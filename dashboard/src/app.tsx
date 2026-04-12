@@ -7,17 +7,9 @@ import { MetricBadges } from "./components/MetricBadges";
 import { PipelineView } from "./components/PipelineView";
 import { StatusBar } from "./components/StatusBar";
 import { fmt, fmtBytes, fmtBytesCompact, fmtCompact } from "./lib/format";
-import {
-  createMetricRegistry,
-  orderedMetrics,
-  PIPELINE_METRIC_ORDER,
-  pushMetricHistorySample,
-  pushMetricSample,
-  SYSTEM_METRIC_ORDER,
-} from "./lib/metricRegistry";
 import { RateTracker } from "./lib/rates";
 import { RingBuffer } from "./lib/ring";
-import type { MetricId, StatsResponse, StatusResponse, TraceRecord } from "./types";
+import type { StatsResponse, StatusResponse, TraceRecord } from "./types";
 
 const POLL_OPTIONS = [
   { label: "500ms", ms: 500 },
@@ -27,7 +19,7 @@ const POLL_OPTIONS = [
 ];
 
 export interface MetricSeries {
-  id: MetricId;
+  id: string;
   label: string;
   color: string;
   ring: RingBuffer;
@@ -147,7 +139,7 @@ function createSeries(): MetricSeries[] {
 }
 
 /** Map server history counters → dashboard series. */
-const HISTORY_MAP: Record<string, { series: MetricId; mode: "gauge" | "counter" }> = {
+const HISTORY_MAP: Record<string, { series: string; mode: "gauge" | "counter" }> = {
   input_lines: { series: "lps", mode: "counter" },
   input_bytes: { series: "bps", mode: "counter" },
   output_bytes: { series: "obps", mode: "counter" },
@@ -163,7 +155,7 @@ export function App() {
   const [traces, setTraces] = useState<TraceRecord[]>([]);
   const [totalErrors, setTotalErrors] = useState(0);
   const [pollMs, setPollMs] = useState(POLL_OPTIONS[2].ms); // default 2s
-  const metricRegistryRef = useRef(createMetricRegistry(createSeries()));
+  const seriesRef = useRef(createSeries());
   const [, forceUpdate] = useState(0);
   const historyLoaded = useRef(false);
 
@@ -173,24 +165,22 @@ export function App() {
     historyLoaded.current = true;
     api.history().then((hist) => {
       if (!hist) return;
-      const metricRegistry = metricRegistryRef.current;
+      const series = seriesRef.current;
       const now = Date.now();
 
       for (const [metricName, points] of Object.entries(hist)) {
         const mapping = HISTORY_MAP[metricName];
         if (!mapping || points.length < 2) continue;
+        const s = series.find((s) => s.id === mapping.series);
+        if (!s) continue;
+
         // Server times are seconds-since-start. Convert to epoch ms
         // by anchoring the latest point to "now".
         const latestServerT = points[points.length - 1][0];
 
         if (mapping.mode === "gauge") {
           for (const [t, v] of points) {
-            pushMetricHistorySample(
-              metricRegistry,
-              mapping.series,
-              now - (latestServerT - t) * 1000,
-              v
-            );
+            s.ring.pushRaw(now - (latestServerT - t) * 1000, v);
           }
         } else {
           // Counter → compute deltas as rates.
@@ -200,12 +190,7 @@ export function App() {
             let rate = (points[i][1] - points[i - 1][1]) / dt;
             if (metricName === "cpu_user_ms") rate /= 10; // ms/s → %
             if (rate < 0) rate = 0;
-            pushMetricHistorySample(
-              metricRegistry,
-              mapping.series,
-              now - (latestServerT - points[i][0]) * 1000,
-              rate
-            );
+            s.ring.pushRaw(now - (latestServerT - points[i][0]) * 1000, rate);
           }
         }
       }
@@ -213,7 +198,8 @@ export function App() {
       const cpuUser = hist.cpu_user_ms;
       const cpuSys = hist.cpu_sys_ms;
       if (cpuUser && cpuSys && cpuUser.length >= 2 && cpuSys.length >= 2) {
-        {
+        const cpuS = series.find((s) => s.id === "cpu");
+        if (cpuS) {
           // Build a map from time → value for cpuSys for quick lookup.
           const sysMap = new Map<number, number>(cpuSys.map(([t, v]) => [t, v]));
           const latestT = cpuUser[cpuUser.length - 1][0];
@@ -226,12 +212,7 @@ export function App() {
             const totalMs = cpuUser[i][1] - cpuUser[i - 1][1] + (curSys - prevSys);
             let rate = totalMs / dt / 10; // ms/s → %
             if (rate < 0) rate = 0;
-            pushMetricHistorySample(
-              metricRegistry,
-              "cpu",
-              now - (latestT - cpuUser[i][0]) * 1000,
-              rate
-            );
+            cpuS.ring.pushRaw(now - (latestT - cpuUser[i][0]) * 1000, rate);
           }
         }
       }
@@ -242,7 +223,8 @@ export function App() {
       const transformHist = hist.transform_sec;
       const outputHistSec = hist.output_sec;
       if (batchesHist && scanHist && transformHist && outputHistSec && batchesHist.length >= 2) {
-        {
+        const latS = series.find((s) => s.id === "lat");
+        if (latS) {
           const scanMap = new Map<number, number>(scanHist.map(([t, v]) => [t, v]));
           const trMap = new Map<number, number>(transformHist.map(([t, v]) => [t, v]));
           const outMap = new Map<number, number>(outputHistSec.map(([t, v]) => [t, v]));
@@ -262,29 +244,21 @@ export function App() {
               continue;
             const totalSec = s1 - s0 + (tr1 - tr0) + (o1 - o0);
             const avgMs = (totalSec / dBatches) * 1000;
-            if (avgMs >= 0) {
-              pushMetricHistorySample(metricRegistry, "lat", now - (latestT - t1) * 1000, avgMs);
-            }
+            if (avgMs >= 0) latS.ring.pushRaw(now - (latestT - t1) * 1000, avgMs);
           }
         }
       }
 
       // Batch rate (batches/min) from server history.
       if (batchesHist && batchesHist.length >= 2) {
-        {
+        const batchS = series.find((s) => s.id === "batches");
+        if (batchS) {
           const latestT = batchesHist[batchesHist.length - 1][0];
           for (let i = 1; i < batchesHist.length; i++) {
             const dt = batchesHist[i][0] - batchesHist[i - 1][0];
             if (dt <= 0) continue;
             const rate = ((batchesHist[i][1] - batchesHist[i - 1][1]) / dt) * 60; // batches/min
-            if (rate >= 0) {
-              pushMetricHistorySample(
-                metricRegistry,
-                "batches",
-                now - (latestT - batchesHist[i][0]) * 1000,
-                rate
-              );
-            }
+            if (rate >= 0) batchS.ring.pushRaw(now - (latestT - batchesHist[i][0]) * 1000, rate);
           }
         }
       }
@@ -292,20 +266,14 @@ export function App() {
       // Backpressure stalls/sec from server history.
       const stallsHist = hist.backpressure_stalls;
       if (stallsHist && stallsHist.length >= 2) {
-        {
+        const stallS = series.find((s) => s.id === "stalls");
+        if (stallS) {
           const latestT = stallsHist[stallsHist.length - 1][0];
           for (let i = 1; i < stallsHist.length; i++) {
             const dt = stallsHist[i][0] - stallsHist[i - 1][0];
             if (dt <= 0) continue;
             const rate = (stallsHist[i][1] - stallsHist[i - 1][1]) / dt; // stalls/sec
-            if (rate >= 0) {
-              pushMetricHistorySample(
-                metricRegistry,
-                "stalls",
-                now - (latestT - stallsHist[i][0]) * 1000,
-                rate
-              );
-            }
+            if (rate >= 0) stallS.ring.pushRaw(now - (latestT - stallsHist[i][0]) * 1000, rate);
           }
         }
       }
@@ -334,7 +302,8 @@ export function App() {
             p.start_unix_ns === t.start_unix_ns &&
             p.total_ns === t.total_ns &&
             p.status === t.status &&
-            p.lifecycle_state === t.lifecycle_state &&
+            p.in_progress === t.in_progress &&
+            p.stage === t.stage &&
             p.errors === t.errors &&
             p.scan_ns === t.scan_ns &&
             p.transform_ns === t.transform_ns &&
@@ -350,7 +319,7 @@ export function App() {
             p.resp_bytes === t.resp_bytes &&
             p.flush_reason === t.flush_reason &&
             p.output_start_unix_ns === t.output_start_unix_ns &&
-            p.lifecycle_state_start_unix_ns === t.lifecycle_state_start_unix_ns &&
+            p.stage_start_unix_ns === t.stage_start_unix_ns &&
             p.scan_rows === t.scan_rows &&
             p.input_rows === t.input_rows &&
             p.output_rows === t.output_rows &&
@@ -380,19 +349,22 @@ export function App() {
       }
       setTotalErrors(te);
 
-      const metricRegistry = metricRegistryRef.current;
+      const series = seriesRef.current;
       const lps = rates.rate("lps", tl);
       const bps = rates.rate("bps", tb);
       const eps = rates.rate("eps", te);
 
       if (lps != null) {
-        pushMetricSample(metricRegistry, "lps", lps, fmt(lps));
+        series[0].ring.push(lps);
+        series[0].value = fmt(lps);
       }
       if (bps != null) {
-        pushMetricSample(metricRegistry, "bps", bps, fmtBytes(bps));
+        series[1].ring.push(bps);
+        series[1].value = fmtBytes(bps);
       }
       if (eps != null) {
-        pushMetricSample(metricRegistry, "err", eps, fmt(eps));
+        series[3].ring.push(eps);
+        series[3].value = fmt(eps);
       }
     } else {
       setConnected(false);
@@ -401,12 +373,13 @@ export function App() {
 
     if (statsData) {
       setStats(statsData);
-      const metricRegistry = metricRegistryRef.current;
+      const series = seriesRef.current;
 
-      // Output bytes/sec.
+      // Output bytes/sec (series[2])
       const obpsRate = rates.rate("obps", statsData.output_bytes);
       if (obpsRate != null) {
-        pushMetricSample(metricRegistry, "obps", obpsRate, fmtBytes(obpsRate));
+        series[2].ring.push(obpsRate);
+        series[2].value = fmtBytes(obpsRate);
       }
 
       if (statsData.cpu_user_ms != null && statsData.cpu_sys_ms != null) {
@@ -414,52 +387,52 @@ export function App() {
         const cpuRate = rates.rate("cpu_ms", cpuMs);
         if (cpuRate != null) {
           const cpuPct = cpuRate / 10;
-          pushMetricSample(metricRegistry, "cpu", cpuPct, cpuPct.toFixed(1));
+          series[4].ring.push(cpuPct);
+          series[4].value = cpuPct.toFixed(1);
         }
       }
 
       const memBytes = statsData.mem_allocated ?? statsData.rss_bytes;
       if (memBytes != null) {
-        const limit = statsData.mem_resident
-          ? `/ ${fmtBytes(statsData.mem_resident)} resident`
-          : undefined;
-        pushMetricSample(metricRegistry, "mem", memBytes, fmtBytes(memBytes), limit);
+        series[5].ring.push(memBytes);
+        series[5].value = fmtBytes(memBytes);
+        if (statsData.mem_resident) {
+          series[5].limit = `/ ${fmtBytes(statsData.mem_resident)} resident`;
+        }
       }
 
       // Batch latency: rolling average of total_ns from recent traces.
       // This gives true ms/batch rather than the cumulative-rate approximation.
       if (tracesData && tracesData.traces.length > 0) {
         const done = tracesData.traces
-          .filter((t) => t.lifecycle_state === "completed" && Number(t.total_ns) > 0)
+          .filter((t) => !t.in_progress && Number(t.total_ns) > 0)
           .slice(0, 50);
         if (done.length > 0) {
           const avgMs =
             done.reduce((s, t) => s + (Number(t.total_ns ?? "0") || 0), 0) / done.length / 1e6;
-          const formatted =
+          series[6].ring.push(avgMs);
+          series[6].value =
             avgMs >= 1000 ? `${(avgMs / 1000).toFixed(1)}s` : `${avgMs.toFixed(0)}ms`;
-          pushMetricSample(metricRegistry, "lat", avgMs, formatted);
         }
       }
 
-      // Inflight batches.
-      pushMetricSample(
-        metricRegistry,
-        "inflight",
-        statsData.inflight_batches,
-        statsData.inflight_batches.toFixed(0)
-      );
+      // Inflight batches (series[7])
+      series[7].ring.push(statsData.inflight_batches);
+      series[7].value = statsData.inflight_batches.toFixed(0);
 
-      // Batch rate: batches/min.
+      // Batch rate: batches/min (series[8])
       const batchRate = rates.rate("batches", statsData.batches);
       if (batchRate != null) {
         const bpm = batchRate * 60;
-        pushMetricSample(metricRegistry, "batches", bpm, fmtCompact(bpm));
+        series[8].ring.push(bpm);
+        series[8].value = fmtCompact(bpm);
       }
 
-      // Scan stalls: stalls/sec.
+      // Scan stalls: stalls/sec (series[9])
       const stallRate = rates.rate("stalls", statsData.backpressure_stalls);
       if (stallRate != null) {
-        pushMetricSample(metricRegistry, "stalls", stallRate, stallRate.toFixed(1));
+        series[9].ring.push(stallRate);
+        series[9].value = stallRate.toFixed(1);
       }
     }
 
@@ -501,11 +474,14 @@ export function App() {
 
   // Stable references — series composition never changes, only data mutated in place.
   const pipelineSeries = useMemo(
-    () => orderedMetrics(metricRegistryRef.current, PIPELINE_METRIC_ORDER),
+    () =>
+      seriesRef.current.filter((s) =>
+        ["lps", "bps", "obps", "err", "lat", "inflight", "batches", "stalls"].includes(s.id)
+      ),
     []
   );
   const systemSeries = useMemo(
-    () => orderedMetrics(metricRegistryRef.current, SYSTEM_METRIC_ORDER),
+    () => seriesRef.current.filter((s) => ["cpu", "mem"].includes(s.id)),
     []
   );
 

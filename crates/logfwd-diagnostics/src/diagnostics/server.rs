@@ -5,13 +5,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Instant;
 
 use super::metrics::PipelineMetrics;
-use super::models::{
-    BatchStatus, BottleneckStatus, ComponentHealthSnapshot, ComponentStatus, FileTransportStatus,
-    LiveResponse, MemoryStats, MemoryStatsResponse, PipelineStatus, ReadyResponse,
-    STABLE_DIAGNOSTICS_CONTRACT_VERSION, StageSeconds, StatusSnapshot, StatusSnapshotResponse,
-    SystemStatus, TcpTransportStatus, TraceLifecycleState, TransformStatus, TransportStatus,
-    UdpTransportStatus,
-};
+use super::models::MemoryStats;
 use super::policy;
 use super::process::process_metrics;
 use super::render::{esc, now_nanos};
@@ -22,16 +16,6 @@ const DASHBOARD_HTML: &str = include_str!("../dashboard.html");
 const REDACTED_SECRET: &str = "***redacted***";
 const REDACTED_CONFIG_UNAVAILABLE: &str = "<redacted config unavailable>";
 const REDACTED_ENDPOINT: &str = "<redacted_endpoint>";
-
-fn lifecycle_state_for_active_batch(stage: &str, worker_id: Option<u64>) -> TraceLifecycleState {
-    match stage {
-        "scan" => TraceLifecycleState::ScanInProgress,
-        "transform" => TraceLifecycleState::TransformInProgress,
-        "output" if worker_id.is_some() => TraceLifecycleState::OutputInProgress,
-        "queued" | "output" => TraceLifecycleState::QueuedForOutput,
-        _ => TraceLifecycleState::QueuedForOutput,
-    }
-}
 
 fn redact_endpoint_credentials(endpoint: &str) -> String {
     let Ok(mut parsed) = url::Url::parse(endpoint) else {
@@ -369,7 +353,11 @@ impl DiagnosticsServer {
     }
 
     fn serve_live(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        let body = serde_json::to_string(&self.live_payload())?;
+        let uptime = self.start_time.elapsed().as_secs();
+        let body = format!(
+            r#"{{"status":"live","uptime_seconds":{},"version":"{}"}}"#,
+            uptime, VERSION,
+        );
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
         let resp = tiny_http::Response::from_string(body).with_header(header);
@@ -391,15 +379,23 @@ impl DiagnosticsServer {
     /// explicit lifecycle wiring lands, so this endpoint is only as honest as
     /// the currently wired health sources.
     fn serve_ready(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        let (payload, ready) = self.ready_payload();
-        let body = serde_json::to_string(&payload)?;
+        let snapshot = policy::readiness_snapshot(&self.pipelines);
+        let observed_at_unix_ns = now_nanos();
 
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        if ready {
+        if snapshot.ready {
+            let body = format!(
+                r#"{{"status":"ready","reason":"{}","observed_at_unix_ns":"{}"}}"#,
+                snapshot.reason, observed_at_unix_ns
+            );
             let resp = tiny_http::Response::from_string(body).with_header(header);
             request.respond(resp)?;
         } else {
+            let body = format!(
+                r#"{{"status":"not_ready","reason":"{}","observed_at_unix_ns":"{}"}}"#,
+                snapshot.reason, observed_at_unix_ns
+            );
             let resp = tiny_http::Response::from_string(body)
                 .with_status_code(503)
                 .with_header(header);
@@ -686,8 +682,7 @@ impl DiagnosticsServer {
                         \"resp_bytes\":{rspb},\
                         \"flush_reason\":\"{fr}\",\
                         \"errors\":{err},\
-                        \"status\":\"{status}\",\
-                        \"lifecycle_state\":\"{lifecycle_state}\"\
+                        \"status\":\"{status}\"\
                     }}",
                     tid = root.trace_id,
                     pl = esc(pipeline),
@@ -713,7 +708,6 @@ impl DiagnosticsServer {
                     fr = esc(flush_reason),
                     err = errors,
                     status = root.status,
-                    lifecycle_state = TraceLifecycleState::Completed.as_str(),
                 );
             }
             // In-progress batches — live entries shown before completion.
@@ -754,8 +748,9 @@ impl DiagnosticsServer {
                                 \"flush_reason\":\"\",\
                                 \"errors\":0,\
                                 \"status\":\"unset\",\
-                                \"lifecycle_state\":\"{lifecycle_state}\",\
-                                \"lifecycle_state_start_unix_ns\":\"{state_start}\"\
+                                \"in_progress\":true,\
+                                \"stage\":\"{stage}\",\
+                                \"stage_start_unix_ns\":\"{ss}\"\
                             }}",
                             id = id,
                             pl = esc(&pm.name),
@@ -764,9 +759,8 @@ impl DiagnosticsServer {
                             xfm = b.transform_ns,
                             out_st = b.output_start_unix_ns,
                             wid = worker_id_json,
-                            lifecycle_state =
-                                lifecycle_state_for_active_batch(b.stage, b.worker_id).as_str(),
-                            state_start = b.stage_start_unix_ns,
+                            stage = b.stage,
+                            ss = b.stage_start_unix_ns,
                         );
                     }
                 }
@@ -785,7 +779,7 @@ impl DiagnosticsServer {
     }
 
     fn serve_status(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        let body = serde_json::to_string(&self.status_payload())?;
+        let body = self.status_body();
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
         let resp = tiny_http::Response::from_string(body).with_header(header);
@@ -793,80 +787,47 @@ impl DiagnosticsServer {
         Ok(())
     }
 
-    fn live_payload(&self) -> LiveResponse {
-        LiveResponse {
-            contract_version: STABLE_DIAGNOSTICS_CONTRACT_VERSION,
-            status: "live",
-            uptime_seconds: self.start_time.elapsed().as_secs(),
-            version: VERSION,
-        }
-    }
-
-    fn ready_payload(&self) -> (ReadyResponse, bool) {
-        let snapshot = policy::readiness_snapshot(&self.pipelines);
-        let observed_at_unix_ns = now_nanos().to_string();
-        let ready = snapshot.ready;
-        let payload = ReadyResponse {
-            contract_version: STABLE_DIAGNOSTICS_CONTRACT_VERSION,
-            status: if ready { "ready" } else { "not_ready" },
-            reason: snapshot.reason,
-            observed_at_unix_ns,
-        };
-        (payload, ready)
-    }
-
-    fn status_payload(&self) -> StatusSnapshotResponse {
+    fn status_body(&self) -> String {
         let uptime = self.start_time.elapsed().as_secs();
         let uptime_s = self.start_time.elapsed().as_secs_f64();
         let observed_at_unix_ns = now_nanos();
-        let mut pipelines = Vec::new();
+        let mut pipelines_json = Vec::new();
 
         for pm in &self.pipelines {
-            let inputs: Vec<ComponentStatus> = pm
+            let inputs_json: Vec<String> = pm
                 .inputs
                 .iter()
                 .map(|(name, typ, stats)| {
-                    let transport = match typ.as_str() {
-                        "file" => Some(TransportStatus {
-                            file: Some(FileTransportStatus {
-                                consecutive_error_polls: stats
-                                    .file_error_polls
-                                    .load(Ordering::Relaxed)
-                                    .into(),
-                            }),
-                            tcp: None,
-                            udp: None,
-                        }),
-                        "tcp" => Some(TransportStatus {
-                            file: None,
-                            tcp: Some(TcpTransportStatus {
-                                accepted_connections: stats.tcp_accepted.load(Ordering::Relaxed),
-                                active_connections: stats.tcp_active.load(Ordering::Relaxed) as u64,
-                            }),
-                            udp: None,
-                        }),
-                        "udp" => Some(TransportStatus {
-                            file: None,
-                            tcp: None,
-                            udp: Some(UdpTransportStatus {
-                                drops_detected: stats.udp_drops.load(Ordering::Relaxed),
-                                recv_buffer_size: stats.udp_recv_buf.load(Ordering::Relaxed) as u64,
-                            }),
-                        }),
-                        _ => None,
+                    let transport_json = match typ.as_str() {
+                        "file" => format!(
+                            r#","transport":{{"file":{{"consecutive_error_polls":{}}}}}"#,
+                            stats.file_error_polls.load(Ordering::Relaxed)
+                        ),
+                        "tcp" => format!(
+                            r#","transport":{{"tcp":{{"accepted_connections":{},"active_connections":{}}}}}"#,
+                            stats.tcp_accepted.load(Ordering::Relaxed),
+                            stats.tcp_active.load(Ordering::Relaxed)
+                        ),
+                        "udp" => format!(
+                            r#","transport":{{"udp":{{"drops_detected":{},"recv_buffer_size":{}}}}}"#,
+                            stats.udp_drops.load(Ordering::Relaxed),
+                            stats.udp_recv_buf.load(Ordering::Relaxed)
+                        ),
+                        _ => String::new(),
                     };
 
-                    ComponentStatus {
-                        name: name.clone(),
-                        component_type: typ.clone(),
-                        health: stats.health().as_str().to_string(),
-                        lines_total: stats.lines(),
-                        bytes_total: stats.bytes(),
-                        errors: stats.errors(),
-                        rotations: Some(stats.rotations()),
-                        parse_errors: Some(stats.parse_errors()),
-                        transport,
-                    }
+                    format!(
+                        r#"{{"name":"{}","type":"{}","health":"{}","lines_total":{},"bytes_total":{},"errors":{},"rotations":{},"parse_errors":{}{}}}"#,
+                        esc(name),
+                        esc(typ),
+                        stats.health().as_str(),
+                        stats.lines(),
+                        stats.bytes(),
+                        stats.errors(),
+                        stats.rotations(),
+                        stats.parse_errors(),
+                        transport_json
+                    )
                 })
                 .collect();
 
@@ -889,19 +850,19 @@ impl DiagnosticsServer {
                 0.0
             };
 
-            let outputs: Vec<ComponentStatus> = pm
+            let outputs_json: Vec<String> = pm
                 .outputs
                 .iter()
-                .map(|(name, typ, stats)| ComponentStatus {
-                    name: name.clone(),
-                    component_type: typ.clone(),
-                    health: stats.health().as_str().to_string(),
-                    lines_total: stats.lines(),
-                    bytes_total: stats.bytes(),
-                    errors: stats.errors(),
-                    rotations: None,
-                    parse_errors: None,
-                    transport: None,
+                .map(|(name, typ, stats)| {
+                    format!(
+                        r#"{{"name":"{}","type":"{}","health":"{}","lines_total":{},"bytes_total":{},"errors":{}}}"#,
+                        esc(name),
+                        esc(typ),
+                        stats.health().as_str(),
+                        stats.lines(),
+                        stats.bytes(),
+                        stats.errors(),
+                    )
                 })
                 .collect();
 
@@ -996,46 +957,39 @@ impl DiagnosticsServer {
                 ("none", "running well within capacity".to_string())
             };
 
-            pipelines.push(PipelineStatus {
-                name: pm.name.clone(),
-                inputs,
-                transform: TransformStatus {
-                    sql: pm.transform_sql.clone(),
-                    health: transform_health.as_str().to_string(),
-                    lines_in,
-                    lines_out,
-                    errors: pm.transform_errors.load(Ordering::Relaxed),
-                    filter_drop_rate: drop_rate,
-                },
-                outputs,
-                batches: BatchStatus {
-                    total: batches,
-                    avg_rows,
-                    flush_by_size: pm.flush_by_size.load(Ordering::Relaxed),
-                    flush_by_timeout: pm.flush_by_timeout.load(Ordering::Relaxed),
-                    cadence_fast_repolls: pm.cadence_fast_repolls.load(Ordering::Relaxed),
-                    cadence_idle_sleeps: pm.cadence_idle_sleeps.load(Ordering::Relaxed),
-                    dropped_batches_total: pm.dropped_batches_total.load(Ordering::Relaxed),
-                    scan_errors_total: pm.scan_errors_total.load(Ordering::Relaxed),
-                    parse_errors_total: pm.parse_errors_total.load(Ordering::Relaxed),
-                    last_batch_time_ns: last_batch_ns.to_string(),
-                    batch_latency_avg_ns,
-                    inflight,
-                    rows_total: batch_rows,
-                },
-                stage_seconds: StageSeconds {
-                    scan: scan_s,
-                    transform: transform_s,
-                    output: output_s,
-                    queue_wait: queue_wait_s,
-                    send: send_s,
-                },
-                backpressure_stalls: backpressure,
-                bottleneck: BottleneckStatus {
-                    stage: bottleneck_stage.to_string(),
-                    reason: bottleneck_reason,
-                },
-            });
+            pipelines_json.push(format!(
+                r#"{{"name":"{}","inputs":[{}],"transform":{{"sql":"{}","health":"{}","lines_in":{},"lines_out":{},"errors":{},"filter_drop_rate":{:.3}}},"outputs":[{}],"batches":{{"total":{},"avg_rows":{:.1},"flush_by_size":{},"flush_by_timeout":{},"cadence_fast_repolls":{},"cadence_idle_sleeps":{},"dropped_batches_total":{},"scan_errors_total":{},"parse_errors_total":{},"last_batch_time_ns":"{}","batch_latency_avg_ns":{},"inflight":{},"rows_total":{}}},"stage_seconds":{{"scan":{:.6},"transform":{:.6},"output":{:.6},"queue_wait":{:.6},"send":{:.6}}},"backpressure_stalls":{},"bottleneck":{{"stage":"{}","reason":"{}"}}}}"#,
+                esc(&pm.name),
+                inputs_json.join(","),
+                esc(&pm.transform_sql),
+                transform_health.as_str(),
+                lines_in,
+                lines_out,
+                pm.transform_errors.load(Ordering::Relaxed),
+                drop_rate,
+                outputs_json.join(","),
+                batches,
+                avg_rows,
+                pm.flush_by_size.load(Ordering::Relaxed),
+                pm.flush_by_timeout.load(Ordering::Relaxed),
+                pm.cadence_fast_repolls.load(Ordering::Relaxed),
+                pm.cadence_idle_sleeps.load(Ordering::Relaxed),
+                pm.dropped_batches_total.load(Ordering::Relaxed),
+                pm.scan_errors_total.load(Ordering::Relaxed),
+                pm.parse_errors_total.load(Ordering::Relaxed),
+                last_batch_ns,
+                batch_latency_avg_ns,
+                inflight,
+                batch_rows,
+                scan_s,
+                transform_s,
+                output_s,
+                queue_wait_s,
+                send_s,
+                backpressure,
+                bottleneck_stage,
+                esc(bottleneck_reason.as_str()),
+            ));
         }
 
         let ready_snapshot = policy::readiness_snapshot(&self.pipelines);
@@ -1049,37 +1003,32 @@ impl DiagnosticsServer {
         let component_reason = policy::health_reason(component_health);
         let readiness_impact = policy::readiness_impact(component_health);
 
-        StatusSnapshotResponse {
-            contract_version: STABLE_DIAGNOSTICS_CONTRACT_VERSION,
-            live: StatusSnapshot {
-                status: "live".to_string(),
-                reason: "process_running".to_string(),
-                observed_at_unix_ns: observed_at_unix_ns.to_string(),
-            },
-            ready: StatusSnapshot {
-                status: ready.to_string(),
-                reason: ready_reason.to_string(),
-                observed_at_unix_ns: observed_at_unix_ns.to_string(),
-            },
-            component_health: ComponentHealthSnapshot {
-                status: component_health.as_str().to_string(),
-                reason: component_reason.to_string(),
-                readiness_impact: readiness_impact.to_string(),
-                observed_at_unix_ns: observed_at_unix_ns.to_string(),
-            },
-            pipelines,
-            system: SystemStatus {
-                uptime_seconds: uptime,
-                version: VERSION,
-                memory: self
-                    .memory_stats_fn
-                    .and_then(|f| f())
-                    .map(|m| MemoryStatsResponse {
-                        resident: m.resident,
-                        allocated: m.allocated,
-                        active: m.active,
-                    }),
-            },
+        format!(
+            r#"{{"live":{{"status":"live","reason":"process_running","observed_at_unix_ns":"{}"}},"ready":{{"status":"{}","reason":"{}","observed_at_unix_ns":"{}"}},"component_health":{{"status":"{}","reason":"{}","readiness_impact":"{}","observed_at_unix_ns":"{}"}},"pipelines":[{}],"system":{{"uptime_seconds":{},"version":"{}"{}}}}}"#,
+            observed_at_unix_ns,
+            ready,
+            ready_reason,
+            observed_at_unix_ns,
+            component_health.as_str(),
+            component_reason,
+            readiness_impact,
+            observed_at_unix_ns,
+            pipelines_json.join(","),
+            uptime,
+            VERSION,
+            self.memory_json(),
+        )
+    }
+
+    /// Returns a JSON fragment (starting with a comma) for allocator memory
+    /// stats, or an empty string if no stats function is registered.
+    fn memory_json(&self) -> String {
+        match self.memory_stats_fn.and_then(|f| f()) {
+            Some(m) => format!(
+                r#","memory":{{"resident":{},"allocated":{},"active":{}}}"#,
+                m.resident, m.allocated, m.active,
+            ),
+            None => String::new(),
         }
     }
 
@@ -1401,8 +1350,8 @@ output:
             "malformed endpoint with userinfo should be replaced with fail-closed marker"
         );
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn diagnostics_server_handle_drop_releases_port() {
         let server = DiagnosticsServer::new("127.0.0.1:0");
         let (handle, addr) = server.start().expect("server bind failed");
@@ -1442,8 +1391,8 @@ output:
         stats.set_health(ComponentHealth::Degraded);
         assert_eq!(stats.health(), ComponentHealth::Degraded);
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn test_live_endpoint() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -1454,18 +1403,16 @@ output:
 
         let (status, body) = http_get(port, "/live");
         assert_eq!(status, 200);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&body).expect("invalid JSON output from /live");
-        assert_eq!(
-            parsed["contract_version"],
-            STABLE_DIAGNOSTICS_CONTRACT_VERSION
+        assert!(body.contains(r#""status":"live""#), "body: {}", body);
+        assert!(
+            body.contains(&format!(r#""version":"{}""#, env!("CARGO_PKG_VERSION"))),
+            "body: {}",
+            body
         );
-        assert_eq!(parsed["status"], "live");
-        assert_eq!(parsed["version"], env!("CARGO_PKG_VERSION"));
-        assert!(parsed["uptime_seconds"].is_u64(), "body: {body}");
+        assert!(body.contains(r#""uptime_seconds":"#), "body: {}", body);
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -1475,25 +1422,27 @@ output:
 
         let (status, body) = http_get(port, "/admin/v1/status");
         assert_eq!(status, 200);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&body).expect("invalid JSON output from /admin/v1/status");
-        assert_eq!(
-            parsed["contract_version"],
-            STABLE_DIAGNOSTICS_CONTRACT_VERSION
+        assert!(
+            body.contains(
+                r#""component_health":{"status":"healthy","reason":"all_components_healthy","readiness_impact":"ready","observed_at_unix_ns":""#
+            ),
+            "body: {}",
+            body
         );
-        assert_eq!(parsed["component_health"]["status"], "healthy");
-        assert_eq!(
-            parsed["component_health"]["reason"],
-            "all_components_healthy"
+        assert!(
+            body.contains(
+                r#""ready":{"status":"ready","reason":"all_components_healthy","observed_at_unix_ns":""#
+            ),
+            "body: {}",
+            body
         );
-        assert_eq!(parsed["component_health"]["readiness_impact"], "ready");
-        assert!(parsed["component_health"]["observed_at_unix_ns"].is_string());
-        assert_eq!(parsed["ready"]["status"], "ready");
-        assert_eq!(parsed["ready"]["reason"], "all_components_healthy");
-        assert!(parsed["ready"]["observed_at_unix_ns"].is_string());
-        assert_eq!(parsed["live"]["status"], "live");
-        assert_eq!(parsed["live"]["reason"], "process_running");
-        assert!(parsed["live"]["observed_at_unix_ns"].is_string());
+        assert!(
+            body.contains(
+                r#""live":{"status":"live","reason":"process_running","observed_at_unix_ns":""#
+            ),
+            "body: {}",
+            body
+        );
         assert!(body.contains(r#""name":"default""#), "body: {}", body);
         assert!(body.contains(r#""health":"healthy""#), "body: {}", body);
         assert!(body.contains(r#""lines_total":1000"#), "body: {}", body);
@@ -1546,13 +1495,13 @@ output:
             "body: {}",
             body
         );
-        assert_eq!(parsed["pipelines"][0]["stage_seconds"]["queue_wait"], 0.05);
-        assert_eq!(parsed["pipelines"][0]["stage_seconds"]["send"], 0.15);
+        assert!(body.contains(r#""queue_wait":0.050000"#), "body: {}", body);
+        assert!(body.contains(r#""send":0.150000"#), "body: {}", body);
         // Bottleneck field must be present and well-formed.
         assert!(body.contains(r#""bottleneck":{"stage":"#), "body: {}", body);
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn test_stats_endpoint_contract() {
         let mut server = server_with_test_pipeline();
         server.set_memory_stats_fn(|| {
@@ -1716,8 +1665,8 @@ output:
         assert_eq!(pm.outputs[0].2.errors(), 1);
         assert_eq!(pm.outputs[1].2.errors(), 1);
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn test_not_found() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -1728,8 +1677,8 @@ output:
         let (status, _body) = http_get(port, "/nonexistent");
         assert_eq!(status, 404);
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint_no_memory_stats() {
         // Without a memory_stats_fn set, the system section must NOT contain
         // a "memory" key — no partial or null fields.
@@ -1748,8 +1697,8 @@ output:
             body
         );
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint_with_memory_stats() {
         // With a memory_stats_fn set, the system section must include
         // "memory" with resident/allocated/active fields.
@@ -1773,8 +1722,8 @@ output:
         assert!(body.contains(r#""allocated":800000"#), "body: {}", body);
         assert!(body.contains(r#""active":900000"#), "body: {}", body);
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn test_ready_endpoint_no_pipelines_returns_503() {
         // No pipelines registered yet → not ready.
         let server = DiagnosticsServer::new("127.0.0.1:0");
@@ -1786,17 +1735,15 @@ output:
 
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 503, "body: {}", body);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&body).expect("invalid JSON output from /ready");
-        assert_eq!(
-            parsed["contract_version"],
-            STABLE_DIAGNOSTICS_CONTRACT_VERSION
+        assert!(body.contains(r#""status":"not_ready""#), "body: {}", body);
+        assert!(
+            body.contains(r#""reason":"no_pipelines_registered""#),
+            "body: {}",
+            body
         );
-        assert_eq!(parsed["status"], "not_ready");
-        assert_eq!(parsed["reason"], "no_pipelines_registered");
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn test_ready_endpoint_with_pipeline_returns_200() {
         // A registered pipeline makes the server ready, regardless of
         // whether any batches have been processed.
@@ -1813,17 +1760,15 @@ output:
 
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 200, "body: {}", body);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&body).expect("invalid JSON output from /ready");
-        assert_eq!(
-            parsed["contract_version"],
-            STABLE_DIAGNOSTICS_CONTRACT_VERSION
+        assert!(body.contains(r#""status":"ready""#), "body: {}", body);
+        assert!(
+            body.contains(r#""reason":"all_components_healthy""#),
+            "body: {}",
+            body
         );
-        assert_eq!(parsed["status"], "ready");
-        assert_eq!(parsed["reason"], "all_components_healthy");
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn test_ready_endpoint_with_starting_component_returns_503() {
         let meter = opentelemetry::global::meter("test");
         let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
@@ -1839,13 +1784,15 @@ output:
 
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 503, "body: {}", body);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&body).expect("invalid JSON output from /ready");
-        assert_eq!(parsed["status"], "not_ready");
-        assert_eq!(parsed["reason"], "components_starting");
+        assert!(body.contains(r#""status":"not_ready""#), "body: {}", body);
+        assert!(
+            body.contains(r#""reason":"components_starting""#),
+            "body: {}",
+            body
+        );
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn test_ready_endpoint_with_degraded_input_stays_200() {
         let meter = opentelemetry::global::meter("test");
         let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
@@ -1861,10 +1808,12 @@ output:
 
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 200, "body: {}", body);
-        let parsed: serde_json::Value =
-            serde_json::from_str(&body).expect("invalid JSON output from /ready");
-        assert_eq!(parsed["status"], "ready");
-        assert_eq!(parsed["reason"], "components_degraded_but_operational");
+        assert!(body.contains(r#""status":"ready""#), "body: {}", body);
+        assert!(
+            body.contains(r#""reason":"components_degraded_but_operational""#),
+            "body: {}",
+            body
+        );
     }
 
     #[test]
@@ -1946,8 +1895,8 @@ output:
             false,
         );
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint_includes_transport_parity_fields() {
         let meter = opentelemetry::global::meter("test");
         let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
@@ -1996,8 +1945,8 @@ output:
         assert_eq!(udp["transport"]["udp"]["drops_detected"], 100);
         assert_eq!(udp["transport"]["udp"]["recv_buffer_size"], 8_388_608);
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint_shows_degraded_input_as_non_blocking() {
         let meter = opentelemetry::global::meter("test");
         let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
@@ -2030,70 +1979,6 @@ output:
         );
     }
 
-    #[derive(serde::Deserialize)]
-    struct MinimalStatusCompatibilityView {
-        contract_version: String,
-        ready: MinimalReadyCompatibilityView,
-    }
-
-    #[derive(serde::Deserialize)]
-    struct MinimalReadyCompatibilityView {
-        status: String,
-        reason: String,
-    }
-
-    #[test]
-    fn test_stable_diagnostics_endpoints_expose_contract_version() {
-        let server = server_with_test_pipeline();
-        let (_handle, addr) = server.start().expect("server bind failed");
-        let port = addr.port();
-
-        thread::sleep(std::time::Duration::from_millis(100));
-
-        let (_, live_body) = http_get(port, "/live");
-        let live: serde_json::Value =
-            serde_json::from_str(&live_body).expect("invalid JSON output from /live");
-        assert_eq!(
-            live["contract_version"],
-            STABLE_DIAGNOSTICS_CONTRACT_VERSION
-        );
-
-        let (_, ready_body) = http_get(port, "/ready");
-        let ready: serde_json::Value =
-            serde_json::from_str(&ready_body).expect("invalid JSON output from /ready");
-        assert_eq!(
-            ready["contract_version"],
-            STABLE_DIAGNOSTICS_CONTRACT_VERSION
-        );
-
-        let (_, status_body) = http_get(port, "/admin/v1/status");
-        let status: serde_json::Value =
-            serde_json::from_str(&status_body).expect("invalid JSON output from /admin/v1/status");
-        assert_eq!(
-            status["contract_version"],
-            STABLE_DIAGNOSTICS_CONTRACT_VERSION
-        );
-    }
-
-    #[test]
-    fn test_status_endpoint_additive_compatibility_fixture() {
-        let server = server_with_test_pipeline();
-        let (_handle, addr) = server.start().expect("server bind failed");
-        let port = addr.port();
-
-        thread::sleep(std::time::Duration::from_millis(100));
-
-        let (_status, body) = http_get(port, "/admin/v1/status");
-        let fixture: MinimalStatusCompatibilityView =
-            serde_json::from_str(&body).expect("status contract should stay additive-compatible");
-        assert_eq!(
-            fixture.contract_version,
-            STABLE_DIAGNOSTICS_CONTRACT_VERSION.to_string()
-        );
-        assert_eq!(fixture.ready.status, "ready");
-        assert_eq!(fixture.ready.reason, "all_components_healthy");
-    }
-
     #[test]
     fn test_esc_control_chars() {
         assert_eq!(esc("hello\0world"), "hello\\u0000world");
@@ -2101,8 +1986,8 @@ output:
         assert_eq!(esc("bell\x07"), "bell\\u0007");
         assert_eq!(esc("escape\x1b"), "escape\\u001b");
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint_escaping() {
         let meter = opentelemetry::global::meter("test");
         // Control character in pipeline name.
@@ -2128,8 +2013,8 @@ output:
         let _v: serde_json::Value =
             serde_json::from_str(&body).expect("invalid JSON output from /admin/v1/status");
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn test_traces_endpoint_empty() {
         // Server with no trace buffer attached — should return empty array.
         let server = server_with_test_pipeline();
@@ -2142,8 +2027,8 @@ output:
         assert_eq!(status, 200);
         assert_eq!(body, r#"{"traces":[]}"#, "unexpected body: {body}");
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn test_traces_endpoint_with_data() {
         use crate::span_exporter::{SpanBuffer, TraceSpan};
 
@@ -2212,77 +2097,6 @@ output:
         assert_eq!(t["output_ns"], "0");
         assert_eq!(t["queue_wait_ns"], "5000000");
         assert_eq!(t["status"], "ok");
-        assert_eq!(t["lifecycle_state"], "completed");
-    }
-
-    #[test]
-    fn test_traces_endpoint_explicit_lifecycle_states_for_active_batches() {
-        use crate::span_exporter::SpanBuffer;
-
-        let meter = opentelemetry::global::meter("test");
-        let pm = Arc::new(PipelineMetrics::new(
-            "default",
-            "SELECT * FROM logs",
-            &meter,
-        ));
-
-        // One batch per active state.
-        pm.begin_active_batch(1, 1_000_000_000, 0, 0);
-        pm.advance_active_batch(1, "scan", 0, 1_000_100_000);
-
-        pm.begin_active_batch(2, 1_100_000_000, 12_000_000, 0);
-        pm.advance_active_batch(2, "scan", 12_000_000, 1_112_000_000);
-        pm.advance_active_batch(2, "transform", 0, 1_112_500_000);
-
-        pm.begin_active_batch(3, 1_200_000_000, 8_000_000, 5_000_000);
-
-        pm.begin_active_batch(4, 1_300_000_000, 9_000_000, 4_000_000);
-        pm.assign_worker_to_active_batch(4, 7, 1_313_500_000);
-
-        let mut server = DiagnosticsServer::new("127.0.0.1:0");
-        server.add_pipeline(Arc::clone(&pm));
-        server.set_trace_buffer(SpanBuffer::new());
-        let (_handle, addr) = server.start().expect("server bind failed");
-        let port = addr.port();
-
-        thread::sleep(std::time::Duration::from_millis(100));
-
-        let (status, body) = http_get(port, "/admin/v1/traces");
-        assert_eq!(status, 200);
-
-        let v: serde_json::Value =
-            serde_json::from_str(&body).expect("invalid JSON from /admin/v1/traces");
-        let traces = v["traces"].as_array().expect("traces must be array");
-        assert_eq!(traces.len(), 4);
-
-        let mut by_state = std::collections::HashMap::new();
-        for trace in traces {
-            by_state.insert(
-                trace["lifecycle_state"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_string(),
-                trace.clone(),
-            );
-        }
-
-        assert!(by_state.contains_key("scan_in_progress"));
-        assert!(by_state.contains_key("transform_in_progress"));
-        assert!(by_state.contains_key("queued_for_output"));
-        assert!(by_state.contains_key("output_in_progress"));
-
-        let queued = by_state
-            .get("queued_for_output")
-            .expect("queued trace missing");
-        assert_eq!(queued["worker_id"], serde_json::Value::Null);
-        assert_eq!(queued["lifecycle_state_start_unix_ns"], "1200000000");
-
-        let output = by_state
-            .get("output_in_progress")
-            .expect("output trace missing");
-        assert_eq!(output["worker_id"], 7);
-        assert_eq!(output["output_start_unix_ns"], "1313500000");
-        assert_eq!(output["lifecycle_state_start_unix_ns"], "1313500000");
     }
 
     /// Raw TCP POST helper for method-rejection tests.
@@ -2347,7 +2161,6 @@ output:
 
     // Bug #728: diagnostics server should return 405 for non-GET methods.
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn non_get_returns_405() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -2362,8 +2175,8 @@ output:
     }
 
     // -- OTLP telemetry endpoint tests --
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn telemetry_metrics_endpoint_returns_valid_otlp() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -2404,8 +2217,8 @@ output:
             "expected at least one metric"
         );
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn telemetry_traces_endpoint_with_spans() {
         use crate::span_exporter::{SpanBuffer, TraceSpan};
 
@@ -2452,8 +2265,8 @@ output:
             "startTimeUnixNano must be a string"
         );
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn telemetry_logs_endpoint_returns_valid_otlp() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -2473,8 +2286,8 @@ output:
             "expected resourceLogs array"
         );
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn telemetry_endpoints_empty_on_fresh_start() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -2504,8 +2317,8 @@ output:
             "traces must have resourceSpans array"
         );
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn existing_endpoints_unchanged_after_telemetry() {
         // Backward compatibility: existing endpoints must still work.
         let server = server_with_test_pipeline();
@@ -2533,8 +2346,8 @@ output:
         assert_eq!(status, 200, "live: {body}");
         assert!(body.contains("\"status\":\"live\""), "live: {body}");
     }
+
     #[test]
-    #[ignore = "network integration test; run with `just test-network`"]
     fn removed_legacy_endpoints_return_404() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");

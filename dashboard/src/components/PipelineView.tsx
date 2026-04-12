@@ -72,68 +72,74 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
         {p.inputs.map((inp, i) => (
           <>
             {i > 0 && <Arrow />}
-            <div
+            <button
+              type="button"
               class={`pn inp ${sel === `i${i}` ? "selected" : ""}`}
               onClick={() => toggle(`i${i}`)}
             >
-              <div class="pn-type">{typeLabel(inp.type)}</div>
-              {!isGenericName(inp.name) && <div class="pn-name">{inp.name}</div>}
-              <div class="pn-row">
+              <span class="pn-type">{typeLabel(inp.type)}</span>
+              {!isGenericName(inp.name) && <span class="pn-name">{inp.name}</span>}
+              <span class="pn-row">
                 <span>lines</span>
                 <b>{fmt(inp.lines_total)}</b>
-              </div>
-              <div class="pn-row">
+              </span>
+              <span class="pn-row">
                 <span>bytes</span>
                 <b>{fmtBytes(inp.bytes_total)}</b>
-              </div>
-              <div class="pn-row">
+              </span>
+              <span class="pn-row">
                 <span>rate</span>
                 <b>{compRate(inp, "lines_total")}</b>
-              </div>
-            </div>
+              </span>
+            </button>
           </>
         ))}
         <Arrow />
-        <div class={`pn xfm ${sel === "t" ? "selected" : ""}`} onClick={() => toggle("t")}>
-          <div class="pn-type">SQL</div>
-          <div class="pn-row">
+        <button
+          type="button"
+          class={`pn xfm ${sel === "t" ? "selected" : ""}`}
+          onClick={() => toggle("t")}
+        >
+          <span class="pn-type">SQL</span>
+          <span class="pn-row">
             <span>in</span>
             <b>{fmt(p.transform.lines_in)}</b>
-          </div>
-          <div class="pn-row">
+          </span>
+          <span class="pn-row">
             <span>out</span>
             <b>{fmt(p.transform.lines_out)}</b>
-          </div>
-          <div class="pn-row">
+          </span>
+          <span class="pn-row">
             <span>drop</span>
             <b style={p.transform.filter_drop_rate > 0.05 ? "color:var(--warn)" : ""}>
               {(p.transform.filter_drop_rate * 100).toFixed(1)}%
             </b>
-          </div>
-        </div>
+          </span>
+        </button>
         <Arrow />
         {p.outputs.map((out, i) => (
           <>
             {i > 0 && <Arrow />}
-            <div
+            <button
+              type="button"
               class={`pn out ${sel === `o${i}` ? "selected" : ""}`}
               onClick={() => toggle(`o${i}`)}
             >
-              <div class="pn-type">{typeLabel(out.type)}</div>
-              {!isGenericName(out.name) && <div class="pn-name">{out.name}</div>}
-              <div class="pn-row">
+              <span class="pn-type">{typeLabel(out.type)}</span>
+              {!isGenericName(out.name) && <span class="pn-name">{out.name}</span>}
+              <span class="pn-row">
                 <span>lines</span>
                 <b>{fmt(out.lines_total)}</b>
-              </div>
-              <div class="pn-row">
+              </span>
+              <span class="pn-row">
                 <span>bytes</span>
                 <b>{fmtBytes(out.bytes_total)}</b>
-              </div>
-              <div class="pn-row">
+              </span>
+              <span class="pn-row">
                 <span>errors</span>
                 <b style={out.errors > 0 ? "color:var(--err)" : ""}>{out.errors}</b>
-              </div>
-            </div>
+              </span>
+            </button>
           </>
         ))}
       </div>
