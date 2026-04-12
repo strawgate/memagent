@@ -15,11 +15,14 @@ use prost::Message;
 use crate::InputError;
 use crate::receiver_http::MAX_REQUEST_BODY_SIZE;
 
+use super::OtlpProtobufDecodeMode;
 use super::convert::{
     convert_request_to_batch, decode_protojson_bytes, hex, parse_protojson_f64,
     parse_protojson_i64, parse_protojson_u64, write_f64_to_buf, write_i64_to_buf, write_json_key,
     write_json_string_field, write_u64_to_buf,
 };
+#[cfg(any(feature = "otlp-research", test))]
+use super::projection::ProjectionError;
 
 pub(super) fn decompress_zstd(body: &[u8]) -> Result<Vec<u8>, InputError> {
     let decoder = zstd::Decoder::new(body)
@@ -54,6 +57,47 @@ pub(super) fn read_decompressed_body(
 /// Decode an OTLP ExportLogsServiceRequest from protobuf and produce a
 /// structured Arrow RecordBatch.
 pub(super) fn decode_otlp_protobuf(
+    body: &[u8],
+    resource_prefix: &str,
+) -> Result<RecordBatch, InputError> {
+    decode_otlp_protobuf_with_prost(body, resource_prefix)
+}
+
+pub(super) fn decode_otlp_protobuf_bytes_with_mode(
+    body: Bytes,
+    resource_prefix: &str,
+    mode: OtlpProtobufDecodeMode,
+) -> Result<RecordBatch, InputError> {
+    if body.is_empty() {
+        return Ok(RecordBatch::new_empty(Arc::new(
+            arrow::datatypes::Schema::empty(),
+        )));
+    }
+
+    match mode {
+        OtlpProtobufDecodeMode::Prost => decode_otlp_protobuf_with_prost(&body, resource_prefix),
+        #[cfg(any(feature = "otlp-research", test))]
+        OtlpProtobufDecodeMode::ProjectedFallback => {
+            match super::projection::decode_projected_otlp_logs_view_bytes(
+                body.clone(),
+                resource_prefix,
+            ) {
+                Ok(batch) => Ok(batch),
+                Err(ProjectionError::Unsupported(_)) => {
+                    decode_otlp_protobuf_with_prost(&body, resource_prefix)
+                }
+                Err(err) => Err(InputError::Receiver(err.to_string())),
+            }
+        }
+        #[cfg(any(feature = "otlp-research", test))]
+        OtlpProtobufDecodeMode::ProjectedOnly => {
+            super::projection::decode_projected_otlp_logs_view_bytes(body, resource_prefix)
+                .map_err(|err| InputError::Receiver(err.to_string()))
+        }
+    }
+}
+
+pub(super) fn decode_otlp_protobuf_with_prost(
     body: &[u8],
     resource_prefix: &str,
 ) -> Result<RecordBatch, InputError> {

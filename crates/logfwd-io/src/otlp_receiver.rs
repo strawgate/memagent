@@ -7,12 +7,20 @@
 
 mod convert;
 mod decode;
+#[cfg(any(feature = "otlp-research", test))]
+mod projection;
 mod server;
 #[cfg(test)]
 mod tests;
+#[cfg(any(feature = "otlp-research", test))]
+use bytes::Bytes;
 #[cfg(test)]
 use convert::*;
 use decode::decode_otlp_logs_to_batch;
+#[cfg(any(feature = "otlp-research", test))]
+use decode::decode_otlp_protobuf_bytes_with_mode;
+#[cfg(any(feature = "otlp-research", test))]
+use decode::decode_otlp_protobuf_with_prost;
 #[cfg(test)]
 use decode::*;
 
@@ -37,6 +45,27 @@ const CHANNEL_BOUND: usize = 4096;
 /// arbitrarily deep queue into memory.
 const MAX_DRAINED_PAYLOADS_PER_POLL: usize = 256;
 
+/// Protobuf decode strategy used by the OTLP HTTP receiver.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OtlpProtobufDecodeMode {
+    /// Decode through the generated prost OTLP model.
+    #[default]
+    Prost,
+    /// Decode supported primitive OTLP log shapes directly into Arrow.
+    ///
+    /// Valid but unsupported semantic cases fall back to prost. Malformed
+    /// protobuf remains an error so the fast path cannot accidentally accept
+    /// data the reference decoder rejects.
+    #[cfg(any(feature = "otlp-research", test))]
+    ProjectedFallback,
+    /// Decode only through the experimental projection path.
+    ///
+    /// This is for parity tests and benchmarks that need to isolate projection
+    /// coverage without hiding unsupported cases behind the reference decoder.
+    #[cfg(any(feature = "otlp-research", test))]
+    ProjectedOnly,
+}
+
 /// OTLP receiver that listens for log exports via HTTP.
 pub struct OtlpReceiverInput {
     name: String,
@@ -60,6 +89,7 @@ struct OtlpServerState {
     is_running: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
     resource_prefix: String,
+    protobuf_decode_mode: OtlpProtobufDecodeMode,
     stats: Option<Arc<ComponentStats>>,
 }
 
@@ -153,6 +183,43 @@ impl OtlpReceiverInput {
         stats: Option<Arc<ComponentStats>>,
         resource_prefix: String,
     ) -> io::Result<Self> {
+        Self::new_with_capacity_stats_prefix_and_decode_mode(
+            name,
+            addr,
+            capacity,
+            stats,
+            resource_prefix,
+            OtlpProtobufDecodeMode::Prost,
+        )
+    }
+
+    #[cfg(any(feature = "otlp-research", test))]
+    #[doc(hidden)]
+    pub fn new_with_protobuf_decode_mode_experimental(
+        name: impl Into<String>,
+        addr: &str,
+        stats: Option<Arc<ComponentStats>>,
+        resource_prefix: impl Into<String>,
+        protobuf_decode_mode: OtlpProtobufDecodeMode,
+    ) -> io::Result<Self> {
+        Self::new_with_capacity_stats_prefix_and_decode_mode(
+            name,
+            addr,
+            CHANNEL_BOUND,
+            stats,
+            resource_prefix.into(),
+            protobuf_decode_mode,
+        )
+    }
+
+    fn new_with_capacity_stats_prefix_and_decode_mode(
+        name: impl Into<String>,
+        addr: &str,
+        capacity: usize,
+        stats: Option<Arc<ComponentStats>>,
+        resource_prefix: String,
+        protobuf_decode_mode: OtlpProtobufDecodeMode,
+    ) -> io::Result<Self> {
         let std_listener = std::net::TcpListener::bind(addr)
             .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?;
         let bound_addr = std_listener.local_addr()?;
@@ -168,6 +235,7 @@ impl OtlpReceiverInput {
             is_running: Arc::clone(&is_running),
             health: Arc::clone(&health),
             resource_prefix,
+            protobuf_decode_mode,
             stats,
         });
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
@@ -275,6 +343,56 @@ impl InputSource for OtlpReceiverInput {
 /// [`logfwd_types::field_names::DEFAULT_RESOURCE_PREFIX`].
 pub fn decode_protobuf_to_batch(body: &[u8]) -> Result<RecordBatch, InputError> {
     decode_otlp_logs_to_batch(body)
+}
+
+/// Decode OTLP protobuf bytes through the experimental projection path.
+///
+/// Supported primitive fields are projected directly into Arrow string views
+/// backed by `body`; unsupported but valid OTLP value shapes fall back to the
+/// prost reference decoder.
+#[cfg(any(feature = "otlp-research", test))]
+#[doc(hidden)]
+pub fn decode_protobuf_bytes_to_batch_projected_experimental(
+    body: Bytes,
+) -> Result<RecordBatch, InputError> {
+    decode_otlp_protobuf_bytes_with_mode(
+        body,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+        OtlpProtobufDecodeMode::ProjectedFallback,
+    )
+}
+
+/// Decode OTLP protobuf bytes through the projection path without prost fallback.
+#[cfg(any(feature = "otlp-research", test))]
+#[doc(hidden)]
+pub fn decode_protobuf_bytes_to_batch_projected_only_experimental(
+    body: Bytes,
+) -> Result<RecordBatch, InputError> {
+    decode_otlp_protobuf_bytes_with_mode(
+        body,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+        OtlpProtobufDecodeMode::ProjectedOnly,
+    )
+}
+
+/// Decode borrowed OTLP protobuf bytes through the detached projection path.
+///
+/// This is useful as a benchmark control for measuring wire projection without
+/// Arrow views attached to the request body.
+#[cfg(any(feature = "otlp-research", test))]
+#[doc(hidden)]
+pub fn decode_protobuf_to_batch_projected_detached_experimental(
+    body: &[u8],
+) -> Result<RecordBatch, InputError> {
+    projection::decode_projected_otlp_logs(body, field_names::DEFAULT_RESOURCE_PREFIX)
+        .map_err(|err| InputError::Receiver(err.to_string()))
+}
+
+/// Decode OTLP protobuf bytes through the prost reference path.
+#[cfg(any(feature = "otlp-research", test))]
+#[doc(hidden)]
+pub fn decode_protobuf_to_batch_prost_reference(body: &[u8]) -> Result<RecordBatch, InputError> {
+    decode_otlp_protobuf_with_prost(body, field_names::DEFAULT_RESOURCE_PREFIX)
 }
 
 fn drain_receiver_payloads(

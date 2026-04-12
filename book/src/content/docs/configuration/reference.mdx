@@ -173,12 +173,14 @@ Receive OTLP log records from another agent or SDK.
 |-------|------|----------|-------------|
 | `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:4318`. |
 | `resource_prefix` | string | No | Prefix used when flattening OTLP resource attributes. Defaults to `resource.attributes.`. Currently only `resource.attributes.` is supported. |
+| `protobuf_decode_mode` | string | No | Experimental protobuf decoder: `prost` (default), `projected_fallback`, or `projected_only`. Projected modes require a build with the `otlp-research` feature. |
 
 ```yaml
 input:
   type: otlp
   listen: 0.0.0.0:4318
   resource_prefix: resource.attributes.
+  protobuf_decode_mode: prost
 ```
 
 ### `http` input

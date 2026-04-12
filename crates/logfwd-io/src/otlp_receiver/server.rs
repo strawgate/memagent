@@ -8,6 +8,7 @@ use axum::extract::State;
 use axum::http::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use bytes::Bytes;
 use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 
 use crate::InputError;
@@ -15,8 +16,11 @@ use crate::receiver_http::{
     MAX_REQUEST_BODY_SIZE, parse_content_length, parse_content_type, read_limited_body,
 };
 
-use super::decode::{decode_otlp_json, decode_otlp_protobuf, decompress_gzip, decompress_zstd};
-use super::{OtlpServerState, ReceiverPayload};
+use super::decode::{
+    decode_otlp_json, decode_otlp_protobuf, decode_otlp_protobuf_bytes_with_mode, decompress_gzip,
+    decompress_zstd,
+};
+use super::{OtlpProtobufDecodeMode, OtlpServerState, ReceiverPayload};
 
 pub(super) fn record_error(stats: Option<&Arc<ComponentStats>>) {
     if let Some(stats) = stats {
@@ -116,8 +120,14 @@ pub(super) async fn handle_otlp_request(
 
     let batch = if is_json {
         decode_otlp_json(&body, &state.resource_prefix)
-    } else {
+    } else if state.protobuf_decode_mode == OtlpProtobufDecodeMode::Prost {
         decode_otlp_protobuf(&body, &state.resource_prefix)
+    } else {
+        decode_otlp_protobuf_bytes_with_mode(
+            Bytes::from(body),
+            &state.resource_prefix,
+            state.protobuf_decode_mode,
+        )
     };
     let batch = match batch {
         Ok(batch) => batch,

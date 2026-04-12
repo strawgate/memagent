@@ -148,6 +148,8 @@ Receive OTLP log records from another agent or SDK.
 input:
   type: otlp
   listen: 0.0.0.0:4318
+  # Experimental: projected_fallback/projected_only require otlp-research builds.
+  protobuf_decode_mode: prost
 ```
 
 ## HTTP

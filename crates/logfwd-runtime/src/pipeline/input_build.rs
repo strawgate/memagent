@@ -4,7 +4,8 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use logfwd_config::{
     Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorProfileConfig,
-    HttpMethodConfig, InputConfig, InputType, InputTypeConfig, PlatformSensorInputConfig,
+    HttpMethodConfig, InputConfig, InputType, InputTypeConfig, OtlpProtobufDecodeModeConfig,
+    PlatformSensorInputConfig,
 };
 use logfwd_diagnostics::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
@@ -88,6 +89,45 @@ fn require_non_empty<'a>(
         ));
     }
     Ok(value)
+}
+
+#[cfg_attr(
+    feature = "otlp-research",
+    allow(unused_variables, clippy::unnecessary_wraps)
+)]
+fn resolve_otlp_protobuf_decode_mode(
+    name: &str,
+    mode: Option<OtlpProtobufDecodeModeConfig>,
+) -> Result<logfwd_io::otlp_receiver::OtlpProtobufDecodeMode, String> {
+    match mode.unwrap_or_default() {
+        OtlpProtobufDecodeModeConfig::Prost => {
+            Ok(logfwd_io::otlp_receiver::OtlpProtobufDecodeMode::Prost)
+        }
+        OtlpProtobufDecodeModeConfig::ProjectedFallback => {
+            #[cfg(feature = "otlp-research")]
+            {
+                Ok(logfwd_io::otlp_receiver::OtlpProtobufDecodeMode::ProjectedFallback)
+            }
+            #[cfg(not(feature = "otlp-research"))]
+            {
+                Err(format!(
+                    "input '{name}': protobuf_decode_mode projected_fallback requires building with the otlp-research feature"
+                ))
+            }
+        }
+        OtlpProtobufDecodeModeConfig::ProjectedOnly => {
+            #[cfg(feature = "otlp-research")]
+            {
+                Ok(logfwd_io::otlp_receiver::OtlpProtobufDecodeMode::ProjectedOnly)
+            }
+            #[cfg(not(feature = "otlp-research"))]
+            {
+                Err(format!(
+                    "input '{name}': protobuf_decode_mode projected_only requires building with the otlp-research feature"
+                ))
+            }
+        }
+    }
 }
 
 /// Build the runtime input state (source, staging buffer, and metrics handle)
@@ -239,8 +279,20 @@ pub(super) fn build_input_state(
                 .resource_prefix
                 .as_deref()
                 .unwrap_or(logfwd_types::field_names::DEFAULT_RESOURCE_PREFIX);
+            let protobuf_decode_mode =
+                resolve_otlp_protobuf_decode_mode(name, o.protobuf_decode_mode)?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Otlp, &format)?;
+            #[cfg(feature = "otlp-research")]
+            let source = logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_protobuf_decode_mode_experimental(
+                name,
+                addr,
+                Some(Arc::clone(&stats)),
+                resource_prefix,
+                protobuf_decode_mode,
+            )
+            .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
+            #[cfg(not(feature = "otlp-research"))]
             let source =
                 logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats_and_resource_prefix(
                     name,
@@ -249,6 +301,8 @@ pub(super) fn build_input_state(
                     resource_prefix,
                 )
                 .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
+            #[cfg(not(feature = "otlp-research"))]
+            let _ = protobuf_decode_mode;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
         InputTypeConfig::ArrowIpc(a) => {
@@ -470,6 +524,34 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(feature = "otlp-research"))]
+    fn projected_otlp_decode_mode_requires_research_feature() {
+        let err = resolve_otlp_protobuf_decode_mode(
+            "otlp-in",
+            Some(OtlpProtobufDecodeModeConfig::ProjectedFallback),
+        )
+        .expect_err("projected mode should require otlp-research");
+        assert!(
+            err.contains("otlp-research"),
+            "unexpected error for projected decode mode: {err}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "otlp-research")]
+    fn projected_otlp_decode_mode_maps_when_research_feature_enabled() {
+        let mode = resolve_otlp_protobuf_decode_mode(
+            "otlp-in",
+            Some(OtlpProtobufDecodeModeConfig::ProjectedFallback),
+        )
+        .expect("projected mode should be available with otlp-research");
+        assert_eq!(
+            mode,
+            logfwd_io::otlp_receiver::OtlpProtobufDecodeMode::ProjectedFallback
+        );
+    }
+
+    #[test]
     fn sensor_inputs_reject_format_configuration() {
         let mut pm = logfwd_diagnostics::diagnostics::PipelineMetrics::new(
             "p",
@@ -653,6 +735,7 @@ mod tests {
                 InputTypeConfig::Otlp(logfwd_config::OtlpTypeConfig {
                     listen: "   ".to_string(),
                     resource_prefix: None,
+                    protobuf_decode_mode: None,
                 }),
             ),
             (

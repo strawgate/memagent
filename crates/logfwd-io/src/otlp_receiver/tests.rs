@@ -1075,6 +1075,87 @@ fn invalid_protobuf_increments_parse_errors_when_stats_hooked() {
 }
 
 #[test]
+fn experimental_projection_decode_mode_controls_http_protobuf_path() {
+    let request = ExportLogsServiceRequest {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![LogRecord {
+                    body: Some(AnyValue {
+                        value: Some(Value::ArrayValue(ArrayValue {
+                            values: vec![AnyValue {
+                                value: Some(Value::StringValue("nested".into())),
+                            }],
+                        })),
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+    let body = request.encode_to_vec();
+
+    let projected_only = OtlpReceiverInput::new_with_protobuf_decode_mode_experimental(
+        "projected-only",
+        "127.0.0.1:0",
+        None,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+        OtlpProtobufDecodeMode::ProjectedOnly,
+    )
+    .expect("projected-only receiver should bind");
+    let projected_only_url = format!("http://{}/v1/logs", projected_only.local_addr());
+    let projected_only_status = match loopback_http_client()
+        .post(&projected_only_url)
+        .header("content-type", "application/x-protobuf")
+        .send(body.as_slice())
+    {
+        Ok(resp) => resp.status().as_u16(),
+        Err(ureq::Error::StatusCode(code)) => code,
+        Err(e) => panic!("unexpected transport error: {e}"),
+    };
+    assert_eq!(
+        projected_only_status, 400,
+        "ProjectedOnly must reject unsupported but valid OTLP shapes"
+    );
+
+    let mut fallback = OtlpReceiverInput::new_with_protobuf_decode_mode_experimental(
+        "projected-fallback",
+        "127.0.0.1:0",
+        None,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+        OtlpProtobufDecodeMode::ProjectedFallback,
+    )
+    .expect("fallback receiver should bind");
+    let fallback_url = format!("http://{}/v1/logs", fallback.local_addr());
+    let fallback_status = match loopback_http_client()
+        .post(&fallback_url)
+        .header("content-type", "application/x-protobuf")
+        .send(body.as_slice())
+    {
+        Ok(resp) => resp.status().as_u16(),
+        Err(ureq::Error::StatusCode(code)) => code,
+        Err(e) => panic!("unexpected transport error: {e}"),
+    };
+    assert_eq!(
+        fallback_status, 200,
+        "ProjectedFallback must use prost for supported-by-prost complex values"
+    );
+
+    let events = poll_receiver_until(
+        &mut fallback,
+        Duration::from_secs(2),
+        |events| {
+            events.iter().any(
+                |event| matches!(event, InputEvent::Batch { batch, .. } if batch.num_rows() == 1),
+            )
+        },
+        "fallback receiver should emit decoded batch",
+    );
+    assert_eq!(events.len(), 1);
+}
+
+#[test]
 fn handles_empty_body() {
     let batch =
         decode_otlp_protobuf(b"", field_names::DEFAULT_RESOURCE_PREFIX).expect("empty body ok");

@@ -21,6 +21,18 @@ just bench-framed-input-alloc -- --lines 200000
 just bench-devour-otlp
 just bench-blast-otlp
 
+# Run OTLP decision-grade stage-separated benchmarks
+just bench-otlp-io
+
+# Run OTLP benchmarks with faster local compile settings for iteration
+just bench-otlp-io-fast -- --warm-up-time 1 --measurement-time 2 --sample-size 10 otlp_input_decode_materialize
+
+# Profile OTLP decode/E2E CPU with the normal allocator
+just profile-otlp-io -- --case attrs-heavy --mode projected_view_decode --iterations 1500 --flamegraph /tmp/otlp-view.svg
+
+# Profile OTLP decode/E2E allocation counts with stats_alloc instrumentation
+just profile-otlp-io-alloc -- --case attrs-heavy --iterations 100
+
 # Run all Criterion benchmarks (Tier 1 + 2, includes file_io, batch_formation)
 just bench-full
 
@@ -29,6 +41,7 @@ just bench-system
 
 # Run a single benchmark group
 cargo bench -p logfwd-bench --bench output_encode
+cargo bench -p logfwd-bench --bench otlp_io
 cargo bench -p logfwd-bench --bench full_chain
 cargo bench -p logfwd-bench --bench file_io
 cargo bench -p logfwd-bench --bench batch_formation
@@ -54,11 +67,24 @@ just bench-report
 |------|-------|-----------------|
 | `pipeline.rs` | `scanner`, `cri`, `transform`, `compress`, `output`, `end_to_end`, `elasticsearch` | Original pipeline stage benchmarks |
 | `output_encode.rs` | `output_encode` | OTLP protobuf, JSON lines, JSON+zstd encoding cost (narrow vs wide, 1K/10K rows) |
+| `otlp_io.rs` | `otlp_input_parser_only`, `otlp_input_decode_materialize`, `otlp_output_encode_only`, `otlp_output_compression`, `otlp_e2e_in_process` | OTLP fixture matrix with stage-separated decode, materialize, encode, compression, and in-process E2E measurements. |
 | `full_chain.rs` | `full_chain_json`, `full_chain_cri`, `full_chain_grok` | Composed pipeline chains — reveals hidden handoff overhead |
 | `file_io.rs` | `file_io_framing`, `file_io_cri` | Disk read + newline framing + CRI parse throughput |
 | `batch_formation.rs` | `batch_scan`, `batch_transform`, `batch_pipeline` | Batch size scaling (100–100K rows) — amortization curve |
 | `builder_compare.rs` | `bench_scan`, `bench_persist`, `bench_pipeline` | StringViewArray vs StringArray comparison |
 | `elasticsearch_arrow.rs` | *(requires ES)* | ES\|QL Arrow IPC vs JSON |
+
+`otlp_io.rs` keeps fixture synthesis, protobuf encoding, and prost/parity
+validation in setup only. The timed regions measure just the named stage:
+
+- `otlp_input_parser_only` times protobuf decode only.
+- `otlp_input_decode_materialize` times decode plus Arrow batch materialization.
+- `otlp_output_encode_only` times OTLP serialization from a prebuilt batch.
+- `otlp_output_compression` times zstd compression of an already encoded payload.
+- `otlp_e2e_in_process` times decode plus encode in one process, without transport or network effects.
+
+The suite includes the experimental wire-to-Arrow decoder for primitive
+fixtures; it is validated against the prost path before benchmark timing starts.
 
 ### Profiling Tools (`src/`)
 
@@ -69,6 +95,7 @@ just bench-report
 | `bin/cloudtrail_profile.rs` | `cloudtrail_profile` | CloudTrail-like generator profile (NDJSON vs direct RecordBatch generation, cardinality, compression) |
 | `es_throughput.rs` | `es-throughput` | Elasticsearch output throughput with worker scaling |
 | `bin/framed_input_profile.rs` | `framed_input_profile` | FramedInput stage timings, RSS, optional flamegraph, optional dhat allocation report |
+| `bin/otlp_io_profile.rs` | `otlp_io_profile` | Focused OTLP prost/projected/projected-view CPU flamegraphs and allocation counts for decode and in-process decode→encode paths. |
 | `explore.rs` | *(lib)* | Multi-dimensional exploratory benchmark (CSV output) |
 | `rss.rs` | *(lib)* | Resident set size at each pipeline stage |
 | `sizes.rs` | *(lib)* | Data size analysis: raw → Arrow → IPC → Parquet |

@@ -128,11 +128,11 @@ clippy-all:
 
 # Tests — default-members only (skips datafusion)
 test:
-    cargo nextest run --profile ci
+    LOGFWD_DISABLE_DEFAULT_CHECKPOINTS=1 cargo nextest run --profile ci
 
 # Tests — full workspace (CI uses this)
 test-all:
-    cargo nextest run --workspace --profile ci
+    LOGFWD_DISABLE_DEFAULT_CHECKPOINTS=1 cargo nextest run --workspace --profile ci
 
 # Run required Kani formal verification proofs for production crates
 # Requires: cargo install --locked kani-verifier && cargo kani setup

@@ -38,7 +38,9 @@ edition = "2024"
 rust-version = "1.85"
 
 [workspace.dependencies]
-arrow = { version = "55", default-features = false, features = ["ipc_compression"] }
+arrow = { version = "55", default-features = false, features = [
+    "ipc_compression",
+] }
 backon = { version = "1", default-features = false, features = ["tokio-sleep"] }
 bytes = "1"
 chrono = { version = "0.4.44", default-features = false }
@@ -53,10 +55,16 @@ datafusion = { version = "48", default-features = false, features = [
     "recursive_protection",
 ] }
 fail = "0.5"
+futures-util = "0.3"
 globset = "0.4"
 opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-client", "trace", "metrics"] }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = [
+    "http-proto",
+    "reqwest-client",
+    "trace",
+    "metrics",
+] }
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 sonic-rs = "0.5"
@@ -113,7 +121,10 @@ needless_pass_by_ref_mut = "warn"
 undocumented_unsafe_blocks = "warn"
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(feature, values("turmoil", "internal-failpoints"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(kani)',
+    'cfg(feature, values("turmoil", "internal-failpoints", "otlp-research", "otlp-profile-alloc"))',
+] }
 unused_qualifications = "warn"
 
 [profile.dev]
@@ -126,7 +137,7 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 overflow-checks = true
-debug = true  # needed for flamegraphs and dhat to show source locations
+debug = true           # needed for flamegraphs and dhat to show source locations
 
 [profile.test]
 # line-tables-only keeps backtraces readable while shrinking test binaries

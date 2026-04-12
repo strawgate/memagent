@@ -22,10 +22,10 @@ pub use types::{
     GeneratorInputConfig, GeneratorProfileConfig, GeneratorSequenceConfig, GeneratorTypeConfig,
     GeoDatabaseConfig, GeoDatabaseFormat, HostInfoConfig, HttpInputConfig, HttpMethodConfig,
     HttpTypeConfig, InputConfig, InputType, InputTypeConfig, JournaldBackendConfig,
-    JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sPathConfig, OtlpTypeConfig,
-    OutputConfig, OutputType, PipelineConfig, PlatformSensorInputConfig, SensorTypeConfig,
-    ServerConfig, StaticEnrichmentConfig, StorageConfig, TcpTypeConfig, TlsInputConfig,
-    UdpTypeConfig,
+    JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sPathConfig,
+    OtlpProtobufDecodeModeConfig, OtlpTypeConfig, OutputConfig, OutputType, PipelineConfig,
+    PlatformSensorInputConfig, SensorTypeConfig, ServerConfig, StaticEnrichmentConfig,
+    StorageConfig, TcpTypeConfig, TlsInputConfig, UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 
@@ -328,6 +328,44 @@ output:
             &pipe.inputs[0].type_config,
             InputTypeConfig::Otlp(o) if o.resource_prefix.as_deref() == Some("resource.attributes.")
         ));
+    }
+
+    #[test]
+    fn otlp_input_accepts_experimental_protobuf_decode_mode() {
+        let yaml = r#"
+input:
+  type: otlp
+  listen: 127.0.0.1:4318
+  protobuf_decode_mode: projected_fallback
+output:
+  type: stdout
+"#;
+        let cfg =
+            Config::load_str(yaml).expect("otlp input with protobuf_decode_mode should parse");
+        let pipe = &cfg.pipelines["default"];
+        assert!(matches!(
+            &pipe.inputs[0].type_config,
+            InputTypeConfig::Otlp(o)
+                if o.protobuf_decode_mode == Some(OtlpProtobufDecodeModeConfig::ProjectedFallback)
+        ));
+    }
+
+    #[test]
+    fn non_otlp_input_rejects_protobuf_decode_mode() {
+        let yaml = r#"
+input:
+  type: file
+  path: /var/log/app.log
+  protobuf_decode_mode: projected_fallback
+output:
+  type: stdout
+"#;
+        let err = Config::load_str(yaml).expect_err("protobuf_decode_mode must be otlp-only");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("protobuf_decode_mode") || msg.contains("unknown field"),
+            "expected serde rejection of protobuf_decode_mode for file input, got: {msg}"
+        );
     }
 
     #[test]

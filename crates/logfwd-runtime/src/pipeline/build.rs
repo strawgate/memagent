@@ -54,6 +54,12 @@ impl Pipeline {
         if config.batch_target_bytes == Some(0) {
             return Err("batch_target_bytes must be > 0".to_string());
         }
+        if config.batch_timeout_ms == Some(0) {
+            return Err("batch_timeout_ms must be > 0".to_string());
+        }
+        if config.poll_interval_ms == Some(0) {
+            return Err("poll_interval_ms must be > 0".to_string());
+        }
 
         // Collect enrichment sources once — they are shared across all
         // per-input transforms.
@@ -185,11 +191,7 @@ impl Pipeline {
         // In tests, avoid creating a default data dir unless explicitly requested.
         // In non-test builds, always try to open/create the checkpoint store so
         // first-run persistence works without out-of-band directory creation.
-        let should_open_checkpoint_store = if cfg!(test) {
-            checkpoint_dir.exists() || std::env::var_os("LOGFWD_DATA_DIR").is_some()
-        } else {
-            true
-        };
+        let should_open_checkpoint_store = should_open_default_checkpoint_store(&checkpoint_dir);
         let checkpoint_store = if should_open_checkpoint_store {
             match FileCheckpointStore::open(&checkpoint_dir) {
                 Ok(s) => Some(Box::new(s) as Box<dyn CheckpointStore>),
@@ -383,6 +385,18 @@ impl Pipeline {
             pool_drain_timeout: DEFAULT_POOL_DRAIN_TIMEOUT,
         })
     }
+}
+
+fn should_open_default_checkpoint_store(checkpoint_dir: &std::path::Path) -> bool {
+    if std::env::var_os("LOGFWD_DATA_DIR").is_some() {
+        return true;
+    }
+
+    if cfg!(test) {
+        return checkpoint_dir.exists();
+    }
+
+    std::env::var_os("LOGFWD_DISABLE_DEFAULT_CHECKPOINTS").is_none()
 }
 
 #[cfg(test)]

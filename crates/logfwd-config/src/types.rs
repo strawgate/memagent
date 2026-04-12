@@ -72,6 +72,20 @@ impl fmt::Display for InputType {
     }
 }
 
+/// OTLP protobuf decode strategy for OTLP inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OtlpProtobufDecodeModeConfig {
+    /// Decode through the generated prost OTLP model.
+    #[default]
+    Prost,
+    /// Try the experimental direct Arrow projection first, falling back to
+    /// prost for valid OTLP shapes the projection path does not cover.
+    ProjectedFallback,
+    /// Decode only through the experimental direct Arrow projection path.
+    ProjectedOnly,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub enum OutputType {
@@ -457,6 +471,8 @@ pub struct OtlpTypeConfig {
     /// Prefix applied to OTLP resource attributes when flattening into columns.
     /// Defaults to `resource.attributes.` when omitted.
     pub resource_prefix: Option<String>,
+    /// Experimental OTLP protobuf decode strategy. Defaults to `prost`.
+    pub protobuf_decode_mode: Option<OtlpProtobufDecodeModeConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

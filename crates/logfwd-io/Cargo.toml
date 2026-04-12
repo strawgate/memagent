@@ -8,6 +8,10 @@ publish = false
 [lib]
 doctest = false
 
+[features]
+default = []
+otlp-research = []
+
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 base64 = { workspace = true }
