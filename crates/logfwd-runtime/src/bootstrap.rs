@@ -405,6 +405,7 @@ fn input_label(i: &logfwd_config::InputConfig) -> String {
         InputTypeConfig::LinuxEbpfSensor(_) => "linux_ebpf_sensor".to_string(),
         InputTypeConfig::MacosEsSensor(_) => "macos_es_sensor".to_string(),
         InputTypeConfig::WindowsEbpfSensor(_) => "windows_ebpf_sensor".to_string(),
+        InputTypeConfig::HostMetrics(_) => "host_metrics".to_string(),
         InputTypeConfig::Journald(_) => "journald".to_string(),
     }
 }

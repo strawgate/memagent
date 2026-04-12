@@ -1417,6 +1417,7 @@ fn validate_pipeline_read_only(
             InputTypeConfig::LinuxEbpfSensor(_)
                 | InputTypeConfig::MacosEsSensor(_)
                 | InputTypeConfig::WindowsEbpfSensor(_)
+                | InputTypeConfig::HostMetrics(_)
                 | InputTypeConfig::ArrowIpc(_)
         ) {
             if input_cfg.format.is_some() {
