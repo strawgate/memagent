@@ -69,7 +69,7 @@ pub struct ProcessExecEvent {
     pub header: EventHeader,
     /// Length of the filename actually captured (may be < MAX_FILENAME).
     pub filename_len: u32,
-    pub _pad: u32,
+    pub pad: u32,
     /// Filename from the exec (the binary path).
     pub filename: [u8; MAX_FILENAME],
 }
@@ -83,7 +83,7 @@ pub struct ProcessExitEvent {
     pub header: EventHeader,
     /// Exit code (from task->exit_code).
     pub exit_code: i32,
-    pub _pad: u32,
+    pub pad: u32,
 }
 
 // ── TCP connect (outbound) ──────────────────────────────────────────────
@@ -158,7 +158,7 @@ pub struct FileRenameEvent {
 pub struct SetuidEvent {
     pub header: EventHeader,
     pub target_uid: u32,
-    pub _pad: u32,
+    pub pad: u32,
 }
 
 /// Emitted on `tracepoint/syscalls/sys_enter_setgid`.
@@ -167,7 +167,7 @@ pub struct SetuidEvent {
 pub struct SetgidEvent {
     pub header: EventHeader,
     pub target_gid: u32,
-    pub _pad: u32,
+    pub pad: u32,
 }
 
 // ── Kernel module load ──────────────────────────────────────────────────
