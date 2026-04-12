@@ -65,7 +65,7 @@ pub async fn run_pipelines(
     let has_file_inputs = config.pipelines.values().any(|pipe| {
         pipe.inputs
             .iter()
-            .any(|input| matches!(input.type_config, logfwd_config::InputTypeConfig::File(_)))
+            .any(|input| matches!(&input.type_config, logfwd_config::InputTypeConfig::File(_)))
     });
     let _lock_guard = if has_file_inputs {
         acquire_instance_lock(&config)?

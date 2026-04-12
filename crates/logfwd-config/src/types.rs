@@ -386,7 +386,11 @@ pub enum InputTypeConfig {
     Generator(GeneratorTypeConfig),
     #[serde(rename = "linux_ebpf_sensor", alias = "linux_sensor_beta")]
     LinuxEbpfSensor(SensorTypeConfig),
-    #[serde(rename = "macos_es_sensor", alias = "macos_sensor_beta")]
+    #[serde(
+        rename = "macos_es_sensor",
+        alias = "macos_sensor_beta",
+        alias = "macos_endpointsecurity_sensor"
+    )]
     MacosEsSensor(SensorTypeConfig),
     #[serde(rename = "windows_ebpf_sensor", alias = "windows_sensor_beta")]
     WindowsEbpfSensor(SensorTypeConfig),
