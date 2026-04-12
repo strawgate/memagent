@@ -15,6 +15,7 @@ otlp-research = []
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 base64 = { workspace = true }
+logfwd-config = { version = "0.1.0", path = "../logfwd-config" }
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
 logfwd-otap-proto = { version = "0.1.0", path = "../logfwd-otap-proto" }
