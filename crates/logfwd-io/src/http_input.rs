@@ -793,9 +793,9 @@ mod tests {
             Err(ureq::Error::StatusCode(code)) => code,
             Err(err) => panic!("unexpected request failure: {err}"),
         };
-        assert!(
-            status == 429 || status == 503,
-            "expected backpressure response (429/503), got {status}"
+        assert_eq!(
+            status, 429,
+            "expected backpressure response (429), got {status}"
         );
 
         let _ = poll_until_data(&mut input, Duration::from_secs(2));

@@ -1418,10 +1418,7 @@ fn returns_429_when_channel_full_not_200() {
         status, 200,
         "channel-full request must not return 200 (got {status})"
     );
-    assert!(
-        status == 429 || status == 503,
-        "expected 429 or 503 for backpressure, got {status}"
-    );
+    assert_eq!(status, 429, "expected 429 for backpressure, got {status}");
     assert_eq!(receiver.health(), ComponentHealth::Degraded);
 
     // Drain the two buffered entries so the receiver is valid.
@@ -1520,6 +1517,24 @@ fn content_type_substring_match_does_not_route_json() {
         status, 400,
         "application/jsonl must not route to JSON decoder"
     );
+}
+
+#[test]
+fn blank_content_encoding_returns_bad_request() {
+    let receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
+    let port = receiver.local_addr().port();
+    let url = format!("http://127.0.0.1:{port}/v1/logs");
+
+    let status = match loopback_http_client()
+        .post(&url)
+        .header("content-encoding", "   ")
+        .send(&make_test_request())
+    {
+        Ok(resp) => resp.status().as_u16(),
+        Err(ureq::Error::StatusCode(code)) => code,
+        Err(e) => panic!("unexpected error: {e}"),
+    };
+    assert_eq!(status, 400, "blank Content-Encoding must be malformed");
 }
 
 // Bug #723: wrong HTTP method should return 405, not 404.

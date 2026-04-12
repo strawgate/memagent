@@ -967,10 +967,7 @@ mod tests {
             Err(ureq::Error::StatusCode(code)) => code,
             Err(e) => panic!("unexpected error: {e}"),
         };
-        assert!(
-            status == 429 || status == 503,
-            "expected 429 or 503, got {status}"
-        );
+        assert_eq!(status, 429, "expected 429, got {status}");
         assert_eq!(receiver.health(), ComponentHealth::Degraded);
 
         // Drain so the receiver is valid.

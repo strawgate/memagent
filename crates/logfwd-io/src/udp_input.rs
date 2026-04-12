@@ -150,6 +150,7 @@ impl InputSource for UdpInput {
                     }
                     let emitted_bytes = total.as_ref().map_or(0, Vec::len);
                     if should_stop_udp_drain(datagrams_read, emitted_bytes) {
+                        under_pressure = true;
                         break;
                     }
                 }

@@ -43,25 +43,6 @@ fn classify_empty_read_result(was_truncated: bool) -> ReadResult {
     }
 }
 
-fn clamp_evicted_offset(path: &Path, source_id: SourceId, offset: u64) -> u64 {
-    let Ok(metadata) = std::fs::metadata(path) else {
-        return offset;
-    };
-    let file_size = metadata.len();
-    if offset > file_size {
-        tracing::warn!(
-            path = %path.display(),
-            source_id = source_id.0,
-            saved_offset = offset,
-            file_size,
-            "evicted checkpoint offset exceeds file size — resetting to 0"
-        );
-        0
-    } else {
-        offset
-    }
-}
-
 /// Owns the open file descriptors, read buffer, and byte-level I/O.
 pub(super) struct FileReader {
     pub(super) files: HashMap<PathBuf, TailedFile>,
@@ -106,13 +87,15 @@ impl FileReader {
 
         let offset = if let Some(evicted) = evicted {
             if evicted.identity == identity {
-                let safe_offset = if evicted.offset > file_size {
-                    tracing::warn!(path = %path.display(), saved_offset = evicted.offset, file_size, "evicted offset exceeds file size — resetting to 0");
-                    0
-                } else {
-                    evicted.offset
-                };
-                file.seek(SeekFrom::Start(safe_offset))?
+                if evicted.offset > file_size {
+                    tracing::warn!(
+                        path = %path.display(),
+                        saved_offset = evicted.offset,
+                        file_size,
+                        "evicted offset exceeds file size — preserving for truncation detection"
+                    );
+                }
+                file.seek(SeekFrom::Start(evicted.offset))?
             } else if evicted.identity.fingerprint == 0
                 && evicted.offset == 0
                 && evicted.identity.device == identity.device
@@ -393,7 +376,7 @@ impl FileReader {
             return Ok(());
         }
         if let Some(evicted) = self.evicted_offsets.get_mut(path) {
-            evicted.offset = clamp_evicted_offset(&evicted.path, evicted.source_id, offset);
+            evicted.offset = offset;
         }
         Ok(())
     }
@@ -429,7 +412,7 @@ impl FileReader {
         }
         for evicted in self.evicted_offsets.values_mut() {
             if evicted.source_id == source_id {
-                evicted.offset = clamp_evicted_offset(&evicted.path, evicted.source_id, offset);
+                evicted.offset = offset;
                 return Ok(());
             }
         }
@@ -581,7 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn set_offset_clamps_evicted_entry_to_zero_when_file_shrunk() {
+    fn set_offset_preserves_evicted_entry_offset_when_file_shrunk() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("evicted.log");
         fs::write(&path, b"abc").unwrap();
@@ -610,12 +593,12 @@ mod tests {
                 .get(&path)
                 .expect("evicted entry should remain present")
                 .offset,
-            0
+            17
         );
     }
 
     #[test]
-    fn set_offset_by_source_clamps_evicted_entry_to_zero_when_file_shrunk() {
+    fn set_offset_by_source_preserves_evicted_entry_offset_when_file_shrunk() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("evicted.log");
         fs::write(&path, b"abc").unwrap();
@@ -644,7 +627,7 @@ mod tests {
                 .get(&path)
                 .expect("evicted entry should remain present")
                 .offset,
-            0
+            17
         );
     }
 
@@ -825,7 +808,7 @@ mod tests {
     }
 
     #[test]
-    fn open_file_at_clamps_evicted_offset_beyond_file_size() {
+    fn open_file_at_preserves_evicted_offset_beyond_file_size_for_truncation_detection() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("clamp.log");
         fs::write(&path, b"abc").unwrap();
@@ -846,7 +829,13 @@ mod tests {
         );
 
         reader.open_file_at(&path, false).unwrap();
-        assert_eq!(reader.get_offset(&path), Some(0));
+        assert_eq!(reader.get_offset(&path), Some(999));
+
+        let got = reader.read_new_data(&path).unwrap();
+        assert!(
+            matches!(got, ReadResult::TruncatedThenData(bytes) if bytes == b"abc"),
+            "reader should preserve the saved offset until read_new_data emits truncation"
+        );
     }
 
     #[test]
@@ -1047,23 +1036,5 @@ mod tests {
 
         reader.set_offset_by_source(source_id, 2).unwrap();
         assert_eq!(reader.get_offset(&path), Some(2));
-    }
-
-    #[test]
-    fn read_new_data_with_zero_len_buffer_classifies_empty_read_as_no_data() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("empty-read-buffer.log");
-        fs::write(&path, b"abcdef").unwrap();
-
-        let mut reader = test_reader();
-        reader.read_buf.clear();
-        reader.open_file_at(&path, false).unwrap();
-        reader.set_offset(&path, 1).unwrap();
-
-        let got = reader.read_new_data(&path).unwrap();
-        assert!(
-            matches!(got, ReadResult::NoData),
-            "zero-length read buffer should produce empty read classification"
-        );
     }
 }

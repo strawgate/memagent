@@ -290,9 +290,11 @@ async fn handle_arrow_ipc_request(
 
     let has_zstd_content_encoding = content_encodings
         .as_ref()
-        .is_some_and(|tokens| tokens.iter().any(|token| token == "zstd"));
+        .is_some_and(|encoding| encoding.has_zstd);
     let is_zstd = has_zstd_content_encoding
-        || content_type.as_deref() == Some("application/vnd.apache.arrow.stream+zstd");
+        || content_type.as_ref().is_some_and(|media_type| {
+            media_type.eq_ignore_ascii_case("application/vnd.apache.arrow.stream+zstd")
+        });
 
     let body = if is_zstd {
         match decompress_zstd(&body) {
@@ -391,41 +393,41 @@ async fn handle_arrow_ipc_request(
     }
 }
 
-fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<Vec<String>>, StatusCode> {
+#[derive(Debug, Default, Eq, PartialEq)]
+struct ContentEncodingFlags {
+    has_zstd: bool,
+}
+
+fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<ContentEncodingFlags>, StatusCode> {
     let Some(value) = headers.get(CONTENT_ENCODING) else {
         return Ok(None);
     };
     let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
-    let mut tokens = Vec::new();
+    let mut flags = ContentEncodingFlags::default();
+    let mut has_token = false;
     for token in parsed.split(',').map(str::trim) {
         if token.is_empty() {
             return Err(StatusCode::BAD_REQUEST);
         }
-        tokens.push(token.to_ascii_lowercase());
+        if token.eq_ignore_ascii_case("zstd") {
+            flags.has_zstd = true;
+        } else if !token.eq_ignore_ascii_case("identity") {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        has_token = true;
     }
-    if tokens.is_empty() {
+    if !has_token {
         return Err(StatusCode::BAD_REQUEST);
     }
-    if tokens
-        .iter()
-        .any(|token| token != "identity" && token != "zstd")
-    {
-        return Err(StatusCode::BAD_REQUEST);
-    }
-    Ok(Some(tokens))
+    Ok(Some(flags))
 }
 
-fn parse_content_type(headers: &HeaderMap) -> Result<Option<String>, StatusCode> {
+fn parse_content_type(headers: &HeaderMap) -> Result<Option<&str>, StatusCode> {
     let Some(value) = headers.get(CONTENT_TYPE) else {
         return Ok(None);
     };
     let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
-    let media_type = parsed
-        .split(';')
-        .next()
-        .unwrap_or(parsed)
-        .trim()
-        .to_ascii_lowercase();
+    let media_type = parsed.split(';').next().unwrap_or(parsed).trim();
     if media_type.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -701,6 +703,28 @@ mod tests {
         let result = ureq::post(&url)
             .header("Content-Type", "application/vnd.apache.arrow.stream")
             .header("Content-Encoding", "gzip")
+            .send(&ipc_bytes);
+        let status = match result {
+            Ok(resp) => resp.status().as_u16(),
+            Err(ureq::Error::StatusCode(code)) => code,
+            Err(e) => panic!("unexpected error: {e}"),
+        };
+        assert_eq!(status, 400);
+    }
+
+    #[test]
+    fn receiver_rejects_empty_content_encoding_token() {
+        let receiver =
+            ArrowIpcReceiver::new_with_capacity("test-empty-encoding-token", "127.0.0.1:0", 16)
+                .expect("bind should succeed");
+        let addr = receiver.local_addr();
+        let batch = make_test_batch();
+        let ipc_bytes = serialize_batch(&batch);
+
+        let url = format!("http://{addr}/v1/arrow");
+        let result = ureq::post(&url)
+            .header("Content-Type", "application/vnd.apache.arrow.stream")
+            .header("Content-Encoding", "identity,,zstd")
             .send(&ipc_bytes);
         let status = match result {
             Ok(resp) => resp.status().as_u16(),

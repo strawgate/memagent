@@ -261,6 +261,8 @@ struct GeneratorGeneratedFieldState {
 impl GeneratorInput {
     pub fn new(name: impl Into<String>, config: GeneratorConfig) -> Self {
         let name = name.into();
+        // The generator treats a zero batch size as the smallest useful batch.
+        // User-facing config validation should reject zero before construction.
         let batch_size = config.batch_size.max(1);
         let initial_rate_credit_events = if config.events_per_sec > 0 {
             batch_size as f64
@@ -429,13 +431,6 @@ impl GeneratorInput {
 
 impl InputSource for GeneratorInput {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
-        if self.config.batch_size == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "generator.batch_size must be at least 1",
-            ));
-        }
-
         if self.done {
             return Ok(vec![]);
         }

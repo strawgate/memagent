@@ -416,7 +416,7 @@ impl StateMachineTest for TailCheckpointTest {
     }
 }
 
-fn checkpoint_state_machine_proptest_config() -> ProptestConfig {
+fn build_checkpoint_state_machine_proptest_config() -> ProptestConfig {
     let mut config = ProptestConfig {
         cases: logfwd_test_utils::state_machine_proptest_cases(),
         max_shrink_iters: 5_000,
@@ -433,7 +433,7 @@ fn checkpoint_state_machine_proptest_config() -> ProptestConfig {
 // ---------------------------------------------------------------------------
 
 prop_state_machine! {
-    #![proptest_config(checkpoint_state_machine_proptest_config())]
+    #![proptest_config(build_checkpoint_state_machine_proptest_config())]
 
     #[test]
     fn checkpoint_state_machine(sequential 5..30 => TailCheckpointTest);

@@ -190,6 +190,43 @@ fn test_tail_new_data() {
 }
 
 #[test]
+fn test_zero_read_buf_size_is_normalized_by_public_constructor() {
+    let dir = tempfile::tempdir().unwrap();
+    let log_path = dir.path().join("zero-read-buf.log");
+    fs::write(&log_path, b"abcdef").unwrap();
+
+    let config = TailConfig {
+        start_from_end: false,
+        poll_interval_ms: 10,
+        read_buf_size: 0,
+        ..Default::default()
+    };
+
+    let mut tailer =
+        FileTailer::new(std::slice::from_ref(&log_path), config, create_test_stats()).unwrap();
+    let events = poll_until(
+        &mut tailer,
+        Duration::from_secs(1),
+        |events, _| {
+            events
+                .iter()
+                .any(|event| matches!(event, TailEvent::Data { .. }))
+        },
+        "timed out waiting for zero read buffer normalization data",
+    );
+
+    let data: Vec<u8> = events
+        .iter()
+        .filter_map(|event| match event {
+            TailEvent::Data { bytes, .. } => Some(bytes.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    assert_eq!(data, b"abcdef");
+}
+
+#[test]
 fn test_eof_requires_fresh_idle_window_after_data() {
     let dir = tempfile::tempdir().unwrap();
     let log_path = dir.path().join("eof-idle-reset.log");
@@ -1797,16 +1834,16 @@ fn glob_rescan_respects_start_from_end() {
     );
 }
 
-/// #1043: open_file_at must not restore an evicted offset that exceeds EOF.
+/// #1043: reopening an evicted shrunken file must emit truncation before data.
 #[test]
-fn test_evicted_offset_clamped_when_file_shrinks() {
+fn test_evicted_offset_emits_truncation_when_file_shrinks() {
     let dir = tempfile::tempdir().unwrap();
     let a = dir.path().join("a.log");
     let b = dir.path().join("b.log");
 
     // Both files share the same 4-byte fingerprint prefix so that
     // whichever file gets evicted will still match identity after truncation,
-    // exercising the stale-offset clamping path (not the identity-mismatch path).
+    // exercising the stale-offset truncation path (not the identity-mismatch path).
     {
         let mut fa = File::create(&a).unwrap();
         // 200 bytes so restored offset can exceed the later truncated size.
@@ -1857,6 +1894,12 @@ fn test_evicted_offset_clamped_when_file_shrinks() {
         &mut tailer,
         Duration::from_secs(2),
         |events, _| {
+            let has_truncation = events.iter().any(|e| {
+                matches!(
+                    e,
+                    TailEvent::Truncated { path, .. } if path == &evicted
+                )
+            });
             let data: Vec<u8> = events
                 .iter()
                 .filter_map(|e| match e {
@@ -1865,13 +1908,23 @@ fn test_evicted_offset_clamped_when_file_shrinks() {
                 })
                 .flatten()
                 .collect();
-            String::from_utf8_lossy(&data).contains("ABCD_shrunk")
+            has_truncation && String::from_utf8_lossy(&data).contains("ABCD_shrunk")
         },
         "timed out waiting for stale-offset rescan data",
     );
 
-    // If stale offset is incorrectly restored past EOF, we'd read nothing.
-    // With clamping, we should read from beginning and see "ABCD_shrunk".
+    let trunc_pos = events
+        .iter()
+        .position(|e| matches!(e, TailEvent::Truncated { path, .. } if path == &evicted))
+        .expect("should emit truncation for shrunken evicted file");
+    let data_pos = events
+        .iter()
+        .position(|e| matches!(e, TailEvent::Data { path, .. } if path == &evicted))
+        .expect("should emit data after shrunken evicted file truncation");
+    assert!(trunc_pos < data_pos, "Truncated must precede Data");
+
+    // If stale offset is incorrectly reset before reopen, truncation is skipped.
+    // Preserving it lets read_new_data observe EOF-before-offset, seek to 0, and read.
     let data: Vec<u8> = events
         .iter()
         .filter_map(|e| match e {

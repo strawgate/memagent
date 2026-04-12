@@ -119,15 +119,15 @@ impl FileDiscovery {
             };
 
             let is_rotated = reader.files.get(path).is_some_and(|tailed| {
-                let previous_handle_deleted = tailed
+                let is_previous_handle_deleted = tailed
                     .file
                     .metadata()
-                    .map(|meta| metadata_indicates_deleted(&meta))
+                    .map(|meta| has_metadata_indicating_deletion(&meta))
                     .unwrap_or(false);
                 should_rotate_file(
                     &tailed.identity,
                     &current_identity,
-                    previous_handle_deleted,
+                    is_previous_handle_deleted,
                     tailed.offset,
                     reader.config.fingerprint_bytes,
                 )
@@ -168,7 +168,7 @@ impl FileDiscovery {
                 tailed
                     .file
                     .metadata()
-                    .map(|m| metadata_indicates_deleted(&m))
+                    .map(|m| has_metadata_indicating_deletion(&m))
                     .unwrap_or(true)
             })
             .map(|(path, _)| path.clone())
@@ -188,18 +188,18 @@ impl FileDiscovery {
 }
 
 #[cfg(unix)]
-fn metadata_indicates_deleted(meta: &std::fs::Metadata) -> bool {
+fn has_metadata_indicating_deletion(meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::MetadataExt;
     meta.nlink() == 0
 }
 
 #[cfg(not(unix))]
-fn metadata_indicates_deleted(_meta: &std::fs::Metadata) -> bool {
+fn has_metadata_indicating_deletion(_meta: &std::fs::Metadata) -> bool {
     false
 }
 
 #[inline]
-fn identity_indicates_rotation(
+fn should_identity_rotate(
     previous: &FileIdentity,
     current: &FileIdentity,
     tailed_offset: u64,
@@ -226,12 +226,12 @@ fn identity_indicates_rotation(
 fn should_rotate_file(
     previous: &FileIdentity,
     current: &FileIdentity,
-    previous_handle_deleted: bool,
+    is_previous_handle_deleted: bool,
     tailed_offset: u64,
     fingerprint_bytes: usize,
 ) -> bool {
-    previous_handle_deleted
-        || identity_indicates_rotation(previous, current, tailed_offset, fingerprint_bytes)
+    is_previous_handle_deleted
+        || should_identity_rotate(previous, current, tailed_offset, fingerprint_bytes)
 }
 
 #[cfg(test)]
@@ -375,7 +375,7 @@ mod tests {
             fingerprint: 4,
         };
         assert!(
-            !identity_indicates_rotation(&previous, &current, 0, 1024),
+            !should_identity_rotate(&previous, &current, 0, 1024),
             "fingerprint drift during append must not be treated as rotation"
         );
     }
@@ -393,7 +393,7 @@ mod tests {
             fingerprint: 4,
         };
         assert!(
-            identity_indicates_rotation(&previous, &current, 1024, 1024),
+            should_identity_rotate(&previous, &current, 1024, 1024),
             "same-inode fingerprint drift after the fingerprint window must be treated as rotation"
         );
     }
@@ -411,7 +411,7 @@ mod tests {
             fingerprint: 4,
         };
         assert!(
-            !identity_indicates_rotation(&previous, &current, 1024, 1024),
+            !should_identity_rotate(&previous, &current, 1024, 1024),
             "empty-file fingerprint sentinel must not rotate when first bytes appear"
         );
     }

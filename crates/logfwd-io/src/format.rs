@@ -301,6 +301,11 @@ fn starts_with_json_object(line: &[u8]) -> bool {
     first_nonws.is_some_and(|idx| line[idx] == b'{')
 }
 
+#[inline]
+fn is_json_whitespace(byte: u8) -> bool {
+    matches!(byte, b' ' | b'\t' | b'\n' | b'\r')
+}
+
 fn normalize_plain_text_fallback(line: &[u8]) -> Option<&[u8]> {
     let line = if line.last() == Some(&b'\r') {
         &line[..line.len().saturating_sub(1)]
@@ -349,7 +354,7 @@ fn inject_cri_metadata(
     plain_text_field_name: &str,
     out: &mut Vec<u8>,
 ) {
-    let json_start = msg.iter().position(|b| !b.is_ascii_whitespace());
+    let json_start = msg.iter().position(|b| !is_json_whitespace(*b));
     if let Some(start) = json_start
         && msg[start] == b'{'
     {
@@ -365,7 +370,7 @@ fn inject_cri_metadata(
         let after_brace = &json_msg[1..];
         let rest = after_brace
             .iter()
-            .position(|b| !b.is_ascii_whitespace())
+            .position(|b| !is_json_whitespace(*b))
             .map_or(after_brace, |i| &after_brace[i..]);
         if rest.starts_with(b"}") {
             // Empty JSON object — close without a comma.
@@ -720,6 +725,35 @@ mod tests {
     }
 
     #[test]
+    fn cri_message_with_non_json_ascii_whitespace_prefix_stays_plain_text() {
+        for prefix in [b'\x0b', b'\x0c'] {
+            let stats = make_stats();
+            let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
+            let input = [
+                b"2024-01-15T10:30:00Z stdout F ".as_slice(),
+                &[prefix],
+                br#"{"msg":"cri"}"#,
+                b"\n",
+            ]
+            .concat();
+            let mut out = Vec::new();
+            proc.process_lines(&input, &mut out);
+            let output_str = std::str::from_utf8(&out).expect("output must be valid UTF-8");
+            let trimmed = output_str.trim_end_matches('\n');
+            let value: serde_json::Value =
+                serde_json::from_str(trimmed).expect("output must remain valid JSON");
+            assert!(
+                value.get("body").is_some(),
+                "non-JSON whitespace byte {prefix:#04x} must keep body wrapper: {trimmed:?}"
+            );
+            assert!(
+                value.get("msg").is_none(),
+                "non-JSON whitespace byte {prefix:#04x} must not be treated as JSON: {trimmed:?}"
+            );
+        }
+    }
+
+    #[test]
     fn passthrough_json_valid_line_no_error() {
         // A valid JSON-object line must NOT increment parse_errors.
         let stats = make_stats();
@@ -916,7 +950,7 @@ mod verification {
     fn verify_inject_non_json_msg_uses_body_key() {
         let msg: [u8; 4] = kani::any();
         let mut i = 0usize;
-        while i < msg.len() && msg[i].is_ascii_whitespace() {
+        while i < msg.len() && is_json_whitespace(msg[i]) {
             i += 1;
         }
         if i < msg.len() {
