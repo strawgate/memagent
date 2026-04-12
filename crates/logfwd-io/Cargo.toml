@@ -44,6 +44,10 @@ xxhash-rust = { version = "0.8.15", features = ["xxh32", "xxh64"] }
 sysinfo = "0.37"
 walkdir = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+aya = { workspace = true }
+sensor-ebpf-common = { path = "../logfwd-ebpf-proto/sensor-ebpf/sensor-ebpf-common" }
+
 [dev-dependencies]
 chrono = { workspace = true }
 dhat = "0.3"

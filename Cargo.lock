@@ -2710,6 +2710,7 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "axum",
+ "aya",
  "base64",
  "bytes",
  "chrono",
@@ -2731,6 +2732,7 @@ dependencies = [
  "proptest",
  "proptest-state-machine",
  "prost",
+ "sensor-ebpf-common",
  "serde",
  "serde_json",
  "serial_test",

@@ -383,13 +383,56 @@ pub(super) fn build_input_state(
             validate_input_format(name, InputType::Tcp, &format)?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
-        InputTypeConfig::LinuxEbpfSensor(s)
-        | InputTypeConfig::MacosEsSensor(s)
-        | InputTypeConfig::WindowsEbpfSensor(s) => {
+        InputTypeConfig::LinuxEbpfSensor(s) => {
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = s;
+                return Err(format!("input '{name}': linux_ebpf_sensor requires Linux"));
+            }
+            #[cfg(target_os = "linux")]
+            {
+                use logfwd_io::platform_sensor::PlatformSensorInput;
+
+                if cfg.format.is_some() {
+                    return Err(format!(
+                        "input '{name}': sensor inputs do not support 'format' (Arrow-native input)"
+                    ));
+                }
+
+                let ebpf_path = s
+                    .sensor
+                    .as_ref()
+                    .and_then(|c| c.ebpf_binary_path.clone())
+                    .ok_or_else(|| {
+                        format!(
+                            "input '{name}': linux_ebpf_sensor requires 'sensor.ebpf_binary_path'"
+                        )
+                    })?;
+
+                let sensor_cfg = logfwd_io::platform_sensor::PlatformSensorConfig {
+                    ebpf_binary_path: ebpf_path.into(),
+                    max_events_per_poll: s
+                        .sensor
+                        .as_ref()
+                        .and_then(|c| c.max_events_per_poll)
+                        .unwrap_or(4096),
+                    filter_self: true,
+                };
+
+                let source = PlatformSensorInput::new(name, sensor_cfg).map_err(|e| {
+                    format!("input '{name}': failed to initialize eBPF sensor: {e}")
+                })?;
+                return Ok(InputState {
+                    source: Box::new(source),
+                    buf: BytesMut::with_capacity(64 * 1024),
+                    stats,
+                });
+            }
+        }
+        InputTypeConfig::MacosEsSensor(s) | InputTypeConfig::WindowsEbpfSensor(s) => {
             use logfwd_io::host_metrics::{HostMetricsInput, HostMetricsTarget};
 
             let target = match &cfg.type_config {
-                InputTypeConfig::LinuxEbpfSensor(_) => HostMetricsTarget::Linux,
                 InputTypeConfig::MacosEsSensor(_) => HostMetricsTarget::Macos,
                 InputTypeConfig::WindowsEbpfSensor(_) => HostMetricsTarget::Windows,
                 _ => unreachable!("handled by outer match"),

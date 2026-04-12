@@ -21,6 +21,9 @@ pub mod journal_ffi;
 pub mod journald_input;
 pub mod otap_receiver;
 pub mod otlp_receiver;
+/// eBPF-based platform sensor input (Linux only).
+#[cfg(target_os = "linux")]
+pub mod platform_sensor;
 /// Adaptive polling primitives shared by file-tail and runtime input loops.
 pub mod poll_cadence;
 pub(crate) mod polling_input_health;
