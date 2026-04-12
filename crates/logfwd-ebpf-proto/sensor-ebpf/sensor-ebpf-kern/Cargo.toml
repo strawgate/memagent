@@ -1,0 +1,12 @@
+[package]
+name = "sensor-ebpf-kern"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aya-ebpf = "0.1"
+sensor-ebpf-common = { path = "../sensor-ebpf-common" }
+
+[[bin]]
+name = "sensor-ebpf"
+path = "src/main.rs"

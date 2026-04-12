@@ -1,0 +1,11 @@
+[package]
+name = "sensor-ebpf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aya = "0.13"
+sensor-ebpf-common = { path = "sensor-ebpf-common" }
+
+[workspace]
+members = ["sensor-ebpf-kern", "sensor-ebpf-common"]
