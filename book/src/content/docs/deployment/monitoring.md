@@ -7,9 +7,13 @@ description: "Diagnostics API endpoints and metrics reference"
 Enable the diagnostics server to get health probes, pipeline metrics, and a built-in HTML dashboard.
 :::
 
+:::caution
+The diagnostics API has no authentication. Bind to `127.0.0.1` (localhost only) unless you need external access. In Kubernetes, use `0.0.0.0` with a `ClusterIP` Service so only in-cluster traffic can reach it.
+:::
+
 ```yaml
 server:
-  diagnostics: 0.0.0.0:9090
+  diagnostics: 127.0.0.1:9090
   log_level: info
 ```
 
@@ -29,7 +33,7 @@ Supported values, from most verbose to least:
 You can change the level at runtime by sending a PUT request:
 
 ```bash
-curl -X PUT http://localhost:9090/admin/v1/log_level -d '"debug"'
+curl -X PUT http://localhost:9090/admin/v1/log_level -H 'Content-Type: application/json' -d '"debug"'
 ```
 
 ## Endpoints

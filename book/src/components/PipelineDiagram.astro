@@ -564,21 +564,21 @@ const icons: Record<string, string> = {
 </style>
 
 <script>
-  document.querySelectorAll<HTMLDivElement>('[data-pd-root]').forEach((root) => {
-    const hint = root.querySelector<HTMLParagraphElement>('.pd-hint');
+  document.querySelectorAll('[data-pd-root]').forEach((root) => {
+    const hint = root.querySelector('.pd-hint');
 
-    root.querySelectorAll<HTMLButtonElement>('.pd-stage').forEach((btn) => {
+    root.querySelectorAll('.pd-stage').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.stage!;
-        const panel = root.querySelector<HTMLDivElement>(`[data-detail-stage="${id}"]`);
+        const panel = root.querySelector(`[data-detail-stage="${id}"]`);
         if (!panel) return;
         const open = btn.getAttribute('aria-expanded') === 'true';
 
         // close everything
-        root.querySelectorAll<HTMLButtonElement>('.pd-stage').forEach(b => b.setAttribute('aria-expanded', 'false'));
-        root.querySelectorAll<HTMLDivElement>('.pd-panel').forEach(p => p.hidden = true);
-        root.querySelectorAll<HTMLButtonElement>('.pd-chip').forEach(b => b.setAttribute('aria-expanded', 'false'));
-        root.querySelectorAll<HTMLDivElement>('.pd-detail').forEach(d => d.hidden = true);
+        root.querySelectorAll('.pd-stage').forEach(b => b.setAttribute('aria-expanded', 'false'));
+        root.querySelectorAll('.pd-panel').forEach(p => p.hidden = true);
+        root.querySelectorAll('.pd-chip').forEach(b => b.setAttribute('aria-expanded', 'false'));
+        root.querySelectorAll('.pd-detail').forEach(d => d.hidden = true);
 
         if (!open) {
           btn.setAttribute('aria-expanded', 'true');
@@ -591,17 +591,17 @@ const icons: Record<string, string> = {
       });
     });
 
-    root.querySelectorAll<HTMLButtonElement>('.pd-chip').forEach((btn) => {
+    root.querySelectorAll('.pd-chip').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.component!;
-        const detail = root.querySelector<HTMLDivElement>(`[data-impl-component="${id}"]`);
+        const detail = root.querySelector(`[data-impl-component="${id}"]`);
         if (!detail) return;
         const open = btn.getAttribute('aria-expanded') === 'true';
         const panel = btn.closest('.pd-panel');
         if (!panel) return;
 
-        panel.querySelectorAll<HTMLButtonElement>('.pd-chip').forEach(b => b.setAttribute('aria-expanded', 'false'));
-        panel.querySelectorAll<HTMLDivElement>('.pd-detail').forEach(d => d.hidden = true);
+        panel.querySelectorAll('.pd-chip').forEach(b => b.setAttribute('aria-expanded', 'false'));
+        panel.querySelectorAll('.pd-detail').forEach(d => d.hidden = true);
 
         if (!open) {
           btn.setAttribute('aria-expanded', 'true');

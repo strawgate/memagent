@@ -142,16 +142,16 @@ Matching input configuration:
 ```yaml
 pipelines:
   syslog-tcp:
-    input:
-      type: tcp
-      address: 0.0.0.0:5140
-      format: raw
+    inputs:
+      - type: tcp
+        listen: 0.0.0.0:5140
+        format: raw
 
   syslog-udp:
-    input:
-      type: udp
-      address: 0.0.0.0:5140
-      format: raw
+    inputs:
+      - type: udp
+        listen: 0.0.0.0:5140
+        format: raw
 ```
 
 :::caution
