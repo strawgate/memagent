@@ -4,8 +4,11 @@
 
 #![no_std]
 
-/// Maximum bytes captured from a filename/path in exec events.
+/// Maximum bytes captured from a filename/path in events.
 pub const MAX_FILENAME: usize = 256;
+
+/// Maximum kernel module name length.
+pub const MAX_MODULE_NAME: usize = 64;
 
 /// Maximum comm (process name) length in Linux.
 pub const COMM_SIZE: usize = 16;
@@ -21,6 +24,13 @@ pub enum EventKind {
     TcpConnect = 3,
     TcpAccept = 4,
     FileOpen = 5,
+    FileDelete = 6,
+    FileRename = 7,
+    Setuid = 8,
+    Setgid = 9,
+    ModuleLoad = 10,
+    Ptrace = 11,
+    MemfdCreate = 12,
 }
 
 // ── Common header ───────────────────────────────────────────────────────
@@ -78,24 +88,20 @@ pub struct ProcessExitEvent {
 
 // ── TCP connect (outbound) ──────────────────────────────────────────────
 
-/// Emitted on `kprobe/tcp_v4_connect` return.
+/// Emitted on `kprobe/tcp_v4_connect` + `inet_sock_set_state`.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct TcpConnectEvent {
     pub header: EventHeader,
-    /// Source address (network byte order for v4, or v6 stored in full).
     pub saddr: u32,
-    /// Destination address.
     pub daddr: u32,
-    /// Source port (host byte order).
     pub sport: u16,
-    /// Destination port (host byte order).
     pub dport: u16,
 }
 
 // ── TCP accept (inbound) ────────────────────────────────────────────────
 
-/// Emitted on `kretprobe/inet_csk_accept`.
+/// Emitted on `inet_sock_set_state` (SYN_RECV → ESTABLISHED).
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct TcpAcceptEvent {
@@ -113,12 +119,92 @@ pub struct TcpAcceptEvent {
 #[derive(Clone, Copy)]
 pub struct FileOpenEvent {
     pub header: EventHeader,
-    /// Open flags (O_RDONLY, O_WRONLY, etc.).
     pub flags: u32,
-    /// Length of filename captured.
     pub filename_len: u32,
-    /// Filename argument to openat.
     pub filename: [u8; MAX_FILENAME],
+}
+
+// ── File delete (unlinkat) ──────────────────────────────────────────────
+
+/// Emitted on `tracepoint/syscalls/sys_enter_unlinkat`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FileDeleteEvent {
+    pub header: EventHeader,
+    /// unlinkat flags (e.g. AT_REMOVEDIR).
+    pub flags: u32,
+    pub pathname_len: u32,
+    pub pathname: [u8; MAX_FILENAME],
+}
+
+// ── File rename (renameat2) ─────────────────────────────────────────────
+
+/// Emitted on `tracepoint/syscalls/sys_enter_renameat2`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FileRenameEvent {
+    pub header: EventHeader,
+    pub oldname_len: u32,
+    pub newname_len: u32,
+    pub oldname: [u8; MAX_FILENAME],
+    pub newname: [u8; MAX_FILENAME],
+}
+
+// ── Privilege escalation ────────────────────────────────────────────────
+
+/// Emitted on `tracepoint/syscalls/sys_enter_setuid`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SetuidEvent {
+    pub header: EventHeader,
+    pub target_uid: u32,
+    pub _pad: u32,
+}
+
+/// Emitted on `tracepoint/syscalls/sys_enter_setgid`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct SetgidEvent {
+    pub header: EventHeader,
+    pub target_gid: u32,
+    pub _pad: u32,
+}
+
+// ── Kernel module load ──────────────────────────────────────────────────
+
+/// Emitted on `tracepoint/module/module_load`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ModuleLoadEvent {
+    pub header: EventHeader,
+    pub taints: u32,
+    pub name_len: u32,
+    pub name: [u8; MAX_MODULE_NAME],
+}
+
+// ── Ptrace ──────────────────────────────────────────────────────────────
+
+/// Emitted on `tracepoint/syscalls/sys_enter_ptrace`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct PtraceEvent {
+    pub header: EventHeader,
+    /// PTRACE request code (PTRACE_ATTACH=16, PTRACE_SEIZE=16902, etc.).
+    pub request: u64,
+    /// Target PID being traced.
+    pub target_pid: u64,
+}
+
+// ── memfd_create (fileless malware staging) ─────────────────────────────
+
+/// Emitted on `tracepoint/syscalls/sys_enter_memfd_create`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct MemfdCreateEvent {
+    pub header: EventHeader,
+    pub flags: u32,
+    pub name_len: u32,
+    pub name: [u8; MAX_FILENAME],
 }
 
 // ── Process info stash (kernel-internal, for kprobe→tracepoint correlation) ─

@@ -1,11 +1,10 @@
 //! Userspace loader for the logfwd eBPF EDR sensor.
 //!
-//! Loads eBPF programs, attaches to tracepoints, and consumes events from
-//! a shared ring buffer. Prints structured JSON to stdout for integration
-//! testing and pipeline validation.
+//! Loads eBPF programs, attaches to tracepoints/kprobes, and consumes events
+//! from a shared ring buffer. Prints structured JSON to stdout.
 //!
 //! Usage:
-//!   sudo ./sensor-ebpf <ebpf-binary-path> [--json] [--duration <seconds>]
+//!   sudo ./sensor-ebpf <ebpf-binary-path> [--json] [--duration <seconds>] [--no-file-open]
 
 use aya::maps::RingBuf;
 use aya::programs::{KProbe, TracePoint};
@@ -29,7 +28,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
 
-    // Self-PID for filtering out our own events.
     let self_tgid = std::process::id();
 
     eprintln!("Loading eBPF from {ebpf_path}...");
@@ -41,6 +39,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ("sched_process_exec", "sched", "sched_process_exec"),
         ("sched_process_exit", "sched", "sched_process_exit"),
         ("sys_enter_openat", "syscalls", "sys_enter_openat"),
+        ("sys_enter_unlinkat", "syscalls", "sys_enter_unlinkat"),
+        ("sys_enter_renameat2", "syscalls", "sys_enter_renameat2"),
+        ("sys_enter_setuid", "syscalls", "sys_enter_setuid"),
+        ("sys_enter_setgid", "syscalls", "sys_enter_setgid"),
+        ("module_load", "module", "module_load"),
+        ("sys_enter_ptrace", "syscalls", "sys_enter_ptrace"),
+        ("sys_enter_memfd_create", "syscalls", "sys_enter_memfd_create"),
         ("inet_sock_set_state", "sock", "inet_sock_set_state"),
     ];
 
@@ -59,9 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Attach kprobes.
-    let kprobes: &[(&str, &str)] = &[
-        ("tcp_v4_connect", "tcp_v4_connect"),
-    ];
+    let kprobes: &[(&str, &str)] = &[("tcp_v4_connect", "tcp_v4_connect")];
 
     for (prog_name, fn_name) in kprobes {
         match ebpf.program_mut(prog_name) {
@@ -98,73 +101,168 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let header = unsafe { &*(ptr as *const EventHeader) };
 
-            // Skip events from our own process tree.
             if header.tgid == self_tgid {
                 counts.self_filtered += 1;
                 continue;
             }
 
             let now_wall = wall_clock_ns();
+            let comm = comm_str(&header.comm);
 
             match header.kind {
+                // ── Process exec ──────────────────────────────
                 k if k == EventKind::ProcessExec as u32 && len >= size_of::<ProcessExecEvent>() => {
                     let ev = unsafe { &*(ptr as *const ProcessExecEvent) };
                     counts.exec += 1;
                     let fname = safe_str(&ev.filename, ev.filename_len as usize);
-                    let comm = comm_str(&header.comm);
                     if json_mode {
                         writeln!(stdout,
                             r#"{{"ts":{},"kind":"exec","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","filename":"{}"}}"#,
                             now_wall, header.tgid, header.pid, header.uid, header.gid, header.cgroup_id, comm, fname
                         )?;
                     } else {
-                        writeln!(stdout,
-                            "EXEC  tgid={:<6} comm={:<16} exe={}",
-                            header.tgid, comm, fname
-                        )?;
+                        writeln!(stdout, "EXEC  tgid={:<6} comm={:<16} exe={}", header.tgid, comm, fname)?;
                     }
                 }
+
+                // ── Process exit ──────────────────────────────
                 k if k == EventKind::ProcessExit as u32 && len >= size_of::<ProcessExitEvent>() => {
                     let ev = unsafe { &*(ptr as *const ProcessExitEvent) };
                     counts.exit += 1;
-                    let comm = comm_str(&header.comm);
                     if json_mode {
                         writeln!(stdout,
                             r#"{{"ts":{},"kind":"exit","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","exit_code":{}}}"#,
                             now_wall, header.tgid, header.pid, header.uid, header.gid, header.cgroup_id, comm, ev.exit_code
                         )?;
                     } else {
-                        writeln!(stdout,
-                            "EXIT  tgid={:<6} comm={:<16} code={}",
-                            header.tgid, comm, ev.exit_code
-                        )?;
+                        writeln!(stdout, "EXIT  tgid={:<6} comm={:<16} code={}", header.tgid, comm, ev.exit_code)?;
                     }
                 }
+
+                // ── File open ─────────────────────────────────
                 k if k == EventKind::FileOpen as u32 && len >= size_of::<FileOpenEvent>() => {
-                    if no_file_open {
-                        counts.file_open += 1;
-                        continue;
-                    }
-                    let ev = unsafe { &*(ptr as *const FileOpenEvent) };
                     counts.file_open += 1;
+                    if no_file_open { continue; }
+                    let ev = unsafe { &*(ptr as *const FileOpenEvent) };
                     let fname = safe_str(&ev.filename, ev.filename_len as usize);
-                    let comm = comm_str(&header.comm);
                     if json_mode {
                         writeln!(stdout,
                             r#"{{"ts":{},"kind":"file_open","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","flags":{},"filename":"{}"}}"#,
                             now_wall, header.tgid, header.pid, header.uid, header.gid, header.cgroup_id, comm, ev.flags, fname
                         )?;
                     } else {
-                        writeln!(stdout,
-                            "OPEN  tgid={:<6} comm={:<16} flags={:#06x} file={}",
-                            header.tgid, comm, ev.flags, fname
-                        )?;
+                        writeln!(stdout, "OPEN  tgid={:<6} comm={:<16} flags={:#06x} file={}", header.tgid, comm, ev.flags, fname)?;
                     }
                 }
+
+                // ── File delete ───────────────────────────────
+                k if k == EventKind::FileDelete as u32 && len >= size_of::<FileDeleteEvent>() => {
+                    let ev = unsafe { &*(ptr as *const FileDeleteEvent) };
+                    counts.file_delete += 1;
+                    let path = safe_str(&ev.pathname, ev.pathname_len as usize);
+                    if json_mode {
+                        writeln!(stdout,
+                            r#"{{"ts":{},"kind":"file_delete","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","flags":{},"pathname":"{}"}}"#,
+                            now_wall, header.tgid, header.pid, header.uid, header.gid, header.cgroup_id, comm, ev.flags, path
+                        )?;
+                    } else {
+                        writeln!(stdout, "DEL   tgid={:<6} comm={:<16} path={}", header.tgid, comm, path)?;
+                    }
+                }
+
+                // ── File rename ───────────────────────────────
+                k if k == EventKind::FileRename as u32 && len >= size_of::<FileRenameEvent>() => {
+                    let ev = unsafe { &*(ptr as *const FileRenameEvent) };
+                    counts.file_rename += 1;
+                    let old = safe_str(&ev.oldname, ev.oldname_len as usize);
+                    let new = safe_str(&ev.newname, ev.newname_len as usize);
+                    if json_mode {
+                        writeln!(stdout,
+                            r#"{{"ts":{},"kind":"file_rename","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","oldname":"{}","newname":"{}"}}"#,
+                            now_wall, header.tgid, header.pid, header.uid, header.gid, header.cgroup_id, comm, old, new
+                        )?;
+                    } else {
+                        writeln!(stdout, "RNAM  tgid={:<6} comm={:<16} {} -> {}", header.tgid, comm, old, new)?;
+                    }
+                }
+
+                // ── Setuid ────────────────────────────────────
+                k if k == EventKind::Setuid as u32 && len >= size_of::<SetuidEvent>() => {
+                    let ev = unsafe { &*(ptr as *const SetuidEvent) };
+                    counts.setuid += 1;
+                    if json_mode {
+                        writeln!(stdout,
+                            r#"{{"ts":{},"kind":"setuid","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","target_uid":{}}}"#,
+                            now_wall, header.tgid, header.pid, header.uid, header.gid, header.cgroup_id, comm, ev.target_uid
+                        )?;
+                    } else {
+                        writeln!(stdout, "SUID  tgid={:<6} comm={:<16} uid={} -> {}", header.tgid, comm, header.uid, ev.target_uid)?;
+                    }
+                }
+
+                // ── Setgid ────────────────────────────────────
+                k if k == EventKind::Setgid as u32 && len >= size_of::<SetgidEvent>() => {
+                    let ev = unsafe { &*(ptr as *const SetgidEvent) };
+                    counts.setgid += 1;
+                    if json_mode {
+                        writeln!(stdout,
+                            r#"{{"ts":{},"kind":"setgid","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","target_gid":{}}}"#,
+                            now_wall, header.tgid, header.pid, header.uid, header.gid, header.cgroup_id, comm, ev.target_gid
+                        )?;
+                    } else {
+                        writeln!(stdout, "SGID  tgid={:<6} comm={:<16} gid={} -> {}", header.tgid, comm, header.gid, ev.target_gid)?;
+                    }
+                }
+
+                // ── Module load ───────────────────────────────
+                k if k == EventKind::ModuleLoad as u32 && len >= size_of::<ModuleLoadEvent>() => {
+                    let ev = unsafe { &*(ptr as *const ModuleLoadEvent) };
+                    counts.module_load += 1;
+                    let name = safe_str(&ev.name, ev.name_len as usize);
+                    if json_mode {
+                        writeln!(stdout,
+                            r#"{{"ts":{},"kind":"module_load","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","taints":{},"module":"{}"}}"#,
+                            now_wall, header.tgid, header.pid, header.uid, header.gid, header.cgroup_id, comm, ev.taints, name
+                        )?;
+                    } else {
+                        writeln!(stdout, "KMOD  tgid={:<6} comm={:<16} module={} taints={}", header.tgid, comm, name, ev.taints)?;
+                    }
+                }
+
+                // ── Ptrace ────────────────────────────────────
+                k if k == EventKind::Ptrace as u32 && len >= size_of::<PtraceEvent>() => {
+                    let ev = unsafe { &*(ptr as *const PtraceEvent) };
+                    counts.ptrace += 1;
+                    let req_name = ptrace_request_name(ev.request);
+                    if json_mode {
+                        writeln!(stdout,
+                            r#"{{"ts":{},"kind":"ptrace","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","request":{},"request_name":"{}","target_pid":{}}}"#,
+                            now_wall, header.tgid, header.pid, header.uid, header.gid, header.cgroup_id, comm, ev.request, req_name, ev.target_pid
+                        )?;
+                    } else {
+                        writeln!(stdout, "PTRC  tgid={:<6} comm={:<16} {}({}) -> pid {}", header.tgid, comm, req_name, ev.request, ev.target_pid)?;
+                    }
+                }
+
+                // ── memfd_create ──────────────────────────────
+                k if k == EventKind::MemfdCreate as u32 && len >= size_of::<MemfdCreateEvent>() => {
+                    let ev = unsafe { &*(ptr as *const MemfdCreateEvent) };
+                    counts.memfd_create += 1;
+                    let name = safe_str(&ev.name, ev.name_len as usize);
+                    if json_mode {
+                        writeln!(stdout,
+                            r#"{{"ts":{},"kind":"memfd_create","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","flags":{},"name":"{}"}}"#,
+                            now_wall, header.tgid, header.pid, header.uid, header.gid, header.cgroup_id, comm, ev.flags, name
+                        )?;
+                    } else {
+                        writeln!(stdout, "MEMFD tgid={:<6} comm={:<16} flags={:#x} name={}", header.tgid, comm, ev.flags, name)?;
+                    }
+                }
+
+                // ── TCP connect ───────────────────────────────
                 k if k == EventKind::TcpConnect as u32 && len >= size_of::<TcpConnectEvent>() => {
                     let ev = unsafe { &*(ptr as *const TcpConnectEvent) };
                     counts.tcp_connect += 1;
-                    let comm = comm_str(&header.comm);
                     let src = Ipv4Addr::from(ev.saddr.to_be());
                     let dst = Ipv4Addr::from(ev.daddr.to_be());
                     if json_mode {
@@ -173,16 +271,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             now_wall, header.tgid, comm, src, ev.sport, dst, ev.dport
                         )?;
                     } else {
-                        writeln!(stdout,
-                            "CONN  tgid={:<6} comm={:<16} {}:{} -> {}:{}",
-                            header.tgid, comm, src, ev.sport, dst, ev.dport
-                        )?;
+                        writeln!(stdout, "CONN  tgid={:<6} comm={:<16} {}:{} -> {}:{}", header.tgid, comm, src, ev.sport, dst, ev.dport)?;
                     }
                 }
+
+                // ── TCP accept ────────────────────────────────
                 k if k == EventKind::TcpAccept as u32 && len >= size_of::<TcpAcceptEvent>() => {
                     let ev = unsafe { &*(ptr as *const TcpAcceptEvent) };
                     counts.tcp_accept += 1;
-                    let comm = comm_str(&header.comm);
                     let src = Ipv4Addr::from(ev.saddr.to_be());
                     let dst = Ipv4Addr::from(ev.daddr.to_be());
                     if json_mode {
@@ -191,12 +287,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             now_wall, header.tgid, comm, src, ev.sport, dst, ev.dport
                         )?;
                     } else {
-                        writeln!(stdout,
-                            "ACPT  tgid={:<6} comm={:<16} {}:{} <- {}:{}",
-                            header.tgid, comm, src, ev.sport, dst, ev.dport
-                        )?;
+                        writeln!(stdout, "ACPT  tgid={:<6} comm={:<16} {}:{} <- {}:{}", header.tgid, comm, src, ev.sport, dst, ev.dport)?;
                     }
                 }
+
                 _ => {
                     counts.malformed += 1;
                 }
@@ -209,8 +303,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("  exec:          {}", counts.exec);
     eprintln!("  exit:          {}", counts.exit);
     eprintln!("  file_open:     {}", counts.file_open);
+    eprintln!("  file_delete:   {}", counts.file_delete);
+    eprintln!("  file_rename:   {}", counts.file_rename);
     eprintln!("  tcp_connect:   {}", counts.tcp_connect);
     eprintln!("  tcp_accept:    {}", counts.tcp_accept);
+    eprintln!("  setuid:        {}", counts.setuid);
+    eprintln!("  setgid:        {}", counts.setgid);
+    eprintln!("  module_load:   {}", counts.module_load);
+    eprintln!("  ptrace:        {}", counts.ptrace);
+    eprintln!("  memfd_create:  {}", counts.memfd_create);
     eprintln!("  self_filtered: {}", counts.self_filtered);
     eprintln!("  malformed:     {}", counts.malformed);
     eprintln!(
@@ -244,19 +345,47 @@ fn size_of<T>() -> usize {
     core::mem::size_of::<T>()
 }
 
+fn ptrace_request_name(req: u64) -> &'static str {
+    match req {
+        0 => "TRACEME",
+        1 => "PEEKTEXT",
+        2 => "PEEKDATA",
+        4 => "POKETEXT",
+        5 => "POKEDATA",
+        12 => "GETREGS",
+        13 => "SETREGS",
+        16 => "ATTACH",
+        17 => "DETACH",
+        24 => "SYSCALL",
+        31 => "SETOPTIONS",
+        16896 => "SEIZE",
+        16897 => "INTERRUPT",
+        _ => "UNKNOWN",
+    }
+}
+
 #[derive(Default)]
 struct EventCounts {
     exec: u64,
     exit: u64,
     file_open: u64,
+    file_delete: u64,
+    file_rename: u64,
     tcp_connect: u64,
     tcp_accept: u64,
+    setuid: u64,
+    setgid: u64,
+    module_load: u64,
+    ptrace: u64,
+    memfd_create: u64,
     self_filtered: u64,
     malformed: u64,
 }
 
 impl EventCounts {
     fn total(&self) -> u64 {
-        self.exec + self.exit + self.file_open + self.tcp_connect + self.tcp_accept
+        self.exec + self.exit + self.file_open + self.file_delete + self.file_rename
+            + self.tcp_connect + self.tcp_accept + self.setuid + self.setgid
+            + self.module_load + self.ptrace + self.memfd_create
     }
 }
