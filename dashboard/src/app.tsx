@@ -396,8 +396,10 @@ export function App() {
       if (memBytes != null) {
         series[5].ring.push(memBytes);
         series[5].value = fmtBytes(memBytes);
-        if (statsData.mem_resident) {
+        if (statsData.mem_resident != null) {
           series[5].limit = `/ ${fmtBytes(statsData.mem_resident)} resident`;
+        } else {
+          series[5].limit = undefined;
         }
       }
 

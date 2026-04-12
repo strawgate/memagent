@@ -1409,7 +1409,16 @@ output:
             "body: {}",
             body
         );
-        assert!(body.contains(r#""uptime_seconds":"#), "body: {}", body);
+        // uptime_seconds is a JSON number, not a string — verify a digit follows the colon
+        assert!(
+            body.contains(r#""uptime_seconds":"#)
+                && body
+                    .split(r#""uptime_seconds":"#)
+                    .nth(1)
+                    .map_or(false, |rest| rest.starts_with(|c: char| c.is_ascii_digit())),
+            "uptime_seconds should be a JSON number, body: {}",
+            body
+        );
     }
 
     #[test]
