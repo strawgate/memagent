@@ -303,9 +303,14 @@ fn normalize_otlp_hex_id<'a>(
     expected_len: usize,
     field_name: &str,
 ) -> Result<Cow<'a, str>, InputError> {
-    if raw.len() != expected_len || !raw.bytes().all(|b| b.is_ascii_hexdigit()) {
+    if raw.len() != expected_len {
         return Err(InputError::Receiver(format!(
             "invalid OTLP JSON {field_name}: expected {expected_len} hex chars"
+        )));
+    }
+    if !raw.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(InputError::Receiver(format!(
+            "invalid OTLP JSON {field_name}: contains non-hex characters"
         )));
     }
     if raw.bytes().all(|b| !b.is_ascii_uppercase()) {

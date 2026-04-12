@@ -396,12 +396,13 @@ fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<Vec<String>>, St
         return Ok(None);
     };
     let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
-    let tokens: Vec<String> = parsed
-        .split(',')
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .map(str::to_ascii_lowercase)
-        .collect();
+    let mut tokens = Vec::new();
+    for token in parsed.split(',').map(str::trim) {
+        if token.is_empty() {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        tokens.push(token.to_ascii_lowercase());
+    }
     if tokens.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }

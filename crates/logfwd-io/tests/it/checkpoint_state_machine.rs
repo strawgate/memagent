@@ -416,17 +416,24 @@ impl StateMachineTest for TailCheckpointTest {
     }
 }
 
+fn checkpoint_state_machine_proptest_config() -> ProptestConfig {
+    let mut config = ProptestConfig {
+        cases: logfwd_test_utils::state_machine_proptest_cases(),
+        max_shrink_iters: 5_000,
+        ..ProptestConfig::default()
+    };
+    if cfg!(miri) || std::env::var_os("LOGFWD_DISABLE_PROPTEST_PERSISTENCE").is_some() {
+        config.failure_persistence = None;
+    }
+    config
+}
+
 // ---------------------------------------------------------------------------
 // Macro invocation
 // ---------------------------------------------------------------------------
 
 prop_state_machine! {
-    #![proptest_config(ProptestConfig {
-        cases: logfwd_test_utils::state_machine_proptest_cases(),
-        max_shrink_iters: 5_000,
-        failure_persistence: None,
-        .. ProptestConfig::default()
-    })]
+    #![proptest_config(checkpoint_state_machine_proptest_config())]
 
     #[test]
     fn checkpoint_state_machine(sequential 5..30 => TailCheckpointTest);

@@ -102,9 +102,10 @@ impl FileTailer {
     /// cannot be created.
     pub fn new(
         paths: &[PathBuf],
-        config: TailConfig,
+        mut config: TailConfig,
         stats: std::sync::Arc<ComponentStats>,
     ) -> io::Result<Self> {
+        config.read_buf_size = config.read_buf_size.max(1);
         let (tx, rx) = crossbeam_channel::unbounded();
         let adaptive_fast_polls_max = config.adaptive_fast_polls_max;
 
@@ -125,7 +126,7 @@ impl FileTailer {
             }
         }
 
-        let read_buf_size = config.read_buf_size.max(1);
+        let read_buf_size = config.read_buf_size;
 
         let mut tailer = FileTailer {
             discovery: FileDiscovery {

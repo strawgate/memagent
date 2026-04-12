@@ -11,7 +11,7 @@ use std::sync::{Arc, mpsc};
 
 use axum::body::Body;
 use axum::extract::State;
-use axum::http::header::{ALLOW, CONTENT_ENCODING};
+use axum::http::header::{ALLOW, CONTENT_ENCODING, RETRY_AFTER};
 use axum::http::{HeaderMap, Method, Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
@@ -405,6 +405,7 @@ async fn handle_request(
                 .store(ComponentHealth::Degraded.as_repr(), Ordering::Relaxed);
             (
                 StatusCode::TOO_MANY_REQUESTS,
+                [(RETRY_AFTER, "1")],
                 "too many requests: pipeline backpressure",
             )
                 .into_response()
@@ -417,6 +418,7 @@ async fn handle_request(
             }
             (
                 StatusCode::SERVICE_UNAVAILABLE,
+                [(RETRY_AFTER, "1")],
                 "service unavailable: pipeline disconnected",
             )
                 .into_response()
