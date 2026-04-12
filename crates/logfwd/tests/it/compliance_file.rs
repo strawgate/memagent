@@ -66,32 +66,9 @@ fn wait_for(predicate: impl Fn() -> bool, timeout: Duration) -> bool {
     predicate()
 }
 
-fn output_lines_max(metrics: &PipelineMetrics) -> u64 {
-    metrics
-        .outputs
-        .iter()
-        .map(|(_, _, stats)| stats.lines_total.load(Ordering::Relaxed))
-        .max()
-        .unwrap_or(0)
-}
-
-fn observed_lines(metrics: &PipelineMetrics) -> u64 {
-    let transform = metrics.transform_in.lines_total.load(Ordering::Relaxed);
-    transform.max(output_lines_max(metrics))
-}
-
 /// Keep a generous wait budget for file-compliance tests.
 /// Coverage and busy CI hosts can introduce significant scheduling jitter.
 fn wait_timeout() -> Duration {
-    Duration::from_secs(90)
-}
-
-/// Extra budget for large pre-rotation ingestion gates.
-///
-/// The create-style rotation test intentionally waits for the full initial
-/// 5000-line file before rotating; on loaded CI hosts that can run slightly
-/// beyond the generic 60s budget.
-fn wait_timeout_large_ingest() -> Duration {
     Duration::from_secs(90)
 }
 
@@ -144,7 +121,10 @@ fn wait_for_lines_and_cancel(
     expected: usize,
     timeout: Duration,
 ) {
-    let reached = wait_for(|| observed_lines(metrics) >= expected as u64, timeout);
+    let reached = wait_for(
+        || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= expected as u64,
+        timeout,
+    );
     shutdown.cancel();
     assert!(
         reached,
@@ -175,19 +155,13 @@ fn compliance_file_rotate_create() {
     let pipeline = build_pipeline(&yaml);
     let (shutdown, metrics, handle) = run_pipeline_background(pipeline);
 
-    // Wait for full initial-file ingestion before rotating to avoid
-    // masking potential loss/duplicate behavior around the rename boundary.
+    // Wait for initial 5000 lines to be ingested before rotating.
     if !wait_for(
-        || observed_lines(&metrics) >= 5000,
-        wait_timeout_large_ingest(),
+        || metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 5000,
+        wait_timeout(),
     ) {
-        let transform = metrics.transform_in.lines_total.load(Ordering::Relaxed);
-        let output = output_lines_max(&metrics);
         shutdown.cancel();
-        panic!(
-            "timed out waiting for initial 5000 lines before create-style rotation \
-             (transform_in={transform}, output_lines_max={output})"
-        );
+        panic!("timed out waiting for initial 5000 lines before create-style rotation");
     }
 
     // Simulate logrotate "create" style.

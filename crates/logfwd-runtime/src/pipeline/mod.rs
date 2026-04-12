@@ -14,13 +14,11 @@ mod input_poll;
 mod internal_faults;
 mod processor_stage;
 mod submit;
-pub(crate) mod transition;
 
 use self::checkpoint_io::flush_checkpoint_with_retry;
 use self::checkpoint_policy::{TicketDisposition, default_ticket_disposition};
 #[cfg(feature = "turmoil")]
 use self::input_poll::async_input_poll_loop;
-use self::transition::TransitionEventEmitterHandle;
 
 use std::collections::HashMap;
 use std::io;
@@ -54,11 +52,6 @@ use logfwd_output::build_sink_factory;
 use logfwd_output::{BatchMetadata, OnceAsyncFactory};
 use logfwd_types::pipeline::{PipelineMachine, Running, SourceId};
 use tokio_util::sync::CancellationToken;
-
-pub use self::transition::{
-    NoopTransitionEventEmitter, TransitionAction, TransitionDisposition, TransitionEvent,
-    TransitionEventEmitter, TransitionEventRecorder, TransitionOutcome, TransitionPhase,
-};
 
 // ---------------------------------------------------------------------------
 // block_in_place shim for simulation
@@ -127,16 +120,6 @@ struct InputState {
     stats: Arc<ComponentStats>,
 }
 
-const DEFAULT_PASSTHROUGH_SQL: &str = "SELECT * FROM logs";
-
-fn assert_stateless_processor(processor: &dyn Processor) {
-    assert!(
-        !processor.is_stateful(),
-        "stateful processors are not yet supported: checkpointing path is incomplete \
-         (see #1404). Register only stateless processors."
-    );
-}
-
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
@@ -177,8 +160,8 @@ pub struct Pipeline {
     last_checkpoint_flush: tokio::time::Instant,
     /// Checkpoint flush throttle interval. Default 5 seconds; overridable for tests.
     checkpoint_flush_interval: Duration,
-    /// Optional transition-event sink. Default handle is no-op.
-    transition_events: TransitionEventEmitterHandle,
+    /// Maximum time to wait for worker-pool graceful drain during shutdown.
+    pool_drain_timeout: Duration,
 }
 
 impl Pipeline {
@@ -189,8 +172,6 @@ impl Pipeline {
         let name = self.name.clone();
         let factory = Arc::new(OnceAsyncFactory::new(name, sink));
         self.pool = OutputWorkerPool::new(factory, 1, Duration::MAX, Arc::clone(&self.metrics));
-        self.pool
-            .set_transition_event_handle(self.transition_events.clone());
         self
     }
 
@@ -207,8 +188,8 @@ impl Pipeline {
         });
         // Keep input_transforms in sync: one transform per input.
         while self.input_transforms.len() < self.inputs.len() {
-            let transform = SqlTransform::new(DEFAULT_PASSTHROUGH_SQL)
-                .expect("default passthrough SQL must compile");
+            let transform =
+                SqlTransform::new("SELECT * FROM logs").expect("default passthrough SQL");
             let scanner = Scanner::new(transform.scan_config());
             self.input_transforms.push(InputTransform {
                 scanner,
@@ -225,22 +206,6 @@ impl Pipeline {
         self
     }
 
-    /// Install a runtime transition-event emitter.
-    pub fn with_transition_event_emitter(
-        mut self,
-        emitter: Arc<dyn TransitionEventEmitter>,
-    ) -> Self {
-        self.set_transition_event_emitter(emitter);
-        self
-    }
-
-    /// Replace the runtime transition-event emitter.
-    pub fn set_transition_event_emitter(&mut self, emitter: Arc<dyn TransitionEventEmitter>) {
-        let handle = TransitionEventEmitterHandle::new(emitter);
-        self.pool.set_transition_event_handle(handle.clone());
-        self.transition_events = handle;
-    }
-
     /// Add a post-transform processor to the chain.
     ///
     /// # Panics
@@ -249,7 +214,11 @@ impl Pipeline {
     /// require deferred-ACK checkpointing support that is not yet implemented
     /// (tracked in #1404). Register only stateless processors until then.
     pub fn with_processor(mut self, processor: Box<dyn Processor>) -> Self {
-        assert_stateless_processor(processor.as_ref());
+        assert!(
+            !processor.is_stateful(),
+            "stateful processors are not yet supported: checkpointing path is incomplete \
+             (see #1404). Register only stateless processors."
+        );
         self.processors.push(processor);
         self
     }
@@ -264,7 +233,11 @@ impl Pipeline {
     /// See [`with_processor`](Self::with_processor) for details.
     pub fn with_processors(mut self, processors: Vec<Box<dyn Processor>>) -> Self {
         for p in &processors {
-            assert_stateless_processor(p.as_ref());
+            assert!(
+                !p.is_stateful(),
+                "stateful processors are not yet supported: checkpointing path is incomplete \
+                 (see #1404). Register only stateless processors."
+            );
         }
         self.processors.extend(processors);
         self
@@ -302,6 +275,30 @@ impl Pipeline {
         self.batch_target_bytes = bytes;
     }
 
+    fn validate_batch_settings(&self) -> io::Result<()> {
+        if self.batch_timeout.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "batch_timeout must be greater than zero",
+            ));
+        }
+        if self.batch_target_bytes == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "batch_target_bytes must be greater than zero",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Override the output worker-pool drain timeout (default 60s).
+    ///
+    /// Tests can shorten this to keep deterministic simulations fast while
+    /// still exercising cancellation/force-stop behavior.
+    pub fn set_pool_drain_timeout(&mut self, timeout: Duration) {
+        self.pool_drain_timeout = timeout;
+    }
+
     /// Create a minimal pipeline for simulation testing.
     ///
     /// Bypasses config parsing, filesystem, and OTel meter setup.
@@ -333,7 +330,7 @@ impl Pipeline {
             held_tickets: Vec::new(),
             last_checkpoint_flush: tokio::time::Instant::now(),
             checkpoint_flush_interval: build::DEFAULT_CHECKPOINT_FLUSH_INTERVAL,
-            transition_events: TransitionEventEmitterHandle::noop(),
+            pool_drain_timeout: Duration::from_secs(60),
         }
     }
 
@@ -369,7 +366,7 @@ impl Pipeline {
             held_tickets: Vec::new(),
             last_checkpoint_flush: tokio::time::Instant::now(),
             checkpoint_flush_interval: build::DEFAULT_CHECKPOINT_FLUSH_INTERVAL,
-            transition_events: TransitionEventEmitterHandle::noop(),
+            pool_drain_timeout: Duration::from_secs(60),
         }
     }
 
@@ -388,16 +385,12 @@ impl Pipeline {
     }
 
     /// Run the pipeline until `shutdown` is cancelled. Blocks the calling thread.
+    /// Run the pipeline until `shutdown` is cancelled. Blocks the calling thread.
     ///
     /// Delegates to `run_async` on a tokio runtime. The sync interface exists
     /// for test convenience; production uses `run_async` directly.
     pub fn run(&mut self, shutdown: &CancellationToken) -> io::Result<()> {
-        if self.batch_timeout.is_zero() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "batch_timeout must be greater than zero",
-            ));
-        }
+        self.validate_batch_settings()?;
         let mut builder = tokio::runtime::Builder::new_multi_thread();
         builder.enable_all();
         if let Ok(threads_raw) = std::env::var("TOKIO_WORKER_THREADS")
@@ -426,12 +419,7 @@ impl Pipeline {
     ///   when ureq is replaced with an async HTTP client.
     /// - self.inputs.drain(..) makes this method non-reentrant.
     pub async fn run_async(&mut self, shutdown: &CancellationToken) -> io::Result<()> {
-        if self.batch_timeout.is_zero() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "batch_timeout must be greater than zero",
-            ));
-        }
+        self.validate_batch_settings()?;
         assert_eq!(
             self.inputs.len(),
             self.input_transforms.len(),
@@ -501,7 +489,6 @@ impl Pipeline {
 
         let mut heartbeat_interval = tokio::time::interval(self.batch_timeout);
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let has_stateful_processors = self.processors.iter().any(|p| p.is_stateful());
 
         let mut should_drain_input_channel = true;
         loop {
@@ -513,7 +500,7 @@ impl Pipeline {
                 // we ingest or flush more data.
                 ack = self.pool.ack_rx_mut().recv() => {
                     if let Some(ack) = ack {
-                        if self.apply_pool_ack(ack) {
+                        if self.apply_pool_ack(ack).await {
                             shutdown.cancel();
                             should_drain_input_channel = false;
                             break;
@@ -542,7 +529,9 @@ impl Pipeline {
                     // Heartbeat for stateful processors: send an empty batch through
                     // the chain so stateful processors can check their internal timers
                     // and emit timed-out data.
-                    if has_stateful_processors {
+                    if !self.processors.is_empty()
+                        && self.processors.iter().any(|p| p.is_stateful())
+                    {
                         let empty = RecordBatch::new_empty(
                             Arc::new(arrow::datatypes::Schema::empty()),
                         );
@@ -602,7 +591,7 @@ impl Pipeline {
 
         // Cascading flush: drain all buffered state from stateful processors.
         // Each processor's flushed output is fed through downstream processors.
-        if has_stateful_processors {
+        if !self.processors.is_empty() {
             let meta = BatchMetadata {
                 resource_attrs: Arc::clone(&self.resource_attrs),
                 observed_time_ns: now_nanos(),
@@ -622,7 +611,7 @@ impl Pipeline {
         }
 
         // Drain the pool: signal workers to finish current item and exit,
-        // then wait up to 60s for graceful shutdown.
+        // then wait up to `pool_drain_timeout` for graceful shutdown.
         #[cfg(feature = "turmoil")]
         crate::turmoil_barriers::trigger(
             crate::turmoil_barriers::RuntimeBarrierEvent::PipelinePhase {
@@ -630,77 +619,32 @@ impl Pipeline {
             },
         )
         .await;
-        self.pool.drain(Duration::from_secs(60)).await;
+        self.pool.drain(self.pool_drain_timeout).await;
 
         // Drain remaining acks that workers sent before exiting.
         while let Some(ack) = self.pool.try_recv_ack() {
-            self.apply_pool_ack(ack);
+            self.apply_pool_ack(ack).await;
         }
 
         // Transition machine: Running → Draining → Stopped.
         if let Some(machine) = self.machine.take() {
-            let transition_events = self.transition_events.clone();
-            transition_events.emit_with(|seq, timestamp_nanos| {
-                let mut event = TransitionEvent::new(
-                    seq,
-                    timestamp_nanos,
-                    TransitionPhase::Lifecycle,
-                    TransitionAction::BeginDrain,
-                );
-                event.outcome = Some(TransitionOutcome::Started);
-                event
-            });
             let draining = machine.begin_drain();
             match draining.stop() {
                 Ok(stopped) => {
                     // All in-flight batches resolved — persist final checkpoints.
                     if let Some(ref mut store) = self.checkpoint_store {
                         for (source_id, offset) in stopped.final_checkpoints() {
-                            transition_events.emit_with(|seq, timestamp_nanos| {
-                                let mut event = TransitionEvent::new(
-                                    seq,
-                                    timestamp_nanos,
-                                    TransitionPhase::Checkpoint,
-                                    TransitionAction::UpdateCheckpoint,
-                                );
-                                event.source_id = Some(source_id.0);
-                                event.checkpoint_offset = Some(*offset);
-                                event.outcome = Some(TransitionOutcome::Advanced);
-                                event
-                            });
                             store.update(SourceCheckpoint {
                                 source_id: source_id.0,
                                 path: None, // path is metadata, not required for restore
                                 offset: *offset,
                             });
                         }
-                        flush_checkpoint_with_retry(store.as_mut(), &transition_events).await;
+                        flush_checkpoint_with_retry(store.as_mut()).await;
                     }
-                    transition_events.emit_with(|seq, timestamp_nanos| {
-                        let mut event = TransitionEvent::new(
-                            seq,
-                            timestamp_nanos,
-                            TransitionPhase::Lifecycle,
-                            TransitionAction::Stop,
-                        );
-                        event.outcome = Some(TransitionOutcome::Completed);
-                        event.in_flight_count = Some(0);
-                        event
-                    });
                 }
                 Err(still_draining) => {
                     let abandoned = still_draining.in_flight_count();
-                    transition_events.emit_with(|seq, timestamp_nanos| {
-                        let mut event = TransitionEvent::new(
-                            seq,
-                            timestamp_nanos,
-                            TransitionPhase::Lifecycle,
-                            TransitionAction::Stop,
-                        );
-                        event.outcome = Some(TransitionOutcome::Blocked);
-                        event.in_flight_count = Some(abandoned);
-                        event
-                    });
                     tracing::warn!(
                         in_flight = abandoned,
                         "pipeline: force-stopping with in-flight batches (checkpoint may not reflect latest delivered data)"
@@ -710,37 +654,14 @@ impl Pipeline {
                     // valid (they only reflect contiguously-acked batches).
                     if let Some(ref mut store) = self.checkpoint_store {
                         for (source_id, offset) in stopped.final_checkpoints() {
-                            transition_events.emit_with(|seq, timestamp_nanos| {
-                                let mut event = TransitionEvent::new(
-                                    seq,
-                                    timestamp_nanos,
-                                    TransitionPhase::Checkpoint,
-                                    TransitionAction::UpdateCheckpoint,
-                                );
-                                event.source_id = Some(source_id.0);
-                                event.checkpoint_offset = Some(*offset);
-                                event.outcome = Some(TransitionOutcome::Advanced);
-                                event
-                            });
                             store.update(SourceCheckpoint {
                                 source_id: source_id.0,
                                 path: None,
                                 offset: *offset,
                             });
                         }
-                        flush_checkpoint_with_retry(store.as_mut(), &transition_events).await;
+                        flush_checkpoint_with_retry(store.as_mut()).await;
                     }
-                    transition_events.emit_with(|seq, timestamp_nanos| {
-                        let mut event = TransitionEvent::new(
-                            seq,
-                            timestamp_nanos,
-                            TransitionPhase::Lifecycle,
-                            TransitionAction::ForceStop,
-                        );
-                        event.outcome = Some(TransitionOutcome::Forced);
-                        event.in_flight_count = Some(abandoned);
-                        event
-                    });
                 }
             }
         }
@@ -758,7 +679,12 @@ impl Pipeline {
     /// Apply a pool `AckItem` at the worker/checkpoint seam.
     ///
     /// Called from the `select!` loop when a pool worker finishes a batch.
-    fn apply_pool_ack(&mut self, ack: AckItem) -> bool {
+    #[allow(clippy::unused_async)] // async required for turmoil barrier await
+    async fn apply_pool_ack(&mut self, ack: AckItem) -> bool {
+        #[cfg(feature = "turmoil")]
+        let outcome_for_event = ack.outcome.clone();
+        #[cfg(feature = "turmoil")]
+        let batch_id_for_event = ack.batch_id;
         if self
             .metrics
             .inflight_batches
@@ -788,11 +714,18 @@ impl Pipeline {
             }
             self.metrics.output_error(&ack.output_name);
         }
-        self.ack_all_tickets(
-            Some(ack.batch_id),
-            ack.tickets,
-            default_ticket_disposition(&ack.outcome),
+        let (has_held, _checkpoint_advances) =
+            self.ack_all_tickets(ack.tickets, default_ticket_disposition(&ack.outcome));
+        #[cfg(feature = "turmoil")]
+        crate::turmoil_barriers::trigger(
+            crate::turmoil_barriers::RuntimeBarrierEvent::AckApplied {
+                batch_id: batch_id_for_event,
+                outcome: outcome_for_event,
+                checkpoint_advances: _checkpoint_advances,
+            },
         )
+        .await;
+        has_held
     }
 
     /// Finalize Sending tickets and apply receipts to the machine when present.
@@ -800,25 +733,16 @@ impl Pipeline {
     /// Flushes are throttled to at most once per 5 seconds to avoid fsync storms.
     fn ack_all_tickets(
         &mut self,
-        batch_id: Option<u64>,
         tickets: Vec<logfwd_types::pipeline::BatchTicket<logfwd_types::pipeline::Sending, u64>>,
         disposition: TicketDisposition,
-    ) -> bool {
+    ) -> (bool, Vec<(u64, u64)>) {
         let Some(ref mut machine) = self.machine else {
-            return false;
+            return (false, Vec::new());
         };
-        let transition_events = self.transition_events.clone();
         let mut any_advanced = false;
         let mut held = 0usize;
+        let mut advances = Vec::new();
         for ticket in tickets {
-            let ticket_id = ticket.id().0;
-            let source_id = ticket.source().0;
-            let checkpoint_offset = *ticket.checkpoint();
-            let transition_disposition = match disposition {
-                TicketDisposition::Ack => TransitionDisposition::Ack,
-                TicketDisposition::Reject => TransitionDisposition::Reject,
-                TicketDisposition::Hold => TransitionDisposition::Hold,
-            };
             let receipt = match disposition {
                 TicketDisposition::Ack => Some(ticket.ack()),
                 TicketDisposition::Reject => Some(ticket.reject()),
@@ -834,82 +758,19 @@ impl Pipeline {
             };
             if let Some(receipt) = receipt {
                 let advance = machine.apply_ack(receipt);
-                let outcome = match disposition {
-                    TicketDisposition::Ack => {
-                        if advance.advanced {
-                            TransitionOutcome::Advanced
-                        } else {
-                            TransitionOutcome::Acked
-                        }
-                    }
-                    TicketDisposition::Reject => {
-                        if advance.advanced {
-                            TransitionOutcome::Advanced
-                        } else {
-                            TransitionOutcome::RejectedTicket
-                        }
-                    }
-                    TicketDisposition::Hold => TransitionOutcome::Held,
-                };
-                transition_events.emit_with(|seq, timestamp_nanos| {
-                    let mut event = TransitionEvent::new(
-                        seq,
-                        timestamp_nanos,
-                        TransitionPhase::Ticket,
-                        TransitionAction::ApplyDisposition,
-                    );
-                    event.batch_id = batch_id;
-                    event.ticket_id = Some(ticket_id);
-                    event.source_id = Some(source_id);
-                    event.checkpoint_offset = Some(checkpoint_offset);
-                    event.disposition = Some(transition_disposition);
-                    event.outcome = Some(outcome);
-                    event
-                });
                 if advance.advanced {
                     if let Some(offset) = advance.checkpoint {
-                        transition_events.emit_with(|seq, timestamp_nanos| {
-                            let mut event = TransitionEvent::new(
-                                seq,
-                                timestamp_nanos,
-                                TransitionPhase::Checkpoint,
-                                TransitionAction::UpdateCheckpoint,
-                            );
-                            event.batch_id = batch_id;
-                            event.ticket_id = Some(ticket_id);
-                            event.source_id = Some(advance.source.0);
-                            event.checkpoint_offset = Some(offset);
-                            event.outcome = Some(TransitionOutcome::Advanced);
-                            event
-                        });
-                    }
-                    if let (Some(ref mut store), Some(offset)) =
-                        (self.checkpoint_store.as_mut(), advance.checkpoint)
-                    {
-                        store.update(SourceCheckpoint {
-                            source_id: advance.source.0,
-                            path: None, // path is metadata, not required for restore
-                            offset,
-                        });
+                        advances.push((advance.source.0, offset));
+                        if let Some(ref mut store) = self.checkpoint_store {
+                            store.update(SourceCheckpoint {
+                                source_id: advance.source.0,
+                                path: None, // path is metadata, not required for restore
+                                offset,
+                            });
+                        }
                         any_advanced = true;
                     }
                 }
-            } else {
-                transition_events.emit_with(|seq, timestamp_nanos| {
-                    let mut event = TransitionEvent::new(
-                        seq,
-                        timestamp_nanos,
-                        TransitionPhase::Ticket,
-                        TransitionAction::ApplyDisposition,
-                    );
-                    event.batch_id = batch_id;
-                    event.ticket_id = Some(ticket_id);
-                    event.source_id = Some(source_id);
-                    event.checkpoint_offset = Some(checkpoint_offset);
-                    event.disposition = Some(transition_disposition);
-                    event.outcome = Some(TransitionOutcome::Held);
-                    event
-                });
             }
         }
         if held > 0 {
@@ -923,29 +784,12 @@ impl Pipeline {
         if any_advanced && self.last_checkpoint_flush.elapsed() >= self.checkpoint_flush_interval {
             self.last_checkpoint_flush = tokio::time::Instant::now();
             if let Some(ref mut store) = self.checkpoint_store {
-                let result = store.flush();
-                let flush_outcome = if result.is_ok() {
-                    TransitionOutcome::FlushSucceeded
-                } else {
-                    TransitionOutcome::FlushFailed
-                };
-                transition_events.emit_with(|seq, timestamp_nanos| {
-                    let mut event = TransitionEvent::new(
-                        seq,
-                        timestamp_nanos,
-                        TransitionPhase::Checkpoint,
-                        TransitionAction::FlushCheckpoint,
-                    );
-                    event.outcome = Some(flush_outcome);
-                    event.attempt = Some(1);
-                    event
-                });
-                if let Err(e) = result {
+                if let Err(e) = store.flush() {
                     tracing::warn!(error = %e, "pipeline: checkpoint flush error");
                 }
             }
         }
-        held > 0
+        (held > 0, advances)
     }
 }
 
@@ -967,17 +811,50 @@ fn now_nanos() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::future::Future;
+    use std::pin::Pin;
     use std::sync::atomic::Ordering;
     // std::time::Instant is cfg-gated in the parent module for turmoil compatibility,
     // but tests need it for timeout deadlines regardless of the turmoil feature flag.
     use serial_test::serial;
     use std::time::Instant;
 
+    use arrow::record_batch::RecordBatch;
     use logfwd_config::{Format, OutputConfig, OutputType};
     use logfwd_core::scan_config::ScanConfig;
     use logfwd_diagnostics::diagnostics::ComponentStats;
+    use logfwd_output::{
+        BatchMetadata,
+        sink::{SendResult, Sink},
+    };
     use logfwd_test_utils::sinks::{DevNullSink, FailingSink, FrozenSink, SlowSink};
     use logfwd_test_utils::test_meter;
+
+    struct PanicSink;
+
+    impl Sink for PanicSink {
+        fn send_batch<'a>(
+            &'a mut self,
+            _batch: &'a RecordBatch,
+            _metadata: &'a BatchMetadata,
+        ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+            Box::pin(async move {
+                panic!("injected panic for held-ticket shutdown test");
+            })
+        }
+
+        fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn name(&self) -> &str {
+            "panic"
+        }
+
+        fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
 
     #[test]
     fn test_build_sink_factory_stdout() {
@@ -1170,6 +1047,72 @@ pipelines:
         assert_eq!(pipeline.batch_target_bytes, 8192);
         assert_eq!(pipeline.batch_timeout, Duration::from_millis(250));
         assert_eq!(pipeline.poll_interval, Duration::from_millis(42));
+    }
+
+    #[test]
+    fn run_rejects_zero_batch_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").unwrap();
+
+        let yaml = format!(
+            r"
+input:
+  type: file
+  path: {}
+  format: json
+output:
+  type: stdout
+  format: json
+",
+            log_path.display()
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
+        pipeline.batch_timeout = Duration::ZERO;
+        let shutdown = CancellationToken::new();
+        let err = pipeline
+            .run(&shutdown)
+            .expect_err("zero batch_timeout should be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("batch_timeout"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn run_rejects_zero_batch_target_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").unwrap();
+
+        let yaml = format!(
+            r"
+input:
+  type: file
+  path: {}
+  format: json
+output:
+  type: stdout
+  format: json
+",
+            log_path.display()
+        );
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
+        pipeline.batch_target_bytes = 0;
+        let shutdown = CancellationToken::new();
+        let err = pipeline
+            .run(&shutdown)
+            .expect_err("zero batch_target_bytes should be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("batch_target_bytes"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -1408,42 +1351,6 @@ output:
             "expected transform_out to be 2, got {}",
             lines_out
         );
-    }
-
-    #[test]
-    #[should_panic(expected = "stateful processors are not yet supported")]
-    fn test_with_processor_rejects_stateful_processors() {
-        #[derive(Debug)]
-        struct StatefulProcessor;
-
-        impl Processor for StatefulProcessor {
-            fn process(
-                &mut self,
-                batch: RecordBatch,
-                _meta: &BatchMetadata,
-            ) -> Result<smallvec::SmallVec<[RecordBatch; 1]>, crate::processor::ProcessorError>
-            {
-                Ok(smallvec::smallvec![batch])
-            }
-
-            fn flush(&mut self) -> smallvec::SmallVec<[RecordBatch; 1]> {
-                smallvec::SmallVec::new()
-            }
-
-            fn name(&self) -> &'static str {
-                "stateful"
-            }
-
-            fn is_stateful(&self) -> bool {
-                true
-            }
-        }
-
-        let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("stateful.log");
-        std::fs::write(&log_path, b"{\"ok\":true}\n").unwrap();
-        let pipeline = pipeline_with_sink(&log_path, Box::new(DevNullSink));
-        let _ = pipeline.with_processor(Box::new(StatefulProcessor));
     }
 
     #[test]
@@ -1706,27 +1613,6 @@ output:
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn test_async_zero_batch_timeout_returns_error() {
-        let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("zero_timeout.log");
-        std::fs::write(&log_path, b"{\"msg\":\"x\"}\n").unwrap();
-
-        let mut pipeline = pipeline_with_sink(&log_path, Box::new(DevNullSink));
-        pipeline.set_batch_timeout(Duration::ZERO);
-
-        let shutdown = CancellationToken::new();
-        let err = pipeline
-            .run_async(&shutdown)
-            .await
-            .expect_err("zero batch_timeout must be rejected");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
-        assert!(
-            err.to_string().contains("batch_timeout"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
     async fn test_async_pipeline_shutdown_drains_data() {
         use std::sync::atomic::Ordering;
 
@@ -1884,9 +1770,12 @@ output:
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
         let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
-        pipeline = pipeline.with_sink(Box::new(FailingSink::new(u32::MAX)));
+        // A panic in the sink is converted into InternalFailure by the worker,
+        // which maps to Hold and triggers terminal shutdown.
+        pipeline = pipeline.with_sink(Box::new(PanicSink));
         pipeline.batch_target_bytes = 64;
         pipeline.batch_timeout = Duration::from_millis(10);
+        pipeline.set_pool_drain_timeout(Duration::from_secs(1));
 
         let shutdown = CancellationToken::new();
         let result =
@@ -2629,10 +2518,7 @@ output:
     // -----------------------------------------------------------------------
 
     /// Helper: build a pipeline from a log file path with a custom async sink.
-    fn pipeline_with_sink(
-        log_path: &std::path::Path,
-        sink: Box<dyn logfwd_output::Sink>,
-    ) -> Pipeline {
+    fn pipeline_with_sink(log_path: &std::path::Path, sink: Box<dyn Sink>) -> Pipeline {
         let yaml = format!(
             r#"
 input:
@@ -2792,8 +2678,9 @@ output:
         let ticket = machine.create_batch(source, 1000);
         let ticket = machine.begin_send(ticket);
 
+        let (has_held, _advances) = pipeline.ack_all_tickets(vec![ticket], TicketDisposition::Hold);
         assert!(
-            pipeline.ack_all_tickets(None, vec![ticket], TicketDisposition::Hold),
+            has_held,
             "hold disposition must request terminal shutdown to bound held-ticket growth"
         );
 
@@ -2811,8 +2698,8 @@ output:
         );
     }
 
-    #[test]
-    fn test_apply_pool_ack_does_not_underflow_inflight_counter() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_apply_pool_ack_does_not_underflow_inflight_counter() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("underflow.log");
         std::fs::write(&log_path, "").unwrap();
@@ -2822,19 +2709,21 @@ output:
             .metrics
             .inflight_batches
             .store(0, Ordering::Relaxed);
-        pipeline.apply_pool_ack(AckItem {
-            tickets: vec![],
-            outcome: crate::worker_pool::DeliveryOutcome::InternalFailure,
-            num_rows: 0,
-            submitted_at: tokio::time::Instant::now(),
-            scan_ns: 0,
-            transform_ns: 0,
-            output_ns: 0,
-            queue_wait_ns: 0,
-            send_latency_ns: 0,
-            batch_id: 0,
-            output_name: "test".to_string(),
-        });
+        pipeline
+            .apply_pool_ack(AckItem {
+                tickets: vec![],
+                outcome: crate::worker_pool::DeliveryOutcome::InternalFailure,
+                num_rows: 0,
+                submitted_at: tokio::time::Instant::now(),
+                scan_ns: 0,
+                transform_ns: 0,
+                output_ns: 0,
+                queue_wait_ns: 0,
+                send_latency_ns: 0,
+                batch_id: 0,
+                output_name: "test".to_string(),
+            })
+            .await;
 
         assert_eq!(
             pipeline.metrics.inflight_batches.load(Ordering::Relaxed),
@@ -2843,8 +2732,8 @@ output:
         );
     }
 
-    #[test]
-    fn held_pool_ack_requests_terminal_shutdown() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn held_pool_ack_requests_terminal_shutdown() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("held-pool-ack.log");
         std::fs::write(&log_path, "").unwrap();
@@ -2853,19 +2742,21 @@ output:
         let ticket = machine.create_batch(SourceId(42), 1000);
         let ticket = machine.begin_send(ticket);
 
-        let should_stop = pipeline.apply_pool_ack(AckItem {
-            tickets: vec![ticket],
-            outcome: crate::worker_pool::DeliveryOutcome::InternalFailure,
-            num_rows: 0,
-            submitted_at: tokio::time::Instant::now(),
-            scan_ns: 0,
-            transform_ns: 0,
-            output_ns: 0,
-            queue_wait_ns: 0,
-            send_latency_ns: 0,
-            batch_id: 0,
-            output_name: "test".to_string(),
-        });
+        let should_stop = pipeline
+            .apply_pool_ack(AckItem {
+                tickets: vec![ticket],
+                outcome: crate::worker_pool::DeliveryOutcome::InternalFailure,
+                num_rows: 0,
+                submitted_at: tokio::time::Instant::now(),
+                scan_ns: 0,
+                transform_ns: 0,
+                output_ns: 0,
+                queue_wait_ns: 0,
+                send_latency_ns: 0,
+                batch_id: 0,
+                output_name: "test".to_string(),
+            })
+            .await;
 
         assert!(
             should_stop,
