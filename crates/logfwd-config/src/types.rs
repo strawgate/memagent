@@ -272,6 +272,8 @@ pub struct PlatformSensorInputConfig {
     pub enabled_families: Option<Vec<String>>,
     /// Emit periodic per-family sample rows. Defaults to true.
     pub emit_signal_rows: Option<bool>,
+    /// Upper bound on data rows emitted per collection cycle. Defaults to 256.
+    pub max_rows_per_poll: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

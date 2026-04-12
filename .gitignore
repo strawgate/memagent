@@ -18,3 +18,12 @@ crates/logfwd-io/src/dashboard-dist/
 *.env
 .env
 es-flamegraph.svg
+
+# Build artifacts in sub-crates
+**/target/
+
+# Logs
+error.log
+
+# Research intermediate artifacts (cloud task diffs, extracts)
+**/cloud-artifacts/

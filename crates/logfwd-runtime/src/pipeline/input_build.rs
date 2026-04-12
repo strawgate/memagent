@@ -395,6 +395,7 @@ fn build_platform_sensor_config(
         ),
         enabled_families: cfg.and_then(|c| c.enabled_families.clone()),
         emit_signal_rows: cfg.and_then(|c| c.emit_signal_rows).unwrap_or(true),
+        max_rows_per_poll: cfg.and_then(|c| c.max_rows_per_poll).unwrap_or(256),
     }
 }
 
