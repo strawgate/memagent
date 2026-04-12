@@ -226,6 +226,10 @@ impl ElasticsearchSink {
                 .and_then(|obj| obj.values().next())
                 .and_then(serde_json::Value::as_object);
             if let Some(action_obj) = action {
+                let status = action_obj
+                    .get("status")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
                 if let Some(error) = action_obj.get("error") {
                     let error_type = error
                         .get("type")
@@ -235,10 +239,6 @@ impl ElasticsearchSink {
                         .get("reason")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("no reason provided");
-                    let status = action_obj
-                        .get("status")
-                        .and_then(serde_json::Value::as_u64)
-                        .unwrap_or(0);
                     if status == 429 || (500..600).contains(&status) {
                         // Status indicates transient backpressure/server failure.
                         return Err(io::Error::other(format!(
@@ -249,6 +249,20 @@ impl ElasticsearchSink {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!("ES bulk error (status {status}): {error_type}: {reason}"),
+                    ));
+                }
+                // Some ES responses include only `status` for failed items (for example
+                // status-only 429/503 under pressure). Preserve retry semantics even when
+                // `error` is absent.
+                if status == 429 || (500..600).contains(&status) {
+                    return Err(io::Error::other(format!(
+                        "ES bulk transient error (status {status}): missing item error details"
+                    )));
+                }
+                if status >= 400 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("ES bulk error (status {status}): missing item error details"),
                     ));
                 }
             }
@@ -1358,6 +1372,42 @@ mod tests {
             err.kind(),
             io::ErrorKind::Other,
             "429 item-level errors should be retried"
+        );
+    }
+
+    #[test]
+    fn parse_bulk_response_status_only_retryable_item_error_is_transient() {
+        let response = br#"{
+            "took":5,
+            "errors":true,
+            "items":[
+                {"index":{"status":429}}
+            ]
+        }"#;
+        let err = ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("status-only 429 bulk item error must be transient");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::Other,
+            "status-only 429 item-level errors should be retried"
+        );
+    }
+
+    #[test]
+    fn parse_bulk_response_status_only_permanent_item_error_is_invalid_data() {
+        let response = br#"{
+            "took":5,
+            "errors":true,
+            "items":[
+                {"index":{"status":400}}
+            ]
+        }"#;
+        let err = ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("status-only 400 bulk item error must be permanent");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "status-only 400 item-level errors should be rejected"
         );
     }
 
