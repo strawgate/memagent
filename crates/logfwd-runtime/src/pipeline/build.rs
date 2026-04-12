@@ -6,7 +6,7 @@ use opentelemetry::metrics::Meter;
 
 #[cfg(feature = "datafusion")]
 use logfwd_config::{EnrichmentConfig, GeoDatabaseFormat};
-use logfwd_config::{Format, InputType, PipelineConfig};
+use logfwd_config::{Format, InputTypeConfig, PipelineConfig};
 use logfwd_diagnostics::diagnostics::PipelineMetrics;
 use logfwd_io::checkpoint::{
     CheckpointStore, FileCheckpointStore, SourceCheckpoint, default_data_dir,
@@ -216,23 +216,23 @@ impl Pipeline {
 
         for (i, input_cfg) in config.inputs.iter().enumerate() {
             let mut resolved_cfg = input_cfg.clone();
-            if let Some(path_str) = &input_cfg.path {
-                let mut path = PathBuf::from(path_str);
+            if let InputTypeConfig::File(ref mut f) = resolved_cfg.type_config {
+                let mut path = PathBuf::from(&f.path);
                 if path.is_relative()
                     && let Some(base) = base_path
                 {
                     path = base.join(path);
                 }
                 if let Ok(abs_path) = std::fs::canonicalize(&path) {
-                    resolved_cfg.path = Some(abs_path.to_string_lossy().into_owned());
+                    f.path = abs_path.to_string_lossy().into_owned();
                 } else {
-                    resolved_cfg.path = Some(path.to_string_lossy().into_owned());
+                    f.path = path.to_string_lossy().into_owned();
                 }
             }
 
             // Resolve journal_directory relative to config base_path.
-            if matches!(input_cfg.input_type, InputType::Journald) {
-                if let Some(ref mut jd) = resolved_cfg.journald {
+            if let InputTypeConfig::Journald(ref mut j) = resolved_cfg.type_config {
+                if let Some(ref mut jd) = j.journald {
                     if let Some(ref dir) = jd.journal_directory {
                         let mut path = PathBuf::from(dir);
                         if path.is_relative()
@@ -249,7 +249,7 @@ impl Pipeline {
                 .name
                 .clone()
                 .unwrap_or_else(|| format!("input_{i}"));
-            let input_type_str = format!("{:?}", input_cfg.input_type).to_lowercase();
+            let input_type_str = input_cfg.input_type().to_string();
             let input_stats = metrics.add_input(&input_name, &input_type_str);
 
             // Determine the SQL for this input: per-input > pipeline-level > passthrough.

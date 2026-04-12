@@ -355,17 +355,70 @@ impl Default for JournaldInputConfig {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct InputConfig {
     pub name: Option<String>,
-    #[serde(rename = "type")]
-    pub input_type: InputType,
-    pub path: Option<String>,
-    pub listen: Option<String>,
-    /// Prefix applied to OTLP resource attributes when flattening into columns.
-    /// Defaults to `resource.attributes.` when omitted.
-    pub resource_prefix: Option<String>,
     pub format: Option<Format>,
+    pub sql: Option<String>,
+    #[serde(flatten)]
+    pub type_config: InputTypeConfig,
+}
+
+impl InputConfig {
+    /// Returns the [`InputType`] for this input.
+    pub fn input_type(&self) -> InputType {
+        self.type_config.input_type()
+    }
+}
+
+/// Tagged‐union carrying per‐input‐type configuration.
+///
+/// Serde tags on `"type"` and uses `deny_unknown_fields` on each variant
+/// struct, so a YAML like `type: file` with an `listen:` key is rejected
+/// at parse time instead of silently ignored.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InputTypeConfig {
+    File(FileTypeConfig),
+    Udp(UdpTypeConfig),
+    Tcp(TcpTypeConfig),
+    Otlp(OtlpTypeConfig),
+    Http(HttpTypeConfig),
+    Generator(GeneratorTypeConfig),
+    #[serde(rename = "linux_ebpf_sensor", alias = "linux_sensor_beta")]
+    LinuxEbpfSensor(SensorTypeConfig),
+    #[serde(rename = "macos_es_sensor", alias = "macos_sensor_beta")]
+    MacosEsSensor(SensorTypeConfig),
+    #[serde(rename = "windows_ebpf_sensor", alias = "windows_sensor_beta")]
+    WindowsEbpfSensor(SensorTypeConfig),
+    ArrowIpc(ArrowIpcTypeConfig),
+    Journald(JournaldTypeConfig),
+}
+
+impl InputTypeConfig {
+    /// Map the variant back to the flat [`InputType`] discriminant.
+    pub fn input_type(&self) -> InputType {
+        match self {
+            Self::File(_) => InputType::File,
+            Self::Udp(_) => InputType::Udp,
+            Self::Tcp(_) => InputType::Tcp,
+            Self::Otlp(_) => InputType::Otlp,
+            Self::Http(_) => InputType::Http,
+            Self::Generator(_) => InputType::Generator,
+            Self::LinuxEbpfSensor(_) => InputType::LinuxEbpfSensor,
+            Self::MacosEsSensor(_) => InputType::MacosEsSensor,
+            Self::WindowsEbpfSensor(_) => InputType::WindowsEbpfSensor,
+            Self::ArrowIpc(_) => InputType::ArrowIpc,
+            Self::Journald(_) => InputType::Journald,
+        }
+    }
+}
+
+// ── Per-type config structs ────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileTypeConfig {
+    pub path: String,
     /// File input poll cadence in milliseconds (default: 50, minimum: 1).
     pub poll_interval_ms: Option<u64>,
     /// File tail read buffer in bytes (default: 262_144, minimum: 1, maximum: 4_194_304).
@@ -377,15 +430,62 @@ pub struct InputConfig {
     pub adaptive_fast_polls_max: Option<u8>,
     pub max_open_files: Option<usize>,
     pub glob_rescan_interval_ms: Option<u64>,
-    #[serde(default)]
-    pub generator: Option<GeneratorInputConfig>,
-    #[serde(default, alias = "sensor_beta")]
-    pub sensor: Option<PlatformSensorInputConfig>,
-    #[serde(default)]
-    pub http: Option<HttpInputConfig>,
-    pub sql: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UdpTypeConfig {
+    pub listen: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TcpTypeConfig {
+    pub listen: String,
     #[serde(default)]
     pub tls: Option<TlsInputConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OtlpTypeConfig {
+    pub listen: String,
+    /// Prefix applied to OTLP resource attributes when flattening into columns.
+    /// Defaults to `resource.attributes.` when omitted.
+    pub resource_prefix: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HttpTypeConfig {
+    pub listen: String,
+    #[serde(default)]
+    pub http: Option<HttpInputConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratorTypeConfig {
+    #[serde(default)]
+    pub generator: Option<GeneratorInputConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct SensorTypeConfig {
+    #[serde(default, alias = "sensor_beta")]
+    pub sensor: Option<PlatformSensorInputConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArrowIpcTypeConfig {
+    pub listen: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct JournaldTypeConfig {
     #[serde(default)]
     pub journald: Option<JournaldInputConfig>,
 }
