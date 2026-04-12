@@ -1,0 +1,66 @@
+{
+  "created_at": "2026-04-12T04:38:08.739270+00:00",
+  "cwd": "/home/bill_easton/memagent.worktrees/copilot-worktree-2026-04-11T21-07-15",
+  "prompt_dir": "/home/bill_easton/memagent.worktrees/copilot-worktree-2026-04-11T21-07-15/dev-docs/research/ebpf-deep-dive-2026-04-12",
+  "pattern": "*.prompt.md",
+  "branch": "copilot/worktree-2026-04-11T21-07-15",
+  "env_id": "69d280173d5c8191b89e9c25ccfef74c",
+  "env_label": null,
+  "attempts_requested": 3,
+  "prompt_attempt_overrides": {
+    "/home/bill_easton/memagent.worktrees/copilot-worktree-2026-04-11T21-07-15/dev-docs/research/ebpf-deep-dive-2026-04-12/02-edr-architecture-patterns.prompt.md": 4,
+    "/home/bill_easton/memagent.worktrees/copilot-worktree-2026-04-11T21-07-15/dev-docs/research/ebpf-deep-dive-2026-04-12/04-security-coverage-mitre.prompt.md": 4
+  },
+  "tasks": [
+    {
+      "name": "Rust eBPF Ecosystem: State of the Art for Production EDR",
+      "prompt_file": "/home/bill_easton/memagent.worktrees/copilot-worktree-2026-04-11T21-07-15/dev-docs/research/ebpf-deep-dive-2026-04-12/01-rust-ebpf-ecosystem.prompt.md",
+      "attempts": 3,
+      "task_id": "task_e_69db21b28378832ea9b3d9f99fe69831",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69db21b28378832ea9b3d9f99fe69831",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69db21b28378832ea9b3d9f99fe69831\n",
+      "stderr": ""
+    },
+    {
+      "name": "EDR Architecture Patterns: How Tracee, Tetragon, and Falco Build Their eBPF Engines",
+      "prompt_file": "/home/bill_easton/memagent.worktrees/copilot-worktree-2026-04-11T21-07-15/dev-docs/research/ebpf-deep-dive-2026-04-12/02-edr-architecture-patterns.prompt.md",
+      "attempts": 4,
+      "task_id": "task_e_69db21b61aa0832ead53668d5bcf8853",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69db21b61aa0832ead53668d5bcf8853",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69db21b61aa0832ead53668d5bcf8853\n",
+      "stderr": ""
+    },
+    {
+      "name": "High-Performance eBPF: Patterns for Zero-Drop, Low-Overhead EDR at Scale",
+      "prompt_file": "/home/bill_easton/memagent.worktrees/copilot-worktree-2026-04-11T21-07-15/dev-docs/research/ebpf-deep-dive-2026-04-12/03-high-performance-ebpf.prompt.md",
+      "attempts": 3,
+      "task_id": "task_e_69db21b9262c832e86899a4a8620883a",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69db21b9262c832e86899a4a8620883a",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69db21b9262c832e86899a4a8620883a\n",
+      "stderr": ""
+    },
+    {
+      "name": "eBPF Security Coverage: MITRE ATT&CK Mapping and Detection Engineering",
+      "prompt_file": "/home/bill_easton/memagent.worktrees/copilot-worktree-2026-04-11T21-07-15/dev-docs/research/ebpf-deep-dive-2026-04-12/04-security-coverage-mitre.prompt.md",
+      "attempts": 4,
+      "task_id": "task_e_69db21bc7028832eaa0818f8c7023622",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69db21bc7028832eaa0818f8c7023622",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69db21bc7028832eaa0818f8c7023622\n",
+      "stderr": ""
+    },
+    {
+      "name": "Bleeding-Edge Linux eBPF: New Kernel Features for Next-Gen EDR Sensors",
+      "prompt_file": "/home/bill_easton/memagent.worktrees/copilot-worktree-2026-04-11T21-07-15/dev-docs/research/ebpf-deep-dive-2026-04-12/05-bleeding-edge-kernel-ebpf.prompt.md",
+      "attempts": 3,
+      "task_id": "task_e_69db21bfcdac832eb144bf42139a7778",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69db21bfcdac832eb144bf42139a7778",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69db21bfcdac832eb144bf42139a7778\n",
+      "stderr": ""
+    }
+  ]
+}
