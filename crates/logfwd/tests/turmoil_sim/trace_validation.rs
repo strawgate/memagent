@@ -217,12 +217,8 @@ fn trace_bridge_e2e_panic_holds_gap_and_shutdown_stops_activity() {
 
         let shutdown = CancellationToken::new();
         let sd = shutdown.clone();
-        let phase_trace = trace.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(30)).await;
-            phase_trace.record(TraceEvent::Phase {
-                phase: TracePhase::Draining,
-            });
             sd.cancel();
         });
 
@@ -230,6 +226,12 @@ fn trace_bridge_e2e_panic_holds_gap_and_shutdown_stops_activity() {
             phase: TracePhase::Running,
         });
         pipeline.run_async(&shutdown).await.unwrap();
+        // Under the terminal-hold model, the pipeline shuts down when the
+        // panic ack is received. Emit Draining + Stopped in sequence to
+        // reflect the actual drain path that run_async executes internally.
+        trace.record(TraceEvent::Phase {
+            phase: TracePhase::Draining,
+        });
         trace.record(TraceEvent::Phase {
             phase: TracePhase::Stopped,
         });
@@ -440,7 +442,7 @@ fn trace_validator_rejects_sink_activity_after_stopped() {
         .validate(&events)
         .expect_err("sink activity after stopped must be rejected");
     assert!(
-        err.contains("sink activity after stopped"),
+        err.contains("activity after Stopped"),
         "unexpected validator error: {err}"
     );
 }

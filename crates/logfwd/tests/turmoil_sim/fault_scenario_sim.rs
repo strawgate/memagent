@@ -54,14 +54,22 @@ fn pre_durability_flush_failure_never_persists_checkpoint_and_keeps_delivery_con
 
 #[test]
 fn post_durability_flush_failure_preserves_valid_checkpoint_progress_and_delivery_contract() {
+    // Use a slow sink (20ms per batch) to ensure simulated time passes
+    // between acks, giving the checkpoint flush interval (50ms) time to
+    // fire at least once before the crash is armed at 500ms.
+    let mut script = Vec::new();
+    for _ in 0..40 {
+        script.push(FailureAction::Delay(Duration::from_millis(20)));
+    }
     let outcome = FaultScenario::builder("post-durability-flush-failure")
         .with_seed(20260418)
         .with_line_count(40)
-        .with_counting_sink()
+        .with_sink_script(script)
+        .with_batch_target_bytes(128)
         .with_batch_timeout(Duration::from_millis(10))
         .with_checkpoint_flush_interval(Duration::from_millis(50))
-        .with_checkpoint_crash_after(Duration::from_millis(220))
-        .with_shutdown_after(Duration::from_secs(5))
+        .with_checkpoint_crash_after(Duration::from_millis(500))
+        .with_shutdown_after(Duration::from_secs(10))
         .run();
 
     InvariantSet::new()

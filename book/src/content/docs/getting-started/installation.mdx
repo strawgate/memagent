@@ -31,7 +31,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
       ghcr.io/strawgate/memagent:latest run --config /etc/logfwd/config.yaml
     ```
 
-    Images are published to `ghcr.io/strawgate/memagent` for `linux/amd64` and `linux/arm64`. See [Docker deployment](../deployment/docker.md) for compose files and volume configuration.
+    Images are published to `ghcr.io/strawgate/memagent` for `linux/amd64` and `linux/arm64`. See [Docker deployment](/memagent/deployment/docker/) for compose files and volume configuration.
   </TabItem>
   <TabItem label="From Source" icon="seti:rust">
     Requires the Rust stable toolchain (1.85+).
@@ -55,7 +55,7 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
     kubectl apply -f deploy/daemonset.yml
     ```
 
-    See the [Kubernetes deployment guide](../deployment/kubernetes.md) for resource sizing and collector integration.
+    See the [Kubernetes deployment guide](/memagent/deployment/kubernetes/) for resource sizing and collector integration.
   </TabItem>
 </Tabs>
 
@@ -68,4 +68,4 @@ logfwd --help
 
 ## Next step
 
-Head to the [Quick Start](./quickstart.md) to run your first pipeline.
+Head to the [Quick Start](/memagent/getting-started/quickstart/) to run your first pipeline.

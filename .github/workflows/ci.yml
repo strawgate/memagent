@@ -40,6 +40,8 @@ jobs:
       tla: ${{ steps.filter.outputs.tla }}
       frontend: ${{ steps.filter.outputs.frontend }}
       miri: ${{ steps.filter.outputs.miri }}
+      rust: ${{ steps.filter.outputs.rust }}
+      loom: ${{ steps.filter.outputs.loom }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@61f87a10cd2c304679af17bb73ef192addf33c1c
@@ -84,11 +86,24 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
+            rust:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+            loom:
+              - 'crates/logfwd-runtime/**'
+              - 'crates/logfwd-types/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
 
   # -------------------------------------------------------------------------
-  # Frontend checks — format, lint, typecheck in one job (single npm install)
+  # Frontend — format, lint, typecheck, and tests in one job
   # -------------------------------------------------------------------------
-  frontend-checks:
+  frontend:
     needs: [changes]
     if: |
       github.event_name == 'push' ||
@@ -120,27 +135,6 @@ jobs:
       - name: typecheck
         run: npx tsgo --noEmit
 
-  # -------------------------------------------------------------------------
-  # Frontend tests — vitest with coverage
-  # -------------------------------------------------------------------------
-  frontend-test:
-    needs: [changes]
-    if: |
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
-      (github.event.pull_request.draft == false && needs.changes.outputs.frontend == 'true')
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: dashboard
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
-        with:
-          node-version: "22"
-          cache: "npm"
-          cache-dependency-path: dashboard/package-lock.json
-      - run: npm ci
       - name: vitest
         run: npx vitest run --coverage
       - name: upload coverage
@@ -200,6 +194,19 @@ jobs:
       - name: No raw payload injection guardrail
         run: python3 scripts/check_no_raw_payload_injection.py
 
+      - name: Set up Python for verification scripts
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Kani boundary contract
+        run: python3 scripts/verify_kani_boundary_contract.py
+      - name: TLC matrix contract
+        run: python3 scripts/verify_tlc_matrix_contract.py
+      - name: Proptest regression policy
+        run: python3 scripts/verify_proptest_regressions.py
+      - name: Verification trigger contract
+        run: python3 scripts/verify_verification_trigger_contract.py
+
       # --- Expensive steps below — only reached if fast checks pass ---
 
       - uses: Swatinem/rust-cache@v2
@@ -237,34 +244,15 @@ jobs:
           args: "--deny=vuln --deny=unsound --deny=yanked"
 
   # -------------------------------------------------------------------------
-  # Verification guardrail — fail fast when the non-core Kani boundary
-  # contract drifts so PRs get a dedicated blocking signal.
-  # -------------------------------------------------------------------------
-  verification-guardrail:
-    name: Verification guardrail
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - name: Set up Python for Kani boundary contract
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Kani boundary contract
-        run: python3 scripts/verify_kani_boundary_contract.py
-      - name: TLC matrix contract
-        run: python3 scripts/verify_tlc_matrix_contract.py
-      - name: Proptest regression policy
-        run: python3 scripts/verify_proptest_regressions.py
-      - name: Verification trigger contract
-        run: python3 scripts/verify_verification_trigger_contract.py
-
-  # -------------------------------------------------------------------------
   # Tests — Linux and macOS in parallel
   # -------------------------------------------------------------------------
   test-linux:
     name: Test (Linux)
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -334,7 +322,11 @@ jobs:
   # -------------------------------------------------------------------------
   build-check:
     name: Build check (aarch64)
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -411,6 +403,9 @@ jobs:
         uses: model-checking/kani-github-action@v1
         with:
           args: >-
+            -Z function-contracts
+            -Z mem-predicates
+            -Z stubbing
             -p logfwd-core
             -p logfwd-arrow
             -p logfwd-types
@@ -419,7 +414,6 @@ jobs:
             -p logfwd-runtime
             -p logfwd-diagnostics
             -p logfwd
-            -Z function-contracts -Z mem-predicates -Z stubbing
         env:
           RUSTC_WRAPPER: ""
 
@@ -467,7 +461,10 @@ jobs:
   turmoil:
     name: Turmoil simulation
     needs: [changes]
-    if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -486,7 +483,10 @@ jobs:
   loom:
     name: Loom seam checks
     needs: [changes]
-    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.loom == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -703,9 +703,7 @@ jobs:
     if: ${{ always() && !cancelled() }}
     needs:
       - changes
-      - frontend-checks
-      - frontend-test
-      - verification-guardrail
+      - frontend
       - lint
       - test-linux
       - test-macos

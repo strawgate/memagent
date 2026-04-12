@@ -263,7 +263,7 @@ The pipeline runs on a tokio multi-thread runtime. Key components:
 ## Current Support Status
 
 For current input/output support status, see the canonical tables in the
-[Configuration Reference](../configuration/reference.mdx#input-types) and
-[Configuration Reference](../configuration/reference.mdx#output-types). This
+[Configuration Reference](/memagent/configuration/reference/#input-types) and
+[Configuration Reference](/memagent/configuration/reference/#output-types). This
 architecture guide focuses on data flow and system shape rather than
 duplicating per-surface availability claims.

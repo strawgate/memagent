@@ -7,7 +7,7 @@ Get a working logfwd pipeline in about 10 minutes, then build on it.
 
 ## Prerequisites
 
-You need the `logfwd` binary. See [Installation](./installation.mdx) for all options, or grab it quickly:
+You need the `logfwd` binary. See [Installation](/memagent/getting-started/installation/) for all options, or grab it quickly:
 
 ```bash
 # Download the latest release (macOS Apple Silicon shown)
@@ -148,7 +148,7 @@ This extracts the URL path from the message with a regex and keeps only 4xx/5xx 
 `ORDER BY` is valid SQL and works correctly within each batch. However, logfwd processes data in streaming batches, so ordering only applies within a single batch, not globally across all data.
 :::
 
-Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`. The `geo_lookup()` UDF is also available when a geo-IP database is configured. See the [SQL Transforms guide](../configuration/sql-transforms.md) for the complete reference.
+Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`. The `geo_lookup()` UDF is also available when a geo-IP database is configured. See the [SQL Transforms guide](/memagent/configuration/sql-transforms/) for the complete reference.
 
 ---
 
@@ -233,8 +233,8 @@ Always validate before deploying. `validate` catches YAML errors; `dry-run` goes
 
 | Guide | What you'll learn |
 |-------|-------------------|
-| [Your First Pipeline](./first-pipeline.md) | Production config with monitoring, multi-pipeline setup, CRI format |
-| [SQL Transforms](../configuration/sql-transforms.md) | Full SQL reference — JOINs, UDFs, enrichment tables, column naming |
-| [Configuration Reference](../configuration/reference.mdx) | Every YAML field, input/output type, and option |
-| [Kubernetes Deployment](../deployment/kubernetes.md) | DaemonSet, resource sizing, OTLP collector integration |
-| [Troubleshooting](../troubleshooting.md) | Common errors, debug mode, diagnostics API |
+| [Your First Pipeline](/memagent/getting-started/first-pipeline/) | Production config with monitoring, multi-pipeline setup, CRI format |
+| [SQL Transforms](/memagent/configuration/sql-transforms/) | Full SQL reference — JOINs, UDFs, enrichment tables, column naming |
+| [Configuration Reference](/memagent/configuration/reference/) | Every YAML field, input/output type, and option |
+| [Kubernetes Deployment](/memagent/deployment/kubernetes/) | DaemonSet, resource sizing, OTLP collector integration |
+| [Troubleshooting](/memagent/troubleshooting/) | Common errors, debug mode, diagnostics API |
