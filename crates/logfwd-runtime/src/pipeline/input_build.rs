@@ -4,7 +4,7 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use logfwd_config::{
     Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorProfileConfig,
-    HttpMethodConfig, InputConfig, InputType, PlatformSensorInputConfig,
+    HttpMethodConfig, InputConfig, InputType, InputTypeConfig, PlatformSensorInputConfig,
 };
 use logfwd_diagnostics::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
@@ -97,27 +97,26 @@ pub(super) fn build_input_state(
     cfg: &InputConfig,
     stats: Arc<ComponentStats>,
 ) -> Result<InputState, String> {
-    let (raw_source, format, buf_cap): (Box<dyn InputSource>, Format, usize) = match cfg.input_type
+    let (raw_source, format, buf_cap): (Box<dyn InputSource>, Format, usize) = match &cfg
+        .type_config
     {
-        InputType::File => {
-            let path = require_non_empty(name, "file", "path", cfg.path.as_ref())?;
+        InputTypeConfig::File(f) => {
+            let path = require_non_empty(name, "file", "path", Some(&f.path))?;
             let format = cfg.format.clone().unwrap_or(Format::Auto);
             let mut tail_config = TailConfig {
                 start_from_end: false,
-                poll_interval_ms: cfg
-                    .poll_interval_ms
-                    .unwrap_or(DEFAULT_FILE_POLL_INTERVAL_MS),
-                read_buf_size: cfg.read_buf_size.unwrap_or(DEFAULT_READ_BUF_SIZE),
-                per_file_read_budget_bytes: cfg
+                poll_interval_ms: f.poll_interval_ms.unwrap_or(DEFAULT_FILE_POLL_INTERVAL_MS),
+                read_buf_size: f.read_buf_size.unwrap_or(DEFAULT_READ_BUF_SIZE),
+                per_file_read_budget_bytes: f
                     .per_file_read_budget_bytes
                     .unwrap_or(DEFAULT_PER_FILE_READ_BUDGET_BYTES),
-                max_open_files: cfg.max_open_files.unwrap_or(DEFAULT_MAX_OPEN_FILES),
+                max_open_files: f.max_open_files.unwrap_or(DEFAULT_MAX_OPEN_FILES),
                 ..Default::default()
             };
-            if let Some(interval) = cfg.glob_rescan_interval_ms {
+            if let Some(interval) = f.glob_rescan_interval_ms {
                 tail_config.glob_rescan_interval_ms = interval;
             }
-            if let Some(max) = cfg.adaptive_fast_polls_max {
+            if let Some(max) = f.adaptive_fast_polls_max {
                 tail_config.adaptive_fast_polls_max = max;
             }
             let is_glob = path.contains('*') || path.contains('?') || path.contains('[');
@@ -140,13 +139,13 @@ pub(super) fn build_input_state(
             validate_input_format(name, InputType::File, &format)?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
-        InputType::Generator => {
+        InputTypeConfig::Generator(g) => {
             use logfwd_io::generator::{
                 GeneratorAttributeValue, GeneratorComplexity, GeneratorConfig,
                 GeneratorGeneratedField, GeneratorInput, GeneratorProfile, GeneratorTimestamp,
                 parse_iso8601_to_epoch_ms,
             };
-            let generator_cfg = cfg.generator.as_ref();
+            let generator_cfg = g.generator.as_ref();
             let config = GeneratorConfig {
                 events_per_sec: generator_cfg.and_then(|c| c.events_per_sec).unwrap_or(0),
                 batch_size: generator_cfg
@@ -209,19 +208,19 @@ pub(super) fn build_input_state(
                     None => GeneratorTimestamp::default(),
                     Some(ts) => {
                         let start_epoch_ms = match ts.start.as_deref() {
-                            None => GeneratorTimestamp::default().start_epoch_ms,
-                            Some(s) if s.eq_ignore_ascii_case("now") => {
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map_err(|_| {
-                                        format!("input '{name}': system clock is before Unix epoch, cannot resolve timestamp.start=\"now\"")
-                                    })?
-                                    .as_millis() as i64
-                            }
-                            Some(s) => parse_iso8601_to_epoch_ms(s).map_err(|e| {
-                                format!("input '{name}': invalid timestamp.start: {e}")
-                            })?,
-                        };
+                                None => GeneratorTimestamp::default().start_epoch_ms,
+                                Some(s) if s.eq_ignore_ascii_case("now") => {
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map_err(|_| {
+                                            format!("input '{name}': system clock is before Unix epoch, cannot resolve timestamp.start=\"now\"")
+                                        })?
+                                        .as_millis() as i64
+                                }
+                                Some(s) => parse_iso8601_to_epoch_ms(s).map_err(|e| {
+                                    format!("input '{name}': invalid timestamp.start: {e}")
+                                })?,
+                            };
                         GeneratorTimestamp {
                             start_epoch_ms,
                             step_ms: ts.step_ms.unwrap_or(1),
@@ -234,9 +233,9 @@ pub(super) fn build_input_state(
             let source = GeneratorInput::new(name, config);
             (Box::new(source), format, 4 * 1024 * 1024)
         }
-        InputType::Otlp => {
-            let addr = require_non_empty(name, "otlp", "listen", cfg.listen.as_ref())?;
-            let resource_prefix = cfg
+        InputTypeConfig::Otlp(o) => {
+            let addr = require_non_empty(name, "otlp", "listen", Some(&o.listen))?;
+            let resource_prefix = o
                 .resource_prefix
                 .as_deref()
                 .unwrap_or(logfwd_types::field_names::DEFAULT_RESOURCE_PREFIX);
@@ -252,20 +251,20 @@ pub(super) fn build_input_state(
                 .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
-        InputType::ArrowIpc => {
-            let addr = require_non_empty(name, "arrow_ipc", "listen", cfg.listen.as_ref())?;
+        InputTypeConfig::ArrowIpc(a) => {
+            let addr = require_non_empty(name, "arrow_ipc", "listen", Some(&a.listen))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::ArrowIpc, &format)?;
             let source = logfwd_io::arrow_ipc_receiver::ArrowIpcReceiver::new(name, addr)
                 .map_err(|e| format!("input '{name}': failed to start Arrow IPC receiver: {e}"))?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
-        InputType::Http => {
-            let addr = require_non_empty(name, "http", "listen", cfg.listen.as_ref())?;
+        InputTypeConfig::Http(h) => {
+            let addr = require_non_empty(name, "http", "listen", Some(&h.listen))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Http, &format)?;
             let mut options = logfwd_io::http_input::HttpInputOptions::default();
-            if let Some(http) = &cfg.http {
+            if let Some(http) = &h.http {
                 if let Some(path) = &http.path {
                     if path.trim().is_empty() {
                         return Err(format!(
@@ -304,8 +303,8 @@ pub(super) fn build_input_state(
                 .map_err(|e| format!("input '{name}': failed to start HTTP input: {e}"))?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
-        InputType::Udp => {
-            let addr = require_non_empty(name, "udp", "listen", cfg.listen.as_ref())?;
+        InputTypeConfig::Udp(u) => {
+            let addr = require_non_empty(name, "udp", "listen", Some(&u.listen))?;
             if matches!(cfg.format, Some(Format::Cri | Format::Auto)) {
                 return Err(format!(
                     "input '{name}': CRI/auto format is not supported for UDP inputs (CRI is a file-based container log format)"
@@ -317,8 +316,8 @@ pub(super) fn build_input_state(
             validate_input_format(name, InputType::Udp, &format)?;
             (Box::new(source), format, 1024 * 1024)
         }
-        InputType::Tcp => {
-            let addr = require_non_empty(name, "tcp", "listen", cfg.listen.as_ref())?;
+        InputTypeConfig::Tcp(t) => {
+            let addr = require_non_empty(name, "tcp", "listen", Some(&t.listen))?;
             if matches!(cfg.format, Some(Format::Cri | Format::Auto)) {
                 return Err(format!(
                     "input '{name}': CRI/auto format is not supported for TCP inputs (CRI is a file-based container log format)"
@@ -330,13 +329,15 @@ pub(super) fn build_input_state(
             validate_input_format(name, InputType::Tcp, &format)?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
-        InputType::LinuxEbpfSensor | InputType::MacosEsSensor | InputType::WindowsEbpfSensor => {
+        InputTypeConfig::LinuxEbpfSensor(s)
+        | InputTypeConfig::MacosEsSensor(s)
+        | InputTypeConfig::WindowsEbpfSensor(s) => {
             use logfwd_io::platform_sensor::{PlatformSensorInput, PlatformSensorTarget};
 
-            let target = match cfg.input_type {
-                InputType::LinuxEbpfSensor => PlatformSensorTarget::Linux,
-                InputType::MacosEsSensor => PlatformSensorTarget::Macos,
-                InputType::WindowsEbpfSensor => PlatformSensorTarget::Windows,
+            let target = match &cfg.type_config {
+                InputTypeConfig::LinuxEbpfSensor(_) => PlatformSensorTarget::Linux,
+                InputTypeConfig::MacosEsSensor(_) => PlatformSensorTarget::Macos,
+                InputTypeConfig::WindowsEbpfSensor(_) => PlatformSensorTarget::Windows,
                 _ => unreachable!("handled by outer match"),
             };
 
@@ -346,11 +347,11 @@ pub(super) fn build_input_state(
                 ));
             }
 
-            let sensor_cfg = build_platform_sensor_config(cfg.sensor.as_ref());
+            let sensor_cfg = build_platform_sensor_config(s.sensor.as_ref());
             let source = PlatformSensorInput::new(name, target, sensor_cfg).map_err(|e| {
                 format!(
                     "input '{name}': failed to initialize {} input: {e}",
-                    cfg.input_type
+                    cfg.input_type()
                 )
             })?;
             return Ok(InputState {
@@ -359,7 +360,7 @@ pub(super) fn build_input_state(
                 stats,
             });
         }
-        InputType::Journald => {
+        InputTypeConfig::Journald(j) => {
             use logfwd_io::journald_input::{JournaldBackendPref, JournaldConfig, JournaldInput};
 
             // Fix #14: Reject non-JSON formats for journald — it always emits JSON.
@@ -371,7 +372,7 @@ pub(super) fn build_input_state(
                 }
             }
 
-            let jd_cfg = cfg.journald.as_ref();
+            let jd_cfg = j.journald.as_ref();
             // Map from config crate's JournaldBackendConfig to IO crate's JournaldBackendPref.
             let backend = match jd_cfg.map(|c| c.backend).unwrap_or_default() {
                 logfwd_config::JournaldBackendConfig::Auto => JournaldBackendPref::Auto,
@@ -395,16 +396,10 @@ pub(super) fn build_input_state(
                 .map_err(|e| format!("input '{name}': failed to start journald receiver: {e}"))?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
-        _ => {
-            return Err(format!(
-                "input '{name}': type {:?} not yet supported",
-                cfg.input_type
-            ));
-        }
     };
 
     // Wrap the raw transport with framing + format processing.
-    let format_proc = make_format(name, cfg.input_type.clone(), &format, &stats)?;
+    let format_proc = make_format(name, cfg.input_type(), &format, &stats)?;
     let framed = FramedInput::new(raw_source, format_proc, Arc::clone(&stats));
 
     Ok(InputState {
@@ -482,32 +477,27 @@ mod tests {
             &logfwd_test_utils::test_meter(),
         );
         let stats = pm.add_input("sensor", "test");
-        let input_type = if cfg!(target_os = "linux") {
-            InputType::LinuxEbpfSensor
+        let (input_type_config, _input_type) = if cfg!(target_os = "linux") {
+            (
+                InputTypeConfig::LinuxEbpfSensor(Default::default()),
+                InputType::LinuxEbpfSensor,
+            )
         } else if cfg!(target_os = "macos") {
-            InputType::MacosEsSensor
+            (
+                InputTypeConfig::MacosEsSensor(Default::default()),
+                InputType::MacosEsSensor,
+            )
         } else {
-            InputType::WindowsEbpfSensor
+            (
+                InputTypeConfig::WindowsEbpfSensor(Default::default()),
+                InputType::WindowsEbpfSensor,
+            )
         };
         let cfg = InputConfig {
             name: Some("sensor".to_string()),
-            input_type,
-            path: None,
-            listen: None,
-            resource_prefix: None,
             format: Some(Format::Raw),
-            poll_interval_ms: None,
-            read_buf_size: None,
-            per_file_read_budget_bytes: None,
-            adaptive_fast_polls_max: None,
-            max_open_files: None,
-            glob_rescan_interval_ms: None,
-            generator: None,
-            http: None,
-            sensor: Some(Default::default()),
             sql: None,
-            tls: None,
-            journald: None,
+            type_config: input_type_config,
         };
         let err = match build_input_state("sensor", &cfg, stats) {
             Ok(_) => panic!("sensor format must be rejected"),
@@ -530,23 +520,17 @@ mod tests {
         // Omitted / defaults
         let cfg_defaults = InputConfig {
             name: Some("test_in".into()),
-            input_type: InputType::File,
-            path: Some("/tmp/test.log".into()),
-            listen: None,
-            resource_prefix: None,
             format: None,
-            poll_interval_ms: None,
-            read_buf_size: None,
-            per_file_read_budget_bytes: None,
-            adaptive_fast_polls_max: None,
-            max_open_files: None,
-            glob_rescan_interval_ms: None,
-            generator: None,
-            sensor: None,
-            http: None,
             sql: None,
-            tls: None,
-            journald: None,
+            type_config: InputTypeConfig::File(logfwd_config::FileTypeConfig {
+                path: "/tmp/test.log".into(),
+                poll_interval_ms: None,
+                read_buf_size: None,
+                per_file_read_budget_bytes: None,
+                adaptive_fast_polls_max: None,
+                max_open_files: None,
+                glob_rescan_interval_ms: None,
+            }),
         };
 
         // Note: build_input_state doesn't return the raw TailConfig directly in
@@ -565,23 +549,17 @@ mod tests {
         // Explicit tuning overrides
         let cfg_overrides = InputConfig {
             name: Some("test_in".into()),
-            input_type: InputType::File,
-            path: Some("/tmp/test.log".into()),
-            listen: None,
-            resource_prefix: None,
             format: None,
-            poll_interval_ms: Some(123),
-            read_buf_size: Some(456),
-            per_file_read_budget_bytes: Some(789),
-            adaptive_fast_polls_max: Some(11),
-            max_open_files: Some(10),
-            glob_rescan_interval_ms: None,
-            generator: None,
-            sensor: None,
-            http: None,
             sql: None,
-            tls: None,
-            journald: None,
+            type_config: InputTypeConfig::File(logfwd_config::FileTypeConfig {
+                path: "/tmp/test.log".into(),
+                poll_interval_ms: Some(123),
+                read_buf_size: Some(456),
+                per_file_read_budget_bytes: Some(789),
+                adaptive_fast_polls_max: Some(11),
+                max_open_files: Some(10),
+                glob_rescan_interval_ms: None,
+            }),
         };
 
         let state = build_input_state("test_in", &cfg_overrides, Arc::clone(&stats))
@@ -600,27 +578,31 @@ mod tests {
         let meter = logfwd_test_utils::test_meter();
         let mut pm = PipelineMetrics::new("p", "SELECT 1", &meter);
 
-        for input_type in [InputType::Udp, InputType::Tcp] {
+        for (input_type, type_config_fn) in [
+            (
+                InputType::Udp,
+                (|listen: &str| {
+                    InputTypeConfig::Udp(logfwd_config::UdpTypeConfig {
+                        listen: listen.to_string(),
+                    })
+                }) as fn(&str) -> InputTypeConfig,
+            ),
+            (
+                InputType::Tcp,
+                (|listen: &str| {
+                    InputTypeConfig::Tcp(logfwd_config::TcpTypeConfig {
+                        listen: listen.to_string(),
+                        tls: None,
+                    })
+                }) as fn(&str) -> InputTypeConfig,
+            ),
+        ] {
             for format in [Format::Cri, Format::Auto] {
                 let cfg = InputConfig {
                     name: Some("in".to_string()),
-                    input_type: input_type.clone(),
-                    path: None,
-                    listen: Some("127.0.0.1:0".to_string()),
-                    resource_prefix: None,
                     format: Some(format),
-                    poll_interval_ms: None,
-                    read_buf_size: None,
-                    per_file_read_budget_bytes: None,
-                    adaptive_fast_polls_max: None,
-                    max_open_files: None,
-                    glob_rescan_interval_ms: None,
-                    generator: None,
-                    http: None,
-                    sensor: None,
                     sql: None,
-                    tls: None,
-                    journald: None,
+                    type_config: type_config_fn("127.0.0.1:0"),
                 };
                 let stats = pm.add_input("in", "test");
                 let err = match build_input_state("in", &cfg, stats) {
@@ -646,23 +628,17 @@ mod tests {
 
         let file_cfg = InputConfig {
             name: Some("file-in".to_string()),
-            input_type: InputType::File,
-            path: Some("   ".to_string()),
-            listen: None,
-            resource_prefix: None,
             format: Some(Format::Json),
-            poll_interval_ms: None,
-            read_buf_size: None,
-            per_file_read_budget_bytes: None,
-            adaptive_fast_polls_max: None,
-            max_open_files: None,
-            glob_rescan_interval_ms: None,
-            generator: None,
-            http: None,
-            sensor: None,
             sql: None,
-            tls: None,
-            journald: None,
+            type_config: InputTypeConfig::File(logfwd_config::FileTypeConfig {
+                path: "   ".to_string(),
+                poll_interval_ms: None,
+                read_buf_size: None,
+                per_file_read_budget_bytes: None,
+                adaptive_fast_polls_max: None,
+                max_open_files: None,
+                glob_rescan_interval_ms: None,
+            }),
         };
         let stats = pm.add_input("file-in", "file");
         let err = match build_input_state("file-in", &file_cfg, stats) {
@@ -671,32 +647,48 @@ mod tests {
         };
         assert!(err.contains("non-empty 'path'"), "unexpected error: {err}");
 
-        for input_type in [
-            InputType::Otlp,
-            InputType::ArrowIpc,
-            InputType::Http,
-            InputType::Udp,
-            InputType::Tcp,
-        ] {
+        let type_configs: Vec<(InputType, InputTypeConfig)> = vec![
+            (
+                InputType::Otlp,
+                InputTypeConfig::Otlp(logfwd_config::OtlpTypeConfig {
+                    listen: "   ".to_string(),
+                    resource_prefix: None,
+                }),
+            ),
+            (
+                InputType::ArrowIpc,
+                InputTypeConfig::ArrowIpc(logfwd_config::ArrowIpcTypeConfig {
+                    listen: "   ".to_string(),
+                }),
+            ),
+            (
+                InputType::Http,
+                InputTypeConfig::Http(logfwd_config::HttpTypeConfig {
+                    listen: "   ".to_string(),
+                    http: None,
+                }),
+            ),
+            (
+                InputType::Udp,
+                InputTypeConfig::Udp(logfwd_config::UdpTypeConfig {
+                    listen: "   ".to_string(),
+                }),
+            ),
+            (
+                InputType::Tcp,
+                InputTypeConfig::Tcp(logfwd_config::TcpTypeConfig {
+                    listen: "   ".to_string(),
+                    tls: None,
+                }),
+            ),
+        ];
+
+        for (_input_type, type_config) in type_configs {
             let cfg = InputConfig {
                 name: Some("net-in".to_string()),
-                input_type,
-                path: None,
-                listen: Some("   ".to_string()),
-                resource_prefix: None,
                 format: Some(Format::Json),
-                poll_interval_ms: None,
-                read_buf_size: None,
-                per_file_read_budget_bytes: None,
-                adaptive_fast_polls_max: None,
-                max_open_files: None,
-                glob_rescan_interval_ms: None,
-                generator: None,
-                http: None,
-                sensor: None,
                 sql: None,
-                tls: None,
-                journald: None,
+                type_config,
             };
             let stats = pm.add_input("net-in", "net");
             let err = match build_input_state("net-in", &cfg, stats) {
