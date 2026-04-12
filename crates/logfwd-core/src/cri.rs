@@ -416,6 +416,7 @@ mod tests {
     use super::*;
     use alloc::format;
     use proptest::prelude::*;
+    use proptest::test_runner::Config as ProptestConfig;
 
     #[test]
     fn test_parse_full_line() {
@@ -1038,6 +1039,32 @@ mod verification {
         let mut out = Vec::with_capacity(64);
         write_json_line_with_plain_text_field(&[0x1F], None, SHORT_FIELD_NAME, &mut out);
         assert_bytes_eq(&out, b"{\"b\":\"\\u001f\"}\n");
+    }
+
+    /// Prove single-byte JSON escaping matches the JSON string escaping table.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    #[kani::solver(kissat)]
+    fn verify_json_escape_single_byte_table() {
+        let b: u8 = kani::any();
+        let input = [b];
+        let mut out = Vec::with_capacity(8);
+        json_escape_bytes(&input, &mut out);
+
+        match b {
+            b'"' => assert_bytes_eq(&out, b"\\\""),
+            b'\\' => assert_bytes_eq(&out, b"\\\\"),
+            0x08 => assert_bytes_eq(&out, b"\\b"),
+            b'\t' => assert_bytes_eq(&out, b"\\t"),
+            b'\n' => assert_bytes_eq(&out, b"\\n"),
+            0x0C => assert_bytes_eq(&out, b"\\f"),
+            b'\r' => assert_bytes_eq(&out, b"\\r"),
+            0x00..=0x1F | 0x7F => {
+                assert_eq!(out.len(), 6);
+                assert_bytes_eq(&out[..4], b"\\u00");
+            }
+            _ => assert_bytes_eq(&out, &input),
+        }
     }
 
     /// Prove the public wrapper uses "body" for non-JSON messages.

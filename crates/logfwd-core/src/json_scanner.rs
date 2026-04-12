@@ -591,6 +591,7 @@ mod tests {
     use alloc::string::String;
     use alloc::vec::Vec;
     use proptest::prelude::*;
+    use proptest::test_runner::Config as ProptestConfig;
 
     /// Minimal ScanBuilder for testing — captures fields as strings.
     struct TestBuilder {
