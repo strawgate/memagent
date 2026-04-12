@@ -393,28 +393,22 @@ impl Pipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use logfwd_config::{InputConfig, InputType, OutputConfig, OutputType};
+    use logfwd_config::{InputConfig, InputTypeConfig, OutputConfig, OutputType};
 
     fn minimal_input(path: String) -> InputConfig {
         InputConfig {
             name: Some("input".to_string()),
-            input_type: InputType::File,
-            path: Some(path),
-            listen: None,
-            resource_prefix: None,
             format: Some(Format::Json),
-            poll_interval_ms: None,
-            read_buf_size: None,
-            per_file_read_budget_bytes: None,
-            adaptive_fast_polls_max: None,
-            max_open_files: None,
-            glob_rescan_interval_ms: None,
-            generator: None,
-            sensor: None,
-            http: None,
             sql: None,
-            tls: None,
-            journald: None,
+            type_config: InputTypeConfig::File(logfwd_config::FileTypeConfig {
+                path,
+                poll_interval_ms: None,
+                read_buf_size: None,
+                per_file_read_budget_bytes: None,
+                adaptive_fast_polls_max: None,
+                max_open_files: None,
+                glob_rescan_interval_ms: None,
+            }),
         }
     }
 

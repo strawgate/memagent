@@ -711,26 +711,15 @@ mod tests {
         let stats = pm.add_input("http-in", "http");
         let cfg = InputConfig {
             name: Some("http-in".to_string()),
-            input_type: InputType::Http,
-            path: None,
-            listen: Some("127.0.0.1:0".to_string()),
-            resource_prefix: None,
             format: Some(Format::Json),
-            poll_interval_ms: None,
-            read_buf_size: None,
-            per_file_read_budget_bytes: None,
-            adaptive_fast_polls_max: None,
-            max_open_files: None,
-            glob_rescan_interval_ms: None,
-            generator: None,
-            http: Some(logfwd_config::HttpInputConfig {
-                path: Some("   ".to_string()),
-                ..Default::default()
-            }),
-            sensor: None,
             sql: None,
-            tls: None,
-            journald: None,
+            type_config: InputTypeConfig::Http(logfwd_config::HttpTypeConfig {
+                listen: "127.0.0.1:0".to_string(),
+                http: Some(logfwd_config::HttpInputConfig {
+                    path: Some("   ".to_string()),
+                    ..Default::default()
+                }),
+            }),
         };
         let err = match build_input_state("http-in", &cfg, stats) {
             Ok(_) => panic!("empty http.path override should be rejected"),

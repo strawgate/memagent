@@ -7,7 +7,7 @@
 //!
 //! # Safety
 //!
-//! The `Journal` handle is `!Send` and `!Sync` because the underlying
+//! The [`Journal`](crate::journal_ffi::Journal) handle is `!Send` and `!Sync` because the underlying
 //! `sd_journal` object must only be used from the thread that created it.
 //! Callers must confine each `Journal` to a single OS thread.
 
