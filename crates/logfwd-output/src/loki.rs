@@ -35,7 +35,7 @@
 //! The `Content-Type` must be `application/json`. Loki 2.x also accepts
 //! Protobuf (snappy-compressed), but JSON is used here for simplicity.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::sync::Arc;
 
@@ -56,8 +56,11 @@ use super::{BatchMetadata, build_col_infos, coalesce_as_str, write_row_json};
 /// A single Loki log entry: (timestamp_ns, log_line).
 type LokiEntry = (u64, String);
 
+/// Sorted Loki stream labels used as a deterministic grouping key.
+type StreamLabels = Vec<(String, String)>;
+
 /// Collect entries per stream label set.
-type StreamMap = HashMap<String, Vec<LokiEntry>>;
+type StreamMap = BTreeMap<StreamLabels, Vec<LokiEntry>>;
 
 fn sanitize_loki_label_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len().max(1));
@@ -255,7 +258,7 @@ impl LokiSink {
             }
         }
 
-        let mut stream_map: StreamMap = HashMap::new();
+        let mut stream_map: StreamMap = BTreeMap::new();
 
         for row in 0..num_rows {
             // --- Timestamp ---
@@ -340,27 +343,13 @@ impl LokiSink {
             }
             labels.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
-            // Build stream key as a JSON array of [key, value] pairs.
-            // This is unambiguous even when label values contain commas or `=`,
-            // which the previous `k=v,...` encoding could not represent losslessly.
-            let stream_key = {
-                let pairs: Vec<String> = labels
-                    .iter()
-                    .map(|(k, v)| format!("[\"{}\",\"{}\"]", escape_json(k), escape_json(v)))
-                    .collect();
-                format!("[{}]", pairs.join(","))
-            };
-
             // --- Log line ---
             let mut log_line = Vec::new();
             write_row_json(batch, row, &cols, &mut log_line)?;
             let log_str = String::from_utf8(log_line)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-            stream_map
-                .entry(stream_key)
-                .or_default()
-                .push((ts_ns, log_str));
+            stream_map.entry(labels).or_default().push((ts_ns, log_str));
         }
 
         Ok(stream_map)
@@ -375,20 +364,11 @@ impl LokiSink {
         let mut streams_json = Vec::new();
         let mut retained: u64 = 0;
 
-        for (stream_key, entries) in stream_map.iter_mut() {
+        for (labels, entries) in stream_map.iter_mut() {
             retained += sort_and_dedup_timestamps(entries) as u64;
 
-            // Parse stream_key (JSON array of [key, value] pairs) back into label map.
-            // The stream key already includes sanitized static and dynamic labels.
-            let mut labels_map: HashMap<String, String> = HashMap::new();
-            if let Ok(pairs) = serde_json::from_str::<Vec<[String; 2]>>(stream_key.as_str()) {
-                for [k, v] in pairs {
-                    labels_map.entry(k).or_insert(v);
-                }
-            }
-
             // Build stream JSON.
-            let labels_str = labels_map
+            let labels_str = labels
                 .iter()
                 .map(|(k, v)| format!("\"{}\":\"{}\"", escape_json(k), escape_json(v)))
                 .collect::<Vec<_>>()
@@ -699,35 +679,29 @@ mod tests {
     }
 
     #[test]
-    fn stream_key_encoding_roundtrip_with_special_chars() {
+    fn stream_labels_preserve_special_chars() {
         // These characters were lossy in the old k=v,... format.
-        let labels = [
+        let labels: StreamLabels = vec![
             ("env".to_string(), "prod=us-east,eu-west".to_string()),
             ("app".to_string(), r#"my"app"#.to_string()),
             ("path".to_string(), r"C:\Users\log".to_string()),
             ("normal".to_string(), "value".to_string()),
         ];
 
-        // Encode to stream key (same logic as build_stream_map).
-        let stream_key = {
-            let pairs: Vec<String> = labels
-                .iter()
-                .map(|(k, v)| format!("[\"{}\",\"{}\"]", escape_json(k), escape_json(v)))
-                .collect();
-            format!("[{}]", pairs.join(","))
-        };
+        let mut stream_map = StreamMap::new();
+        stream_map.insert(
+            labels.clone(),
+            vec![(1, "{\"message\":\"ok\"}".to_string())],
+        );
 
-        // Parse back (same logic as serialize_loki_json).
-        let parsed: Vec<[String; 2]> =
-            serde_json::from_str(&stream_key).expect("stream_key must be valid JSON array");
+        let (payload, retained) = LokiSink::serialize_loki_json(&mut stream_map);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&payload).expect("payload must be valid JSON");
+        let stream = &parsed["streams"][0]["stream"];
 
-        assert_eq!(parsed.len(), labels.len(), "label count must be preserved");
-        for (i, [k, v]) in parsed.iter().enumerate() {
-            assert_eq!(k, &labels[i].0, "key {i} must round-trip");
-            assert_eq!(
-                v, &labels[i].1,
-                "value {i} must round-trip through JSON encoding"
-            );
+        assert_eq!(retained, 1);
+        for (key, value) in labels {
+            assert_eq!(stream[&key], value);
         }
     }
 
@@ -1040,10 +1014,9 @@ mod tests {
 
         let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
         let key = stream_map.keys().next().unwrap();
-        let parsed: Vec<[String; 2]> = serde_json::from_str(key).unwrap();
         assert_eq!(
-            parsed,
-            vec![["service_name".to_string(), "checkout".to_string()]]
+            key,
+            &vec![("service_name".to_string(), "checkout".to_string())]
         );
     }
 
@@ -1325,8 +1298,8 @@ mod tests {
         assert_eq!(stream_map.len(), 1);
         let key = stream_map.keys().next().unwrap();
         assert!(
-            !key.contains("namespace"),
-            "empty label value must be excluded from stream key; key: {key}"
+            !key.iter().any(|(label, _)| label == "namespace"),
+            "empty label value must be excluded from stream key; key: {key:?}"
         );
     }
 
