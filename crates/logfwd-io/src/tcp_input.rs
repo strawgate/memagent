@@ -125,7 +125,7 @@ fn has_incomplete_octet_frame_tail(buf: &[u8]) -> bool {
         };
         i += 1;
     }
-    if i == 0 || i >= buf.len() {
+    if i >= buf.len() {
         // Digits with no delimiter can still be a truncated octet prefix.
         return true;
     }
