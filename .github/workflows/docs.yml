@@ -93,8 +93,8 @@ jobs:
             --max-retries 3
             --exclude 'mailto:'
             --exclude-loopback
-            --root-dir book/dist
-            book/dist
+            --root-dir book/dist/memagent
+            book/dist/memagent
 
       - name: Build rustdoc (public API only)
         run: |
@@ -104,12 +104,12 @@ jobs:
             -p logfwd-config \
             -p logfwd-output \
             -p logfwd-transform
-          cp -r target/doc book/dist/api
+          cp -r target/doc book/dist/memagent/api
 
       - name: Include benchmark dashboard
         run: |
-          mkdir -p book/dist/bench
-          cp -r bench/dashboard/* book/dist/bench/ 2>/dev/null || true
+          mkdir -p book/dist/memagent/bench
+          cp -r bench/dashboard/* book/dist/memagent/bench/ 2>/dev/null || true
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
