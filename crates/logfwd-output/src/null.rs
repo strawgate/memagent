@@ -124,7 +124,7 @@ mod tests {
             resource_attrs: Arc::default(),
             observed_time_ns: 0,
         };
-        let _ = sink.send_batch(&batch, &meta).await.unwrap();
+        sink.send_batch(&batch, &meta).await.unwrap();
         assert!(sink.flush().await.is_ok());
 
         assert_eq!(sink.batches_discarded(), 1);
@@ -147,8 +147,8 @@ mod tests {
         };
 
         let mut sink = NullSink::new("blackhole", Arc::new(ComponentStats::new()));
-        let _ = sink.send_batch(&batch, &meta).await.unwrap();
-        let _ = sink.send_batch(&batch, &meta).await.unwrap();
+        sink.send_batch(&batch, &meta).await.unwrap();
+        sink.send_batch(&batch, &meta).await.unwrap();
 
         assert_eq!(sink.batches_discarded(), 2);
         assert_eq!(sink.rows_discarded(), 6);
@@ -174,8 +174,8 @@ mod tests {
 
         let stats = Arc::new(ComponentStats::new());
         let mut sink = NullSink::new("blackhole", Arc::clone(&stats));
-        let _ = sink.send_batch(&batch, &meta).await.unwrap();
-        let _ = sink.send_batch(&batch, &meta).await.unwrap();
+        sink.send_batch(&batch, &meta).await.unwrap();
+        sink.send_batch(&batch, &meta).await.unwrap();
 
         // Sink must increment lines_total once per row per batch.
         assert_eq!(

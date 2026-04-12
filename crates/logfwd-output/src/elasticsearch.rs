@@ -979,6 +979,14 @@ mod tests {
     use proptest::string::string_regex;
     use std::sync::{Arc, OnceLock};
 
+    type RandomRow = (
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<f64>,
+        Option<bool>,
+    );
+
     fn zero_metadata() -> BatchMetadata {
         BatchMetadata {
             resource_attrs: Arc::new(vec![]),
@@ -1090,16 +1098,7 @@ mod tests {
         out
     }
 
-    fn build_random_batch(
-        rows: &[(
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-            Option<f64>,
-            Option<bool>,
-        )],
-        include_timestamp: bool,
-    ) -> RecordBatch {
+    fn build_random_batch(rows: &[RandomRow], include_timestamp: bool) -> RecordBatch {
         let mut fields = Vec::new();
         let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
 
@@ -1276,7 +1275,7 @@ mod tests {
                         tx_clone,
                         emitted,
                     )
-                    .expect("serialize_batch_streaming should not error")
+                    .expect("serialize_batch_streaming should not error");
                 })
                 .await
                 .expect("task must not panic");
@@ -1688,13 +1687,7 @@ mod tests {
         use std::hint::black_box;
         use std::time::Instant;
 
-        let rows: Vec<(
-            Option<String>,
-            Option<String>,
-            Option<i64>,
-            Option<f64>,
-            Option<bool>,
-        )> = (0..2_000)
+        let rows: Vec<RandomRow> = (0..2_000)
             .map(|i| {
                 (
                     Some(match i % 4 {

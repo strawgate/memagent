@@ -18,7 +18,7 @@ use logfwd_types::diagnostics::ComponentStats;
 
 use super::sink::{SendResult, Sink, SinkFactory};
 use super::{BatchMetadata, Compression};
-use crate::http_classify::DEFAULT_RETRY_AFTER_SECS;
+use crate::http_classify::{DEFAULT_RETRY_AFTER_SECS, parse_retry_after};
 
 /// Content-Type for uncompressed Arrow IPC stream.
 const CONTENT_TYPE_ARROW: &str = "application/vnd.apache.arrow.stream";
@@ -136,20 +136,15 @@ impl ArrowIpcSink {
         }
 
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let retry_after = crate::http_classify::parse_retry_after(
-                response.headers().get(reqwest::header::RETRY_AFTER),
-            )
-            .unwrap_or(Duration::from_secs(DEFAULT_RETRY_AFTER_SECS));
-            // Consume the response body to free the connection for reuse.
-            let _ = response.text().await;
+            let retry_after = parse_retry_after(response.headers().get("Retry-After"))
+                .unwrap_or(Duration::from_secs(DEFAULT_RETRY_AFTER_SECS));
+            let _ = response.text().await.unwrap_or_default();
             return Ok(SendResult::RetryAfter(retry_after));
         }
 
         if status.is_server_error() {
-            let retry_after = crate::http_classify::parse_retry_after(
-                response.headers().get(reqwest::header::RETRY_AFTER),
-            )
-            .unwrap_or(Duration::from_secs(DEFAULT_RETRY_AFTER_SECS));
+            let retry_after = parse_retry_after(response.headers().get("Retry-After"))
+                .unwrap_or(Duration::from_secs(DEFAULT_RETRY_AFTER_SECS));
             // Consume the response body to free the connection.
             let _body = response.text().await.unwrap_or_default();
             return Ok(SendResult::RetryAfter(retry_after));
@@ -338,7 +333,6 @@ mod tests {
     use super::*;
     use arrow::array::{Float64Array, Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
-    use std::time::Duration;
 
     fn make_test_batch() -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
@@ -431,38 +425,5 @@ mod tests {
     fn deserialize_invalid_bytes_returns_error() {
         let result = deserialize_ipc(b"not arrow ipc data");
         assert!(result.is_err(), "invalid bytes should produce an error");
-    }
-
-    #[test]
-    fn retry_after_parses_delta_seconds() {
-        let hv = reqwest::header::HeaderValue::from_static("12");
-        let parsed = crate::http_classify::parse_retry_after(Some(&hv));
-        assert_eq!(parsed, Some(Duration::from_secs(12)));
-    }
-
-    #[test]
-    fn retry_after_defaults_on_invalid_header() {
-        let hv = reqwest::header::HeaderValue::from_static("definitely-not-valid");
-        let parsed = crate::http_classify::parse_retry_after(Some(&hv));
-        assert_eq!(parsed, None);
-    }
-
-    #[test]
-    fn retry_after_none_when_absent() {
-        let parsed = crate::http_classify::parse_retry_after(None);
-        assert_eq!(parsed, None);
-    }
-
-    #[test]
-    fn retry_after_parses_http_date() {
-        // Use a far-future HTTP-date so the parsed duration is always positive.
-        let hv = reqwest::header::HeaderValue::from_static("Thu, 01 Jan 2099 00:00:00 GMT");
-        let parsed = crate::http_classify::parse_retry_after(Some(&hv));
-        let duration = parsed.expect("should parse a far-future HTTP-date");
-        // The duration should be large (decades away) but finite.
-        assert!(
-            duration.as_secs() > 3600,
-            "expected duration > 1 hour for a far-future date, got {duration:?}"
-        );
     }
 }

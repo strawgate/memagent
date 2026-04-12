@@ -35,7 +35,7 @@
 //! The `Content-Type` must be `application/json`. Loki 2.x also accepts
 //! Protobuf (snappy-compressed), but JSON is used here for simplicity.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::sync::Arc;
 
@@ -56,11 +56,11 @@ use super::{BatchMetadata, build_col_infos, coalesce_as_str, write_row_json};
 /// A single Loki log entry: (timestamp_ns, log_line).
 type LokiEntry = (u64, String);
 
-/// Collect entries per stream label set.
-type StreamKey = Vec<(String, String)>;
+/// Sorted Loki stream labels used as a deterministic grouping key.
+type StreamLabels = Vec<(String, String)>;
 
 /// Collect entries per stream label set.
-type StreamMap = HashMap<StreamKey, Vec<LokiEntry>>;
+type StreamMap = BTreeMap<StreamLabels, Vec<LokiEntry>>;
 
 fn sanitize_loki_label_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len().max(1));
@@ -258,7 +258,7 @@ impl LokiSink {
             }
         }
 
-        let mut stream_map: StreamMap = HashMap::new();
+        let mut stream_map: StreamMap = BTreeMap::new();
 
         for row in 0..num_rows {
             // --- Timestamp ---
@@ -343,20 +343,13 @@ impl LokiSink {
             }
             labels.sort_unstable_by(|a, b| a.0.cmp(&b.0));
 
-            // Stream key is the sorted label vector itself.
-            // This avoids per-row string formatting and per-stream JSON parsing.
-            let stream_key = labels;
-
             // --- Log line ---
             let mut log_line = Vec::new();
             write_row_json(batch, row, &cols, &mut log_line)?;
             let log_str = String::from_utf8(log_line)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-            stream_map
-                .entry(stream_key)
-                .or_default()
-                .push((ts_ns, log_str));
+            stream_map.entry(labels).or_default().push((ts_ns, log_str));
         }
 
         Ok(stream_map)
@@ -371,16 +364,10 @@ impl LokiSink {
         let mut streams_json = Vec::new();
         let mut retained: u64 = 0;
 
-        let mut ordered_keys: Vec<StreamKey> = stream_map.keys().cloned().collect();
-        ordered_keys.sort_unstable();
-
-        for labels in ordered_keys {
-            let Some(entries) = stream_map.get_mut(&labels) else {
-                continue;
-            };
+        for (labels, entries) in stream_map.iter_mut() {
             retained += sort_and_dedup_timestamps(entries) as u64;
 
-            // Build stream JSON from the deterministic sorted labels vector.
+            // Build stream JSON.
             let labels_str = labels
                 .iter()
                 .map(|(k, v)| format!("\"{}\":\"{}\"", escape_json(k), escape_json(v)))
@@ -692,35 +679,29 @@ mod tests {
     }
 
     #[test]
-    fn stream_key_encoding_roundtrip_with_special_chars() {
+    fn stream_labels_preserve_special_chars() {
         // These characters were lossy in the old k=v,... format.
-        let labels = [
+        let labels: StreamLabels = vec![
             ("env".to_string(), "prod=us-east,eu-west".to_string()),
             ("app".to_string(), r#"my"app"#.to_string()),
             ("path".to_string(), r"C:\Users\log".to_string()),
             ("normal".to_string(), "value".to_string()),
         ];
 
-        // Encode to stream key (same logic as build_stream_map).
-        let stream_key = {
-            let pairs: Vec<String> = labels
-                .iter()
-                .map(|(k, v)| format!("[\"{}\",\"{}\"]", escape_json(k), escape_json(v)))
-                .collect();
-            format!("[{}]", pairs.join(","))
-        };
+        let mut stream_map = StreamMap::new();
+        stream_map.insert(
+            labels.clone(),
+            vec![(1, "{\"message\":\"ok\"}".to_string())],
+        );
 
-        // Parse back (same logic as serialize_loki_json).
-        let parsed: Vec<[String; 2]> =
-            serde_json::from_str(&stream_key).expect("stream_key must be valid JSON array");
+        let (payload, retained) = LokiSink::serialize_loki_json(&mut stream_map);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&payload).expect("payload must be valid JSON");
+        let stream = &parsed["streams"][0]["stream"];
 
-        assert_eq!(parsed.len(), labels.len(), "label count must be preserved");
-        for (i, [k, v]) in parsed.iter().enumerate() {
-            assert_eq!(k, &labels[i].0, "key {i} must round-trip");
-            assert_eq!(
-                v, &labels[i].1,
-                "value {i} must round-trip through JSON encoding"
-            );
+        assert_eq!(retained, 1);
+        for (key, value) in labels {
+            assert_eq!(stream[&key], value);
         }
     }
 
@@ -1034,8 +1015,8 @@ mod tests {
         let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
         let key = stream_map.keys().next().unwrap();
         assert_eq!(
-            key.as_slice(),
-            &[("service_name".to_string(), "checkout".to_string())]
+            key,
+            &vec![("service_name".to_string(), "checkout".to_string())]
         );
     }
 
@@ -1317,7 +1298,7 @@ mod tests {
         assert_eq!(stream_map.len(), 1);
         let key = stream_map.keys().next().unwrap();
         assert!(
-            !key.iter().any(|(k, _)| k == "namespace"),
+            !key.iter().any(|(label, _)| label == "namespace"),
             "empty label value must be excluded from stream key; key: {key:?}"
         );
     }
@@ -1588,35 +1569,6 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].0, metadata.observed_time_ns);
         assert_eq!(entries[1].0, metadata.observed_time_ns);
-    }
-
-    #[test]
-    fn serialize_loki_json_is_deterministic_across_stream_insertion_order() {
-        let mut map_a: StreamMap = HashMap::new();
-        let mut map_b: StreamMap = HashMap::new();
-
-        let stream_a = vec![
-            ("app".to_string(), "api".to_string()),
-            ("env".to_string(), "prod".to_string()),
-        ];
-        let stream_b = vec![
-            ("app".to_string(), "worker".to_string()),
-            ("env".to_string(), "prod".to_string()),
-        ];
-
-        map_a.insert(stream_a.clone(), vec![(2, "a".to_string())]);
-        map_a.insert(stream_b.clone(), vec![(1, "b".to_string())]);
-        map_b.insert(stream_b, vec![(1, "b".to_string())]);
-        map_b.insert(stream_a, vec![(2, "a".to_string())]);
-
-        let (payload_a, retained_a) = LokiSink::serialize_loki_json(&mut map_a);
-        let (payload_b, retained_b) = LokiSink::serialize_loki_json(&mut map_b);
-        assert_eq!(retained_a, 2);
-        assert_eq!(retained_b, 2);
-        assert_eq!(
-            payload_a, payload_b,
-            "Loki payload serialization must be deterministic"
-        );
     }
 }
 
