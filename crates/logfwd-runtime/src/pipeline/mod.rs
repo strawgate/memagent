@@ -385,7 +385,6 @@ impl Pipeline {
     }
 
     /// Run the pipeline until `shutdown` is cancelled. Blocks the calling thread.
-    /// Run the pipeline until `shutdown` is cancelled. Blocks the calling thread.
     ///
     /// Delegates to `run_async` on a tokio runtime. The sync interface exists
     /// for test convenience; production uses `run_async` directly.
