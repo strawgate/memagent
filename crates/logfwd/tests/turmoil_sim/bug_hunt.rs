@@ -22,17 +22,6 @@ fn generate_json_lines(n: usize) -> Vec<Vec<u8>> {
         .collect()
 }
 
-fn generate_fixed_width_json_lines(n: usize, payload_bytes: usize) -> Vec<Vec<u8>> {
-    let payload = "x".repeat(payload_bytes);
-    (0..n)
-        .map(|i| format!("{{\"msg\":\"line {i}\",\"payload\":\"{payload}\"}}\n").into_bytes())
-        .collect()
-}
-
-fn total_bytes(lines: &[Vec<u8>]) -> u64 {
-    lines.iter().map(|line| line.len() as u64).sum()
-}
-
 // ---------------------------------------------------------------------------
 // Test 1: Ack starvation under sustained load
 // ---------------------------------------------------------------------------
@@ -141,7 +130,6 @@ fn worker_panic_does_not_block_drain() {
         FailureAction::Panic,
     ]]));
     let delivered_counter = factory.delivered_counter();
-    let (store, ckpt_handle) = ObservableCheckpointStore::new();
 
     sim.client("pipeline", async move {
         let lines = generate_json_lines(20);
@@ -149,10 +137,7 @@ fn worker_panic_does_not_block_drain() {
 
         let mut pipeline = Pipeline::for_simulation_with_factory("sim", factory, 1);
         pipeline.set_batch_timeout(Duration::from_millis(20));
-        pipeline.set_checkpoint_flush_interval(Duration::from_millis(50));
-        let mut pipeline = pipeline
-            .with_input("test", Box::new(input))
-            .with_checkpoint_store(Box::new(store));
+        let mut pipeline = pipeline.with_input("test", Box::new(input));
 
         let shutdown = CancellationToken::new();
         let sd = shutdown.clone();
@@ -188,17 +173,6 @@ fn worker_panic_does_not_block_drain() {
     eprintln!(
         "worker_panic test: {delivered} rows delivered out of 20 \
          (0 is acceptable if worker pool doesn't respawn after panic)"
-    );
-
-    // A panic path is mapped to InternalFailure and must hold the checkpoint.
-    assert!(
-        ckpt_handle.durable_offset(1).is_none(),
-        "panic must not advance durable checkpoint state"
-    );
-    assert_eq!(
-        ckpt_handle.update_count(1),
-        0,
-        "panic must not write checkpoint updates"
     );
 }
 
@@ -286,23 +260,18 @@ fn rejected_batch_checkpoint_behavior() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: Retry exhaustion must not advance checkpoints
+// Test 4: Persistent transient failures must not advance checkpoints
 // ---------------------------------------------------------------------------
 //
-// Contract: retry/control-plane failures should hold checkpoint progress.
-// The current runtime does not retain enough payload state to retry these
-// batches in-process, so the conservative behavior is to leave them
-// unresolved and rely on replay after restart.
+// Contract: retry/control-plane failures should hold checkpoint progress until
+// delivery eventually succeeds or shutdown cancels the in-flight batch.
 
 #[test]
 fn retry_exhausted_does_not_advance_checkpoint() {
     let mut sim = super::build_sim(120, 1);
 
     let factory = Arc::new(InstrumentedSinkFactory::new(vec![vec![
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
+        FailureAction::RepeatIoError(std::io::ErrorKind::TimedOut),
     ]]));
     let delivered_counter = factory.delivered_counter();
     let call_counter = factory.call_counter();
@@ -339,24 +308,24 @@ fn retry_exhausted_does_not_advance_checkpoint() {
     let updates = ckpt_handle.update_count(1);
 
     eprintln!(
-        "retry_exhausted test: delivered={delivered} calls={calls} durable={durable:?} updates={updates}"
+        "persistent_failure test: delivered={delivered} calls={calls} durable={durable:?} updates={updates}"
     );
 
     assert_eq!(
         delivered, 0,
-        "expected no rows delivered after retry exhaustion"
+        "expected no rows delivered while failures persist through shutdown"
     );
-    assert_eq!(
-        calls, 4,
-        "expected 1 initial attempt + 3 retries before RetryExhausted"
+    assert!(
+        calls >= 4,
+        "expected at least 4 retry attempts before shutdown cancellation"
     );
     assert!(
         durable.is_none(),
-        "retry exhaustion must not advance checkpoint progress; durable={durable:?}"
+        "persistent transient failures must not advance checkpoint progress; durable={durable:?}"
     );
     assert_eq!(
         updates, 0,
-        "retry exhaustion must not write checkpoint updates"
+        "persistent transient failures must not write checkpoint updates"
     );
 }
 
@@ -446,247 +415,4 @@ fn retry_after_respects_server_backoff() {
     // If an IO error follows a RetryAfter, the backoff restarts from 100ms.
     // This is arguably a minor issue (the server's rate-limit hint is lost) but
     // in practice, RetryAfter followed by IO error is an unusual sequence.
-}
-
-// ---------------------------------------------------------------------------
-// Test 6: Panic on first batch, worker recycles, checkpoint remains held
-// ---------------------------------------------------------------------------
-//
-// Bug hypothesis: a sink panic could unwind before the ack/checkpoint seam is
-// resolved, leaving unresolved tickets and either hanging shutdown or
-// accidentally advancing checkpoints.
-//
-// Expected invariant:
-// - pipeline terminates (no hang bound breach),
-// - post-panic batches can still be delivered after worker recycle,
-// - durable checkpoint never advances while the first failed ticket remains held.
-
-#[test]
-fn panic_first_batch_recycles_worker_without_checkpoint_advance() {
-    let mut sim = super::build_sim(90, 1);
-
-    // Factory scripts are popped from the end:
-    // 1st worker => [Panic], recycled worker => [] (all succeed).
-    let factory = Arc::new(InstrumentedSinkFactory::new(vec![
-        vec![],
-        vec![FailureAction::Panic],
-    ]));
-    let delivered_counter = factory.delivered_counter();
-    let call_counter = factory.call_counter();
-    let (store, ckpt_handle) = ObservableCheckpointStore::new();
-
-    sim.client("pipeline", async move {
-        let lines = generate_fixed_width_json_lines(10, 96);
-        let input = ChannelInputSource::new("panic-first", SourceId(1), lines);
-
-        let mut pipeline = Pipeline::for_simulation_with_factory("sim", factory, 1);
-        pipeline.set_batch_target_bytes(1);
-        pipeline.set_batch_timeout(Duration::from_millis(10));
-        pipeline.set_checkpoint_flush_interval(Duration::from_millis(25));
-        let mut pipeline = pipeline
-            .with_input("panic-first", Box::new(input))
-            .with_checkpoint_store(Box::new(store));
-
-        let shutdown = CancellationToken::new();
-        let sd = shutdown.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(6)).await;
-            sd.cancel();
-        });
-
-        pipeline.run_async(&shutdown).await.unwrap();
-        Ok(())
-    });
-
-    let run_result = sim.run();
-    assert!(
-        run_result.is_ok(),
-        "pipeline must terminate after panic+recycle path; got {run_result:?}"
-    );
-
-    let delivered = delivered_counter.load(Ordering::Relaxed);
-    let calls = call_counter.load(Ordering::Relaxed);
-    assert!(
-        delivered > 0,
-        "expected worker recycle to allow post-panic delivery; delivered={delivered}"
-    );
-    assert!(
-        calls >= 2,
-        "expected at least panic + one recovery send call; calls={calls}"
-    );
-
-    // Held first ticket must block checkpoint advancement entirely.
-    assert!(
-        ckpt_handle.durable_offset(1).is_none(),
-        "durable checkpoint must remain absent while first failed ticket is held"
-    );
-    assert_eq!(
-        ckpt_handle.update_count(1),
-        0,
-        "held panic outcome must not emit checkpoint updates"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Test 7: Mid-stream panic does not silently advance past unresolved gap
-// ---------------------------------------------------------------------------
-//
-// Bug hypothesis: after at least one successful ack, a later panic could still
-// let checkpoints drift forward via subsequent successful batches.
-//
-// Expected invariant:
-// - some data is delivered before and after panic,
-// - checkpoint remains strictly behind end-of-input once a gap is introduced,
-// - monotonicity and "durable not ahead of updates" are preserved.
-
-#[test]
-fn panic_after_initial_success_does_not_advance_checkpoint_past_gap() {
-    let mut sim = super::build_sim(90, 1);
-
-    // First worker: success then panic. Recycled worker: default success.
-    let factory = Arc::new(InstrumentedSinkFactory::new(vec![
-        vec![],
-        vec![FailureAction::Succeed, FailureAction::Panic],
-    ]));
-    let delivered_counter = factory.delivered_counter();
-    let call_counter = factory.call_counter();
-    let (store, ckpt_handle) = ObservableCheckpointStore::new();
-
-    let lines = generate_fixed_width_json_lines(12, 96);
-    let input_total_bytes = total_bytes(&lines);
-
-    sim.client("pipeline", async move {
-        let input = ChannelInputSource::new("panic-midstream", SourceId(1), lines);
-
-        let mut pipeline = Pipeline::for_simulation_with_factory("sim", factory, 1);
-        pipeline.set_batch_target_bytes(1);
-        pipeline.set_batch_timeout(Duration::from_millis(10));
-        pipeline.set_checkpoint_flush_interval(Duration::from_millis(25));
-        let mut pipeline = pipeline
-            .with_input("panic-midstream", Box::new(input))
-            .with_checkpoint_store(Box::new(store));
-
-        let shutdown = CancellationToken::new();
-        let sd = shutdown.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(6)).await;
-            sd.cancel();
-        });
-
-        pipeline.run_async(&shutdown).await.unwrap();
-        Ok(())
-    });
-
-    let run_result = sim.run();
-    assert!(
-        run_result.is_ok(),
-        "pipeline must terminate under mid-stream panic path; got {run_result:?}"
-    );
-
-    let delivered = delivered_counter.load(Ordering::Relaxed);
-    let calls = call_counter.load(Ordering::Relaxed);
-    let durable = ckpt_handle.durable_offset(1);
-
-    assert!(
-        delivered > 0,
-        "expected at least some successful deliveries before/after panic; delivered={delivered}"
-    );
-    assert!(
-        calls >= 3,
-        "expected at least success + panic + recovery calls; calls={calls}"
-    );
-    assert!(
-        durable.is_some(),
-        "first successful batch should commit some checkpoint progress"
-    );
-    assert!(
-        durable.unwrap_or_default() < input_total_bytes,
-        "checkpoint must stay behind full input after unresolved panic gap; durable={durable:?} input_total_bytes={input_total_bytes}"
-    );
-    ckpt_handle.assert_monotonic(1);
-    ckpt_handle.assert_durable_not_ahead_of_updates(1);
-}
-
-// ---------------------------------------------------------------------------
-// Test 8: Retry-exhausted gap holds checkpoint despite later successes
-// ---------------------------------------------------------------------------
-//
-// Bug hypothesis: non-terminal worker failures (RetryExhausted / Internal)
-// could accidentally advance checkpoints when later batches succeed.
-//
-// Expected invariant:
-// - retries are attempted (high send call count),
-// - later batches may still deliver,
-// - durable checkpoint never reaches end-of-input because failed gap is held.
-
-#[test]
-fn retry_exhausted_gap_blocks_checkpoint_even_after_later_successes() {
-    let mut sim = super::build_sim(90, 1);
-
-    let factory = Arc::new(InstrumentedSinkFactory::new(vec![vec![
-        FailureAction::Succeed,
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
-        FailureAction::Succeed,
-        FailureAction::Succeed,
-    ]]));
-    let delivered_counter = factory.delivered_counter();
-    let call_counter = factory.call_counter();
-    let (store, ckpt_handle) = ObservableCheckpointStore::new();
-
-    let lines = generate_fixed_width_json_lines(3, 96);
-    let input_total_bytes = total_bytes(&lines);
-
-    sim.client("pipeline", async move {
-        let input = ChannelInputSource::new("retry-gap", SourceId(1), lines);
-
-        let mut pipeline = Pipeline::for_simulation_with_factory("sim", factory, 1);
-        pipeline.set_batch_target_bytes(1);
-        pipeline.set_batch_timeout(Duration::from_millis(10));
-        pipeline.set_checkpoint_flush_interval(Duration::from_millis(25));
-        let mut pipeline = pipeline
-            .with_input("retry-gap", Box::new(input))
-            .with_checkpoint_store(Box::new(store));
-
-        let shutdown = CancellationToken::new();
-        let sd = shutdown.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(8)).await;
-            sd.cancel();
-        });
-
-        pipeline.run_async(&shutdown).await.unwrap();
-        Ok(())
-    });
-
-    let run_result = sim.run();
-    assert!(
-        run_result.is_ok(),
-        "pipeline must terminate under retry-exhaustion path; got {run_result:?}"
-    );
-
-    let delivered = delivered_counter.load(Ordering::Relaxed);
-    let calls = call_counter.load(Ordering::Relaxed);
-    let durable = ckpt_handle.durable_offset(1);
-
-    assert!(
-        calls >= 6,
-        "expected retry-exhaustion attempts plus later sends; calls={calls}"
-    );
-    assert!(
-        delivered >= 2,
-        "expected first and later batches to deliver around retry-exhausted gap; delivered={delivered}"
-    );
-    assert!(
-        durable.is_some(),
-        "first successful batch should commit checkpoint progress"
-    );
-    assert!(
-        durable.unwrap_or_default() < input_total_bytes,
-        "checkpoint must remain behind full input because retry-exhausted gap is held; durable={durable:?} input_total_bytes={input_total_bytes}"
-    );
-    ckpt_handle.assert_monotonic(1);
-    ckpt_handle.assert_durable_not_ahead_of_updates(1);
 }

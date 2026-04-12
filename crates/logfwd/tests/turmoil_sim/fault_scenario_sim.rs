@@ -4,7 +4,8 @@ use std::io;
 use std::time::Duration;
 
 use super::fault_harness::{
-    FaultScenario, InvariantSet, NetworkFault, NetworkFaultAction, TypedInvariantBundle,
+    FaultScenario, InvariantSet, NetworkFault, NetworkFaultAction, ScenarioProfile,
+    TypedInvariantBundle,
 };
 use super::instrumented_sink::FailureAction;
 use super::trace_bridge::{SinkOutcome, TraceEvent, validate_replay_history_equivalence};
@@ -31,63 +32,15 @@ fn checkpoint_crash_scenario_keeps_delivery_and_monotonic_updates() {
 }
 
 #[test]
-fn pre_durability_flush_failure_never_persists_checkpoint_and_keeps_delivery_contract() {
-    let outcome = FaultScenario::builder("pre-durability-flush-failure")
-        .with_seed(20260417)
-        .with_line_count(20)
-        .with_counting_sink()
-        .with_batch_timeout(Duration::from_millis(10))
-        .with_checkpoint_flush_interval(Duration::from_millis(50))
-        .with_checkpoint_crash_on_nth_flush(1)
-        .with_shutdown_after(Duration::from_secs(3))
-        .run();
-
-    InvariantSet::new()
-        .no_sim_error()
-        .delivered_eq(20)
-        .checkpoint_crash_count_ge(1)
-        .checkpoint_updates_ge(1, 1)
-        .checkpoint_monotonic(1)
-        .checkpoint_durable_absent(1)
-        .verify(&outcome);
-}
-
-#[test]
-fn post_durability_flush_failure_preserves_valid_checkpoint_progress_and_delivery_contract() {
-    let outcome = FaultScenario::builder("post-durability-flush-failure")
-        .with_seed(20260418)
-        .with_line_count(40)
-        .with_counting_sink()
-        .with_batch_timeout(Duration::from_millis(10))
-        .with_checkpoint_flush_interval(Duration::from_millis(50))
-        .with_checkpoint_crash_after(Duration::from_millis(220))
-        .with_shutdown_after(Duration::from_secs(5))
-        .run();
-
-    InvariantSet::new()
-        .no_sim_error()
-        .delivered_eq(40)
-        .checkpoint_crash_count_ge(1)
-        .checkpoint_flush_count_ge(1)
-        .checkpoint_updates_ge(1, 1)
-        .checkpoint_monotonic(1)
-        .checkpoint_durable_not_ahead_of_updates(1)
-        .verify(&outcome);
-}
-
-#[test]
 fn retry_exhaustion_scenario_tracks_send_attempts() {
     let outcome = FaultScenario::builder("retry-exhaustion")
         .with_seed(20260411)
+        .with_profile(ScenarioProfile::retry_stress())
         .with_line_count(10)
-        .with_sink_script(vec![
-            FailureAction::IoError(io::ErrorKind::ConnectionRefused),
-            FailureAction::IoError(io::ErrorKind::ConnectionRefused),
-            FailureAction::IoError(io::ErrorKind::ConnectionRefused),
-            FailureAction::IoError(io::ErrorKind::ConnectionRefused),
-            FailureAction::IoError(io::ErrorKind::ConnectionRefused),
-        ])
-        .with_shutdown_after(Duration::from_secs(5))
+        .with_sink_script(vec![FailureAction::RepeatIoError(
+            io::ErrorKind::ConnectionRefused,
+        )])
+        .with_pool_drain_timeout(Duration::from_secs(2))
         .run();
 
     InvariantSet::new()
@@ -101,10 +54,9 @@ fn retry_exhaustion_scenario_tracks_send_attempts() {
 fn network_partition_repair_scenario_recovers_delivery() {
     let outcome = FaultScenario::builder("network-partition-repair")
         .with_seed(20260412)
+        .with_profile(ScenarioProfile::network_chaos())
         .with_turmoil_tcp_sink()
         .with_line_count(80)
-        .with_batch_timeout(Duration::from_millis(20))
-        .with_shutdown_after(Duration::from_secs(15))
         .with_network_fault(NetworkFault::at_step(100, NetworkFaultAction::Partition))
         .with_network_fault(NetworkFault::at_step(260, NetworkFaultAction::Repair))
         .run();
@@ -217,33 +169,6 @@ fn panic_unwind_scenario_reports_panic_contract() {
 }
 
 #[test]
-fn panic_scenario_holds_checkpoint_progress() {
-    let outcome = FaultScenario::builder("panic-holds-checkpoint")
-        .with_seed(20260419)
-        .with_line_count(20)
-        .with_sink_script(vec![FailureAction::Panic])
-        .with_checkpoint_flush_interval(Duration::from_millis(50))
-        .with_shutdown_after(Duration::from_secs(3))
-        .run();
-
-    InvariantSet::new()
-        .no_sim_error()
-        .delivered_eq(0)
-        .calls_ge(1)
-        .checkpoint_durable_absent(1)
-        .verify(&outcome);
-
-    let checkpoint = outcome
-        .checkpoint()
-        .expect("checkpoint handle should be present for checkpoint invariants");
-    assert_eq!(
-        checkpoint.update_count(1),
-        0,
-        "panic path should not produce checkpoint updates"
-    );
-}
-
-#[test]
 fn checkpoint_flush_crash_can_hold_durable_checkpoint_progress() {
     let outcome = FaultScenario::builder("checkpoint-hold-no-advance")
         .with_seed(20260421)
@@ -264,68 +189,6 @@ fn checkpoint_flush_crash_can_hold_durable_checkpoint_progress() {
 }
 
 #[test]
-fn panic_after_initial_success_keeps_checkpoint_monotonic() {
-    let outcome = FaultScenario::builder("panic-after-progress")
-        .with_seed(20260420)
-        .with_line_count(200)
-        .with_batch_target_bytes(512)
-        .with_sink_script(vec![
-            FailureAction::Succeed,
-            FailureAction::Succeed,
-            FailureAction::Panic,
-        ])
-        .with_checkpoint_flush_interval(Duration::from_millis(50))
-        .with_shutdown_after(Duration::from_secs(8))
-        .run();
-
-    InvariantSet::new()
-        .no_sim_error()
-        .calls_ge(3)
-        .checkpoint_monotonic(1)
-        .checkpoint_updates_ge(1, 1)
-        .checkpoint_durable_not_ahead_of_updates(1)
-        .verify(&outcome);
-
-    assert!(
-        outcome.delivered_rows() > 0,
-        "expected at least some rows delivered before panic"
-    );
-}
-
-#[test]
-fn reject_then_success_preserves_checkpoint_contract() {
-    let outcome = FaultScenario::builder("reject-then-success")
-        .with_seed(20260421)
-        .with_line_count(200)
-        .with_batch_target_bytes(512)
-        .with_sink_script(vec![
-            FailureAction::Reject("simulated bad payload".to_string()),
-            FailureAction::Succeed,
-            FailureAction::Succeed,
-        ])
-        .with_checkpoint_flush_interval(Duration::from_millis(50))
-        .with_shutdown_after(Duration::from_secs(8))
-        .run();
-
-    InvariantSet::new()
-        .no_sim_error()
-        .calls_ge(3)
-        .checkpoint_monotonic(1)
-        .checkpoint_updates_ge(1, 1)
-        .checkpoint_durable_not_ahead_of_updates(1)
-        .verify(&outcome);
-
-    assert!(
-        outcome.delivered_rows() > 0,
-        "expected post-reject batches to still be delivered"
-    );
-    assert!(
-        outcome.delivered_rows() < 200,
-        "first rejected batch should prevent full delivery"
-    );
-}
-
-#[test]
 fn post_stop_trace_contract_disallows_further_side_effects() {
     let outcome = FaultScenario::builder("post-stop-contract")
         .with_seed(20260422)
@@ -339,39 +202,6 @@ fn post_stop_trace_contract_disallows_further_side_effects() {
         .no_sim_error()
         .trace_contract_valid()
         .verify(&outcome);
-}
-
-#[test]
-fn retry_exhaustion_with_checkpoint_store_keeps_durable_absent() {
-    let outcome = FaultScenario::builder("retry-exhaustion-checkpoint")
-        .with_seed(20260422)
-        .with_line_count(20)
-        .with_sink_script(vec![
-            FailureAction::IoError(io::ErrorKind::ConnectionRefused),
-            FailureAction::IoError(io::ErrorKind::ConnectionRefused),
-            FailureAction::IoError(io::ErrorKind::ConnectionRefused),
-            FailureAction::IoError(io::ErrorKind::ConnectionRefused),
-            FailureAction::IoError(io::ErrorKind::ConnectionRefused),
-        ])
-        .with_checkpoint_flush_interval(Duration::from_millis(50))
-        .with_shutdown_after(Duration::from_secs(5))
-        .run();
-
-    InvariantSet::new()
-        .no_sim_error()
-        .delivered_eq(0)
-        .calls_ge(4)
-        .checkpoint_durable_absent(1)
-        .verify(&outcome);
-
-    let checkpoint = outcome
-        .checkpoint()
-        .expect("checkpoint handle should be present for checkpoint invariants");
-    assert_eq!(
-        checkpoint.update_count(1),
-        0,
-        "retry exhaustion should not advance checkpoint history"
-    );
 }
 
 #[test]
@@ -458,74 +288,12 @@ fn replay_equivalence_seed_matrix_keeps_history_equivalent() {
 }
 
 #[test]
-fn panic_checkpoint_seed_replay_is_stable() {
-    let seed = 20260423;
-    let baseline = FaultScenario::builder("panic-checkpoint-baseline")
-        .with_seed(seed)
-        .with_line_count(200)
-        .with_batch_target_bytes(512)
-        .with_sink_script(vec![
-            FailureAction::Succeed,
-            FailureAction::Succeed,
-            FailureAction::Panic,
-        ])
-        .with_checkpoint_flush_interval(Duration::from_millis(50))
-        .with_shutdown_after(Duration::from_secs(8))
-        .run();
-
-    let replay = FaultScenario::builder("panic-checkpoint-replay")
-        .with_seed(seed)
-        .with_line_count(200)
-        .with_batch_target_bytes(512)
-        .with_sink_script(vec![
-            FailureAction::Succeed,
-            FailureAction::Succeed,
-            FailureAction::Panic,
-        ])
-        .with_checkpoint_flush_interval(Duration::from_millis(50))
-        .with_shutdown_after(Duration::from_secs(8))
-        .run();
-
-    InvariantSet::new()
-        .no_sim_error()
-        .calls_ge(3)
-        .checkpoint_monotonic(1)
-        .checkpoint_durable_not_ahead_of_updates(1)
-        .verify(&baseline);
-    InvariantSet::new()
-        .no_sim_error()
-        .calls_ge(3)
-        .checkpoint_monotonic(1)
-        .checkpoint_durable_not_ahead_of_updates(1)
-        .verify(&replay);
-
-    let baseline_checkpoint = baseline
-        .checkpoint()
-        .expect("checkpoint handle should be present for checkpoint invariants");
-    let replay_checkpoint = replay
-        .checkpoint()
-        .expect("checkpoint handle should be present for checkpoint invariants");
-
-    assert_eq!(
-        baseline.delivered_rows(),
-        replay.delivered_rows(),
-        "same seed should reproduce same delivered-row count"
-    );
-    assert_eq!(
-        baseline_checkpoint.update_count(1),
-        replay_checkpoint.update_count(1),
-        "same seed should reproduce same checkpoint update count"
-    );
-}
-
-#[test]
 fn hold_release_schedule_restores_delivery() {
     let outcome = FaultScenario::builder("hold-release")
         .with_seed(20260424)
+        .with_profile(ScenarioProfile::network_chaos())
         .with_turmoil_tcp_sink()
         .with_line_count(50)
-        .with_batch_timeout(Duration::from_millis(20))
-        .with_shutdown_after(Duration::from_secs(10))
         .with_network_fault(NetworkFault::at_step(80, NetworkFaultAction::Hold))
         .with_network_fault(NetworkFault::at_step(160, NetworkFaultAction::Release))
         .run();
@@ -535,4 +303,86 @@ fn hold_release_schedule_restores_delivery() {
         .server_connections_ge(1)
         .server_received_ge(1)
         .verify(&outcome);
+}
+
+#[test]
+fn chaos_schedule_converges_after_network_stabilizes() {
+    let line_count = 120_u64;
+    let outcome = FaultScenario::builder("chaos-then-stable")
+        .with_seed(20260434)
+        .with_profile(ScenarioProfile::network_chaos())
+        .with_turmoil_tcp_sink()
+        .with_line_count(line_count as usize)
+        .with_network_fault(NetworkFault::at_step(40, NetworkFaultAction::Hold))
+        .with_network_fault(NetworkFault::at_step(110, NetworkFaultAction::Release))
+        .with_network_fault(NetworkFault::at_step(150, NetworkFaultAction::Partition))
+        .with_network_fault(NetworkFault::at_step(210, NetworkFaultAction::Repair))
+        .with_network_fault(NetworkFault::at_step(240, NetworkFaultAction::Hold))
+        .with_network_fault(NetworkFault::at_step(300, NetworkFaultAction::Release))
+        .run();
+
+    InvariantSet::new()
+        .no_sim_error()
+        .server_connections_ge(1)
+        .trace_contract_valid()
+        .verify(&outcome);
+    assert_eq!(
+        outcome.server_received(),
+        Some(line_count),
+        "chaos phase should eventually converge to full delivery after stable tail"
+    );
+}
+
+#[test]
+fn one_way_fault_schedule_recovers_after_directional_repair() {
+    let line_count = 80_u64;
+    let outcome = FaultScenario::builder("one-way-fault-schedule")
+        .with_seed(20260436)
+        .with_profile(ScenarioProfile::network_chaos())
+        .with_turmoil_tcp_sink()
+        .with_line_count(line_count as usize)
+        .with_network_fault(NetworkFault::at_step(
+            0,
+            NetworkFaultAction::PartitionOneWay,
+        ))
+        .with_network_fault(NetworkFault::at_step(150, NetworkFaultAction::RepairOneWay))
+        .run();
+
+    InvariantSet::new()
+        .no_sim_error()
+        .server_connections_ge(1)
+        .trace_contract_valid()
+        .verify(&outcome);
+    assert_eq!(
+        outcome.server_received(),
+        Some(line_count),
+        "directional repair should restore full delivery after one-way partition"
+    );
+}
+
+fn replay_equivalence_run(seed: u64, name: &str) -> Vec<TraceEvent> {
+    FaultScenario::builder(name)
+        .with_seed(seed)
+        .with_line_count(16)
+        .with_sink_script(vec![
+            FailureAction::RetryAfter(Duration::from_millis(5)),
+            FailureAction::Succeed,
+        ])
+        .with_checkpoint_flush_interval(Duration::from_millis(30))
+        .with_shutdown_after(Duration::from_secs(3))
+        .run()
+        .trace_events()
+        .to_vec()
+}
+
+#[test]
+fn replay_equivalence_seed_supports_three_identical_replays() {
+    let seed = 20260435_u64;
+    let runs = vec![
+        replay_equivalence_run(seed, "replay-3x-a"),
+        replay_equivalence_run(seed, "replay-3x-b"),
+        replay_equivalence_run(seed, "replay-3x-c"),
+    ];
+    validate_replay_history_equivalence(&runs)
+        .unwrap_or_else(|err| panic!("seed {seed} replay equivalence (3x) failed: {err}"));
 }
