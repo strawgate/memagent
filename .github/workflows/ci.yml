@@ -91,6 +91,7 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.cargo/**'
+              - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
             loom:
               - 'crates/logfwd-runtime/**'
@@ -403,6 +404,7 @@ jobs:
         with:
           args: >-
             -Z function-contracts
+            -Z mem-predicates
             -Z stubbing
             -p logfwd-core
             -p logfwd-arrow
@@ -412,7 +414,6 @@ jobs:
             -p logfwd-runtime
             -p logfwd-diagnostics
             -p logfwd
-            -Z function-contracts -Z mem-predicates -Z stubbing
         env:
           RUSTC_WRAPPER: ""
 

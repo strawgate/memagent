@@ -244,11 +244,11 @@ def extract_kani_args_crates(ci_text: str) -> set[str]:
 
 
 def extract_guardrail_scripts(ci_text: str) -> set[str]:
-    guardrail_block = extract_job_block(ci_text, "verification-guardrail")
+    lint_block = extract_job_block(ci_text, "lint")
     scripts = set()
-    for line in guardrail_block:
+    for line in lint_block:
         stripped = line.strip()
-        if stripped.startswith("run: python3 scripts/"):
+        if stripped.startswith("run: python3 scripts/verify_"):
             scripts.add(stripped.removeprefix("run: python3 ").strip())
     return scripts
 
