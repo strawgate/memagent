@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10243a">
   <title>Competitive Analysis - Benchmark Dashboard</title>
   <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7"></script>
@@ -13,7 +14,11 @@
     <a href="index.html">Dashboard</a><span class="sep">/</span>Competitive
   </div>
 
-  <h1>Competitive Analysis</h1>
+  <header class="hero">
+    <p class="eyebrow">competitive lane</p>
+    <h1>Competitive Analysis</h1>
+    <p class="lede">Compare collector throughput by scenario, inspect trend movement over recent runs, and spot stability gaps quickly.</p>
+  </header>
 
   <nav class="nav-pills">
     <a href="index.html">Overview</a>
@@ -23,6 +28,8 @@
 
   <div id="loading" class="loading">Loading competitive data...</div>
   <div id="content" style="display:none">
+    <div class="tracking-cards" id="competitive-kpis"></div>
+
     <div id="charts-section" class="section">
       <h2>Per-Scenario Throughput</h2>
       <div class="chart-grid" id="scenario-charts"></div>
@@ -35,7 +42,7 @@
 
     <div id="table-section" class="section">
       <h2>Full Results</h2>
-      <div class="card">
+      <div class="card table-card">
         <table id="results-table">
           <thead id="results-thead"></thead>
           <tbody id="results-tbody"></tbody>
@@ -45,7 +52,9 @@
   </div>
 </div>
 
-<script>
+<script type="module">
+import { fetchBenchIndex, fetchBenchRun, toTrendDataset, shortId } from "./o11y-client.js";
+
 const SCENARIO_NAMES = {
   'passthrough': { title: 'Passthrough (No Transforms)', config: 'transform: "SELECT * FROM logs"' },
   'json_parse': { title: 'JSON Parsing & Extraction', config: 'transform: "SELECT timestamp_str, level_str, message_str, duration_ms_int AS latency_ms, request_id_str, service_str FROM logs"' },
@@ -78,6 +87,16 @@ function formatBytes(b) {
   return b + 'B';
 }
 
+function averageLps(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  if (Number.isFinite(entry.avg_lps)) return Math.max(0, entry.avg_lps);
+  if (Array.isArray(entry.lps)) {
+    const values = entry.lps.filter((v) => Number.isFinite(v));
+    if (values.length > 0) return values.reduce((sum, v) => sum + v, 0) / values.length;
+  }
+  return null;
+}
+
 function isDark() { return window.matchMedia('(prefers-color-scheme: dark)').matches; }
 
 function chartColors() {
@@ -86,21 +105,14 @@ function chartColors() {
   Chart.defaults.borderColor = dark ? '#30363d' : '#d0d7de';
 }
 
-const DATA_BASE = 'https://raw.githubusercontent.com/strawgate/memagent/bench-data';
-
 function runId(entry) {
   if (entry && typeof entry === 'object') return entry.id;
   return entry;
 }
 
-async function loadJSON(url) {
-  try { const r = await fetch(url); if (!r.ok) return null; return await r.json(); }
-  catch { return null; }
-}
-
 async function main() {
   chartColors();
-  const index = await loadJSON(DATA_BASE + '/index.json');
+  const index = await fetchBenchIndex();
   if (!index) {
     document.getElementById('loading').textContent = 'No data/index.json found.';
     return;
@@ -114,7 +126,7 @@ async function main() {
     return;
   }
 
-  const allRuns = (await Promise.all(runIds.map(id => loadJSON(DATA_BASE + '/runs/' + id + '.json')))).filter(Boolean);
+  const allRuns = (await Promise.all(runIds.map(id => fetchBenchRun(id)))).filter(Boolean);
   if (allRuns.length === 0) {
     document.getElementById('loading').textContent = 'Could not load any run data.';
     return;
@@ -126,6 +138,34 @@ async function main() {
   const latestRun = allRuns[allRuns.length - 1];
   const scenarios = latestRun.scenario_names || Object.keys(latestRun.scenarios || {});
   const agents = latestRun.agents || [];
+  const kpisEl = document.getElementById('competitive-kpis');
+
+  let fastest = null;
+  for (const sn of scenarios) {
+      const sc = latestRun.scenarios?.[sn];
+      if (!sc) continue;
+      for (const agent of agents) {
+      const lps = averageLps(sc[agent]) || 0;
+      if (!fastest || lps > fastest.lps) fastest = { agent, scenario: sn, lps };
+      }
+  }
+  kpisEl.innerHTML = `
+    <div class="tracking-card">
+      <span class="label">Latest Run</span>
+      <span class="value">#${latestRun.id || '--'}</span>
+      <span class="subtitle">${allRuns.length} runs in trend window</span>
+    </div>
+    <div class="tracking-card">
+      <span class="label">Fastest Collector</span>
+      <span class="value">${fastest ? formatLPS(fastest.lps) : '--'}</span>
+      <span class="subtitle">${fastest ? fastest.agent + ' · ' + getScenarioTitle(fastest.scenario) : 'no throughput data'}</span>
+    </div>
+    <div class="tracking-card">
+      <span class="label">Coverage</span>
+      <span class="value">${scenarios.length} × ${agents.length}</span>
+      <span class="subtitle">scenarios × collectors in latest run</span>
+    </div>
+  `;
 
   // Per-scenario horizontal bar charts (latest run)
   const chartsEl = document.getElementById('scenario-charts');
@@ -144,7 +184,7 @@ async function main() {
     for (const agent of agents) {
       if (!sc[agent]) continue;
       labels.push(agent);
-      data.push(sc[agent].avg_lps);
+      data.push(averageLps(sc[agent]) || 0);
       colors.push(AGENT_COLORS[agent] || '#64748b');
     }
 
@@ -169,7 +209,7 @@ async function main() {
     });
   }
 
-  // Throughput trend sparklines per scenario/agent
+  // Throughput trends per scenario/agent (o11ykit adapter-backed)
   const trendsEl = document.getElementById('trend-charts');
   for (const sn of scenarios) {
     const cardDiv = document.createElement('div');
@@ -177,18 +217,42 @@ async function main() {
     cardDiv.innerHTML = `<h3>${getScenarioTitle(sn)} Trend</h3><canvas id="trend-${sn}" height="200"></canvas>`;
     trendsEl.appendChild(cardDiv);
 
-    const labels = allRuns.map(r => r.id || '');
+    const labels = allRuns.map((r) => shortId(r.id || ""));
     const datasets = [];
     for (const agent of agents) {
-      const data = allRuns.map(r => r.scenarios?.[sn]?.[agent]?.avg_lps || null);
-      if (data.every(d => d === null)) continue;
+      const points = allRuns.map((r, idx) => ({
+        timestamp: r.date || new Date(Date.UTC(2020, 0, 1, 0, 0, idx)).toISOString(),
+        value: averageLps(r.scenarios?.[sn]?.[agent]),
+      }));
+      if (points.every((p) => p.value == null)) continue;
+
+      const adapted = toTrendDataset(agent, points, {
+        color: AGENT_COLORS[agent] || '#64748b',
+        direction: 'bigger_is_better',
+        threshold: 8,
+        window: 3,
+      });
+
+      const compactColors = Array.isArray(adapted.dataset.pointBackgroundColor)
+        ? adapted.dataset.pointBackgroundColor
+        : [];
+      let colorIdx = 0;
+      const pointColors = points.map((p) => {
+        if (p.value == null) return 'transparent';
+        const next = compactColors[colorIdx];
+        colorIdx += 1;
+        return next || (AGENT_COLORS[agent] || '#64748b');
+      });
+
       datasets.push({
         label: agent,
-        data,
+        data: points.map((p) => p.value),
         borderColor: AGENT_COLORS[agent] || '#64748b',
         backgroundColor: 'transparent',
         borderWidth: 2,
-        pointRadius: 2,
+        pointRadius: 2.5,
+        pointBackgroundColor: pointColors,
+        pointBorderColor: pointColors,
         tension: 0.3,
         spanGaps: true
       });
@@ -203,7 +267,10 @@ async function main() {
           tooltip: { callbacks: { label: ctx => ctx.dataset.label + ': ' + formatLPS(ctx.raw) } }
         },
         scales: {
-          x: { ticks: { maxTicksLimit: 10 }, grid: { color: isDark() ? '#30363d' : '#e5e7eb' } },
+          x: {
+            ticks: { maxTicksLimit: 7, maxRotation: 0, minRotation: 0 },
+            grid: { color: isDark() ? '#30363d' : '#e5e7eb' }
+          },
           y: { ticks: { callback: v => formatLPS(v) }, grid: { color: isDark() ? '#30363d' : '#e5e7eb' } }
         }
       }
@@ -233,7 +300,8 @@ async function main() {
       // Find winner
       let bestAgent = null, bestLps = 0;
       for (const a of agents) {
-        if (sc[a]?.avg_lps > bestLps) { bestLps = sc[a].avg_lps; bestAgent = a; }
+        const lps = averageLps(sc[a]) || 0;
+        if (lps > bestLps) { bestLps = lps; bestAgent = a; }
       }
 
       let row = `<td><a href="run.html?id=${run.id}">#${run.id}</a></td><td>${getScenarioTitle(sn)}</td>`;
