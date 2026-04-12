@@ -42,6 +42,12 @@ impl Pipeline {
         meter: &Meter,
         base_path: Option<&std::path::Path>,
     ) -> Result<Self, String> {
+        if config.inputs.is_empty() {
+            return Err("at least one input is required".to_string());
+        }
+        if config.outputs.is_empty() {
+            return Err("at least one output is required".to_string());
+        }
         if config.workers == Some(0) {
             return Err("workers must be >= 1".to_string());
         }
