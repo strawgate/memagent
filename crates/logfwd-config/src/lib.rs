@@ -20,12 +20,12 @@ pub use types::{
     ArrowIpcTypeConfig, AuthConfig, Config, ConfigError, CsvEnrichmentConfig, EnrichmentConfig,
     FileTypeConfig, Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig,
     GeneratorInputConfig, GeneratorProfileConfig, GeneratorSequenceConfig, GeneratorTypeConfig,
-    GeoDatabaseConfig, GeoDatabaseFormat, HostInfoConfig, HttpInputConfig, HttpMethodConfig,
-    HttpTypeConfig, InputConfig, InputType, InputTypeConfig, JournaldBackendConfig,
-    JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sPathConfig,
-    OtlpProtobufDecodeModeConfig, OtlpTypeConfig, OutputConfig, OutputType, PipelineConfig,
-    PlatformSensorInputConfig, SensorTypeConfig, ServerConfig, StaticEnrichmentConfig,
-    StorageConfig, TcpTypeConfig, TlsInputConfig, UdpTypeConfig,
+    GeoDatabaseConfig, GeoDatabaseFormat, HostInfoConfig, HostMetricsInputConfig, HttpInputConfig,
+    HttpMethodConfig, HttpTypeConfig, InputConfig, InputType, InputTypeConfig,
+    JournaldBackendConfig, JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig,
+    K8sPathConfig, OtlpProtobufDecodeModeConfig, OtlpTypeConfig, OutputConfig, OutputType,
+    PipelineConfig, PlatformSensorInputConfig, SensorTypeConfig, ServerConfig,
+    StaticEnrichmentConfig, StorageConfig, TcpTypeConfig, TlsInputConfig, UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 

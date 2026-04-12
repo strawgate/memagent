@@ -52,6 +52,9 @@ pub enum InputType {
     /// Journald (systemd journal) input via native `sd_journal` API or
     /// `journalctl` subprocess fallback.
     Journald,
+    /// Host metrics input (process snapshots, CPU, memory, network stats via sysinfo).
+    #[serde(rename = "host_metrics")]
+    HostMetrics,
 }
 
 impl fmt::Display for InputType {
@@ -68,6 +71,7 @@ impl fmt::Display for InputType {
             InputType::WindowsEbpfSensor => f.write_str("windows_ebpf_sensor"),
             InputType::ArrowIpc => f.write_str("arrow_ipc"),
             InputType::Journald => f.write_str("journald"),
+            InputType::HostMetrics => f.write_str("host_metrics"),
         }
     }
 }
@@ -270,10 +274,10 @@ pub struct GeneratorInputConfig {
     pub timestamp: Option<GeneratorTimestampConfig>,
 }
 
-/// Platform sensor configuration.
+/// Host metrics configuration.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct PlatformSensorInputConfig {
+pub struct HostMetricsInputConfig {
     /// Sensor sample cadence. Defaults to 10_000 when omitted.
     pub poll_interval_ms: Option<u64>,
     /// Deprecated no-op retained for backward compatibility.
@@ -412,6 +416,9 @@ pub enum InputTypeConfig {
     WindowsEbpfSensor(SensorTypeConfig),
     ArrowIpc(ArrowIpcTypeConfig),
     Journald(JournaldTypeConfig),
+    /// Host metrics input (process snapshots, CPU, memory, network stats via sysinfo).
+    #[serde(rename = "host_metrics")]
+    HostMetrics(SensorTypeConfig),
 }
 
 impl InputTypeConfig {
@@ -429,6 +436,7 @@ impl InputTypeConfig {
             Self::WindowsEbpfSensor(_) => InputType::WindowsEbpfSensor,
             Self::ArrowIpc(_) => InputType::ArrowIpc,
             Self::Journald(_) => InputType::Journald,
+            Self::HostMetrics(_) => InputType::HostMetrics,
         }
     }
 }
@@ -496,7 +504,7 @@ pub struct GeneratorTypeConfig {
 #[serde(deny_unknown_fields)]
 pub struct SensorTypeConfig {
     #[serde(default, alias = "sensor_beta")]
-    pub sensor: Option<PlatformSensorInputConfig>,
+    pub sensor: Option<HostMetricsInputConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

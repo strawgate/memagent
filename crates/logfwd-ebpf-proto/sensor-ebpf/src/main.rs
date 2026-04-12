@@ -6,7 +6,7 @@
 //!
 //! **Integration path:** When wired into the logfwd pipeline, the ring buffer
 //! consumer should build Arrow `RecordBatch` directly from the `repr(C)` event
-//! structs — the same pattern `platform_sensor.rs` uses. The JSON output here
+//! structs — the same pattern `host_metrics.rs` uses. The JSON output here
 //! is a prototype convenience and must NOT be routed through a JSON parser to
 //! produce Arrow columns.
 //!

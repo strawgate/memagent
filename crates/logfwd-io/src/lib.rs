@@ -10,6 +10,8 @@ pub mod filter_hints;
 pub mod format;
 pub mod framed;
 pub mod generator;
+/// Platform sensor inputs and Arrow-native control/sample event emission.
+pub mod host_metrics;
 /// HTTP NDJSON input source.
 pub mod http_input;
 pub mod input;
@@ -19,8 +21,6 @@ pub mod journal_ffi;
 pub mod journald_input;
 pub mod otap_receiver;
 pub mod otlp_receiver;
-/// Platform sensor inputs and Arrow-native control/sample event emission.
-pub mod platform_sensor;
 /// Adaptive polling primitives shared by file-tail and runtime input loops.
 pub mod poll_cadence;
 pub(crate) mod polling_input_health;

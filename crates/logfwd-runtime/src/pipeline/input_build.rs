@@ -4,8 +4,8 @@ use std::sync::Arc;
 use bytes::BytesMut;
 use logfwd_config::{
     Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorProfileConfig,
-    HttpMethodConfig, InputConfig, InputType, InputTypeConfig, OtlpProtobufDecodeModeConfig,
-    PlatformSensorInputConfig,
+    HostMetricsInputConfig, HttpMethodConfig, InputConfig, InputType, InputTypeConfig,
+    OtlpProtobufDecodeModeConfig, PlatformSensorInputConfig,
 };
 use logfwd_diagnostics::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
@@ -386,12 +386,12 @@ pub(super) fn build_input_state(
         InputTypeConfig::LinuxEbpfSensor(s)
         | InputTypeConfig::MacosEsSensor(s)
         | InputTypeConfig::WindowsEbpfSensor(s) => {
-            use logfwd_io::platform_sensor::{PlatformSensorInput, PlatformSensorTarget};
+            use logfwd_io::host_metrics::{HostMetricsInput, HostMetricsTarget};
 
             let target = match &cfg.type_config {
-                InputTypeConfig::LinuxEbpfSensor(_) => PlatformSensorTarget::Linux,
-                InputTypeConfig::MacosEsSensor(_) => PlatformSensorTarget::Macos,
-                InputTypeConfig::WindowsEbpfSensor(_) => PlatformSensorTarget::Windows,
+                InputTypeConfig::LinuxEbpfSensor(_) => HostMetricsTarget::Linux,
+                InputTypeConfig::MacosEsSensor(_) => HostMetricsTarget::Macos,
+                InputTypeConfig::WindowsEbpfSensor(_) => HostMetricsTarget::Windows,
                 _ => unreachable!("handled by outer match"),
             };
 
@@ -401,12 +401,38 @@ pub(super) fn build_input_state(
                 ));
             }
 
-            let sensor_cfg = build_platform_sensor_config(s.sensor.as_ref());
-            let source = PlatformSensorInput::new(name, target, sensor_cfg).map_err(|e| {
+            let sensor_cfg = build_host_metrics_config(s.sensor.as_ref());
+            let source = HostMetricsInput::new(name, target, sensor_cfg).map_err(|e| {
                 format!(
                     "input '{name}': failed to initialize {} input: {e}",
                     cfg.input_type()
                 )
+            })?;
+            return Ok(InputState {
+                source: Box::new(source),
+                buf: BytesMut::with_capacity(64 * 1024),
+                stats,
+            });
+        }
+        InputTypeConfig::HostMetrics(s) => {
+            use logfwd_io::host_metrics::{HostMetricsInput, HostMetricsTarget};
+
+            #[cfg(target_os = "linux")]
+            let target = HostMetricsTarget::Linux;
+            #[cfg(target_os = "macos")]
+            let target = HostMetricsTarget::Macos;
+            #[cfg(target_os = "windows")]
+            let target = HostMetricsTarget::Windows;
+
+            if cfg.format.is_some() {
+                return Err(format!(
+                    "input '{name}': host_metrics input does not support 'format' (Arrow-native input)"
+                ));
+            }
+
+            let metrics_cfg = build_host_metrics_config(s.sensor.as_ref());
+            let source = HostMetricsInput::new(name, target, metrics_cfg).map_err(|e| {
+                format!("input '{name}': failed to initialize host_metrics input: {e}")
             })?;
             return Ok(InputState {
                 source: Box::new(source),
@@ -463,16 +489,16 @@ pub(super) fn build_input_state(
     })
 }
 
-fn build_platform_sensor_config(
-    cfg: Option<&PlatformSensorInputConfig>,
-) -> logfwd_io::platform_sensor::PlatformSensorConfig {
+fn build_host_metrics_config(
+    cfg: Option<&HostMetricsInputConfig>,
+) -> logfwd_io::host_metrics::HostMetricsConfig {
     let poll_interval_ms = cfg
         .and_then(|c| c.poll_interval_ms)
         .unwrap_or(DEFAULT_SENSOR_POLL_INTERVAL_MS);
     let control_reload_interval_ms = cfg
         .and_then(|c| c.control_reload_interval_ms)
         .unwrap_or(DEFAULT_SENSOR_CONTROL_RELOAD_INTERVAL_MS);
-    logfwd_io::platform_sensor::PlatformSensorConfig {
+    logfwd_io::host_metrics::HostMetricsConfig {
         poll_interval: std::time::Duration::from_millis(poll_interval_ms.max(1)),
         control_path: cfg.and_then(|c| c.control_path.clone()).map(PathBuf::from),
         control_reload_interval: std::time::Duration::from_millis(

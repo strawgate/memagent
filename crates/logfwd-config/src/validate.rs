@@ -301,7 +301,8 @@ impl Config {
                         }
                         InputTypeConfig::LinuxEbpfSensor(s)
                         | InputTypeConfig::MacosEsSensor(s)
-                        | InputTypeConfig::WindowsEbpfSensor(s) => {
+                        | InputTypeConfig::WindowsEbpfSensor(s)
+                        | InputTypeConfig::HostMetrics(s) => {
                             let input_type = input.input_type();
                             if input.format.is_some() {
                                 return Err(ConfigError::Validation(format!(

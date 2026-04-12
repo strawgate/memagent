@@ -1,8 +1,9 @@
-//! Cross-platform sensor input.
+//! Host metrics input.
 //!
-//! This source now emits Arrow `RecordBatch` rows directly. It includes a
+//! This source emits Arrow `RecordBatch` rows directly with host metrics
+//! (process snapshots, CPU, memory, network stats via sysinfo). It includes a
 //! lightweight runtime control plane (optional JSON file reload) and explicit
-//! per-platform signal families so we can iterate toward production sensors
+//! per-platform signal families so we can iterate toward production metrics
 //! without routing synthetic JSON through text decoders.
 
 use std::ffi::OsStr;
@@ -22,13 +23,13 @@ use crate::input::{InputEvent, InputSource};
 
 /// Platform target for a platform sensor input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlatformSensorTarget {
+pub enum HostMetricsTarget {
     Linux,
     Macos,
     Windows,
 }
 
-impl PlatformSensorTarget {
+impl HostMetricsTarget {
     /// Returns the stable lowercase platform key used in config and telemetry rows.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -107,17 +108,17 @@ const WINDOWS_FAMILIES: &[SignalFamily] = &[
     SignalFamily::Authz,
 ];
 
-fn target_signal_families(target: PlatformSensorTarget) -> &'static [SignalFamily] {
+fn target_signal_families(target: HostMetricsTarget) -> &'static [SignalFamily] {
     match target {
-        PlatformSensorTarget::Linux => LINUX_FAMILIES,
-        PlatformSensorTarget::Macos => MACOS_FAMILIES,
-        PlatformSensorTarget::Windows => WINDOWS_FAMILIES,
+        HostMetricsTarget::Linux => LINUX_FAMILIES,
+        HostMetricsTarget::Macos => MACOS_FAMILIES,
+        HostMetricsTarget::Windows => WINDOWS_FAMILIES,
     }
 }
 
 /// Runtime options for platform sensor inputs.
 #[derive(Debug, Clone)]
-pub struct PlatformSensorConfig {
+pub struct HostMetricsConfig {
     /// Periodic sample cadence.
     pub poll_interval: Duration,
     /// Optional JSON control-plane file for runtime sensor tuning.
@@ -134,7 +135,7 @@ pub struct PlatformSensorConfig {
     pub max_rows_per_poll: usize,
 }
 
-impl Default for PlatformSensorConfig {
+impl Default for HostMetricsConfig {
     fn default() -> Self {
         Self {
             poll_interval: Duration::from_millis(10_000),
@@ -149,31 +150,31 @@ impl Default for PlatformSensorConfig {
 
 /// Input source for per-platform sensor bring-up.
 #[derive(Debug)]
-pub struct PlatformSensorInput {
+pub struct HostMetricsInput {
     name: String,
-    machine: Option<PlatformSensorMachine>,
+    machine: Option<HostMetricsMachine>,
 }
 
 #[derive(Debug)]
-enum PlatformSensorMachine {
-    Init(PlatformSensorState<InitState>),
-    Running(PlatformSensorState<RunningState>),
+enum HostMetricsMachine {
+    Init(HostMetricsState<InitState>),
+    Running(HostMetricsState<RunningState>),
 }
 
 #[derive(Debug)]
-struct PlatformSensorCommon {
+struct HostMetricsCommon {
     name: String,
-    target: PlatformSensorTarget,
+    target: HostMetricsTarget,
     host_platform: &'static str,
-    cfg: PlatformSensorConfig,
+    cfg: HostMetricsConfig,
     schema: Arc<Schema>,
     system: System,
     networks: Networks,
 }
 
 #[derive(Debug)]
-struct PlatformSensorState<S> {
-    common: PlatformSensorCommon,
+struct HostMetricsState<S> {
+    common: HostMetricsCommon,
     state: S,
 }
 
@@ -198,8 +199,8 @@ struct ControlState {
     emit_signal_rows: bool,
 }
 
-type InitStartOk = (PlatformSensorState<RunningState>, Vec<InputEvent>);
-type InitStartErr = Box<(PlatformSensorState<InitState>, io::Error)>;
+type InitStartOk = (HostMetricsState<RunningState>, Vec<InputEvent>);
+type InitStartErr = Box<(HostMetricsState<InitState>, io::Error)>;
 
 #[derive(Debug, Clone, Copy)]
 enum ControlSource {
@@ -297,7 +298,7 @@ struct ControlFileConfig {
     emit_signal_rows: Option<bool>,
 }
 
-impl PlatformSensorState<InitState> {
+impl HostMetricsState<InitState> {
     fn start(mut self) -> Result<InitStartOk, InitStartErr> {
         let now = Instant::now();
         let mut rows = vec![self.common.control_row(
@@ -322,7 +323,7 @@ impl PlatformSensorState<InitState> {
         let last_control_check = now
             .checked_sub(self.common.cfg.control_reload_interval)
             .unwrap_or(now);
-        let running = PlatformSensorState {
+        let running = HostMetricsState {
             common: self.common,
             state: RunningState {
                 last_emit: now,
@@ -335,7 +336,7 @@ impl PlatformSensorState<InitState> {
     }
 }
 
-impl PlatformSensorState<RunningState> {
+impl HostMetricsState<RunningState> {
     fn poll_rows(&mut self) -> Vec<SensorRow> {
         let mut rows = Vec::new();
 
@@ -439,7 +440,7 @@ impl PlatformSensorState<RunningState> {
     }
 }
 
-impl PlatformSensorCommon {
+impl HostMetricsCommon {
     fn base_row(
         &self,
         control: &ControlState,
@@ -1029,14 +1030,14 @@ impl PlatformSensorCommon {
     }
 }
 
-impl PlatformSensorInput {
+impl HostMetricsInput {
     /// Create a platform sensor source.
     ///
     /// Returns an error when `target` does not match the current host platform.
     pub fn new(
         name: impl Into<String>,
-        target: PlatformSensorTarget,
-        cfg: PlatformSensorConfig,
+        target: HostMetricsTarget,
+        cfg: HostMetricsConfig,
     ) -> io::Result<Self> {
         let name = name.into();
         let host_platform = current_host_platform().as_str().ok_or_else(|| {
@@ -1067,8 +1068,8 @@ impl PlatformSensorInput {
 
         Ok(Self {
             name: name.clone(),
-            machine: Some(PlatformSensorMachine::Init(PlatformSensorState {
-                common: PlatformSensorCommon {
+            machine: Some(HostMetricsMachine::Init(HostMetricsState {
+                common: HostMetricsCommon {
                     name,
                     target,
                     host_platform,
@@ -1083,7 +1084,7 @@ impl PlatformSensorInput {
     }
 }
 
-impl InputSource for PlatformSensorInput {
+impl InputSource for HostMetricsInput {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
         let machine = self
             .machine
@@ -1091,14 +1092,14 @@ impl InputSource for PlatformSensorInput {
             .ok_or_else(|| io::Error::other("platform sensor state missing"))?;
 
         let (next_machine, result) = match machine {
-            PlatformSensorMachine::Init(init) => match init.start() {
-                Ok((running, events)) => (PlatformSensorMachine::Running(running), Ok(events)),
+            HostMetricsMachine::Init(init) => match init.start() {
+                Ok((running, events)) => (HostMetricsMachine::Running(running), Ok(events)),
                 Err(err) => {
                     let (init, err) = *err;
-                    (PlatformSensorMachine::Init(init), Err(err))
+                    (HostMetricsMachine::Init(init), Err(err))
                 }
             },
-            PlatformSensorMachine::Running(mut running) => {
+            HostMetricsMachine::Running(mut running) => {
                 let rows = running.poll_rows();
                 let result = if rows.is_empty() {
                     Ok(Vec::new())
@@ -1108,7 +1109,7 @@ impl InputSource for PlatformSensorInput {
                         .build_batch_event(rows)
                         .map(|event| vec![event])
                 };
-                (PlatformSensorMachine::Running(running), result)
+                (HostMetricsMachine::Running(running), result)
             }
         };
         self.machine = Some(next_machine);
@@ -1121,8 +1122,8 @@ impl InputSource for PlatformSensorInput {
 
     fn health(&self) -> ComponentHealth {
         match self.machine.as_ref() {
-            Some(PlatformSensorMachine::Init(_)) => ComponentHealth::Starting,
-            Some(PlatformSensorMachine::Running(running)) => running.state.health,
+            Some(HostMetricsMachine::Init(_)) => ComponentHealth::Starting,
+            Some(HostMetricsMachine::Running(running)) => running.state.health,
             None => ComponentHealth::Failed,
         }
     }
@@ -1130,7 +1131,7 @@ impl InputSource for PlatformSensorInput {
 
 fn parse_enabled_families(
     configured: Option<&[String]>,
-    target: PlatformSensorTarget,
+    target: HostMetricsTarget,
 ) -> io::Result<Vec<SignalFamily>> {
     let mut out = Vec::new();
     let Some(configured) = configured else {
@@ -1353,33 +1354,33 @@ mod tests {
         }
     }
 
-    fn host_target() -> PlatformSensorTarget {
+    fn host_target() -> HostMetricsTarget {
         #[cfg(target_os = "linux")]
         {
-            PlatformSensorTarget::Linux
+            HostMetricsTarget::Linux
         }
         #[cfg(target_os = "macos")]
         {
-            PlatformSensorTarget::Macos
+            HostMetricsTarget::Macos
         }
         #[cfg(target_os = "windows")]
         {
-            PlatformSensorTarget::Windows
+            HostMetricsTarget::Windows
         }
     }
 
-    fn non_host_target() -> PlatformSensorTarget {
+    fn non_host_target() -> HostMetricsTarget {
         #[cfg(target_os = "linux")]
         {
-            PlatformSensorTarget::Macos
+            HostMetricsTarget::Macos
         }
         #[cfg(target_os = "macos")]
         {
-            PlatformSensorTarget::Windows
+            HostMetricsTarget::Windows
         }
         #[cfg(target_os = "windows")]
         {
-            PlatformSensorTarget::Linux
+            HostMetricsTarget::Linux
         }
     }
 
@@ -1420,20 +1421,19 @@ mod tests {
 
     #[test]
     fn rejects_non_matching_platform_target() {
-        let err =
-            PlatformSensorInput::new("sensor", non_host_target(), PlatformSensorConfig::default())
-                .expect_err("non-matching target must fail");
+        let err = HostMetricsInput::new("sensor", non_host_target(), HostMetricsConfig::default())
+            .expect_err("non-matching target must fail");
         assert!(err.to_string().contains("can only run on"));
     }
 
     #[test]
     fn rejects_unknown_enabled_family() {
-        let err = PlatformSensorInput::new(
+        let err = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 enabled_families: Some(vec!["not_a_family".to_string()]),
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect_err("unknown family must fail");
@@ -1443,7 +1443,7 @@ mod tests {
     #[test]
     fn emits_startup_batch_on_first_poll() {
         let mut input =
-            PlatformSensorInput::new("sensor", host_target(), PlatformSensorConfig::default())
+            HostMetricsInput::new("sensor", host_target(), HostMetricsConfig::default())
                 .expect("host target should be valid");
 
         let events = input.poll().expect("poll should succeed");
@@ -1462,13 +1462,13 @@ mod tests {
 
     #[test]
     fn signal_rows_disabled_suppresses_sample_placeholders() {
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 emit_signal_rows: false,
                 poll_interval: Duration::from_millis(1),
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("host target should be valid");
@@ -1491,13 +1491,13 @@ mod tests {
 
     #[test]
     fn periodic_signal_rows_emit_when_enabled() {
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 emit_signal_rows: true,
                 poll_interval: Duration::from_millis(1),
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("host target should be valid");
@@ -1517,12 +1517,12 @@ mod tests {
 
     #[test]
     fn enabled_families_filter_signal_samples() {
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 enabled_families: Some(vec!["process".to_string(), "dns".to_string()]),
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("host target should be valid");
@@ -1565,12 +1565,12 @@ mod tests {
 
     #[test]
     fn explicit_empty_enabled_families_disables_signal_samples() {
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 enabled_families: Some(Vec::new()),
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("host target should be valid");
@@ -1590,15 +1590,15 @@ mod tests {
     fn control_file_reload_updates_generation_and_families() {
         let (_dir, control_path) = tempfiles::control_file_path();
 
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 control_path: Some(control_path.clone()),
                 control_reload_interval: Duration::from_millis(1),
                 poll_interval: Duration::from_secs(60),
                 enabled_families: Some(vec!["process".to_string()]),
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("host target should be valid");
@@ -1650,15 +1650,15 @@ mod tests {
     fn control_reload_same_generation_and_values_is_noop() {
         let (_dir, control_path) = tempfiles::control_file_path();
 
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 control_path: Some(control_path.clone()),
                 control_reload_interval: Duration::from_millis(1),
                 poll_interval: Duration::from_secs(60),
                 enabled_families: Some(vec!["process".to_string()]),
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("host target should be valid");
@@ -1688,14 +1688,14 @@ mod tests {
         let (_dir, control_path) = tempfiles::control_file_path();
         tempfiles::write_malformed_control_file(&control_path);
 
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 control_path: Some(control_path),
                 control_reload_interval: Duration::from_millis(1),
                 emit_signal_rows: false,
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("startup should not fail on malformed optional control file");
@@ -1720,14 +1720,14 @@ mod tests {
         let (_dir, control_path) = tempfiles::control_file_path();
         tempfiles::write_malformed_control_file(&control_path);
 
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 control_path: Some(control_path.clone()),
                 control_reload_interval: Duration::from_millis(1),
                 emit_signal_rows: false,
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("startup should succeed");
@@ -1756,11 +1756,11 @@ mod tests {
     #[test]
     fn poll_error_preserves_machine_and_name_invariants() {
         let mut input =
-            PlatformSensorInput::new("sensor", host_target(), PlatformSensorConfig::default())
+            HostMetricsInput::new("sensor", host_target(), HostMetricsConfig::default())
                 .expect("host target should be valid");
 
         let init = match input.machine.as_mut() {
-            Some(PlatformSensorMachine::Init(init)) => init,
+            Some(HostMetricsMachine::Init(init)) => init,
             _ => panic!("expected init machine"),
         };
         init.common.schema = Arc::new(Schema::new(Vec::<Field>::new()));
@@ -1790,7 +1790,7 @@ mod tests {
     #[test]
     fn health_transitions_from_starting_to_healthy_after_first_poll() {
         let mut input =
-            PlatformSensorInput::new("sensor", host_target(), PlatformSensorConfig::default())
+            HostMetricsInput::new("sensor", host_target(), HostMetricsConfig::default())
                 .expect("host target should be valid");
 
         assert_eq!(input.health(), ComponentHealth::Starting);
@@ -1801,14 +1801,14 @@ mod tests {
     #[test]
     fn health_degrades_on_control_reload_failure_and_recovers_on_success() {
         let (_dir, control_path) = tempfiles::control_file_path();
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 control_path: Some(control_path.clone()),
                 control_reload_interval: Duration::from_millis(1),
                 emit_signal_rows: false,
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("host target should be valid");
@@ -1851,14 +1851,14 @@ mod tests {
 
     #[test]
     fn first_poll_emits_process_data() {
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 enabled_families: Some(vec!["process".to_string()]),
                 poll_interval: Duration::from_millis(1),
                 max_rows_per_poll: 8,
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("host target should be valid");
@@ -1883,14 +1883,14 @@ mod tests {
 
     #[test]
     fn first_poll_emits_network_data() {
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 enabled_families: Some(vec!["network".to_string()]),
                 poll_interval: Duration::from_millis(1),
                 max_rows_per_poll: 64,
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("host target should be valid");
@@ -1913,15 +1913,15 @@ mod tests {
 
     #[test]
     fn collection_respects_enabled_families() {
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 enabled_families: Some(vec!["process".to_string()]),
                 emit_signal_rows: false,
                 poll_interval: Duration::from_millis(1),
                 max_rows_per_poll: 8,
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("host target should be valid");
@@ -1945,15 +1945,15 @@ mod tests {
 
     #[test]
     fn max_rows_per_poll_caps_data_collection() {
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 enabled_families: Some(vec!["process".to_string()]),
                 emit_signal_rows: false,
                 poll_interval: Duration::from_millis(1),
                 max_rows_per_poll: 3,
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("host target should be valid");
@@ -1982,15 +1982,15 @@ mod tests {
 
     #[test]
     fn process_snapshot_has_valid_fields() {
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 enabled_families: Some(vec!["process".to_string()]),
                 emit_signal_rows: false,
                 poll_interval: Duration::from_millis(1),
                 max_rows_per_poll: 16,
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("host target should be valid");
@@ -2031,15 +2031,15 @@ mod tests {
 
     #[test]
     fn disk_io_family_emits_only_active_processes() {
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 enabled_families: Some(vec!["file".to_string()]),
                 emit_signal_rows: false,
                 poll_interval: Duration::from_millis(1),
                 max_rows_per_poll: 256,
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("host target should be valid");
@@ -2068,15 +2068,15 @@ mod tests {
 
     #[test]
     fn second_cycle_network_deltas_are_plausible() {
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 enabled_families: Some(vec!["network".to_string()]),
                 emit_signal_rows: false,
                 poll_interval: Duration::from_millis(1),
                 max_rows_per_poll: 64,
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("host target should be valid");
@@ -2141,10 +2141,10 @@ mod tests {
             .unwrap_or_default()
             .as_secs();
 
-        let mut input = PlatformSensorInput::new(
+        let mut input = HostMetricsInput::new(
             "audit",
             host_target(),
-            PlatformSensorConfig {
+            HostMetricsConfig {
                 enabled_families: Some(vec![
                     "process".to_string(),
                     "network".to_string(),
@@ -2153,7 +2153,7 @@ mod tests {
                 emit_signal_rows: true,
                 poll_interval: Duration::from_millis(50),
                 max_rows_per_poll: 32,
-                ..PlatformSensorConfig::default()
+                ..HostMetricsConfig::default()
             },
         )
         .expect("host target");

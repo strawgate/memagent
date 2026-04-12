@@ -271,6 +271,27 @@ Compatibility note: legacy names `linux_sensor_beta`, `macos_sensor_beta`,
 `windows_sensor_beta`, plus the legacy `sensor_beta:` block, are still
 accepted as aliases for backward compatibility.
 
+### `host_metrics` input
+
+Host metrics input that collects process snapshots, CPU, memory, and network
+statistics via `sysinfo`. This input is Arrow-native and does not support
+`format`. It auto-detects the current OS at startup.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `sensor.poll_interval_ms` | integer | No | Periodic sample cadence in milliseconds. Must be `>= 1`. Defaults to `10000`. |
+| `sensor.control_path` | string | No | Optional JSON control-plane file path for runtime reload. |
+| `sensor.control_reload_interval_ms` | integer | No | Reload check interval in milliseconds. Must be `>= 1`. Defaults to `1000`. |
+| `sensor.enabled_families` | array[string] | No | Optional enabled signal families. Omit to use defaults; set `[]` to disable all families. |
+| `sensor.emit_signal_rows` | boolean | No | Emit periodic per-family sample rows. Defaults to `true`. |
+
+```yaml
+input:
+  type: host_metrics
+  sensor:
+    poll_interval_ms: 5000
+```
+
 ### `arrow_ipc` input
 
 Receive Arrow IPC stream payloads over HTTP `POST` and forward decoded
@@ -305,6 +326,7 @@ Behavior:
 | `linux_ebpf_sensor` | Implemented | Linux eBPF sensor input (Arrow-native control + signal rows). |
 | `macos_es_sensor` | Implemented | macOS EndpointSecurity sensor input (Arrow-native control + signal rows). |
 | `windows_ebpf_sensor` | Implemented | Windows eBPF sensor input (Arrow-native control + signal rows). |
+| `host_metrics` | Implemented | Host metrics input — process snapshots, CPU, memory, network stats via sysinfo (Arrow-native). |
 | `arrow_ipc` | Implemented | Receive Arrow IPC stream batches via HTTP `POST /v1/arrow`. |
 
 ---
