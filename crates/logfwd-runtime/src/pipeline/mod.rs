@@ -774,6 +774,7 @@ impl Pipeline {
     /// Apply a pool `AckItem` at the worker/checkpoint seam.
     ///
     /// Called from the `select!` loop when a pool worker finishes a batch.
+    #[cfg_attr(not(feature = "turmoil"), allow(clippy::unused_async))]
     async fn apply_pool_ack(&mut self, ack: AckItem) -> bool {
         let batch_id = ack.batch_id;
         #[cfg(feature = "turmoil")]
