@@ -257,7 +257,7 @@ jobs:
           results = {}
           for est_file in glob.glob('target/criterion/**/new/estimates.json', recursive=True):
               parts = est_file.split('/criterion/')[1].split('/new/')[0]
-              bench_name = parts.replace('/', '/')
+              bench_name = parts
               with open(est_file) as f:
                   data = json.load(f)
               mean_ns = data.get('mean', {}).get('point_estimate', 0)
@@ -266,7 +266,7 @@ jobs:
           # Also grab throughput if available.
           for thr_file in glob.glob('target/criterion/**/new/benchmark.json', recursive=True):
               parts = thr_file.split('/criterion/')[1].split('/new/')[0]
-              bench_name = parts.replace('/', '/')
+              bench_name = parts
               with open(thr_file) as f:
                   data = json.load(f)
               tp = data.get('throughput')
@@ -288,6 +288,7 @@ jobs:
         with:
           name: micro-results
           path: |
+            micro_raw.txt
             micro_body.md
             criterion-data.json
           retention-days: 7
@@ -392,6 +393,74 @@ jobs:
         env:
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_SHA: ${{ github.sha }}
+
+      - name: Parse competitive benchmark output to OTLP (benchkit 0.2.3)
+        id: parse_competitive_otlp
+        uses: strawgate/o11ykit/actions/parse-results@1dabdc45cb73ac44a576d826f3acadd5d159a691
+        with:
+          mode: file
+          results: gh-bench.json
+          format: benchmark-action
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          data-branch: bench-data
+          run-id: ${{ github.run_id }}-${{ github.run_attempt }}--competitive-otlp
+          commit-results: ${{ github.ref == 'refs/heads/main' }}
+          fail-on-zero-datapoints: "false"
+          min-datapoints: "0"
+          summary: "true"
+
+      - name: Parse rate benchmark output to OTLP (benchkit 0.2.3)
+        id: parse_rate_otlp
+        if: hashFiles('rate-results/rate-gh-bench.json') != ''
+        uses: strawgate/o11ykit/actions/parse-results@1dabdc45cb73ac44a576d826f3acadd5d159a691
+        with:
+          mode: file
+          results: rate-results/rate-gh-bench.json
+          format: benchmark-action
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          data-branch: bench-data
+          run-id: ${{ github.run_id }}-${{ github.run_attempt }}--rate-otlp
+          commit-results: ${{ github.ref == 'refs/heads/main' }}
+          fail-on-zero-datapoints: "false"
+          min-datapoints: "0"
+          summary: "true"
+
+      - name: Parse criterion benchmark output to OTLP (benchkit 0.2.3)
+        id: parse_criterion_otlp
+        if: hashFiles('micro/micro_raw.txt') != ''
+        uses: strawgate/o11ykit/actions/parse-results@1dabdc45cb73ac44a576d826f3acadd5d159a691
+        with:
+          mode: file
+          results: micro/micro_raw.txt
+          format: rust
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          data-branch: bench-data
+          run-id: ${{ github.run_id }}-${{ github.run_attempt }}--criterion-otlp
+          commit-results: ${{ github.ref == 'refs/heads/main' }}
+          fail-on-zero-datapoints: "false"
+          min-datapoints: "0"
+          summary: "true"
+
+      - name: Collect normalized OTLP files
+        run: |
+          mkdir -p benchkit-otlp
+          if [ -n "${{ steps.parse_competitive_otlp.outputs['normalized-otlp-path'] }}" ] && [ -f "${{ steps.parse_competitive_otlp.outputs['normalized-otlp-path'] }}" ]; then
+            cp "${{ steps.parse_competitive_otlp.outputs['normalized-otlp-path'] }}" benchkit-otlp/competitive-otlp.json
+          fi
+          if [ -n "${{ steps.parse_rate_otlp.outputs['normalized-otlp-path'] }}" ] && [ -f "${{ steps.parse_rate_otlp.outputs['normalized-otlp-path'] }}" ]; then
+            cp "${{ steps.parse_rate_otlp.outputs['normalized-otlp-path'] }}" benchkit-otlp/rate-otlp.json
+          fi
+          if [ -n "${{ steps.parse_criterion_otlp.outputs['normalized-otlp-path'] }}" ] && [ -f "${{ steps.parse_criterion_otlp.outputs['normalized-otlp-path'] }}" ]; then
+            cp "${{ steps.parse_criterion_otlp.outputs['normalized-otlp-path'] }}" benchkit-otlp/criterion-otlp.json
+          fi
+          ls -la benchkit-otlp || true
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: benchkit-otlp-${{ github.run_number }}
+          path: benchkit-otlp/
+          retention-days: 90
 
       # Commit bench data to the bench-data branch so the dashboard can fetch
       # it live via raw.githubusercontent.com — no Pages redeploy needed.

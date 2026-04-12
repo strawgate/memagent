@@ -2,8 +2,8 @@ import {
   fetchIndex,
   fetchRun,
   rawUrl,
-} from "https://cdn.jsdelivr.net/npm/@benchkit/chart@0.2.2/dist/fetch.js/+esm";
-import { trendChartDataset } from "https://cdn.jsdelivr.net/npm/@benchkit/adapters@0.2.2/dist/chartjs.js/+esm";
+} from "https://cdn.jsdelivr.net/npm/@benchkit/chart@0.2.3/dist/fetch.js/+esm";
+import { trendChartDataset } from "https://cdn.jsdelivr.net/npm/@benchkit/adapters@0.2.3/dist/chartjs.js/+esm";
 
 export const benchDataSource = {
   owner: "strawgate",

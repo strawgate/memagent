@@ -18,6 +18,9 @@
     <p class="eyebrow">development lane</p>
     <h1>Development Metrics</h1>
     <p class="lede">Watch resource curves and criterion drift so we can defend scanner and pipeline performance with real trend evidence.</p>
+    <div class="hero-tags">
+      <span>criterion drift</span><span>rate pressure</span><span>perf confidence</span>
+    </div>
   </header>
 
   <nav class="nav-pills">
@@ -347,10 +350,6 @@ async function main() {
     const latest = criterionRuns[criterionRuns.length - 1];
     const benchmarks = latest.benchmarks || {};
     const tbody = document.getElementById('criterion-tbody');
-
-    // Gather all benchmark names across runs for trends
-    const allBenchNames = new Set();
-    criterionRuns.forEach(r => Object.keys(r.benchmarks || {}).forEach(n => allBenchNames.add(n)));
 
     let sparkIdx = 0;
     let rowsHtml = '';
