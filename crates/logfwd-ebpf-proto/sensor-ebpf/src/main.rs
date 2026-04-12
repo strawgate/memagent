@@ -4,7 +4,7 @@
 //! from a shared ring buffer. Prints structured JSON to stdout.
 //!
 //! Usage:
-//!   sudo ./sensor-ebpf <ebpf-binary-path> [--json] [--duration <seconds>] [--no-file-open]
+//!   sudo ./sensor-ebpf `<ebpf-binary-path>` \[--json\] \[--duration `<seconds>`\] \[--no-file-open\]
 
 // Ring buffer events are 8-byte aligned by the kernel, so casting from *const u8
 // to a repr(C) struct pointer is safe despite clippy's alignment warning.
@@ -118,6 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let now_wall = wall_clock_ns();
             let comm = comm_str(&header.comm);
+            let comm_esc = json_escape(comm);
 
             match header.kind {
                 // ── Process exec ──────────────────────────────
@@ -136,8 +137,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             header.uid,
                             header.gid,
                             header.cgroup_id,
-                            comm,
-                            fname
+                            comm_esc,
+                            json_escape(fname)
                         )?;
                     } else {
                         writeln!(
@@ -163,7 +164,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             header.uid,
                             header.gid,
                             header.cgroup_id,
-                            comm,
+                            comm_esc,
                             ev.exit_code
                         )?;
                     } else {
@@ -194,9 +195,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             header.uid,
                             header.gid,
                             header.cgroup_id,
-                            comm,
+                            comm_esc,
                             ev.flags,
-                            fname
+                            json_escape(fname)
                         )?;
                     } else {
                         writeln!(
@@ -223,9 +224,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             header.uid,
                             header.gid,
                             header.cgroup_id,
-                            comm,
+                            comm_esc,
                             ev.flags,
-                            path
+                            json_escape(path)
                         )?;
                     } else {
                         writeln!(
@@ -253,9 +254,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             header.uid,
                             header.gid,
                             header.cgroup_id,
-                            comm,
-                            old,
-                            new
+                            comm_esc,
+                            json_escape(old),
+                            json_escape(new)
                         )?;
                     } else {
                         writeln!(
@@ -281,7 +282,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             header.uid,
                             header.gid,
                             header.cgroup_id,
-                            comm,
+                            comm_esc,
                             ev.target_uid
                         )?;
                     } else {
@@ -308,7 +309,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             header.uid,
                             header.gid,
                             header.cgroup_id,
-                            comm,
+                            comm_esc,
                             ev.target_gid
                         )?;
                     } else {
@@ -336,9 +337,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             header.uid,
                             header.gid,
                             header.cgroup_id,
-                            comm,
+                            comm_esc,
                             ev.taints,
-                            name
+                            json_escape(name)
                         )?;
                     } else {
                         writeln!(
@@ -365,7 +366,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             header.uid,
                             header.gid,
                             header.cgroup_id,
-                            comm,
+                            comm_esc,
                             ev.request,
                             req_name,
                             ev.target_pid
@@ -395,9 +396,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             header.uid,
                             header.gid,
                             header.cgroup_id,
-                            comm,
+                            comm_esc,
                             ev.flags,
-                            name
+                            json_escape(name)
                         )?;
                     } else {
                         writeln!(
@@ -419,7 +420,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"tcp_connect","tgid":{},"comm":"{}","src":"{}:{}","dst":"{}:{}"}}"#,
-                            now_wall, header.tgid, comm, src, ev.sport, dst, ev.dport
+                            now_wall, header.tgid, comm_esc, src, ev.sport, dst, ev.dport
                         )?;
                     } else {
                         writeln!(
@@ -441,7 +442,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"tcp_accept","tgid":{},"comm":"{}","src":"{}:{}","dst":"{}:{}"}}"#,
-                            now_wall, header.tgid, comm, src, ev.sport, dst, ev.dport
+                            now_wall, header.tgid, comm_esc, src, ev.sport, dst, ev.dport
                         )?;
                     } else {
                         writeln!(
@@ -500,6 +501,26 @@ fn safe_str(buf: &[u8], len: usize) -> &str {
     let slice = &buf[..end];
     let nul = slice.iter().position(|&b| b == 0).unwrap_or(end);
     std::str::from_utf8(&slice[..nul]).unwrap_or("<invalid>")
+}
+
+/// Escape a string for safe interpolation into JSON string values.
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str(r#"\""#),
+            '\\' => out.push_str(r"\\"),
+            '\n' => out.push_str(r"\n"),
+            '\r' => out.push_str(r"\r"),
+            '\t' => out.push_str(r"\t"),
+            c if c.is_control() => {
+                use std::fmt::Write;
+                let _ = write!(out, r"\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn size_of<T>() -> usize {

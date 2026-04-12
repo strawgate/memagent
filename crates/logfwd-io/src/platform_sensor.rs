@@ -679,10 +679,13 @@ impl PlatformSensorCommon {
             row.process_start_time_unix_sec = Some(process.start_time());
             row.process_disk_read_delta_bytes = Some(disk_usage.read_bytes);
             row.process_disk_write_delta_bytes = Some(disk_usage.written_bytes);
-            row.process_user_id = process.user_id().map(|uid| **uid);
-            row.process_effective_user_id = process.effective_user_id().map(|uid| **uid);
-            row.process_group_id = process.group_id().map(|gid| *gid);
-            row.process_effective_group_id = process.effective_group_id().map(|gid| *gid);
+            #[cfg(unix)]
+            {
+                row.process_user_id = process.user_id().map(|uid| **uid);
+                row.process_effective_user_id = process.effective_user_id().map(|uid| **uid);
+                row.process_group_id = process.group_id().map(|gid| *gid);
+                row.process_effective_group_id = process.effective_group_id().map(|gid| *gid);
+            }
             row.process_cwd = process.cwd().map(|p| p.to_string_lossy().to_string());
             row.process_session_id = process.session_id().map(sysinfo::Pid::as_u32);
             row.process_run_time_secs = Some(process.run_time());
@@ -1197,9 +1200,8 @@ fn extract_container_id(pid: u32) -> Option<String> {
                 .strip_prefix("docker-")
                 .or_else(|| segment.strip_prefix("cri-containerd-"))
                 .or_else(|| segment.strip_prefix("crio-"))
-                .unwrap_or(segment)
-                .strip_suffix(".scope")
                 .unwrap_or(segment);
+            let cleaned = cleaned.strip_suffix(".scope").unwrap_or(cleaned);
             if cleaned.len() == 64 && cleaned.chars().all(|c| c.is_ascii_hexdigit()) {
                 return Some(cleaned.to_string());
             }
@@ -1815,14 +1817,14 @@ mod tests {
         let _ = input.poll().expect("startup poll");
         assert_eq!(input.health(), ComponentHealth::Healthy);
 
-        tempfiles::write_control_file(&control_path, r#"{"generation":"bad"}"#);
+        tempfiles::write_control_file(&control_path, serde_json::json!({"generation":"bad"}));
         std::thread::sleep(Duration::from_millis(2));
         let _ = input.poll().expect("reload failure poll");
         assert_eq!(input.health(), ComponentHealth::Degraded);
 
         tempfiles::write_control_file(
             &control_path,
-            r#"{"generation":2,"enabled_families":["process"],"emit_signal_rows":false}"#,
+            serde_json::json!({"generation":2,"enabled_families":["process"],"emit_signal_rows":false}),
         );
         std::thread::sleep(Duration::from_millis(2));
         let _ = input.poll().expect("reload recovery poll");

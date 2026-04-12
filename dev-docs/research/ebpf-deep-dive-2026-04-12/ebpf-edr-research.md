@@ -1,6 +1,8 @@
 # eBPF EDR Sensor — Research & Implementation Plan
 
+> **Status:** Active
 > **Date:** 2026-04-12
+> **Context:** Research synthesis from 5 parallel workstreams (Rust eBPF ecosystem, EDR architecture patterns, high-performance eBPF, MITRE ATT&CK coverage, bleeding-edge kernel features).
 > **Sources:** Aya/libbpf-rs ecosystem analysis, Tracee/Tetragon/Falco architecture review, performance modeling, MITRE ATT&CK coverage mapping.
 
 ---
