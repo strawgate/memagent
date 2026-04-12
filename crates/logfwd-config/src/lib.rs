@@ -17,13 +17,15 @@ mod validate;
 #[cfg(test)]
 pub(crate) use env::expand_env_vars;
 pub use types::{
-    AuthConfig, Config, ConfigError, CsvEnrichmentConfig, EnrichmentConfig, Format,
-    GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorInputConfig,
-    GeneratorProfileConfig, GeneratorSequenceConfig, GeoDatabaseConfig, GeoDatabaseFormat,
-    HostInfoConfig, HttpInputConfig, HttpMethodConfig, InputConfig, InputType,
-    JournaldBackendConfig, JournaldInputConfig, JsonlEnrichmentConfig, K8sPathConfig, OutputConfig,
-    OutputType, PipelineConfig, PlatformSensorInputConfig, ServerConfig, StaticEnrichmentConfig,
-    StorageConfig, TlsInputConfig,
+    ArrowIpcTypeConfig, AuthConfig, Config, ConfigError, CsvEnrichmentConfig, EnrichmentConfig,
+    FileTypeConfig, Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig,
+    GeneratorInputConfig, GeneratorProfileConfig, GeneratorSequenceConfig, GeneratorTypeConfig,
+    GeoDatabaseConfig, GeoDatabaseFormat, HostInfoConfig, HttpInputConfig, HttpMethodConfig,
+    HttpTypeConfig, InputConfig, InputType, InputTypeConfig, JournaldBackendConfig,
+    JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sPathConfig, OtlpTypeConfig,
+    OutputConfig, OutputType, PipelineConfig, PlatformSensorInputConfig, SensorTypeConfig,
+    ServerConfig, StaticEnrichmentConfig, StorageConfig, TcpTypeConfig, TlsInputConfig,
+    UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 
@@ -63,11 +65,11 @@ storage:
         assert_eq!(cfg.pipelines.len(), 1);
         let pipe = &cfg.pipelines["default"];
         assert_eq!(pipe.inputs.len(), 1);
-        assert_eq!(pipe.inputs[0].input_type, InputType::File);
-        assert_eq!(
-            pipe.inputs[0].path.as_deref(),
-            Some("/var/log/pods/**/*.log")
-        );
+        assert_eq!(pipe.inputs[0].input_type(), InputType::File);
+        assert!(matches!(
+            &pipe.inputs[0].type_config,
+            InputTypeConfig::File(f) if f.path == "/var/log/pods/**/*.log"
+        ));
         assert_eq!(pipe.inputs[0].format, Some(Format::Cri));
         assert!(pipe.transform.as_ref().unwrap().contains("SELECT"));
         assert_eq!(pipe.outputs[0].output_type, OutputType::Otlp);
@@ -113,9 +115,12 @@ server:
         assert_eq!(cfg.pipelines.len(), 1);
         let pipe = &cfg.pipelines["app_logs"];
         assert_eq!(pipe.inputs.len(), 2);
-        assert_eq!(pipe.inputs[0].input_type, InputType::File);
-        assert_eq!(pipe.inputs[1].input_type, InputType::Udp);
-        assert_eq!(pipe.inputs[1].listen.as_deref(), Some("0.0.0.0:514"));
+        assert_eq!(pipe.inputs[0].input_type(), InputType::File);
+        assert_eq!(pipe.inputs[1].input_type(), InputType::Udp);
+        assert!(matches!(
+            &pipe.inputs[1].type_config,
+            InputTypeConfig::Udp(u) if u.listen == "0.0.0.0:514"
+        ));
         assert_eq!(pipe.outputs.len(), 2);
         assert_eq!(pipe.outputs[0].output_type, OutputType::Otlp);
         assert_eq!(pipe.outputs[1].output_type, OutputType::Stdout);
@@ -167,7 +172,7 @@ output:
         let cfg = Config::load(&path).expect("Config::load should parse file");
         assert_eq!(cfg.pipelines.len(), 1);
         let pipe = &cfg.pipelines["default"];
-        assert_eq!(pipe.inputs[0].input_type, InputType::File);
+        assert_eq!(pipe.inputs[0].input_type(), InputType::File);
         assert_eq!(pipe.outputs[0].output_type, OutputType::Stdout);
         let _ = fs::remove_file(&path);
     }
@@ -318,11 +323,11 @@ output:
         let cfg = Config::load_str(yaml).expect("otlp input with resource_prefix should parse");
         let pipe = &cfg.pipelines["default"];
         assert_eq!(pipe.inputs.len(), 1);
-        assert_eq!(pipe.inputs[0].input_type, InputType::Otlp);
-        assert_eq!(
-            pipe.inputs[0].resource_prefix.as_deref(),
-            Some("resource.attributes.")
-        );
+        assert_eq!(pipe.inputs[0].input_type(), InputType::Otlp);
+        assert!(matches!(
+            &pipe.inputs[0].type_config,
+            InputTypeConfig::Otlp(o) if o.resource_prefix.as_deref() == Some("resource.attributes.")
+        ));
     }
 
     #[test]
@@ -346,6 +351,8 @@ output:
 
     #[test]
     fn non_otlp_input_rejects_resource_prefix() {
+        // With the tagged-enum refactor, `resource_prefix` is only valid inside
+        // the `otlp` variant.  Serde rejects it at parse time for other types.
         let yaml = r#"
 input:
   type: file
@@ -357,8 +364,8 @@ output:
         let err = Config::load_str(yaml).expect_err("resource_prefix must be otlp-only");
         let msg = err.to_string();
         assert!(
-            msg.contains("resource_prefix") && msg.contains("only supported for otlp"),
-            "expected otlp-only resource_prefix validation error, got: {msg}"
+            msg.contains("resource_prefix") || msg.contains("unknown field"),
+            "expected serde rejection of resource_prefix for file input, got: {msg}"
         );
     }
 
@@ -675,6 +682,7 @@ pipelines:
             ("linux_ebpf_sensor", ""),
             ("macos_es_sensor", ""),
             ("windows_ebpf_sensor", ""),
+            ("journald", ""),
         ] {
             let yaml = format!("input:\n  type: {itype}\n  {extra}\noutput:\n  type: stdout\n");
             Config::load_str(&yaml).unwrap_or_else(|e| panic!("failed for {itype}: {e}"));
@@ -712,9 +720,13 @@ output:
         let cfg = Config::load_str(yaml).unwrap();
         let pipe = &cfg.pipelines["default"];
         let input = &pipe.inputs[0];
-        assert_eq!(input.poll_interval_ms, Some(100));
-        assert_eq!(input.read_buf_size, Some(1048576));
-        assert_eq!(input.per_file_read_budget_bytes, Some(2097152));
+        let f = match &input.type_config {
+            InputTypeConfig::File(f) => f,
+            _ => panic!("expected File type_config"),
+        };
+        assert_eq!(f.poll_interval_ms, Some(100));
+        assert_eq!(f.read_buf_size, Some(1048576));
+        assert_eq!(f.per_file_read_budget_bytes, Some(2097152));
     }
 
     #[test]
@@ -763,6 +775,8 @@ output:
 
     #[test]
     fn non_file_input_rejects_tuning_knobs() {
+        // With the tagged-enum refactor, file-only tuning knobs are rejected by
+        // serde `deny_unknown_fields` at parse time for non-file input types.
         let inputs = [
             ("http", "listen: 0.0.0.0:8080"),
             ("tcp", "listen: 0.0.0.0:8080"),
@@ -791,8 +805,8 @@ output:
                 let err = Config::load_str(&yaml).unwrap_err().to_string();
                 let field_name = field.split(':').next().unwrap();
                 assert!(
-                    err.contains(&format!("'{field_name}' is not supported for")),
-                    "expected error about {field_name} not supported for {in_type}, got: {err}"
+                    err.contains(field_name) || err.contains("unknown field"),
+                    "expected serde rejection of {field_name} for {in_type}, got: {err}"
                 );
             }
         }
@@ -800,6 +814,8 @@ output:
 
     #[test]
     fn file_input_rejects_sensor_block() {
+        // With the tagged-enum refactor, the `sensor` key is only valid inside
+        // sensor input variants.  Serde rejects it at parse time for file inputs.
         let yaml = r"
 input:
   type: file
@@ -811,8 +827,9 @@ output:
 ";
         let err = Config::load_str(yaml).unwrap_err();
         assert!(
-            err.to_string()
-                .contains("'sensor' settings are only supported for sensor inputs")
+            err.to_string().contains("sensor") || err.to_string().contains("unknown field"),
+            "expected serde rejection of sensor for file input: {}",
+            err
         );
     }
 
@@ -1796,6 +1813,8 @@ enrichment:
 
     #[test]
     fn file_input_rejects_listen() {
+        // With the tagged-enum refactor, `listen` is not a valid field for file
+        // inputs. Serde rejects it at parse time via `deny_unknown_fields`.
         let yaml = r#"
 pipelines:
   test:
@@ -1806,11 +1825,7 @@ pipelines:
     outputs:
       - type: null
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("listen"),
-            "expected listen rejection: {err}"
-        );
+        let _ = Config::load_str(yaml).expect_err("file input must reject listen");
     }
 
     #[test]
@@ -1825,11 +1840,7 @@ pipelines:
     outputs:
       - type: null
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("path"),
-            "expected path rejection: {err}"
-        );
+        let _ = Config::load_str(yaml).expect_err("tcp input must reject path");
     }
 
     #[test]
@@ -1844,11 +1855,7 @@ pipelines:
     outputs:
       - type: null
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("max_open_files"),
-            "expected max_open_files rejection: {err}"
-        );
+        let _ = Config::load_str(yaml).expect_err("tcp input must reject max_open_files");
     }
 
     #[test]
@@ -1863,11 +1870,7 @@ pipelines:
     outputs:
       - type: null
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("adaptive_fast_polls_max"),
-            "expected adaptive_fast_polls_max rejection: {err}"
-        );
+        let _ = Config::load_str(yaml).expect_err("tcp input must reject adaptive_fast_polls_max");
     }
 
     #[test]
@@ -1943,6 +1946,8 @@ pipelines:
 
     #[test]
     fn udp_rejects_tls_block() {
+        // With the tagged-enum refactor, UDP has no `tls` field. Serde rejects
+        // it at parse time via `deny_unknown_fields`.
         let yaml = r#"
 pipelines:
   test:
@@ -1955,11 +1960,7 @@ pipelines:
     outputs:
       - type: null
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("TLS is not supported for UDP"),
-            "expected UDP TLS rejection: {err}"
-        );
+        let _ = Config::load_str(yaml).expect_err("udp input must reject tls");
     }
 
     #[test]
@@ -1974,11 +1975,7 @@ pipelines:
     outputs:
       - type: null
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("glob_rescan_interval_ms"),
-            "expected glob_rescan_interval_ms rejection: {err}"
-        );
+        let _ = Config::load_str(yaml).expect_err("tcp input must reject glob_rescan_interval_ms");
     }
 
     #[test]
@@ -1992,11 +1989,7 @@ pipelines:
     outputs:
       - type: null
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("path"),
-            "expected path rejection: {err}"
-        );
+        let _ = Config::load_str(yaml).expect_err("generator input must reject path");
     }
 
     #[test]
@@ -2025,10 +2018,11 @@ pipelines:
       - type: null
 "#;
         let cfg = Config::load_str(yaml).expect("generator block should be valid");
-        let generator = cfg.pipelines["test"].inputs[0]
-            .generator
-            .as_ref()
-            .expect("generator config");
+        let gen_type = match &cfg.pipelines["test"].inputs[0].type_config {
+            InputTypeConfig::Generator(g) => g,
+            _ => panic!("expected Generator type_config"),
+        };
+        let generator = gen_type.generator.as_ref().expect("generator config");
         assert_eq!(generator.events_per_sec, Some(25000));
         assert_eq!(generator.batch_size, Some(2048));
         assert_eq!(generator.total_events, Some(123));
@@ -2080,16 +2074,13 @@ pipelines:
     outputs:
       - type: null
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("'listen' is not supported for generator inputs"),
-            "expected generator listen rejection: {err}"
-        );
+        let _ = Config::load_str(yaml).expect_err("generator input must reject listen");
     }
 
     #[test]
     fn non_generator_input_rejects_generator_block() {
+        // With the tagged-enum refactor, the `generator` key is only valid inside
+        // the generator variant. Serde rejects it at parse time for file inputs.
         let yaml = r#"
 pipelines:
   test:
@@ -2101,12 +2092,7 @@ pipelines:
     outputs:
       - type: null
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("only supported for generator inputs"),
-            "expected generator block rejection: {err}"
-        );
+        let _ = Config::load_str(yaml).expect_err("file input must reject generator block");
     }
 
     #[test]
@@ -2318,7 +2304,11 @@ pipelines:
       - type: null
 "#;
         let cfg = Config::load_str(yaml).expect("timestamp config should be valid");
-        let ts = cfg.pipelines["test"].inputs[0]
+        let gen_type = match &cfg.pipelines["test"].inputs[0].type_config {
+            InputTypeConfig::Generator(g) => g,
+            _ => panic!("expected Generator type_config"),
+        };
+        let ts = gen_type
             .generator
             .as_ref()
             .unwrap()

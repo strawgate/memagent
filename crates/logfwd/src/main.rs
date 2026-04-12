@@ -1288,7 +1288,7 @@ fn validate_pipeline_read_only(
     use logfwd::transform::SqlTransform;
     #[cfg(feature = "datafusion")]
     use logfwd_config::{EnrichmentConfig, GeoDatabaseFormat};
-    use logfwd_config::{Format, InputType};
+    use logfwd_config::{Format, InputTypeConfig};
     #[cfg(feature = "datafusion")]
     use std::path::PathBuf;
 
@@ -1413,8 +1413,10 @@ fn validate_pipeline_read_only(
             .clone()
             .unwrap_or_else(|| format!("input_{i}"));
         if matches!(
-            input_cfg.input_type,
-            InputType::LinuxEbpfSensor | InputType::MacosEsSensor | InputType::WindowsEbpfSensor
+            input_cfg.type_config,
+            InputTypeConfig::LinuxEbpfSensor(_)
+                | InputTypeConfig::MacosEsSensor(_)
+                | InputTypeConfig::WindowsEbpfSensor(_)
         ) {
             if input_cfg.format.is_some() {
                 return Err(format!(
@@ -1425,11 +1427,11 @@ fn validate_pipeline_read_only(
             let format = input_cfg
                 .format
                 .clone()
-                .unwrap_or(match input_cfg.input_type {
-                    InputType::File => Format::Auto,
+                .unwrap_or(match input_cfg.type_config {
+                    InputTypeConfig::File(_) => Format::Auto,
                     _ => Format::Json,
                 });
-            validate_input_format_read_only(&input_name, input_cfg.input_type.clone(), &format)?;
+            validate_input_format_read_only(&input_name, input_cfg.input_type(), &format)?;
         }
 
         let input_sql = input_cfg.sql.as_deref().unwrap_or(pipeline_sql);
