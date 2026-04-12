@@ -394,18 +394,35 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_SHA: ${{ github.sha }}
 
-      # parse-results currently parses one format per invocation, so we keep
-      # one benchmark-action parse (competitive + rate files) and one rust parse.
+      # parse-results currently parses one result file per invocation. Keep
+      # benchmark-action files separate so multiple JSON arrays are never
+      # concatenated before parsing.
       - name: Parse throughput benchmark output to OTLP (benchkit 0.2.3)
         id: parse_throughput_otlp
         uses: strawgate/o11ykit/actions/parse-results@1dabdc45cb73ac44a576d826f3acadd5d159a691
         with:
           mode: file
-          results: "**/*gh-bench.json"
+          results: gh-bench.json
           format: benchmark-action
           github-token: ${{ secrets.GITHUB_TOKEN }}
           data-branch: bench-data
           run-id: ${{ github.run_id }}-${{ github.run_attempt }}--throughput-otlp
+          commit-results: ${{ github.ref == 'refs/heads/main' }}
+          fail-on-zero-datapoints: "false"
+          min-datapoints: "0"
+          summary: "true"
+
+      - name: Parse rate benchmark output to OTLP (benchkit 0.2.3)
+        id: parse_rate_otlp
+        if: hashFiles('rate-results/rate-gh-bench.json') != ''
+        uses: strawgate/o11ykit/actions/parse-results@1dabdc45cb73ac44a576d826f3acadd5d159a691
+        with:
+          mode: file
+          results: rate-results/rate-gh-bench.json
+          format: benchmark-action
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          data-branch: bench-data
+          run-id: ${{ github.run_id }}-${{ github.run_attempt }}--rate-otlp
           commit-results: ${{ github.ref == 'refs/heads/main' }}
           fail-on-zero-datapoints: "false"
           min-datapoints: "0"
@@ -432,7 +449,7 @@ jobs:
         with:
           name: benchkit-otlp-${{ github.run_number }}
           path: /tmp/o11ykit-run-${{ github.run_id }}-${{ github.run_attempt }}--*-otlp.json
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 90
 
       # Commit bench data to the bench-data branch so the dashboard can fetch
