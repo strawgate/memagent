@@ -487,10 +487,28 @@ bench:
 bench-ceiling:
     cargo bench -p logfwd-bench --bench throughput_ceiling
 
+# Run OTLP decision-grade IO benchmark suite (decode/materialize/encode/compress/e2e).
+bench-otlp-io *ARGS:
+    cargo bench -p logfwd-bench --bench otlp_io {{ARGS}}
+
+# Run OTLP IO benchmarks with fast local compile settings for iteration.
+# Use `bench-otlp-io` for final comparison runs.
+bench-otlp-io-fast *ARGS:
+    CARGO_PROFILE_BENCH_DEBUG=0 CARGO_PROFILE_BENCH_LTO=false CARGO_PROFILE_BENCH_CODEGEN_UNITS=16 cargo bench -p logfwd-bench --bench otlp_io {{ARGS}}
+
+# Profile OTLP IO decode/E2E paths with the normal allocator; pass
+# `--flamegraph /tmp/file.svg` for a pprof flamegraph.
+profile-otlp-io *ARGS:
+    cargo run -p logfwd-bench --release --bin otlp_io_profile -- {{ARGS}}
+
+# Profile OTLP IO allocation counts with stats_alloc instrumentation.
+profile-otlp-io-alloc *ARGS:
+    cargo run -p logfwd-bench --release --features otlp-profile-alloc --bin otlp_io_profile -- {{ARGS}}
+
 # Run all criterion benchmarks (Tier 1 + Tier 2 — includes I/O and batch scaling, ~2-5min)
 # Excludes elasticsearch_arrow which requires a running ES instance.
 bench-full:
-    cargo bench -p logfwd-bench --bench pipeline --bench output_encode --bench full_chain --bench builder_compare --bench batch_formation --bench file_io --bench throughput_ceiling
+    cargo bench -p logfwd-bench --bench pipeline --bench output_encode --bench full_chain --bench builder_compare --bench batch_formation --bench file_io --bench throughput_ceiling --bench otlp_io
 
 # Run system-level benchmarks (pipeline, contention, backpressure — requires running services)
 bench-system:

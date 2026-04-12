@@ -208,7 +208,8 @@ impl OtlpSink {
         let columns = resolve_batch_columns(batch, self.message_field.as_str(), &resource_prefix);
 
         // Phase 1: encode all LogRecords and assign each row to a resource group.
-        let mut records_buf: Vec<u8> = Vec::with_capacity(num_rows * 128);
+        let mut records_buf: Vec<u8> =
+            Vec::with_capacity(estimate_records_buf_capacity(num_rows, &columns));
         let mut grouped_ranges: Vec<ResourceGroup<'_>> = Vec::new();
         let mut group_index_by_key: std::collections::HashMap<
             (ResourceKey<'_>, ScopeKey<'_>),
@@ -448,6 +449,18 @@ impl OtlpSink {
     pub fn encoded_payload(&self) -> &[u8] {
         &self.encoder_buf
     }
+}
+
+fn estimate_records_buf_capacity(num_rows: usize, columns: &BatchColumns<'_>) -> usize {
+    const MIN_RECORD_BYTES: usize = 128;
+    const ATTR_BYTES_HINT: usize = 48;
+    const MAX_INITIAL_RECORDS_BUF: usize = 64 * 1024 * 1024;
+
+    let hinted_attrs = columns.attribute_cols.len().min(64);
+    let bytes_per_row = MIN_RECORD_BYTES.saturating_add(hinted_attrs * ATTR_BYTES_HINT);
+    num_rows
+        .saturating_mul(bytes_per_row)
+        .min(MAX_INITIAL_RECORDS_BUF)
 }
 
 impl OtlpSink {

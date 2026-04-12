@@ -19,6 +19,7 @@ use super::convert::{
     parse_protojson_i64, parse_protojson_u64, write_f64_to_buf, write_hex_to_buf, write_i64_to_buf,
     write_json_key, write_json_string_field, write_u64_to_buf,
 };
+use super::projection::decode_projected_otlp_logs;
 
 pub(super) fn decompress_zstd(body: &[u8]) -> Result<Vec<u8>, InputError> {
     let decoder = zstd::Decoder::new(body)
@@ -62,6 +63,16 @@ pub(super) fn decode_otlp_protobuf(
         )));
     }
 
+    match decode_projected_otlp_logs(body, resource_prefix) {
+        Ok(batch) => Ok(batch),
+        Err(_) => decode_otlp_protobuf_with_prost(body, resource_prefix),
+    }
+}
+
+pub(super) fn decode_otlp_protobuf_with_prost(
+    body: &[u8],
+    resource_prefix: &str,
+) -> Result<RecordBatch, InputError> {
     let request = ExportLogsServiceRequest::decode(body)
         .map_err(|e| InputError::Receiver(format!("invalid protobuf: {e}")))?;
 

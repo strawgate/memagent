@@ -7,14 +7,15 @@
 
 mod convert;
 mod decode;
+mod projection;
 mod server;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 use convert::*;
-use decode::decode_otlp_logs_to_batch;
 #[cfg(test)]
 use decode::*;
+use decode::{decode_otlp_logs_to_batch, decode_otlp_protobuf_with_prost};
 
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -275,6 +276,38 @@ impl InputSource for OtlpReceiverInput {
 /// [`logfwd_types::field_names::DEFAULT_RESOURCE_PREFIX`].
 pub fn decode_protobuf_to_batch(body: &[u8]) -> Result<RecordBatch, InputError> {
     decode_otlp_logs_to_batch(body)
+}
+
+/// Decode OTLP protobuf bytes with the experimental projected wire decoder.
+///
+/// This is exposed for benchmarks and differential validation. Production
+/// receiver decode uses this path opportunistically and falls back to prost for
+/// unsupported semantic cases.
+pub fn decode_protobuf_to_batch_projected_experimental(
+    body: &[u8],
+) -> Result<RecordBatch, InputError> {
+    projection::decode_projected_otlp_logs(body, field_names::DEFAULT_RESOURCE_PREFIX)
+        .map_err(|e| InputError::Receiver(e.to_string()))
+}
+
+/// Decode OTLP protobuf bytes with the experimental projected wire decoder,
+/// preserving string columns as Arrow `Utf8View` views into the input buffer.
+///
+/// This is benchmark-only scaffolding for evaluating whether view-backed OTLP
+/// batches pay off before the production path adopts them.
+pub fn decode_protobuf_bytes_to_batch_projected_view_experimental(
+    body: bytes::Bytes,
+) -> Result<RecordBatch, InputError> {
+    projection::decode_projected_otlp_logs_view_bytes(body, field_names::DEFAULT_RESOURCE_PREFIX)
+        .map_err(|e| InputError::Receiver(e.to_string()))
+}
+
+/// Decode OTLP protobuf bytes with the prost reference path.
+///
+/// This is intentionally exposed for benchmarks so the projected decoder can
+/// be compared against the allocation-heavy prost object graph.
+pub fn decode_protobuf_to_batch_prost_reference(body: &[u8]) -> Result<RecordBatch, InputError> {
+    decode_otlp_protobuf_with_prost(body, field_names::DEFAULT_RESOURCE_PREFIX)
 }
 
 fn drain_receiver_payloads(

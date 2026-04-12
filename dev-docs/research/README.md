@@ -19,6 +19,7 @@ Point-in-time investigations that informed architecture decisions.
 
 ## Active Research
 
+- [columnar-builder/README.md](columnar-builder/README.md)
 - [checkpoint-snapshot-design.md](checkpoint-snapshot-design.md)
 - [crate-restructure-plan.md](crate-restructure-plan.md)
 - [file-tailing-audit.md](file-tailing-audit.md)
