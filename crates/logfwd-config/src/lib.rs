@@ -17,10 +17,10 @@ mod validate;
 #[cfg(test)]
 pub(crate) use env::expand_env_vars;
 pub use types::{
-    AuthConfig, Config, ConfigError, CsvEnrichmentConfig, EnrichmentConfig, Format,
-    GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorInputConfig,
-    GeneratorProfileConfig, GeneratorSequenceConfig, GeoDatabaseConfig, GeoDatabaseFormat,
-    HostInfoConfig, HttpInputConfig, HttpMethodConfig, InputConfig, InputType,
+    AuthConfig, Config, ConfigError, CsvEnrichmentConfig, EnrichmentConfig,
+    EnvVarsEnrichmentConfig, Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig,
+    GeneratorInputConfig, GeneratorProfileConfig, GeneratorSequenceConfig, GeoDatabaseConfig,
+    GeoDatabaseFormat, HostInfoConfig, HttpInputConfig, HttpMethodConfig, InputConfig, InputType,
     JsonlEnrichmentConfig, K8sPathConfig, OutputConfig, OutputType, PipelineConfig,
     PlatformSensorInputConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig, TlsInputConfig,
 };

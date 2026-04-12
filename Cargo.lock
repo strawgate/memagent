@@ -2745,6 +2745,7 @@ dependencies = [
  "arrow",
  "backon",
  "bytes",
+ "csv",
  "dhat",
  "fail",
  "futures-util",
@@ -2777,6 +2778,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "turmoil",
+ "ureq",
 ]
 
 [[package]]

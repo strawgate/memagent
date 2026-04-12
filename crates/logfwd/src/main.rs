@@ -1391,6 +1391,16 @@ fn validate_pipeline_read_only(
                         .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
                     enrichment_tables.push(table);
                 }
+                EnrichmentConfig::EnvVars(cfg) => {
+                    let table = Arc::new(
+                        logfwd::transform::enrichment::EnvTable::from_prefix(
+                            &cfg.table_name,
+                            &cfg.prefix,
+                        )
+                        .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?,
+                    );
+                    enrichment_tables.push(table);
+                }
             }
         }
 

@@ -610,6 +610,156 @@ pub trait GeoDatabase: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
+// Reloadable geo database
+// ---------------------------------------------------------------------------
+
+/// Wraps a [`GeoDatabase`] with an atomic hot-swap handle.
+///
+/// The hot path takes a cheap shared read lock.  The reload task takes an
+/// exclusive write lock only to swap the `Arc` pointer — the critical section
+/// is a pointer copy, never an I/O operation.
+///
+/// ```rust,ignore
+/// let db = Arc::new(MmdbDatabase::open(path)?);
+/// let reloadable = Arc::new(ReloadableGeoDb::new(db));
+/// let handle = reloadable.reload_handle();
+///
+/// tokio::spawn(async move {
+///     let mut ticker = tokio::time::interval(Duration::from_secs(interval));
+///     ticker.tick().await; // skip first immediate tick
+///     loop {
+///         ticker.tick().await;
+///         if let Ok(new_db) = MmdbDatabase::open(&path) {
+///             handle.replace(Arc::new(new_db));
+///         }
+///     }
+/// });
+/// ```
+pub struct ReloadableGeoDb {
+    inner: Arc<RwLock<Arc<dyn GeoDatabase>>>,
+}
+
+impl ReloadableGeoDb {
+    /// Wrap an existing database.
+    pub fn new(db: Arc<dyn GeoDatabase>) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(db)),
+        }
+    }
+
+    /// Return a lightweight handle for driving background reloads.
+    pub fn reload_handle(&self) -> GeoReloadHandle {
+        GeoReloadHandle {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl GeoDatabase for ReloadableGeoDb {
+    fn lookup(&self, ip: &str) -> Option<GeoResult> {
+        self.inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lookup(ip)
+    }
+}
+
+/// A cloneable handle used to atomically replace the active database.
+#[derive(Clone)]
+pub struct GeoReloadHandle {
+    inner: Arc<RwLock<Arc<dyn GeoDatabase>>>,
+}
+
+impl GeoReloadHandle {
+    /// Atomically swap in a new database.  Safe to call from any thread.
+    pub fn replace(&self, db: Arc<dyn GeoDatabase>) {
+        *self
+            .inner
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = db;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Environment variable enrichment table
+// ---------------------------------------------------------------------------
+
+/// A one-row enrichment table populated from environment variables matching a
+/// name prefix.  The prefix is stripped and the remainder lower-cased to form
+/// column names.
+///
+/// Useful for injecting deployment metadata that is already baked into the pod
+/// environment without needing a separate config file.
+///
+/// ```yaml
+/// enrichment:
+///   - type: env_vars
+///     table_name: deploy_meta
+///     prefix: LOGFWD_META_
+/// ```
+///
+/// With `LOGFWD_META_CLUSTER=prod` and `LOGFWD_META_REGION=us-east-1` set,
+/// the table exposes `cluster` and `region` columns.
+///
+/// SQL: `SELECT logs.*, m.cluster, m.region FROM logs CROSS JOIN deploy_meta AS m`
+pub struct EnvTable {
+    table_name: String,
+    batch: RecordBatch,
+}
+
+impl EnvTable {
+    /// Build the table from all environment variables whose names begin with
+    /// `prefix`.
+    ///
+    /// Returns an error if no matching variables are found, since an empty
+    /// table would be misleading to wire into the pipeline.
+    pub fn from_prefix(
+        table_name: impl Into<String>,
+        prefix: &str,
+    ) -> Result<Self, TransformError> {
+        let mut pairs: Vec<(String, String)> = std::env::vars()
+            .filter_map(|(k, v)| {
+                k.strip_prefix(prefix)
+                    .map(|stripped| (stripped.to_lowercase(), v))
+            })
+            .collect();
+        pairs.sort_by(|a, b| a.0.cmp(&b.0));
+
+        if pairs.is_empty() {
+            return Err(TransformError::Enrichment(format!(
+                "EnvTable: no environment variables found with prefix '{prefix}'"
+            )));
+        }
+
+        let fields: Vec<Field> = pairs
+            .iter()
+            .map(|(k, _)| Field::new(k.as_str(), DataType::Utf8, false))
+            .collect();
+        let schema = Arc::new(Schema::new(fields));
+        let columns: Vec<Arc<dyn arrow::array::Array>> = pairs
+            .iter()
+            .map(|(_, v)| Arc::new(StringArray::from(vec![v.as_str()])) as _)
+            .collect();
+        let batch = RecordBatch::try_new(schema, columns).map_err(TransformError::Arrow)?;
+
+        Ok(EnvTable {
+            table_name: table_name.into(),
+            batch,
+        })
+    }
+}
+
+impl EnrichmentTable for EnvTable {
+    fn name(&self) -> &str {
+        &self.table_name
+    }
+
+    fn snapshot(&self) -> Option<RecordBatch> {
+        Some(self.batch.clone())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1054,4 +1204,110 @@ mod tests {
         // Final state should have data.
         assert!(table.snapshot().is_some());
     }
+}
+
+// -- ReloadableGeoDb ----------------------------------------------------
+
+#[allow(dead_code)]
+struct FixedGeoDb(GeoResult);
+impl GeoDatabase for FixedGeoDb {
+    fn lookup(&self, _ip: &str) -> Option<GeoResult> {
+        Some(self.0.clone())
+    }
+}
+
+#[test]
+fn reloadable_geo_db_initial_lookup() {
+    let result = GeoResult {
+        country_code: Some("US".to_string()),
+        ..Default::default()
+    };
+    let db = Arc::new(FixedGeoDb(result));
+    let reloadable = Arc::new(ReloadableGeoDb::new(db));
+    let got = reloadable.lookup("1.2.3.4").unwrap();
+    assert_eq!(got.country_code.as_deref(), Some("US"));
+}
+
+#[test]
+fn reloadable_geo_db_swap_replaces_backend() {
+    let first = Arc::new(FixedGeoDb(GeoResult {
+        country_code: Some("US".to_string()),
+        ..Default::default()
+    }));
+    let reloadable = Arc::new(ReloadableGeoDb::new(first));
+    let handle = reloadable.reload_handle();
+
+    let second = Arc::new(FixedGeoDb(GeoResult {
+        country_code: Some("DE".to_string()),
+        ..Default::default()
+    }));
+    handle.replace(second);
+
+    let got = reloadable.lookup("1.2.3.4").unwrap();
+    assert_eq!(got.country_code.as_deref(), Some("DE"));
+}
+
+#[test]
+fn reloadable_geo_db_concurrent_reads() {
+    let db = Arc::new(FixedGeoDb(GeoResult {
+        country_code: Some("AU".to_string()),
+        ..Default::default()
+    }));
+    let reloadable = Arc::new(ReloadableGeoDb::new(db));
+    let handle = reloadable.reload_handle();
+
+    let reader = Arc::clone(&reloadable);
+    let reader_thread = std::thread::spawn(move || {
+        for _ in 0..100 {
+            let _ = reader.lookup("8.8.8.8");
+        }
+    });
+
+    // Swap pointer while reader is running.
+    handle.replace(Arc::new(FixedGeoDb(GeoResult {
+        country_code: Some("GB".to_string()),
+        ..Default::default()
+    })));
+
+    reader_thread.join().unwrap();
+}
+
+// -- EnvTable -----------------------------------------------------------
+
+#[test]
+fn env_table_reads_prefix() {
+    // SAFETY: test sets and clears env vars; must not run in parallel with other
+    // tests that read the same vars.
+    unsafe {
+        std::env::set_var("LOGFWD_TEST_CLUSTER", "prod");
+        std::env::set_var("LOGFWD_TEST_REGION", "us-east-1");
+    }
+
+    let table = EnvTable::from_prefix("deploy", "LOGFWD_TEST_").expect("should succeed");
+    assert_eq!(table.name(), "deploy");
+    let batch = table.snapshot().unwrap();
+    assert_eq!(batch.num_rows(), 1);
+
+    // Columns exist for the two vars we set (plus any pre-existing matches).
+    assert!(batch.column_by_name("cluster").is_some());
+    assert!(batch.column_by_name("region").is_some());
+
+    let cluster = batch
+        .column_by_name("cluster")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(cluster.value(0), "prod");
+
+    unsafe {
+        std::env::remove_var("LOGFWD_TEST_CLUSTER");
+        std::env::remove_var("LOGFWD_TEST_REGION");
+    }
+}
+
+#[test]
+fn env_table_no_match_returns_error() {
+    let result = EnvTable::from_prefix("nothing", "LOGFWD_NONEXISTENT_PREFIX_XYZZY_12345_");
+    assert!(result.is_err());
 }

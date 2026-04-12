@@ -1079,6 +1079,18 @@ impl Config {
                             }
                         }
                         EnrichmentConfig::HostInfo(_) => {}
+                        EnrichmentConfig::EnvVars(cfg) => {
+                            if cfg.table_name.is_empty() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' enrichment #{j}: table_name must not be empty"
+                                )));
+                            }
+                            if cfg.prefix.is_empty() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' enrichment #{j}: env_vars 'prefix' must not be empty"
+                                )));
+                            }
+                        }
                     }
                 }
 

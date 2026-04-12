@@ -21,6 +21,7 @@ Point-in-time investigations that informed architecture decisions.
 
 - [checkpoint-snapshot-design.md](checkpoint-snapshot-design.md)
 - [crate-restructure-plan.md](crate-restructure-plan.md)
+- [enrichment-architecture-plan-2026-04.md](enrichment-architecture-plan-2026-04.md)
 - [file-tailing-audit.md](file-tailing-audit.md)
 - [per-input-sql-analysis.md](per-input-sql-analysis.md)
 - [tla-gap-analysis.md](tla-gap-analysis.md)
