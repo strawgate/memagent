@@ -1,6 +1,6 @@
 use crate::types::{
     Config, ConfigError, EnrichmentConfig, Format, GeneratorAttributeValueConfig,
-    GeneratorProfileConfig, InputType, OutputType,
+    GeneratorProfileConfig, InputType, JournaldBackendConfig, OutputType,
 };
 use std::path::Path;
 use url::Url;
@@ -212,11 +212,14 @@ impl Config {
                             if let Some(jd) = &input.journald {
                                 // journal_directory and journal_namespace are mutually exclusive
                                 // in the native backend (directory opens a specific path, namespace
-                                // opens a named journal).
-                                if jd.journal_directory.is_some() && jd.journal_namespace.is_some()
+                                // opens a named journal). The subprocess backend supports both
+                                // flags together, so only reject when the native API is required.
+                                if jd.backend == JournaldBackendConfig::Native
+                                    && jd.journal_directory.is_some()
+                                    && jd.journal_namespace.is_some()
                                 {
                                     return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': 'journal_directory' and 'journal_namespace' cannot both be set"
+                                        "pipeline '{name}' input '{label}': 'journal_directory' and 'journal_namespace' cannot both be set with native backend"
                                     )));
                                 }
 
