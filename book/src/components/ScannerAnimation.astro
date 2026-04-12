@@ -270,5 +270,35 @@
   });
 
   go(0);
+
+  // Scroll sync: map page headings to animation steps
+  var headingToStep = {
+    'the-log-line': 0,
+    'simd-structural-detection': 1,
+    'string-interior-mask': 2,
+    'usable-positions': 3,
+    'field-extraction': 4,
+    'all-fields-extracted': 5,
+  };
+
+  // Observe headings and activate corresponding step when scrolled into view
+  if ('IntersectionObserver' in window) {
+    var observer = new IntersectionObserver(function(entries) {
+      if (playing) return; // don't override autoplay
+      entries.forEach(function(entry) {
+        if (entry.isIntersecting) {
+          var id = entry.target.id;
+          if (id in headingToStep) {
+            go(headingToStep[id]);
+          }
+        }
+      });
+    }, { rootMargin: '-20% 0px -60% 0px' });
+
+    Object.keys(headingToStep).forEach(function(id) {
+      var heading = document.getElementById(id);
+      if (heading) observer.observe(heading);
+    });
+  }
 })();
 </script>
