@@ -130,7 +130,7 @@ fn try_process_exec(ctx: &TracePointContext) -> Result<(), i64> {
             Ok(s) => (*event).filename_len = s.len() as u32,
             Err(_) => (*event).filename_len = 0,
         }
-        (*event)._pad = 0;
+        (*event).pad = 0;
     }
 
     entry.submit(0);
@@ -156,7 +156,7 @@ fn try_process_exit(_ctx: &TracePointContext) -> Result<(), i64> {
     unsafe {
         fill_header(&mut (*event).header, EventKind::ProcessExit);
         (*event).exit_code = 0;
-        (*event)._pad = 0;
+        (*event).pad = 0;
     }
 
     entry.submit(0);
@@ -279,7 +279,7 @@ fn try_setuid(ctx: &TracePointContext) -> Result<(), i64> {
         fill_header(&mut (*event).header, EventKind::Setuid);
         let uid: u64 = ctx.read_at(16).unwrap_or(0);
         (*event).target_uid = uid as u32;
-        (*event)._pad = 0;
+        (*event).pad = 0;
     }
 
     entry.submit(0);
@@ -307,7 +307,7 @@ fn try_setgid(ctx: &TracePointContext) -> Result<(), i64> {
         fill_header(&mut (*event).header, EventKind::Setgid);
         let gid: u64 = ctx.read_at(16).unwrap_or(0);
         (*event).target_gid = gid as u32;
-        (*event)._pad = 0;
+        (*event).pad = 0;
     }
 
     entry.submit(0);

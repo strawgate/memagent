@@ -1,11 +1,13 @@
 [package]
 name = "sensor-ebpf"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
 
 [dependencies]
-aya = "0.13"
+aya = { workspace = true }
 sensor-ebpf-common = { path = "sensor-ebpf-common" }
 
-[workspace]
-members = ["sensor-ebpf-kern", "sensor-ebpf-common"]
+[lints]
+workspace = true

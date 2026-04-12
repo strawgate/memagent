@@ -1,2 +1,2 @@
-target/
-Cargo.lock
+# sensor-ebpf-kern builds separately (nightly + bpfel-unknown-none target)
+# Its target/ dir is not covered by root **/target/ since it's excluded from workspace
