@@ -68,7 +68,20 @@ jobs:
       - name: Build docs (Starlight)
         run: cd book && npm run build
 
-      - name: Link check (book + docs + README)
+      - name: Link check (source docs)
+        uses: lycheeverse/lychee-action@v2
+        with:
+          lycheeVersion: v0.23.0
+          args: >-
+            --no-progress
+            --accept 200,429
+            --max-retries 3
+            --root-dir .
+            --exclude mailto:
+            --exclude-loopback
+            README.md dev-docs docs
+
+      - name: Link check (built book)
         uses: lycheeverse/lychee-action@v2
         with:
           lycheeVersion: v0.23.0
@@ -79,7 +92,7 @@ jobs:
             --root-dir ${{ github.workspace }}/book/dist
             --exclude mailto:
             --exclude-loopback
-            README.md book/src/content/docs dev-docs docs
+            book/src/content/docs
 
       - name: Build rustdoc (public API only)
         run: |
