@@ -778,7 +778,7 @@ fn cmd_init() -> Result<(), CliError> {
 # 3. Run the pipeline:      logfwd run --config logfwd.yaml
 #
 # For production, change the input path and output to your real
-# source/destination — see the examples in examples/use-cases/.
+# source/destination — see the examples at https://github.com/strawgate/memagent/tree/main/examples/use-cases/
 # Or run `logfwd wizard` for an interactive setup.
 
 # Tail a JSON log file and stream new lines as they appear.
@@ -863,6 +863,7 @@ fn cmd_wizard() -> Result<(), CliError> {
         let uc = &USE_CASE_TEMPLATES[uc_idx];
         println!("{}selected{}: {}", green(), reset(), uc.title,);
         println!();
+        // TODO: support multiline SQL input (currently single-line via read_line)
         let sql = prompt_text(
             "SQL transform (blank = keep the preset default)",
             uc.transform,
@@ -887,6 +888,7 @@ fn cmd_wizard() -> Result<(), CliError> {
             &output_descs,
         )?;
 
+        // TODO: support multiline SQL input (currently single-line via read_line)
         let sql = prompt_text(
             "Optional SQL transform (blank = SELECT * FROM logs)",
             "SELECT * FROM logs",
