@@ -360,12 +360,10 @@ mod tests {
         sink.serialize_batch(&batch).unwrap();
         let out = std::str::from_utf8(&sink.batch_buf).unwrap();
         let lines: Vec<&str> = out.lines().collect();
+        // All-null columns are omitted from JSON output.
         assert_eq!(
             lines,
-            vec![
-                r#"{"body":"raw-line-1","level":null}"#,
-                r#"{"body":"raw-line-2","level":null}"#
-            ]
+            vec![r#"{"body":"raw-line-1"}"#, r#"{"body":"raw-line-2"}"#]
         );
     }
 
