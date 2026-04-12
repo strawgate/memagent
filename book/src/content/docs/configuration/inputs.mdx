@@ -3,10 +3,13 @@ title: "Input Types"
 description: "Usage notes and examples for each input type"
 ---
 
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
 Support status lives in the [Configuration Reference](/configuration/reference/#input-types).
 This page focuses on usage notes and examples.
 
-## File
+<Tabs>
+<TabItem label="File">
 
 Tail one or more log files with glob pattern support.
 
@@ -28,7 +31,8 @@ input:
 - `per_file_read_budget_bytes` (default: 262144): The maximum bytes to read from a single file during one polling iteration before yielding to other files.
 - `adaptive_fast_polls_max` (default: 8): Immediate repoll budget after a read-budget hit; set to `0` to disable adaptive fast repolls.
 
-## Generator
+</TabItem>
+<TabItem label="Generator">
 
 Emit synthetic JSON log lines for benchmarking and pipeline testing. No external
 data source is required.
@@ -97,7 +101,8 @@ input:
 
 Use `generate-json <num_lines> <output_file>` on the CLI to write a fixed number of lines to a file instead.
 
-## UDP
+</TabItem>
+<TabItem label="UDP">
 
 Receive log lines on a UDP socket.
 
@@ -110,7 +115,8 @@ input:
 
 TLS is not supported for UDP inputs.
 
-## TCP
+</TabItem>
+<TabItem label="TCP">
 
 Accept log lines on a TCP socket.
 
@@ -140,7 +146,8 @@ input:
     client_ca_file: /etc/logfwd/tls/clients-ca.pem
 ```
 
-## OTLP
+</TabItem>
+<TabItem label="OTLP">
 
 Receive OTLP log records from another agent or SDK.
 
@@ -150,7 +157,8 @@ input:
   listen: 0.0.0.0:4318
 ```
 
-## HTTP
+</TabItem>
+<TabItem label="HTTP">
 
 Receive newline-delimited payloads over HTTP `POST` (NDJSON or raw lines).
 
@@ -166,3 +174,6 @@ input:
     max_request_body_size: 20971520
     response_code: 200
 ```
+
+</TabItem>
+</Tabs>
