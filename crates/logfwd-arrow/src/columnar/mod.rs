@@ -1,9 +1,15 @@
 //! Shared columnar construction engine.
 //!
-//! This module will eventually house the `ColumnarBatchBuilder` and its
-//! supporting types (`BatchPlan`, `FieldHandle`, `FieldKind`).  For now it
-//! contains only the extracted row lifecycle protocol — the state machine
-//! that enforces the begin_batch → begin_row → end_row → finish_batch
-//! call sequence shared by all columnar builders.
+//! This module houses the planning and lifecycle types for the shared
+//! `ColumnarBatchBuilder` direction:
+//!
+//! - [`row_protocol::RowLifecycle`] — batch/row state machine
+//! - [`plan::BatchPlan`] — field registry and handle allocator
+//! - [`plan::FieldHandle`] — stable column reference
+//! - [`plan::FieldKind`] — protocol-agnostic column type
+//!
+//! See `dev-docs/research/columnar-batch-builder.md` for the design intent.
 
+#[allow(dead_code)]
+pub(crate) mod plan;
 pub(crate) mod row_protocol;
