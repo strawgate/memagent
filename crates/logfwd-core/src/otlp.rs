@@ -321,7 +321,8 @@ pub enum Severity {
 /// Fast severity lookup from first byte + length. No string comparison needed.
 #[inline(always)]
 pub fn parse_severity(text: &[u8]) -> (Severity, &[u8]) {
-    // Exact case-insensitive match against the 6 standard severity strings.
+    // Exact case-insensitive match against the 6 standard severity strings
+    // plus common aliases used by syslog and application logs.
     // Previous version used prefix matching (e.g., any string starting with
     // "I" matched INFO) which caused false positives like "INVALID" → Info.
     let sev = match text.len() {
@@ -735,7 +736,7 @@ mod tests {
         assert!(matches!(parse_severity(b"WARNING").0, Severity::Warn));
         assert!(matches!(parse_severity(b"warning").0, Severity::Warn));
         assert!(matches!(parse_severity(b"Warning").0, Severity::Warn));
-        // ERR -> Error (#1866)
+        // ERR -> Error (#1912)
         assert!(matches!(parse_severity(b"ERR").0, Severity::Error));
         assert!(matches!(parse_severity(b"err").0, Severity::Error));
         assert!(matches!(parse_severity(b"Err").0, Severity::Error));
