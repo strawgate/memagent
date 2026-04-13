@@ -20,7 +20,7 @@ use crossbeam_channel::{Receiver, TrySendError, bounded};
 use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 
 use crate::input::{InputEvent, InputSource};
-use crate::journal_ffi;
+use crate::journal_ffi::{self, SD_JOURNAL_INVALIDATE};
 
 /// Channel capacity between the reader thread and `poll()`.
 const CHANNEL_CAPACITY: usize = 4096;
@@ -343,6 +343,11 @@ fn native_reader_loop(
     // Reusable buffer for JSON serialization.
     let mut json_buf = Vec::with_capacity(4096);
 
+    // Track the last-read cursor so we can recover after INVALIDATE.
+    // Seed it with the current position (from seek_start) so since_now
+    // recovery works even before the first entry is processed.
+    let mut last_cursor: Option<String> = journal.cursor().ok();
+
     loop {
         if !running.load(Ordering::Acquire) {
             return;
@@ -356,6 +361,11 @@ fn native_reader_loop(
 
             match journal.next() {
                 Ok(true) => {
+                    // Save cursor before reading data (cheap string copy).
+                    if let Ok(c) = journal.cursor() {
+                        last_cursor = Some(c);
+                    }
+
                     // Build JSON from entry fields.
                     match entry_to_json(&mut journal, &exclude_units, &mut json_buf) {
                         Ok(Some(())) => {
@@ -395,7 +405,20 @@ fn native_reader_loop(
 
         // Wait for new entries (with periodic timeout to check running flag).
         match journal.wait(NATIVE_WAIT_USEC) {
-            Ok(_) => {} // NOP, APPEND, or INVALIDATE — all handled by next loop iteration
+            Ok(SD_JOURNAL_INVALIDATE) => {
+                // Journal files were rotated/added/removed. The internal file
+                // handle state may be stale, causing next() to return false
+                // even when new entries exist. Re-seek to our saved cursor so
+                // the drain loop's next() call picks up new entries.
+                if let Some(ref cursor) = last_cursor {
+                    if let Err(e) = journal.seek_cursor(cursor) {
+                        tracing::warn!(error = %e, "failed to re-seek after journal invalidate");
+                    }
+                    // Don't call next() here — the drain loop will call it,
+                    // advancing past the cursor entry to the first new one.
+                }
+            }
+            Ok(_) => {} // NOP or APPEND — next loop iteration will drain.
             Err(e) => {
                 tracing::warn!(error = %e, "sd_journal_wait error");
                 health.store(HEALTH_DEGRADED, Ordering::Release);
