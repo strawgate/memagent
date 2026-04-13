@@ -462,17 +462,17 @@ fn tcp_server_crash_preserves_pre_crash_delivery() {
     let total_received = server_handle_check.received_lines.load(Ordering::Relaxed);
 
     // The server received some data before the crash.
-    // After crash+bounce, more data may have been delivered.
-    // At minimum, pre-crash data must exist (it was already counted).
     assert!(
         pre_crash > 0,
         "expected data delivered before server crash, got 0"
     );
 
-    // Crash/bounce must not corrupt pre-crash data.
+    // With indefinite retry the worker keeps trying through the
+    // crash/bounce window. Pre-crash data is never lost, and
+    // additional data may arrive once the server is back up.
     assert!(
         total_received >= pre_crash,
-        "crash should not corrupt pre-crash data: total ({total_received}) < pre_crash ({pre_crash})"
+        "crash should not lose pre-crash data: total ({total_received}) < pre_crash ({pre_crash})"
     );
 }
 

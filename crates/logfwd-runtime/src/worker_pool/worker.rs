@@ -206,6 +206,17 @@ pub(super) async fn recv_with_idle_timeout(
 /// Returns `(outcome, send_latency_ns, retries)` where `send_latency_ns` is
 /// cumulative wall time inside `sink.send_batch()` across all attempts
 /// (excludes backoff sleep).
+///
+/// Retries indefinitely for transient failures (`IoError`, `RetryAfter`,
+/// timeouts) using exponential backoff capped at `max_retry_delay`. The
+/// worker blocks on its current batch, which propagates backpressure
+/// through the bounded worker channels to the pipeline and ultimately to
+/// inputs — matching Filebeat's delivery model. The only exits are:
+///
+/// - `Delivered` — batch was sent successfully
+/// - `Rejected` — sink permanently rejected the data (4xx, schema error)
+/// - `PoolClosed` — shutdown cancellation was observed
+/// - `InternalFailure` — unknown `SendResult` variant
 pub(super) async fn process_item(
     worker_id: usize,
     sink: &mut dyn Sink,
@@ -217,22 +228,22 @@ pub(super) async fn process_item(
 ) -> (DeliveryOutcome, u64, usize) {
     sink.begin_batch();
 
-    // Retry budget for transient IoError failures. When exhausted the worker
-    // reports RetryExhausted so the pipeline can hold tickets and initiate an
-    // orderly shutdown (checkpoints do not advance past undelivered data).
-    // RetryAfter (server-specified backoff) resets the cycle and retries
-    // indefinitely until cancellation since the server explicitly asked to wait.
-    const RETRY_BUDGET: usize = 3;
     const BATCH_TIMEOUT_SECS: u64 = 60;
 
-    let mut backoff = ExponentialBuilder::default()
-        .with_min_delay(Duration::from_millis(100))
-        .with_max_delay(max_retry_delay)
-        .with_factor(2.0)
-        .with_max_times(RETRY_BUDGET)
-        .with_jitter()
-        .build();
+    /// Build a fresh exponential backoff iterator.
+    fn new_backoff(max_retry_delay: Duration) -> backon::ExponentialBackoff {
+        ExponentialBuilder::default()
+            .with_min_delay(Duration::from_millis(100))
+            .with_max_delay(max_retry_delay)
+            .with_factor(2.0)
+            // Large per-cycle count; we reset the cycle when exhausted so
+            // the worker retries indefinitely until cancellation.
+            .with_max_times(10)
+            .with_jitter()
+            .build()
+    }
 
+    let mut backoff = new_backoff(max_retry_delay);
     let mut send_latency_ns: u64 = 0;
     let mut retries_count = 0;
 
@@ -256,13 +267,31 @@ pub(super) async fn process_item(
 
         match result {
             Err(_elapsed) => {
-                tracing::error!(
+                // Timeout — treat like a transient error: back off and retry.
+                // A hung send doesn't mean the output is permanently dead.
+                retries_count += 1;
+                let delay = backoff.next().unwrap_or_else(|| {
+                    backoff = new_backoff(max_retry_delay);
+                    backoff
+                        .next()
+                        .expect("fresh backoff yields at least one delay")
+                });
+                output_health.apply_worker_event(worker_id, OutputHealthEvent::Retrying);
+                tracing::warn!(
                     worker_id,
                     timeout_secs = BATCH_TIMEOUT_SECS,
-                    "worker_pool: batch send timed out"
+                    retries = retries_count,
+                    sleep_ms = delay.as_millis() as u64,
+                    "worker_pool: batch send timed out, retrying"
                 );
-                output_health.apply_worker_event(worker_id, OutputHealthEvent::FatalFailure);
-                return (DeliveryOutcome::TimedOut, send_latency_ns, retries_count);
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => {
+                        tracing::warn!(worker_id, "worker_pool: cancellation observed during timeout backoff");
+                        return (DeliveryOutcome::PoolClosed, send_latency_ns, retries_count);
+                    }
+                    () = tokio::time::sleep(delay) => {}
+                }
             }
             Ok(SendResult::Ok) => {
                 output_health.apply_worker_event(worker_id, OutputHealthEvent::DeliverySucceeded);
@@ -280,26 +309,19 @@ pub(super) async fn process_item(
                 );
             }
             Ok(SendResult::RetryAfter(retry_dur)) => {
-                // Server specified delay — consume a backoff slot but use
-                // the server's delay (capped at max_retry_delay).
+                // Server specified delay — use the server's delay (capped).
                 if backoff.next().is_none() {
-                    tracing::warn!(
-                        worker_id,
-                        retry_budget = RETRY_BUDGET,
-                        "worker_pool: retry budget exhausted under RetryAfter; continuing until cancellation"
-                    );
-                    backoff = ExponentialBuilder::default()
-                        .with_min_delay(Duration::from_millis(100))
-                        .with_max_delay(max_retry_delay)
-                        .with_factor(2.0)
-                        .with_max_times(RETRY_BUDGET)
-                        .with_jitter()
-                        .build();
+                    backoff = new_backoff(max_retry_delay);
                 }
                 retries_count += 1;
                 let sleep_for = retry_dur.min(max_retry_delay);
                 output_health.apply_worker_event(worker_id, OutputHealthEvent::Retrying);
-                tracing::warn!(worker_id, ?sleep_for, "worker_pool: rate-limited, retrying");
+                tracing::warn!(
+                    worker_id,
+                    ?sleep_for,
+                    retries = retries_count,
+                    "worker_pool: rate-limited, retrying"
+                );
                 tokio::select! {
                     biased;
                     () = cancel.cancelled() => {
@@ -309,40 +331,34 @@ pub(super) async fn process_item(
                     () = tokio::time::sleep(sleep_for) => {}
                 }
             }
-            Ok(SendResult::IoError(e)) => match backoff.next() {
-                Some(delay) => {
-                    retries_count += 1;
-                    output_health.apply_worker_event(worker_id, OutputHealthEvent::Retrying);
-                    tracing::warn!(
-                        worker_id,
-                        sleep_ms = delay.as_millis() as u64,
-                        error = %e,
-                        "worker_pool: transient error, retrying with jitter"
-                    );
-                    tokio::select! {
-                        biased;
-                        () = cancel.cancelled() => {
-                            tracing::warn!(worker_id, "worker_pool: cancellation observed during jitter backoff");
-                            return (DeliveryOutcome::PoolClosed, send_latency_ns, retries_count);
-                        }
-                        () = tokio::time::sleep(delay) => {}
+            Ok(SendResult::IoError(e)) => {
+                // Transient I/O error — retry indefinitely with backoff.
+                // Backpressure propagates naturally: while this worker blocks,
+                // the pipeline cannot submit new batches to it, slowing inputs.
+                retries_count += 1;
+                let delay = backoff.next().unwrap_or_else(|| {
+                    backoff = new_backoff(max_retry_delay);
+                    backoff
+                        .next()
+                        .expect("fresh backoff yields at least one delay")
+                });
+                output_health.apply_worker_event(worker_id, OutputHealthEvent::Retrying);
+                tracing::warn!(
+                    worker_id,
+                    sleep_ms = delay.as_millis() as u64,
+                    retries = retries_count,
+                    error = %e,
+                    "worker_pool: transient error, retrying"
+                );
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => {
+                        tracing::warn!(worker_id, "worker_pool: cancellation observed during retry backoff");
+                        return (DeliveryOutcome::PoolClosed, send_latency_ns, retries_count);
                     }
+                    () = tokio::time::sleep(delay) => {}
                 }
-                None => {
-                    tracing::error!(
-                        worker_id,
-                        retry_budget = RETRY_BUDGET,
-                        error = %e,
-                        "worker_pool: retry budget exhausted on transient error"
-                    );
-                    output_health.apply_worker_event(worker_id, OutputHealthEvent::FatalFailure);
-                    return (
-                        DeliveryOutcome::RetryExhausted,
-                        send_latency_ns,
-                        retries_count,
-                    );
-                }
-            },
+            }
             // Future SendResult variants (#[non_exhaustive]) — treat as failure.
             Ok(_) => {
                 output_health.apply_worker_event(worker_id, OutputHealthEvent::FatalFailure);
