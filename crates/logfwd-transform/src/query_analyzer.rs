@@ -141,6 +141,20 @@ fn walk_query(
     except_fields: &mut Vec<String>,
     where_clause: &mut Option<SqlExpr>,
 ) {
+    // Walk CTE (WITH clause) bodies — columns inside CTEs are referenced.
+    if let Some(ref with) = query.with {
+        for cte in &with.cte_tables {
+            let mut cte_where = None;
+            walk_query(
+                &cte.query,
+                referenced_columns,
+                uses_select_star,
+                except_fields,
+                &mut cte_where,
+            );
+        }
+    }
+
     // Walk ORDER BY — columns may appear only here.
     if let Some(ref order_by) = query.order_by
         && let sqlast::OrderByKind::Expressions(exprs) = &order_by.kind
@@ -665,7 +679,9 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
                     }
                 }
                 sqlast::FunctionArguments::None => {}
-                sqlast::FunctionArguments::Subquery(_) => {}
+                sqlast::FunctionArguments::Subquery(subquery) => {
+                    collect_columns_from_subquery(subquery, cols);
+                }
             }
             // Walk OVER clause: columns in PARTITION BY and ORDER BY are
             // only referenced in func.over, not in func.args.
@@ -788,8 +804,9 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
             collect_column_refs(expr, cols);
             collect_column_refs(r#in, cols);
         }
-        SqlExpr::InSubquery { expr, .. } => {
+        SqlExpr::InSubquery { expr, subquery, .. } => {
             collect_column_refs(expr, cols);
+            collect_columns_from_subquery(subquery, cols);
         }
         SqlExpr::InUnnest {
             expr, array_expr, ..
@@ -800,7 +817,96 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
         SqlExpr::Convert { expr, .. } | SqlExpr::Collate { expr, .. } => {
             collect_column_refs(expr, cols);
         }
+        SqlExpr::Exists { subquery, .. } | SqlExpr::Subquery(subquery) => {
+            collect_columns_from_subquery(subquery, cols);
+        }
         // Literals, wildcards, etc. — no column refs.
         _ => {}
+    }
+}
+
+/// Walk a subquery and collect column references from it.
+/// Used by InSubquery, Exists, Subquery (scalar), and FunctionArguments::Subquery.
+fn collect_columns_from_subquery(query: &sqlast::Query, cols: &mut HashSet<String>) {
+    let mut star = false;
+    let mut except = Vec::new();
+    let mut nested_where = None;
+    walk_query(query, cols, &mut star, &mut except, &mut nested_where);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refs(sql: &str) -> HashSet<String> {
+        QueryAnalyzer::new(sql).unwrap().referenced_columns
+    }
+
+    #[test]
+    fn cte_columns_are_collected() {
+        let cols =
+            refs("WITH cte AS (SELECT severity, facility FROM logs) SELECT severity FROM cte");
+        assert!(cols.contains("severity"), "missing severity: {cols:?}");
+        assert!(
+            cols.contains("facility"),
+            "missing facility from CTE body: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn multiple_ctes_are_walked() {
+        let cols = refs(
+            "WITH a AS (SELECT host FROM logs), b AS (SELECT pid FROM logs) \
+             SELECT host FROM a",
+        );
+        assert!(cols.contains("host"), "missing host: {cols:?}");
+        assert!(
+            cols.contains("pid"),
+            "missing pid from second CTE: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn in_subquery_body_is_walked() {
+        let cols = refs("SELECT level FROM logs WHERE level IN (SELECT severity FROM alerts)");
+        assert!(cols.contains("level"), "missing level: {cols:?}");
+        assert!(
+            cols.contains("severity"),
+            "missing severity from IN subquery: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn exists_subquery_is_walked() {
+        let cols = refs(
+            "SELECT host FROM logs WHERE EXISTS (SELECT 1 FROM alerts WHERE alerts.src = logs.src)",
+        );
+        assert!(cols.contains("host"), "missing host: {cols:?}");
+        assert!(
+            cols.contains("src"),
+            "missing src from EXISTS subquery: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn not_exists_subquery_is_walked() {
+        let cols = refs(
+            "SELECT host FROM logs \
+             WHERE NOT EXISTS (SELECT 1 FROM alerts WHERE alerts.pid = logs.pid)",
+        );
+        assert!(
+            cols.contains("pid"),
+            "missing pid from NOT EXISTS subquery: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn scalar_subquery_is_walked() {
+        let cols = refs("SELECT host, (SELECT MAX(severity) FROM alerts) AS max_sev FROM logs");
+        assert!(cols.contains("host"), "missing host: {cols:?}");
+        assert!(
+            cols.contains("severity"),
+            "missing severity from scalar subquery: {cols:?}"
+        );
     }
 }
