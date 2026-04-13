@@ -17,9 +17,7 @@
     --tl-amber: #f59e0b;
     --tl-blue: #60a5fa;
     margin: 1.5rem 0;
-    position: sticky;
-    top: 3.5rem;
-    z-index: 10;
+    /* no sticky — scroll naturally with the page */
   }
   .tl * { margin-top: 0 !important; }
 
@@ -202,7 +200,6 @@
       updateStats();
 
       if (lineNum > 6) {
-        addEvent('<b>\u2705 Normal tailing resumed</b> — both files visible. Old file drained, new file actively tailed. Checkpoint updated.', 'ok');
         phase = 'done';
         timer = setTimeout(function() {
           // Reset for next loop
