@@ -344,9 +344,8 @@ fn native_reader_loop(
     let mut json_buf = Vec::with_capacity(4096);
 
     // Track the last-read cursor so we can recover after INVALIDATE.
-    // Seed it with the current position (from seek_start) so since_now
-    // recovery works even before the first entry is processed.
-    let mut last_cursor: Option<String> = journal.cursor().ok();
+    // Starts as None — only set after actually emitting an entry.
+    let mut last_cursor: Option<String> = None;
 
     loop {
         if !running.load(Ordering::Acquire) {
@@ -408,14 +407,20 @@ fn native_reader_loop(
             Ok(SD_JOURNAL_INVALIDATE) => {
                 // Journal files were rotated/added/removed. The internal file
                 // handle state may be stale, causing next() to return false
-                // even when new entries exist. Re-seek to our saved cursor so
-                // the drain loop's next() call picks up new entries.
+                // even when new entries exist. Re-seek to restore position.
                 if let Some(ref cursor) = last_cursor {
                     if let Err(e) = journal.seek_cursor(cursor) {
                         tracing::warn!(error = %e, "failed to re-seek after journal invalidate");
                     }
-                    // Don't call next() here — the drain loop will call it,
-                    // advancing past the cursor entry to the first new one.
+                    // seek_cursor positions ON the cursor entry (already
+                    // emitted). Advance past it so the drain loop reads
+                    // only new entries.
+                    let _ = journal.next();
+                } else {
+                    // No entries read yet — restore initial seek position.
+                    if let Err(e) = seek_start(&mut journal, config) {
+                        tracing::warn!(error = %e, "failed to re-seek after journal invalidate");
+                    }
                 }
             }
             Ok(_) => {} // NOP or APPEND — next loop iteration will drain.
