@@ -16,10 +16,9 @@
 use std::sync::Arc;
 
 use arrow::array::{
-    ArrayRef, BooleanArray, Float64Array, Int64Array, StringBuilder, StringViewBuilder,
-    StructArray,
+    ArrayRef, BooleanArray, Float64Array, Int64Array, StringArray, StringViewBuilder, StructArray,
 };
-use arrow::buffer::{Buffer, NullBuffer};
+use arrow::buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field, Fields};
 
 use super::plan::FieldKind;
@@ -495,24 +494,59 @@ fn build_string(
             generated_buf,
         } => {
             let original_len = original_buf.len();
-            // Pre-compute total string bytes to avoid reallocation.
-            let total_str_bytes: usize = facts
-                .iter()
-                .map(|(_, sref)| sref.len as usize)
-                .sum();
-            let mut builder = StringBuilder::with_capacity(facts.len(), total_str_bytes);
+            // Build offsets + values directly, skipping per-value UTF-8 validation.
+            // Safety argument: all strings entered via write_str(&str) are already
+            // valid UTF-8 by Rust's type system. StringRef data written via
+            // write_str_ref may originate from arbitrary bytes, so we validate
+            // the entire concatenated values buffer once at the end.
+            let mut offsets: Vec<i32> = Vec::with_capacity(num_rows + 1);
+            let mut values: Vec<u8> =
+                Vec::with_capacity(facts.iter().map(|(_, sref)| sref.len as usize).sum());
+            let mut validity: Vec<bool> = Vec::with_capacity(num_rows);
             let mut vi = 0;
+
             for row in 0..num_rows as u32 {
+                offsets.push(values.len() as i32);
                 if vi < facts.len() && facts[vi].0 == row {
                     let sref = facts[vi].1;
-                    let s = read_str(original_buf, generated_buf, original_len, sref)?;
-                    builder.append_value(s);
+                    let bytes = read_str_bytes(original_buf, generated_buf, original_len, sref)?;
+                    values.extend_from_slice(bytes);
+                    validity.push(true);
                     vi += 1;
                 } else {
-                    builder.append_null();
+                    validity.push(false);
                 }
             }
-            Ok((Arc::new(builder.finish()), DataType::Utf8))
+            offsets.push(values.len() as i32);
+
+            // Single UTF-8 validation of the entire values buffer.
+            if std::str::from_utf8(&values).is_err() {
+                // Find the offending string for a precise error.
+                let mut fvi = 0;
+                for row in 0..num_rows as u32 {
+                    if fvi < facts.len() && facts[fvi].0 == row {
+                        let sref = facts[fvi].1;
+                        let start = offsets[row as usize] as usize;
+                        let end = offsets[row as usize + 1] as usize;
+                        if std::str::from_utf8(&values[start..end]).is_err() {
+                            return Err(MaterializeError::InvalidUtf8 {
+                                offset: sref.offset,
+                                len: sref.len,
+                            });
+                        }
+                        fvi += 1;
+                    }
+                }
+            }
+
+            let nulls = if validity.iter().all(|&v| v) {
+                None
+            } else {
+                Some(NullBuffer::from(validity))
+            };
+            let offset_buf = OffsetBuffer::new(ScalarBuffer::from(offsets));
+            let array = StringArray::new(offset_buf, Buffer::from_vec(values), nulls);
+            Ok((Arc::new(array), DataType::Utf8))
         }
         FinalizationMode::View {
             original,
@@ -564,36 +598,77 @@ fn read_str<'a>(
     sref: StringRef,
 ) -> Result<&'a str, MaterializeError> {
     let start = sref.offset as usize;
-    let end = start.checked_add(sref.len as usize).ok_or(
-        MaterializeError::StringRefOutOfBounds {
-            offset: sref.offset,
-            len: sref.len,
-            buffer_len: original.len() + generated.len(),
-        },
-    )?;
+    let end =
+        start
+            .checked_add(sref.len as usize)
+            .ok_or(MaterializeError::StringRefOutOfBounds {
+                offset: sref.offset,
+                len: sref.len,
+                buffer_len: original.len() + generated.len(),
+            })?;
     let bytes = if start < original_len {
-        original.get(start..end).ok_or(
-            MaterializeError::StringRefOutOfBounds {
+        original
+            .get(start..end)
+            .ok_or(MaterializeError::StringRefOutOfBounds {
                 offset: sref.offset,
                 len: sref.len,
                 buffer_len: original.len(),
-            },
-        )?
+            })?
     } else {
         let dec_start = start - original_len;
         let dec_end = end - original_len;
-        generated.get(dec_start..dec_end).ok_or(
-            MaterializeError::StringRefOutOfBounds {
+        generated
+            .get(dec_start..dec_end)
+            .ok_or(MaterializeError::StringRefOutOfBounds {
                 offset: sref.offset,
                 len: sref.len,
                 buffer_len: generated.len(),
-            },
-        )?
+            })?
     };
     std::str::from_utf8(bytes).map_err(|_| MaterializeError::InvalidUtf8 {
         offset: sref.offset,
         len: sref.len,
     })
+}
+
+/// Read string bytes from the 2-buffer system without UTF-8 validation.
+///
+/// Returns the raw bytes referenced by `sref`. Callers must validate UTF-8
+/// externally (e.g., once over the concatenated output).
+fn read_str_bytes<'a>(
+    original: &'a [u8],
+    generated: &'a [u8],
+    original_len: usize,
+    sref: StringRef,
+) -> Result<&'a [u8], MaterializeError> {
+    let start = sref.offset as usize;
+    let end =
+        start
+            .checked_add(sref.len as usize)
+            .ok_or(MaterializeError::StringRefOutOfBounds {
+                offset: sref.offset,
+                len: sref.len,
+                buffer_len: original.len() + generated.len(),
+            })?;
+    if start < original_len {
+        original
+            .get(start..end)
+            .ok_or(MaterializeError::StringRefOutOfBounds {
+                offset: sref.offset,
+                len: sref.len,
+                buffer_len: original.len(),
+            })
+    } else {
+        let dec_start = start - original_len;
+        let dec_end = end - original_len;
+        generated
+            .get(dec_start..dec_end)
+            .ok_or(MaterializeError::StringRefOutOfBounds {
+                offset: sref.offset,
+                len: sref.len,
+                buffer_len: generated.len(),
+            })
+    }
 }
 
 fn build_conflict_struct(
@@ -761,13 +836,7 @@ mod tests {
         acc.push_i64(0, 200);
 
         let input = b"OK";
-        acc.push_str(
-            1,
-            StringRef {
-                offset: 0,
-                len: 2,
-            },
-        );
+        acc.push_str(1, StringRef { offset: 0, len: 2 });
 
         let mode = FinalizationMode::Detached {
             original_buf: input,
@@ -852,7 +921,13 @@ mod tests {
     fn string_ref_out_of_bounds_returns_error() {
         let mut acc = ColumnAccumulator::for_planned(FieldKind::Utf8View);
         // Reference past end of buffer
-        acc.push_str(0, StringRef { offset: 100, len: 5 });
+        acc.push_str(
+            0,
+            StringRef {
+                offset: 100,
+                len: 5,
+            },
+        );
 
         let mode = FinalizationMode::Detached {
             original_buf: b"short",

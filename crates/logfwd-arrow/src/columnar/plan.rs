@@ -150,6 +150,12 @@ pub struct BatchPlan {
     index: HashMap<Arc<str>, FieldHandle>,
 }
 
+impl Default for BatchPlan {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BatchPlan {
     /// Create an empty plan.
     pub fn new() -> Self {

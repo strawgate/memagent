@@ -8,7 +8,7 @@
 //! Tests use `#[serial]` because the global counting allocator is shared.
 
 use serial_test::serial;
-use stats_alloc::{Region, StatsAlloc, INSTRUMENTED_SYSTEM};
+use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 use std::alloc::System;
 
 #[global_allocator]
@@ -86,8 +86,16 @@ fn run_streaming_detached(warmup: bool) -> stats_alloc::Stats {
                 sb.append_i64_value_by_idx(idx, row as i64);
             }
             for &idx in &[
-                indices[2], indices[3], indices[5], indices[6], indices[7],
-                indices[8], indices[9], indices[10], indices[11], indices[14],
+                indices[2],
+                indices[3],
+                indices[5],
+                indices[6],
+                indices[7],
+                indices[8],
+                indices[9],
+                indices[10],
+                indices[11],
+                indices[14],
             ] {
                 sb.append_decoded_str_by_idx(idx, b"example-value-0123456789");
             }
@@ -113,8 +121,16 @@ fn run_streaming_detached(warmup: bool) -> stats_alloc::Stats {
                 sb.append_i64_value_by_idx(idx, row as i64);
             }
             for &idx in &[
-                indices[2], indices[3], indices[5], indices[6], indices[7],
-                indices[8], indices[9], indices[10], indices[11], indices[14],
+                indices[2],
+                indices[3],
+                indices[5],
+                indices[6],
+                indices[7],
+                indices[8],
+                indices[9],
+                indices[10],
+                indices[11],
+                indices[14],
             ] {
                 sb.append_decoded_str_by_idx(idx, b"example-value-0123456789");
             }
@@ -144,8 +160,16 @@ fn run_streaming_view(warmup: bool) -> stats_alloc::Stats {
                 sb.append_i64_value_by_idx(idx, row as i64);
             }
             for &idx in &[
-                indices[2], indices[3], indices[5], indices[6], indices[7],
-                indices[8], indices[9], indices[10], indices[11], indices[14],
+                indices[2],
+                indices[3],
+                indices[5],
+                indices[6],
+                indices[7],
+                indices[8],
+                indices[9],
+                indices[10],
+                indices[11],
+                indices[14],
             ] {
                 sb.append_decoded_str_by_idx(idx, b"example-value-0123456789");
             }
@@ -171,8 +195,16 @@ fn run_streaming_view(warmup: bool) -> stats_alloc::Stats {
                 sb.append_i64_value_by_idx(idx, row as i64);
             }
             for &idx in &[
-                indices[2], indices[3], indices[5], indices[6], indices[7],
-                indices[8], indices[9], indices[10], indices[11], indices[14],
+                indices[2],
+                indices[3],
+                indices[5],
+                indices[6],
+                indices[7],
+                indices[8],
+                indices[9],
+                indices[10],
+                indices[11],
+                indices[14],
             ] {
                 sb.append_decoded_str_by_idx(idx, b"example-value-0123456789");
             }
@@ -190,29 +222,46 @@ fn run_streaming_view(warmup: bool) -> stats_alloc::Stats {
 // ColumnarBatchBuilder workload runners
 // ---------------------------------------------------------------------------
 
-fn make_columnar_plan() -> (BatchPlan, [FieldHandle; 4], [FieldHandle; 10], [FieldHandle; 1]) {
+fn make_columnar_plan() -> (
+    BatchPlan,
+    [FieldHandle; 4],
+    [FieldHandle; 10],
+    [FieldHandle; 1],
+) {
     let mut plan = BatchPlan::new();
     let int_handles: [FieldHandle; 4] = [
-        plan.declare_planned("timestamp_ns", FieldKind::Int64).unwrap(),
-        plan.declare_planned("severity_number", FieldKind::Int64).unwrap(),
+        plan.declare_planned("timestamp_ns", FieldKind::Int64)
+            .unwrap(),
+        plan.declare_planned("severity_number", FieldKind::Int64)
+            .unwrap(),
         plan.declare_planned("flags", FieldKind::Int64).unwrap(),
-        plan.declare_planned("attributes.http.status_code", FieldKind::Int64).unwrap(),
+        plan.declare_planned("attributes.http.status_code", FieldKind::Int64)
+            .unwrap(),
     ];
     let str_handles: [FieldHandle; 10] = [
-        plan.declare_planned("severity_text", FieldKind::Utf8View).unwrap(),
+        plan.declare_planned("severity_text", FieldKind::Utf8View)
+            .unwrap(),
         plan.declare_planned("body", FieldKind::Utf8View).unwrap(),
-        plan.declare_planned("trace_id", FieldKind::Utf8View).unwrap(),
-        plan.declare_planned("span_id", FieldKind::Utf8View).unwrap(),
-        plan.declare_planned("resource.service.name", FieldKind::Utf8View).unwrap(),
-        plan.declare_planned("resource.host.name", FieldKind::Utf8View).unwrap(),
-        plan.declare_planned("scope.name", FieldKind::Utf8View).unwrap(),
-        plan.declare_planned("scope.version", FieldKind::Utf8View).unwrap(),
-        plan.declare_planned("attributes.http.method", FieldKind::Utf8View).unwrap(),
-        plan.declare_planned("attributes.http.path", FieldKind::Utf8View).unwrap(),
+        plan.declare_planned("trace_id", FieldKind::Utf8View)
+            .unwrap(),
+        plan.declare_planned("span_id", FieldKind::Utf8View)
+            .unwrap(),
+        plan.declare_planned("resource.service.name", FieldKind::Utf8View)
+            .unwrap(),
+        plan.declare_planned("resource.host.name", FieldKind::Utf8View)
+            .unwrap(),
+        plan.declare_planned("scope.name", FieldKind::Utf8View)
+            .unwrap(),
+        plan.declare_planned("scope.version", FieldKind::Utf8View)
+            .unwrap(),
+        plan.declare_planned("attributes.http.method", FieldKind::Utf8View)
+            .unwrap(),
+        plan.declare_planned("attributes.http.path", FieldKind::Utf8View)
+            .unwrap(),
     ];
-    let float_handles: [FieldHandle; 1] = [
-        plan.declare_planned("attributes.duration_ms", FieldKind::Float64).unwrap(),
-    ];
+    let float_handles: [FieldHandle; 1] = [plan
+        .declare_planned("attributes.duration_ms", FieldKind::Float64)
+        .unwrap()];
     (plan, int_handles, str_handles, float_handles)
 }
 
@@ -325,7 +374,11 @@ fn allocation_profile() {
 
     eprintln!("\n=== StreamingBuilder ({total_rows} rows, {NUM_BATCHES} batches) ===\n");
     eprintln!("  -- Cold start --");
-    print_stats("detached (cold)", &run_streaming_detached(false), total_rows);
+    print_stats(
+        "detached (cold)",
+        &run_streaming_detached(false),
+        total_rows,
+    );
     print_stats("view (cold)", &run_streaming_view(false), total_rows);
     eprintln!("\n  -- Steady state (warmed) --");
     print_stats("detached (warm)", &run_streaming_detached(true), total_rows);
@@ -373,17 +426,11 @@ fn allocation_comparison() {
     );
     eprintln!(
         "  {:>32} {:>10} {:>12} {:>10}",
-        "ColumnarBatch detached",
-        cb_det.allocations,
-        cb_det.bytes_allocated,
-        cb_det.reallocations
+        "ColumnarBatch detached", cb_det.allocations, cb_det.bytes_allocated, cb_det.reallocations
     );
     eprintln!(
         "  {:>32} {:>10} {:>12} {:>10}",
-        "ColumnarBatch view",
-        cb_view.allocations,
-        cb_view.bytes_allocated,
-        cb_view.reallocations
+        "ColumnarBatch view", cb_view.allocations, cb_view.bytes_allocated, cb_view.reallocations
     );
 
     // Summarize

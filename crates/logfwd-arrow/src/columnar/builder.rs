@@ -15,9 +15,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{
-    ArrayRef, BooleanArray, Float64Array, Int64Array, NullArray, StringBuilder,
-};
+use arrow::array::{ArrayRef, BooleanArray, Float64Array, Int64Array, NullArray, StringBuilder};
 use arrow::buffer::{Buffer, NullBuffer};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::error::ArrowError;
@@ -244,11 +242,7 @@ impl ColumnarBatchBuilder {
     ///
     /// Returns `Err` if the string buffer would exceed u32 addressable range.
     #[inline]
-    pub fn write_str(
-        &mut self,
-        handle: FieldHandle,
-        value: &str,
-    ) -> Result<(), BuilderError> {
+    pub fn write_str(&mut self, handle: FieldHandle, value: &str) -> Result<(), BuilderError> {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
         if self.is_duplicate(handle) {
@@ -260,11 +254,9 @@ impl ColumnarBatchBuilder {
                 value_len: value.len(),
             }
         })?;
-        let len = u32::try_from(value.len()).map_err(|_| {
-            BuilderError::StringBufferOverflow {
-                buffer_len: self.string_buf.len(),
-                value_len: value.len(),
-            }
+        let len = u32::try_from(value.len()).map_err(|_| BuilderError::StringBufferOverflow {
+            buffer_len: self.string_buf.len(),
+            value_len: value.len(),
         })?;
         self.string_buf.extend_from_slice(value.as_bytes());
         let sref = StringRef { offset, len };
@@ -421,7 +413,10 @@ fn null_column(name: &str, kind: FieldKind, num_rows: usize) -> (Field, ArrayRef
             for _ in 0..num_rows {
                 builder.append_null();
             }
-            (Field::new(name, DataType::Utf8, true), Arc::new(builder.finish()))
+            (
+                Field::new(name, DataType::Utf8, true),
+                Arc::new(builder.finish()),
+            )
         }
         FieldKind::BinaryView | FieldKind::FixedBinary(_) => {
             let arr = NullArray::new(num_rows);
@@ -820,16 +815,20 @@ mod tests {
         b.begin_row();
         b.write_i64(ts, 1000);
         // Use str_ref pointing into the original buffer
-        b.write_str_ref(msg, super::super::accumulator::StringRef { offset: 0, len: 5 });
+        b.write_str_ref(
+            msg,
+            super::super::accumulator::StringRef { offset: 0, len: 5 },
+        );
         b.end_row();
         b.begin_row();
         b.write_i64(ts, 2000);
-        b.write_str_ref(msg, super::super::accumulator::StringRef { offset: 6, len: 5 });
+        b.write_str_ref(
+            msg,
+            super::super::accumulator::StringRef { offset: 6, len: 5 },
+        );
         b.end_row();
 
-        let batch = b
-            .finish_batch_view(arrow_buf, input.len() as u32)
-            .unwrap();
+        let batch = b.finish_batch_view(arrow_buf, input.len() as u32).unwrap();
         assert_eq!(batch.num_rows(), 2);
 
         let msg_col = batch.column_by_name("msg").unwrap();
@@ -876,25 +875,61 @@ mod tests {
     #[test]
     fn planned_fields_at_scale() {
         let mut plan = BatchPlan::new();
-        let ts = plan.declare_planned("timestamp_ns", FieldKind::Int64).unwrap();
-        let sev_num = plan.declare_planned("severity_number", FieldKind::Int64).unwrap();
-        let sev_text = plan.declare_planned("severity_text", FieldKind::Utf8View).unwrap();
+        let ts = plan
+            .declare_planned("timestamp_ns", FieldKind::Int64)
+            .unwrap();
+        let sev_num = plan
+            .declare_planned("severity_number", FieldKind::Int64)
+            .unwrap();
+        let sev_text = plan
+            .declare_planned("severity_text", FieldKind::Utf8View)
+            .unwrap();
         let body = plan.declare_planned("body", FieldKind::Utf8View).unwrap();
         let flags = plan.declare_planned("flags", FieldKind::Int64).unwrap();
-        let trace_id = plan.declare_planned("trace_id", FieldKind::Utf8View).unwrap();
-        let span_id = plan.declare_planned("span_id", FieldKind::Utf8View).unwrap();
-        let res_svc = plan.declare_planned("resource.service.name", FieldKind::Utf8View).unwrap();
-        let res_host = plan.declare_planned("resource.host.name", FieldKind::Utf8View).unwrap();
-        let scope_name = plan.declare_planned("scope.name", FieldKind::Utf8View).unwrap();
-        let scope_ver = plan.declare_planned("scope.version", FieldKind::Utf8View).unwrap();
-        let attr_method = plan.declare_planned("attributes.http.method", FieldKind::Utf8View).unwrap();
-        let attr_status = plan.declare_planned("attributes.http.status_code", FieldKind::Int64).unwrap();
-        let attr_dur = plan.declare_planned("attributes.duration_ms", FieldKind::Float64).unwrap();
-        let attr_path = plan.declare_planned("attributes.http.path", FieldKind::Utf8View).unwrap();
+        let trace_id = plan
+            .declare_planned("trace_id", FieldKind::Utf8View)
+            .unwrap();
+        let span_id = plan
+            .declare_planned("span_id", FieldKind::Utf8View)
+            .unwrap();
+        let res_svc = plan
+            .declare_planned("resource.service.name", FieldKind::Utf8View)
+            .unwrap();
+        let res_host = plan
+            .declare_planned("resource.host.name", FieldKind::Utf8View)
+            .unwrap();
+        let scope_name = plan
+            .declare_planned("scope.name", FieldKind::Utf8View)
+            .unwrap();
+        let scope_ver = plan
+            .declare_planned("scope.version", FieldKind::Utf8View)
+            .unwrap();
+        let attr_method = plan
+            .declare_planned("attributes.http.method", FieldKind::Utf8View)
+            .unwrap();
+        let attr_status = plan
+            .declare_planned("attributes.http.status_code", FieldKind::Int64)
+            .unwrap();
+        let attr_dur = plan
+            .declare_planned("attributes.duration_ms", FieldKind::Float64)
+            .unwrap();
+        let attr_path = plan
+            .declare_planned("attributes.http.path", FieldKind::Utf8View)
+            .unwrap();
 
         let handles_int = [ts, sev_num, flags, attr_status];
-        let handles_str = [sev_text, body, trace_id, span_id, res_svc, res_host,
-            scope_name, scope_ver, attr_method, attr_path];
+        let handles_str = [
+            sev_text,
+            body,
+            trace_id,
+            span_id,
+            res_svc,
+            res_host,
+            scope_name,
+            scope_ver,
+            attr_method,
+            attr_path,
+        ];
         let handles_float = [attr_dur];
 
         let mut b = ColumnarBatchBuilder::new(plan);
@@ -941,8 +976,12 @@ mod tests {
     #[test]
     fn mixed_planned_dynamic_at_scale() {
         let mut plan = BatchPlan::new();
-        let ts = plan.declare_planned("timestamp_ns", FieldKind::Int64).unwrap();
-        let sev = plan.declare_planned("severity_text", FieldKind::Utf8View).unwrap();
+        let ts = plan
+            .declare_planned("timestamp_ns", FieldKind::Int64)
+            .unwrap();
+        let sev = plan
+            .declare_planned("severity_text", FieldKind::Utf8View)
+            .unwrap();
         let body = plan.declare_planned("body", FieldKind::Utf8View).unwrap();
 
         let mut b = ColumnarBatchBuilder::new(plan);
@@ -958,7 +997,8 @@ mod tests {
                 let base = (batch_idx as i64) * (rows_per_batch as i64) + row as i64;
                 b.write_i64(ts, base);
                 b.write_str(sev, "INFO").unwrap();
-                b.write_str(body, "example log message for testing").unwrap();
+                b.write_str(body, "example log message for testing")
+                    .unwrap();
 
                 // Dynamic attributes (vary by row)
                 let attr_key = match row % 5 {
@@ -972,7 +1012,9 @@ mod tests {
                 b.write_str(h, "dynamic-value-here").unwrap();
 
                 if row % 3 == 0 {
-                    let h2 = b.resolve_dynamic("http.status_code", FieldKind::Int64).unwrap();
+                    let h2 = b
+                        .resolve_dynamic("http.status_code", FieldKind::Int64)
+                        .unwrap();
                     b.write_i64(h2, 200);
                 }
 
@@ -1004,11 +1046,21 @@ mod tests {
         use crate::streaming_builder::StreamingBuilder;
 
         let field_names: Vec<&str> = vec![
-            "timestamp_ns", "severity_number", "severity_text", "body",
-            "flags", "trace_id", "span_id", "resource.service.name",
-            "resource.host.name", "scope.name", "scope.version",
-            "attributes.http.method", "attributes.http.status_code",
-            "attributes.duration_ms", "attributes.http.path",
+            "timestamp_ns",
+            "severity_number",
+            "severity_text",
+            "body",
+            "flags",
+            "trace_id",
+            "span_id",
+            "resource.service.name",
+            "resource.host.name",
+            "scope.name",
+            "scope.version",
+            "attributes.http.method",
+            "attributes.http.status_code",
+            "attributes.duration_ms",
+            "attributes.http.path",
         ];
 
         let rows_per_batch: u32 = 1000;
@@ -1037,8 +1089,16 @@ mod tests {
                 // str fields (10 of them) — use decoded path since strings
                 // aren't subslices of the input buffer (fair comparison)
                 for &idx in &[
-                    indices[2], indices[3], indices[5], indices[6], indices[7],
-                    indices[8], indices[9], indices[10], indices[11], indices[14],
+                    indices[2],
+                    indices[3],
+                    indices[5],
+                    indices[6],
+                    indices[7],
+                    indices[8],
+                    indices[9],
+                    indices[10],
+                    indices[11],
+                    indices[14],
                 ] {
                     sb.append_decoded_str_by_idx(idx, b"example-value-0123456789");
                 }
@@ -1067,25 +1127,61 @@ mod tests {
     #[test]
     fn planned_fields_view_at_scale() {
         let mut plan = BatchPlan::new();
-        let ts = plan.declare_planned("timestamp_ns", FieldKind::Int64).unwrap();
-        let sev_num = plan.declare_planned("severity_number", FieldKind::Int64).unwrap();
-        let sev_text = plan.declare_planned("severity_text", FieldKind::Utf8View).unwrap();
+        let ts = plan
+            .declare_planned("timestamp_ns", FieldKind::Int64)
+            .unwrap();
+        let sev_num = plan
+            .declare_planned("severity_number", FieldKind::Int64)
+            .unwrap();
+        let sev_text = plan
+            .declare_planned("severity_text", FieldKind::Utf8View)
+            .unwrap();
         let body = plan.declare_planned("body", FieldKind::Utf8View).unwrap();
         let flags = plan.declare_planned("flags", FieldKind::Int64).unwrap();
-        let trace_id = plan.declare_planned("trace_id", FieldKind::Utf8View).unwrap();
-        let span_id = plan.declare_planned("span_id", FieldKind::Utf8View).unwrap();
-        let res_svc = plan.declare_planned("resource.service.name", FieldKind::Utf8View).unwrap();
-        let res_host = plan.declare_planned("resource.host.name", FieldKind::Utf8View).unwrap();
-        let scope_name = plan.declare_planned("scope.name", FieldKind::Utf8View).unwrap();
-        let scope_ver = plan.declare_planned("scope.version", FieldKind::Utf8View).unwrap();
-        let attr_method = plan.declare_planned("attributes.http.method", FieldKind::Utf8View).unwrap();
-        let attr_status = plan.declare_planned("attributes.http.status_code", FieldKind::Int64).unwrap();
-        let attr_dur = plan.declare_planned("attributes.duration_ms", FieldKind::Float64).unwrap();
-        let attr_path = plan.declare_planned("attributes.http.path", FieldKind::Utf8View).unwrap();
+        let trace_id = plan
+            .declare_planned("trace_id", FieldKind::Utf8View)
+            .unwrap();
+        let span_id = plan
+            .declare_planned("span_id", FieldKind::Utf8View)
+            .unwrap();
+        let res_svc = plan
+            .declare_planned("resource.service.name", FieldKind::Utf8View)
+            .unwrap();
+        let res_host = plan
+            .declare_planned("resource.host.name", FieldKind::Utf8View)
+            .unwrap();
+        let scope_name = plan
+            .declare_planned("scope.name", FieldKind::Utf8View)
+            .unwrap();
+        let scope_ver = plan
+            .declare_planned("scope.version", FieldKind::Utf8View)
+            .unwrap();
+        let attr_method = plan
+            .declare_planned("attributes.http.method", FieldKind::Utf8View)
+            .unwrap();
+        let attr_status = plan
+            .declare_planned("attributes.http.status_code", FieldKind::Int64)
+            .unwrap();
+        let attr_dur = plan
+            .declare_planned("attributes.duration_ms", FieldKind::Float64)
+            .unwrap();
+        let attr_path = plan
+            .declare_planned("attributes.http.path", FieldKind::Utf8View)
+            .unwrap();
 
         let handles_int = [ts, sev_num, flags, attr_status];
-        let handles_str = [sev_text, body, trace_id, span_id, res_svc, res_host,
-            scope_name, scope_ver, attr_method, attr_path];
+        let handles_str = [
+            sev_text,
+            body,
+            trace_id,
+            span_id,
+            res_svc,
+            res_host,
+            scope_name,
+            scope_ver,
+            attr_method,
+            attr_path,
+        ];
         let handles_float = [attr_dur];
 
         let mut b = ColumnarBatchBuilder::new(plan);
@@ -1110,10 +1206,9 @@ mod tests {
                 }
                 b.end_row();
             }
-            let batch = b.finish_batch_view(
-                arrow::buffer::Buffer::from(b"" as &[u8]),
-                0,
-            ).unwrap();
+            let batch = b
+                .finish_batch_view(arrow::buffer::Buffer::from(b"" as &[u8]), 0)
+                .unwrap();
             assert_eq!(batch.num_rows(), rows_per_batch as usize);
             assert_eq!(batch.num_columns(), 15);
         }
@@ -1137,11 +1232,21 @@ mod tests {
         use crate::streaming_builder::StreamingBuilder;
 
         let field_names: Vec<&str> = vec![
-            "timestamp_ns", "severity_number", "severity_text", "body",
-            "flags", "trace_id", "span_id", "resource.service.name",
-            "resource.host.name", "scope.name", "scope.version",
-            "attributes.http.method", "attributes.http.status_code",
-            "attributes.duration_ms", "attributes.http.path",
+            "timestamp_ns",
+            "severity_number",
+            "severity_text",
+            "body",
+            "flags",
+            "trace_id",
+            "span_id",
+            "resource.service.name",
+            "resource.host.name",
+            "scope.name",
+            "scope.version",
+            "attributes.http.method",
+            "attributes.http.status_code",
+            "attributes.duration_ms",
+            "attributes.http.path",
         ];
 
         let rows_per_batch: u32 = 1000;
@@ -1165,8 +1270,16 @@ mod tests {
                     sb.append_i64_value_by_idx(idx, row as i64);
                 }
                 for &idx in &[
-                    indices[2], indices[3], indices[5], indices[6], indices[7],
-                    indices[8], indices[9], indices[10], indices[11], indices[14],
+                    indices[2],
+                    indices[3],
+                    indices[5],
+                    indices[6],
+                    indices[7],
+                    indices[8],
+                    indices[9],
+                    indices[10],
+                    indices[11],
+                    indices[14],
                 ] {
                     sb.append_decoded_str_by_idx(idx, b"example-value-0123456789");
                 }
@@ -1196,8 +1309,14 @@ mod tests {
         use super::super::accumulator::ColumnAccumulator;
 
         eprintln!("\n  Type sizes:");
-        eprintln!("    ColumnAccumulator: {} bytes", size_of::<ColumnAccumulator>());
-        eprintln!("    ColumnarBatchBuilder: {} bytes", size_of::<ColumnarBatchBuilder>());
+        eprintln!(
+            "    ColumnAccumulator: {} bytes",
+            size_of::<ColumnAccumulator>()
+        );
+        eprintln!(
+            "    ColumnarBatchBuilder: {} bytes",
+            size_of::<ColumnarBatchBuilder>()
+        );
         eprintln!("    FieldHandle: {} bytes", size_of::<FieldHandle>());
         eprintln!("    FieldKind: {} bytes", size_of::<FieldKind>());
         eprintln!("    StringRef: {} bytes", size_of::<StringRef>());
@@ -1208,25 +1327,61 @@ mod tests {
     #[test]
     fn cpu_breakdown_write_vs_materialize() {
         let mut plan = BatchPlan::new();
-        let ts = plan.declare_planned("timestamp_ns", FieldKind::Int64).unwrap();
-        let sev_num = plan.declare_planned("severity_number", FieldKind::Int64).unwrap();
-        let sev_text = plan.declare_planned("severity_text", FieldKind::Utf8View).unwrap();
+        let ts = plan
+            .declare_planned("timestamp_ns", FieldKind::Int64)
+            .unwrap();
+        let sev_num = plan
+            .declare_planned("severity_number", FieldKind::Int64)
+            .unwrap();
+        let sev_text = plan
+            .declare_planned("severity_text", FieldKind::Utf8View)
+            .unwrap();
         let body = plan.declare_planned("body", FieldKind::Utf8View).unwrap();
         let flags = plan.declare_planned("flags", FieldKind::Int64).unwrap();
-        let trace_id = plan.declare_planned("trace_id", FieldKind::Utf8View).unwrap();
-        let span_id = plan.declare_planned("span_id", FieldKind::Utf8View).unwrap();
-        let res_svc = plan.declare_planned("resource.service.name", FieldKind::Utf8View).unwrap();
-        let res_host = plan.declare_planned("resource.host.name", FieldKind::Utf8View).unwrap();
-        let scope_name = plan.declare_planned("scope.name", FieldKind::Utf8View).unwrap();
-        let scope_ver = plan.declare_planned("scope.version", FieldKind::Utf8View).unwrap();
-        let attr_method = plan.declare_planned("attributes.http.method", FieldKind::Utf8View).unwrap();
-        let attr_status = plan.declare_planned("attributes.http.status_code", FieldKind::Int64).unwrap();
-        let attr_dur = plan.declare_planned("attributes.duration_ms", FieldKind::Float64).unwrap();
-        let attr_path = plan.declare_planned("attributes.http.path", FieldKind::Utf8View).unwrap();
+        let trace_id = plan
+            .declare_planned("trace_id", FieldKind::Utf8View)
+            .unwrap();
+        let span_id = plan
+            .declare_planned("span_id", FieldKind::Utf8View)
+            .unwrap();
+        let res_svc = plan
+            .declare_planned("resource.service.name", FieldKind::Utf8View)
+            .unwrap();
+        let res_host = plan
+            .declare_planned("resource.host.name", FieldKind::Utf8View)
+            .unwrap();
+        let scope_name = plan
+            .declare_planned("scope.name", FieldKind::Utf8View)
+            .unwrap();
+        let scope_ver = plan
+            .declare_planned("scope.version", FieldKind::Utf8View)
+            .unwrap();
+        let attr_method = plan
+            .declare_planned("attributes.http.method", FieldKind::Utf8View)
+            .unwrap();
+        let attr_status = plan
+            .declare_planned("attributes.http.status_code", FieldKind::Int64)
+            .unwrap();
+        let attr_dur = plan
+            .declare_planned("attributes.duration_ms", FieldKind::Float64)
+            .unwrap();
+        let attr_path = plan
+            .declare_planned("attributes.http.path", FieldKind::Utf8View)
+            .unwrap();
 
         let handles_int = [ts, sev_num, flags, attr_status];
-        let handles_str = [sev_text, body, trace_id, span_id, res_svc, res_host,
-            scope_name, scope_ver, attr_method, attr_path];
+        let handles_str = [
+            sev_text,
+            body,
+            trace_id,
+            span_id,
+            res_svc,
+            res_host,
+            scope_name,
+            scope_ver,
+            attr_method,
+            attr_path,
+        ];
         let handles_float = [attr_dur];
 
         let mut b = ColumnarBatchBuilder::new(plan);
