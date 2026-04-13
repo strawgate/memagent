@@ -26,7 +26,7 @@
   }
   .sa-play:hover { background: color-mix(in srgb, var(--sa-accent) 12%, transparent); }
   .sa-prog { flex: 1; height: 3px; background: var(--sa-border); border-radius: 2px; overflow: hidden; }
-  .sa-prog-fill { height: 100%; width: 0; background: var(--sa-accent); transition: none; }
+  .sa-prog-fill { height: 100%; width: 0; background: var(--sa-accent); transition: width 0.4s ease; }
   .sa-pills { display: flex; gap: 3px; }
   .sa-pill {
     width: 22px; height: 22px; border-radius: 50%;
@@ -293,8 +293,8 @@
 
   go(0);
 
-  // Auto-start after 1.5 seconds
-  setTimeout(function() { startPlay(); }, 1500);
+  // Auto-start playback after a brief delay
+  setTimeout(function() { startPlay(); }, 1200);
 
   // Scroll sync: map page headings to animation steps
   var headingToStep = {

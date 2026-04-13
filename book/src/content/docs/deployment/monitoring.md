@@ -71,37 +71,42 @@ annotated example:
 
 ```json
 {
-  "live": true,
-  "ready": true,
-  "uptime_secs": 3621,
-  "version": "0.14.0",
-  "pipelines": {
-    "host-logs": {
-      "input": {
-        "type": "file",
-        "lines_total": 184200,
-        "bytes_total": 52428800,
-        "errors_total": 0,
-        "transport": {
-          "consecutive_error_polls": 0
+  "live": { "status": "live" },
+  "ready": { "status": "ready" },
+  "pipelines": [
+    {
+      "name": "host-logs",
+      "inputs": [
+        {
+          "type": "file",
+          "lines_total": 184200,
+          "bytes_total": 52428800,
+          "errors_total": 0
         }
-      },
+      ],
       "transform": {
         "lines_in": 184200,
         "lines_out": 91040,
-        "filter_ratio": 0.506
+        "filter_drop_rate": 0.506
       },
-      "output": {
-        "type": "otlp",
-        "lines_total": 91040,
-        "bytes_total": 11206400,
-        "errors_total": 0,
-        "last_flush_age_secs": 4.2
-      }
+      "outputs": [
+        {
+          "type": "otlp",
+          "lines_total": 91040,
+          "bytes_total": 11206400,
+          "errors_total": 0
+        }
+      ]
     }
+  ],
+  "system": {
+    "uptime_seconds": 3621,
+    "version": "0.14.0"
   }
 }
 ```
+
+Pipelines are returned as an array. Use `jq '.pipelines[0]'` to access the first pipeline, or filter by name with `jq '.pipelines[] | select(.name == "host-logs")'`.
 
 | Field | Description |
 |-------|-------------|
@@ -115,7 +120,7 @@ annotated example:
 | `pipelines.<name>.input.transport` | Transport-specific metrics (see Transport Observability below) |
 | `pipelines.<name>.transform.lines_in` | Lines entering the SQL transform stage |
 | `pipelines.<name>.transform.lines_out` | Lines emitted after filtering |
-| `pipelines.<name>.transform.filter_ratio` | Fraction of input lines that pass through (lower = more aggressive filter) |
+| `pipelines.<name>.transform.filter_drop_rate` | Fraction of input lines dropped by the filter (higher = more aggressive filter) |
 | `pipelines.<name>.output.lines_total` | Lines successfully delivered to the destination |
 | `pipelines.<name>.output.errors_total` | Delivery failures (connection errors, timeouts, HTTP 5xx) |
 | `pipelines.<name>.output.last_flush_age_secs` | Seconds since the last successful flush; useful for staleness alerts |
@@ -156,7 +161,7 @@ alerts you always act on than twenty you learn to ignore.
 | Output stale | `last_flush_age_secs` | > 120 s | Critical |
 | Delivery errors | `output.errors_total` rate | > 0 sustained for 5 min | Warning |
 | Input errors | `input.errors_total` rate | > 0 sustained for 5 min | Warning |
-| High filter ratio | `transform.filter_ratio` | < 0.01 (dropping >99 % of lines) | Info |
+| High drop rate | `transform.filter_drop_rate` | > 0.99 (dropping >99% of lines) | Info |
 | Memory pressure | Container memory usage | > 85 % of limit | Warning |
 | CPU saturation | `logfwd_stage_seconds_total` rate | Approaching `--cpus` limit | Warning |
 | UDP drops | `transport.drops_detected` rate | > 0 sustained for 2 min | Warning |
@@ -211,7 +216,7 @@ available regardless.
 
 ## What's next
 
-- [Docker Deployment](/deployment/docker/) -- container setup, volumes, and resource constraints.
-- [Kubernetes Deployment](/deployment/kubernetes/) -- DaemonSet manifests and production defaults.
-- [Output Types](/configuration/outputs/) -- configure OTLP and other destinations.
-- [Troubleshooting](/troubleshooting/) -- common issues and diagnostic steps.
+- [Docker Deployment](/memagent/deployment/docker/) -- container setup, volumes, and resource constraints.
+- [Kubernetes Deployment](/memagent/deployment/kubernetes/) -- DaemonSet manifests and production defaults.
+- [Output Types](/memagent/configuration/outputs/) -- configure OTLP and other destinations.
+- [Troubleshooting](/memagent/troubleshooting/) -- common issues and diagnostic steps.

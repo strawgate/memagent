@@ -1,5 +1,6 @@
 ---
-// Thin shell — continuous auto-playing tailing simulation
+// Auto-playing tailing simulation: shows normal tailing, then rotation, then recovery.
+// Events accumulate as a timeline — nothing disappears.
 ---
 
 <div class="tl" id="tailing-diagram"></div>
@@ -16,32 +17,26 @@
     --tl-amber: #f59e0b;
     --tl-blue: #60a5fa;
     margin: 1.5rem 0;
+    /* no sticky — scroll naturally with the page */
   }
   .tl * { margin-top: 0 !important; }
 
-  .tl-stage {
-    padding: 0.5rem 0.75rem;
+  .tl-events {
+    display: flex; flex-direction: column; gap: 0.4rem;
+    margin-bottom: 0.5rem;
+  }
+  .tl-event {
+    padding: 0.45rem 0.65rem;
     background: var(--tl-bg);
     border: 1px solid var(--tl-border);
-    border-radius: 8px;
-    margin-bottom: 0.5rem;
-    font-size: 0.82rem; line-height: 1.5;
-    min-height: 2.5rem;
-    transition: border-color 0.3s, background 0.3s;
+    border-radius: 6px;
+    font-size: 0.78rem; line-height: 1.45;
+    animation: tl-fadein 0.3s ease-out;
   }
-  .tl-stage.event {
-    border-color: var(--tl-amber);
-    background: color-mix(in srgb, var(--tl-amber) 5%, var(--tl-bg));
-  }
-  .tl-stage.danger {
-    border-color: var(--tl-red);
-    background: color-mix(in srgb, var(--tl-red) 5%, var(--tl-bg));
-  }
-  .tl-stage.success {
-    border-color: var(--tl-green);
-    background: color-mix(in srgb, var(--tl-green) 5%, var(--tl-bg));
-  }
-  .tl-stage b { font-size: 0.85rem; }
+  @keyframes tl-fadein { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; } }
+  .tl-event.warn { border-color: var(--tl-amber); background: color-mix(in srgb, var(--tl-amber) 6%, var(--tl-bg)); }
+  .tl-event.ok { border-color: var(--tl-green); background: color-mix(in srgb, var(--tl-green) 6%, var(--tl-bg)); }
+  .tl-event b { font-size: 0.82rem; }
 
   .tl-sim {
     display: flex; gap: 0.75rem; flex-wrap: wrap;
@@ -50,11 +45,11 @@
 
   .tl-file {
     border: 1.5px solid var(--tl-border); border-radius: 8px;
-    padding: 0.5rem; flex: 1; min-width: 240px; max-width: 400px;
+    padding: 0.5rem; flex: 1; min-width: 200px; max-width: 380px;
     background: var(--tl-bg); transition: border-color 0.3s, opacity 0.5s;
   }
   .tl-file.active { border-color: var(--tl-green); }
-  .tl-file.old { border-color: var(--tl-amber); opacity: 0.5; }
+  .tl-file.old { border-color: var(--tl-amber); opacity: 0.6; }
 
   .tl-file-head {
     display: flex; justify-content: space-between; align-items: center;
@@ -66,31 +61,29 @@
   .tl-fmeta { font-size: 0.58rem; color: var(--tl-muted); font-weight: 400; }
 
   .tl-lines {
-    font-family: var(--sl-font-mono, monospace); font-size: 0.62rem;
-    line-height: 1.6; max-height: 180px; overflow-y: auto;
+    font-family: var(--sl-font-mono, monospace); font-size: 0.58rem;
+    line-height: 1.5; max-height: 160px; overflow-y: auto;
   }
-  .tl-line { display: flex; gap: 0.25rem; transition: opacity 0.3s; }
-  .tl-line-num { color: var(--tl-muted); min-width: 20px; text-align: right; user-select: none; }
+  .tl-line { display: flex; gap: 0.25rem; }
+  .tl-line-num { color: var(--tl-muted); min-width: 18px; text-align: right; user-select: none; }
   .tl-line-text { white-space: nowrap; }
-  .tl-line.read .tl-line-text { color: var(--tl-muted); }
   .tl-line.new .tl-line-text { color: var(--tl-green); font-weight: 600; }
 
   .tl-cursor {
     display: flex; align-items: center; gap: 0.3rem;
     margin-top: 0.25rem; padding-top: 0.25rem;
     border-top: 1px dashed var(--tl-border);
-    font-size: 0.6rem; color: var(--tl-accent); font-weight: 600;
+    font-size: 0.58rem; color: var(--tl-accent); font-weight: 600;
   }
 
   .tl-stats {
     display: flex; gap: 0.75rem; flex-wrap: wrap;
-    font-size: 0.72rem; padding: 0.4rem 0;
+    font-size: 0.68rem; padding: 0.3rem 0;
   }
   .tl-stat { display: flex; flex-direction: column; }
-  .tl-stat-label { font-size: 0.58rem; color: var(--tl-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  .tl-stat-label { font-size: 0.55rem; color: var(--tl-muted); text-transform: uppercase; letter-spacing: 0.03em; }
   .tl-stat-val { font-weight: 700; font-family: var(--sl-font-mono, monospace); }
   .tl-stat-val.green { color: var(--tl-green); }
-  .tl-stat-val.red { color: var(--tl-red); }
 </style>
 
 <script>
@@ -100,34 +93,30 @@
 
   function el(tag, cls) { var e = document.createElement(tag); if (cls) e.className = cls; return e; }
 
-  var LEVELS = ['INFO', 'INFO', 'INFO', 'DEBUG', 'INFO', 'WARN', 'INFO', 'INFO', 'ERROR', 'INFO'];
-  var MSGS = ['request handled', 'connection opened', 'query executed', 'cache hit', 'user login', 'slow response', 'health check ok', 'batch processed', 'connection refused', 'session created'];
+  var LEVELS = ['INFO', 'INFO', 'DEBUG', 'INFO', 'WARN', 'INFO', 'INFO', 'ERROR', 'INFO', 'INFO'];
+  var MSGS = ['request handled', 'conn opened', 'query exec', 'cache hit', 'slow resp', 'health ok', 'batch done', 'conn refused', 'session new', 'auth ok'];
 
   function genLine(n) {
-    var lvl = LEVELS[n % LEVELS.length];
-    var msg = MSGS[n % MSGS.length];
-    return '{"level":"' + lvl + '","msg":"' + msg + '","n":' + n + '}';
+    return '{"level":"' + LEVELS[n % LEVELS.length] + '","msg":"' + MSGS[n % MSGS.length] + '","n":' + n + '}';
   }
 
-  // DOM
-  var stageEl = el('div', 'tl-stage');
+  var eventsEl = el('div', 'tl-events');
   var simEl = el('div', 'tl-sim');
   var statsEl = el('div', 'tl-stats');
-
-  root.appendChild(stageEl);
+  root.appendChild(eventsEl);
   root.appendChild(simEl);
   root.appendChild(statsEl);
 
-  // State
-  var lineNum = 1;
-  var offset = 0;
-  var linesRead = 0;
-  var phase = 'tailing'; // tailing, rotating, recovery, done
-  var fileInode = 12345;
-  var rotateAt = 15; // rotate after 15 lines
-  var mainFile = null;
-  var oldFile = null;
-  var timer = null;
+  var lineNum = 1, offset = 0, linesRead = 0, fileInode = 12345;
+  var ROTATE_AT = 10;
+  var phase = 'tailing';
+  var mainFile = null, oldFile = null, timer = null;
+
+  function addEvent(html, cls) {
+    var ev = el('div', 'tl-event' + (cls ? ' ' + cls : ''));
+    ev.innerHTML = html;
+    eventsEl.appendChild(ev);
+  }
 
   function createFileEl(name, inode, cls) {
     var f = el('div', 'tl-file ' + cls);
@@ -145,123 +134,93 @@
 
   function updateStats() {
     statsEl.innerHTML = '';
-    var items = [
-      ['Lines read', '' + linesRead, 'green'],
-      ['File offset', offset + ' bytes', ''],
-      ['Inode', '' + fileInode, ''],
-      ['Phase', phase, phase === 'tailing' ? 'green' : phase === 'rotating' ? '' : 'green'],
-    ];
-    items.forEach(function(item) {
+    [['Lines read', linesRead, 'green'], ['Offset', offset + ' B', ''], ['Inode', fileInode, ''], ['Phase', phase, phase.indexOf('tailing') >= 0 ? 'green' : '']].forEach(function(item) {
       var s = el('div', 'tl-stat');
       var l = el('div', 'tl-stat-label'); l.textContent = item[0];
-      var v = el('div', 'tl-stat-val' + (item[2] ? ' ' + item[2] : '')); v.textContent = item[1];
-      s.appendChild(l); s.appendChild(v);
-      statsEl.appendChild(s);
+      var v = el('div', 'tl-stat-val' + (item[2] ? ' ' + item[2] : '')); v.textContent = '' + item[1];
+      s.appendChild(l); s.appendChild(v); statsEl.appendChild(s);
     });
   }
 
-  function addLine(fileObj, num, text, cls) {
-    var line = el('div', 'tl-line ' + cls);
+  function addLine(fileObj, num, text) {
+    var line = el('div', 'tl-line new');
     var numEl = el('span', 'tl-line-num'); numEl.textContent = '' + num;
     var textEl = el('span', 'tl-line-text'); textEl.textContent = text;
     line.appendChild(numEl); line.appendChild(textEl);
     fileObj.lines.appendChild(line);
-    // Auto-scroll
     fileObj.lines.scrollTop = fileObj.lines.scrollHeight;
   }
 
-  // Initialize
+  addEvent('<b>Tailing app.log</b> — logfwd reads new lines as they appear.');
   mainFile = createFileEl('app.log', fileInode, 'active');
   simEl.appendChild(mainFile.el);
-  stageEl.innerHTML = '<b>Tailing app.log</b> — logfwd reads new lines as they appear. Watch the line counter grow.';
   mainFile.cursor.textContent = '\u25B6 reading...';
+  updateStats();
 
   function tick() {
     if (phase === 'tailing') {
-      var text = genLine(lineNum);
-      var len = text.length + 1;
-      addLine(mainFile, lineNum, text, 'new');
-      lineNum++;
-      offset += len;
-      linesRead++;
+      addLine(mainFile, lineNum, genLine(lineNum));
+      offset += genLine(lineNum).length + 1;
+      lineNum++; linesRead++;
       mainFile.cursor.textContent = '\u25B6 offset: ' + offset;
+      updateStats();
 
-      if (lineNum > rotateAt) {
+      if (lineNum > ROTATE_AT) {
         phase = 'rotating';
-        stageEl.className = 'tl-stage event';
-        stageEl.innerHTML = '<b>\u26A0 Log rotation!</b> — logrotate renames app.log \u2192 app.log.1 and creates a new empty app.log. The inode changes. A naive <code>tail -f</code> would keep reading the old file and miss all new data.';
+        addEvent('<b>\u26A0 Log rotation!</b> — logrotate renames <code>app.log</code> \u2192 <code>app.log.1</code> and creates a new empty <code>app.log</code>. The inode changes. A naive <code>tail -f</code> would keep reading the old file and miss new data.', 'warn');
 
-        // Show old file
         mainFile.el.className = 'tl-file old';
         mainFile.fname.textContent = 'app.log.1';
         mainFile.fmeta.textContent = 'inode: ' + fileInode + ' (old)';
         mainFile.cursor.textContent = '\u25B6 EOF — drained';
 
-        // Create new file
+        var oldInode = fileInode;
         fileInode = 67890;
         oldFile = mainFile;
         mainFile = createFileEl('app.log', fileInode, 'active');
-        simEl.appendChild(mainFile.el);
-        mainFile.cursor.textContent = '\u25B6 detected! new inode ' + fileInode;
-
-        offset = 0;
-        lineNum = 1;
-
-        timer = setTimeout(tick, 1500);
+        simEl.insertBefore(mainFile.el, oldFile.el);
+        mainFile.cursor.textContent = '\u25B6 new inode ' + fileInode;
+        offset = 0; lineNum = 1;
         updateStats();
+        timer = setTimeout(tick, 2000);
         return;
       }
-
-      updateStats();
-      timer = setTimeout(tick, 500);
+      timer = setTimeout(tick, 400);
 
     } else if (phase === 'rotating') {
-      // logfwd detects the new file and starts reading
-      stageEl.className = 'tl-stage success';
-      stageEl.innerHTML = '<b>\u2705 logfwd detected rotation</b> — New inode ' + fileInode + ' detected. Drained remaining lines from old file, opened new file at offset 0. No data lost.';
+      addEvent('<b>\u2705 Rotation detected</b> — logfwd saw inode change from 12345 \u2192 ' + fileInode + '. Drained old file, opened new file at offset 0. <b>No data lost.</b>', 'ok');
       phase = 'new-tailing';
-      timer = setTimeout(tick, 800);
+      timer = setTimeout(tick, 1000);
 
     } else if (phase === 'new-tailing') {
-      var text = genLine(lineNum);
-      var len = text.length + 1;
-      addLine(mainFile, lineNum, text, 'new');
-      lineNum++;
-      offset += len;
-      linesRead++;
+      addLine(mainFile, lineNum, genLine(lineNum));
+      offset += genLine(lineNum).length + 1;
+      lineNum++; linesRead++;
       mainFile.cursor.textContent = '\u25B6 offset: ' + offset;
-
       updateStats();
 
-      if (lineNum > 8) {
-        // Loop: reset everything
-        phase = 'reset';
+      if (lineNum > 6) {
+        phase = 'done';
         timer = setTimeout(function() {
-          // Clean reset
+          // Reset for next loop
+          eventsEl.innerHTML = '';
           simEl.innerHTML = '';
-          lineNum = 1;
-          offset = 0;
-          linesRead = 0;
-          fileInode = 12345;
+          lineNum = 1; offset = 0; linesRead = 0; fileInode = 12345;
           phase = 'tailing';
+          addEvent('<b>Tailing app.log</b> — logfwd reads new lines as they appear.');
           mainFile = createFileEl('app.log', fileInode, 'active');
           simEl.appendChild(mainFile.el);
-          stageEl.className = 'tl-stage';
-          stageEl.innerHTML = '<b>Tailing app.log</b> — logfwd reads new lines as they appear. Watch the line counter grow.';
           mainFile.cursor.textContent = '\u25B6 reading...';
           updateStats();
           timer = setTimeout(tick, 800);
-        }, 3000);
+        }, 5000);
         return;
       }
-
       timer = setTimeout(tick, 400);
     }
   }
 
-  updateStats();
-
   // Auto-start after a brief delay
-  timer = setTimeout(tick, 1000);
+  timer = setTimeout(tick, 800);
 })();
 </script>

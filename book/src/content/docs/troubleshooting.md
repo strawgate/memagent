@@ -206,3 +206,11 @@ curl -s http://localhost:9090/admin/v1/status | jq .
 # Flattened stats snapshot
 curl -s http://localhost:9090/admin/v1/stats | jq .
 ```
+
+## What's next
+
+| Topic | Where to go |
+|-------|-------------|
+| Check pipeline metrics | [Monitoring & Diagnostics](/memagent/deployment/monitoring/) |
+| Review your config | [YAML Reference](/memagent/configuration/reference/) |
+| Understand the pipeline | [Pipeline Explorer](/memagent/how-it-works/) (interactive) |

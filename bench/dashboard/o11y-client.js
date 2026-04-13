@@ -44,6 +44,12 @@ export async function fetchBenchIndex(signal) {
 }
 
 export async function fetchBenchRun(runId, signal) {
+  // The bench-data branch stores runs as flat files at data/runs/{id}.json
+  // rather than the benchkit default of runs/{id}/benchmark.otlp.json.
+  // Fetch directly to match our actual layout.
+  const flat = await fetchBenchJson(`runs/${runId}.json`, signal);
+  if (flat) return flat;
+  // Fall back to the benchkit convention in case the layout changes.
   try {
     return await fetchRun(benchDataSource, runId, signal);
   } catch {

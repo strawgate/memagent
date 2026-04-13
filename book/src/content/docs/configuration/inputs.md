@@ -3,7 +3,7 @@ title: "Input Types"
 description: "Usage notes and examples for each input type"
 ---
 
-Support status lives in the [Configuration Reference](/memagent/configuration/reference/#input-types).
+Support status lives in the [YAML Reference](/memagent/configuration/reference/#input-types).
 This page focuses on usage notes and examples.
 
 ## File
