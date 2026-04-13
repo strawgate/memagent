@@ -8,6 +8,11 @@ publish = false
 [lib]
 doctest = false
 
+[features]
+# Expose columnar builder internals for allocation profiling integration tests.
+# Not for production use.
+_test-internals = []
+
 [dependencies]
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }

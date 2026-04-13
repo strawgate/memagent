@@ -4,6 +4,9 @@
 //! Contains `StreamingBuilder` (zero-copy hot path) and the `Scanner`
 //! wrapper type that produces `RecordBatch`.
 
+#[cfg(feature = "_test-internals")]
+pub mod columnar;
+#[cfg(not(feature = "_test-internals"))]
 pub(crate) mod columnar;
 pub mod conflict_schema;
 pub mod materialize;

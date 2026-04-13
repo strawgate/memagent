@@ -34,9 +34,9 @@ use super::plan::FieldKind;
 /// offsets `>= original_len` point into the generated buffer at
 /// `offset - original_len`.  This encoding costs zero extra bits per fact.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct StringRef {
-    pub(crate) offset: u32,
-    pub(crate) len: u32,
+pub struct StringRef {
+    pub offset: u32,
+    pub len: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ pub(crate) struct StringRef {
 ///
 /// Planned fields use single-type variants (one Vec per field).
 /// Dynamic fields use `Dynamic` (all 4 Vecs + conflict flags).
-pub(crate) enum ColumnAccumulator {
+pub enum ColumnAccumulator {
     /// Planned Int64 field — single fact vector.
     Int64 {
         facts: Vec<(u32, i64)>,
@@ -84,7 +84,7 @@ pub(crate) enum ColumnAccumulator {
 
 impl ColumnAccumulator {
     /// Create the right variant for a planned field kind.
-    pub(crate) fn for_planned(kind: FieldKind) -> Self {
+    pub fn for_planned(kind: FieldKind) -> Self {
         match kind {
             FieldKind::Int64 => ColumnAccumulator::Int64 {
                 facts: Vec::with_capacity(256),
@@ -108,7 +108,7 @@ impl ColumnAccumulator {
     }
 
     /// Create a Dynamic variant (for JSON-style discovered fields).
-    pub(crate) fn dynamic() -> Self {
+    pub fn dynamic() -> Self {
         ColumnAccumulator::Dynamic {
             int_facts: Vec::new(),
             float_facts: Vec::new(),
@@ -123,7 +123,7 @@ impl ColumnAccumulator {
     }
 
     /// Clear accumulated data for batch reuse.
-    pub(crate) fn clear(&mut self) {
+    pub fn clear(&mut self) {
         match self {
             ColumnAccumulator::Int64 { facts, last_row } => {
                 facts.clear();
@@ -166,7 +166,7 @@ impl ColumnAccumulator {
     }
 
     /// Mutable last_row for dedup when field index >= 64.
-    pub(crate) fn last_row_mut(&mut self) -> &mut u32 {
+    pub fn last_row_mut(&mut self) -> &mut u32 {
         match self {
             ColumnAccumulator::Int64 { last_row, .. }
             | ColumnAccumulator::Float64 { last_row, .. }
@@ -177,7 +177,7 @@ impl ColumnAccumulator {
     }
 
     /// Last row written.
-    pub(crate) fn last_row(&self) -> u32 {
+    pub fn last_row(&self) -> u32 {
         match self {
             ColumnAccumulator::Int64 { last_row, .. }
             | ColumnAccumulator::Float64 { last_row, .. }
@@ -194,7 +194,7 @@ impl ColumnAccumulator {
     /// Append an i64 fact.  For planned Int64, goes to the single vec.
     /// For Dynamic, goes to int_facts.
     #[inline(always)]
-    pub(crate) fn push_i64(&mut self, row: u32, value: i64) {
+    pub fn push_i64(&mut self, row: u32, value: i64) {
         match self {
             ColumnAccumulator::Int64 { facts, .. } => facts.push((row, value)),
             ColumnAccumulator::Dynamic {
@@ -210,7 +210,7 @@ impl ColumnAccumulator {
 
     /// Append an f64 fact.
     #[inline(always)]
-    pub(crate) fn push_f64(&mut self, row: u32, value: f64) {
+    pub fn push_f64(&mut self, row: u32, value: f64) {
         match self {
             ColumnAccumulator::Float64 { facts, .. } => facts.push((row, value)),
             ColumnAccumulator::Dynamic {
@@ -227,7 +227,7 @@ impl ColumnAccumulator {
 
     /// Append a bool fact.
     #[inline(always)]
-    pub(crate) fn push_bool(&mut self, row: u32, value: bool) {
+    pub fn push_bool(&mut self, row: u32, value: bool) {
         match self {
             ColumnAccumulator::Bool { facts, .. } => facts.push((row, value)),
             ColumnAccumulator::Dynamic {
@@ -244,7 +244,7 @@ impl ColumnAccumulator {
 
     /// Append a string ref.
     #[inline(always)]
-    pub(crate) fn push_str(&mut self, row: u32, sref: StringRef) {
+    pub fn push_str(&mut self, row: u32, sref: StringRef) {
         match self {
             ColumnAccumulator::String { facts, .. } => facts.push((row, sref)),
             ColumnAccumulator::Dynamic {
@@ -274,7 +274,7 @@ impl ColumnAccumulator {
     ///
     /// Returns `Err` if a string reference points outside the provided buffers
     /// or if buffer data is not valid UTF-8.
-    pub(crate) fn materialize(
+    pub fn materialize(
         &self,
         name: &str,
         num_rows: usize,
@@ -363,7 +363,7 @@ impl ColumnAccumulator {
 
 /// Error during column materialization.
 #[derive(Debug)]
-pub(crate) enum MaterializeError {
+pub enum MaterializeError {
     /// A `StringRef` pointed outside the provided buffers.
     StringRefOutOfBounds {
         offset: u32,
@@ -410,7 +410,7 @@ impl std::error::Error for MaterializeError {
 
 /// Controls how string columns are built at finalization.
 #[derive(Clone)]
-pub(crate) enum FinalizationMode<'a> {
+pub enum FinalizationMode<'a> {
     /// Copy strings into contiguous `StringArray` (self-contained, input-freeable).
     Detached {
         /// Original input buffer, for reading string data.
@@ -495,7 +495,12 @@ fn build_string(
             generated_buf,
         } => {
             let original_len = original_buf.len();
-            let mut builder = StringBuilder::with_capacity(facts.len(), 0);
+            // Pre-compute total string bytes to avoid reallocation.
+            let total_str_bytes: usize = facts
+                .iter()
+                .map(|(_, sref)| sref.len as usize)
+                .sum();
+            let mut builder = StringBuilder::with_capacity(facts.len(), total_str_bytes);
             let mut vi = 0;
             for row in 0..num_rows as u32 {
                 if vi < facts.len() && facts[vi].0 == row {

@@ -11,9 +11,9 @@
 //! See `dev-docs/research/columnar-batch-builder.md` for the design intent.
 
 #[allow(dead_code)]
-pub(crate) mod accumulator;
+pub mod accumulator;
 #[allow(dead_code)]
-pub(crate) mod builder;
+pub mod builder;
 #[allow(dead_code)]
-pub(crate) mod plan;
+pub mod plan;
 pub(crate) mod row_protocol;

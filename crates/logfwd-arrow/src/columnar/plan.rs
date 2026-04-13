@@ -23,7 +23,7 @@ use std::sync::Arc;
 /// OTLP field numbers, JSON mixed-type conflict logic, and CSV column
 /// indices do not belong here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum FieldKind {
+pub enum FieldKind {
     /// 64-bit signed integer (`Int64`).
     Int64,
     /// 64-bit IEEE 754 float (`Float64`).
@@ -48,12 +48,12 @@ pub(crate) enum FieldKind {
 /// handle regardless of when it was declared or resolved.  Producers store
 /// handles for repeated use across rows without re-resolving by name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct FieldHandle(u32);
+pub struct FieldHandle(u32);
 
 impl FieldHandle {
     /// The underlying column index.
     #[inline(always)]
-    pub(crate) fn index(self) -> usize {
+    pub fn index(self) -> usize {
         self.0 as usize
     }
 }
@@ -68,7 +68,7 @@ impl FieldHandle {
 /// Dynamic fields accumulate observed kinds and may develop type conflicts
 /// (like JSON's mixed int/string columns).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum FieldSchemaMode {
+pub enum FieldSchemaMode {
     /// Producer declared the field with a fixed kind up front.
     /// Attempts to write a different kind are rejected (not silently
     /// promoted to a conflict column).
@@ -142,7 +142,7 @@ struct FieldEntry {
 /// - **Dynamic fields** are resolved by name + observed kind at write time
 ///   (like `StreamingBuilder::resolve_field` for JSON).  Multiple observed
 ///   kinds are accumulated and may produce conflict columns.
-pub(crate) struct BatchPlan {
+pub struct BatchPlan {
     /// Ordered field entries (index = handle value).
     fields: Vec<FieldEntry>,
     /// Name → handle for O(1) lookup.  Keys share the same `Arc<str>`
@@ -152,7 +152,7 @@ pub(crate) struct BatchPlan {
 
 impl BatchPlan {
     /// Create an empty plan.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         BatchPlan {
             fields: Vec::new(),
             index: HashMap::new(),
@@ -160,7 +160,7 @@ impl BatchPlan {
     }
 
     /// Create a plan with pre-allocated capacity.
-    pub(crate) fn with_capacity(cap: usize) -> Self {
+    pub fn with_capacity(cap: usize) -> Self {
         BatchPlan {
             fields: Vec::with_capacity(cap),
             index: HashMap::with_capacity(cap),
@@ -168,12 +168,12 @@ impl BatchPlan {
     }
 
     /// Number of fields in the plan.
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.fields.len()
     }
 
     /// Whether the plan is empty.
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.fields.is_empty()
     }
 
@@ -182,7 +182,7 @@ impl BatchPlan {
     /// If the field already exists as planned with the same kind, returns
     /// the existing handle (idempotent).  If it exists with a different
     /// kind or as a dynamic field, returns `Err`.
-    pub(crate) fn declare_planned(
+    pub fn declare_planned(
         &mut self,
         name: &str,
         kind: FieldKind,
@@ -219,7 +219,7 @@ impl BatchPlan {
     /// If the field already exists as dynamic, the observed kind is
     /// accumulated (for conflict detection).  If it exists as planned,
     /// returns `Err` — planned fields cannot become dynamic.
-    pub(crate) fn resolve_dynamic(
+    pub fn resolve_dynamic(
         &mut self,
         name: &str,
         kind: FieldKind,
@@ -250,22 +250,22 @@ impl BatchPlan {
     }
 
     /// Look up a field by name without creating it.
-    pub(crate) fn lookup(&self, name: &str) -> Option<FieldHandle> {
+    pub fn lookup(&self, name: &str) -> Option<FieldHandle> {
         self.index.get(name).copied()
     }
 
     /// Get the schema mode for a field handle.
-    pub(crate) fn field_mode(&self, handle: FieldHandle) -> Option<&FieldSchemaMode> {
+    pub fn field_mode(&self, handle: FieldHandle) -> Option<&FieldSchemaMode> {
         self.fields.get(handle.index()).map(|e| &e.mode)
     }
 
     /// Get the field name for a handle.
-    pub(crate) fn field_name(&self, handle: FieldHandle) -> Option<&str> {
+    pub fn field_name(&self, handle: FieldHandle) -> Option<&str> {
         self.fields.get(handle.index()).map(|e| &*e.name)
     }
 
     /// Iterate over all fields in declaration order.
-    pub(crate) fn fields(&self) -> impl Iterator<Item = (FieldHandle, &str, &FieldSchemaMode)> {
+    pub fn fields(&self) -> impl Iterator<Item = (FieldHandle, &str, &FieldSchemaMode)> {
         self.fields.iter().map(|e| (e.handle, &*e.name, &e.mode))
     }
 
@@ -282,7 +282,7 @@ impl BatchPlan {
 
 /// Error from `BatchPlan` field declaration or resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PlanError {
+pub enum PlanError {
     /// A planned field was re-declared with a different kind.
     KindMismatch {
         field: String,

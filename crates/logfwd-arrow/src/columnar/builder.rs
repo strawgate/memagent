@@ -36,7 +36,7 @@ use crate::check_dup_bits;
 
 /// Errors from `ColumnarBatchBuilder` operations.
 #[derive(Debug)]
-pub(crate) enum BuilderError {
+pub enum BuilderError {
     /// Arrow error during RecordBatch construction.
     Arrow(ArrowError),
     /// String buffer exceeded u32 addressable range.
@@ -105,7 +105,7 @@ impl From<MaterializeError> for BuilderError {
 ///   dynamic → `ColumnAccumulator::Dynamic` (all vecs, conflict detection).
 /// - Dedup uses the same bitmask approach as `RowLifecycle::written_bits`.
 /// - `finish_batch` iterates fields and calls `accumulator.materialize()`.
-pub(crate) struct ColumnarBatchBuilder {
+pub struct ColumnarBatchBuilder {
     plan: BatchPlan,
     lifecycle: RowLifecycle,
     columns: Vec<ColumnAccumulator>,
@@ -118,7 +118,7 @@ impl ColumnarBatchBuilder {
     /// Create a builder from a plan.
     ///
     /// Allocates per-field storage matched to each field's schema mode.
-    pub(crate) fn new(plan: BatchPlan) -> Self {
+    pub fn new(plan: BatchPlan) -> Self {
         let columns: Vec<ColumnAccumulator> = plan
             .fields()
             .map(|(_handle, _name, mode)| match mode {
@@ -135,7 +135,7 @@ impl ColumnarBatchBuilder {
     }
 
     /// Start a new batch.
-    pub(crate) fn begin_batch(&mut self) {
+    pub fn begin_batch(&mut self) {
         self.lifecycle.begin_batch();
         for col in &mut self.columns {
             col.clear();
@@ -145,13 +145,13 @@ impl ColumnarBatchBuilder {
 
     /// Start a new row.
     #[inline]
-    pub(crate) fn begin_row(&mut self) {
+    pub fn begin_row(&mut self) {
         self.lifecycle.begin_row();
     }
 
     /// Finish the current row.
     #[inline]
-    pub(crate) fn end_row(&mut self) {
+    pub fn end_row(&mut self) {
         self.lifecycle.end_row();
     }
 
@@ -159,7 +159,7 @@ impl ColumnarBatchBuilder {
     ///
     /// This is the runtime field-discovery path for JSON/CRI-style producers.
     /// Returns a stable handle that can be used for writes in the current row.
-    pub(crate) fn resolve_dynamic(
+    pub fn resolve_dynamic(
         &mut self,
         name: &str,
         kind: FieldKind,
@@ -202,7 +202,7 @@ impl ColumnarBatchBuilder {
 
     /// Write an i64 value for the given field in the current row.
     #[inline]
-    pub(crate) fn write_i64(&mut self, handle: FieldHandle, value: i64) {
+    pub fn write_i64(&mut self, handle: FieldHandle, value: i64) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
         if self.is_duplicate(handle) {
@@ -213,7 +213,7 @@ impl ColumnarBatchBuilder {
 
     /// Write an f64 value for the given field in the current row.
     #[inline]
-    pub(crate) fn write_f64(&mut self, handle: FieldHandle, value: f64) {
+    pub fn write_f64(&mut self, handle: FieldHandle, value: f64) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
         if self.is_duplicate(handle) {
@@ -224,7 +224,7 @@ impl ColumnarBatchBuilder {
 
     /// Write a bool value for the given field in the current row.
     #[inline]
-    pub(crate) fn write_bool(&mut self, handle: FieldHandle, value: bool) {
+    pub fn write_bool(&mut self, handle: FieldHandle, value: bool) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
         if self.is_duplicate(handle) {
@@ -244,7 +244,7 @@ impl ColumnarBatchBuilder {
     ///
     /// Returns `Err` if the string buffer would exceed u32 addressable range.
     #[inline]
-    pub(crate) fn write_str(
+    pub fn write_str(
         &mut self,
         handle: FieldHandle,
         value: &str,
@@ -275,7 +275,7 @@ impl ColumnarBatchBuilder {
     /// Write a `StringRef` directly (for zero-copy producers that already
     /// have offsets into an input buffer).
     #[inline]
-    pub(crate) fn write_str_ref(&mut self, handle: FieldHandle, sref: StringRef) {
+    pub fn write_str_ref(&mut self, handle: FieldHandle, sref: StringRef) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
         if self.is_duplicate(handle) {
@@ -289,7 +289,7 @@ impl ColumnarBatchBuilder {
     /// Sparse fields are null by default; this just marks the field as
     /// written for dedup purposes.
     #[inline]
-    pub(crate) fn write_null(&mut self, handle: FieldHandle) {
+    pub fn write_null(&mut self, handle: FieldHandle) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
         let _ = self.is_duplicate(handle);
@@ -303,7 +303,7 @@ impl ColumnarBatchBuilder {
     ///
     /// Copies string data into `StringBuilder` arrays. The builder's internal
     /// buffers can be reused after this call.
-    pub(crate) fn finish_batch(&mut self) -> Result<RecordBatch, BuilderError> {
+    pub fn finish_batch(&mut self) -> Result<RecordBatch, BuilderError> {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InBatch);
         let num_rows = self.lifecycle.row_count() as usize;
 
@@ -324,7 +324,7 @@ impl ColumnarBatchBuilder {
     /// `original_len` is the length of the original buffer.
     /// Strings with `offset < original_len` reference the original buffer;
     /// strings with `offset >= original_len` reference the generated buffer.
-    pub(crate) fn finish_batch_view(
+    pub fn finish_batch_view(
         &mut self,
         original: Buffer,
         original_len: u32,
@@ -383,12 +383,12 @@ impl ColumnarBatchBuilder {
     }
 
     /// Number of completed rows in the current batch.
-    pub(crate) fn row_count(&self) -> u32 {
+    pub fn row_count(&self) -> u32 {
         self.lifecycle.row_count()
     }
 
     /// Reference to the underlying plan.
-    pub(crate) fn plan(&self) -> &BatchPlan {
+    pub fn plan(&self) -> &BatchPlan {
         &self.plan
     }
 }
@@ -1202,5 +1202,106 @@ mod tests {
         eprintln!("    FieldKind: {} bytes", size_of::<FieldKind>());
         eprintln!("    StringRef: {} bytes", size_of::<StringRef>());
         eprintln!("    BatchPlan: {} bytes\n", size_of::<BatchPlan>());
+    }
+
+    /// CPU breakdown: write phase vs materialization phase.
+    #[test]
+    fn cpu_breakdown_write_vs_materialize() {
+        let mut plan = BatchPlan::new();
+        let ts = plan.declare_planned("timestamp_ns", FieldKind::Int64).unwrap();
+        let sev_num = plan.declare_planned("severity_number", FieldKind::Int64).unwrap();
+        let sev_text = plan.declare_planned("severity_text", FieldKind::Utf8View).unwrap();
+        let body = plan.declare_planned("body", FieldKind::Utf8View).unwrap();
+        let flags = plan.declare_planned("flags", FieldKind::Int64).unwrap();
+        let trace_id = plan.declare_planned("trace_id", FieldKind::Utf8View).unwrap();
+        let span_id = plan.declare_planned("span_id", FieldKind::Utf8View).unwrap();
+        let res_svc = plan.declare_planned("resource.service.name", FieldKind::Utf8View).unwrap();
+        let res_host = plan.declare_planned("resource.host.name", FieldKind::Utf8View).unwrap();
+        let scope_name = plan.declare_planned("scope.name", FieldKind::Utf8View).unwrap();
+        let scope_ver = plan.declare_planned("scope.version", FieldKind::Utf8View).unwrap();
+        let attr_method = plan.declare_planned("attributes.http.method", FieldKind::Utf8View).unwrap();
+        let attr_status = plan.declare_planned("attributes.http.status_code", FieldKind::Int64).unwrap();
+        let attr_dur = plan.declare_planned("attributes.duration_ms", FieldKind::Float64).unwrap();
+        let attr_path = plan.declare_planned("attributes.http.path", FieldKind::Utf8View).unwrap();
+
+        let handles_int = [ts, sev_num, flags, attr_status];
+        let handles_str = [sev_text, body, trace_id, span_id, res_svc, res_host,
+            scope_name, scope_ver, attr_method, attr_path];
+        let handles_float = [attr_dur];
+
+        let mut b = ColumnarBatchBuilder::new(plan);
+        let rows_per_batch: u32 = 1000;
+        let num_batches: u64 = 20;
+
+        // Warmup
+        b.begin_batch();
+        for row in 0..rows_per_batch {
+            b.begin_row();
+            for (i, &h) in handles_int.iter().enumerate() {
+                b.write_i64(h, row as i64 + i as i64);
+            }
+            for &h in &handles_str {
+                b.write_str(h, "warmup-string-value").unwrap();
+            }
+            for &h in &handles_float {
+                b.write_f64(h, row as f64);
+            }
+            b.end_row();
+        }
+        let _ = b.finish_batch().unwrap();
+
+        let mut total_write = std::time::Duration::ZERO;
+        let mut total_materialize = std::time::Duration::ZERO;
+
+        for batch_idx in 0..num_batches {
+            b.begin_batch();
+
+            let write_start = std::time::Instant::now();
+            for row in 0..rows_per_batch {
+                b.begin_row();
+                let base = (batch_idx as i64) * (rows_per_batch as i64) + row as i64;
+                for (i, &h) in handles_int.iter().enumerate() {
+                    b.write_i64(h, base + i as i64 * 1000);
+                }
+                for &h in &handles_str {
+                    b.write_str(h, "example-value-0123456789").unwrap();
+                }
+                for &h in &handles_float {
+                    b.write_f64(h, base as f64 * 0.001);
+                }
+                b.end_row();
+            }
+            total_write += write_start.elapsed();
+
+            let mat_start = std::time::Instant::now();
+            let batch = b.finish_batch().unwrap();
+            total_materialize += mat_start.elapsed();
+
+            assert_eq!(batch.num_rows(), rows_per_batch as usize);
+        }
+
+        let total_rows = u64::from(rows_per_batch) * num_batches;
+        let total = total_write + total_materialize;
+        let write_pct = total_write.as_nanos() as f64 / total.as_nanos() as f64 * 100.0;
+        let mat_pct = total_materialize.as_nanos() as f64 / total.as_nanos() as f64 * 100.0;
+
+        eprintln!("\n  CPU breakdown ({total_rows} rows, {num_batches} batches):");
+        eprintln!(
+            "    write phase:        {:.1?}  ({:.0} ns/row, {:.0}%)",
+            total_write,
+            total_write.as_nanos() as f64 / total_rows as f64,
+            write_pct,
+        );
+        eprintln!(
+            "    materialize phase:  {:.1?}  ({:.0} ns/row, {:.0}%)",
+            total_materialize,
+            total_materialize.as_nanos() as f64 / total_rows as f64,
+            mat_pct,
+        );
+        eprintln!(
+            "    total:              {:.1?}  ({:.0} ns/row)\n",
+            total,
+            total.as_nanos() as f64 / total_rows as f64,
+        );
     }
 }
