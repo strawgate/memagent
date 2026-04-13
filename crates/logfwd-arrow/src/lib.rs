@@ -4,6 +4,7 @@
 //! Contains `StreamingBuilder` (zero-copy hot path) and the `Scanner`
 //! wrapper type that produces `RecordBatch`.
 
+pub(crate) mod columnar;
 pub mod conflict_schema;
 pub mod materialize;
 pub mod scanner;

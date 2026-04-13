@@ -24,6 +24,7 @@ use logfwd_core::scanner::BuilderState;
 use logfwd_types::field_names;
 
 use crate::check_dup_bits;
+use crate::columnar::row_protocol::RowLifecycle;
 
 #[cfg(kani)]
 type FieldIndexMap = std::collections::BTreeMap<Vec<u8>, usize>;
@@ -156,10 +157,8 @@ pub struct StreamingBuilder {
     /// `field_index` — bounds `fields.len()` to the high-water mark of unique
     /// fields seen in any *single* batch rather than growing without limit.
     num_active: usize,
-    row_count: u32,
-    /// Tracks which fields (by index) were written in the current row.
-    /// Only covers the first 64 fields (indices 0-63); see `check_dup_bits`.
-    written_bits: u64,
+    /// Row lifecycle state machine: batch/row phase, row count, dedup bits.
+    lifecycle: RowLifecycle,
     /// Reference-counted buffer. Stored here to compute offsets safely
     /// and shared with Arrow StringViewArrays in finish_batch.
     buf: bytes::Bytes,
@@ -172,11 +171,6 @@ pub struct StreamingBuilder {
     /// Line views: (offset_in_buf, len) per row, in row order.
     /// Populated only when `line_field_name` is set.
     line_views: Vec<(u32, u32)>,
-    /// Tracks whether `append_line` has been called for the current row.
-    /// Used for duplicate detection since `line_views` is not indexed by field.
-    line_written_this_row: bool,
-    /// Protocol state — enforced via `debug_assert` in each method.
-    state: BuilderState,
     /// Constant per-row resource attributes emitted as `_resource_*` columns.
     resource_attrs: Vec<(String, String)>,
 }
@@ -193,14 +187,11 @@ impl StreamingBuilder {
             fields: Vec::with_capacity(32),
             field_index: new_field_index(),
             num_active: 0,
-            row_count: 0,
-            written_bits: 0,
+            lifecycle: RowLifecycle::new(),
             buf: bytes::Bytes::new(),
             decoded_buf: Vec::new(),
             line_field_name,
             line_views: Vec::new(),
-            line_written_this_row: false,
-            state: BuilderState::Idle,
             resource_attrs: Vec::new(),
         }
     }
@@ -224,9 +215,11 @@ impl StreamingBuilder {
     /// offsets are stored as u32. Buffers larger than 4 GiB would produce
     /// silently truncated offsets without this guard.
     pub fn begin_batch(&mut self, buf: bytes::Bytes) {
-        debug_assert_ne!(
-            self.state,
-            BuilderState::InRow,
+        debug_assert!(
+            matches!(
+                self.lifecycle.state(),
+                BuilderState::Idle | BuilderState::InBatch
+            ),
             "begin_batch called while inside a row (missing end_row)"
         );
         assert!(
@@ -236,7 +229,7 @@ impl StreamingBuilder {
         );
         self.buf = buf;
         self.decoded_buf.clear();
-        self.row_count = 0;
+        self.lifecycle.begin_batch();
         // Only clear the slots that were active in the previous batch.
         // This preserves the inner-Vec capacity of each FieldColumns for
         // hot-path reuse while still bounding memory under key churn.
@@ -250,39 +243,23 @@ impl StreamingBuilder {
         self.field_index.clear();
         self.num_active = 0;
         self.line_views.clear();
-        self.state = BuilderState::InBatch;
     }
 
     #[inline(always)]
     pub fn begin_row(&mut self) {
-        debug_assert_eq!(
-            self.state,
-            BuilderState::InBatch,
-            "begin_row called outside of a batch (call begin_batch first)"
-        );
-        self.written_bits = 0;
-        self.line_written_this_row = false;
-        self.state = BuilderState::InRow;
+        self.lifecycle.begin_row();
     }
 
     #[inline(always)]
     pub fn end_row(&mut self) {
-        debug_assert_eq!(
-            self.state,
-            BuilderState::InRow,
-            "end_row called without a matching begin_row"
-        );
-        self.row_count = self
-            .row_count
-            .checked_add(1)
-            .expect("row_count overflow: batch exceeds u32::MAX rows");
-        self.state = BuilderState::InBatch;
+        self.lifecycle.end_row();
     }
 
     #[inline]
     pub fn resolve_field(&mut self, key: &[u8]) -> usize {
         debug_assert!(
-            self.state == BuilderState::InBatch || self.state == BuilderState::InRow,
+            self.lifecycle.state() == BuilderState::InBatch
+                || self.lifecycle.state() == BuilderState::InRow,
             "resolve_field called outside of an active batch"
         );
         if let Some(&idx) = self.field_index.get(key) {
@@ -331,14 +308,14 @@ impl StreamingBuilder {
     #[inline(always)]
     pub fn append_str_by_idx(&mut self, idx: usize, value: &[u8]) {
         debug_assert_eq!(
-            self.state,
+            self.lifecycle.state(),
             BuilderState::InRow,
             "append_str_by_idx called outside of a row"
         );
-        if check_dup_bits(&mut self.written_bits, idx) {
+        if check_dup_bits(self.lifecycle.written_bits_mut(), idx) {
             return;
         }
-        if idx >= u64::BITS as usize && self.fields[idx].last_row == self.row_count {
+        if idx >= u64::BITS as usize && self.fields[idx].last_row == self.lifecycle.row_count() {
             return;
         }
         // StringViewArray requires valid UTF-8.  JSON is always UTF-8 in
@@ -351,12 +328,12 @@ impl StreamingBuilder {
             return;
         };
         if idx >= u64::BITS as usize {
-            self.fields[idx].last_row = self.row_count;
+            self.fields[idx].last_row = self.lifecycle.row_count();
         }
         let offset = self.offset_of(value);
         let fc = &mut self.fields[idx];
         fc.has_str = true;
-        fc.str_views.push((self.row_count, offset, len));
+        fc.str_views.push((self.lifecycle.row_count(), offset, len));
     }
 
     #[inline(always)]
@@ -373,14 +350,14 @@ impl StreamingBuilder {
     #[inline(always)]
     pub fn append_decoded_str_by_idx(&mut self, idx: usize, value: &[u8]) {
         debug_assert_eq!(
-            self.state,
+            self.lifecycle.state(),
             BuilderState::InRow,
             "append_decoded_str_by_idx called outside of a row"
         );
-        if check_dup_bits(&mut self.written_bits, idx) {
+        if check_dup_bits(self.lifecycle.written_bits_mut(), idx) {
             return;
         }
-        if idx >= u64::BITS as usize && self.fields[idx].last_row == self.row_count {
+        if idx >= u64::BITS as usize && self.fields[idx].last_row == self.lifecycle.row_count() {
             return;
         }
         if std::str::from_utf8(value).is_err() {
@@ -406,12 +383,13 @@ impl StreamingBuilder {
         };
         // All validation passed — safe to update dedup guard and extend decoded_buf.
         if idx >= u64::BITS as usize {
-            self.fields[idx].last_row = self.row_count;
+            self.fields[idx].last_row = self.lifecycle.row_count();
         }
         self.decoded_buf.extend_from_slice(value);
         let fc = &mut self.fields[idx];
         fc.has_str = true;
-        fc.str_views.push((self.row_count, combined_offset, len));
+        fc.str_views
+            .push((self.lifecycle.row_count(), combined_offset, len));
     }
 
     #[inline(always)]
@@ -422,126 +400,126 @@ impl StreamingBuilder {
     #[inline(always)]
     pub fn append_int_by_idx(&mut self, idx: usize, value: &[u8]) {
         debug_assert_eq!(
-            self.state,
+            self.lifecycle.state(),
             BuilderState::InRow,
             "append_int_by_idx called outside of a row"
         );
-        if check_dup_bits(&mut self.written_bits, idx) {
+        if check_dup_bits(self.lifecycle.written_bits_mut(), idx) {
             return;
         }
         let fc = &mut self.fields[idx];
         if idx >= 64 {
-            if fc.last_row == self.row_count {
+            if fc.last_row == self.lifecycle.row_count() {
                 return;
             }
-            fc.last_row = self.row_count;
+            fc.last_row = self.lifecycle.row_count();
         }
         if let Some(v) = parse_int_fast(value) {
             fc.has_int = true;
-            fc.int_values.push((self.row_count, v));
+            fc.int_values.push((self.lifecycle.row_count(), v));
         }
     }
 
     #[inline(always)]
     pub fn append_i64_value_by_idx(&mut self, idx: usize, value: i64) {
         debug_assert_eq!(
-            self.state,
+            self.lifecycle.state(),
             BuilderState::InRow,
             "append_i64_value_by_idx called outside of a row"
         );
-        if check_dup_bits(&mut self.written_bits, idx) {
+        if check_dup_bits(self.lifecycle.written_bits_mut(), idx) {
             return;
         }
         let fc = &mut self.fields[idx];
         if idx >= 64 {
-            if fc.last_row == self.row_count {
+            if fc.last_row == self.lifecycle.row_count() {
                 return;
             }
-            fc.last_row = self.row_count;
+            fc.last_row = self.lifecycle.row_count();
         }
         fc.has_int = true;
-        fc.int_values.push((self.row_count, value));
+        fc.int_values.push((self.lifecycle.row_count(), value));
     }
 
     #[inline(always)]
     pub fn append_float_by_idx(&mut self, idx: usize, value: &[u8]) {
         debug_assert_eq!(
-            self.state,
+            self.lifecycle.state(),
             BuilderState::InRow,
             "append_float_by_idx called outside of a row"
         );
-        if check_dup_bits(&mut self.written_bits, idx) {
+        if check_dup_bits(self.lifecycle.written_bits_mut(), idx) {
             return;
         }
         let fc = &mut self.fields[idx];
         if idx >= 64 {
-            if fc.last_row == self.row_count {
+            if fc.last_row == self.lifecycle.row_count() {
                 return;
             }
-            fc.last_row = self.row_count;
+            fc.last_row = self.lifecycle.row_count();
         }
         if let Some(v) = parse_float_fast(value) {
             fc.has_float = true;
-            fc.float_values.push((self.row_count, v));
+            fc.float_values.push((self.lifecycle.row_count(), v));
         }
     }
 
     #[inline(always)]
     pub fn append_f64_value_by_idx(&mut self, idx: usize, value: f64) {
         debug_assert_eq!(
-            self.state,
+            self.lifecycle.state(),
             BuilderState::InRow,
             "append_f64_value_by_idx called outside of a row"
         );
-        if check_dup_bits(&mut self.written_bits, idx) {
+        if check_dup_bits(self.lifecycle.written_bits_mut(), idx) {
             return;
         }
         let fc = &mut self.fields[idx];
         if idx >= 64 {
-            if fc.last_row == self.row_count {
+            if fc.last_row == self.lifecycle.row_count() {
                 return;
             }
-            fc.last_row = self.row_count;
+            fc.last_row = self.lifecycle.row_count();
         }
         fc.has_float = true;
-        fc.float_values.push((self.row_count, value));
+        fc.float_values.push((self.lifecycle.row_count(), value));
     }
 
     #[inline(always)]
     pub fn append_bool_by_idx(&mut self, idx: usize, value: bool) {
         debug_assert_eq!(
-            self.state,
+            self.lifecycle.state(),
             BuilderState::InRow,
             "append_bool_by_idx called outside of a row"
         );
-        if check_dup_bits(&mut self.written_bits, idx) {
+        if check_dup_bits(self.lifecycle.written_bits_mut(), idx) {
             return;
         }
         let fc = &mut self.fields[idx];
         if idx >= 64 {
-            if fc.last_row == self.row_count {
+            if fc.last_row == self.lifecycle.row_count() {
                 return;
             }
-            fc.last_row = self.row_count;
+            fc.last_row = self.lifecycle.row_count();
         }
         fc.has_bool = true;
-        fc.bool_values.push((self.row_count, value));
+        fc.bool_values.push((self.lifecycle.row_count(), value));
     }
 
     #[inline(always)]
     pub fn append_null_by_idx(&mut self, idx: usize) {
         debug_assert_eq!(
-            self.state,
+            self.lifecycle.state(),
             BuilderState::InRow,
             "append_null_by_idx called outside of a row"
         );
         // Nulls are represented by gaps -- no value record needed.
         // But mark as written for duplicate-key detection.
-        let _ = check_dup_bits(&mut self.written_bits, idx);
+        let _ = check_dup_bits(self.lifecycle.written_bits_mut(), idx);
 
         let fc = &mut self.fields[idx];
         if idx >= 64 {
-            fc.last_row = self.row_count;
+            fc.last_row = self.lifecycle.row_count();
         }
     }
 
@@ -556,11 +534,11 @@ impl StreamingBuilder {
     #[inline(always)]
     pub fn append_line(&mut self, line: &[u8]) {
         debug_assert_eq!(
-            self.state,
+            self.lifecycle.state(),
             BuilderState::InRow,
             "append_line called outside of a row"
         );
-        if self.line_field_name.is_some() && !self.line_written_this_row {
+        if self.line_field_name.is_some() && !self.lifecycle.line_written_this_row() {
             let line_view = if std::str::from_utf8(line).is_ok() {
                 let Ok(line_len) = u32::try_from(line.len()) else {
                     return;
@@ -586,7 +564,7 @@ impl StreamingBuilder {
             if let Some(line_view) = line_view {
                 self.line_views.push(line_view);
             }
-            self.line_written_this_row = true;
+            self.lifecycle.set_line_written();
         }
     }
 
@@ -598,11 +576,11 @@ impl StreamingBuilder {
     /// as separate Arrow StringView blocks to avoid copying the whole input.
     pub fn finish_batch(&mut self) -> Result<RecordBatch, ArrowError> {
         debug_assert_eq!(
-            self.state,
+            self.lifecycle.state(),
             BuilderState::InBatch,
             "finish_batch called outside of a batch (call begin_batch first, and ensure all rows are closed with end_row)"
         );
-        let num_rows = self.row_count as usize;
+        let num_rows = self.lifecycle.row_count() as usize;
 
         // StringView offsets use original-buffer offsets for unescaped strings
         // and offsets >= original_buf_len for decoded strings. Keep those as two
@@ -911,7 +889,7 @@ impl StreamingBuilder {
         let schema = Arc::new(Schema::new(schema_fields));
         let opts = RecordBatchOptions::new().with_row_count(Some(num_rows));
         let result = RecordBatch::try_new_with_options(schema, arrays, &opts);
-        self.state = BuilderState::Idle;
+        self.lifecycle.finish_batch();
         result
     }
 
@@ -927,11 +905,11 @@ impl StreamingBuilder {
     /// `StringArray` compresses efficiently via IPC zstd.
     pub fn finish_batch_detached(&mut self) -> Result<RecordBatch, ArrowError> {
         debug_assert_eq!(
-            self.state,
+            self.lifecycle.state(),
             BuilderState::InBatch,
             "finish_batch_detached called outside of a batch"
         );
-        let num_rows = self.row_count as usize;
+        let num_rows = self.lifecycle.row_count() as usize;
         let has_decoded = !self.decoded_buf.is_empty();
 
         let mut schema_fields: Vec<Field> = Vec::with_capacity(self.num_active);
@@ -1177,7 +1155,7 @@ impl StreamingBuilder {
         let schema = Arc::new(Schema::new(schema_fields));
         let opts = RecordBatchOptions::new().with_row_count(Some(num_rows));
         let result = RecordBatch::try_new_with_options(schema, arrays, &opts);
-        self.state = BuilderState::Idle;
+        self.lifecycle.finish_batch();
         result
     }
 
@@ -2762,15 +2740,14 @@ mod verification {
         let mut b = StreamingBuilder::new(Some("line".to_string()));
         b.fields.push(FieldColumns::new(b"x"));
         b.num_active = 1;
-        b.row_count = 7;
         b.line_views.push((1, 2));
         b.decoded_buf.extend_from_slice(b"decoded");
         b.begin_batch(bytes::Bytes::from_static(b"test data pad"));
         assert_eq!(b.num_active, 0);
-        assert_eq!(b.row_count, 0);
+        assert_eq!(b.lifecycle.row_count(), 0);
         assert!(b.line_views.is_empty());
         assert!(b.decoded_buf.is_empty());
-        assert_eq!(b.state, BuilderState::InBatch);
+        assert_eq!(b.lifecycle.state(), BuilderState::InBatch);
         assert_eq!(b.fields.len(), 1);
     }
 
@@ -2787,7 +2764,7 @@ mod verification {
             b.begin_row();
             b.end_row();
         }
-        assert_eq!(b.row_count, num_rows);
+        assert_eq!(b.lifecycle.row_count(), num_rows);
         kani::cover!(num_rows == 0, "empty batch");
         kani::cover!(num_rows > 0, "non-empty batch");
     }
