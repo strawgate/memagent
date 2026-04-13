@@ -11,5 +11,7 @@
 //! See `dev-docs/research/columnar-batch-builder.md` for the design intent.
 
 #[allow(dead_code)]
+pub(crate) mod builder;
+#[allow(dead_code)]
 pub(crate) mod plan;
 pub(crate) mod row_protocol;
