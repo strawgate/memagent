@@ -128,9 +128,16 @@ impl ScalarUDFImpl for RegexpExtractUdf {
             | ColumnarValue::Scalar(datafusion::common::ScalarValue::LargeUtf8(Some(s))) => {
                 s.clone()
             }
-            ColumnarValue::Scalar(s) => {
-                let s = s.to_string();
-                s.trim_matches('"').trim_matches('\'').to_string()
+            // NULL pattern -> NULL propagation: return all-null result.
+            ColumnarValue::Scalar(s) if s.is_null() => {
+                return Ok(ColumnarValue::Scalar(
+                    datafusion::common::ScalarValue::Utf8(None),
+                ));
+            }
+            ColumnarValue::Scalar(_) => {
+                return Err(datafusion::error::DataFusionError::Execution(
+                    "regexp_extract() pattern argument must be a scalar string literal".to_string(),
+                ));
             }
             ColumnarValue::Array(_) => {
                 return Err(datafusion::error::DataFusionError::Execution(
@@ -173,13 +180,10 @@ impl ScalarUDFImpl for RegexpExtractUdf {
                     0
                 }
             }
-            ColumnarValue::Array(arr) => {
-                let int_arr = arr.as_primitive::<arrow::datatypes::Int64Type>();
-                if int_arr.is_empty() || int_arr.is_null(0) {
-                    0
-                } else {
-                    int_arr.value(0) as usize
-                }
+            ColumnarValue::Array(_) => {
+                return Err(datafusion::error::DataFusionError::Execution(
+                    "regexp_extract() group_index argument must be a scalar integer literal, not an array column".to_string(),
+                ));
             }
         };
 
@@ -254,9 +258,15 @@ impl ScalarUDFImpl for RegexpExtractUdf {
                         datafusion::common::ScalarValue::Utf8(None),
                     ));
                 }
-                let val = scalar.to_string();
-                let val = val.trim_matches('"').trim_matches('\'');
-                match re.captures(val) {
+                // Extract the inner string directly from ScalarValue to avoid
+                // trim_matches corruption on values with boundary quotes.
+                let val = match scalar {
+                    datafusion::common::ScalarValue::Utf8(Some(s))
+                    | datafusion::common::ScalarValue::Utf8View(Some(s))
+                    | datafusion::common::ScalarValue::LargeUtf8(Some(s)) => s.clone(),
+                    other => other.to_string(),
+                };
+                match re.captures(&val) {
                     Some(caps) => match caps.get(idx) {
                         Some(m) => Ok(ColumnarValue::Scalar(
                             datafusion::common::ScalarValue::Utf8(Some(m.as_str().to_string())),
@@ -595,6 +605,83 @@ mod tests {
         let msg = err.to_string();
         assert!(
             msg.contains("pattern argument must be a scalar string literal"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    /// Regression (#1891): NULL pattern must return NULL, not compile "NULL" as regex.
+    #[test]
+    fn test_null_pattern_returns_null() {
+        let batch = make_batch();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(run_sql(
+            batch,
+            "SELECT regexp_extract(msg, CAST(NULL AS VARCHAR), 1) AS extracted FROM logs",
+        ));
+        let col = result.column_by_name("extracted").unwrap();
+        for row in 0..result.num_rows() {
+            assert!(
+                col.is_null(row),
+                "row {row}: NULL pattern must propagate NULL"
+            );
+        }
+    }
+
+    /// Regression (#1901): scalar input with boundary quotes must not be corrupted.
+    #[test]
+    fn test_scalar_input_preserves_boundary_quotes() {
+        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
+        let msgs: Arc<dyn Array> = Arc::new(StringArray::from(vec![Some("dummy")]));
+        let batch = RecordBatch::try_new(schema, vec![msgs]).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(run_sql(
+            batch,
+            r#"SELECT regexp_extract('"hello"', '(".*")', 1) AS extracted FROM logs"#,
+        ));
+        let col = result
+            .column_by_name("extracted")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(
+            col.value(0),
+            "\"hello\"",
+            "boundary quotes must be preserved"
+        );
+    }
+
+    /// Regression (#1889): array group_index must be rejected.
+    #[test]
+    fn test_rejects_array_group_index() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("msg", DataType::Utf8, true),
+            Field::new("idx", DataType::Int64, true),
+        ]));
+        let msg: Arc<dyn Array> = Arc::new(StringArray::from(vec![Some("status=200")]));
+        let idx: Arc<dyn Array> = Arc::new(Int64Array::from(vec![Some(1)]));
+        let batch = RecordBatch::try_new(schema, vec![msg, idx]).unwrap();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let err = rt
+            .block_on(run_sql_result(
+                batch,
+                "SELECT regexp_extract(msg, 'status=(\\d+)', idx) AS status FROM logs",
+            ))
+            .expect_err("array group_index must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("group_index argument must be a scalar integer literal"),
             "unexpected error: {msg}"
         );
     }

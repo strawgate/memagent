@@ -183,9 +183,16 @@ impl ScalarUDFImpl for GrokUdf {
             | ColumnarValue::Scalar(datafusion::common::ScalarValue::LargeUtf8(Some(s))) => {
                 s.clone()
             }
-            ColumnarValue::Scalar(s) => {
-                let s = s.to_string();
-                s.trim_matches('"').trim_matches('\'').to_string()
+            // NULL pattern -> NULL propagation: return scalar Utf8 NULL.
+            ColumnarValue::Scalar(s) if s.is_null() => {
+                return Ok(ColumnarValue::Scalar(
+                    datafusion::common::ScalarValue::Utf8(None),
+                ));
+            }
+            ColumnarValue::Scalar(_) => {
+                return Err(datafusion::error::DataFusionError::Execution(
+                    "grok() pattern argument must be a scalar string literal".to_string(),
+                ));
             }
             ColumnarValue::Array(_) => {
                 return Err(datafusion::error::DataFusionError::Execution(
@@ -331,14 +338,20 @@ impl ScalarUDFImpl for GrokUdf {
                 // Treat SQL NULL input the same as no match: return a Struct
                 // with all-null fields. This avoids matching against "NULL" —
                 // the string that ScalarValue::Utf8(None).to_string() produces.
-                let raw = if scalar.is_null() {
+                // Extract the inner string directly from ScalarValue to avoid
+                // trim_matches corruption on values with boundary quotes.
+                let raw: Option<String> = if scalar.is_null() {
                     None
                 } else {
-                    Some(scalar.to_string())
+                    match scalar {
+                        datafusion::common::ScalarValue::Utf8(Some(s))
+                        | datafusion::common::ScalarValue::Utf8View(Some(s))
+                        | datafusion::common::ScalarValue::LargeUtf8(Some(s)) => Some(s.clone()),
+                        other => Some(other.to_string()),
+                    }
                 };
                 let matches = raw
                     .as_deref()
-                    .map(|s| s.trim_matches('"').trim_matches('\''))
                     .and_then(|s| compiled.pattern.match_against(s));
 
                 let fields: Vec<Field> = compiled
@@ -668,5 +681,26 @@ mod tests {
             msg.contains("pattern argument must be a scalar string literal"),
             "unexpected error: {msg}"
         );
+    }
+
+    /// Regression (#1891/#1908): NULL pattern must return NULL.
+    #[test]
+    fn test_null_pattern_returns_null() {
+        let batch = make_access_log_batch();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = rt.block_on(run_sql(
+            batch,
+            "SELECT grok(message, CAST(NULL AS VARCHAR)) AS parsed FROM logs",
+        ));
+        let col = result.column_by_name("parsed").unwrap();
+        for row in 0..result.num_rows() {
+            assert!(
+                col.is_null(row),
+                "row {row}: NULL pattern must propagate NULL"
+            );
+        }
     }
 }
