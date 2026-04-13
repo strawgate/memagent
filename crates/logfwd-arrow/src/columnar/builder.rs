@@ -866,4 +866,341 @@ mod tests {
             "finish_batch should fail for out-of-bounds StringRef"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Performance validation: planned fields at scale
+    // -----------------------------------------------------------------------
+
+    /// OTLP-like workload: 15 planned fields, 1000 rows per batch, 10 batches.
+    /// Validates correctness at scale and prints timing for manual inspection.
+    #[test]
+    fn planned_fields_at_scale() {
+        let mut plan = BatchPlan::new();
+        let ts = plan.declare_planned("timestamp_ns", FieldKind::Int64).unwrap();
+        let sev_num = plan.declare_planned("severity_number", FieldKind::Int64).unwrap();
+        let sev_text = plan.declare_planned("severity_text", FieldKind::Utf8View).unwrap();
+        let body = plan.declare_planned("body", FieldKind::Utf8View).unwrap();
+        let flags = plan.declare_planned("flags", FieldKind::Int64).unwrap();
+        let trace_id = plan.declare_planned("trace_id", FieldKind::Utf8View).unwrap();
+        let span_id = plan.declare_planned("span_id", FieldKind::Utf8View).unwrap();
+        let res_svc = plan.declare_planned("resource.service.name", FieldKind::Utf8View).unwrap();
+        let res_host = plan.declare_planned("resource.host.name", FieldKind::Utf8View).unwrap();
+        let scope_name = plan.declare_planned("scope.name", FieldKind::Utf8View).unwrap();
+        let scope_ver = plan.declare_planned("scope.version", FieldKind::Utf8View).unwrap();
+        let attr_method = plan.declare_planned("attributes.http.method", FieldKind::Utf8View).unwrap();
+        let attr_status = plan.declare_planned("attributes.http.status_code", FieldKind::Int64).unwrap();
+        let attr_dur = plan.declare_planned("attributes.duration_ms", FieldKind::Float64).unwrap();
+        let attr_path = plan.declare_planned("attributes.http.path", FieldKind::Utf8View).unwrap();
+
+        let handles_int = [ts, sev_num, flags, attr_status];
+        let handles_str = [sev_text, body, trace_id, span_id, res_svc, res_host,
+            scope_name, scope_ver, attr_method, attr_path];
+        let handles_float = [attr_dur];
+
+        let mut b = ColumnarBatchBuilder::new(plan);
+        let rows_per_batch: u32 = 1000;
+        let num_batches: u64 = 10;
+
+        let start = std::time::Instant::now();
+
+        for batch_idx in 0..num_batches {
+            b.begin_batch();
+            for row in 0..rows_per_batch {
+                b.begin_row();
+                let base = (batch_idx as i64) * (rows_per_batch as i64) + row as i64;
+                for (i, &h) in handles_int.iter().enumerate() {
+                    b.write_i64(h, base + i as i64 * 1000);
+                }
+                for &h in &handles_str {
+                    b.write_str(h, "example-value-0123456789").unwrap();
+                }
+                for &h in &handles_float {
+                    b.write_f64(h, base as f64 * 0.001);
+                }
+                b.end_row();
+            }
+            let batch = b.finish_batch().unwrap();
+            assert_eq!(batch.num_rows(), rows_per_batch as usize);
+            assert_eq!(batch.num_columns(), 15);
+        }
+
+        let elapsed = start.elapsed();
+        let total_rows = u64::from(rows_per_batch) * num_batches;
+        let rows_per_sec = total_rows as f64 / elapsed.as_secs_f64();
+
+        eprintln!(
+            "\n  planned_fields_at_scale: {} rows in {:.1?} ({:.0} rows/sec, {:.0} ns/row)\n",
+            total_rows,
+            elapsed,
+            rows_per_sec,
+            elapsed.as_nanos() as f64 / total_rows as f64,
+        );
+    }
+
+    /// Mixed planned + dynamic workload: OTLP canonical + arbitrary JSON attrs.
+    #[test]
+    fn mixed_planned_dynamic_at_scale() {
+        let mut plan = BatchPlan::new();
+        let ts = plan.declare_planned("timestamp_ns", FieldKind::Int64).unwrap();
+        let sev = plan.declare_planned("severity_text", FieldKind::Utf8View).unwrap();
+        let body = plan.declare_planned("body", FieldKind::Utf8View).unwrap();
+
+        let mut b = ColumnarBatchBuilder::new(plan);
+        let rows_per_batch: u32 = 1000;
+        let num_batches: u64 = 10;
+
+        let start = std::time::Instant::now();
+
+        for batch_idx in 0..num_batches {
+            b.begin_batch();
+            for row in 0..rows_per_batch {
+                b.begin_row();
+                let base = (batch_idx as i64) * (rows_per_batch as i64) + row as i64;
+                b.write_i64(ts, base);
+                b.write_str(sev, "INFO").unwrap();
+                b.write_str(body, "example log message for testing").unwrap();
+
+                // Dynamic attributes (vary by row)
+                let attr_key = match row % 5 {
+                    0 => "http.method",
+                    1 => "http.path",
+                    2 => "user.id",
+                    3 => "region",
+                    _ => "custom.tag",
+                };
+                let h = b.resolve_dynamic(attr_key, FieldKind::Utf8View).unwrap();
+                b.write_str(h, "dynamic-value-here").unwrap();
+
+                if row % 3 == 0 {
+                    let h2 = b.resolve_dynamic("http.status_code", FieldKind::Int64).unwrap();
+                    b.write_i64(h2, 200);
+                }
+
+                b.end_row();
+            }
+            let batch = b.finish_batch().unwrap();
+            assert_eq!(batch.num_rows(), rows_per_batch as usize);
+            // 3 planned + up to 6 dynamic fields
+            assert!(batch.num_columns() >= 3);
+        }
+
+        let elapsed = start.elapsed();
+        let total_rows = u64::from(rows_per_batch) * num_batches;
+        let rows_per_sec = total_rows as f64 / elapsed.as_secs_f64();
+
+        eprintln!(
+            "\n  mixed_planned_dynamic_at_scale: {} rows in {:.1?} ({:.0} rows/sec, {:.0} ns/row)\n",
+            total_rows,
+            elapsed,
+            rows_per_sec,
+            elapsed.as_nanos() as f64 / total_rows as f64,
+        );
+    }
+
+    /// Baseline: StreamingBuilder doing the same 15-field OTLP-like workload.
+    /// Uses detached path for apples-to-apples comparison.
+    #[test]
+    fn streaming_builder_baseline_at_scale() {
+        use crate::streaming_builder::StreamingBuilder;
+
+        let field_names: Vec<&str> = vec![
+            "timestamp_ns", "severity_number", "severity_text", "body",
+            "flags", "trace_id", "span_id", "resource.service.name",
+            "resource.host.name", "scope.name", "scope.version",
+            "attributes.http.method", "attributes.http.status_code",
+            "attributes.duration_ms", "attributes.http.path",
+        ];
+
+        let rows_per_batch: u32 = 1000;
+        let num_batches: u64 = 10;
+
+        let mut sb = StreamingBuilder::new(None);
+        let start = std::time::Instant::now();
+
+        for _batch_idx in 0..num_batches {
+            // StreamingBuilder needs a Bytes buffer for begin_batch
+            let dummy_buf = bytes::Bytes::from_static(b"");
+            sb.begin_batch(dummy_buf);
+
+            // Pre-resolve field indices
+            let indices: Vec<usize> = field_names
+                .iter()
+                .map(|name| sb.resolve_field(name.as_bytes()))
+                .collect();
+
+            for row in 0..rows_per_batch {
+                sb.begin_row();
+                // int fields: timestamp_ns, severity_number, flags, status_code
+                for &idx in &[indices[0], indices[1], indices[4], indices[12]] {
+                    sb.append_i64_value_by_idx(idx, row as i64);
+                }
+                // str fields (10 of them) — use decoded path since strings
+                // aren't subslices of the input buffer (fair comparison)
+                for &idx in &[
+                    indices[2], indices[3], indices[5], indices[6], indices[7],
+                    indices[8], indices[9], indices[10], indices[11], indices[14],
+                ] {
+                    sb.append_decoded_str_by_idx(idx, b"example-value-0123456789");
+                }
+                // float field: duration_ms
+                sb.append_f64_value_by_idx(indices[13], row as f64 * 0.001);
+                sb.end_row();
+            }
+            let batch = sb.finish_batch_detached().unwrap();
+            assert_eq!(batch.num_rows(), rows_per_batch as usize);
+        }
+
+        let elapsed = start.elapsed();
+        let total_rows = u64::from(rows_per_batch) * num_batches;
+        let rows_per_sec = total_rows as f64 / elapsed.as_secs_f64();
+
+        eprintln!(
+            "\n  streaming_builder_baseline: {} rows in {:.1?} ({:.0} rows/sec, {:.0} ns/row)\n",
+            total_rows,
+            elapsed,
+            rows_per_sec,
+            elapsed.as_nanos() as f64 / total_rows as f64,
+        );
+    }
+
+    /// ColumnarBatchBuilder view finalization: same 15-field workload.
+    #[test]
+    fn planned_fields_view_at_scale() {
+        let mut plan = BatchPlan::new();
+        let ts = plan.declare_planned("timestamp_ns", FieldKind::Int64).unwrap();
+        let sev_num = plan.declare_planned("severity_number", FieldKind::Int64).unwrap();
+        let sev_text = plan.declare_planned("severity_text", FieldKind::Utf8View).unwrap();
+        let body = plan.declare_planned("body", FieldKind::Utf8View).unwrap();
+        let flags = plan.declare_planned("flags", FieldKind::Int64).unwrap();
+        let trace_id = plan.declare_planned("trace_id", FieldKind::Utf8View).unwrap();
+        let span_id = plan.declare_planned("span_id", FieldKind::Utf8View).unwrap();
+        let res_svc = plan.declare_planned("resource.service.name", FieldKind::Utf8View).unwrap();
+        let res_host = plan.declare_planned("resource.host.name", FieldKind::Utf8View).unwrap();
+        let scope_name = plan.declare_planned("scope.name", FieldKind::Utf8View).unwrap();
+        let scope_ver = plan.declare_planned("scope.version", FieldKind::Utf8View).unwrap();
+        let attr_method = plan.declare_planned("attributes.http.method", FieldKind::Utf8View).unwrap();
+        let attr_status = plan.declare_planned("attributes.http.status_code", FieldKind::Int64).unwrap();
+        let attr_dur = plan.declare_planned("attributes.duration_ms", FieldKind::Float64).unwrap();
+        let attr_path = plan.declare_planned("attributes.http.path", FieldKind::Utf8View).unwrap();
+
+        let handles_int = [ts, sev_num, flags, attr_status];
+        let handles_str = [sev_text, body, trace_id, span_id, res_svc, res_host,
+            scope_name, scope_ver, attr_method, attr_path];
+        let handles_float = [attr_dur];
+
+        let mut b = ColumnarBatchBuilder::new(plan);
+        let rows_per_batch: u32 = 1000;
+        let num_batches: u64 = 10;
+
+        let start = std::time::Instant::now();
+
+        for batch_idx in 0..num_batches {
+            b.begin_batch();
+            for row in 0..rows_per_batch {
+                b.begin_row();
+                let base = (batch_idx as i64) * (rows_per_batch as i64) + row as i64;
+                for (i, &h) in handles_int.iter().enumerate() {
+                    b.write_i64(h, base + i as i64 * 1000);
+                }
+                for &h in &handles_str {
+                    b.write_str(h, "example-value-0123456789").unwrap();
+                }
+                for &h in &handles_float {
+                    b.write_f64(h, base as f64 * 0.001);
+                }
+                b.end_row();
+            }
+            let batch = b.finish_batch_view(
+                arrow::buffer::Buffer::from(b"" as &[u8]),
+                0,
+            ).unwrap();
+            assert_eq!(batch.num_rows(), rows_per_batch as usize);
+            assert_eq!(batch.num_columns(), 15);
+        }
+
+        let elapsed = start.elapsed();
+        let total_rows = u64::from(rows_per_batch) * num_batches;
+        let rows_per_sec = total_rows as f64 / elapsed.as_secs_f64();
+
+        eprintln!(
+            "\n  planned_fields_view: {} rows in {:.1?} ({:.0} rows/sec, {:.0} ns/row)\n",
+            total_rows,
+            elapsed,
+            rows_per_sec,
+            elapsed.as_nanos() as f64 / total_rows as f64,
+        );
+    }
+
+    /// StreamingBuilder view baseline: same 15-field workload.
+    #[test]
+    fn streaming_builder_view_baseline_at_scale() {
+        use crate::streaming_builder::StreamingBuilder;
+
+        let field_names: Vec<&str> = vec![
+            "timestamp_ns", "severity_number", "severity_text", "body",
+            "flags", "trace_id", "span_id", "resource.service.name",
+            "resource.host.name", "scope.name", "scope.version",
+            "attributes.http.method", "attributes.http.status_code",
+            "attributes.duration_ms", "attributes.http.path",
+        ];
+
+        let rows_per_batch: u32 = 1000;
+        let num_batches: u64 = 10;
+
+        let mut sb = StreamingBuilder::new(None);
+        let start = std::time::Instant::now();
+
+        for _batch_idx in 0..num_batches {
+            let dummy_buf = bytes::Bytes::from_static(b"");
+            sb.begin_batch(dummy_buf);
+
+            let indices: Vec<usize> = field_names
+                .iter()
+                .map(|name| sb.resolve_field(name.as_bytes()))
+                .collect();
+
+            for row in 0..rows_per_batch {
+                sb.begin_row();
+                for &idx in &[indices[0], indices[1], indices[4], indices[12]] {
+                    sb.append_i64_value_by_idx(idx, row as i64);
+                }
+                for &idx in &[
+                    indices[2], indices[3], indices[5], indices[6], indices[7],
+                    indices[8], indices[9], indices[10], indices[11], indices[14],
+                ] {
+                    sb.append_decoded_str_by_idx(idx, b"example-value-0123456789");
+                }
+                sb.append_f64_value_by_idx(indices[13], row as f64 * 0.001);
+                sb.end_row();
+            }
+            let batch = sb.finish_batch().unwrap();
+            assert_eq!(batch.num_rows(), rows_per_batch as usize);
+        }
+
+        let elapsed = start.elapsed();
+        let total_rows = u64::from(rows_per_batch) * num_batches;
+        let rows_per_sec = total_rows as f64 / elapsed.as_secs_f64();
+
+        eprintln!(
+            "\n  streaming_builder_view_baseline: {} rows in {:.1?} ({:.0} rows/sec, {:.0} ns/row)\n",
+            total_rows,
+            elapsed,
+            rows_per_sec,
+            elapsed.as_nanos() as f64 / total_rows as f64,
+        );
+    }
+
+    /// Report type sizes for performance-critical structures.
+    #[test]
+    fn type_sizes() {
+        use super::super::accumulator::ColumnAccumulator;
+
+        eprintln!("\n  Type sizes:");
+        eprintln!("    ColumnAccumulator: {} bytes", size_of::<ColumnAccumulator>());
+        eprintln!("    ColumnarBatchBuilder: {} bytes", size_of::<ColumnarBatchBuilder>());
+        eprintln!("    FieldHandle: {} bytes", size_of::<FieldHandle>());
+        eprintln!("    FieldKind: {} bytes", size_of::<FieldKind>());
+        eprintln!("    StringRef: {} bytes", size_of::<StringRef>());
+        eprintln!("    BatchPlan: {} bytes\n", size_of::<BatchPlan>());
+    }
 }
