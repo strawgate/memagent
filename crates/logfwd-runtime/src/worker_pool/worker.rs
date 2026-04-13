@@ -229,18 +229,29 @@ pub(super) async fn process_item(
     sink.begin_batch();
 
     const BATCH_TIMEOUT_SECS: u64 = 60;
+    /// After this many retries, downgrade repeated warnings to debug level
+    /// to avoid unbounded log volume during extended outages.
+    const WARN_RETRY_LIMIT: usize = 5;
 
-    /// Build a fresh exponential backoff iterator.
+    /// Build a fresh exponential backoff iterator. Once exhausted the caller
+    /// should fall back to `max_retry_delay` directly (stay at cap) rather
+    /// than resetting to min — this avoids sawtooth retry spikes against an
+    /// unhealthy sink.
     fn new_backoff(max_retry_delay: Duration) -> backon::ExponentialBackoff {
+        let min_delay = Duration::from_millis(100).min(max_retry_delay);
         ExponentialBuilder::default()
-            .with_min_delay(Duration::from_millis(100))
+            .with_min_delay(min_delay)
             .with_max_delay(max_retry_delay)
             .with_factor(2.0)
-            // Large per-cycle count; we reset the cycle when exhausted so
-            // the worker retries indefinitely until cancellation.
             .with_max_times(10)
             .with_jitter()
             .build()
+    }
+
+    /// Get the next backoff delay, staying at `max_retry_delay` once the
+    /// iterator is exhausted (no panic, no cycle reset).
+    fn next_delay(backoff: &mut backon::ExponentialBackoff, max_retry_delay: Duration) -> Duration {
+        backoff.next().unwrap_or(max_retry_delay)
     }
 
     let mut backoff = new_backoff(max_retry_delay);
@@ -270,20 +281,25 @@ pub(super) async fn process_item(
                 // Timeout — treat like a transient error: back off and retry.
                 // A hung send doesn't mean the output is permanently dead.
                 retries_count += 1;
-                let delay = backoff.next().unwrap_or_else(|| {
-                    backoff = new_backoff(max_retry_delay);
-                    backoff
-                        .next()
-                        .expect("fresh backoff yields at least one delay")
-                });
+                let delay = next_delay(&mut backoff, max_retry_delay);
                 output_health.apply_worker_event(worker_id, OutputHealthEvent::Retrying);
-                tracing::warn!(
-                    worker_id,
-                    timeout_secs = BATCH_TIMEOUT_SECS,
-                    retries = retries_count,
-                    sleep_ms = delay.as_millis() as u64,
-                    "worker_pool: batch send timed out, retrying"
-                );
+                if retries_count <= WARN_RETRY_LIMIT {
+                    tracing::warn!(
+                        worker_id,
+                        timeout_secs = BATCH_TIMEOUT_SECS,
+                        retries = retries_count,
+                        sleep_ms = delay.as_millis() as u64,
+                        "worker_pool: batch send timed out, retrying"
+                    );
+                } else {
+                    tracing::debug!(
+                        worker_id,
+                        timeout_secs = BATCH_TIMEOUT_SECS,
+                        retries = retries_count,
+                        sleep_ms = delay.as_millis() as u64,
+                        "worker_pool: batch send timed out, retrying"
+                    );
+                }
                 tokio::select! {
                     biased;
                     () = cancel.cancelled() => {
@@ -310,9 +326,7 @@ pub(super) async fn process_item(
             }
             Ok(SendResult::RetryAfter(retry_dur)) => {
                 // Server specified delay — use the server's delay (capped).
-                if backoff.next().is_none() {
-                    backoff = new_backoff(max_retry_delay);
-                }
+                // Don't advance the backoff iterator; server controls timing.
                 retries_count += 1;
                 let sleep_for = retry_dur.min(max_retry_delay);
                 output_health.apply_worker_event(worker_id, OutputHealthEvent::Retrying);
@@ -336,20 +350,25 @@ pub(super) async fn process_item(
                 // Backpressure propagates naturally: while this worker blocks,
                 // the pipeline cannot submit new batches to it, slowing inputs.
                 retries_count += 1;
-                let delay = backoff.next().unwrap_or_else(|| {
-                    backoff = new_backoff(max_retry_delay);
-                    backoff
-                        .next()
-                        .expect("fresh backoff yields at least one delay")
-                });
+                let delay = next_delay(&mut backoff, max_retry_delay);
                 output_health.apply_worker_event(worker_id, OutputHealthEvent::Retrying);
-                tracing::warn!(
-                    worker_id,
-                    sleep_ms = delay.as_millis() as u64,
-                    retries = retries_count,
-                    error = %e,
-                    "worker_pool: transient error, retrying"
-                );
+                if retries_count <= WARN_RETRY_LIMIT {
+                    tracing::warn!(
+                        worker_id,
+                        sleep_ms = delay.as_millis() as u64,
+                        retries = retries_count,
+                        error = %e,
+                        "worker_pool: transient error, retrying"
+                    );
+                } else {
+                    tracing::debug!(
+                        worker_id,
+                        sleep_ms = delay.as_millis() as u64,
+                        retries = retries_count,
+                        error = %e,
+                        "worker_pool: transient error, retrying"
+                    );
+                }
                 tokio::select! {
                     biased;
                     () = cancel.cancelled() => {
