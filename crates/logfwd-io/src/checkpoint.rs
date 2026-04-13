@@ -85,9 +85,17 @@ impl FileCheckpointStore {
         let checkpoints_path = data_dir.join("checkpoints.json");
         let checkpoints = if checkpoints_path.exists() {
             let bytes = std::fs::read(&checkpoints_path)?;
-            let list: Vec<SourceCheckpoint> = serde_json::from_slice(&bytes)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            list.into_iter().map(|c| (c.source_id, c)).collect()
+            match serde_json::from_slice::<Vec<SourceCheckpoint>>(&bytes) {
+                Ok(list) => list.into_iter().map(|c| (c.source_id, c)).collect(),
+                Err(e) => {
+                    tracing::warn!(
+                        path = %checkpoints_path.display(),
+                        error = %e,
+                        "checkpoint file is corrupt — starting fresh"
+                    );
+                    BTreeMap::new()
+                }
+            }
         } else {
             BTreeMap::new()
         };
@@ -355,6 +363,19 @@ mod tests {
         let parsed: Vec<SourceCheckpoint> = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].offset, 2048);
+    }
+
+    /// A corrupt checkpoint file should not prevent the store from opening.
+    /// Instead it logs a warning and starts with empty state.
+    #[test]
+    fn test_corrupt_checkpoint_recovers() {
+        let dir = TempDir::new().unwrap();
+        let cp_path = dir.path().join("checkpoints.json");
+        std::fs::write(&cp_path, b"NOT VALID JSON {{{").unwrap();
+
+        let store = FileCheckpointStore::open(dir.path())
+            .expect("open should succeed despite corrupt file");
+        assert!(store.load_all().is_empty(), "should start with empty state");
     }
 
     /// `default_data_dir` returns a non-empty path.
