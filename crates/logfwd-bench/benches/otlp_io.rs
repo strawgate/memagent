@@ -332,7 +332,7 @@ fn bench_decode_materialize(c: &mut Criterion) {
 
         if !fixture.profile.has_complex_any {
             group.bench_with_input(
-                BenchmarkId::new("experimental_wire_to_batch", fixture.profile.name),
+                BenchmarkId::new("projected_detached_to_batch", fixture.profile.name),
                 &fixture.payload,
                 |b, payload| {
                     b.iter(|| {
@@ -345,7 +345,7 @@ fn bench_decode_materialize(c: &mut Criterion) {
             );
 
             group.bench_with_input(
-                BenchmarkId::new("experimental_wire_view_to_batch", fixture.profile.name),
+                BenchmarkId::new("projected_view_to_batch", fixture.profile.name),
                 &fixture.payload_bytes,
                 |b, payload| {
                     b.iter(|| {
@@ -399,7 +399,7 @@ fn bench_output_encode_only(c: &mut Criterion) {
 
         if let Some(batch) = fixture.projected_batch.as_ref() {
             group.bench_with_input(
-                BenchmarkId::new("handwritten_projected_detached", fixture.profile.name),
+                BenchmarkId::new("projected_detached_handwritten", fixture.profile.name),
                 batch,
                 |b, batch| {
                     let mut sink = make_otlp_sink(Compression::None);
@@ -413,7 +413,7 @@ fn bench_output_encode_only(c: &mut Criterion) {
 
         if let Some(batch) = fixture.projected_view_batch.as_ref() {
             group.bench_with_input(
-                BenchmarkId::new("handwritten_projected_view", fixture.profile.name),
+                BenchmarkId::new("projected_view_handwritten", fixture.profile.name),
                 batch,
                 |b, batch| {
                     let mut sink = make_otlp_sink(Compression::None);
@@ -474,7 +474,10 @@ fn bench_end_to_end(c: &mut Criterion) {
         group.throughput(Throughput::Elements(fixture.profile.total_rows() as u64));
 
         group.bench_with_input(
-            BenchmarkId::new("decode_to_handwritten_encode", fixture.profile.name),
+            BenchmarkId::new(
+                "prost_reference_to_handwritten_encode",
+                fixture.profile.name,
+            ),
             &fixture.payload,
             |b, payload| {
                 let mut sink = make_otlp_sink(Compression::None);
@@ -488,7 +491,10 @@ fn bench_end_to_end(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("decode_to_generated_fast_encode", fixture.profile.name),
+            BenchmarkId::new(
+                "prost_reference_to_generated_fast_encode",
+                fixture.profile.name,
+            ),
             &fixture.payload,
             |b, payload| {
                 let mut sink = make_otlp_sink(Compression::None);
@@ -502,7 +508,10 @@ fn bench_end_to_end(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("production_to_handwritten_encode", fixture.profile.name),
+            BenchmarkId::new(
+                "production_current_to_handwritten_encode",
+                fixture.profile.name,
+            ),
             &fixture.payload,
             |b, payload| {
                 let mut sink = make_otlp_sink(Compression::None);
@@ -516,7 +525,10 @@ fn bench_end_to_end(c: &mut Criterion) {
         );
 
         group.bench_with_input(
-            BenchmarkId::new("production_to_generated_fast_encode", fixture.profile.name),
+            BenchmarkId::new(
+                "production_current_to_generated_fast_encode",
+                fixture.profile.name,
+            ),
             &fixture.payload,
             |b, payload| {
                 let mut sink = make_otlp_sink(Compression::None);
@@ -532,7 +544,7 @@ fn bench_end_to_end(c: &mut Criterion) {
         if !fixture.profile.has_complex_any {
             group.bench_with_input(
                 BenchmarkId::new(
-                    "experimental_wire_to_handwritten_encode",
+                    "projected_detached_to_handwritten_encode",
                     fixture.profile.name,
                 ),
                 &fixture.payload,
@@ -549,10 +561,7 @@ fn bench_end_to_end(c: &mut Criterion) {
             );
 
             group.bench_with_input(
-                BenchmarkId::new(
-                    "experimental_wire_view_to_handwritten_encode",
-                    fixture.profile.name,
-                ),
+                BenchmarkId::new("projected_view_to_handwritten_encode", fixture.profile.name),
                 &fixture.payload_bytes,
                 |b, payload| {
                     let mut sink = make_otlp_sink(Compression::None);

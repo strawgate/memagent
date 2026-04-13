@@ -83,8 +83,29 @@ validation in setup only. The timed regions measure just the named stage:
 - `otlp_output_compression` times zstd compression of an already encoded payload.
 - `otlp_e2e_in_process` times decode plus encode in one process, without transport or network effects.
 
-The suite includes the experimental wire-to-Arrow decoder for primitive
-fixtures; it is validated against the prost path before benchmark timing starts.
+The suite includes the experimental projected wire-to-Arrow decoder for
+primitive fixtures; it is validated against the prost path before benchmark
+timing starts. Mode names are aligned between Criterion and the profile binary:
+
+| Decode path | Criterion (decode_materialize) | Criterion (e2e) | Profile binary |
+|-------------|-------------------------------|-----------------|----------------|
+| prost reference | `prost_reference_to_batch` | `prost_reference_to_*_encode` | `prost_reference_to_batch` |
+| production current | `production_current_to_batch` | `production_current_to_*_encode` | `production_current_to_batch` |
+| projected detached | `projected_detached_to_batch` | `projected_detached_to_*_encode` | `projected_detached_to_batch` |
+| projected view | `projected_view_to_batch` | `projected_view_to_*_encode` | `projected_view_to_batch` |
+
+**Timing boundaries:**
+
+- `otlp_input_parser_only` — protobuf decode only (no Arrow materialization).
+- `otlp_input_decode_materialize` — protobuf decode + Arrow batch construction.
+- `otlp_output_encode_only` — OTLP serialization from a prebuilt batch.
+- `otlp_output_compression` — zstd compression of an already-encoded payload.
+- `otlp_e2e_in_process` — decode + encode in one pass, no transport or network.
+
+All fixture synthesis, prost/reference parity checks, and encode-path assertions
+run in setup before any Criterion timer starts. In the profile binary, warmup
+exercises the same code path as the measured loop to pre-size reusable buffers;
+allocation counting begins after warmup completes.
 
 ### Profiling Tools (`src/`)
 
@@ -95,7 +116,7 @@ fixtures; it is validated against the prost path before benchmark timing starts.
 | `bin/cloudtrail_profile.rs` | `cloudtrail_profile` | CloudTrail-like generator profile (NDJSON vs direct RecordBatch generation, cardinality, compression) |
 | `es_throughput.rs` | `es-throughput` | Elasticsearch output throughput with worker scaling |
 | `bin/framed_input_profile.rs` | `framed_input_profile` | FramedInput stage timings, RSS, optional flamegraph, optional dhat allocation report |
-| `bin/otlp_io_profile.rs` | `otlp_io_profile` | Focused OTLP prost/projected/projected-view CPU flamegraphs and allocation counts for decode and in-process decode→encode paths. |
+| `bin/otlp_io_profile.rs` | `otlp_io_profile` | Focused OTLP decode and decode→encode CPU flamegraphs and allocation counts. Mode names match Criterion (`prost_reference_to_batch`, `production_current_to_batch`, `projected_detached_to_batch`, `projected_view_to_batch`, `e2e_*`). |
 | `explore.rs` | *(lib)* | Multi-dimensional exploratory benchmark (CSV output) |
 | `rss.rs` | *(lib)* | Resident set size at each pipeline stage |
 | `sizes.rs` | *(lib)* | Data size analysis: raw → Arrow → IPC → Parquet |

@@ -61,11 +61,11 @@ impl FixtureProfile {
 #[derive(Clone, Copy)]
 enum Mode {
     ProstReferenceToBatch,
-    ProductionToBatch,
-    ProjectedDetachedDecode,
-    ProjectedViewDecode,
+    ProductionCurrentToBatch,
+    ProjectedDetachedToBatch,
+    ProjectedViewToBatch,
     E2eProstReference,
-    E2eProduction,
+    E2eProductionCurrent,
     E2eProjectedDetached,
     E2eProjectedView,
 }
@@ -73,11 +73,11 @@ enum Mode {
 impl Mode {
     const ALL: [Mode; 8] = [
         Mode::ProstReferenceToBatch,
-        Mode::ProductionToBatch,
-        Mode::ProjectedDetachedDecode,
-        Mode::ProjectedViewDecode,
+        Mode::ProductionCurrentToBatch,
+        Mode::ProjectedDetachedToBatch,
+        Mode::ProjectedViewToBatch,
         Mode::E2eProstReference,
-        Mode::E2eProduction,
+        Mode::E2eProductionCurrent,
         Mode::E2eProjectedDetached,
         Mode::E2eProjectedView,
     ];
@@ -85,11 +85,11 @@ impl Mode {
     fn name(self) -> &'static str {
         match self {
             Mode::ProstReferenceToBatch => "prost_reference_to_batch",
-            Mode::ProductionToBatch => "production_to_batch",
-            Mode::ProjectedDetachedDecode => "projected_detached_decode",
-            Mode::ProjectedViewDecode => "projected_view_decode",
+            Mode::ProductionCurrentToBatch => "production_current_to_batch",
+            Mode::ProjectedDetachedToBatch => "projected_detached_to_batch",
+            Mode::ProjectedViewToBatch => "projected_view_to_batch",
             Mode::E2eProstReference => "e2e_prost_reference",
-            Mode::E2eProduction => "e2e_production",
+            Mode::E2eProductionCurrent => "e2e_production_current",
             Mode::E2eProjectedDetached => "e2e_projected_detached",
             Mode::E2eProjectedView => "e2e_projected_view",
         }
@@ -97,14 +97,22 @@ impl Mode {
 
     fn by_name(name: &str) -> Self {
         match name {
-            "prost_decode" | "prost_reference_to_batch" => Mode::ProstReferenceToBatch,
-            "production_to_batch" => Mode::ProductionToBatch,
-            "projected_detached_decode" => Mode::ProjectedDetachedDecode,
-            "projected_view_decode" => Mode::ProjectedViewDecode,
-            "e2e_prost" | "e2e_prost_reference" => Mode::E2eProstReference,
-            "e2e_production" => Mode::E2eProduction,
+            // canonical names
+            "prost_reference_to_batch" => Mode::ProstReferenceToBatch,
+            "production_current_to_batch" => Mode::ProductionCurrentToBatch,
+            "projected_detached_to_batch" => Mode::ProjectedDetachedToBatch,
+            "projected_view_to_batch" => Mode::ProjectedViewToBatch,
+            "e2e_prost_reference" => Mode::E2eProstReference,
+            "e2e_production_current" => Mode::E2eProductionCurrent,
             "e2e_projected_detached" => Mode::E2eProjectedDetached,
             "e2e_projected_view" => Mode::E2eProjectedView,
+            // deprecated aliases from earlier naming
+            "prost_decode" => Mode::ProstReferenceToBatch,
+            "production_to_batch" => Mode::ProductionCurrentToBatch,
+            "projected_detached_decode" => Mode::ProjectedDetachedToBatch,
+            "projected_view_decode" => Mode::ProjectedViewToBatch,
+            "e2e_prost" => Mode::E2eProstReference,
+            "e2e_production" => Mode::E2eProductionCurrent,
             _ => panic!("unknown mode {name}; run with --help to list supported modes"),
         }
     }
@@ -220,9 +228,13 @@ fn print_usage() {
     for mode in Mode::ALL {
         eprintln!("  {}", mode.name());
     }
-    eprintln!("Aliases:");
+    eprintln!("Deprecated aliases:");
     eprintln!("  prost_decode => prost_reference_to_batch");
+    eprintln!("  production_to_batch => production_current_to_batch");
+    eprintln!("  projected_detached_decode => projected_detached_to_batch");
+    eprintln!("  projected_view_decode => projected_view_to_batch");
     eprintln!("  e2e_prost => e2e_prost_reference");
+    eprintln!("  e2e_production => e2e_production_current");
 }
 
 fn run_with_flamegraph(
@@ -253,14 +265,14 @@ fn run_profile(fixture: &FixtureData, mode: Mode, iterations: usize) -> ProfileR
     if matches!(
         mode,
         Mode::E2eProstReference
-            | Mode::E2eProduction
+            | Mode::E2eProductionCurrent
             | Mode::E2eProjectedDetached
             | Mode::E2eProjectedView
     ) {
         let batch = match mode {
             Mode::E2eProstReference => decode_protobuf_to_batch_prost_reference(&fixture.payload)
                 .expect("warmup prost reference decode"),
-            Mode::E2eProduction => {
+            Mode::E2eProductionCurrent => {
                 decode_protobuf_to_batch(&fixture.payload).expect("warmup production decode")
             }
             Mode::E2eProjectedDetached => {
@@ -272,9 +284,9 @@ fn run_profile(fixture: &FixtureData, mode: Mode, iterations: usize) -> ProfileR
             )
             .expect("warmup projected view decode"),
             Mode::ProstReferenceToBatch
-            | Mode::ProductionToBatch
-            | Mode::ProjectedDetachedDecode
-            | Mode::ProjectedViewDecode => unreachable!("decode-only modes are not warmed here"),
+            | Mode::ProductionCurrentToBatch
+            | Mode::ProjectedDetachedToBatch
+            | Mode::ProjectedViewToBatch => unreachable!("decode-only modes are not warmed here"),
         };
         sink.encode_batch(&batch, &metadata);
     }
@@ -289,17 +301,17 @@ fn run_profile(fixture: &FixtureData, mode: Mode, iterations: usize) -> ProfileR
                     decode_protobuf_to_batch_prost_reference(&fixture.payload).expect("prost");
                 black_box(batch.num_rows());
             }
-            Mode::ProductionToBatch => {
+            Mode::ProductionCurrentToBatch => {
                 let batch = decode_protobuf_to_batch(&fixture.payload).expect("production");
                 black_box(batch.num_rows());
             }
-            Mode::ProjectedDetachedDecode => {
+            Mode::ProjectedDetachedToBatch => {
                 let batch =
                     decode_protobuf_to_batch_projected_detached_experimental(&fixture.payload)
                         .expect("projected detached");
                 black_box(batch.num_rows());
             }
-            Mode::ProjectedViewDecode => {
+            Mode::ProjectedViewToBatch => {
                 let batch = decode_protobuf_bytes_to_batch_projected_only_experimental(
                     fixture.payload_bytes.clone(),
                 )
@@ -312,7 +324,7 @@ fn run_profile(fixture: &FixtureData, mode: Mode, iterations: usize) -> ProfileR
                 sink.encode_batch(&batch, &metadata);
                 black_box(sink.encoded_payload().len());
             }
-            Mode::E2eProduction => {
+            Mode::E2eProductionCurrent => {
                 let batch = decode_protobuf_to_batch(&fixture.payload).expect("production");
                 sink.encode_batch(&batch, &metadata);
                 black_box(sink.encoded_payload().len());

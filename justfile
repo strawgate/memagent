@@ -566,6 +566,22 @@ profile-otlp-local lines="500000" seconds="6":
         exit 1
     fi
 
+# Run OTLP I/O Criterion benchmarks (stage-separated: parser, decode, encode, compression, e2e).
+bench-otlp-io *ARGS:
+    cargo bench -p logfwd-bench --bench otlp_io -- {{ARGS}}
+
+# Run OTLP I/O benchmarks with fast local iteration settings.
+bench-otlp-io-fast *ARGS:
+    cargo bench -p logfwd-bench --bench otlp_io -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
+
+# Profile OTLP decode/encode CPU with the normal allocator (flamegraph, per-mode timings).
+profile-otlp-io *ARGS:
+    cargo run -p logfwd-bench --release --bin otlp_io_profile -- {{ARGS}}
+
+# Profile OTLP decode/encode allocation counts with stats_alloc instrumentation.
+profile-otlp-io-alloc *ARGS:
+    cargo run -p logfwd-bench --release --features otlp-profile-alloc --bin otlp_io_profile -- {{ARGS}}
+
 # Generate microbenchmark report (markdown)
 bench-report:
     cargo run -p logfwd-bench
