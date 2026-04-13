@@ -399,7 +399,7 @@ jobs:
       # concatenated before parsing.
       - name: Parse throughput benchmark output to OTLP (benchkit 0.2.3)
         id: parse_throughput_otlp
-        uses: strawgate/o11ykit/actions/parse-results@1dabdc45cb73ac44a576d826f3acadd5d159a691
+        uses: strawgate/o11ykit/actions/parse-results@2e4718ac0efd70a9448d4bee3f04ee7d4f1856a0
         with:
           mode: file
           results: gh-bench.json
@@ -415,7 +415,7 @@ jobs:
       - name: Parse rate benchmark output to OTLP (benchkit 0.2.3)
         id: parse_rate_otlp
         if: hashFiles('rate-results/rate-gh-bench.json') != ''
-        uses: strawgate/o11ykit/actions/parse-results@1dabdc45cb73ac44a576d826f3acadd5d159a691
+        uses: strawgate/o11ykit/actions/parse-results@2e4718ac0efd70a9448d4bee3f04ee7d4f1856a0
         with:
           mode: file
           results: rate-results/rate-gh-bench.json
@@ -431,7 +431,7 @@ jobs:
       - name: Parse criterion benchmark output to OTLP (benchkit 0.2.3)
         id: parse_criterion_otlp
         if: hashFiles('micro/micro_raw.txt') != ''
-        uses: strawgate/o11ykit/actions/parse-results@1dabdc45cb73ac44a576d826f3acadd5d159a691
+        uses: strawgate/o11ykit/actions/parse-results@2e4718ac0efd70a9448d4bee3f04ee7d4f1856a0
         with:
           mode: file
           results: micro/micro_raw.txt
