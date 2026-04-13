@@ -474,6 +474,9 @@ fn tcp_server_crash_preserves_pre_crash_delivery() {
         total_received >= pre_crash,
         "crash should not corrupt pre-crash data: total ({total_received}) < pre_crash ({pre_crash})"
     );
+    // NOTE: Strengthening to `total_received > pre_crash` requires held batch
+    // re-dispatch (#1800), which is a future enhancement. For now, the pipeline
+    // continues running (no deadlock) but already-held batches are not retried.
 }
 
 /// Test: hold/release creates burst delivery after message buffering.

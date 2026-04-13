@@ -143,11 +143,15 @@ fn worker_panic_does_not_block_drain() {
     let delivered_counter = factory.delivered_counter();
 
     sim.client("pipeline", async move {
-        let lines = generate_json_lines(20);
+        // Use 200 lines with tiny batch target to guarantee multiple batches.
+        // The first batch panics; the pipeline continues and the worker pool
+        // respawns a new worker for subsequent batches.
+        let lines = generate_json_lines(200);
         let input = ChannelInputSource::new("test", SourceId(1), lines);
 
         let mut pipeline = Pipeline::for_simulation_with_factory("sim", factory, 1);
         pipeline.set_batch_timeout(Duration::from_millis(20));
+        pipeline.set_batch_target_bytes(64); // tiny → many batches
         let mut pipeline = pipeline.with_input("test", Box::new(input));
 
         let shutdown = CancellationToken::new();
@@ -171,20 +175,15 @@ fn worker_panic_does_not_block_drain() {
          Error: {result:?}"
     );
 
-    // Some rows may or may not be delivered depending on whether the worker
-    // pool can recover from the panic. Document actual behavior.
+    // With pipeline hold resilience, the pipeline continues accepting batches
+    // after the first hold. The worker pool respawns a new worker on the next
+    // submit, so subsequent batches should be delivered successfully.
     let delivered = delivered_counter.load(Ordering::Relaxed);
-    // NOTE: With 1 worker, if the worker panics and the pool doesn't respawn,
-    // no subsequent batches can be delivered. The key assertion is that the
-    // pipeline COMPLETES (above), not that all rows are delivered.
-    //
-    // If delivered > 0, the pool successfully recovered from the panic.
-    // If delivered == 0, all batches after the panic were also lost (the
-    // single worker died and wasn't replaced).
-    eprintln!(
-        "worker_panic test: {delivered} rows delivered out of 20 \
-         (0 is acceptable if worker pool doesn't respawn after panic)"
+    assert!(
+        delivered > 0,
+        "expected post-panic delivery after worker respawn, got 0 delivered out of 200"
     );
+    eprintln!("worker_panic test: {delivered} rows delivered out of 200");
 }
 
 // ---------------------------------------------------------------------------
@@ -446,8 +445,8 @@ fn panic_first_batch_triggers_terminal_hold_without_checkpoint_advance() {
     let mut sim = super::build_sim(90, 1);
 
     // Factory scripts are popped from the end:
-    // 1st worker => [Panic]. Under the terminal-hold model, the pipeline
-    // shuts down after the panic ack without recycling workers.
+    // 1st worker => [Panic]. Under hold resilience, the pipeline continues
+    // after the panic ack — worker pool respawns and delivers remaining batches.
     let factory = Arc::new(InstrumentedSinkFactory::new(vec![
         vec![],
         vec![FailureAction::Panic],
@@ -489,24 +488,28 @@ fn panic_first_batch_triggers_terminal_hold_without_checkpoint_advance() {
     let delivered = delivered_counter.load(Ordering::Relaxed);
     eprintln!(
         "panic_first_batch test: {delivered} rows delivered, {calls} calls \
-         (terminal-hold model stops ingestion after panic ack)"
+         (hold resilience continues after panic ack)"
     );
 
-    // Under the terminal-hold model, the pipeline shuts down immediately
-    // after the panic ack. The first batch panics and no subsequent batches
-    // are processed because ingestion is stopped — no worker recycling.
-    assert_eq!(
-        calls, 1,
-        "terminal-hold model must issue exactly 1 send call (the panic); calls={calls}"
+    // Under hold resilience, the pipeline continues after the panic ack.
+    // The worker pool respawns a new worker and delivers subsequent batches.
+    // With batch_target_bytes=1, each line is a separate batch (10 batches).
+    // The first batch panics; remaining batches succeed via respawned worker.
+    assert!(
+        calls >= 2,
+        "hold resilience: must issue at least 2 send calls (1 panic + respawned deliveries); calls={calls}"
     );
 
-    // Terminal hold means zero deliveries: the only batch panicked.
-    assert_eq!(
-        delivered, 0,
-        "terminal-hold model must not deliver any rows after panic; delivered={delivered}"
+    // Subsequent batches are delivered after worker respawn.
+    assert!(
+        delivered > 0,
+        "hold resilience: respawned worker must deliver post-panic batches; delivered={delivered}"
     );
 
-    // Held first ticket must block checkpoint advancement entirely.
+    // Critical invariant: held first ticket must block checkpoint advancement.
+    // Even though later batches succeed, the checkpoint cannot advance past
+    // the held gap because at-least-once semantics require replay of the
+    // panicked batch on restart.
     assert!(
         ckpt_handle.durable_offset(1).is_none(),
         "durable checkpoint must remain absent while first failed ticket is held"
@@ -535,8 +538,8 @@ fn panic_first_batch_triggers_terminal_hold_without_checkpoint_advance() {
 fn panic_after_initial_success_does_not_advance_checkpoint_past_gap() {
     let mut sim = super::build_sim(90, 1);
 
-    // First worker: success then panic. Under the terminal-hold model, the
-    // pipeline shuts down after the panic ack without recycling workers.
+    // First worker: success then panic. Under hold resilience, the pipeline
+    // continues after the panic ack — worker pool respawns for remaining batches.
     let factory = Arc::new(InstrumentedSinkFactory::new(vec![
         vec![],
         vec![FailureAction::Succeed, FailureAction::Panic],
@@ -587,11 +590,12 @@ fn panic_after_initial_success_does_not_advance_checkpoint_past_gap() {
         delivered > 0,
         "expected at least some successful deliveries before panic; delivered={delivered}"
     );
-    // Under the terminal-hold model: exactly 1 success + 1 panic = 2 calls.
-    // No recovery calls because ingestion stops after the panic ack.
-    assert_eq!(
-        calls, 2,
-        "terminal-hold model must issue exactly 2 send calls (1 success + 1 panic); calls={calls}"
+    // Under hold resilience, the pipeline continues after the panic ack.
+    // 12 lines with batch_target_bytes=1 → 12 batches. First succeeds,
+    // second panics, remaining succeed via respawned worker.
+    assert!(
+        calls > 2,
+        "hold resilience: must issue more than 2 calls (1 success + 1 panic + respawned); calls={calls}"
     );
     // The first successful batch may or may not have triggered a checkpoint
     // update depending on flush timing. Either way, checkpoint must not
