@@ -1,83 +1,86 @@
-// builder.rs — ColumnarBatchBuilder prototype.
+// builder.rs — ColumnarBatchBuilder: shared column construction engine.
 //
-// Validates the BatchPlan + FieldHandle → typed writes → Arrow materialization
-// path end-to-end.  This spike informs the design of #1844-#1847 before
-// committing to a full extraction from StreamingBuilder.
+// Drives BatchPlan + FieldHandle → typed writes → Arrow materialization.
+// Uses ColumnAccumulator for per-field storage (typed enum, no dead vecs).
 //
-// Current scope:
-//   - Planned fields: fixed-kind, single-type columns, no conflict overhead
+// Scope:
+//   - Planned fields: single-type columns, zero conflict overhead
 //   - Dynamic fields: multi-type, conflict detection at finalization
-//   - Detached string materialization (copies into StringBuilder)
+//   - Detached string materialization via shared string buffer
 //   - Sparse padding with deferred (row, value) facts
+//   - StringViewArray zero-copy when given input buffer
 //
-// Out of scope (future #1844):
-//   - Zero-copy StringViewArray via block store
-//   - ScanBuilder trait adapter (StreamingBuilder keeps that role)
-//   - Resource attributes, line capture (StreamingBuilder concerns)
+// StreamingBuilder remains the scanner-facing ScanBuilder adapter.
+// ColumnarBatchBuilder is for structured producers (OTLP, CSV, etc).
 
 use std::sync::Arc;
 
 use arrow::array::{
-    ArrayRef, BooleanArray, Float64Array, Int64Array, StringBuilder, StructArray,
+    ArrayRef, BooleanArray, Float64Array, Int64Array, NullArray, StringBuilder,
 };
-use arrow::buffer::NullBuffer;
-use arrow::datatypes::{DataType, Field, Fields, Schema};
+use arrow::buffer::{Buffer, NullBuffer};
+use arrow::datatypes::{DataType, Field, Schema};
 use arrow::error::ArrowError;
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 
 use logfwd_core::scanner::BuilderState;
 
+use super::accumulator::{ColumnAccumulator, FinalizationMode, MaterializeError, StringRef};
 use super::plan::{BatchPlan, FieldHandle, FieldKind, FieldSchemaMode, PlanError};
 use super::row_protocol::RowLifecycle;
 use crate::check_dup_bits;
 
 // ---------------------------------------------------------------------------
-// Per-field column storage (deferred facts)
+// BuilderError
 // ---------------------------------------------------------------------------
 
-/// Deferred (row, value) facts for a single field.
-///
-/// Same approach as `StreamingBuilder::FieldColumns`: store facts during row
-/// writes, materialize into Arrow arrays at `finish_batch` time.  Sparse rows
-/// become null via the validity bitmap.
-struct ColumnStorage {
-    str_values: Vec<(u32, String)>,
-    int_values: Vec<(u32, i64)>,
-    float_values: Vec<(u32, f64)>,
-    bool_values: Vec<(u32, bool)>,
-    has_str: bool,
-    has_int: bool,
-    has_float: bool,
-    has_bool: bool,
-    /// Last row written, for dedup when field index >= 64.
-    last_row: u32,
+/// Errors from `ColumnarBatchBuilder` operations.
+#[derive(Debug)]
+pub(crate) enum BuilderError {
+    /// Arrow error during RecordBatch construction.
+    Arrow(ArrowError),
+    /// String buffer exceeded u32 addressable range.
+    StringBufferOverflow { buffer_len: usize, value_len: usize },
+    /// Column materialization failed (invalid StringRef, bad UTF-8, etc).
+    Materialize(MaterializeError),
 }
 
-impl ColumnStorage {
-    fn new() -> Self {
-        ColumnStorage {
-            str_values: Vec::new(),
-            int_values: Vec::new(),
-            float_values: Vec::new(),
-            bool_values: Vec::new(),
-            has_str: false,
-            has_int: false,
-            has_float: false,
-            has_bool: false,
-            last_row: u32::MAX,
+impl std::fmt::Display for BuilderError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BuilderError::Arrow(e) => write!(f, "Arrow error: {e}"),
+            BuilderError::StringBufferOverflow {
+                buffer_len,
+                value_len,
+            } => write!(
+                f,
+                "string buffer overflow: buffer_len={buffer_len}, value_len={value_len}, \
+                 exceeds u32::MAX"
+            ),
+            BuilderError::Materialize(e) => write!(f, "materialize error: {e}"),
         }
     }
+}
 
-    fn clear(&mut self) {
-        self.str_values.clear();
-        self.int_values.clear();
-        self.float_values.clear();
-        self.bool_values.clear();
-        self.has_str = false;
-        self.has_int = false;
-        self.has_float = false;
-        self.has_bool = false;
-        self.last_row = u32::MAX;
+impl std::error::Error for BuilderError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            BuilderError::Arrow(e) => Some(e),
+            BuilderError::Materialize(e) => Some(e),
+            BuilderError::StringBufferOverflow { .. } => None,
+        }
+    }
+}
+
+impl From<ArrowError> for BuilderError {
+    fn from(e: ArrowError) -> Self {
+        BuilderError::Arrow(e)
+    }
+}
+
+impl From<MaterializeError> for BuilderError {
+    fn from(e: MaterializeError) -> Self {
+        BuilderError::Materialize(e)
     }
 }
 
@@ -85,42 +88,49 @@ impl ColumnStorage {
 // ColumnarBatchBuilder
 // ---------------------------------------------------------------------------
 
-/// Prototype shared columnar batch builder driven by `BatchPlan` + `FieldHandle`.
+/// Shared columnar batch builder driven by `BatchPlan` + `FieldHandle`.
 ///
 /// Producers declare fields up front (planned) or discover them dynamically,
-/// then write typed values via stable handles.  At `finish_batch`, deferred
+/// then write typed values via stable handles. At `finish_batch`, deferred
 /// facts are materialized into an Arrow `RecordBatch`.
 ///
-/// # Design findings (spike)
+/// String values are appended to an internal buffer and referenced via
+/// `StringRef`. At finalization, the buffer is passed to `FinalizationMode`
+/// which controls whether strings are copied (Detached) or zero-copy (View).
 ///
-/// - Planned fields bypass conflict detection entirely: the handle's kind
-///   determines the output column type.
-/// - Dynamic fields reuse the `has_*` flag + conflict struct pattern from
-///   `StreamingBuilder`.
-/// - The `BatchPlan` provides the schema metadata; storage is handle-indexed.
+/// # Design
+///
+/// - Each field gets a `ColumnAccumulator` matched to its schema mode:
+///   planned Int64 → `ColumnAccumulator::Int64` (one vec, no conflict overhead),
+///   dynamic → `ColumnAccumulator::Dynamic` (all vecs, conflict detection).
 /// - Dedup uses the same bitmask approach as `RowLifecycle::written_bits`.
-/// - String storage is detached (owned copies) in this prototype; the
-///   block store (#1844) adds zero-copy view-backed paths later.
+/// - `finish_batch` iterates fields and calls `accumulator.materialize()`.
 pub(crate) struct ColumnarBatchBuilder {
     plan: BatchPlan,
     lifecycle: RowLifecycle,
-    columns: Vec<ColumnStorage>,
+    columns: Vec<ColumnAccumulator>,
+    /// Shared buffer for string values written via `write_str`.
+    /// StringRef offsets point into this buffer.
+    string_buf: Vec<u8>,
 }
 
 impl ColumnarBatchBuilder {
     /// Create a builder from a plan.
     ///
-    /// Allocates per-field storage for all declared fields.
+    /// Allocates per-field storage matched to each field's schema mode.
     pub(crate) fn new(plan: BatchPlan) -> Self {
-        let num_fields = plan.len();
-        let mut columns = Vec::with_capacity(num_fields);
-        for _ in 0..num_fields {
-            columns.push(ColumnStorage::new());
-        }
+        let columns: Vec<ColumnAccumulator> = plan
+            .fields()
+            .map(|(_handle, _name, mode)| match mode {
+                FieldSchemaMode::Planned(kind) => ColumnAccumulator::for_planned(*kind),
+                FieldSchemaMode::Dynamic { .. } => ColumnAccumulator::dynamic(),
+            })
+            .collect();
         ColumnarBatchBuilder {
             plan,
             lifecycle: RowLifecycle::new(),
             columns,
+            string_buf: Vec::new(),
         }
     }
 
@@ -130,16 +140,17 @@ impl ColumnarBatchBuilder {
         for col in &mut self.columns {
             col.clear();
         }
+        self.string_buf.clear();
     }
 
     /// Start a new row.
-    #[inline(always)]
+    #[inline]
     pub(crate) fn begin_row(&mut self) {
         self.lifecycle.begin_row();
     }
 
     /// Finish the current row.
-    #[inline(always)]
+    #[inline]
     pub(crate) fn end_row(&mut self) {
         self.lifecycle.end_row();
     }
@@ -156,9 +167,33 @@ impl ColumnarBatchBuilder {
         let handle = self.plan.resolve_dynamic(name, kind)?;
         // Ensure storage exists for newly resolved fields.
         while self.columns.len() <= handle.index() {
-            self.columns.push(ColumnStorage::new());
+            self.columns.push(ColumnAccumulator::dynamic());
         }
         Ok(handle)
+    }
+
+    // -----------------------------------------------------------------------
+    // Dedup helper
+    // -----------------------------------------------------------------------
+
+    /// Check if a write to `handle` in the current row is a duplicate.
+    ///
+    /// Returns `true` if the write should be suppressed (duplicate).
+    /// For fields 0–63, uses the bitmask. For fields ≥64, uses last_row.
+    #[inline]
+    fn is_duplicate(&mut self, handle: FieldHandle) -> bool {
+        let idx = handle.index();
+        if check_dup_bits(self.lifecycle.written_bits_mut(), idx) {
+            return true;
+        }
+        if idx >= 64 {
+            let col = &mut self.columns[idx];
+            if col.last_row() == self.lifecycle.row_count() {
+                return true;
+            }
+            *col.last_row_mut() = self.lifecycle.row_count();
+        }
+        false
     }
 
     // -----------------------------------------------------------------------
@@ -166,146 +201,185 @@ impl ColumnarBatchBuilder {
     // -----------------------------------------------------------------------
 
     /// Write an i64 value for the given field in the current row.
-    #[inline(always)]
+    #[inline]
     pub(crate) fn write_i64(&mut self, handle: FieldHandle, value: i64) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
-        let idx = handle.index();
-        if check_dup_bits(self.lifecycle.written_bits_mut(), idx) {
+        debug_assert!(handle.index() < self.columns.len());
+        if self.is_duplicate(handle) {
             return;
         }
-        if idx >= 64 && self.columns[idx].last_row == self.lifecycle.row_count() {
-            return;
-        }
-        if idx >= 64 {
-            self.columns[idx].last_row = self.lifecycle.row_count();
-        }
-        let col = &mut self.columns[idx];
-        col.has_int = true;
-        col.int_values.push((self.lifecycle.row_count(), value));
+        self.columns[handle.index()].push_i64(self.lifecycle.row_count(), value);
     }
 
     /// Write an f64 value for the given field in the current row.
-    #[inline(always)]
+    #[inline]
     pub(crate) fn write_f64(&mut self, handle: FieldHandle, value: f64) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
-        let idx = handle.index();
-        if check_dup_bits(self.lifecycle.written_bits_mut(), idx) {
+        debug_assert!(handle.index() < self.columns.len());
+        if self.is_duplicate(handle) {
             return;
         }
-        if idx >= 64 && self.columns[idx].last_row == self.lifecycle.row_count() {
-            return;
-        }
-        if idx >= 64 {
-            self.columns[idx].last_row = self.lifecycle.row_count();
-        }
-        let col = &mut self.columns[idx];
-        col.has_float = true;
-        col.float_values.push((self.lifecycle.row_count(), value));
+        self.columns[handle.index()].push_f64(self.lifecycle.row_count(), value);
     }
 
     /// Write a bool value for the given field in the current row.
-    #[inline(always)]
+    #[inline]
     pub(crate) fn write_bool(&mut self, handle: FieldHandle, value: bool) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
-        let idx = handle.index();
-        if check_dup_bits(self.lifecycle.written_bits_mut(), idx) {
+        debug_assert!(handle.index() < self.columns.len());
+        if self.is_duplicate(handle) {
             return;
         }
-        if idx >= 64 && self.columns[idx].last_row == self.lifecycle.row_count() {
-            return;
-        }
-        if idx >= 64 {
-            self.columns[idx].last_row = self.lifecycle.row_count();
-        }
-        let col = &mut self.columns[idx];
-        col.has_bool = true;
-        col.bool_values.push((self.lifecycle.row_count(), value));
+        self.columns[handle.index()].push_bool(self.lifecycle.row_count(), value);
     }
 
     /// Write a string value for the given field in the current row.
     ///
-    /// This is the detached (copying) path.  The block store (#1844) will add
-    /// a zero-copy view-backed alternative.
-    #[inline(always)]
-    pub(crate) fn write_str(&mut self, handle: FieldHandle, value: &str) {
+    /// The string is appended to the builder's internal buffer and
+    /// referenced via `StringRef`. At finalization, the buffer is
+    /// passed to `FinalizationMode` to produce the appropriate
+    /// Arrow string type.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the string buffer would exceed u32 addressable range.
+    #[inline]
+    pub(crate) fn write_str(
+        &mut self,
+        handle: FieldHandle,
+        value: &str,
+    ) -> Result<(), BuilderError> {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
-        let idx = handle.index();
-        if check_dup_bits(self.lifecycle.written_bits_mut(), idx) {
+        debug_assert!(handle.index() < self.columns.len());
+        if self.is_duplicate(handle) {
+            return Ok(());
+        }
+        let offset = u32::try_from(self.string_buf.len()).map_err(|_| {
+            BuilderError::StringBufferOverflow {
+                buffer_len: self.string_buf.len(),
+                value_len: value.len(),
+            }
+        })?;
+        let len = u32::try_from(value.len()).map_err(|_| {
+            BuilderError::StringBufferOverflow {
+                buffer_len: self.string_buf.len(),
+                value_len: value.len(),
+            }
+        })?;
+        self.string_buf.extend_from_slice(value.as_bytes());
+        let sref = StringRef { offset, len };
+        self.columns[handle.index()].push_str(self.lifecycle.row_count(), sref);
+        Ok(())
+    }
+
+    /// Write a `StringRef` directly (for zero-copy producers that already
+    /// have offsets into an input buffer).
+    #[inline]
+    pub(crate) fn write_str_ref(&mut self, handle: FieldHandle, sref: StringRef) {
+        debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
+        debug_assert!(handle.index() < self.columns.len());
+        if self.is_duplicate(handle) {
             return;
         }
-        if idx >= 64 && self.columns[idx].last_row == self.lifecycle.row_count() {
-            return;
-        }
-        if idx >= 64 {
-            self.columns[idx].last_row = self.lifecycle.row_count();
-        }
-        let col = &mut self.columns[idx];
-        col.has_str = true;
-        col.str_values
-            .push((self.lifecycle.row_count(), value.to_string()));
+        self.columns[handle.index()].push_str(self.lifecycle.row_count(), sref);
     }
 
     /// Write a null for the given field in the current row.
     ///
     /// Sparse fields are null by default; this just marks the field as
     /// written for dedup purposes.
-    #[inline(always)]
+    #[inline]
     pub(crate) fn write_null(&mut self, handle: FieldHandle) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
-        let idx = handle.index();
-        let _ = check_dup_bits(self.lifecycle.written_bits_mut(), idx);
-        if idx >= 64 {
-            self.columns[idx].last_row = self.lifecycle.row_count();
-        }
+        debug_assert!(handle.index() < self.columns.len());
+        let _ = self.is_duplicate(handle);
     }
 
     // -----------------------------------------------------------------------
     // Finalization
     // -----------------------------------------------------------------------
 
-    /// Materialize all deferred facts into an Arrow `RecordBatch`.
+    /// Materialize all deferred facts into an Arrow `RecordBatch` (detached).
     ///
-    /// Planned fields produce single-type columns (no conflict check).
-    /// Dynamic fields check for type conflicts and emit `StructArray` when
-    /// multiple types were observed.
-    pub(crate) fn finish_batch(&mut self) -> Result<RecordBatch, ArrowError> {
+    /// Copies string data into `StringBuilder` arrays. The builder's internal
+    /// buffers can be reused after this call.
+    pub(crate) fn finish_batch(&mut self) -> Result<RecordBatch, BuilderError> {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InBatch);
         let num_rows = self.lifecycle.row_count() as usize;
 
-        let mut schema_fields: Vec<Field> = Vec::with_capacity(self.plan.len());
-        let mut arrays: Vec<ArrayRef> = Vec::with_capacity(self.plan.len());
+        // Detached mode: string_buf is the "generated" buffer, no original.
+        let mode = FinalizationMode::Detached {
+            original_buf: &[],
+            generated_buf: &self.string_buf,
+        };
 
-        for (handle, name, mode) in self.plan.fields() {
+        let result = self.materialize_all(num_rows, mode)?;
+        self.lifecycle.finish_batch();
+        Ok(result)
+    }
+
+    /// Materialize with zero-copy StringViewArray.
+    ///
+    /// `original` is the input buffer (e.g., protobuf wire bytes).
+    /// `original_len` is the length of the original buffer.
+    /// Strings with `offset < original_len` reference the original buffer;
+    /// strings with `offset >= original_len` reference the generated buffer.
+    pub(crate) fn finish_batch_view(
+        &mut self,
+        original: Buffer,
+        original_len: u32,
+    ) -> Result<RecordBatch, BuilderError> {
+        debug_assert_eq!(self.lifecycle.state(), BuilderState::InBatch);
+        let num_rows = self.lifecycle.row_count() as usize;
+
+        let generated = if self.string_buf.is_empty() {
+            None
+        } else {
+            Some(Buffer::from(self.string_buf.as_slice()))
+        };
+        let mode = FinalizationMode::View {
+            original,
+            original_len,
+            generated,
+        };
+
+        let result = self.materialize_all(num_rows, mode)?;
+        self.lifecycle.finish_batch();
+        Ok(result)
+    }
+
+    /// Core materialization shared by both detached and view paths.
+    fn materialize_all(
+        &self,
+        num_rows: usize,
+        mode: FinalizationMode<'_>,
+    ) -> Result<RecordBatch, BuilderError> {
+        let mut schema_fields = Vec::with_capacity(self.plan.len());
+        let mut arrays = Vec::with_capacity(self.plan.len());
+
+        for (handle, name, field_mode) in self.plan.fields() {
             let col = &self.columns[handle.index()];
-
-            match mode {
-                FieldSchemaMode::Planned(kind) => {
-                    Self::materialize_planned(
-                        col,
-                        name,
-                        *kind,
-                        num_rows,
-                        &mut schema_fields,
-                        &mut arrays,
-                    );
+            match col.materialize(name, num_rows, mode.clone())? {
+                Some((field, array)) => {
+                    schema_fields.push(field);
+                    arrays.push(array);
                 }
-                FieldSchemaMode::Dynamic { .. } => {
-                    Self::materialize_dynamic(
-                        col,
-                        name,
-                        num_rows,
-                        &mut schema_fields,
-                        &mut arrays,
-                    );
+                None => {
+                    // Planned fields always appear in the schema (all-null if
+                    // no values were written). Dynamic fields with no data are
+                    // omitted — this matches StreamingBuilder behavior.
+                    if let FieldSchemaMode::Planned(kind) = field_mode {
+                        let (field, array) = null_column(name, *kind, num_rows);
+                        schema_fields.push(field);
+                        arrays.push(array);
+                    }
                 }
             }
         }
 
         let schema = Arc::new(Schema::new(schema_fields));
         let opts = RecordBatchOptions::new().with_row_count(Some(num_rows));
-        let result = RecordBatch::try_new_with_options(schema, arrays, &opts);
-        self.lifecycle.finish_batch();
-        result
+        Ok(RecordBatch::try_new_with_options(schema, arrays, &opts)?)
     }
 
     /// Number of completed rows in the current batch.
@@ -317,192 +391,42 @@ impl ColumnarBatchBuilder {
     pub(crate) fn plan(&self) -> &BatchPlan {
         &self.plan
     }
+}
 
-    // -----------------------------------------------------------------------
-    // Materialization helpers
-    // -----------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-    fn materialize_planned(
-        col: &ColumnStorage,
-        name: &str,
-        kind: FieldKind,
-        num_rows: usize,
-        schema_fields: &mut Vec<Field>,
-        arrays: &mut Vec<ArrayRef>,
-    ) {
-        match kind {
-            FieldKind::Int64 => {
-                let (array, dt) = Self::build_int64_column(&col.int_values, num_rows);
-                schema_fields.push(Field::new(name, dt, true));
-                arrays.push(array);
-            }
-            FieldKind::Float64 => {
-                let (array, dt) = Self::build_float64_column(&col.float_values, num_rows);
-                schema_fields.push(Field::new(name, dt, true));
-                arrays.push(array);
-            }
-            FieldKind::Bool => {
-                let (array, dt) = Self::build_bool_column(&col.bool_values, num_rows);
-                schema_fields.push(Field::new(name, dt, true));
-                arrays.push(array);
-            }
-            FieldKind::Utf8View => {
-                let (array, dt) = Self::build_string_column(&col.str_values, num_rows);
-                schema_fields.push(Field::new(name, dt, true));
-                arrays.push(array);
-            }
-            FieldKind::BinaryView | FieldKind::FixedBinary(_) => {
-                // Not yet implemented in prototype; emit null Utf8 column as placeholder.
-                let (array, dt) = Self::build_string_column(&col.str_values, num_rows);
-                schema_fields.push(Field::new(name, dt, true));
-                arrays.push(array);
-            }
+/// Create an all-null column of the appropriate Arrow type for a planned field.
+fn null_column(name: &str, kind: FieldKind, num_rows: usize) -> (Field, ArrayRef) {
+    match kind {
+        FieldKind::Int64 => {
+            let nulls = NullBuffer::new_null(num_rows);
+            let arr = Int64Array::new(vec![0i64; num_rows].into(), Some(nulls));
+            (Field::new(name, DataType::Int64, true), Arc::new(arr))
         }
-    }
-
-    fn materialize_dynamic(
-        col: &ColumnStorage,
-        name: &str,
-        num_rows: usize,
-        schema_fields: &mut Vec<Field>,
-        arrays: &mut Vec<ArrayRef>,
-    ) {
-        let type_count = col.has_int as u8
-            + col.has_float as u8
-            + col.has_str as u8
-            + col.has_bool as u8;
-
-        if type_count > 1 {
-            // Conflict: emit StructArray with typed children.
-            let mut child_fields: Vec<Arc<Field>> = Vec::new();
-            let mut child_arrays: Vec<ArrayRef> = Vec::new();
-
-            if col.has_int {
-                let (array, _) = Self::build_int64_column(&col.int_values, num_rows);
-                child_fields.push(Arc::new(Field::new("int", DataType::Int64, true)));
-                child_arrays.push(array);
-            }
-            if col.has_float {
-                let (array, _) = Self::build_float64_column(&col.float_values, num_rows);
-                child_fields.push(Arc::new(Field::new("float", DataType::Float64, true)));
-                child_arrays.push(array);
-            }
-            if col.has_str {
-                let (array, _) = Self::build_string_column(&col.str_values, num_rows);
-                child_fields.push(Arc::new(Field::new("str", DataType::Utf8, true)));
-                child_arrays.push(array);
-            }
-            if col.has_bool {
-                let (array, _) = Self::build_bool_column(&col.bool_values, num_rows);
-                child_fields.push(Arc::new(Field::new("bool", DataType::Boolean, true)));
-                child_arrays.push(array);
-            }
-
-            let struct_validity: Vec<bool> = (0..num_rows)
-                .map(|i| child_arrays.iter().any(|arr| !arr.is_null(i)))
-                .collect();
-
-            let fields = Fields::from(child_fields);
-            let struct_arr = StructArray::new(
-                fields.clone(),
-                child_arrays,
-                Some(NullBuffer::from(struct_validity)),
-            );
-
-            schema_fields.push(Field::new(name, DataType::Struct(fields), true));
-            arrays.push(Arc::new(struct_arr));
-        } else {
-            // Single-type or empty: flat column.
-            if col.has_int {
-                let (array, dt) = Self::build_int64_column(&col.int_values, num_rows);
-                schema_fields.push(Field::new(name, dt, true));
-                arrays.push(array);
-            } else if col.has_float {
-                let (array, dt) = Self::build_float64_column(&col.float_values, num_rows);
-                schema_fields.push(Field::new(name, dt, true));
-                arrays.push(array);
-            } else if col.has_str {
-                let (array, dt) = Self::build_string_column(&col.str_values, num_rows);
-                schema_fields.push(Field::new(name, dt, true));
-                arrays.push(array);
-            } else if col.has_bool {
-                let (array, dt) = Self::build_bool_column(&col.bool_values, num_rows);
-                schema_fields.push(Field::new(name, dt, true));
-                arrays.push(array);
-            }
-            // If no values at all, field is omitted (all-null sparse field
-            // with no writes). This matches StreamingBuilder behavior.
+        FieldKind::Float64 => {
+            let nulls = NullBuffer::new_null(num_rows);
+            let arr = Float64Array::new(vec![0.0f64; num_rows].into(), Some(nulls));
+            (Field::new(name, DataType::Float64, true), Arc::new(arr))
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // Column builders — deferred (row, value) → Arrow array
-    // -----------------------------------------------------------------------
-
-    fn build_int64_column(values: &[(u32, i64)], num_rows: usize) -> (ArrayRef, DataType) {
-        let mut data = vec![0i64; num_rows];
-        let mut valid = vec![false; num_rows];
-        for &(row, v) in values {
-            let row = row as usize;
-            if row < num_rows {
-                data[row] = v;
-                valid[row] = true;
-            }
+        FieldKind::Bool => {
+            let nulls = NullBuffer::new_null(num_rows);
+            let arr = BooleanArray::new(vec![false; num_rows].into(), Some(nulls));
+            (Field::new(name, DataType::Boolean, true), Arc::new(arr))
         }
-        let nulls = NullBuffer::from(valid);
-        let array = Int64Array::new(data.into(), Some(nulls));
-        (Arc::new(array), DataType::Int64)
-    }
-
-    fn build_float64_column(values: &[(u32, f64)], num_rows: usize) -> (ArrayRef, DataType) {
-        let mut data = vec![0.0f64; num_rows];
-        let mut valid = vec![false; num_rows];
-        for &(row, v) in values {
-            let row = row as usize;
-            if row < num_rows {
-                data[row] = v;
-                valid[row] = true;
+        FieldKind::Utf8View => {
+            // Use StringBuilder for detached mode compatibility.
+            let mut builder = StringBuilder::with_capacity(0, 0);
+            for _ in 0..num_rows {
+                builder.append_null();
             }
+            (Field::new(name, DataType::Utf8, true), Arc::new(builder.finish()))
         }
-        let nulls = NullBuffer::from(valid);
-        let array = Float64Array::new(data.into(), Some(nulls));
-        (Arc::new(array), DataType::Float64)
-    }
-
-    fn build_bool_column(values: &[(u32, bool)], num_rows: usize) -> (ArrayRef, DataType) {
-        let mut data = vec![false; num_rows];
-        let mut valid = vec![false; num_rows];
-        for &(row, v) in values {
-            let row = row as usize;
-            if row < num_rows {
-                data[row] = v;
-                valid[row] = true;
-            }
+        FieldKind::BinaryView | FieldKind::FixedBinary(_) => {
+            let arr = NullArray::new(num_rows);
+            (Field::new(name, DataType::Null, true), Arc::new(arr))
         }
-        let nulls = NullBuffer::from(valid);
-        let array = BooleanArray::new(data.into(), Some(nulls));
-        (Arc::new(array), DataType::Boolean)
-    }
-
-    fn build_string_column(values: &[(u32, String)], num_rows: usize) -> (ArrayRef, DataType) {
-        // Use StringBuilder (detached/copy path).
-        // Block store (#1844) will add StringViewBuilder with zero-copy views.
-        let mut builder = StringBuilder::with_capacity(values.len(), 0);
-        // Build a row-indexed lookup for sparse fill.
-        let mut row_map: Vec<Option<&str>> = vec![None; num_rows];
-        for (row, v) in values {
-            let row = *row as usize;
-            if row < num_rows {
-                row_map[row] = Some(v.as_str());
-            }
-        }
-        for slot in &row_map {
-            match slot {
-                Some(s) => builder.append_value(s),
-                None => builder.append_null(),
-            }
-        }
-        (Arc::new(builder.finish()), DataType::Utf8)
     }
 }
 
@@ -560,7 +484,7 @@ mod tests {
 
         // Row 1: only severity
         b.begin_row();
-        b.write_str(sev, "INFO");
+        b.write_str(sev, "INFO").unwrap();
         b.end_row();
 
         // Row 2: only value
@@ -683,13 +607,13 @@ mod tests {
         b.begin_batch();
         b.begin_row();
         let h = b.resolve_dynamic("level", FieldKind::Utf8View).unwrap();
-        b.write_str(h, "INFO");
+        b.write_str(h, "INFO").unwrap();
         b.end_row();
 
         b.begin_row();
         let h2 = b.resolve_dynamic("level", FieldKind::Utf8View).unwrap();
         assert_eq!(h, h2);
-        b.write_str(h2, "ERROR");
+        b.write_str(h2, "ERROR").unwrap();
         b.end_row();
 
         let batch = b.finish_batch().unwrap();
@@ -716,7 +640,7 @@ mod tests {
         b.begin_row();
         let h2 = b.resolve_dynamic("status", FieldKind::Utf8View).unwrap();
         assert_eq!(h, h2);
-        b.write_str(h2, "OK");
+        b.write_str(h2, "OK").unwrap();
         b.end_row();
 
         let batch = b.finish_batch().unwrap();
@@ -751,13 +675,13 @@ mod tests {
         b.begin_row();
         b.write_i64(ts, 1000);
         let msg = b.resolve_dynamic("message", FieldKind::Utf8View).unwrap();
-        b.write_str(msg, "hello");
+        b.write_str(msg, "hello").unwrap();
         b.end_row();
 
         b.begin_row();
         b.write_i64(ts, 2000);
         let msg2 = b.resolve_dynamic("message", FieldKind::Utf8View).unwrap();
-        b.write_str(msg2, "world");
+        b.write_str(msg2, "world").unwrap();
         b.end_row();
 
         let batch = b.finish_batch().unwrap();
@@ -868,7 +792,7 @@ mod tests {
 
         b.begin_batch();
         b.begin_row();
-        b.write_str(h, "not an int");
+        b.write_str(h, "not an int").unwrap();
         b.end_row();
 
         let batch = b.finish_batch().unwrap();
@@ -876,5 +800,70 @@ mod tests {
         let arr = col.as_primitive::<Int64Type>();
         // Planned kind is Int64, but we only wrote a string → int column is all-null.
         assert!(arr.is_null(0));
+    }
+
+    // -----------------------------------------------------------------------
+    // View mode finalization
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn finish_batch_view_produces_string_view_array() {
+        let mut plan = BatchPlan::new();
+        let ts = plan.declare_planned("ts", FieldKind::Int64).unwrap();
+        let msg = plan.declare_planned("msg", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+
+        let input = b"hello world";
+        let arrow_buf = Buffer::from(&input[..]);
+
+        b.begin_batch();
+        b.begin_row();
+        b.write_i64(ts, 1000);
+        // Use str_ref pointing into the original buffer
+        b.write_str_ref(msg, super::super::accumulator::StringRef { offset: 0, len: 5 });
+        b.end_row();
+        b.begin_row();
+        b.write_i64(ts, 2000);
+        b.write_str_ref(msg, super::super::accumulator::StringRef { offset: 6, len: 5 });
+        b.end_row();
+
+        let batch = b
+            .finish_batch_view(arrow_buf, input.len() as u32)
+            .unwrap();
+        assert_eq!(batch.num_rows(), 2);
+
+        let msg_col = batch.column_by_name("msg").unwrap();
+        let arr = msg_col.as_string_view();
+        assert_eq!(arr.value(0), "hello");
+        assert_eq!(arr.value(1), "world");
+    }
+
+    // -----------------------------------------------------------------------
+    // Error handling
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn finish_batch_propagates_materialize_error() {
+        let mut plan = BatchPlan::new();
+        let msg = plan.declare_planned("msg", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+
+        b.begin_batch();
+        b.begin_row();
+        // Write a str_ref pointing beyond any valid buffer
+        b.write_str_ref(
+            msg,
+            super::super::accumulator::StringRef {
+                offset: 9999,
+                len: 10,
+            },
+        );
+        b.end_row();
+
+        let result = b.finish_batch();
+        assert!(
+            result.is_err(),
+            "finish_batch should fail for out-of-bounds StringRef"
+        );
     }
 }

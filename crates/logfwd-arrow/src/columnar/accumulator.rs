@@ -2,16 +2,22 @@
 //
 // Each variant carries only the storage it needs:
 //   - Planned Int64 → one Vec<(u32, i64)>
-//   - Planned String → one Vec<(u32, u32, u32)> (row, offset, len)
+//   - Planned String → one Vec<(u32, StringRef)> (row + buffer reference)
 //   - Dynamic → all 4 vecs + conflict flags (same as FieldColumns today)
 //
 // Materialization is distributed: each variant builds its own Arrow array.
 // No monolithic finalization function.
+//
+// INVARIANT: facts within each vec must be pushed in non-decreasing row order.
+// The builder enforces this by calling push_* only with the current row_count,
+// which monotonically increases. build_string relies on this for its
+// sequential merge with the row range.
 
 use std::sync::Arc;
 
 use arrow::array::{
-    ArrayRef, BooleanArray, Float64Array, Int64Array, StringBuilder, StringViewBuilder, StructArray,
+    ArrayRef, BooleanArray, Float64Array, Int64Array, StringBuilder, StringViewBuilder,
+    StructArray,
 };
 use arrow::buffer::{Buffer, NullBuffer};
 use arrow::datatypes::{DataType, Field, Fields};
@@ -257,46 +263,51 @@ impl ColumnAccumulator {
 
     /// Materialize into an Arrow field + array.
     ///
-    /// Returns `None` if the accumulator has no data (sparse all-null field
+    /// Returns `Ok(None)` if the accumulator has no data (sparse all-null field
     /// with no writes — omitted from schema like StreamingBuilder does).
     ///
     /// `mode` controls string materialization:
     ///   - `Detached`: uses `StringBuilder` (copies strings, self-contained)
     ///   - `View`: uses `StringViewArray` backed by input + generated buffers
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if a string reference points outside the provided buffers
+    /// or if buffer data is not valid UTF-8.
     pub(crate) fn materialize(
         &self,
         name: &str,
         num_rows: usize,
         mode: FinalizationMode<'_>,
-    ) -> Option<(Field, ArrayRef)> {
+    ) -> Result<Option<(Field, ArrayRef)>, MaterializeError> {
         match self {
             ColumnAccumulator::Int64 { facts, .. } => {
                 if facts.is_empty() {
-                    return None;
+                    return Ok(None);
                 }
                 let (arr, dt) = build_int64(facts, num_rows);
-                Some((Field::new(name, dt, true), arr))
+                Ok(Some((Field::new(name, dt, true), arr)))
             }
             ColumnAccumulator::Float64 { facts, .. } => {
                 if facts.is_empty() {
-                    return None;
+                    return Ok(None);
                 }
                 let (arr, dt) = build_float64(facts, num_rows);
-                Some((Field::new(name, dt, true), arr))
+                Ok(Some((Field::new(name, dt, true), arr)))
             }
             ColumnAccumulator::Bool { facts, .. } => {
                 if facts.is_empty() {
-                    return None;
+                    return Ok(None);
                 }
                 let (arr, dt) = build_bool(facts, num_rows);
-                Some((Field::new(name, dt, true), arr))
+                Ok(Some((Field::new(name, dt, true), arr)))
             }
             ColumnAccumulator::String { facts, .. } => {
                 if facts.is_empty() {
-                    return None;
+                    return Ok(None);
                 }
-                let (arr, dt) = build_string(facts, num_rows, &mode);
-                Some((Field::new(name, dt, true), arr))
+                let (arr, dt) = build_string(facts, num_rows, &mode)?;
+                Ok(Some((Field::new(name, dt, true), arr)))
             }
             ColumnAccumulator::Dynamic {
                 int_facts,
@@ -312,11 +323,11 @@ impl ColumnAccumulator {
                 let type_count =
                     *has_int as u8 + *has_float as u8 + *has_str as u8 + *has_bool as u8;
                 if type_count == 0 {
-                    return None;
+                    return Ok(None);
                 }
                 if type_count > 1 {
                     // Conflict → StructArray
-                    Some(build_conflict_struct(
+                    Ok(Some(build_conflict_struct(
                         name,
                         num_rows,
                         &mode,
@@ -324,24 +335,71 @@ impl ColumnAccumulator {
                         float_facts,
                         bool_facts,
                         str_facts,
-                    ))
+                    )?))
                 } else {
                     // Single type → flat column
                     if *has_int {
                         let (arr, dt) = build_int64(int_facts, num_rows);
-                        Some((Field::new(name, dt, true), arr))
+                        Ok(Some((Field::new(name, dt, true), arr)))
                     } else if *has_float {
                         let (arr, dt) = build_float64(float_facts, num_rows);
-                        Some((Field::new(name, dt, true), arr))
+                        Ok(Some((Field::new(name, dt, true), arr)))
                     } else if *has_str {
-                        let (arr, dt) = build_string(str_facts, num_rows, &mode);
-                        Some((Field::new(name, dt, true), arr))
+                        let (arr, dt) = build_string(str_facts, num_rows, &mode)?;
+                        Ok(Some((Field::new(name, dt, true), arr)))
                     } else {
                         let (arr, dt) = build_bool(bool_facts, num_rows);
-                        Some((Field::new(name, dt, true), arr))
+                        Ok(Some((Field::new(name, dt, true), arr)))
                     }
                 }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MaterializeError
+// ---------------------------------------------------------------------------
+
+/// Error during column materialization.
+#[derive(Debug)]
+pub(crate) enum MaterializeError {
+    /// A `StringRef` pointed outside the provided buffers.
+    StringRefOutOfBounds {
+        offset: u32,
+        len: u32,
+        buffer_len: usize,
+    },
+    /// Buffer data was not valid UTF-8 at the referenced range.
+    InvalidUtf8 { offset: u32, len: u32 },
+    /// Arrow's `StringViewBuilder::try_append_view` failed.
+    ViewAppend(arrow::error::ArrowError),
+}
+
+impl std::fmt::Display for MaterializeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MaterializeError::StringRefOutOfBounds {
+                offset,
+                len,
+                buffer_len,
+            } => write!(
+                f,
+                "StringRef(offset={offset}, len={len}) out of bounds for buffer(len={buffer_len})"
+            ),
+            MaterializeError::InvalidUtf8 { offset, len } => {
+                write!(f, "invalid UTF-8 at StringRef(offset={offset}, len={len})")
+            }
+            MaterializeError::ViewAppend(e) => write!(f, "StringViewBuilder append failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for MaterializeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            MaterializeError::ViewAppend(e) => Some(e),
+            _ => None,
         }
     }
 }
@@ -430,7 +488,7 @@ fn build_string(
     facts: &[(u32, StringRef)],
     num_rows: usize,
     mode: &FinalizationMode<'_>,
-) -> (ArrayRef, DataType) {
+) -> Result<(ArrayRef, DataType), MaterializeError> {
     match mode {
         FinalizationMode::Detached {
             original_buf,
@@ -442,17 +500,14 @@ fn build_string(
             for row in 0..num_rows as u32 {
                 if vi < facts.len() && facts[vi].0 == row {
                     let sref = facts[vi].1;
-                    let s = read_str(original_buf, generated_buf, original_len, sref);
-                    match s {
-                        Some(s) => builder.append_value(s),
-                        None => builder.append_null(),
-                    }
+                    let s = read_str(original_buf, generated_buf, original_len, sref)?;
+                    builder.append_value(s);
                     vi += 1;
                 } else {
                     builder.append_null();
                 }
             }
-            (Arc::new(builder.finish()), DataType::Utf8)
+            Ok((Arc::new(builder.finish()), DataType::Utf8))
         }
         FinalizationMode::View {
             original,
@@ -471,42 +526,69 @@ fn build_string(
                     {
                         builder
                             .try_append_view(orig_block, sref.offset, sref.len)
-                            .expect("pre-validated offset/len");
+                            .map_err(MaterializeError::ViewAppend)?;
                     } else if let Some(gen_block) = gen_block {
                         let gen_offset = sref.offset - *original_len;
                         builder
                             .try_append_view(gen_block, gen_offset, sref.len)
-                            .expect("pre-validated offset/len");
+                            .map_err(MaterializeError::ViewAppend)?;
                     } else {
-                        builder.append_null();
+                        return Err(MaterializeError::StringRefOutOfBounds {
+                            offset: sref.offset,
+                            len: sref.len,
+                            buffer_len: original.len(),
+                        });
                     }
                     vi += 1;
                 } else {
                     builder.append_null();
                 }
             }
-            (Arc::new(builder.finish()), DataType::Utf8View)
+            Ok((Arc::new(builder.finish()), DataType::Utf8View))
         }
     }
 }
 
 /// Read a string from the 2-buffer system.
+///
+/// Returns an error if the reference is out of bounds or the bytes are not valid UTF-8.
 fn read_str<'a>(
     original: &'a [u8],
     generated: &'a [u8],
     original_len: usize,
     sref: StringRef,
-) -> Option<&'a str> {
+) -> Result<&'a str, MaterializeError> {
     let start = sref.offset as usize;
-    let end = start.checked_add(sref.len as usize)?;
+    let end = start.checked_add(sref.len as usize).ok_or(
+        MaterializeError::StringRefOutOfBounds {
+            offset: sref.offset,
+            len: sref.len,
+            buffer_len: original.len() + generated.len(),
+        },
+    )?;
     let bytes = if start < original_len {
-        original.get(start..end)?
+        original.get(start..end).ok_or(
+            MaterializeError::StringRefOutOfBounds {
+                offset: sref.offset,
+                len: sref.len,
+                buffer_len: original.len(),
+            },
+        )?
     } else {
-        let dec_start = start.checked_sub(original_len)?;
-        let dec_end = end.checked_sub(original_len)?;
-        generated.get(dec_start..dec_end)?
+        let dec_start = start - original_len;
+        let dec_end = end - original_len;
+        generated.get(dec_start..dec_end).ok_or(
+            MaterializeError::StringRefOutOfBounds {
+                offset: sref.offset,
+                len: sref.len,
+                buffer_len: generated.len(),
+            },
+        )?
     };
-    std::str::from_utf8(bytes).ok()
+    std::str::from_utf8(bytes).map_err(|_| MaterializeError::InvalidUtf8 {
+        offset: sref.offset,
+        len: sref.len,
+    })
 }
 
 fn build_conflict_struct(
@@ -517,7 +599,7 @@ fn build_conflict_struct(
     float_facts: &[(u32, f64)],
     bool_facts: &[(u32, bool)],
     str_facts: &[(u32, StringRef)],
-) -> (Field, ArrayRef) {
+) -> Result<(Field, ArrayRef), MaterializeError> {
     let mut child_fields: Vec<Arc<Field>> = Vec::new();
     let mut child_arrays: Vec<ArrayRef> = Vec::new();
 
@@ -532,7 +614,7 @@ fn build_conflict_struct(
         child_arrays.push(arr);
     }
     if !str_facts.is_empty() {
-        let (arr, dt) = build_string(str_facts, num_rows, mode);
+        let (arr, dt) = build_string(str_facts, num_rows, mode)?;
         child_fields.push(Arc::new(Field::new("str", dt, true)));
         child_arrays.push(arr);
     }
@@ -553,10 +635,10 @@ fn build_conflict_struct(
         Some(NullBuffer::from(struct_validity)),
     );
 
-    (
+    Ok((
         Field::new(name, DataType::Struct(fields), true),
         Arc::new(struct_arr),
-    )
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -579,7 +661,7 @@ mod tests {
             original_buf: &[],
             generated_buf: &[],
         };
-        let (field, arr) = acc.materialize("ts", 3, mode).unwrap();
+        let (field, arr) = acc.materialize("ts", 3, mode).unwrap().unwrap();
         assert_eq!(field.name(), "ts");
         let a = arr.as_primitive::<Int64Type>();
         assert_eq!(a.value(0), 100);
@@ -598,7 +680,7 @@ mod tests {
             original_buf: input,
             generated_buf: &[],
         };
-        let (_, arr) = acc.materialize("msg", 2, mode).unwrap();
+        let (_, arr) = acc.materialize("msg", 2, mode).unwrap().unwrap();
         let a = arr.as_string::<i32>();
         assert_eq!(a.value(0), "hello");
         assert_eq!(a.value(1), "world");
@@ -617,7 +699,7 @@ mod tests {
             original_len: input.len() as u32,
             generated: None,
         };
-        let (field, arr) = acc.materialize("msg", 2, mode).unwrap();
+        let (field, arr) = acc.materialize("msg", 2, mode).unwrap().unwrap();
         assert_eq!(field.data_type(), &DataType::Utf8View);
         let a = arr.as_string_view();
         assert_eq!(a.value(0), "hello");
@@ -645,7 +727,7 @@ mod tests {
             original_buf: input,
             generated_buf: generated,
         };
-        let (_, arr) = acc.materialize("msg", 2, mode).unwrap();
+        let (_, arr) = acc.materialize("msg", 2, mode).unwrap().unwrap();
         let a = arr.as_string::<i32>();
         assert_eq!(a.value(0), "original");
         assert_eq!(a.value(1), "decoded");
@@ -661,7 +743,7 @@ mod tests {
             original_buf: &[],
             generated_buf: &[],
         };
-        let (field, arr) = acc.materialize("x", 2, mode).unwrap();
+        let (field, arr) = acc.materialize("x", 2, mode).unwrap().unwrap();
         assert_eq!(field.data_type(), &DataType::Int64);
         let a = arr.as_primitive::<Int64Type>();
         assert_eq!(a.value(0), 42);
@@ -686,7 +768,7 @@ mod tests {
             original_buf: input,
             generated_buf: &[],
         };
-        let (field, arr) = acc.materialize("status", 2, mode).unwrap();
+        let (field, arr) = acc.materialize("status", 2, mode).unwrap().unwrap();
         assert!(matches!(field.data_type(), DataType::Struct(_)));
         let s = arr.as_struct();
         assert_eq!(s.num_columns(), 2);
@@ -702,7 +784,7 @@ mod tests {
             original_buf: &[],
             generated_buf: &[],
         };
-        assert!(acc.materialize("x", 3, mode).is_none());
+        assert!(acc.materialize("x", 3, mode).unwrap().is_none());
     }
 
     #[test]
@@ -716,7 +798,7 @@ mod tests {
             original_buf: &[],
             generated_buf: &[],
         };
-        assert!(acc.materialize("x", 1, mode).is_none()); // no int facts → None
+        assert!(acc.materialize("x", 1, mode).unwrap().is_none()); // no int facts → None
     }
 
     #[test]
@@ -730,7 +812,7 @@ mod tests {
             original_buf: &[],
             generated_buf: &[],
         };
-        let (_, arr) = acc.materialize("x", 1, mode).unwrap();
+        let (_, arr) = acc.materialize("x", 1, mode).unwrap().unwrap();
         assert_eq!(arr.as_primitive::<Int64Type>().value(0), 200);
     }
 
@@ -755,5 +837,70 @@ mod tests {
             planned_size <= dynamic_size,
             "planned {planned_size} should be <= dynamic {dynamic_size}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Error handling tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn string_ref_out_of_bounds_returns_error() {
+        let mut acc = ColumnAccumulator::for_planned(FieldKind::Utf8View);
+        // Reference past end of buffer
+        acc.push_str(0, StringRef { offset: 100, len: 5 });
+
+        let mode = FinalizationMode::Detached {
+            original_buf: b"short",
+            generated_buf: &[],
+        };
+        let result = acc.materialize("x", 1, mode);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MaterializeError::StringRefOutOfBounds { .. }),
+            "expected StringRefOutOfBounds, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_utf8_returns_error() {
+        let bad_bytes: &[u8] = &[0xFF, 0xFE, 0x80, 0x81];
+        let mut acc = ColumnAccumulator::for_planned(FieldKind::Utf8View);
+        acc.push_str(0, StringRef { offset: 0, len: 4 });
+
+        let mode = FinalizationMode::Detached {
+            original_buf: bad_bytes,
+            generated_buf: &[],
+        };
+        let result = acc.materialize("x", 1, mode);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MaterializeError::InvalidUtf8 { .. }),
+            "expected InvalidUtf8, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn view_mode_out_of_bounds_returns_error() {
+        let input = b"short";
+        let arrow_buf = Buffer::from(&input[..]);
+        let mut acc = ColumnAccumulator::for_planned(FieldKind::Utf8View);
+        // Reference past generated buffer (which doesn't exist)
+        acc.push_str(
+            0,
+            StringRef {
+                offset: input.len() as u32,
+                len: 10,
+            },
+        );
+
+        let mode = FinalizationMode::View {
+            original: arrow_buf,
+            original_len: input.len() as u32,
+            generated: None,
+        };
+        let result = acc.materialize("x", 1, mode);
+        assert!(result.is_err());
     }
 }
