@@ -1624,6 +1624,608 @@ mod tests {
         );
     }
 
+    // ── Multi-resource/scope container tests ──────────────────────────
+
+    #[test]
+    fn projected_multiple_resources_match_prost() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![
+                ResourceLogs {
+                    resource: Some(Resource {
+                        attributes: vec![kv_string("service.name", "frontend")],
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope {
+                            name: "scope-fe".into(),
+                            ..Default::default()
+                        }),
+                        log_records: vec![LogRecord {
+                            body: Some(any_string("frontend-log")),
+                            severity_text: "INFO".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                ResourceLogs {
+                    resource: Some(Resource {
+                        attributes: vec![
+                            kv_string("service.name", "backend"),
+                            kv_i64("resource.pid", 42),
+                        ],
+                        ..Default::default()
+                    }),
+                    scope_logs: vec![ScopeLogs {
+                        scope: Some(InstrumentationScope {
+                            name: "scope-be".into(),
+                            version: "2.0.0".into(),
+                            ..Default::default()
+                        }),
+                        log_records: vec![
+                            LogRecord {
+                                body: Some(any_string("backend-log-1")),
+                                severity_text: "WARN".into(),
+                                ..Default::default()
+                            },
+                            LogRecord {
+                                body: Some(any_string("backend-log-2")),
+                                attributes: vec![kv_bool("retried", true)],
+                                ..Default::default()
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            ],
+        };
+        assert_projected_matches_prost(&request);
+    }
+
+    #[test]
+    fn projected_multiple_scopes_per_resource_match_prost() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![kv_string("service.name", "multi-scope")],
+                    ..Default::default()
+                }),
+                scope_logs: vec![
+                    ScopeLogs {
+                        scope: Some(InstrumentationScope {
+                            name: "http-handler".into(),
+                            version: "1.0.0".into(),
+                            ..Default::default()
+                        }),
+                        log_records: vec![LogRecord {
+                            body: Some(any_string("request-received")),
+                            severity_text: "INFO".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                    ScopeLogs {
+                        scope: Some(InstrumentationScope {
+                            name: "db-client".into(),
+                            version: "3.2.0".into(),
+                            ..Default::default()
+                        }),
+                        log_records: vec![LogRecord {
+                            body: Some(any_string("query-executed")),
+                            severity_text: "DEBUG".into(),
+                            attributes: vec![kv_string("db.system", "postgres")],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+        };
+        assert_projected_matches_prost(&request);
+    }
+
+    #[test]
+    fn projected_resource_attrs_do_not_collide_with_log_attrs() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![
+                        kv_string("service.name", "collision-test"),
+                        kv_string("host", "resource-host"),
+                    ],
+                    ..Default::default()
+                }),
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        attributes: vec![kv_string("host", "log-host")],
+                        body: Some(any_string("collision")),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        assert_projected_matches_prost(&request);
+    }
+
+    #[test]
+    fn projected_empty_resource_and_scope_match_prost() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: None,
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        body: Some(any_string("no-context")),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        assert_projected_matches_prost(&request);
+    }
+
+    #[test]
+    fn projected_empty_payload_matches_prost() {
+        assert_projected_payload_matches_prost(&[]);
+    }
+
+    // ── Malformed wire data tests ─────────────────────────────────────
+
+    #[test]
+    fn projected_truncated_varint_is_invalid() {
+        // A varint that starts with a continuation bit but has no following byte.
+        let payload = vec![0x80];
+        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect_err("truncated varint should be invalid");
+        assert!(
+            matches!(err, ProjectionError::Invalid(_)),
+            "expected invalid, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn projected_truncated_fixed64_is_invalid() {
+        // A tag claiming fixed64 (wire type 1) followed by only 4 bytes instead of 8.
+        let mut payload = Vec::new();
+        // field=1, wire_type=1 (fixed64) => tag = (1 << 3) | 1 = 9
+        // Wrap in a resource_logs container so field 1 is expected.
+        let mut resource_logs_inner = Vec::new();
+        encode_varint(&mut resource_logs_inner, (1_u64 << 3) | 1); // field 1, fixed64
+        resource_logs_inner.extend_from_slice(&[0x01, 0x02, 0x03, 0x04]); // only 4 bytes
+
+        encode_len_field(
+            &mut payload,
+            spec::export_logs_service_request::RESOURCE_LOGS,
+            &resource_logs_inner,
+        );
+
+        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect_err("truncated fixed64 should be invalid");
+        assert!(
+            matches!(err, ProjectionError::Invalid(_)),
+            "expected invalid, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn projected_truncated_fixed32_is_invalid() {
+        // A tag claiming fixed32 (wire type 5) followed by only 2 bytes instead of 4.
+        let mut inner = Vec::new();
+        encode_varint(&mut inner, (8_u64 << 3) | 5); // log_record field 8 (flags), fixed32
+        inner.extend_from_slice(&[0x01, 0x02]); // only 2 bytes
+
+        let mut scope_logs = Vec::new();
+        encode_len_field(&mut scope_logs, spec::scope_logs::LOG_RECORDS, &inner);
+        let mut resource_logs = Vec::new();
+        encode_len_field(
+            &mut resource_logs,
+            spec::resource_logs::SCOPE_LOGS,
+            &scope_logs,
+        );
+        let mut payload = Vec::new();
+        encode_len_field(
+            &mut payload,
+            spec::export_logs_service_request::RESOURCE_LOGS,
+            &resource_logs,
+        );
+
+        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect_err("truncated fixed32 should be invalid");
+        assert!(
+            matches!(err, ProjectionError::Invalid(_)),
+            "expected invalid, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn projected_length_exceeding_buffer_is_invalid() {
+        // A length-delimited field that claims more bytes than are available.
+        let mut payload = Vec::new();
+        encode_varint(&mut payload, (1_u64 << 3) | 2); // field 1, len
+        encode_varint(&mut payload, 9999); // claims 9999 bytes
+        payload.extend_from_slice(b"short"); // only 5 bytes
+
+        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect_err("length exceeding buffer should be invalid");
+        assert!(
+            matches!(err, ProjectionError::Invalid(_)),
+            "expected invalid, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn projected_group_mismatch_is_invalid() {
+        // Start group field 99, end group field 98 (mismatch).
+        let mut payload = Vec::new();
+        encode_varint(&mut payload, (99_u64 << 3) | 3); // start group field 99
+        encode_varint(&mut payload, (98_u64 << 3) | 4); // end group field 98 (wrong!)
+
+        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect_err("mismatched group boundaries should be invalid");
+        assert!(
+            matches!(err, ProjectionError::Invalid(_)),
+            "expected invalid, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn projected_nested_truncation_inside_log_record_is_invalid() {
+        // Build a valid outer wrapper but truncate inside the log record body.
+        let mut log_record = Vec::new();
+        // severity_text field (3, len) with truncated length
+        encode_varint(
+            &mut log_record,
+            (spec::log_record::SEVERITY_TEXT as u64) << 3 | 2,
+        );
+        encode_varint(&mut log_record, 100); // claims 100 bytes
+        log_record.extend_from_slice(b"short"); // only 5 bytes
+
+        let mut scope_logs = Vec::new();
+        encode_len_field(&mut scope_logs, spec::scope_logs::LOG_RECORDS, &log_record);
+        let mut resource_logs = Vec::new();
+        encode_len_field(
+            &mut resource_logs,
+            spec::resource_logs::SCOPE_LOGS,
+            &scope_logs,
+        );
+        let mut payload = Vec::new();
+        encode_len_field(
+            &mut payload,
+            spec::export_logs_service_request::RESOURCE_LOGS,
+            &resource_logs,
+        );
+
+        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect_err("truncation inside log record should be invalid");
+        assert!(
+            matches!(err, ProjectionError::Invalid(_)),
+            "expected invalid, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn projected_invalid_utf8_in_attribute_key_is_invalid() {
+        let mut kv_bytes = Vec::new();
+        // key = field 1, len with invalid UTF-8
+        encode_len_field(&mut kv_bytes, spec::key_value::KEY, &[0xff, 0xfe]);
+        // value = field 2, len with a string AnyValue
+        let mut any_val = Vec::new();
+        encode_len_field(&mut any_val, spec::any_value::STRING, b"valid");
+        encode_len_field(&mut kv_bytes, spec::key_value::VALUE, &any_val);
+
+        let mut log_record = Vec::new();
+        encode_len_field(&mut log_record, spec::log_record::ATTRIBUTES, &kv_bytes);
+
+        let mut scope_logs = Vec::new();
+        encode_len_field(&mut scope_logs, spec::scope_logs::LOG_RECORDS, &log_record);
+        let mut resource_logs = Vec::new();
+        encode_len_field(
+            &mut resource_logs,
+            spec::resource_logs::SCOPE_LOGS,
+            &scope_logs,
+        );
+        let mut payload = Vec::new();
+        encode_len_field(
+            &mut payload,
+            spec::export_logs_service_request::RESOURCE_LOGS,
+            &resource_logs,
+        );
+
+        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect_err("invalid UTF-8 in attribute key should be invalid");
+        assert!(
+            matches!(err, ProjectionError::Invalid(_)),
+            "expected invalid, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn projected_invalid_utf8_in_attribute_string_value_is_invalid() {
+        let mut any_val = Vec::new();
+        encode_len_field(&mut any_val, spec::any_value::STRING, &[0x80, 0x81]);
+        let mut kv_bytes = Vec::new();
+        encode_len_field(&mut kv_bytes, spec::key_value::KEY, b"bad-val");
+        encode_len_field(&mut kv_bytes, spec::key_value::VALUE, &any_val);
+
+        let mut log_record = Vec::new();
+        encode_len_field(&mut log_record, spec::log_record::ATTRIBUTES, &kv_bytes);
+
+        let mut scope_logs = Vec::new();
+        encode_len_field(&mut scope_logs, spec::scope_logs::LOG_RECORDS, &log_record);
+        let mut resource_logs = Vec::new();
+        encode_len_field(
+            &mut resource_logs,
+            spec::resource_logs::SCOPE_LOGS,
+            &scope_logs,
+        );
+        let mut payload = Vec::new();
+        encode_len_field(
+            &mut payload,
+            spec::export_logs_service_request::RESOURCE_LOGS,
+            &resource_logs,
+        );
+
+        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect_err("invalid UTF-8 in attribute string value should be invalid");
+        assert!(
+            matches!(err, ProjectionError::Invalid(_)),
+            "expected invalid, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn projected_invalid_utf8_in_body_string_is_invalid() {
+        let mut any_val = Vec::new();
+        encode_len_field(&mut any_val, spec::any_value::STRING, &[0xc0, 0xaf]);
+        let mut log_record = Vec::new();
+        encode_len_field(&mut log_record, spec::log_record::BODY, &any_val);
+
+        let mut scope_logs = Vec::new();
+        encode_len_field(&mut scope_logs, spec::scope_logs::LOG_RECORDS, &log_record);
+        let mut resource_logs = Vec::new();
+        encode_len_field(
+            &mut resource_logs,
+            spec::resource_logs::SCOPE_LOGS,
+            &scope_logs,
+        );
+        let mut payload = Vec::new();
+        encode_len_field(
+            &mut payload,
+            spec::export_logs_service_request::RESOURCE_LOGS,
+            &resource_logs,
+        );
+
+        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect_err("invalid UTF-8 in body string should be invalid");
+        assert!(
+            matches!(err, ProjectionError::Invalid(_)),
+            "expected invalid, got {err:?}"
+        );
+    }
+
+    // ── Unsupported-but-valid AnyValue tests ──────────────────────────
+
+    #[test]
+    fn projected_kvlist_attribute_requests_unsupported_fallback() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        body: Some(any_string("normal body")),
+                        attributes: vec![KeyValue {
+                            key: "nested".into(),
+                            value: Some(AnyValue {
+                                value: Some(Value::KvlistValue(KeyValueList {
+                                    values: vec![kv_string("inner", "value")],
+                                })),
+                            }),
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let payload = request.encode_to_vec();
+        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect_err("kvlist attribute should trigger unsupported");
+        assert!(
+            matches!(err, ProjectionError::Unsupported(_)),
+            "expected unsupported, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn projected_array_attribute_requests_unsupported_fallback() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        body: Some(any_string("normal body")),
+                        attributes: vec![KeyValue {
+                            key: "tags".into(),
+                            value: Some(AnyValue {
+                                value: Some(Value::ArrayValue(ArrayValue {
+                                    values: vec![any_string("a"), any_string("b")],
+                                })),
+                            }),
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let payload = request.encode_to_vec();
+        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect_err("array attribute should trigger unsupported");
+        assert!(
+            matches!(err, ProjectionError::Unsupported(_)),
+            "expected unsupported, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn projected_kvlist_body_requests_unsupported_fallback() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(Value::KvlistValue(KeyValueList {
+                                values: vec![kv_string("key", "value")],
+                            })),
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let payload = request.encode_to_vec();
+        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect_err("kvlist body should trigger unsupported");
+        assert!(
+            matches!(err, ProjectionError::Unsupported(_)),
+            "expected unsupported, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn projected_fallback_for_kvlist_attr_matches_prost() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        body: Some(any_string("fallback body")),
+                        attributes: vec![KeyValue {
+                            key: "nested".into(),
+                            value: Some(AnyValue {
+                                value: Some(Value::KvlistValue(KeyValueList {
+                                    values: vec![kv_string("inner", "value")],
+                                })),
+                            }),
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let payload = request.encode_to_vec();
+        let expected = crate::otlp_receiver::decode_protobuf_to_batch_prost_reference(&payload)
+            .expect("prost reference should decode kvlist attribute fixture");
+        let actual = crate::otlp_receiver::decode_protobuf_bytes_to_batch_projected_experimental(
+            Bytes::from(payload),
+        )
+        .expect("fallback should produce a batch for kvlist attribute");
+        assert_batches_match(&expected, &actual);
+    }
+
+    #[test]
+    fn projected_fallback_for_array_attr_matches_prost() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        body: Some(any_string("fallback body")),
+                        attributes: vec![KeyValue {
+                            key: "tags".into(),
+                            value: Some(AnyValue {
+                                value: Some(Value::ArrayValue(ArrayValue {
+                                    values: vec![any_string("x"), any_string("y")],
+                                })),
+                            }),
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let payload = request.encode_to_vec();
+        let expected = crate::otlp_receiver::decode_protobuf_to_batch_prost_reference(&payload)
+            .expect("prost reference should decode array attribute fixture");
+        let actual = crate::otlp_receiver::decode_protobuf_bytes_to_batch_projected_experimental(
+            Bytes::from(payload),
+        )
+        .expect("fallback should produce a batch for array attribute");
+        assert_batches_match(&expected, &actual);
+    }
+
+    #[test]
+    fn projected_mixed_primitive_and_unsupported_attrs_requests_fallback() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        body: Some(any_string("mixed")),
+                        attributes: vec![
+                            kv_string("simple", "ok"),
+                            kv_i64("count", 42),
+                            KeyValue {
+                                key: "nested_list".into(),
+                                value: Some(AnyValue {
+                                    value: Some(Value::KvlistValue(KeyValueList {
+                                        values: vec![kv_string("deep", "val")],
+                                    })),
+                                }),
+                            },
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+        let payload = request.encode_to_vec();
+
+        // Projection alone should return Unsupported
+        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect_err("mixed attrs with kvlist should trigger unsupported");
+        assert!(matches!(err, ProjectionError::Unsupported(_)));
+
+        // Fallback should produce prost-equivalent result
+        let expected = crate::otlp_receiver::decode_protobuf_to_batch_prost_reference(&payload)
+            .expect("prost should decode mixed attrs");
+        let actual = crate::otlp_receiver::decode_protobuf_bytes_to_batch_projected_experimental(
+            Bytes::from(payload),
+        )
+        .expect("fallback should handle mixed attrs");
+        assert_batches_match(&expected, &actual);
+    }
+
+    #[test]
+    fn projected_malformed_wire_does_not_fall_back_as_valid_data() {
+        // Malformed protobuf must return an error even in fallback mode,
+        // because prost also rejects it.
+        let mut payload = Vec::new();
+        encode_varint(&mut payload, 0); // field number 0 — always invalid
+
+        let err = crate::otlp_receiver::decode_protobuf_bytes_to_batch_projected_experimental(
+            Bytes::from(payload),
+        );
+        assert!(
+            err.is_err(),
+            "malformed wire data must not silently produce a valid batch"
+        );
+    }
+
+    // ── Expanded proptest ─────────────────────────────────────────────
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
@@ -1654,6 +2256,120 @@ mod tests {
 
             assert_batches_match(&prost, &projected);
         }
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(32))]
+
+        #[test]
+        fn projected_multi_container_payload_matches_prost(
+            num_resources in 1usize..5,
+            scopes_per_resource in 1usize..4,
+            rows_per_scope in 1usize..30,
+            attrs_per_row in 0usize..12,
+            resource_attrs in 0usize..8,
+        ) {
+            let request = randomized_multi_container_request(
+                num_resources,
+                scopes_per_resource,
+                rows_per_scope,
+                attrs_per_row,
+                resource_attrs,
+            );
+            let payload = request.encode_to_vec();
+            let projected = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+                .expect("multi-container randomized payload should decode in projection");
+            let prost = crate::otlp_receiver::decode_protobuf_to_batch_prost_reference(&payload)
+                .expect("prost reference should decode multi-container payload");
+
+            assert_batches_match(&prost, &projected);
+        }
+    }
+
+    fn randomized_multi_container_request(
+        num_resources: usize,
+        scopes_per_resource: usize,
+        rows_per_scope: usize,
+        attrs_per_row: usize,
+        resource_attrs: usize,
+    ) -> ExportLogsServiceRequest {
+        let mut global_row = 0usize;
+        let resource_logs = (0..num_resources)
+            .map(|res_idx| {
+                let resource_attributes = (0..resource_attrs)
+                    .map(|idx| {
+                        let key = format!("resource.{res_idx}.attr.{idx}");
+                        match idx % 4 {
+                            0 => kv_string(&key, &format!("rv-{res_idx}-{idx}")),
+                            1 => kv_i64(&key, (res_idx * 100 + idx) as i64),
+                            2 => kv_f64(&key, res_idx as f64 + idx as f64 * 0.1),
+                            _ => kv_bool(&key, idx % 2 == 0),
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                let scope_logs = (0..scopes_per_resource)
+                    .map(|scope_idx| {
+                        let log_records = (0..rows_per_scope)
+                            .map(|_| {
+                                let row = global_row;
+                                global_row += 1;
+                                let attributes = (0..attrs_per_row)
+                                    .map(|attr_idx| {
+                                        let key = format!("attr.{attr_idx}");
+                                        match (row + attr_idx) % 5 {
+                                            0 => kv_string(&key, &format!("v-{row}-{attr_idx}")),
+                                            1 => kv_i64(&key, row as i64 + attr_idx as i64),
+                                            2 => kv_f64(&key, row as f64 + attr_idx as f64 / 10.0),
+                                            3 => kv_bool(&key, (row + attr_idx) % 2 == 0),
+                                            _ => kv_bytes(&key, &[row as u8, attr_idx as u8]),
+                                        }
+                                    })
+                                    .collect::<Vec<_>>();
+
+                                LogRecord {
+                                    time_unix_nano: 1_700_000_000_000_000_000u64
+                                        .saturating_add(row as u64),
+                                    observed_time_unix_nano: 1_700_000_000_000_001_000u64
+                                        .saturating_add(row as u64),
+                                    severity_number: (row % 24) as i32,
+                                    severity_text: ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"]
+                                        [row % 5]
+                                        .to_string(),
+                                    body: Some(any_string(&format!("row-{row}"))),
+                                    attributes,
+                                    trace_id: vec![row as u8; 16],
+                                    span_id: vec![row as u8; 8],
+                                    flags: row as u32,
+                                    ..Default::default()
+                                }
+                            })
+                            .collect::<Vec<_>>();
+
+                        ScopeLogs {
+                            scope: Some(InstrumentationScope {
+                                name: format!("scope-{res_idx}-{scope_idx}"),
+                                version: format!("{res_idx}.{scope_idx}.0"),
+                                ..Default::default()
+                            }),
+                            log_records,
+                            ..Default::default()
+                        }
+                    })
+                    .collect::<Vec<_>>();
+
+                ResourceLogs {
+                    resource: Some(Resource {
+                        attributes: resource_attributes,
+                        ..Default::default()
+                    }),
+                    scope_logs,
+                    ..Default::default()
+                }
+            })
+            .collect::<Vec<_>>();
+
+        ExportLogsServiceRequest { resource_logs }
     }
 
     fn randomized_primitive_request(
