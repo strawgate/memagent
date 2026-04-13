@@ -15,8 +15,9 @@ use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Float32Array, Float64Array, Int8Array, Int16Array,
-    Int32Array, Int64Array, LargeBinaryArray, LargeStringArray, StringArray, UInt8Array,
-    UInt16Array, UInt32Array, UInt64Array,
+    Int32Array, Int64Array, LargeBinaryArray, LargeStringArray, StringArray,
+    TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+    TimestampSecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::error::ArrowError;
@@ -526,10 +527,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         for row in 0..num_rows {
             if !ts_arr.is_null(row) {
                 // Timestamp is stored as i64 nanoseconds.
-                if let Some(prim) = ts_arr
-                    .as_any()
-                    .downcast_ref::<arrow::array::TimestampNanosecondArray>()
-                {
+                if let Some(prim) = ts_arr.as_any().downcast_ref::<TimestampNanosecondArray>() {
                     let ns = prim.value(row);
                     // Format as RFC3339 nanoseconds. Use Euclidean div/rem so
                     // that negative timestamps (pre-1970) yield nanos in
@@ -860,6 +858,26 @@ fn str_value_at(arr: &dyn Array, row: usize) -> String {
         DataType::Float32 => arr
             .as_any()
             .downcast_ref::<Float32Array>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::Timestamp(TimeUnit::Second, _) => arr
+            .as_any()
+            .downcast_ref::<TimestampSecondArray>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::Timestamp(TimeUnit::Millisecond, _) => arr
+            .as_any()
+            .downcast_ref::<TimestampMillisecondArray>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => arr
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::Timestamp(TimeUnit::Nanosecond, _) => arr
+            .as_any()
+            .downcast_ref::<TimestampNanosecondArray>()
             .map(|a| a.value(row).to_string())
             .unwrap_or_default(),
         _ => array_value_to_string(arr, row).unwrap_or_default(),
@@ -1351,7 +1369,7 @@ fn build_logs_fact(
         Arc::new(UInt32Array::from(ids)),
         Arc::new(rid_arr),
         Arc::new(UInt32Array::from(scope_ids)),
-        Arc::new(arrow::array::TimestampNanosecondArray::from(timestamps)),
+        Arc::new(TimestampNanosecondArray::from(timestamps)),
         Arc::new(Int32Array::from(severity_numbers)),
         Arc::new(StringArray::from(
             severity_texts
@@ -2957,10 +2975,7 @@ mod tests {
                 Arc::new(UInt32Array::from(vec![0_u32, 1])),
                 Arc::new(UInt32Array::from(vec![0_u32, 0])),
                 Arc::new(UInt32Array::from(vec![0_u32, 0])),
-                Arc::new(arrow::array::TimestampNanosecondArray::from(vec![
-                    None::<i64>,
-                    None,
-                ])),
+                Arc::new(TimestampNanosecondArray::from(vec![None::<i64>, None])),
                 Arc::new(Int32Array::from(vec![None::<i32>, None])),
                 Arc::new(StringArray::from(vec![None::<&str>, None])),
                 Arc::new(StringArray::from(vec![Some("row-0"), Some("row-1")])),
@@ -3013,9 +3028,7 @@ mod tests {
                 Arc::new(UInt32Array::from(vec![0_u32])),
                 Arc::new(UInt32Array::from(vec![0_u32])),
                 Arc::new(UInt32Array::from(vec![0_u32])),
-                Arc::new(arrow::array::TimestampNanosecondArray::from(vec![
-                    None::<i64>,
-                ])),
+                Arc::new(TimestampNanosecondArray::from(vec![None::<i64>])),
                 Arc::new(Int32Array::from(vec![Some(9_i32)])),
                 Arc::new(StringArray::from(vec![Some("ERROR")])),
                 Arc::new(StringArray::from(vec![Some("row-0")])),
@@ -3403,10 +3416,6 @@ mod tests {
 #[cfg(test)]
 mod str_value_at_tests {
     use super::*;
-    use arrow::array::{
-        Float32Array, Int8Array, Int16Array, Int32Array, LargeStringArray,
-        TimestampNanosecondArray, UInt16Array, UInt64Array,
-    };
 
     #[test]
     fn int_types() {
