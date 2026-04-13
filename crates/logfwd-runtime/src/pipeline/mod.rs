@@ -2086,16 +2086,18 @@ pipelines:
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
         let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
-        // always-failing: fails every call — pool exhausts retries and the
+        // always-failing: fails every call — workers retry indefinitely and the
         // pipeline must hold checkpoint progress instead of rejecting it.
         pipeline = pipeline.with_sink(Box::new(FailingSink::new(u32::MAX)));
         pipeline.batch_timeout = Duration::from_millis(20);
+        // Short drain timeout so pool cancels workers promptly on shutdown.
+        pipeline.set_pool_drain_timeout(Duration::from_secs(1));
 
         let shutdown = CancellationToken::new();
         let sd = shutdown.clone();
 
         tokio::spawn(async move {
-            // Give pool time to exhaust retries (4 attempts × ~100ms backoff ≈ 700ms)
+            // Give workers time to start retrying.
             tokio::time::sleep(Duration::from_millis(1500)).await;
             sd.cancel();
         });
@@ -2619,6 +2621,8 @@ output:
 
         let mut pipeline = pipeline_with_sink(&log_path, Box::new(FailingSink::new(u32::MAX)));
         pipeline.set_batch_timeout(Duration::from_millis(10));
+        // Short drain timeout so pool cancels indefinitely-retrying workers promptly.
+        pipeline.set_pool_drain_timeout(Duration::from_secs(1));
 
         let shutdown = CancellationToken::new();
         let sd = shutdown.clone();
