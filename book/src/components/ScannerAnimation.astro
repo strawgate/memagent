@@ -293,6 +293,9 @@
 
   go(0);
 
+  // Auto-start playback after a brief delay
+  setTimeout(function() { startPlay(); }, 1200);
+
   // Scroll sync: map page headings to animation steps
   var headingToStep = {
     'the-log-line': 0,
