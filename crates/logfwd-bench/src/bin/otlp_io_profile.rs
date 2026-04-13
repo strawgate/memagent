@@ -526,7 +526,7 @@ fn make_record_attrs(profile: FixtureProfile, row: usize) -> Vec<KeyValue> {
         format!("/api/v1/item/{}", row % 128),
     ));
     attrs.push(kv_int("http.status_code", status_code(row)));
-    attrs.push(kv_bool("cache.hit", row % 3 == 0));
+    attrs.push(kv_bool("cache.hit", row.is_multiple_of(3)));
     for idx in 0..profile.attrs_per_record.saturating_sub(4) {
         match idx % 5 {
             0 => attrs.push(kv_string(
@@ -534,7 +534,10 @@ fn make_record_attrs(profile: FixtureProfile, row: usize) -> Vec<KeyValue> {
                 format!("value-{row}-{idx}"),
             )),
             1 => attrs.push(kv_int(format!("attr.int.{idx}"), (row * (idx + 1)) as i64)),
-            2 => attrs.push(kv_bool(format!("attr.bool.{idx}"), (row + idx) % 2 == 0)),
+            2 => attrs.push(kv_bool(
+                format!("attr.bool.{idx}"),
+                (row + idx).is_multiple_of(2),
+            )),
             3 => attrs.push(kv_double(
                 format!("attr.double.{idx}"),
                 row as f64 * 0.25 + idx as f64,

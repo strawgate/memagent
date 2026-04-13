@@ -434,10 +434,8 @@ fn dict_utf8view_where_equals() {
 
 /// GROUP BY on a Dictionary<Int32, Utf8View> column.
 ///
-/// **Known limitation:** Arrow's dictionary-packing path does not support
-/// `Utf8View` as a dictionary value type (`DataFusion` returns an error:
-/// "Unsupported output type for dictionary packing: Utf8View").
-/// This test documents the current behaviour so any future fix is detected.
+/// Arrow 58 / DataFusion 53 added support for dictionary packing with Utf8View
+/// values, so this query now succeeds where it previously returned an error.
 #[test]
 fn dict_utf8view_group_by_count() {
     let batch = make_dict_utf8view_batch();
@@ -445,21 +443,8 @@ fn dict_utf8view_group_by_count() {
         "SELECT level_str, COUNT(*) AS cnt FROM logs GROUP BY level_str ORDER BY level_str",
     )
     .unwrap();
-    // GROUP BY on Dictionary(Int32, Utf8View) is not yet supported.
-    // Arrow cannot repack the dictionary with a Utf8View value type.
-    let result = t.execute_blocking(batch);
-    assert!(
-        result.is_err(),
-        "GROUP BY on Dictionary(Int32, Utf8View) should fail \
-         (Arrow does not support dictionary packing with Utf8View values); \
-         got: {result:?}",
-    );
-    let err = result.unwrap_err();
-    let err_msg = err.to_string();
-    assert!(
-        err_msg.contains("Utf8View") || err_msg.contains("dictionary"),
-        "error message should mention Utf8View or dictionary, got: {err}",
-    );
+    let result = t.execute_blocking(batch).unwrap();
+    assert_eq!(result.num_rows(), 3, "expected 3 distinct levels");
 }
 
 // --- ORDER BY ---

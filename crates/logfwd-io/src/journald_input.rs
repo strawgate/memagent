@@ -475,16 +475,16 @@ fn entry_to_json(
     buf: &mut Vec<u8>,
 ) -> io::Result<Option<()>> {
     // First pass: check exclude filter before full serialization.
-    if !exclude_units.is_empty() {
-        if let Ok(Some(field_data)) = journal.get_data("_SYSTEMD_UNIT") {
-            // field_data is "FIELD=value" bytes.
-            if let Some(eq_pos) = memchr::memchr(b'=', field_data) {
-                let value = &field_data[eq_pos + 1..];
-                let unit_str = String::from_utf8_lossy(value);
-                let normalized = fixup_unit(&unit_str);
-                if exclude_units.contains(&normalized) {
-                    return Ok(None);
-                }
+    if !exclude_units.is_empty()
+        && let Ok(Some(field_data)) = journal.get_data("_SYSTEMD_UNIT")
+    {
+        // field_data is "FIELD=value" bytes.
+        if let Some(eq_pos) = memchr::memchr(b'=', field_data) {
+            let value = &field_data[eq_pos + 1..];
+            let unit_str = String::from_utf8_lossy(value);
+            let normalized = fixup_unit(&unit_str);
+            if exclude_units.contains(&normalized) {
+                return Ok(None);
             }
         }
     }

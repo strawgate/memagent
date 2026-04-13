@@ -382,10 +382,10 @@ fn resolve_message_idx(fields: &arrow::datatypes::Fields, message_field: &str) -
 }
 
 fn push_unique(indices: &mut Vec<usize>, idx: Option<usize>) {
-    if let Some(idx) = idx {
-        if !indices.contains(&idx) {
-            indices.push(idx);
-        }
+    if let Some(idx) = idx
+        && !indices.contains(&idx)
+    {
+        indices.push(idx);
     }
 }
 

@@ -522,17 +522,18 @@ fn decode_unicode_escape(input: &[u8], pos: usize, out: &mut alloc::vec::Vec<u8>
 
     // High surrogate — expect a following \uXXXX low surrogate
     if (0xD800..=0xDBFF).contains(&cp) {
-        if pos + 12 <= input.len() && input[pos + 6] == b'\\' && input[pos + 7] == b'u' {
-            if let Some(lo) = parse_hex4(&input[pos + 8..pos + 12]) {
-                if (0xDC00..=0xDFFF).contains(&lo) {
-                    let full = 0x10000 + ((cp as u32 - 0xD800) << 10) + (lo as u32 - 0xDC00);
-                    if let Some(c) = char::from_u32(full) {
-                        let mut utf8 = [0u8; 4];
-                        let s = c.encode_utf8(&mut utf8);
-                        out.extend_from_slice(s.as_bytes());
-                        return pos + 12;
-                    }
-                }
+        if pos + 12 <= input.len()
+            && input[pos + 6] == b'\\'
+            && input[pos + 7] == b'u'
+            && let Some(lo) = parse_hex4(&input[pos + 8..pos + 12])
+            && (0xDC00..=0xDFFF).contains(&lo)
+        {
+            let full = 0x10000 + ((cp as u32 - 0xD800) << 10) + (lo as u32 - 0xDC00);
+            if let Some(c) = char::from_u32(full) {
+                let mut utf8 = [0u8; 4];
+                let s = c.encode_utf8(&mut utf8);
+                out.extend_from_slice(s.as_bytes());
+                return pos + 12;
             }
         }
         // Unpaired high surrogate — pass through raw

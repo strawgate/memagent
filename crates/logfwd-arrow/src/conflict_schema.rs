@@ -136,36 +136,36 @@ pub fn normalize_conflict_columns(batch: RecordBatch) -> RecordBatch {
     let mut new_arrays: Vec<Arc<dyn Array>> = Vec::with_capacity(schema.fields().len());
 
     for (col_idx, field) in schema.fields().iter().enumerate() {
-        if let DataType::Struct(child_fields) = field.data_type() {
-            if is_conflict_struct(child_fields) {
-                // Downcast to StructArray and extract named children.
-                let struct_arr = batch
-                    .column(col_idx)
-                    .as_any()
-                    .downcast_ref::<StructArray>()
-                    .expect("column declared as Struct must downcast to StructArray");
+        if let DataType::Struct(child_fields) = field.data_type()
+            && is_conflict_struct(child_fields)
+        {
+            // Downcast to StructArray and extract named children.
+            let struct_arr = batch
+                .column(col_idx)
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .expect("column declared as Struct must downcast to StructArray");
 
-                let find_child = |name: &str| -> Option<&dyn Array> {
-                    child_fields
-                        .iter()
-                        .enumerate()
-                        .find(|(_, f)| f.name() == name)
-                        .map(|(i, _)| struct_arr.column(i).as_ref())
-                };
+            let find_child = |name: &str| -> Option<&dyn Array> {
+                child_fields
+                    .iter()
+                    .enumerate()
+                    .find(|(_, f)| f.name() == name)
+                    .map(|(i, _)| struct_arr.column(i).as_ref())
+            };
 
-                let merged = merge_to_utf8(
-                    find_child("int"),
-                    find_child("float"),
-                    find_child("bool"),
-                    find_child("str"),
-                    batch.num_rows(),
-                );
+            let merged = merge_to_utf8(
+                find_child("int"),
+                find_child("float"),
+                find_child("bool"),
+                find_child("str"),
+                batch.num_rows(),
+            );
 
-                // Replace in-place: same name, flat Utf8 type.
-                new_fields.push(Field::new(field.name(), DataType::Utf8, true));
-                new_arrays.push(merged);
-                continue;
-            }
+            // Replace in-place: same name, flat Utf8 type.
+            new_fields.push(Field::new(field.name(), DataType::Utf8, true));
+            new_arrays.push(merged);
+            continue;
         }
 
         // Non-conflict column: keep as-is.

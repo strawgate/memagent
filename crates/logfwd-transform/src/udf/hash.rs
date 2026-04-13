@@ -37,7 +37,7 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 
 /// UDF: hash(col) — computes a deterministic FNV-1a hash of a string, returning UInt64.
 /// Used primarily for tail-based sampling decisions.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct HashUdf {
     signature: Signature,
 }

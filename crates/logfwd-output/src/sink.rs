@@ -298,10 +298,10 @@ impl Sink for AsyncFanoutSink {
         Box::pin(async move {
             let mut first_err: Option<io::Error> = None;
             for sink in &mut self.sinks {
-                if let Err(e) = sink.flush().await {
-                    if first_err.is_none() {
-                        first_err = Some(e);
-                    }
+                if let Err(e) = sink.flush().await
+                    && first_err.is_none()
+                {
+                    first_err = Some(e);
                 }
             }
             match first_err {
@@ -328,10 +328,10 @@ impl Sink for AsyncFanoutSink {
         Box::pin(async move {
             let mut first_err: Option<io::Error> = None;
             for sink in &mut self.sinks {
-                if let Err(e) = sink.shutdown().await {
-                    if first_err.is_none() {
-                        first_err = Some(e);
-                    }
+                if let Err(e) = sink.shutdown().await
+                    && first_err.is_none()
+                {
+                    first_err = Some(e);
                 }
             }
             match first_err {

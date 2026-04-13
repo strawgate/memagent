@@ -29,7 +29,7 @@ use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 // ---------------------------------------------------------------------------
 
 /// Selects which json extraction variant to expose.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum JsonExtractMode {
     /// `json(body, 'key')` -> Utf8
     Str,
@@ -164,7 +164,7 @@ fn coerce_to_string_array(arr: &dyn Array) -> Result<StringArray, DataFusionErro
 /// Scalar UDF that extracts a named field from raw JSON lines.
 ///
 /// Instantiate once per [`JsonExtractMode`] and register with DataFusion.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub struct JsonExtractUdf {
     mode: JsonExtractMode,
     signature: Signature,

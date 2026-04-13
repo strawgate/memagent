@@ -145,7 +145,7 @@ fn cloudtrail_user_agent(
     match service_kind {
         CloudTrailServiceKind::CloudTrail => "cloudtrail.amazonaws.com".to_string(),
         CloudTrailServiceKind::Iam | CloudTrailServiceKind::Sts => {
-            if principal_slot % 4 == 0 {
+            if principal_slot.is_multiple_of(4) {
                 "console.amazonaws.com".to_string()
             } else {
                 pick(rng, CLOUDTRAIL_USER_AGENTS).to_string()
@@ -155,7 +155,7 @@ fn cloudtrail_user_agent(
             pick(rng, CLOUDTRAIL_USER_AGENTS).to_string()
         }
         CloudTrailServiceKind::Ec2 | CloudTrailServiceKind::Lambda | CloudTrailServiceKind::Rds => {
-            if principal_slot % 3 == 0 {
+            if principal_slot.is_multiple_of(3) {
                 "aws-cli/2.15.0 Python/3.11.8 Linux/6.6".to_string()
             } else {
                 pick(rng, CLOUDTRAIL_USER_AGENTS).to_string()

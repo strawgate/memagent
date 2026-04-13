@@ -1009,10 +1009,10 @@ fn prompt_select_described(
         println!("{prompt}");
         for (i, option) in options.iter().enumerate() {
             println!("  {}{}) {option}{}", bold(), i + 1, reset());
-            if let Some(desc) = descriptions.get(i) {
-                if !desc.is_empty() {
-                    println!("     {}{desc}{}", dim(), reset());
-                }
+            if let Some(desc) = descriptions.get(i)
+                && !desc.is_empty()
+            {
+                println!("     {}{desc}{}", dim(), reset());
             }
         }
         print!("Enter choice [1-{}]: ", options.len());
@@ -1150,10 +1150,10 @@ fn discover_config() -> Option<std::path::PathBuf> {
                 .ok()
                 .map(|h| PathBuf::from(h).join(".config"))
         });
-    if let Some(xdg) = xdg_base.map(|b| b.join("logfwd/config.yaml")) {
-        if xdg.is_file() {
-            return Some(xdg);
-        }
+    if let Some(xdg) = xdg_base.map(|b| b.join("logfwd/config.yaml"))
+        && xdg.is_file()
+    {
+        return Some(xdg);
     }
 
     // 4. System config
