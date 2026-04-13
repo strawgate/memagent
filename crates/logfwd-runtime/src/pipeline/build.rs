@@ -41,7 +41,11 @@ pub(crate) const DEFAULT_POOL_DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
 /// accumulate — this allows recovery when the failure is transient (e.g.,
 /// downstream bounce). Only when the held count exceeds this limit does the
 /// pipeline stop accepting new input to bound memory growth.
-pub(crate) const DEFAULT_MAX_HELD_BATCHES: usize = 100;
+///
+/// At 10 batches with typical retry backoff (~2-3 seconds per batch), persistent
+/// failures are detected within ~30 seconds while transient blips (1-3 holds)
+/// recover naturally.
+pub(crate) const DEFAULT_MAX_HELD_BATCHES: usize = 10;
 
 impl Pipeline {
     /// Construct a pipeline from parsed YAML config.
