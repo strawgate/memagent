@@ -432,7 +432,9 @@ fn native_reader_loop(
 
 /// Open a journal handle with the appropriate flags/directory/namespace.
 fn open_native_journal(config: &JournaldConfig) -> io::Result<journal_ffi::Journal> {
-    let flags = journal_ffi::SD_JOURNAL_LOCAL_ONLY | journal_ffi::SD_JOURNAL_SYSTEM;
+    // SD_JOURNAL_LOCAL_ONLY reads both system and user journals from the
+    // local machine, matching the default behavior of `journalctl --follow`.
+    let flags = journal_ffi::SD_JOURNAL_LOCAL_ONLY;
 
     let mut journal = if let Some(ref dir) = config.journal_directory {
         // sd_journal_open_directory only accepts 0 or SD_JOURNAL_OS_ROOT.

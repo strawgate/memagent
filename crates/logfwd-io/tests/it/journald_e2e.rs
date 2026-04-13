@@ -17,7 +17,9 @@ use std::time::Duration;
 
 use logfwd_io::input::{InputEvent, InputSource};
 use logfwd_io::journal_ffi;
-use logfwd_io::journald_input::{JournaldBackend, JournaldBackendPref, JournaldConfig, JournaldInput};
+use logfwd_io::journald_input::{
+    JournaldBackend, JournaldBackendPref, JournaldConfig, JournaldInput,
+};
 use logfwd_types::diagnostics::ComponentStats;
 
 // ---------------------------------------------------------------------------
@@ -31,10 +33,7 @@ fn journald_available() -> bool {
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
-        && Command::new("logger")
-            .arg("--version")
-            .output()
-            .is_ok()
+        && Command::new("logger").arg("--version").output().is_ok()
 }
 
 /// Write `n` test entries to the journal with a unique tag and message prefix.
@@ -99,11 +98,7 @@ fn poll_until_lines(
 
 /// Poll `input` until at least one line containing `needle` is found, or
 /// `timeout` elapses. Returns all collected lines.
-fn poll_until_match(
-    input: &mut dyn InputSource,
-    needle: &str,
-    timeout: Duration,
-) -> Vec<String> {
+fn poll_until_match(input: &mut dyn InputSource, needle: &str, timeout: Duration) -> Vec<String> {
     let deadline = std::time::Instant::now() + timeout;
     let mut all_bytes = Vec::new();
 
@@ -190,8 +185,8 @@ fn subprocess_reads_journal_entries() {
 
     // Verify output is valid JSON.
     for line in &lines {
-        let parsed: serde_json::Value =
-            serde_json::from_str(line).unwrap_or_else(|e| panic!("invalid JSON: {e}\nline: {line}"));
+        let parsed: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}\nline: {line}"));
         assert!(parsed.is_object(), "expected JSON object, got {parsed}");
     }
 }
@@ -307,7 +302,10 @@ fn subprocess_since_now_skips_history() {
     let has_old = lines.iter().any(|l| l.contains(&old_tag));
 
     assert!(has_new, "expected new entries (tag={new_tag}) in output");
-    assert!(!has_old, "since_now should skip old entries (tag={old_tag})");
+    assert!(
+        !has_old,
+        "since_now should skip old entries (tag={old_tag})"
+    );
 }
 
 /// Exclude units filter works.
@@ -343,7 +341,11 @@ fn subprocess_exclude_units_filters() {
         .filter(|l| {
             serde_json::from_str::<serde_json::Value>(l)
                 .ok()
-                .and_then(|v| v.get("_SYSTEMD_UNIT").and_then(|u| u.as_str()).map(String::from))
+                .and_then(|v| {
+                    v.get("_SYSTEMD_UNIT")
+                        .and_then(|u| u.as_str())
+                        .map(String::from)
+                })
                 .map(|u| u.contains("sshd"))
                 .unwrap_or(false)
         })
@@ -384,10 +386,7 @@ fn subprocess_health_becomes_healthy() {
 
     let health = input.health();
     assert!(
-        matches!(
-            health,
-            logfwd_types::diagnostics::ComponentHealth::Healthy
-        ),
+        matches!(health, logfwd_types::diagnostics::ComponentHealth::Healthy),
         "expected Healthy after receiving data, got {health:?}"
     );
 }
@@ -461,8 +460,8 @@ fn native_reads_journal_entries() {
 
     // Verify output is valid JSON.
     for line in &lines {
-        let parsed: serde_json::Value =
-            serde_json::from_str(line).unwrap_or_else(|e| panic!("invalid JSON: {e}\nline: {line}"));
+        let parsed: serde_json::Value = serde_json::from_str(line)
+            .unwrap_or_else(|e| panic!("invalid JSON: {e}\nline: {line}"));
         assert!(parsed.is_object(), "expected JSON object");
     }
 }
@@ -509,10 +508,7 @@ fn native_entries_contain_standard_fields() {
         })
         .collect();
 
-    assert!(
-        !our_entries.is_empty(),
-        "expected entries with tag={tag}"
-    );
+    assert!(!our_entries.is_empty(), "expected entries with tag={tag}");
 
     for entry in &our_entries {
         assert!(entry.get("MESSAGE").is_some(), "missing MESSAGE");
@@ -559,7 +555,10 @@ fn native_since_now_skips_history() {
     let has_old = lines.iter().any(|l| l.contains(&old_tag));
 
     assert!(has_new, "expected new entries (tag={new_tag}) in output");
-    assert!(!has_old, "since_now should skip old entries (tag={old_tag})");
+    assert!(
+        !has_old,
+        "since_now should skip old entries (tag={old_tag})"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -596,254 +595,4 @@ fn auto_backend_selects_native_when_available() {
         expected,
         "auto backend should select {expected:?} based on libsystemd availability"
     );
-}
-
-/// Debug: exhaustive test of recovery strategies
-#[test]
-#[ignore]
-fn debug_native_recovery_strategies() {
-    if !journal_ffi::is_native_available() {
-        eprintln!("SKIP");
-        return;
-    }
-    
-    let flags = journal_ffi::SD_JOURNAL_LOCAL_ONLY | journal_ffi::SD_JOURNAL_SYSTEM;
-    let mut j = journal_ffi::Journal::open(flags).expect("open");
-    
-    // Apply boot filter like production code does
-    let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
-        .unwrap().trim().replace('-', "");
-    j.add_match(format!("_BOOT_ID={boot_id}").as_bytes()).unwrap();
-    
-    j.seek_tail().unwrap();
-    let prev = j.previous().unwrap();
-    eprintln!("previous: {prev}");
-    
-    let cursor = if prev { Some(j.cursor().unwrap()) } else { None };
-    eprintln!("cursor: {cursor:?}");
-    
-    // Drain any entries
-    loop { if !j.next().unwrap() { break; } }
-    
-    // Write entries
-    let tag = unique_tag("recovery");
-    write_journal_entries(&tag, 3);
-    eprintln!("wrote 3 entries with tag: {tag}");
-    
-    // Try multiple wait + next cycles
-    for attempt in 0..10 {
-        let w = j.wait(500_000).unwrap_or(-1); // 500ms
-        eprintln!("attempt {attempt}: wait={w}");
-        
-        let mut found = 0;
-        loop {
-            match j.next() {
-                Ok(true) => {
-                    found += 1;
-                    // Check if it's our entry
-                    j.restart_data();
-                    let mut is_ours = false;
-                    while let Ok(Some(field)) = j.enumerate_data() {
-                        let s = String::from_utf8_lossy(field);
-                        if s.contains(&tag) {
-                            is_ours = true;
-                            eprintln!("  found our entry: {}", &s[..s.len().min(80)]);
-                        }
-                    }
-                    if is_ours {
-                        eprintln!("SUCCESS on attempt {attempt}!");
-                        return;
-                    }
-                }
-                Ok(false) => break,
-                Err(e) => { eprintln!("  next error: {e}"); break; }
-            }
-        }
-        eprintln!("  found {found} entries, none ours");
-        
-        // Try seek_cursor recovery on attempt 5
-        if attempt == 5 {
-            if let Some(ref c) = cursor {
-                eprintln!("  trying seek_cursor recovery");
-                j.seek_cursor(c).unwrap();
-            }
-        }
-    }
-    eprintln!("FAILED: never found our entries");
-    panic!("native recovery failed");
-}
-
-/// Debug: minimal native since_now test without any filters
-#[test]
-#[ignore]
-fn debug_native_no_filter() {
-    if !journal_ffi::is_native_available() {
-        eprintln!("SKIP");
-        return;
-    }
-    
-    let flags = journal_ffi::SD_JOURNAL_LOCAL_ONLY | journal_ffi::SD_JOURNAL_SYSTEM;
-    let mut j = journal_ffi::Journal::open(flags).expect("open");
-    
-    // NO match filters - just open + seek_tail + previous
-    j.seek_tail().unwrap();
-    let _ = j.previous().unwrap();
-    
-    // Drain
-    loop { if !j.next().unwrap() { break; } }
-    
-    let tag = unique_tag("nofilter");
-    write_journal_entries(&tag, 2);
-    eprintln!("wrote: {tag}");
-    
-    for i in 0..10 {
-        let w = j.wait(500_000).unwrap_or(-1);
-        let mut found = false;
-        loop {
-            match j.next() {
-                Ok(true) => {
-                    j.restart_data();
-                    while let Ok(Some(f)) = j.enumerate_data() {
-                        let s = String::from_utf8_lossy(f);
-                        if s.contains(&tag) {
-                            eprintln!("FOUND on iter {i}: {}", &s[..s.len().min(100)]);
-                            found = true;
-                        }
-                    }
-                }
-                Ok(false) => break,
-                Err(_) => break,
-            }
-        }
-        if found { return; }
-        eprintln!("iter {i}: wait={w}, not found yet");
-    }
-    panic!("never found entries");
-}
-
-/// Debug: seek_head + drain all + then follow new entries
-#[test]
-#[ignore]
-fn debug_native_drain_then_follow() {
-    if !journal_ffi::is_native_available() {
-        eprintln!("SKIP");
-        return;
-    }
-    
-    let flags = journal_ffi::SD_JOURNAL_LOCAL_ONLY | journal_ffi::SD_JOURNAL_SYSTEM;
-    let mut j = journal_ffi::Journal::open(flags).expect("open");
-    
-    // Seek to head and drain ALL existing entries
-    j.seek_head().unwrap();
-    let mut count = 0u64;
-    loop {
-        match j.next() {
-            Ok(true) => count += 1,
-            _ => break,
-        }
-    }
-    eprintln!("drained {count} existing entries");
-    
-    // Now write new entries
-    let tag = unique_tag("drain-follow");
-    write_journal_entries(&tag, 2);
-    eprintln!("wrote: {tag}");
-    
-    // Follow
-    for i in 0..10 {
-        let w = j.wait(500_000).unwrap_or(-1);
-        let mut found = false;
-        loop {
-            match j.next() {
-                Ok(true) => {
-                    j.restart_data();
-                    while let Ok(Some(f)) = j.enumerate_data() {
-                        let s = String::from_utf8_lossy(f);
-                        if s.contains(&tag) {
-                            eprintln!("FOUND on iter {i}: {}", &s[..s.len().min(100)]);
-                            found = true;
-                        }
-                    }
-                }
-                Ok(false) => break,
-                Err(_) => break,
-            }
-        }
-        if found { return; }
-        eprintln!("iter {i}: wait={w}, not found");
-    }
-    panic!("never found");
-}
-
-/// Debug: fresh journal handle opened AFTER entries are written
-#[test]
-#[ignore]
-fn debug_native_fresh_handle() {
-    if !journal_ffi::is_native_available() {
-        eprintln!("SKIP");
-        return;
-    }
-    
-    // Write entries first
-    let tag = unique_tag("fresh");
-    write_journal_entries(&tag, 2);
-    std::thread::sleep(Duration::from_millis(500));
-    
-    // Open a fresh handle
-    let flags = journal_ffi::SD_JOURNAL_LOCAL_ONLY | journal_ffi::SD_JOURNAL_SYSTEM;
-    let mut j = journal_ffi::Journal::open(flags).expect("open");
-    
-    j.seek_tail().unwrap();
-    
-    // Go back 10 entries from tail
-    for _ in 0..10 {
-        if !j.previous().unwrap() { break; }
-    }
-    
-    // Now try to find our entries
-    let mut found = false;
-    for _ in 0..100 {
-        match j.next() {
-            Ok(true) => {
-                j.restart_data();
-                while let Ok(Some(f)) = j.enumerate_data() {
-                    let s = String::from_utf8_lossy(f);
-                    if s.contains(&tag) {
-                        eprintln!("FOUND: {}", &s[..s.len().min(100)]);
-                        found = true;
-                    }
-                }
-            }
-            _ => break,
-        }
-    }
-    assert!(found, "entries should be visible in a fresh handle");
-    
-    // Now write MORE entries and see if wait+next works
-    let tag2 = unique_tag("fresh2");
-    write_journal_entries(&tag2, 2);
-    eprintln!("wrote tag2: {tag2}");
-    
-    for i in 0..10 {
-        let w = j.wait(500_000).unwrap_or(-1);
-        let mut found2 = false;
-        loop {
-            match j.next() {
-                Ok(true) => {
-                    j.restart_data();
-                    while let Ok(Some(f)) = j.enumerate_data() {
-                        let s = String::from_utf8_lossy(f);
-                        if s.contains(&tag2) {
-                            eprintln!("FOUND tag2 on iter {i}: {}", &s[..s.len().min(100)]);
-                            found2 = true;
-                        }
-                    }
-                }
-                _ => break,
-            }
-        }
-        if found2 { return; }
-        eprintln!("iter {i}: wait={w}, tag2 not found");
-    }
-    panic!("tag2 never found in follow mode");
 }
