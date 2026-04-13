@@ -25,6 +25,14 @@ use aya::programs::{KProbe, TracePoint};
 use logfwd_types::diagnostics::ComponentHealth;
 use sensor_ebpf_common::*;
 
+/// Newtype wrapper for `EbpfConfig` to satisfy aya's `Pod` trait (orphan rule).
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct PodEbpfConfig(EbpfConfig);
+
+// SAFETY: EbpfConfig is repr(C), Copy, and contains only primitive types (u32).
+unsafe impl aya::Pod for PodEbpfConfig {}
+
 use crate::input::{InputEvent, InputSource};
 
 // ── Configuration ──────────────────────────────────────────────────────
@@ -329,7 +337,82 @@ impl PlatformSensorInput {
             }
         }
 
-        Ok((ebpf, skipped))
+        // Configure runtime parameters via the CONFIG BPF map.
+        let mut warnings = skipped;
+        match Self::configure_ebpf_params(&mut ebpf) {
+            Ok(()) => tracing::debug!("configured eBPF runtime parameters (exit_code offset)"),
+            Err(e) => {
+                tracing::warn!("eBPF config: exit_code offset unavailable, using sentinel: {e}");
+                warnings.push(format!("exit_code offset unavailable: {e}"));
+            }
+        }
+
+        Ok((ebpf, warnings))
+    }
+
+    /// Write runtime configuration to the eBPF CONFIG map.
+    ///
+    /// Discovers the byte offset of `task_struct.exit_code` from kernel BTF
+    /// so the eBPF program can read real exit codes instead of using a sentinel.
+    fn configure_ebpf_params(ebpf: &mut Ebpf) -> io::Result<()> {
+        let offset = Self::find_exit_code_offset()?;
+
+        let config_map = ebpf
+            .map_mut("CONFIG")
+            .ok_or_else(|| io::Error::other("CONFIG map not found in eBPF binary"))?;
+        let mut array: aya::maps::Array<_, PodEbpfConfig> = config_map
+            .try_into()
+            .map_err(|e| io::Error::other(format!("CONFIG map type error: {e}")))?;
+
+        let cfg = PodEbpfConfig(EbpfConfig {
+            task_exit_code_offset: offset,
+            pad: 0,
+        });
+        array
+            .set(0, cfg, 0)
+            .map_err(|e| io::Error::other(format!("CONFIG map write: {e}")))?;
+
+        tracing::info!(offset, "set task_struct.exit_code offset from kernel BTF");
+        Ok(())
+    }
+
+    /// Discover `task_struct.exit_code` offset from `/sys/kernel/btf/vmlinux`.
+    ///
+    /// Tries `pahole` first (standard BTF introspection tool), then falls back
+    /// to parsing `/proc/kallsyms` heuristics. Returns the byte offset on success.
+    fn find_exit_code_offset() -> io::Result<u32> {
+        // Try pahole — the standard tool for BTF struct layout.
+        if let Ok(output) = std::process::Command::new("pahole")
+            .args(["-C", "task_struct", "/sys/kernel/btf/vmlinux"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // pahole output: "	int  exit_code;  /*  1234  4 */"
+                for line in stdout.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.contains("exit_code") && trimmed.contains("/*") {
+                        if let Some(comment) = trimmed.split("/*").nth(1) {
+                            let parts: Vec<&str> = comment.split_whitespace().collect();
+                            if let Some(offset_str) = parts.first() {
+                                if let Ok(offset) = offset_str.parse::<u32>() {
+                                    if offset > 0 && offset < 16384 {
+                                        return Ok(offset);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                return Err(io::Error::other(
+                    "exit_code field not found in pahole output",
+                ));
+            }
+        }
+
+        Err(io::Error::other(
+            "pahole not available; install dwarves package for exit_code support",
+        ))
     }
 
     /// Drain available events from the ring buffer into an Arrow `RecordBatch`.

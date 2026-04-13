@@ -22,13 +22,14 @@
 #![allow(dangerous_implicit_autorefs)]
 
 use aya_ebpf::{
+    bindings::bpf_get_current_task,
     helpers::{
         bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_get_current_pid_tgid,
-        bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_kernel_str_bytes,
-        bpf_probe_read_user_str_bytes,
+        bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_kernel,
+        bpf_probe_read_kernel_str_bytes, bpf_probe_read_user_str_bytes,
     },
     macros::{kprobe, map, tracepoint},
-    maps::{HashMap, RingBuf},
+    maps::{Array, HashMap, RingBuf},
     programs::{ProbeContext, TracePointContext},
     EbpfContext,
 };
@@ -47,6 +48,10 @@ static EVENTS: RingBuf = RingBuf::with_byte_size(16 * 1024 * 1024, 0);
 /// tracepoint (softirq context) can attribute connections to the right process.
 #[map]
 static SOCK_OWNERS: HashMap<u64, ConnProcessInfo> = HashMap::with_max_entries(8192, 0);
+
+/// Runtime configuration from userspace (e.g., task_struct field offsets from BTF).
+#[map]
+static CONFIG: Array<EbpfConfig> = Array::with_max_entries(1, 0);
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -169,7 +174,27 @@ fn try_process_exit(_ctx: &TracePointContext) -> Result<(), i64> {
     // written before submit.
     unsafe {
         fill_header(&mut (*event).header, EventKind::ProcessExit);
-        (*event).exit_code = 0;
+
+        // Try to read exit_code from task_struct using BTF-provided offset.
+        // Falls back to -1 sentinel when offset is unavailable or read fails.
+        let mut exit_code: i32 = -1;
+        if let Some(cfg) = CONFIG.get(0) {
+            let offset = cfg.task_exit_code_offset;
+            if offset > 0 {
+                // SAFETY: bpf_get_current_task returns a pointer to the current
+                // task_struct; offset is from kernel BTF set by userspace loader.
+                let task = bpf_get_current_task();
+                if task != 0 {
+                    let ptr = (task as *const u8).add(offset as usize) as *const i32;
+                    // SAFETY: ptr points into task_struct at the BTF-verified offset.
+                    if let Ok(code) = bpf_probe_read_kernel(ptr) {
+                        exit_code = code;
+                    }
+                }
+            }
+        }
+
+        (*event).exit_code = exit_code;
         (*event).pad = 0;
     }
 
