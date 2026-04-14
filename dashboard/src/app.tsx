@@ -153,6 +153,12 @@ export function App() {
   const MAX_TRACES = 1000;
 
   // Process OTLP spans from WebSocket push (delta delivery).
+  // The server sends: (a) only NEW completed spans since last cursor, plus
+  // (b) ALL currently in-progress batches every tick. So we:
+  //   1. Keep all completed traces from prev (they're immutable)
+  //   2. Drop old in-progress from prev (server re-sends active ones each tick)
+  //   3. Merge new completed from incoming (dedup by trace_id)
+  //   4. Merge in-progress from incoming (always latest state)
   const processOtlpTraces = useCallback((doc: import("@otlpkit/otlpjson").OtlpTracesDocument) => {
     const incoming = extractTraceRecords(doc);
     setTraces((prev) => {
@@ -166,11 +172,24 @@ export function App() {
         }
       }
 
+      // Build the set of all trace_ids present in this incoming update.
+      const incomingIds = new Set<string>([
+        ...incomingCompleted.map((t) => t.trace_id),
+        ...incomingInProgress.keys(),
+      ]);
+
       const merged: TraceRecord[] = [];
       for (const t of prev) {
         if (t.lifecycle_state === "completed") {
+          // Always keep completed traces (immutable).
+          merged.push(t);
+        } else if (!incomingIds.has(t.trace_id)) {
+          // Defensive: keep in-progress traces not superseded by incoming.
+          // Normally the server re-sends all active batches each tick, but
+          // this guards against races or dropped WS messages.
           merged.push(t);
         }
+        // Otherwise drop stale in-progress — incoming has a fresher version.
       }
 
       const seen = new Set(merged.map((t) => t.trace_id));
