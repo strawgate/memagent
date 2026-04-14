@@ -1,6 +1,7 @@
 ---
 // Tailing simulation: continuous log fill with play/pause, auto-events (rotate/truncate),
 // and manual event buttons. Rotation/truncation shown as an overlay on the log panels.
+// Manual events turn Auto off and keep the overlay until dismissed.
 ---
 
 <div class="tl" id="tailing-diagram"></div>
@@ -39,6 +40,7 @@
   .tl-btn.event { border-color: var(--tl-amber); color: var(--tl-amber); }
   .tl-btn.event:hover { background: color-mix(in srgb, var(--tl-amber) 12%, transparent); }
   .tl-btn-sep { width: 1px; height: 20px; background: var(--tl-border); margin: 0 0.1rem; }
+  .tl-ctrl-label { font-size: 0.62rem; color: var(--tl-muted); font-weight: 500; }
 
   /* Panels wrapper — position:relative so overlay can cover it */
   .tl-panels { position: relative; margin-bottom: 0.5rem; min-height: 230px; }
@@ -55,16 +57,17 @@
     opacity: 0; pointer-events: none;
     transition: opacity 0.25s;
   }
-  .tl-overlay.visible { opacity: 1; }
+  .tl-overlay.visible { opacity: 1; pointer-events: auto; }
   .tl-overlay-inner {
+    position: relative;
     background: var(--tl-bg); border: 2px solid var(--tl-amber);
     border-radius: 8px; padding: 0.75rem 1.1rem; text-align: center;
-    max-width: 300px; box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+    max-width: 310px; box-shadow: 0 4px 16px rgba(0,0,0,0.3);
   }
   .tl-overlay-inner.ok { border-color: var(--tl-green); }
   .tl-overlay-title {
     font-size: 0.82rem; font-weight: 700; margin-bottom: 0.3rem;
-    color: var(--tl-text);
+    color: var(--tl-text); padding-right: 1.2rem;
   }
   .tl-overlay-body {
     font-size: 0.67rem; color: var(--tl-muted); line-height: 1.55;
@@ -73,6 +76,18 @@
     font-family: var(--sl-font-mono, monospace); font-size: 0.65rem;
     color: var(--tl-text);
   }
+  /* Close button — only shown for manual (persistent) overlays */
+  .tl-overlay-close {
+    position: absolute; top: 0.35rem; right: 0.35rem;
+    width: 1.3rem; height: 1.3rem;
+    border: 1px solid var(--tl-border); background: transparent;
+    color: var(--tl-muted); cursor: pointer; font-size: 0.75rem;
+    border-radius: 3px; padding: 0;
+    display: none; align-items: center; justify-content: center;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .tl-overlay-close.shown { display: flex; }
+  .tl-overlay-close:hover { color: var(--tl-text); border-color: var(--tl-text); }
 
   /* File panel */
   .tl-file {
@@ -154,6 +169,7 @@
   var AUTO_EVENTS = ['rotate', 'truncate'];
   var AUTO_THRESHOLDS = [10, 8];
   var mainFile = null, oldFile = null;
+  var pendingRemoval = null; // old file panel to remove when overlay is dismissed
   var ticker = null;
 
   // ----- Build DOM -----
@@ -165,22 +181,24 @@
 
   var btnAuto = el('button', 'tl-btn active');
   btnAuto.type = 'button'; btnAuto.textContent = 'Auto';
-  btnAuto.title = 'Auto-fire rotate/truncate events after N lines';
+  btnAuto.title = 'Automatically fires rotate then truncate events as the log fills';
   btnAuto.setAttribute('aria-pressed', 'true');
 
   var sep = el('div', 'tl-btn-sep');
+  var manualLbl = el('span', 'tl-ctrl-label'); manualLbl.textContent = 'Manual:';
 
   var btnRotate = el('button', 'tl-btn event');
   btnRotate.type = 'button'; btnRotate.textContent = '\u21BB Rotate';
-  btnRotate.title = 'Simulate logrotate: rename app.log \u2192 app.log.1 and create new file';
+  btnRotate.title = 'Rename app.log \u2192 app.log.1 and start a new file (turns Auto off)';
 
   var btnTruncate = el('button', 'tl-btn event');
   btnTruncate.type = 'button'; btnTruncate.textContent = '\u2702 Truncate';
-  btnTruncate.title = 'Simulate truncate: same inode, file content wiped, offset reset';
+  btnTruncate.title = 'Wipe file content, same inode, offset reset (turns Auto off)';
 
   ctrlEl.appendChild(btnPlay);
   ctrlEl.appendChild(btnAuto);
   ctrlEl.appendChild(sep);
+  ctrlEl.appendChild(manualLbl);
   ctrlEl.appendChild(btnRotate);
   ctrlEl.appendChild(btnTruncate);
   root.appendChild(ctrlEl);
@@ -197,8 +215,12 @@
   var overlayInner = el('div', 'tl-overlay-inner');
   var overlayTitle = el('div', 'tl-overlay-title');
   var overlayBody = el('div', 'tl-overlay-body');
+  var overlayClose = el('button', 'tl-overlay-close');
+  overlayClose.type = 'button'; overlayClose.textContent = '\u00D7';
+  overlayClose.setAttribute('aria-label', 'Dismiss');
   overlayInner.appendChild(overlayTitle);
   overlayInner.appendChild(overlayBody);
+  overlayInner.appendChild(overlayClose);
   overlayEl.appendChild(overlayInner);
   panelsEl.appendChild(overlayEl);
   root.appendChild(panelsEl);
@@ -230,16 +252,13 @@
   }
 
   function addLine(fileObj, num, text) {
-    // Remove "new" highlight from previous last line
     var prev = fileObj.linesInner.lastChild;
     if (prev) prev.className = 'tl-line';
-
     var line = el('div', 'tl-line new');
     var numEl = el('span', 'tl-line-num'); numEl.textContent = '' + num;
     var textEl = el('span', 'tl-line-text'); textEl.textContent = text;
     line.appendChild(numEl); line.appendChild(textEl);
     fileObj.linesInner.appendChild(line);
-
     while (fileObj.linesInner.children.length > 22) {
       fileObj.linesInner.removeChild(fileObj.linesInner.firstChild);
     }
@@ -270,21 +289,55 @@
 
   // ----- Overlay -----
   var overlayTimer = null;
-  function showOverlay(title, body, level, duration) {
+
+  function dismissOverlay() {
+    if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
+    overlayEl.classList.remove('visible');
+    overlayClose.className = 'tl-overlay-close'; // hide close button
+    // Remove any pending old file panel
+    if (pendingRemoval) {
+      var toRemove = pendingRemoval;
+      pendingRemoval = null;
+      setTimeout(function() {
+        if (toRemove.el.parentNode) toRemove.el.parentNode.removeChild(toRemove.el);
+        if (oldFile === toRemove) oldFile = null;
+      }, 280);
+    }
+  }
+
+  // autoDismissMs: if provided, overlay auto-closes after that delay.
+  // If null, overlay stays until user clicks ✕.
+  function showOverlay(title, body, level, autoDismissMs) {
     if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
     overlayInner.className = 'tl-overlay-inner ' + (level || 'warn');
     overlayTitle.textContent = title;
     overlayBody.innerHTML = body;
+    // Show close button only for persistent (manual) overlays
+    overlayClose.className = 'tl-overlay-close' + (autoDismissMs ? '' : ' shown');
     void overlayEl.offsetHeight;
     overlayEl.classList.add('visible');
-    overlayTimer = setTimeout(function() {
-      overlayEl.classList.remove('visible');
-      overlayTimer = null;
-    }, duration || 2500);
+    if (autoDismissMs) {
+      overlayTimer = setTimeout(dismissOverlay, autoDismissMs);
+    }
+  }
+
+  overlayClose.onclick = dismissOverlay;
+
+  // ----- Auto off -----
+  function setManualMode() {
+    if (!autoMode) return;
+    autoMode = false;
+    autoLineCount = 0;
+    btnAuto.className = 'tl-btn';
+    btnAuto.setAttribute('aria-pressed', 'false');
+    updateProgress();
+    updateStats();
   }
 
   // ----- Event triggers -----
-  function triggerRotate() {
+  // isAuto=true: overlay auto-dismisses, old panel removed after timer
+  // isAuto=false: overlay stays until ✕, old panel stays until dismissed
+  function triggerRotate(isAuto) {
     if (!mainFile) return;
     var oldInode = fileInode;
     fileInode = (fileInode === 12345 ? 67890 : 12345);
@@ -294,7 +347,8 @@
       '<code>app.log</code> \u2192 <code>app.log.1</code><br>' +
       'inode\u00A0' + oldInode + '\u00A0\u2192\u00A0' + fileInode + '<br>' +
       'logfwd drains old file, opens new at offset\u00A00. No data lost.',
-      'warn', 2400
+      'warn',
+      isAuto ? 3500 : null
     );
 
     mainFile.el.className = 'tl-file old';
@@ -309,23 +363,28 @@
     mainFile.cursor.textContent = '\u25B6 new inode ' + fileInode;
     updateStats();
 
-    var toRemove = oldFile;
-    setTimeout(function() {
-      if (toRemove && toRemove.el.parentNode) {
-        toRemove.el.parentNode.removeChild(toRemove.el);
+    if (isAuto) {
+      // Remove old panel after overlay fades
+      var toRemove = oldFile;
+      setTimeout(function() {
+        if (toRemove && toRemove.el.parentNode) toRemove.el.parentNode.removeChild(toRemove.el);
         if (oldFile === toRemove) oldFile = null;
-      }
-    }, 3200);
+      }, 3800);
+    } else {
+      // Old panel stays until user dismisses overlay
+      pendingRemoval = oldFile;
+    }
   }
 
-  function triggerTruncate() {
+  function triggerTruncate(isAuto) {
     if (!mainFile) return;
     showOverlay(
       '\u2702 Truncation detected',
       'File size shrank, inode unchanged\u00A0(' + fileInode + ').<br>' +
       'logfwd offset\u00A0>\u00A0file size \u2014 resets to\u00A00.<br>' +
       'Reads fresh content from the beginning.',
-      'ok', 2200
+      'ok',
+      isAuto ? 3500 : null
     );
     mainFile.linesInner.innerHTML = '';
     offset = 0; lineNum = 1;
@@ -336,7 +395,6 @@
   // ----- Ticker -----
   function tickFn() {
     if (!playing || !mainFile) return;
-
     var lineText = genLine(lineNum);
     addLine(mainFile, lineNum, lineText);
     offset += lineText.length + 1;
@@ -352,8 +410,8 @@
         autoLineCount = 0;
         var eventName = AUTO_EVENTS[autoEventIdx % AUTO_EVENTS.length];
         autoEventIdx++;
-        if (eventName === 'rotate') triggerRotate();
-        else triggerTruncate();
+        if (eventName === 'rotate') triggerRotate(true);
+        else triggerTruncate(true);
       }
     }
   }
@@ -383,10 +441,11 @@
     btnAuto.className = 'tl-btn' + (autoMode ? ' active' : '');
     btnAuto.setAttribute('aria-pressed', autoMode ? 'true' : 'false');
     updateProgress();
+    updateStats();
   };
 
-  btnRotate.onclick = function() { triggerRotate(); autoLineCount = 0; updateProgress(); };
-  btnTruncate.onclick = function() { triggerTruncate(); autoLineCount = 0; updateProgress(); };
+  btnRotate.onclick = function() { setManualMode(); triggerRotate(false); };
+  btnTruncate.onclick = function() { setManualMode(); triggerTruncate(false); };
 
   function handleVisibility() {
     if (document.hidden) stopTicker();
@@ -422,7 +481,7 @@
   document.addEventListener('astro:before-swap', function() {
     document.removeEventListener('visibilitychange', handleVisibility);
     stopTicker();
-    if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
+    dismissOverlay();
   }, { once: true });
 })();
 </script>

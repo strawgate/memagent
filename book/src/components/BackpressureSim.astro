@@ -239,6 +239,21 @@
   .bp-mini-gap.warn { color: var(--bp-amber); }
   .bp-mini-gap.err  { color: var(--bp-red); }
 
+  /* File log viz */
+  .bp-file-viz {
+    font-family: var(--sl-font-mono, monospace); font-size: 0.51rem;
+    background: color-mix(in srgb, var(--bp-text) 6%, transparent);
+    border-radius: 3px; padding: 0.25rem 0.4rem;
+    min-height: 56px; line-height: 1.55; overflow: hidden;
+  }
+  .bp-file-old { color: var(--bp-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bp-file-more {
+    color: var(--bp-amber); text-align: center; font-size: 0.47rem;
+    font-style: italic; padding: 0.05rem 0; min-height: 1.3em;
+  }
+  .bp-file-cursor { color: var(--bp-green); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bp-file-cursor.stalled { color: var(--bp-red); animation: bp-blocked-pulse 2s ease-in-out infinite; }
+
   /* UDP mini */
   .bp-mini-udp { display: flex; gap: 0.5rem; align-items: flex-end; }
   .bp-mini-gauge-wrap { flex: 1; }
@@ -322,14 +337,14 @@
   var FILE_MAX = 400;
   var FILE_WRITE_RATE = 0.55;
 
-  var UDP_CAP = 32;
+  var UDP_CAP = 16;
   var udpBuf = 0, udpDrops = 0;
-  var UDP_ARRIVE_RATE = 0.55;
+  var UDP_ARRIVE_RATE = 1.8;
 
   var otlpBatchNum = 0, otlpAccepted = 0, otlpRejected = 0;
 
   var srcNameEl, srcVizEl, srcTabBtns;
-  var fileMiniWritten, fileMiniRead, fileMiniGap;
+  var fileMiniMore, fileMiniCursor;
   var udpMiniFill, udpMiniDropCount;
   var otlpMiniLogEl;
 
@@ -379,27 +394,14 @@
   srcVizEl = el('div', 'bp-mini-viz');
   srcEl.appendChild(srcVizEl);
 
-  // I/O→CPU channel slots
-  var srcQueue = el('div', 'bp-queue');
-  var srcSlots = [];
-  for (var si = 0; si < IO_CPU_CAP; si++) {
-    var sslot = el('div', 'bp-slot');
-    srcQueue.appendChild(sslot);
-    srcSlots.push(sslot);
-  }
-  srcEl.appendChild(srcQueue);
-  var srcQLabel = el('div', 'bp-queue-label');
-  srcQLabel.textContent = '0/' + IO_CPU_CAP + ' slots';
-  srcEl.appendChild(srcQLabel);
-
-  // Activity bar
+  // Activity bar (slot queue removed — source viz in srcVizEl handles the visual)
   var srcActBar = el('div', 'bp-activity');
   var srcActFill = el('div', 'bp-activity-fill flowing');
   srcActBar.appendChild(srcActFill);
   srcEl.appendChild(srcActBar);
 
-  // ioStage interface — same shape as makeStage() output so existing helpers work unchanged
-  var ioStage = { el: srcEl, tag: srcTagEl, slots: srcSlots, qlabel: srcQLabel, actFill: srcActFill };
+  // ioStage — slots=[] so updateStage skips slot loop; coloring done inline in simTick
+  var ioStage = { el: srcEl, tag: srcTagEl, slots: [], actFill: srcActFill };
 
   function makeStage(name, desc, cap, queueLabel) {
     var s = el('div', 'bp-stage');
@@ -496,19 +498,20 @@
 
   function buildSourceViz() {
     srcVizEl.innerHTML = '';
-    fileMiniWritten = null; fileMiniRead = null; fileMiniGap = null;
+    fileMiniMore = null; fileMiniCursor = null;
     udpMiniFill = null; udpMiniDropCount = null;
     otlpMiniLogEl = null;
 
     if (sourceMode === 'file') {
-      var track = el('div', 'bp-mini-bar-track');
-      fileMiniWritten = el('div', 'bp-mini-bar-written');
-      fileMiniRead = el('div', 'bp-mini-bar-read');
-      track.appendChild(fileMiniWritten); track.appendChild(fileMiniRead);
-      srcVizEl.appendChild(track);
-      fileMiniGap = el('div', 'bp-mini-gap ok');
-      fileMiniGap.textContent = 'caught up';
-      srcVizEl.appendChild(fileMiniGap);
+      var viz = el('div', 'bp-file-viz');
+      var l1 = el('div', 'bp-file-old'); l1.textContent = '[10:23:41] ERROR db conn refused';
+      var l2 = el('div', 'bp-file-old'); l2.textContent = '[10:23:42] WARN  retry attempt 1';
+      fileMiniMore = el('div', 'bp-file-more');
+      fileMiniCursor = el('div', 'bp-file-cursor');
+      fileMiniCursor.textContent = '\u25B6 [10:23:42] INFO  watching...';
+      viz.appendChild(l1); viz.appendChild(l2);
+      viz.appendChild(fileMiniMore); viz.appendChild(fileMiniCursor);
+      srcVizEl.appendChild(viz);
     } else if (sourceMode === 'udp') {
       var row = el('div', 'bp-mini-udp');
       var gwrap = el('div', 'bp-mini-gauge-wrap');
@@ -540,16 +543,19 @@
 
   function updateSourceViz() {
     if (sourceMode === 'file') {
-      if (!fileMiniWritten) return;
-      fileMiniWritten.style.width = Math.min(100, (fileWritten / FILE_MAX) * 100) + '%';
-      fileMiniRead.style.width = Math.min(100, (fileRead / FILE_MAX) * 100) + '%';
+      if (!fileMiniMore) return;
       var gap = Math.round(fileWritten - fileRead);
-      if (gap <= 1) {
-        fileMiniGap.className = 'bp-mini-gap ok'; fileMiniGap.textContent = 'caught up';
-      } else if (gap < 40) {
-        fileMiniGap.className = 'bp-mini-gap warn'; fileMiniGap.textContent = gap + ' lines behind';
+      var readLine = Math.round(fileRead);
+      var sec = readLine % 60;
+      var secStr = sec < 10 ? '0' + sec : '' + sec;
+      if (gap <= 0) {
+        fileMiniMore.textContent = '';
+        fileMiniCursor.className = 'bp-file-cursor';
+        fileMiniCursor.textContent = '\u25B6 [10:23:' + secStr + '] INFO  offset ' + readLine;
       } else {
-        fileMiniGap.className = 'bp-mini-gap err'; fileMiniGap.textContent = gap + ' lines behind';
+        fileMiniMore.textContent = '\u2026 ' + gap + ' more line' + (gap === 1 ? '' : 's') + ' \u2026';
+        fileMiniCursor.className = 'bp-file-cursor' + (ioBlocked ? ' stalled' : '');
+        fileMiniCursor.textContent = '\u25B6 offset ' + readLine + (ioBlocked ? ' \u2014 stalled' : ' \u2190 reading');
       }
     } else if (sourceMode === 'udp') {
       if (!udpMiniFill) return;
@@ -774,7 +780,21 @@
     checkTransitions();
 
     // Render pipeline stages
-    updateStage(ioStage, ioCpuFill, IO_CPU_CAP, 'slots');
+    // Update source stage coloring inline (no slot bars — viz in srcVizEl)
+    var ioPct = ioCpuFill / IO_CPU_CAP;
+    if (ioPct >= 1.0) {
+      ioStage.el.className = 'bp-stage blocked';
+      ioStage.tag.className = 'bp-stage-tag bp-tag-blocked'; ioStage.tag.textContent = 'BLOCKED';
+      ioStage.actFill.className = 'bp-activity-fill blocked';
+    } else if (ioPct > 0.5) {
+      ioStage.el.className = 'bp-stage pressured';
+      ioStage.tag.className = 'bp-stage-tag bp-tag-slow'; ioStage.tag.textContent = 'PRESSURE';
+      ioStage.actFill.className = 'bp-activity-fill flowing pressured';
+    } else {
+      ioStage.el.className = 'bp-stage';
+      ioStage.tag.className = 'bp-stage-tag bp-tag-ok'; ioStage.tag.textContent = 'OK';
+      ioStage.actFill.className = 'bp-activity-fill flowing';
+    }
     updateStage(cpuStage, pipelineFill, PIPELINE_CAP, 'slots');
 
     var workerBusy = workerFills.filter(function(f) { return f > 0.1; }).length;
