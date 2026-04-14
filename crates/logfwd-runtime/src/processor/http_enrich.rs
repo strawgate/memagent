@@ -185,9 +185,15 @@ impl HttpEnrichProcessor {
         };
 
         // Evict if we would exceed capacity after inserting.
-        let headroom = results.len();
-        if cache.len() + headroom > self.config.max_entries {
-            let evict_target = (cache.len() + headroom).saturating_sub(self.config.max_entries)
+        // Only count cacheable entries (non-Error) for headroom since errors
+        // are skipped below.
+        let cacheable_count = results
+            .iter()
+            .filter(|(_, r)| !matches!(r, LookupResult::Error(_)))
+            .count();
+        if cache.len() + cacheable_count > self.config.max_entries {
+            let evict_target = (cache.len() + cacheable_count)
+                .saturating_sub(self.config.max_entries)
                 + self.config.max_entries / 10;
             let mut entries: Vec<(Instant, String)> = cache
                 .iter()

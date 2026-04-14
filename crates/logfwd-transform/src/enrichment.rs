@@ -107,6 +107,7 @@ impl Default for HostInfoTable {
 }
 
 impl HostInfoTable {
+    /// Snapshot host metadata at construction time: hostname, OS type, architecture.
     pub fn new() -> Self {
         let hostname = gethostname::gethostname().to_string_lossy().into_owned();
         let os_type = std::env::consts::OS.to_string();
@@ -167,6 +168,8 @@ pub struct K8sPodEntry {
 }
 
 impl K8sPathTable {
+    /// Create an empty K8s path table. Call [`update_from_paths`](Self::update_from_paths)
+    /// to populate with CRI log paths.
     pub fn new(table_name: impl Into<String>) -> Self {
         let table_name = table_name.into();
         // Start with an empty batch so SQL queries don't fail with "table not found".
@@ -459,6 +462,7 @@ pub struct JsonLinesFileTable {
 }
 
 impl JsonLinesFileTable {
+    /// Create a JSONL file table. Call [`reload`](Self::reload) to load data from disk.
     pub fn new(table_name: impl Into<String>, path: impl Into<PathBuf>) -> Self {
         JsonLinesFileTable {
             table_name: table_name.into(),
@@ -657,10 +661,14 @@ impl ReloadableGeoDb {
 
 impl GeoDatabase for ReloadableGeoDb {
     fn lookup(&self, ip: &str) -> Option<GeoResult> {
-        self.inner
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .lookup(ip)
+        let db = Arc::clone(
+            &self
+                .inner
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        // Lock is dropped here; the lookup runs without blocking writers.
+        db.lookup(ip)
     }
 }
 
@@ -720,6 +728,7 @@ impl EnvTable {
         let mut pairs: Vec<(String, String)> = std::env::vars()
             .filter_map(|(k, v)| {
                 k.strip_prefix(prefix)
+                    .filter(|s| !s.is_empty()) // skip exact prefix match (empty column name)
                     .map(|stripped| (stripped.to_lowercase(), v))
             })
             .collect();
@@ -797,6 +806,7 @@ impl Default for ProcessInfoTable {
 }
 
 impl ProcessInfoTable {
+    /// Snapshot agent self-metadata: name ("logfwd"), version, PID, start time.
     pub fn new() -> Self {
         let agent_name = "logfwd";
         let agent_version = env!("CARGO_PKG_VERSION");
@@ -893,6 +903,7 @@ pub struct KvFileTable {
 }
 
 impl KvFileTable {
+    /// Create a KV file table. Call [`reload`](Self::reload) to load data from disk.
     pub fn new(table_name: impl Into<String>, path: &Path) -> Self {
         KvFileTable {
             table_name: table_name.into(),
@@ -1016,6 +1027,11 @@ impl Default for NetworkInfoTable {
 }
 
 impl NetworkInfoTable {
+    /// Snapshot network metadata: hostname, IP addresses (sorted lexicographically).
+    ///
+    /// `primary_ipv4` / `primary_ipv6` are the lexicographically first non-loopback
+    /// addresses. On multihomed hosts this may not match the default-route interface;
+    /// use `all_ipv4` / `all_ipv6` if you need full coverage.
     pub fn new() -> Self {
         let hostname = gethostname::gethostname().to_string_lossy().into_owned();
 
@@ -1176,6 +1192,7 @@ impl Default for ContainerInfoTable {
 }
 
 impl ContainerInfoTable {
+    /// Detect container runtime and ID from `/proc/self/cgroup` and `/proc/self/mountinfo`.
     pub fn new() -> Self {
         let (container_id, container_runtime) = detect_container();
 
@@ -1362,6 +1379,8 @@ impl Default for K8sClusterInfoTable {
 }
 
 impl K8sClusterInfoTable {
+    /// Read Kubernetes cluster metadata from the downward API environment variables
+    /// and service account token path.
     pub fn new() -> Self {
         let in_k8s = std::env::var("KUBERNETES_SERVICE_HOST").is_ok();
 
@@ -1990,6 +2009,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // Windows env vars are case-insensitive; both names map to one var.
     fn env_table_rejects_duplicate_columns_after_lowercasing() {
         // Set env vars that collide after lowercasing the suffix.
         // SAFETY: test is run single-threaded (--test-threads=1).
