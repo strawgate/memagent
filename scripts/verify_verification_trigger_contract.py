@@ -204,6 +204,9 @@ def extract_paths_filter_entries(ci_text: str, filter_name: str) -> set[str]:
 def extract_kani_args_crates(ci_text: str) -> set[str]:
     kani_block = extract_job_block(ci_text, "kani")
 
+    crates: set[str] = set()
+
+    # Collect crates from kani-github-action args blocks.
     for idx, line in enumerate(kani_block):
         stripped = line.strip()
         if not ("uses:" in stripped and "model-checking/kani-github-action@" in stripped):
@@ -229,18 +232,22 @@ def extract_kani_args_crates(ci_text: str) -> set[str]:
                     break
                 args_lines.append(step_stripped)
 
-        if not args_lines:
-            raise ValueError(
-                "ci.yml kani job missing args block for model-checking/kani-github-action"
-            )
-
         joined = " ".join(args_lines)
-        crates = set(re.findall(r"-p\s+([A-Za-z0-9_-]+)", joined))
-        if not crates:
-            raise ValueError("ci.yml kani args missing -p crate entries")
-        return crates
+        crates |= set(re.findall(r"-p\s+([A-Za-z0-9_-]+)", joined))
 
-    raise ValueError("ci.yml kani job missing model-checking/kani-github-action step")
+    # Also collect crates from raw `run: cargo kani -p ...` steps
+    # (used when a package needs flags like --lib that can't be mixed
+    # with other packages in a single kani-github-action invocation).
+    for line in kani_block:
+        stripped = line.strip()
+        if stripped.startswith("run:"):
+            cmd = stripped.removeprefix("run:").strip()
+            if "cargo kani" in cmd or "cargo-kani" in cmd:
+                crates |= set(re.findall(r"-p\s+([A-Za-z0-9_-]+)", cmd))
+
+    if not crates:
+        raise ValueError("ci.yml kani job missing -p crate entries")
+    return crates
 
 
 def extract_guardrail_scripts(ci_text: str) -> set[str]:

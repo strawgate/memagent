@@ -23,14 +23,16 @@ use std::sync::Arc;
 /// OTLP field numbers, JSON mixed-type conflict logic, and CSV column
 /// indices do not belong here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum FieldKind {
+pub enum FieldKind {
     /// 64-bit signed integer (`Int64`).
     Int64,
     /// 64-bit IEEE 754 float (`Float64`).
     Float64,
     /// Boolean.
     Bool,
-    /// Variable-length UTF-8 string backed by Arrow `StringViewArray`.
+    /// Variable-length UTF-8 string. When `utf8_trusted` is true (default),
+    /// materialized as `StringViewArray` (zero-copy). When false, materialized
+    /// as `StringArray` with full UTF-8 validation.
     Utf8View,
     /// Variable-length binary backed by Arrow `BinaryViewArray`.
     BinaryView,
@@ -48,12 +50,12 @@ pub(crate) enum FieldKind {
 /// handle regardless of when it was declared or resolved.  Producers store
 /// handles for repeated use across rows without re-resolving by name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) struct FieldHandle(u32);
+pub struct FieldHandle(u32);
 
 impl FieldHandle {
     /// The underlying column index.
     #[inline(always)]
-    pub(crate) fn index(self) -> usize {
+    pub fn index(self) -> usize {
         self.0 as usize
     }
 }
@@ -68,7 +70,7 @@ impl FieldHandle {
 /// Dynamic fields accumulate observed kinds and may develop type conflicts
 /// (like JSON's mixed int/string columns).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum FieldSchemaMode {
+pub enum FieldSchemaMode {
     /// Producer declared the field with a fixed kind up front.
     /// Attempts to write a different kind are rejected (not silently
     /// promoted to a conflict column).
@@ -142,39 +144,70 @@ struct FieldEntry {
 /// - **Dynamic fields** are resolved by name + observed kind at write time
 ///   (like `StreamingBuilder::resolve_field` for JSON).  Multiple observed
 ///   kinds are accumulated and may produce conflict columns.
-pub(crate) struct BatchPlan {
+pub struct BatchPlan {
     /// Ordered field entries (index = handle value).
     fields: Vec<FieldEntry>,
     /// Name → handle for O(1) lookup.  Keys share the same `Arc<str>`
     /// as the corresponding `FieldEntry::name` to avoid double-allocation.
     index: HashMap<Arc<str>, FieldHandle>,
+    /// Number of planned (schema-fixed) fields. These occupy the first
+    /// `num_planned` slots and are never removed by `reset_dynamic`.
+    num_planned: usize,
+}
+
+impl Default for BatchPlan {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl BatchPlan {
     /// Create an empty plan.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         BatchPlan {
             fields: Vec::new(),
             index: HashMap::new(),
+            num_planned: 0,
         }
     }
 
     /// Create a plan with pre-allocated capacity.
-    pub(crate) fn with_capacity(cap: usize) -> Self {
+    pub fn with_capacity(cap: usize) -> Self {
         BatchPlan {
             fields: Vec::with_capacity(cap),
             index: HashMap::with_capacity(cap),
+            num_planned: 0,
         }
     }
 
     /// Number of fields in the plan.
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.fields.len()
     }
 
     /// Whether the plan is empty.
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.fields.is_empty()
+    }
+
+    /// Number of planned (schema-fixed) fields.
+    pub fn num_planned(&self) -> usize {
+        self.num_planned
+    }
+
+    /// Remove all dynamic fields, keeping planned fields intact.
+    ///
+    /// Called by `ColumnarBatchBuilder::begin_batch` so that dynamic field
+    /// names are re-resolved from scratch each batch — matching
+    /// `StreamingBuilder`'s `field_index.clear()` behavior. Without this,
+    /// dynamic fields accumulate unboundedly across batches.
+    pub fn reset_dynamic(&mut self) {
+        // Remove dynamic entries from the name index.
+        for entry in &self.fields[self.num_planned..] {
+            self.index.remove(&entry.name);
+        }
+        // Truncate the field list to planned-only.
+        self.fields.truncate(self.num_planned);
     }
 
     /// Declare a schema-fixed field.
@@ -182,7 +215,11 @@ impl BatchPlan {
     /// If the field already exists as planned with the same kind, returns
     /// the existing handle (idempotent).  If it exists with a different
     /// kind or as a dynamic field, returns `Err`.
-    pub(crate) fn declare_planned(
+    ///
+    /// Planned fields must be declared before any dynamic fields are
+    /// resolved. They form a stable prefix of the field list that
+    /// `reset_dynamic` preserves.
+    pub fn declare_planned(
         &mut self,
         name: &str,
         kind: FieldKind,
@@ -202,7 +239,13 @@ impl BatchPlan {
                 }),
             }
         } else {
-            let handle = self.alloc_handle();
+            if self.fields.len() != self.num_planned {
+                return Err(PlanError::ModeMismatch {
+                    field: name.to_string(),
+                    reason: "planned fields must be declared before any dynamic resolution",
+                });
+            }
+            let handle = self.alloc_handle()?;
             let shared_name: Arc<str> = Arc::from(name);
             self.fields.push(FieldEntry {
                 name: Arc::clone(&shared_name),
@@ -210,6 +253,7 @@ impl BatchPlan {
                 mode: FieldSchemaMode::new_planned(kind),
             });
             self.index.insert(shared_name, handle);
+            self.num_planned += 1;
             Ok(handle)
         }
     }
@@ -219,7 +263,7 @@ impl BatchPlan {
     /// If the field already exists as dynamic, the observed kind is
     /// accumulated (for conflict detection).  If it exists as planned,
     /// returns `Err` — planned fields cannot become dynamic.
-    pub(crate) fn resolve_dynamic(
+    pub fn resolve_dynamic(
         &mut self,
         name: &str,
         kind: FieldKind,
@@ -237,7 +281,7 @@ impl BatchPlan {
                 }),
             }
         } else {
-            let handle = self.alloc_handle();
+            let handle = self.alloc_handle()?;
             let shared_name: Arc<str> = Arc::from(name);
             self.fields.push(FieldEntry {
                 name: Arc::clone(&shared_name),
@@ -250,29 +294,30 @@ impl BatchPlan {
     }
 
     /// Look up a field by name without creating it.
-    pub(crate) fn lookup(&self, name: &str) -> Option<FieldHandle> {
+    pub fn lookup(&self, name: &str) -> Option<FieldHandle> {
         self.index.get(name).copied()
     }
 
     /// Get the schema mode for a field handle.
-    pub(crate) fn field_mode(&self, handle: FieldHandle) -> Option<&FieldSchemaMode> {
+    pub fn field_mode(&self, handle: FieldHandle) -> Option<&FieldSchemaMode> {
         self.fields.get(handle.index()).map(|e| &e.mode)
     }
 
     /// Get the field name for a handle.
-    pub(crate) fn field_name(&self, handle: FieldHandle) -> Option<&str> {
+    pub fn field_name(&self, handle: FieldHandle) -> Option<&str> {
         self.fields.get(handle.index()).map(|e| &*e.name)
     }
 
     /// Iterate over all fields in declaration order.
-    pub(crate) fn fields(&self) -> impl Iterator<Item = (FieldHandle, &str, &FieldSchemaMode)> {
+    pub fn fields(&self) -> impl Iterator<Item = (FieldHandle, &str, &FieldSchemaMode)> {
         self.fields.iter().map(|e| (e.handle, &*e.name, &e.mode))
     }
 
-    fn alloc_handle(&self) -> FieldHandle {
-        FieldHandle(
-            u32::try_from(self.fields.len()).expect("BatchPlan field count exceeds u32::MAX"),
-        )
+    fn alloc_handle(&self) -> Result<FieldHandle, PlanError> {
+        let idx = u32::try_from(self.fields.len()).map_err(|_| PlanError::TooManyFields {
+            count: self.fields.len(),
+        })?;
+        Ok(FieldHandle(idx))
     }
 }
 
@@ -282,7 +327,7 @@ impl BatchPlan {
 
 /// Error from `BatchPlan` field declaration or resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum PlanError {
+pub enum PlanError {
     /// A planned field was re-declared with a different kind.
     KindMismatch {
         field: String,
@@ -291,6 +336,8 @@ pub(crate) enum PlanError {
     },
     /// A field mode conflict (e.g., planned field resolved as dynamic).
     ModeMismatch { field: String, reason: &'static str },
+    /// The plan has more fields than can be addressed by `FieldHandle` (u32).
+    TooManyFields { count: usize },
 }
 
 impl std::fmt::Display for PlanError {
@@ -306,6 +353,9 @@ impl std::fmt::Display for PlanError {
             ),
             PlanError::ModeMismatch { field, reason } => {
                 write!(f, "field {field:?}: {reason}")
+            }
+            PlanError::TooManyFields { count } => {
+                write!(f, "too many fields: {count} exceeds u32::MAX")
             }
         }
     }
@@ -426,11 +476,11 @@ mod tests {
     fn fields_iterator_in_declaration_order() {
         let mut plan = BatchPlan::new();
         plan.declare_planned("z", FieldKind::Bool).unwrap();
-        plan.resolve_dynamic("a", FieldKind::Int64).unwrap();
         plan.declare_planned("m", FieldKind::Float64).unwrap();
+        plan.resolve_dynamic("a", FieldKind::Int64).unwrap();
 
         let names: Vec<&str> = plan.fields().map(|(_, name, _)| name).collect();
-        assert_eq!(names, vec!["z", "a", "m"]);
+        assert_eq!(names, vec!["z", "m", "a"]);
     }
 
     #[test]
@@ -480,5 +530,47 @@ mod tests {
             reason: "already dynamic",
         };
         assert!(err2.to_string().contains("already dynamic"));
+    }
+
+    #[test]
+    fn reset_dynamic_removes_dynamic_keeps_planned() {
+        let mut plan = BatchPlan::new();
+        plan.declare_planned("ts", FieldKind::Int64).unwrap();
+        plan.declare_planned("msg", FieldKind::Utf8View).unwrap();
+        plan.resolve_dynamic("level", FieldKind::Utf8View).unwrap();
+        plan.resolve_dynamic("code", FieldKind::Int64).unwrap();
+
+        assert_eq!(plan.len(), 4);
+        assert_eq!(plan.num_planned(), 2);
+
+        plan.reset_dynamic();
+
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan.num_planned(), 2);
+        // Planned fields survive.
+        assert!(plan.lookup("ts").is_some());
+        assert!(plan.lookup("msg").is_some());
+        // Dynamic fields are gone.
+        assert!(plan.lookup("level").is_none());
+        assert!(plan.lookup("code").is_none());
+
+        // Re-resolving dynamic fields works after reset.
+        let h = plan.resolve_dynamic("level", FieldKind::Int64).unwrap();
+        assert_eq!(h.index(), 2);
+        assert_eq!(plan.len(), 3);
+    }
+
+    #[test]
+    fn declare_planned_after_dynamic_is_error() {
+        let mut plan = BatchPlan::new();
+        plan.declare_planned("ts", FieldKind::Int64).unwrap();
+        plan.resolve_dynamic("level", FieldKind::Utf8View).unwrap();
+        let err = plan
+            .declare_planned("msg", FieldKind::Utf8View)
+            .unwrap_err();
+        assert!(
+            matches!(err, PlanError::ModeMismatch { .. }),
+            "expected ModeMismatch, got {err:?}"
+        );
     }
 }

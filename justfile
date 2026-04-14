@@ -160,7 +160,7 @@ miri-types:
 # Run the required Kani crate set enforced by CI guardrails.
 kani-required:
     RUSTC_WRAPPER="" cargo kani -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing
-    RUSTC_WRAPPER="" cargo kani -p logfwd-arrow -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p logfwd-arrow --lib -Z function-contracts -Z mem-predicates -Z stubbing
     RUSTC_WRAPPER="" cargo kani -p logfwd-types -Z function-contracts -Z mem-predicates -Z stubbing
     RUSTC_WRAPPER="" cargo kani -p logfwd-io -Z function-contracts -Z mem-predicates -Z stubbing
     RUSTC_WRAPPER="" cargo kani -p logfwd-output -Z function-contracts -Z mem-predicates -Z stubbing

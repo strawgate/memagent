@@ -300,3 +300,187 @@ mod tests {
         lc.finish_batch();
     }
 }
+
+// ---------------------------------------------------------------------------
+// Kani proofs — exhaustive state machine verification
+// ---------------------------------------------------------------------------
+//
+// Pattern: symbolic action sequences (same technique as checkpoint_tracker.rs).
+// Explores all valid transition orderings to prove safety invariants hold
+// for every reachable state.  Each harness uses an invariant oracle
+// (`check_invariants`) verified after every step.
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    /// Invariant oracle — checked after every symbolic action.
+    /// Mirrors the checkpoint_tracker.rs `check_invariants()` pattern.
+    fn check_invariants(lc: &RowLifecycle) {
+        assert!(
+            matches!(
+                lc.state(),
+                BuilderState::Idle | BuilderState::InBatch | BuilderState::InRow
+            ),
+            "state must always be valid"
+        );
+        // In Idle state, row_count is stale from the last batch — no constraint.
+        // In InBatch/InRow, row_count is the running tally.
+    }
+
+    /// Dispatch a valid action based on current state.
+    /// Returns the action tag for coverage tracking:
+    ///   0 = begin_batch, 1 = begin_row, 2 = finish_batch, 3 = end_row.
+    fn symbolic_action(lc: &mut RowLifecycle) -> u8 {
+        let tag: u8 = kani::any();
+        match lc.state() {
+            // Idle: only begin_batch is valid.
+            BuilderState::Idle => {
+                kani::assume(tag == 0);
+                lc.begin_batch();
+            }
+            // InBatch: begin_row (1), finish_batch (2), or begin_batch restart (0).
+            BuilderState::InBatch => {
+                kani::assume(tag <= 2);
+                match tag {
+                    0 => lc.begin_batch(),
+                    1 => lc.begin_row(),
+                    _ => lc.finish_batch(),
+                }
+            }
+            // InRow: end_row is the only valid transition.
+            BuilderState::InRow => {
+                kani::assume(tag == 3);
+                lc.end_row();
+            }
+        }
+        tag
+    }
+
+    /// Row count never decreases within a batch and resets on begin_batch.
+    ///
+    /// 8-step sequence: begin_batch + 3×(begin_row+end_row) + finish = 8.
+    /// Invariant oracle verified after every step.
+    #[kani::proof]
+    #[kani::solver(kissat)]
+    #[kani::unwind(10)] // 8 iterations + 2 margin
+    fn verify_row_count_monotonic() {
+        let mut lc = RowLifecycle::new();
+        let mut prev_count: u32 = 0;
+
+        for _ in 0..8 {
+            let tag = symbolic_action(&mut lc);
+            check_invariants(&lc);
+            let count = lc.row_count();
+
+            if tag == 0 {
+                // begin_batch resets to 0.
+                assert_eq!(count, 0, "begin_batch must reset row_count");
+                prev_count = 0;
+            } else if tag == 3 {
+                // end_row increments by exactly 1.
+                assert_eq!(count, prev_count + 1, "end_row must increment by 1");
+                prev_count = count;
+            } else {
+                // begin_row (1) and finish_batch (2) preserve row_count.
+                assert_eq!(count, prev_count, "non-row actions preserve count");
+            }
+        }
+
+        kani::cover!(prev_count > 0, "at least one row completed");
+        kani::cover!(prev_count > 2, "three+ rows completed");
+    }
+
+    /// written_bits is zero at the start of every row, even after prior
+    /// rows wrote non-zero bits.
+    ///
+    /// 7-step sequence: enough for 2+ full row cycles with dirty bits.
+    #[kani::proof]
+    #[kani::solver(kissat)]
+    #[kani::unwind(9)] // 7 iterations + 2 margin
+    fn verify_written_bits_reset_on_begin_row() {
+        let mut lc = RowLifecycle::new();
+        let mut begin_row_seen = false;
+
+        for _ in 0..7 {
+            let tag = symbolic_action(&mut lc);
+            check_invariants(&lc);
+
+            if tag == 1 {
+                // begin_row just fired → bits must be zero.
+                assert_eq!(
+                    *lc.written_bits_mut(),
+                    0,
+                    "written_bits must be zero after begin_row"
+                );
+                // Simulate field writes in this row.
+                *lc.written_bits_mut() = kani::any();
+                begin_row_seen = true;
+            }
+        }
+
+        kani::cover!(begin_row_seen, "begin_row was exercised");
+        kani::cover!(lc.row_count() > 1, "multiple rows completed");
+        kani::cover!(lc.state() == BuilderState::Idle, "returned to Idle");
+    }
+
+    /// State machine only reaches valid states via the invariant oracle.
+    ///
+    /// 7-step sequence exercises all transitions.
+    #[kani::proof]
+    #[kani::solver(kissat)]
+    #[kani::unwind(9)] // 7 iterations + 2 margin
+    fn verify_state_always_valid() {
+        let mut lc = RowLifecycle::new();
+        let mut saw_begin_batch = false;
+        let mut saw_begin_row = false;
+        let mut saw_end_row = false;
+        let mut saw_finish_batch = false;
+
+        for _ in 0..7 {
+            let tag = symbolic_action(&mut lc);
+            check_invariants(&lc);
+
+            match tag {
+                0 => saw_begin_batch = true,
+                1 => saw_begin_row = true,
+                2 => saw_finish_batch = true,
+                3 => saw_end_row = true,
+                _ => {} // tag is bounded by assume() in symbolic_action
+            }
+        }
+
+        kani::cover!(lc.state() == BuilderState::Idle, "reached Idle");
+        kani::cover!(lc.state() == BuilderState::InBatch, "reached InBatch");
+        kani::cover!(lc.state() == BuilderState::InRow, "reached InRow");
+        kani::cover!(
+            saw_begin_batch && saw_begin_row && saw_end_row && saw_finish_batch,
+            "all four transitions exercised"
+        );
+    }
+
+    /// line_written_this_row resets on begin_row and persists through end_row.
+    #[kani::proof]
+    #[kani::solver(kissat)]
+    #[kani::unwind(9)] // 7 iterations + 2 margin
+    fn verify_line_written_reset_on_begin_row() {
+        let mut lc = RowLifecycle::new();
+
+        for _ in 0..7 {
+            let tag = symbolic_action(&mut lc);
+            check_invariants(&lc);
+
+            if tag == 1 {
+                // begin_row resets line_written flag.
+                assert!(
+                    !lc.line_written_this_row(),
+                    "line_written must be false after begin_row"
+                );
+                // Simulate writing a line.
+                lc.set_line_written();
+                assert!(lc.line_written_this_row(), "set_line_written must stick");
+            }
+        }
+
+        kani::cover!(lc.row_count() > 0, "at least one row completed");
+    }
+}

@@ -2708,6 +2708,7 @@ dependencies = [
  "bytes",
  "logfwd-core",
  "logfwd-types",
+ "proptest",
  "serial_test",
  "stats_alloc",
 ]

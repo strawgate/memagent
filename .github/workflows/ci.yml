@@ -400,7 +400,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           key: kani
 
-      - name: Run Kani verification
+      - name: Run Kani verification (all packages except logfwd-arrow)
         uses: model-checking/kani-github-action@v1
         with:
           args: >-
@@ -408,13 +408,19 @@ jobs:
             -Z mem-predicates
             -Z stubbing
             -p logfwd-core
-            -p logfwd-arrow
             -p logfwd-types
             -p logfwd-io
             -p logfwd-output
             -p logfwd-runtime
             -p logfwd-diagnostics
             -p logfwd
+        env:
+          RUSTC_WRAPPER: ""
+
+      - name: Run Kani verification (logfwd-arrow --lib)
+        # logfwd-arrow has a binary with required-features that cargo-kani
+        # cannot skip, so verify only the library target.
+        run: cargo kani -p logfwd-arrow --lib -Z function-contracts -Z mem-predicates -Z stubbing
         env:
           RUSTC_WRAPPER: ""
 

@@ -27,3 +27,4 @@ error.log
 # Research intermediate artifacts (cloud task diffs, extracts)
 **/cloud-artifacts/
 .codex/
+scripts/__pycache__/
