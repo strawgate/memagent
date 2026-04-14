@@ -52,6 +52,7 @@ impl ChunkCompressor {
     /// Reuses internal buffers to avoid allocation.
     pub fn compress(&mut self, raw: &[u8]) -> io::Result<CompressedChunk> {
         let raw_size = raw.len();
+        let raw_size_u32 = check_wire_size("raw size", raw_size)?;
 
         // Worst case: zstd may expand data. zstd_safe::compress_bound gives the max.
         let max_compressed = zstd::zstd_safe::compress_bound(raw_size);
@@ -71,6 +72,10 @@ impl ChunkCompressor {
         cursor.set_position(HEADER_SIZE as u64);
         let compressed_size = self.compressor.compress_to_buffer(raw, &mut cursor)?;
 
+        // Validate that compressed size fits in u32; the wire format only has
+        // 4 bytes per size field.
+        let compressed_size_u32 = check_wire_size("compressed size", compressed_size)?;
+
         // Compute checksum over the compressed payload.
         let checksum =
             xxhash_rust::xxh32::xxh32(&self.out_buf[HEADER_SIZE..HEADER_SIZE + compressed_size], 0);
@@ -79,8 +84,8 @@ impl ChunkCompressor {
         self.out_buf[0..2].copy_from_slice(&MAGIC.to_le_bytes());
         self.out_buf[2] = VERSION;
         self.out_buf[3] = FLAG_ZSTD;
-        self.out_buf[4..8].copy_from_slice(&(compressed_size as u32).to_le_bytes());
-        self.out_buf[8..12].copy_from_slice(&(raw_size as u32).to_le_bytes());
+        self.out_buf[4..8].copy_from_slice(&compressed_size_u32.to_le_bytes());
+        self.out_buf[8..12].copy_from_slice(&raw_size_u32.to_le_bytes());
         self.out_buf[12..16].copy_from_slice(&checksum.to_le_bytes());
 
         // Swap out_buf to give ownership to the caller without cloning.
@@ -92,8 +97,8 @@ impl ChunkCompressor {
 
         Ok(CompressedChunk {
             data,
-            raw_size: raw_size as u32,
-            compressed_size: compressed_size as u32,
+            raw_size: raw_size_u32,
+            compressed_size: compressed_size_u32,
         })
     }
 
@@ -105,6 +110,15 @@ impl ChunkCompressor {
         }
         chunk.raw_size as f64 / chunk.compressed_size as f64
     }
+}
+
+fn check_wire_size(name: &str, size: usize) -> io::Result<u32> {
+    u32::try_from(size).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name} {size} exceeds u32::MAX"),
+        )
+    })
 }
 
 /// Decompress and verify a compressed chunk (for testing / receiver side).
@@ -202,5 +216,22 @@ mod tests {
     #[test]
     fn test_truncated_rejected() {
         assert!(decompress_chunk(&[0u8; 4]).is_err());
+    }
+
+    /// Verify the validation path used by `compress()` for oversized inputs.
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn test_oversized_raw_input_rejected() {
+        let oversized: usize = u32::MAX as usize + 1;
+        let result = check_wire_size("raw size", oversized);
+        assert!(
+            result.is_err(),
+            "check_wire_size should fail for values > u32::MAX"
+        );
+
+        let err = result.expect_err("oversized raw input must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("raw size"));
+        assert!(err.to_string().contains("exceeds u32::MAX"));
     }
 }
