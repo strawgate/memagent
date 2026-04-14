@@ -32,6 +32,8 @@ export default defineConfig({
             { label: "Scanner Deep Dive", slug: "how-it-works/scanner" },
             { label: "Why Tailing Is Hard", slug: "how-it-works/tailing" },
             { label: "Why Columnar Matters", slug: "how-it-works/columnar" },
+            { label: "Backpressure in Action", slug: "how-it-works/backpressure" },
+            { label: "Checkpoint Ordering", slug: "how-it-works/checkpoints" },
             { label: "Performance", slug: "how-it-works/performance" },
           ],
         },

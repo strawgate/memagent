@@ -1,0 +1,77 @@
+---
+title: "Checkpoint Ordering"
+description: "Interactive visualization of how logfwd tracks out-of-order ACKs and advances checkpoints safely"
+---
+
+import CheckpointSim from '../../../components/CheckpointSim.astro';
+
+When logfwd ships a batch to your collector, the collector might ACK batch #3 before batch #1.
+**The checkpoint must not advance past unresolved batches** — or a crash would skip unsent data.
+
+This is the core correctness invariant, proven in TLA+.
+
+<CheckpointSim />
+
+## The algorithm
+
+Each source maintains three data structures:
+
+```rust
+committed:    BTreeMap<SourceId, Checkpoint>      // safe restart point
+in_flight:    BTreeMap<SourceId, BTreeMap<BatchId, Checkpoint>>  // sent, awaiting ACK
+pending_acks: BTreeMap<SourceId, BTreeMap<BatchId, Checkpoint>>  // ACKed but can't commit yet
+```
+
+When an ACK arrives:
+
+1. Remove the batch from `in_flight`, add to `pending_acks`
+2. Starting from the lowest pending ACK, check: is there any in-flight batch with a lower ID?
+3. If **no** — consume the pending ACK, advance `committed`, repeat from step 2
+4. If **yes** — stop. The checkpoint cannot advance past an unresolved batch.
+
+This is the Filebeat registrar pattern, implemented as a pure state machine with no executor dependencies.
+
+## Batch lifecycle
+
+Every batch follows a strict lifecycle enforced by Rust's type system:
+
+```
+create_batch() → BatchTicket<Queued>
+       │
+  begin_send() → BatchTicket<Sending>   ← enters in_flight tracking
+       │
+       ├── ack()    → AckReceipt        ← successful delivery
+       ├── reject() → AckReceipt        ← permanent failure (e.g. 413)
+       └── fail()   → BatchTicket<Queued> ← transient failure, retry
+```
+
+The `#[must_use]` annotation on `begin_send()` warns if the returned `Sending` ticket is
+ignored at the call site. The deeper enforcement comes from the **typestate pattern**: the
+`Sending` ticket's self-consuming transition methods (`ack()`, `reject()`, `fail()`) are the
+only way to resolve it — you cannot drop a `Sending` ticket without calling one of these.
+
+## Why rejection advances the checkpoint
+
+A permanently rejected batch (e.g., 413 Payload Too Large) is **undeliverable**. Holding it
+in-flight forever would freeze the checkpoint for that source, eventually blocking all
+progress. The trade-off:
+
+- **Hold** (transient failures): retry with backoff, checkpoint frozen until success
+- **Reject** (permanent failures): advance checkpoint past the batch, accept data loss for one batch
+
+This matches Filebeat's model: advance past undeliverable records rather than stall the pipeline.
+
+## Formal verification
+
+The TLA+ specification `PipelineMachine.tla` proves 70+ properties including:
+
+| Property | What it guarantees |
+|----------|--------------------|
+| `CheckpointNeverAheadOfTerminalizedPrefix` | Checkpoint never skips an unresolved batch |
+| `DrainCompleteness` | `stop()` is unreachable unless all batches resolved |
+| `CommittedMonotonic` | Committed offset never decreases |
+| `CheckpointOrderingInvariant` | Every sent batch below the committed watermark is terminally resolved |
+| `NoBatchLeftBehind` | Every in-flight batch eventually resolves (ack/reject/abandon) |
+
+The Rust implementation mirrors the TLA+ spec field-by-field — `committed`, `in_flight`,
+and `pending_acks` map directly to the specification variables.
