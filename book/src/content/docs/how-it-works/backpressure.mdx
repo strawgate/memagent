@@ -4,12 +4,21 @@ description: "Interactive simulation of how logfwd propagates backpressure from 
 ---
 
 import BackpressureSim from '../../../components/BackpressureSim.astro';
+import InputBackpressure from '../../../components/InputBackpressure.astro';
 
 When a collector goes slow or drops offline, logfwd doesn't buffer infinitely or drop data.
 Instead, **bounded channels** turn slow outputs into backpressure that cascades all the way
 back to the file reader — by design.
 
 <BackpressureSim />
+
+## What happens at the source?
+
+Backpressure reaches the input eventually — but the consequences depend on the input type. A file stays on disk and logfwd catches up later. UDP has no flow control and drops packets. OTLP pushes back to the sender with 429s.
+
+Use the sliders below to simulate data arriving faster than the pipeline can process it.
+
+<InputBackpressure />
 
 ## How the cascade works
 
