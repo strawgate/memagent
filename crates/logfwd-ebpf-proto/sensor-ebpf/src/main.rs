@@ -656,7 +656,10 @@ fn configure_exit_code(ebpf: &mut Ebpf) -> Result<u32, Box<dyn std::error::Error
         if trimmed.contains("exit_code")
             && trimmed.contains("/*")
             && let Some(comment) = trimmed.split("/*").nth(1)
-            && let Some(off) = comment.split_whitespace().next().and_then(|s| s.parse::<u32>().ok())
+            && let Some(off) = comment
+                .split_whitespace()
+                .next()
+                .and_then(|s| s.parse::<u32>().ok())
             && off > 0
             && off < 16384
         {
