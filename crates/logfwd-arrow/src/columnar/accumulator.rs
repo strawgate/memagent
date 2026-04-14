@@ -16,8 +16,7 @@
 use std::sync::Arc;
 
 use arrow::array::{
-    ArrayRef, BooleanArray, Float64Array, Int64Array, StringArray, StringViewArray,
-    StringViewBuilder, StructArray,
+    ArrayRef, BooleanArray, Float64Array, Int64Array, StringArray, StringViewArray, StructArray,
 };
 use arrow::buffer::{Buffer, NullBuffer, OffsetBuffer, ScalarBuffer};
 use arrow::datatypes::{DataType, Field, Fields};
@@ -266,9 +265,9 @@ impl ColumnAccumulator {
     /// Returns `Ok(None)` if the accumulator has no data (sparse all-null field
     /// with no writes — omitted from schema like StreamingBuilder does).
     ///
-    /// `mode` controls string materialization:
-    ///   - `Detached`: uses `StringBuilder` (copies strings, self-contained)
-    ///   - `View`: uses `StringViewArray` backed by input + generated buffers
+    /// `mode` controls string materialization: when `utf8_trusted` is true,
+    /// produces zero-copy `StringViewArray`; otherwise copies into `StringArray`
+    /// with full UTF-8 validation.
     ///
     /// # Errors
     ///
@@ -372,8 +371,6 @@ pub enum MaterializeError {
     },
     /// Buffer data was not valid UTF-8 at the referenced range.
     InvalidUtf8 { offset: u32, len: u32 },
-    /// Arrow's `StringViewBuilder::try_append_view` failed.
-    ViewAppend(arrow::error::ArrowError),
 }
 
 impl std::fmt::Display for MaterializeError {
@@ -390,19 +387,11 @@ impl std::fmt::Display for MaterializeError {
             MaterializeError::InvalidUtf8 { offset, len } => {
                 write!(f, "invalid UTF-8 at StringRef(offset={offset}, len={len})")
             }
-            MaterializeError::ViewAppend(e) => write!(f, "StringViewBuilder append failed: {e}"),
         }
     }
 }
 
-impl std::error::Error for MaterializeError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            MaterializeError::ViewAppend(e) => Some(e),
-            _ => None,
-        }
-    }
-}
+impl std::error::Error for MaterializeError {}
 
 // ---------------------------------------------------------------------------
 // FinalizationMode — controls string materialization strategy
@@ -410,31 +399,16 @@ impl std::error::Error for MaterializeError {
 
 /// Controls how string columns are built at finalization.
 #[derive(Clone)]
-pub enum FinalizationMode {
-    /// Build string columns from owned Arrow buffers.
-    ///
-    /// When `utf8_trusted` is true, produces `StringViewArray` with zero per-string
-    /// byte copying — views reference the source buffers directly. When false,
-    /// copies bytes into a contiguous `StringArray` with full UTF-8 validation.
-    Detached {
-        /// Original input buffer (e.g., protobuf wire bytes, scanner input).
-        original_buf: Buffer,
-        /// Generated/decoded buffer (e.g., JSON-unescaped strings).
-        generated_buf: Buffer,
-        /// When true, all string data is known to be valid UTF-8 (validated
-        /// at the ingestion boundary — scanner, OTLP decoder, etc.). Enables
-        /// zero-copy StringViewArray construction.
-        utf8_trusted: bool,
-    },
-    /// Zero-copy `StringViewArray` backed by Arrow buffers.
-    View {
-        /// Arrow buffer wrapping the original input.
-        original: Buffer,
-        /// Original buffer length (for the 2-buffer offset convention).
-        original_len: u32,
-        /// Arrow buffer wrapping generated/decoded strings (if any).
-        generated: Option<Buffer>,
-    },
+pub struct FinalizationMode {
+    /// Original input buffer (e.g., protobuf wire bytes, scanner input).
+    pub original_buf: Buffer,
+    /// Generated/decoded buffer (e.g., JSON-unescaped strings).
+    pub generated_buf: Buffer,
+    /// When true, all string data is known to be valid UTF-8 (validated
+    /// at the ingestion boundary — scanner, OTLP decoder, etc.). Enables
+    /// zero-copy StringViewArray construction.  When false, copies bytes
+    /// into a contiguous `StringArray` with full UTF-8 validation.
+    pub utf8_trusted: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -445,6 +419,10 @@ fn build_int64(facts: &[(u32, i64)], num_rows: usize) -> (ArrayRef, DataType) {
     let dense = facts.len() == num_rows;
     let mut values = vec![0i64; num_rows];
     if dense {
+        debug_assert!(
+            facts.is_empty() || facts[0].0 == 0,
+            "dense path requires consecutive rows starting at 0"
+        );
         for (i, &(_, v)) in facts.iter().enumerate() {
             values[i] = v;
         }
@@ -478,6 +456,10 @@ fn build_float64(facts: &[(u32, f64)], num_rows: usize) -> (ArrayRef, DataType) 
     let dense = facts.len() == num_rows;
     let mut values = vec![0.0f64; num_rows];
     if dense {
+        debug_assert!(
+            facts.is_empty() || facts[0].0 == 0,
+            "dense path requires consecutive rows starting at 0"
+        );
         for (i, &(_, v)) in facts.iter().enumerate() {
             values[i] = v;
         }
@@ -511,6 +493,10 @@ fn build_bool(facts: &[(u32, bool)], num_rows: usize) -> (ArrayRef, DataType) {
     let dense = facts.len() == num_rows;
     let mut values = vec![false; num_rows];
     if dense {
+        debug_assert!(
+            facts.is_empty() || facts[0].0 == 0,
+            "dense path requires consecutive rows starting at 0"
+        );
         for (i, &(_, v)) in facts.iter().enumerate() {
             values[i] = v;
         }
@@ -545,55 +531,10 @@ fn build_string(
     num_rows: usize,
     mode: &FinalizationMode,
 ) -> Result<(ArrayRef, DataType), MaterializeError> {
-    match mode {
-        FinalizationMode::Detached {
-            original_buf,
-            generated_buf,
-            utf8_trusted,
-        } => {
-            if *utf8_trusted {
-                build_string_view_trusted(facts, num_rows, original_buf, generated_buf)
-            } else {
-                build_string_array_validated(facts, num_rows, original_buf, generated_buf)
-            }
-        }
-        FinalizationMode::View {
-            original,
-            original_len,
-            generated,
-        } => {
-            let mut builder = StringViewBuilder::new();
-            let orig_block = builder.append_block(original.clone());
-            let gen_block = generated.as_ref().map(|g| builder.append_block(g.clone()));
-            let mut vi = 0;
-            for row in 0..num_rows as u32 {
-                if vi < facts.len() && facts[vi].0 == row {
-                    let sref = facts[vi].1;
-                    if sref.offset < *original_len
-                        || (sref.len == 0 && sref.offset == *original_len)
-                    {
-                        builder
-                            .try_append_view(orig_block, sref.offset, sref.len)
-                            .map_err(MaterializeError::ViewAppend)?;
-                    } else if let Some(gen_block) = gen_block {
-                        let gen_offset = sref.offset - *original_len;
-                        builder
-                            .try_append_view(gen_block, gen_offset, sref.len)
-                            .map_err(MaterializeError::ViewAppend)?;
-                    } else {
-                        return Err(MaterializeError::StringRefOutOfBounds {
-                            offset: sref.offset,
-                            len: sref.len,
-                            buffer_len: original.len(),
-                        });
-                    }
-                    vi += 1;
-                } else {
-                    builder.append_null();
-                }
-            }
-            Ok((Arc::new(builder.finish()), DataType::Utf8View))
-        }
+    if mode.utf8_trusted {
+        build_string_view_trusted(facts, num_rows, &mode.original_buf, &mode.generated_buf)
+    } else {
+        build_string_array_validated(facts, num_rows, &mode.original_buf, &mode.generated_buf)
     }
 }
 
@@ -633,9 +574,14 @@ fn build_string_view_trusted(
     // zeroes 16KB in ~200 instructions while the Result iterator adapter
     // (GenericShunt) adds ~25M instructions of overhead.
     let mut views: Vec<u128> = vec![0u128; num_rows];
+    let mut nulls: Option<NullBuffer> = None;
 
     if dense {
         // Dense fast path: every row has a value, facts[i] corresponds to row i.
+        debug_assert!(
+            facts.is_empty() || facts[0].0 == 0,
+            "dense path requires consecutive rows starting at 0"
+        );
         for (i, &(_, sref)) in facts.iter().enumerate() {
             views[i] = make_string_view(
                 sref,
@@ -648,6 +594,7 @@ fn build_string_view_trusted(
         }
     } else {
         // Sparse: walk facts in row order, null rows stay as 0 (zero-length view).
+        let mut valid = vec![false; num_rows];
         let mut vi = 0;
         for (row, view_slot) in views.iter_mut().enumerate() {
             if vi < facts.len() && facts[vi].0 as usize == row {
@@ -659,23 +606,12 @@ fn build_string_view_trusted(
                     orig_block,
                     gen_block,
                 )?;
+                valid[row] = true;
                 vi += 1;
             }
         }
+        nulls = Some(NullBuffer::from(valid));
     }
-
-    let nulls = if dense {
-        None
-    } else {
-        let valid: Vec<bool> = (0..num_rows)
-            .map(|row| {
-                facts
-                    .binary_search_by_key(&(row as u32), |&(r, _)| r)
-                    .is_ok()
-            })
-            .collect();
-        Some(NullBuffer::from(valid))
-    };
 
     debug_assert!(
         {
@@ -855,49 +791,6 @@ fn build_string_array_validated(
     }
 }
 
-/// Read a string from the 2-buffer system.
-///
-/// Returns an error if the reference is out of bounds or the bytes are not valid UTF-8.
-fn read_str<'a>(
-    original: &'a [u8],
-    generated: &'a [u8],
-    original_len: usize,
-    sref: StringRef,
-) -> Result<&'a str, MaterializeError> {
-    let start = sref.offset as usize;
-    let end =
-        start
-            .checked_add(sref.len as usize)
-            .ok_or(MaterializeError::StringRefOutOfBounds {
-                offset: sref.offset,
-                len: sref.len,
-                buffer_len: original.len() + generated.len(),
-            })?;
-    let bytes = if start < original_len {
-        original
-            .get(start..end)
-            .ok_or(MaterializeError::StringRefOutOfBounds {
-                offset: sref.offset,
-                len: sref.len,
-                buffer_len: original.len(),
-            })?
-    } else {
-        let dec_start = start - original_len;
-        let dec_end = end - original_len;
-        generated
-            .get(dec_start..dec_end)
-            .ok_or(MaterializeError::StringRefOutOfBounds {
-                offset: sref.offset,
-                len: sref.len,
-                buffer_len: generated.len(),
-            })?
-    };
-    std::str::from_utf8(bytes).map_err(|_| MaterializeError::InvalidUtf8 {
-        offset: sref.offset,
-        len: sref.len,
-    })
-}
-
 /// Read string bytes from the 2-buffer system without UTF-8 validation.
 ///
 /// Returns the raw bytes referenced by `sref`. Callers must validate UTF-8
@@ -1004,7 +897,7 @@ mod tests {
         acc.push_i64(0, 100);
         acc.push_i64(2, 300);
 
-        let mode = FinalizationMode::Detached {
+        let mode = FinalizationMode {
             original_buf: Buffer::from(&[] as &[u8]),
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
@@ -1024,7 +917,7 @@ mod tests {
         acc.push_str(0, StringRef { offset: 0, len: 5 }); // "hello"
         acc.push_str(1, StringRef { offset: 6, len: 5 }); // "world"
 
-        let mode = FinalizationMode::Detached {
+        let mode = FinalizationMode {
             original_buf: Buffer::from(&input[..]),
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
@@ -1036,17 +929,16 @@ mod tests {
     }
 
     #[test]
-    fn planned_string_view_materialize() {
+    fn planned_string_trusted_materialize() {
         let input = b"hello world";
-        let arrow_buf = Buffer::from(&input[..]);
         let mut acc = ColumnAccumulator::for_planned(FieldKind::Utf8View);
         acc.push_str(0, StringRef { offset: 0, len: 5 });
         acc.push_str(1, StringRef { offset: 6, len: 5 });
 
-        let mode = FinalizationMode::View {
-            original: arrow_buf,
-            original_len: input.len() as u32,
-            generated: None,
+        let mode = FinalizationMode {
+            original_buf: Buffer::from(&input[..]),
+            generated_buf: Buffer::from(&[] as &[u8]),
+            utf8_trusted: true,
         };
         let (field, arr) = acc.materialize("msg", 2, mode).unwrap().unwrap();
         assert_eq!(field.data_type(), &DataType::Utf8View);
@@ -1072,7 +964,7 @@ mod tests {
             },
         );
 
-        let mode = FinalizationMode::Detached {
+        let mode = FinalizationMode {
             original_buf: Buffer::from(&input[..]),
             generated_buf: Buffer::from(&generated[..]),
             utf8_trusted: true,
@@ -1089,7 +981,7 @@ mod tests {
         acc.push_i64(0, 42);
         acc.push_i64(1, 99);
 
-        let mode = FinalizationMode::Detached {
+        let mode = FinalizationMode {
             original_buf: Buffer::from(&[] as &[u8]),
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
@@ -1109,7 +1001,7 @@ mod tests {
         let input = b"OK";
         acc.push_str(1, StringRef { offset: 0, len: 2 });
 
-        let mode = FinalizationMode::Detached {
+        let mode = FinalizationMode {
             original_buf: Buffer::from(&input[..]),
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
@@ -1126,7 +1018,7 @@ mod tests {
     #[test]
     fn empty_accumulator_returns_none() {
         let acc = ColumnAccumulator::for_planned(FieldKind::Int64);
-        let mode = FinalizationMode::Detached {
+        let mode = FinalizationMode {
             original_buf: Buffer::from(&[] as &[u8]),
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
@@ -1141,7 +1033,7 @@ mod tests {
         acc.push_f64(0, 1.5); // no-op for Int64
         acc.push_bool(0, true); // no-op for Int64
 
-        let mode = FinalizationMode::Detached {
+        let mode = FinalizationMode {
             original_buf: Buffer::from(&[] as &[u8]),
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
@@ -1156,7 +1048,7 @@ mod tests {
         acc.clear();
         acc.push_i64(0, 200);
 
-        let mode = FinalizationMode::Detached {
+        let mode = FinalizationMode {
             original_buf: Buffer::from(&[] as &[u8]),
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
@@ -1204,7 +1096,7 @@ mod tests {
             },
         );
 
-        let mode = FinalizationMode::Detached {
+        let mode = FinalizationMode {
             original_buf: Buffer::from(b"short" as &[u8]),
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
@@ -1224,7 +1116,7 @@ mod tests {
         let mut acc = ColumnAccumulator::for_planned(FieldKind::Utf8View);
         acc.push_str(0, StringRef { offset: 0, len: 4 });
 
-        let mode = FinalizationMode::Detached {
+        let mode = FinalizationMode {
             original_buf: Buffer::from(bad_bytes),
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: false,
@@ -1239,11 +1131,10 @@ mod tests {
     }
 
     #[test]
-    fn view_mode_out_of_bounds_returns_error() {
+    fn out_of_bounds_generated_returns_error() {
         let input = b"short";
-        let arrow_buf = Buffer::from(&input[..]);
         let mut acc = ColumnAccumulator::for_planned(FieldKind::Utf8View);
-        // Reference past generated buffer (which doesn't exist)
+        // Reference past generated buffer (which is empty)
         acc.push_str(
             0,
             StringRef {
@@ -1252,10 +1143,10 @@ mod tests {
             },
         );
 
-        let mode = FinalizationMode::View {
-            original: arrow_buf,
-            original_len: input.len() as u32,
-            generated: None,
+        let mode = FinalizationMode {
+            original_buf: Buffer::from(&input[..]),
+            generated_buf: Buffer::from(&[] as &[u8]),
+            utf8_trusted: true,
         };
         let result = acc.materialize("x", 1, mode);
         assert!(result.is_err());

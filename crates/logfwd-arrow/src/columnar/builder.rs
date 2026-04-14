@@ -347,7 +347,7 @@ impl ColumnarBatchBuilder {
 
         // utf8_trusted: true because write_str takes &str (Rust guarantees UTF-8)
         // and write_str_ref is only used with scanner-validated buffers.
-        let mode = FinalizationMode::Detached {
+        let mode = FinalizationMode {
             original_buf: original,
             generated_buf: generated,
             utf8_trusted: true,
@@ -358,37 +358,7 @@ impl ColumnarBatchBuilder {
         Ok(result)
     }
 
-    /// Materialize with zero-copy StringViewArray.
-    ///
-    /// `original` is the input buffer (e.g., protobuf wire bytes).
-    /// `original_len` is the length of the original buffer.
-    /// Strings with `offset < original_len` reference the original buffer;
-    /// strings with `offset >= original_len` reference the generated buffer.
-    pub fn finish_batch_view(
-        &mut self,
-        original: Buffer,
-        original_len: u32,
-    ) -> Result<RecordBatch, BuilderError> {
-        debug_assert_eq!(self.lifecycle.state(), BuilderState::InBatch);
-        let num_rows = self.lifecycle.row_count() as usize;
-
-        let generated = if self.string_buf.is_empty() {
-            None
-        } else {
-            Some(Buffer::from(self.string_buf.as_slice()))
-        };
-        let mode = FinalizationMode::View {
-            original,
-            original_len,
-            generated,
-        };
-
-        let result = self.materialize_all(num_rows, mode)?;
-        self.lifecycle.finish_batch();
-        Ok(result)
-    }
-
-    /// Core materialization shared by both detached and view paths.
+    /// Core materialization — shared by all finalization paths.
     fn materialize_all(
         &self,
         num_rows: usize,
@@ -486,6 +456,73 @@ mod tests {
         let val = plan.declare_planned("value", FieldKind::Float64).unwrap();
         let builder = ColumnarBatchBuilder::new(plan);
         (builder, ts, sev, val)
+    }
+
+    /// OTLP-like 15-field plan for scale tests (4 int, 10 str, 1 float).
+    struct OtlpHandles {
+        int_handles: [FieldHandle; 4],
+        str_handles: [FieldHandle; 10],
+        float_handles: [FieldHandle; 1],
+    }
+
+    fn make_otlp_plan() -> (ColumnarBatchBuilder, OtlpHandles) {
+        let mut plan = BatchPlan::new();
+        let int_handles: [FieldHandle; 4] = [
+            plan.declare_planned("timestamp_ns", FieldKind::Int64)
+                .unwrap(),
+            plan.declare_planned("severity_number", FieldKind::Int64)
+                .unwrap(),
+            plan.declare_planned("flags", FieldKind::Int64).unwrap(),
+            plan.declare_planned("attributes.http.status_code", FieldKind::Int64)
+                .unwrap(),
+        ];
+        let str_handles: [FieldHandle; 10] = [
+            plan.declare_planned("severity_text", FieldKind::Utf8View)
+                .unwrap(),
+            plan.declare_planned("body", FieldKind::Utf8View).unwrap(),
+            plan.declare_planned("trace_id", FieldKind::Utf8View)
+                .unwrap(),
+            plan.declare_planned("span_id", FieldKind::Utf8View)
+                .unwrap(),
+            plan.declare_planned("resource.service.name", FieldKind::Utf8View)
+                .unwrap(),
+            plan.declare_planned("resource.host.name", FieldKind::Utf8View)
+                .unwrap(),
+            plan.declare_planned("scope.name", FieldKind::Utf8View)
+                .unwrap(),
+            plan.declare_planned("scope.version", FieldKind::Utf8View)
+                .unwrap(),
+            plan.declare_planned("attributes.http.method", FieldKind::Utf8View)
+                .unwrap(),
+            plan.declare_planned("attributes.http.path", FieldKind::Utf8View)
+                .unwrap(),
+        ];
+        let float_handles: [FieldHandle; 1] = [plan
+            .declare_planned("attributes.duration_ms", FieldKind::Float64)
+            .unwrap()];
+
+        (
+            ColumnarBatchBuilder::new(plan),
+            OtlpHandles {
+                int_handles,
+                str_handles,
+                float_handles,
+            },
+        )
+    }
+
+    fn write_otlp_row(b: &mut ColumnarBatchBuilder, h: &OtlpHandles, base: i64) {
+        b.begin_row();
+        for (i, &handle) in h.int_handles.iter().enumerate() {
+            b.write_i64(handle, base + i as i64 * 1000);
+        }
+        for &handle in &h.str_handles {
+            b.write_str(handle, "example-value-0123456789").unwrap();
+        }
+        for &handle in &h.float_handles {
+            b.write_f64(handle, base as f64 * 0.001);
+        }
+        b.end_row();
     }
 
     // -----------------------------------------------------------------------
@@ -839,37 +876,30 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // View mode finalization
+    // Zero-copy finalization via set_original_buffer
     // -----------------------------------------------------------------------
 
     #[test]
-    fn finish_batch_view_produces_string_view_array() {
+    fn original_buffer_produces_string_view_array() {
         let mut plan = BatchPlan::new();
         let ts = plan.declare_planned("ts", FieldKind::Int64).unwrap();
         let msg = plan.declare_planned("msg", FieldKind::Utf8View).unwrap();
         let mut b = ColumnarBatchBuilder::new(plan);
 
         let input = b"hello world";
-        let arrow_buf = Buffer::from(&input[..]);
 
         b.begin_batch();
+        b.set_original_buffer(input);
         b.begin_row();
         b.write_i64(ts, 1000);
-        // Use str_ref pointing into the original buffer
-        b.write_str_ref(
-            msg,
-            super::super::accumulator::StringRef { offset: 0, len: 5 },
-        );
+        b.write_str_ref(msg, StringRef { offset: 0, len: 5 });
         b.end_row();
         b.begin_row();
         b.write_i64(ts, 2000);
-        b.write_str_ref(
-            msg,
-            super::super::accumulator::StringRef { offset: 6, len: 5 },
-        );
+        b.write_str_ref(msg, StringRef { offset: 6, len: 5 });
         b.end_row();
 
-        let batch = b.finish_batch_view(arrow_buf, input.len() as u32).unwrap();
+        let batch = b.finish_batch().unwrap();
         assert_eq!(batch.num_rows(), 2);
 
         let msg_col = batch.column_by_name("msg").unwrap();
@@ -893,7 +923,7 @@ mod tests {
         // Write a str_ref pointing beyond any valid buffer
         b.write_str_ref(
             msg,
-            super::super::accumulator::StringRef {
+            StringRef {
                 offset: 9999,
                 len: 10,
             },
@@ -977,65 +1007,7 @@ mod tests {
     /// Validates correctness at scale and prints timing for manual inspection.
     #[test]
     fn planned_fields_at_scale() {
-        let mut plan = BatchPlan::new();
-        let ts = plan
-            .declare_planned("timestamp_ns", FieldKind::Int64)
-            .unwrap();
-        let sev_num = plan
-            .declare_planned("severity_number", FieldKind::Int64)
-            .unwrap();
-        let sev_text = plan
-            .declare_planned("severity_text", FieldKind::Utf8View)
-            .unwrap();
-        let body = plan.declare_planned("body", FieldKind::Utf8View).unwrap();
-        let flags = plan.declare_planned("flags", FieldKind::Int64).unwrap();
-        let trace_id = plan
-            .declare_planned("trace_id", FieldKind::Utf8View)
-            .unwrap();
-        let span_id = plan
-            .declare_planned("span_id", FieldKind::Utf8View)
-            .unwrap();
-        let res_svc = plan
-            .declare_planned("resource.service.name", FieldKind::Utf8View)
-            .unwrap();
-        let res_host = plan
-            .declare_planned("resource.host.name", FieldKind::Utf8View)
-            .unwrap();
-        let scope_name = plan
-            .declare_planned("scope.name", FieldKind::Utf8View)
-            .unwrap();
-        let scope_ver = plan
-            .declare_planned("scope.version", FieldKind::Utf8View)
-            .unwrap();
-        let attr_method = plan
-            .declare_planned("attributes.http.method", FieldKind::Utf8View)
-            .unwrap();
-        let attr_status = plan
-            .declare_planned("attributes.http.status_code", FieldKind::Int64)
-            .unwrap();
-        let attr_dur = plan
-            .declare_planned("attributes.duration_ms", FieldKind::Float64)
-            .unwrap();
-        let attr_path = plan
-            .declare_planned("attributes.http.path", FieldKind::Utf8View)
-            .unwrap();
-
-        let handles_int = [ts, sev_num, flags, attr_status];
-        let handles_str = [
-            sev_text,
-            body,
-            trace_id,
-            span_id,
-            res_svc,
-            res_host,
-            scope_name,
-            scope_ver,
-            attr_method,
-            attr_path,
-        ];
-        let handles_float = [attr_dur];
-
-        let mut b = ColumnarBatchBuilder::new(plan);
+        let (mut b, h) = make_otlp_plan();
         let rows_per_batch: u32 = 1000;
         let num_batches: u64 = 10;
 
@@ -1044,18 +1016,8 @@ mod tests {
         for batch_idx in 0..num_batches {
             b.begin_batch();
             for row in 0..rows_per_batch {
-                b.begin_row();
                 let base = (batch_idx as i64) * (rows_per_batch as i64) + row as i64;
-                for (i, &h) in handles_int.iter().enumerate() {
-                    b.write_i64(h, base + i as i64 * 1000);
-                }
-                for &h in &handles_str {
-                    b.write_str(h, "example-value-0123456789").unwrap();
-                }
-                for &h in &handles_float {
-                    b.write_f64(h, base as f64 * 0.001);
-                }
-                b.end_row();
+                write_otlp_row(&mut b, &h, base);
             }
             let batch = b.finish_batch().unwrap();
             assert_eq!(batch.num_rows(), rows_per_batch as usize);
@@ -1226,186 +1188,6 @@ mod tests {
         );
     }
 
-    /// ColumnarBatchBuilder view finalization: same 15-field workload.
-    #[test]
-    fn planned_fields_view_at_scale() {
-        let mut plan = BatchPlan::new();
-        let ts = plan
-            .declare_planned("timestamp_ns", FieldKind::Int64)
-            .unwrap();
-        let sev_num = plan
-            .declare_planned("severity_number", FieldKind::Int64)
-            .unwrap();
-        let sev_text = plan
-            .declare_planned("severity_text", FieldKind::Utf8View)
-            .unwrap();
-        let body = plan.declare_planned("body", FieldKind::Utf8View).unwrap();
-        let flags = plan.declare_planned("flags", FieldKind::Int64).unwrap();
-        let trace_id = plan
-            .declare_planned("trace_id", FieldKind::Utf8View)
-            .unwrap();
-        let span_id = plan
-            .declare_planned("span_id", FieldKind::Utf8View)
-            .unwrap();
-        let res_svc = plan
-            .declare_planned("resource.service.name", FieldKind::Utf8View)
-            .unwrap();
-        let res_host = plan
-            .declare_planned("resource.host.name", FieldKind::Utf8View)
-            .unwrap();
-        let scope_name = plan
-            .declare_planned("scope.name", FieldKind::Utf8View)
-            .unwrap();
-        let scope_ver = plan
-            .declare_planned("scope.version", FieldKind::Utf8View)
-            .unwrap();
-        let attr_method = plan
-            .declare_planned("attributes.http.method", FieldKind::Utf8View)
-            .unwrap();
-        let attr_status = plan
-            .declare_planned("attributes.http.status_code", FieldKind::Int64)
-            .unwrap();
-        let attr_dur = plan
-            .declare_planned("attributes.duration_ms", FieldKind::Float64)
-            .unwrap();
-        let attr_path = plan
-            .declare_planned("attributes.http.path", FieldKind::Utf8View)
-            .unwrap();
-
-        let handles_int = [ts, sev_num, flags, attr_status];
-        let handles_str = [
-            sev_text,
-            body,
-            trace_id,
-            span_id,
-            res_svc,
-            res_host,
-            scope_name,
-            scope_ver,
-            attr_method,
-            attr_path,
-        ];
-        let handles_float = [attr_dur];
-
-        let mut b = ColumnarBatchBuilder::new(plan);
-        let rows_per_batch: u32 = 1000;
-        let num_batches: u64 = 10;
-
-        let start = std::time::Instant::now();
-
-        for batch_idx in 0..num_batches {
-            b.begin_batch();
-            for row in 0..rows_per_batch {
-                b.begin_row();
-                let base = (batch_idx as i64) * (rows_per_batch as i64) + row as i64;
-                for (i, &h) in handles_int.iter().enumerate() {
-                    b.write_i64(h, base + i as i64 * 1000);
-                }
-                for &h in &handles_str {
-                    b.write_str(h, "example-value-0123456789").unwrap();
-                }
-                for &h in &handles_float {
-                    b.write_f64(h, base as f64 * 0.001);
-                }
-                b.end_row();
-            }
-            let batch = b
-                .finish_batch_view(arrow::buffer::Buffer::from(b"" as &[u8]), 0)
-                .unwrap();
-            assert_eq!(batch.num_rows(), rows_per_batch as usize);
-            assert_eq!(batch.num_columns(), 15);
-        }
-
-        let elapsed = start.elapsed();
-        let total_rows = u64::from(rows_per_batch) * num_batches;
-        let rows_per_sec = total_rows as f64 / elapsed.as_secs_f64();
-
-        eprintln!(
-            "\n  planned_fields_view: {} rows in {:.1?} ({:.0} rows/sec, {:.0} ns/row)\n",
-            total_rows,
-            elapsed,
-            rows_per_sec,
-            elapsed.as_nanos() as f64 / total_rows as f64,
-        );
-    }
-
-    /// StreamingBuilder view baseline: same 15-field workload.
-    #[test]
-    fn streaming_builder_view_baseline_at_scale() {
-        use crate::streaming_builder::StreamingBuilder;
-
-        let field_names: Vec<&str> = vec![
-            "timestamp_ns",
-            "severity_number",
-            "severity_text",
-            "body",
-            "flags",
-            "trace_id",
-            "span_id",
-            "resource.service.name",
-            "resource.host.name",
-            "scope.name",
-            "scope.version",
-            "attributes.http.method",
-            "attributes.http.status_code",
-            "attributes.duration_ms",
-            "attributes.http.path",
-        ];
-
-        let rows_per_batch: u32 = 1000;
-        let num_batches: u64 = 10;
-
-        let mut sb = StreamingBuilder::new(None);
-        let start = std::time::Instant::now();
-
-        for _batch_idx in 0..num_batches {
-            let dummy_buf = bytes::Bytes::from_static(b"");
-            sb.begin_batch(dummy_buf);
-
-            let indices: Vec<usize> = field_names
-                .iter()
-                .map(|name| sb.resolve_field(name.as_bytes()))
-                .collect();
-
-            for row in 0..rows_per_batch {
-                sb.begin_row();
-                for &idx in &[indices[0], indices[1], indices[4], indices[12]] {
-                    sb.append_i64_value_by_idx(idx, row as i64);
-                }
-                for &idx in &[
-                    indices[2],
-                    indices[3],
-                    indices[5],
-                    indices[6],
-                    indices[7],
-                    indices[8],
-                    indices[9],
-                    indices[10],
-                    indices[11],
-                    indices[14],
-                ] {
-                    sb.append_decoded_str_by_idx(idx, b"example-value-0123456789");
-                }
-                sb.append_f64_value_by_idx(indices[13], row as f64 * 0.001);
-                sb.end_row();
-            }
-            let batch = sb.finish_batch().unwrap();
-            assert_eq!(batch.num_rows(), rows_per_batch as usize);
-        }
-
-        let elapsed = start.elapsed();
-        let total_rows = u64::from(rows_per_batch) * num_batches;
-        let rows_per_sec = total_rows as f64 / elapsed.as_secs_f64();
-
-        eprintln!(
-            "\n  streaming_builder_view_baseline: {} rows in {:.1?} ({:.0} rows/sec, {:.0} ns/row)\n",
-            total_rows,
-            elapsed,
-            rows_per_sec,
-            elapsed.as_nanos() as f64 / total_rows as f64,
-        );
-    }
-
     /// Report type sizes for performance-critical structures.
     #[test]
     fn type_sizes() {
@@ -1429,82 +1211,14 @@ mod tests {
     /// CPU breakdown: write phase vs materialization phase.
     #[test]
     fn cpu_breakdown_write_vs_materialize() {
-        let mut plan = BatchPlan::new();
-        let ts = plan
-            .declare_planned("timestamp_ns", FieldKind::Int64)
-            .unwrap();
-        let sev_num = plan
-            .declare_planned("severity_number", FieldKind::Int64)
-            .unwrap();
-        let sev_text = plan
-            .declare_planned("severity_text", FieldKind::Utf8View)
-            .unwrap();
-        let body = plan.declare_planned("body", FieldKind::Utf8View).unwrap();
-        let flags = plan.declare_planned("flags", FieldKind::Int64).unwrap();
-        let trace_id = plan
-            .declare_planned("trace_id", FieldKind::Utf8View)
-            .unwrap();
-        let span_id = plan
-            .declare_planned("span_id", FieldKind::Utf8View)
-            .unwrap();
-        let res_svc = plan
-            .declare_planned("resource.service.name", FieldKind::Utf8View)
-            .unwrap();
-        let res_host = plan
-            .declare_planned("resource.host.name", FieldKind::Utf8View)
-            .unwrap();
-        let scope_name = plan
-            .declare_planned("scope.name", FieldKind::Utf8View)
-            .unwrap();
-        let scope_ver = plan
-            .declare_planned("scope.version", FieldKind::Utf8View)
-            .unwrap();
-        let attr_method = plan
-            .declare_planned("attributes.http.method", FieldKind::Utf8View)
-            .unwrap();
-        let attr_status = plan
-            .declare_planned("attributes.http.status_code", FieldKind::Int64)
-            .unwrap();
-        let attr_dur = plan
-            .declare_planned("attributes.duration_ms", FieldKind::Float64)
-            .unwrap();
-        let attr_path = plan
-            .declare_planned("attributes.http.path", FieldKind::Utf8View)
-            .unwrap();
-
-        let handles_int = [ts, sev_num, flags, attr_status];
-        let handles_str = [
-            sev_text,
-            body,
-            trace_id,
-            span_id,
-            res_svc,
-            res_host,
-            scope_name,
-            scope_ver,
-            attr_method,
-            attr_path,
-        ];
-        let handles_float = [attr_dur];
-
-        let mut b = ColumnarBatchBuilder::new(plan);
+        let (mut b, h) = make_otlp_plan();
         let rows_per_batch: u32 = 1000;
         let num_batches: u64 = 20;
 
         // Warmup
         b.begin_batch();
         for row in 0..rows_per_batch {
-            b.begin_row();
-            for (i, &h) in handles_int.iter().enumerate() {
-                b.write_i64(h, row as i64 + i as i64);
-            }
-            for &h in &handles_str {
-                b.write_str(h, "warmup-string-value").unwrap();
-            }
-            for &h in &handles_float {
-                b.write_f64(h, row as f64);
-            }
-            b.end_row();
+            write_otlp_row(&mut b, &h, row as i64);
         }
         let _ = b.finish_batch().unwrap();
 
@@ -1516,18 +1230,8 @@ mod tests {
 
             let write_start = std::time::Instant::now();
             for row in 0..rows_per_batch {
-                b.begin_row();
                 let base = (batch_idx as i64) * (rows_per_batch as i64) + row as i64;
-                for (i, &h) in handles_int.iter().enumerate() {
-                    b.write_i64(h, base + i as i64 * 1000);
-                }
-                for &h in &handles_str {
-                    b.write_str(h, "example-value-0123456789").unwrap();
-                }
-                for &h in &handles_float {
-                    b.write_f64(h, base as f64 * 0.001);
-                }
-                b.end_row();
+                write_otlp_row(&mut b, &h, base);
             }
             total_write += write_start.elapsed();
 

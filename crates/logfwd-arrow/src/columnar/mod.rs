@@ -10,10 +10,7 @@
 //!
 //! See `dev-docs/research/columnar-batch-builder.md` for the design intent.
 
-#[allow(dead_code)]
 pub mod accumulator;
-#[allow(dead_code)]
 pub mod builder;
-#[allow(dead_code)]
 pub mod plan;
 pub(crate) mod row_protocol;

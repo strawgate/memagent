@@ -331,9 +331,7 @@ fn run_columnar_view(warmup: bool) -> stats_alloc::Stats {
             }
             b.end_row();
         }
-        let _ = b
-            .finish_batch_view(arrow::buffer::Buffer::from(b"" as &[u8]), 0)
-            .unwrap();
+        let _ = b.finish_batch().unwrap();
     }
 
     let region = Region::new(GLOBAL);
@@ -353,9 +351,7 @@ fn run_columnar_view(warmup: bool) -> stats_alloc::Stats {
             }
             b.end_row();
         }
-        let batch = b
-            .finish_batch_view(arrow::buffer::Buffer::from(b"" as &[u8]), 0)
-            .unwrap();
+        let batch = b.finish_batch().unwrap();
         assert_eq!(batch.num_rows(), ROWS_PER_BATCH as usize);
     }
 

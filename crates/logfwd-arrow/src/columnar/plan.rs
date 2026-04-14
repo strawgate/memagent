@@ -208,7 +208,7 @@ impl BatchPlan {
                 }),
             }
         } else {
-            let handle = self.alloc_handle();
+            let handle = self.alloc_handle()?;
             let shared_name: Arc<str> = Arc::from(name);
             self.fields.push(FieldEntry {
                 name: Arc::clone(&shared_name),
@@ -243,7 +243,7 @@ impl BatchPlan {
                 }),
             }
         } else {
-            let handle = self.alloc_handle();
+            let handle = self.alloc_handle()?;
             let shared_name: Arc<str> = Arc::from(name);
             self.fields.push(FieldEntry {
                 name: Arc::clone(&shared_name),
@@ -275,10 +275,11 @@ impl BatchPlan {
         self.fields.iter().map(|e| (e.handle, &*e.name, &e.mode))
     }
 
-    fn alloc_handle(&self) -> FieldHandle {
-        FieldHandle(
-            u32::try_from(self.fields.len()).expect("BatchPlan field count exceeds u32::MAX"),
-        )
+    fn alloc_handle(&self) -> Result<FieldHandle, PlanError> {
+        let idx = u32::try_from(self.fields.len()).map_err(|_| PlanError::TooManyFields {
+            count: self.fields.len(),
+        })?;
+        Ok(FieldHandle(idx))
     }
 }
 
@@ -297,6 +298,8 @@ pub enum PlanError {
     },
     /// A field mode conflict (e.g., planned field resolved as dynamic).
     ModeMismatch { field: String, reason: &'static str },
+    /// The plan has more fields than can be addressed by `FieldHandle` (u32).
+    TooManyFields { count: usize },
 }
 
 impl std::fmt::Display for PlanError {
@@ -312,6 +315,9 @@ impl std::fmt::Display for PlanError {
             ),
             PlanError::ModeMismatch { field, reason } => {
                 write!(f, "field {field:?}: {reason}")
+            }
+            PlanError::TooManyFields { count } => {
+                write!(f, "too many fields: {count} exceeds u32::MAX")
             }
         }
     }
