@@ -400,19 +400,19 @@
           addOtlpReq(otlpBatchNum, 200, null);
         }
       }
-      // Retry fires
+      // Retry fires — reuse the same batch number (it's the retried batch)
       if (otlpRetrying && tick >= otlpRetryUntil) {
         otlpRetrying = false;
+        var retryBatch = otlpBatchNum; // the batch that was 429'd
         var stillFull = writeSpeed > pipelineSpeed * 1.2;
-        otlpBatchNum++;
         if (stillFull) {
           otlpRejected++;
           otlpRetrying = true;
           otlpRetryUntil = tick + 12; // back off longer
-          addOtlpReq(otlpBatchNum, 429, 'Retry-After: 3s (backoff)');
+          addOtlpReq(retryBatch, 429, 'Retry-After: 3s (backoff)');
         } else {
           otlpAccepted++;
-          addOtlpReq(otlpBatchNum, 200, 'retry succeeded');
+          addOtlpReq(retryBatch, 200, 'retry succeeded');
         }
       }
     }
