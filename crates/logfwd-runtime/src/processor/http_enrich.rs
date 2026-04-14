@@ -177,23 +177,26 @@ impl HttpEnrichProcessor {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-        // If more results than capacity, only keep the newest ones.
-        let results = if results.len() > self.config.max_entries {
-            &results[results.len() - self.config.max_entries..]
-        } else {
-            results
-        };
-
-        // Evict if we would exceed capacity after inserting.
-        // Only count cacheable entries (non-Error) for headroom since errors
-        // are skipped below.
-        let cacheable_count = results
+        // Filter to cacheable results first (errors are transient, not cached).
+        let cacheable: Vec<&(String, LookupResult)> = results
             .iter()
             .filter(|(_, r)| !matches!(r, LookupResult::Error(_)))
+            .collect();
+
+        // If more cacheable results than capacity, only keep the newest ones.
+        let cacheable = if cacheable.len() > self.config.max_entries {
+            &cacheable[cacheable.len() - self.config.max_entries..]
+        } else {
+            &cacheable[..]
+        };
+
+        // Count only net-new keys (not already in cache) for eviction sizing.
+        let net_new = cacheable
+            .iter()
+            .filter(|(k, _)| !cache.contains_key(k))
             .count();
-        if cache.len() + cacheable_count > self.config.max_entries {
-            let evict_target = (cache.len() + cacheable_count)
-                .saturating_sub(self.config.max_entries)
+        if cache.len() + net_new > self.config.max_entries {
+            let evict_target = (cache.len() + net_new).saturating_sub(self.config.max_entries)
                 + self.config.max_entries / 10;
             let mut entries: Vec<(Instant, String)> = cache
                 .iter()
@@ -206,11 +209,7 @@ impl HttpEnrichProcessor {
         }
 
         let now = Instant::now();
-        for (key, result) in results {
-            // Only cache Hit/Miss — errors are transient and should be retried.
-            if matches!(result, LookupResult::Error(_)) {
-                continue;
-            }
+        for (key, result) in cacheable {
             cache.insert(
                 key.clone(),
                 CacheEntry {
