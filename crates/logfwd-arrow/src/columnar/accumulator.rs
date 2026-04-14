@@ -281,34 +281,35 @@ impl ColumnAccumulator {
         name: &str,
         num_rows: usize,
         mode: FinalizationMode,
+        dedup: bool,
     ) -> Result<Option<(Field, ArrayRef)>, MaterializeError> {
         match self {
             ColumnAccumulator::Int64 { facts, .. } => {
                 if facts.is_empty() {
                     return Ok(None);
                 }
-                let (arr, dt) = build_int64(facts, num_rows);
+                let (arr, dt) = build_int64(facts, num_rows, dedup);
                 Ok(Some((Field::new(name, dt, true), arr)))
             }
             ColumnAccumulator::Float64 { facts, .. } => {
                 if facts.is_empty() {
                     return Ok(None);
                 }
-                let (arr, dt) = build_float64(facts, num_rows);
+                let (arr, dt) = build_float64(facts, num_rows, dedup);
                 Ok(Some((Field::new(name, dt, true), arr)))
             }
             ColumnAccumulator::Bool { facts, .. } => {
                 if facts.is_empty() {
                     return Ok(None);
                 }
-                let (arr, dt) = build_bool(facts, num_rows);
+                let (arr, dt) = build_bool(facts, num_rows, dedup);
                 Ok(Some((Field::new(name, dt, true), arr)))
             }
             ColumnAccumulator::String { facts, .. } => {
                 if facts.is_empty() {
                     return Ok(None);
                 }
-                let (arr, dt) = build_string(facts, num_rows, &mode)?;
+                let (arr, dt) = build_string(facts, num_rows, &mode, dedup)?;
                 Ok(Some((Field::new(name, dt, true), arr)))
             }
             ColumnAccumulator::Dynamic {
@@ -337,20 +338,21 @@ impl ColumnAccumulator {
                         float_facts,
                         bool_facts,
                         str_facts,
+                        dedup,
                     )?))
                 } else {
                     // Single type → flat column
                     if *has_int {
-                        let (arr, dt) = build_int64(int_facts, num_rows);
+                        let (arr, dt) = build_int64(int_facts, num_rows, dedup);
                         Ok(Some((Field::new(name, dt, true), arr)))
                     } else if *has_float {
-                        let (arr, dt) = build_float64(float_facts, num_rows);
+                        let (arr, dt) = build_float64(float_facts, num_rows, dedup);
                         Ok(Some((Field::new(name, dt, true), arr)))
                     } else if *has_str {
-                        let (arr, dt) = build_string(str_facts, num_rows, &mode)?;
+                        let (arr, dt) = build_string(str_facts, num_rows, &mode, dedup)?;
                         Ok(Some((Field::new(name, dt, true), arr)))
                     } else {
-                        let (arr, dt) = build_bool(bool_facts, num_rows);
+                        let (arr, dt) = build_bool(bool_facts, num_rows, dedup);
                         Ok(Some((Field::new(name, dt, true), arr)))
                     }
                 }
@@ -428,15 +430,19 @@ pub struct FinalizationMode {
 
 /// Check whether facts cover rows 0..num_rows exactly (no gaps, no duplicates).
 ///
-/// Facts are appended in row order. If `facts.len() == num_rows` and the last
-/// fact targets row `num_rows - 1`, the pigeonhole principle guarantees every
-/// row is present exactly once (rows are monotonically non-decreasing).
-fn is_dense<T>(facts: &[(u32, T)], num_rows: usize) -> bool {
-    facts.len() == num_rows && (num_rows == 0 || facts[num_rows - 1].0 as usize == num_rows - 1)
+/// The pigeonhole argument requires that row indices are *distinct*. With dedup
+/// enabled the builder's bitset/last-row guard guarantees at most one write per
+/// (row, field), so `facts.len() == num_rows ∧ last == num_rows - 1` is
+/// sufficient.  When dedup is disabled duplicate writes are possible, breaking
+/// the pigeonhole premise, so we conservatively return false.
+fn is_dense<T>(facts: &[(u32, T)], num_rows: usize, dedup: bool) -> bool {
+    dedup
+        && facts.len() == num_rows
+        && (num_rows == 0 || facts[num_rows - 1].0 as usize == num_rows - 1)
 }
 
-fn build_int64(facts: &[(u32, i64)], num_rows: usize) -> (ArrayRef, DataType) {
-    let dense = is_dense(facts, num_rows);
+fn build_int64(facts: &[(u32, i64)], num_rows: usize, dedup: bool) -> (ArrayRef, DataType) {
+    let dense = is_dense(facts, num_rows, dedup);
     let mut values = vec![0i64; num_rows];
     if dense {
         debug_assert!(
@@ -472,8 +478,8 @@ fn build_int64(facts: &[(u32, i64)], num_rows: usize) -> (ArrayRef, DataType) {
     )
 }
 
-fn build_float64(facts: &[(u32, f64)], num_rows: usize) -> (ArrayRef, DataType) {
-    let dense = is_dense(facts, num_rows);
+fn build_float64(facts: &[(u32, f64)], num_rows: usize, dedup: bool) -> (ArrayRef, DataType) {
+    let dense = is_dense(facts, num_rows, dedup);
     let mut values = vec![0.0f64; num_rows];
     if dense {
         debug_assert!(
@@ -509,8 +515,8 @@ fn build_float64(facts: &[(u32, f64)], num_rows: usize) -> (ArrayRef, DataType) 
     )
 }
 
-fn build_bool(facts: &[(u32, bool)], num_rows: usize) -> (ArrayRef, DataType) {
-    let dense = is_dense(facts, num_rows);
+fn build_bool(facts: &[(u32, bool)], num_rows: usize, dedup: bool) -> (ArrayRef, DataType) {
+    let dense = is_dense(facts, num_rows, dedup);
     let mut values = vec![false; num_rows];
     if dense {
         debug_assert!(
@@ -550,11 +556,24 @@ fn build_string(
     facts: &[(u32, StringRef)],
     num_rows: usize,
     mode: &FinalizationMode,
+    dedup: bool,
 ) -> Result<(ArrayRef, DataType), MaterializeError> {
     if mode.utf8_trusted {
-        build_string_view_trusted(facts, num_rows, &mode.original_buf, &mode.generated_buf)
+        build_string_view_trusted(
+            facts,
+            num_rows,
+            &mode.original_buf,
+            &mode.generated_buf,
+            dedup,
+        )
     } else {
-        build_string_array_validated(facts, num_rows, &mode.original_buf, &mode.generated_buf)
+        build_string_array_validated(
+            facts,
+            num_rows,
+            &mode.original_buf,
+            &mode.generated_buf,
+            dedup,
+        )
     }
 }
 
@@ -574,9 +593,10 @@ fn build_string_view_trusted(
     num_rows: usize,
     original_buf: &Buffer,
     generated_buf: &Buffer,
+    dedup: bool,
 ) -> Result<(ArrayRef, DataType), MaterializeError> {
     let original_len = original_buf.len();
-    let dense = is_dense(facts, num_rows);
+    let dense = is_dense(facts, num_rows, dedup);
 
     // Register source buffers as StringViewArray blocks.
     // block 0 = original, block 1 = generated (if non-empty).
@@ -737,9 +757,10 @@ fn build_string_array_validated(
     num_rows: usize,
     original_buf: &Buffer,
     generated_buf: &Buffer,
+    dedup: bool,
 ) -> Result<(ArrayRef, DataType), MaterializeError> {
     let original_len = original_buf.len();
-    let dense = is_dense(facts, num_rows);
+    let dense = is_dense(facts, num_rows, dedup);
     let mut offsets: Vec<i32> = Vec::with_capacity(num_rows + 1);
     let mut values: Vec<u8> =
         Vec::with_capacity(facts.iter().map(|(_, sref)| sref.len as usize).sum());
@@ -854,6 +875,7 @@ fn read_str_bytes<'a>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_conflict_struct(
     name: &str,
     num_rows: usize,
@@ -862,27 +884,28 @@ fn build_conflict_struct(
     float_facts: &[(u32, f64)],
     bool_facts: &[(u32, bool)],
     str_facts: &[(u32, StringRef)],
+    dedup: bool,
 ) -> Result<(Field, ArrayRef), MaterializeError> {
     let mut child_fields: Vec<Arc<Field>> = Vec::new();
     let mut child_arrays: Vec<ArrayRef> = Vec::new();
 
     if !int_facts.is_empty() {
-        let (arr, _) = build_int64(int_facts, num_rows);
+        let (arr, _) = build_int64(int_facts, num_rows, dedup);
         child_fields.push(Arc::new(Field::new("int", DataType::Int64, true)));
         child_arrays.push(arr);
     }
     if !float_facts.is_empty() {
-        let (arr, _) = build_float64(float_facts, num_rows);
+        let (arr, _) = build_float64(float_facts, num_rows, dedup);
         child_fields.push(Arc::new(Field::new("float", DataType::Float64, true)));
         child_arrays.push(arr);
     }
     if !str_facts.is_empty() {
-        let (arr, dt) = build_string(str_facts, num_rows, mode)?;
+        let (arr, dt) = build_string(str_facts, num_rows, mode, dedup)?;
         child_fields.push(Arc::new(Field::new("str", dt, true)));
         child_arrays.push(arr);
     }
     if !bool_facts.is_empty() {
-        let (arr, _) = build_bool(bool_facts, num_rows);
+        let (arr, _) = build_bool(bool_facts, num_rows, dedup);
         child_fields.push(Arc::new(Field::new("bool", DataType::Boolean, true)));
         child_arrays.push(arr);
     }
@@ -927,7 +950,7 @@ mod tests {
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
-        let (field, arr) = acc.materialize("ts", 3, mode).unwrap().unwrap();
+        let (field, arr) = acc.materialize("ts", 3, mode, true).unwrap().unwrap();
         assert_eq!(field.name(), "ts");
         let a = arr.as_primitive::<Int64Type>();
         assert_eq!(a.value(0), 100);
@@ -947,7 +970,7 @@ mod tests {
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
-        let (_, arr) = acc.materialize("msg", 2, mode).unwrap().unwrap();
+        let (_, arr) = acc.materialize("msg", 2, mode, true).unwrap().unwrap();
         let a = arr.as_string_view();
         assert_eq!(a.value(0), "hello");
         assert_eq!(a.value(1), "world");
@@ -965,7 +988,7 @@ mod tests {
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
-        let (field, arr) = acc.materialize("msg", 2, mode).unwrap().unwrap();
+        let (field, arr) = acc.materialize("msg", 2, mode, true).unwrap().unwrap();
         assert_eq!(field.data_type(), &DataType::Utf8View);
         let a = arr.as_string_view();
         assert_eq!(a.value(0), "hello");
@@ -994,7 +1017,7 @@ mod tests {
             generated_buf: Buffer::from(&generated[..]),
             utf8_trusted: true,
         };
-        let (_, arr) = acc.materialize("msg", 2, mode).unwrap().unwrap();
+        let (_, arr) = acc.materialize("msg", 2, mode, true).unwrap().unwrap();
         let a = arr.as_string_view();
         assert_eq!(a.value(0), "original");
         assert_eq!(a.value(1), "decoded");
@@ -1011,7 +1034,7 @@ mod tests {
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
-        let (field, arr) = acc.materialize("x", 2, mode).unwrap().unwrap();
+        let (field, arr) = acc.materialize("x", 2, mode, true).unwrap().unwrap();
         assert_eq!(field.data_type(), &DataType::Int64);
         let a = arr.as_primitive::<Int64Type>();
         assert_eq!(a.value(0), 42);
@@ -1031,7 +1054,7 @@ mod tests {
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
-        let (field, arr) = acc.materialize("status", 2, mode).unwrap().unwrap();
+        let (field, arr) = acc.materialize("status", 2, mode, true).unwrap().unwrap();
         assert!(matches!(field.data_type(), DataType::Struct(_)));
         let s = arr.as_struct();
         assert_eq!(s.num_columns(), 2);
@@ -1048,7 +1071,7 @@ mod tests {
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
-        assert!(acc.materialize("x", 3, mode).unwrap().is_none());
+        assert!(acc.materialize("x", 3, mode, true).unwrap().is_none());
     }
 
     #[test]
@@ -1063,7 +1086,7 @@ mod tests {
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
-        assert!(acc.materialize("x", 1, mode).unwrap().is_none()); // no int facts → None
+        assert!(acc.materialize("x", 1, mode, true).unwrap().is_none()); // no int facts → None
     }
 
     #[test]
@@ -1078,7 +1101,7 @@ mod tests {
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
-        let (_, arr) = acc.materialize("x", 1, mode).unwrap().unwrap();
+        let (_, arr) = acc.materialize("x", 1, mode, true).unwrap().unwrap();
         assert_eq!(arr.as_primitive::<Int64Type>().value(0), 200);
     }
 
@@ -1126,7 +1149,7 @@ mod tests {
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
-        let result = acc.materialize("x", 1, mode);
+        let result = acc.materialize("x", 1, mode, true);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -1146,7 +1169,7 @@ mod tests {
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: false,
         };
-        let result = acc.materialize("x", 1, mode);
+        let result = acc.materialize("x", 1, mode, true);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -1173,7 +1196,7 @@ mod tests {
             generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
-        let result = acc.materialize("x", 1, mode);
+        let result = acc.materialize("x", 1, mode, true);
         assert!(result.is_err());
     }
 }
@@ -1386,7 +1409,7 @@ mod proptests {
             let num_rows = values.len();
             let facts: Vec<(u32, i64)> = values.iter().enumerate()
                 .map(|(i, &v)| (i as u32, v)).collect();
-            let (arr, dt) = build_int64(&facts, num_rows);
+            let (arr, dt) = build_int64(&facts, num_rows, true);
             prop_assert_eq!(dt, DataType::Int64);
             prop_assert_eq!(arr.len(), num_rows);
             prop_assert_eq!(arr.null_count(), 0, "dense path must have no nulls");
@@ -1413,7 +1436,7 @@ mod proptests {
                 // Ensure at least one fact for a meaningful test.
                 facts.push((0, 42));
             }
-            let (arr, _) = build_int64(&facts, num_rows);
+            let (arr, _) = build_int64(&facts, num_rows, true);
             prop_assert_eq!(arr.len(), num_rows);
 
             let typed = arr.as_any().downcast_ref::<Int64Array>().unwrap();
@@ -1444,7 +1467,7 @@ mod proptests {
             let num_rows = values.len();
             let facts: Vec<(u32, f64)> = values.iter().enumerate()
                 .map(|(i, &v)| (i as u32, v)).collect();
-            let (arr, dt) = build_float64(&facts, num_rows);
+            let (arr, dt) = build_float64(&facts, num_rows, true);
             prop_assert_eq!(dt, DataType::Float64);
             prop_assert_eq!(arr.len(), num_rows);
             prop_assert_eq!(arr.null_count(), 0);
@@ -1466,7 +1489,7 @@ mod proptests {
             if facts.is_empty() {
                 facts.push((0, 42.0));
             }
-            let (arr, _) = build_float64(&facts, num_rows);
+            let (arr, _) = build_float64(&facts, num_rows, true);
             prop_assert_eq!(arr.len(), num_rows);
 
             let typed = arr.as_any().downcast_ref::<Float64Array>().unwrap();
@@ -1496,7 +1519,7 @@ mod proptests {
             let num_rows = values.len();
             let facts: Vec<(u32, bool)> = values.iter().enumerate()
                 .map(|(i, &v)| (i as u32, v)).collect();
-            let (arr, dt) = build_bool(&facts, num_rows);
+            let (arr, dt) = build_bool(&facts, num_rows, true);
             prop_assert_eq!(dt, DataType::Boolean);
             prop_assert_eq!(arr.len(), num_rows);
             prop_assert_eq!(arr.null_count(), 0);
@@ -1518,7 +1541,7 @@ mod proptests {
             if facts.is_empty() {
                 facts.push((0, true));
             }
-            let (arr, _) = build_bool(&facts, num_rows);
+            let (arr, _) = build_bool(&facts, num_rows, true);
             prop_assert_eq!(arr.len(), num_rows);
 
             let typed = arr.as_any().downcast_ref::<BooleanArray>().unwrap();
@@ -1530,6 +1553,41 @@ mod proptests {
                     fi += 1;
                 } else {
                     prop_assert!(typed.is_null(row));
+                }
+            }
+        }
+    }
+
+    // ── dedup=false duplicate rows ──────────────────────────────────────────
+
+    proptest! {
+        /// With dedup disabled and duplicate row indices, the sparse path must be
+        /// used and last-write-wins for each row.
+        #[test]
+        fn build_int64_no_dedup_duplicates(num_rows in 2usize..=16, seed in any::<u64>()) {
+            // Build facts with some duplicate row indices.
+            let mut facts: Vec<(u32, i64)> = Vec::new();
+            for i in 0..num_rows as u32 {
+                let row = (seed.wrapping_mul(i as u64 + 1) % num_rows as u64) as u32;
+                facts.push((row, i as i64 * 7));
+            }
+            // Sort by row to satisfy monotonicity requirement.
+            facts.sort_by_key(|f| f.0);
+            let (arr, _) = build_int64(&facts, num_rows, false);
+            prop_assert_eq!(arr.len(), num_rows);
+            let typed = arr.as_any().downcast_ref::<Int64Array>().unwrap();
+
+            // Verify last-write-wins for each row.
+            let mut expected: std::collections::HashMap<u32, i64> = std::collections::HashMap::new();
+            for &(row, val) in &facts {
+                expected.insert(row, val);
+            }
+            for row in 0..num_rows {
+                if let Some(&val) = expected.get(&(row as u32)) {
+                    prop_assert!(!typed.is_null(row), "written row must not be null");
+                    prop_assert_eq!(typed.value(row), val);
+                } else {
+                    prop_assert!(typed.is_null(row), "unwritten row must be null");
                 }
             }
         }

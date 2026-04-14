@@ -377,7 +377,7 @@ impl ColumnarBatchBuilder {
 
         for (handle, name, field_mode) in self.plan.fields() {
             let col = &self.columns[handle.index()];
-            match col.materialize(name, num_rows, mode.clone())? {
+            match col.materialize(name, num_rows, mode.clone(), self.dedup_enabled)? {
                 Some((field, array)) => {
                     schema_fields.push(field);
                     arrays.push(array);
