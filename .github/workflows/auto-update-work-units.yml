@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Update parent work-unit checkboxes
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             const closedNumber = context.payload.issue.number;
