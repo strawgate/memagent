@@ -361,7 +361,7 @@ fn inject_cri_metadata(
         let json_msg = &msg[start..];
         out.push(b'{');
         out.extend_from_slice(b"\"_timestamp\":\"");
-        out.extend_from_slice(timestamp);
+        json_escape_bytes(timestamp, out);
         out.extend_from_slice(b"\",\"_stream\":\"");
         out.extend_from_slice(stream);
         // Fixes #1658: if the message body after '{' is empty (just '}' possibly
@@ -384,7 +384,7 @@ fn inject_cri_metadata(
         // Plain text: wrap as {"_timestamp":"...","_stream":"...","<field>":"<escaped>"}
         // so that message content is preserved and the scanner can ingest the record.
         out.extend_from_slice(b"{\"_timestamp\":\"");
-        out.extend_from_slice(timestamp);
+        json_escape_bytes(timestamp, out);
         out.extend_from_slice(b"\",\"_stream\":\"");
         out.extend_from_slice(stream);
         out.extend_from_slice(b"\",\"");
@@ -614,6 +614,19 @@ mod tests {
             out,
             b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"body\":\"world\"}\n"
         );
+    }
+
+    #[test]
+    fn cri_injects_timestamp_escaped() {
+        let mut out = Vec::new();
+        inject_cri_metadata(
+            b"hello",
+            b"2024-01-15T10:30:00Z\n\"",
+            b"stdout",
+            "body",
+            &mut out,
+        );
+        assert_eq!(&out, b"{\"_timestamp\":\"2024-01-15T10:30:00Z\\n\\\"\",\"_stream\":\"stdout\",\"body\":\"hello\"}\n");
     }
 
     #[test]
