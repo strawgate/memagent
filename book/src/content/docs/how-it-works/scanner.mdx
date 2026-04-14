@@ -72,7 +72,7 @@ No scanning. Each field is extracted in constant time.
 
 ## Field pushdown
 
-Before scanning, logfwd analyzes your SQL query and builds a `ScanConfig` listing only the columns you reference. Fields not in the config are skipped entirely — no parsing, no memory allocation. On wide data (20+ fields), this gives 2-3x throughput improvement.
+Before scanning, logfwd analyzes your SQL query and builds a `ScanConfig` listing only the columns you reference. The scanner still reads each key to check `is_wanted()`, but skips value parsing and memory allocation for unwanted fields. On wide data (20+ fields), this gives 2-3x throughput improvement.
 
 Try it below — select fields or choose a preset to see how pushdown affects throughput on a realistic 20-field log line.
 

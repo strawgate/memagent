@@ -153,14 +153,24 @@
   var totalBytes = 0;
   for (var i = 0; i < FIELDS.length; i++) totalBytes += FIELDS[i].bytes;
 
-  // Throughput model (calibrated to real benchmarks)
-  var MAX_THROUGHPUT = 4.0;
+  // Throughput model (calibrated to published benchmarks)
+  // Known data points: (1, 3.8), (2, 3.4), (3, 3.4), (6, 2.0), (20, 0.56)
+  var MAX_THROUGHPUT = 3.8;
+  var THROUGHPUT_POINTS = [
+    [1, 3.8], [2, 3.4], [3, 3.4], [6, 2.0], [20, 0.56]
+  ];
   function estimateThroughput(n) {
     if (n === 0) return MAX_THROUGHPUT;
-    if (n <= 1) return 3.8;
-    if (n <= 3) return 3.4;
-    var t = 11.5 / (n + 0.4);
-    return Math.min(t, MAX_THROUGHPUT);
+    if (n <= THROUGHPUT_POINTS[0][0]) return THROUGHPUT_POINTS[0][1];
+    if (n >= THROUGHPUT_POINTS[THROUGHPUT_POINTS.length - 1][0]) return THROUGHPUT_POINTS[THROUGHPUT_POINTS.length - 1][1];
+    for (var i = 0; i < THROUGHPUT_POINTS.length - 1; i++) {
+      var lo = THROUGHPUT_POINTS[i], hi = THROUGHPUT_POINTS[i + 1];
+      if (n >= lo[0] && n <= hi[0]) {
+        var frac = (n - lo[0]) / (hi[0] - lo[0]);
+        return lo[1] + frac * (hi[1] - lo[1]);
+      }
+    }
+    return THROUGHPUT_POINTS[THROUGHPUT_POINTS.length - 1][1];
   }
   var BASE_THROUGHPUT = estimateThroughput(TOTAL_FIELDS);
 
@@ -283,6 +293,12 @@
 
   // --- Logic ---
   function toggleField(name) {
+    // If in SELECT * mode, populate all fields first, then deselect the clicked one
+    if (getSelectedCount() === 0) {
+      for (var i = 0; i < FIELDS.length; i++) {
+        selected[FIELDS[i].name] = true;
+      }
+    }
     selected[name] = !selected[name];
     render();
   }
@@ -362,6 +378,7 @@
         }
       }
       presetBtns[p].classList.toggle('active', match);
+      presetBtns[p].setAttribute('aria-pressed', match ? 'true' : 'false');
     }
 
     // Update callout
