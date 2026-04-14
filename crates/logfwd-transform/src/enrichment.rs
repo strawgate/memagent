@@ -732,15 +732,15 @@ impl EnvTable {
         }
 
         // Reject duplicate column names after lowercase normalization (e.g.
-        // FOO and foo both present would create duplicate Arrow columns).
-        pairs.dedup_by(|a, b| {
-            if a.0 == b.0 {
-                // Keep first occurrence, drop duplicate.
-                true
-            } else {
-                false
+        // LOGFWD_META_REGION and LOGFWD_META_region both present would collide).
+        for w in pairs.windows(2) {
+            if w[0].0 == w[1].0 {
+                return Err(TransformError::Enrichment(format!(
+                    "EnvTable: duplicate column name '{}' after lowercasing (prefix '{prefix}')",
+                    w[0].0
+                )));
             }
-        });
+        }
 
         let fields: Vec<Field> = pairs
             .iter()
@@ -1244,6 +1244,22 @@ fn parse_cgroup_for_container(content: &str) -> Option<(String, String)> {
             let id = rest.split('/').next().unwrap_or("");
             if is_hex_container_id(id) {
                 return Some((id.to_string(), "docker".to_string()));
+            }
+        }
+
+        // Docker cgroup v2: docker-<id>.scope (e.g. /system.slice/docker-<id>.scope)
+        if let Some(seg) = path.rsplit('/').find(|s| {
+            s.starts_with("docker-")
+                && Path::new(s)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("scope"))
+        }) {
+            let inner = seg
+                .strip_prefix("docker-")
+                .and_then(|s| s.strip_suffix(".scope"))
+                .unwrap_or("");
+            if is_hex_container_id(inner) {
+                return Some((inner.to_string(), "docker".to_string()));
             }
         }
 
@@ -1974,6 +1990,25 @@ fn env_table_no_match_returns_error() {
     assert!(result.is_err());
 }
 
+#[test]
+fn env_table_rejects_duplicate_columns_after_lowercasing() {
+    // Set env vars that collide after lowercasing the suffix.
+    // SAFETY: test is run single-threaded (--test-threads=1).
+    unsafe {
+        std::env::set_var("LOGFWD_DUPTEST_FOO", "a");
+        std::env::set_var("LOGFWD_DUPTEST_foo", "b");
+    }
+    let result = EnvTable::from_prefix("dup_test", "LOGFWD_DUPTEST_");
+    // Clean up before asserting.
+    unsafe {
+        std::env::remove_var("LOGFWD_DUPTEST_FOO");
+        std::env::remove_var("LOGFWD_DUPTEST_foo");
+    }
+    assert!(result.is_err());
+    let msg = format!("{}", result.err().unwrap());
+    assert!(msg.contains("duplicate column name"), "got: {msg}");
+}
+
 // -- ProcessInfoTable -------------------------------------------------------
 
 #[test]
@@ -2249,6 +2284,17 @@ fn parse_cgroup_docker_format() {
     let (id, runtime) = result.unwrap();
     assert_eq!(runtime, "docker");
     assert_eq!(id.len(), 64);
+}
+
+#[test]
+fn parse_cgroup_docker_scope_v2() {
+    let id_hex = "a1b2c3d4".repeat(8); // 64 hex chars
+    let content = format!("0::/system.slice/docker-{id_hex}.scope\n");
+    let result = parse_cgroup_for_container(&content);
+    assert!(result.is_some());
+    let (id, runtime) = result.unwrap();
+    assert_eq!(runtime, "docker");
+    assert_eq!(id, id_hex);
 }
 
 #[test]

@@ -302,7 +302,7 @@ fn load_blocklist<R: io::Read>(reader: R) -> Result<HashMap<String, Option<Strin
 
     for (row_num, record) in csv.records().enumerate() {
         let record =
-            record.map_err(|e| format!("blocklist CSV parse error at row {row_num}: {e}"))?;
+            record.map_err(|e| format!("blocklist CSV parse error at row {}: {e}", row_num + 1))?;
 
         let key = record.get(key_idx).unwrap_or("").trim().to_owned();
         if key.is_empty() {
