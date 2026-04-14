@@ -15,7 +15,6 @@ import type { TraceRecord } from "../types";
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 const BASE_NOW_MS = 1_700_000_000_000;
-const BASE_NOW_NS = String(BASE_NOW_MS * 1e6);
 
 function makeTr(overrides: Partial<TraceRecord> = {}): TraceRecord {
   return {
@@ -102,7 +101,7 @@ describe("hitTest", () => {
 
     const result = hitTest(lanes, rect, x, y, windowMs, nowMs);
     expect(result).not.toBeNull();
-    expect(result!.trace_id).toBe("t2");
+    expect(result?.trace_id).toBe("t2");
   });
 
   it("returns null for clicks in the section gap between scan and workers", () => {
@@ -128,7 +127,7 @@ describe("hitTest", () => {
 
     const result = hitTest(lanes, rect, x, y, windowMs, nowMs);
     expect(result).not.toBeNull();
-    expect(result!.trace_id).toBe("t1");
+    expect(result?.trace_id).toBe("t1");
   });
 
   it("maps clicks in the second worker lane correctly", () => {
@@ -142,7 +141,7 @@ describe("hitTest", () => {
 
     const result = hitTest(lanes, rect, x, y, windowMs, nowMs);
     expect(result).not.toBeNull();
-    expect(result!.trace_id).toBe("t2");
+    expect(result?.trace_id).toBe("t2");
   });
 
   it("clamps lane index to last lane when clicking far below", () => {
@@ -157,7 +156,7 @@ describe("hitTest", () => {
     const result = hitTest(lanes, rect, x, y, windowMs, nowMs);
     // Should hit the last lane (workerLane1 with tr2)
     expect(result).not.toBeNull();
-    expect(result!.trace_id).toBe("t2");
+    expect(result?.trace_id).toBe("t2");
   });
 
   it("falls back to first lane when click is above canvas top", () => {
@@ -194,7 +193,7 @@ describe("hitTest", () => {
 
     const result = hitTest(testLanes, rect, x, y, windowMs, nowMs);
     expect(result).not.toBeNull();
-    expect(result!.trace_id).toBe("late");
+    expect(result?.trace_id).toBe("late");
   });
 
   it("picks the closest trace by midpoint distance in worker lane", () => {
@@ -223,7 +222,7 @@ describe("hitTest", () => {
 
     const result = hitTest(testLanes, rect, x, y, windowMs, nowMs);
     expect(result).not.toBeNull();
-    expect(result!.trace_id).toBe("w-late");
+    expect(result?.trace_id).toBe("w-late");
   });
 
   it("uses scan+xfm midpoint for scan lane traces", () => {
@@ -246,7 +245,7 @@ describe("hitTest", () => {
 
     const result = hitTest(testLanes, rect, x, y, windowMs, nowMs);
     expect(result).not.toBeNull();
-    expect(result!.trace_id).toBe("scan-mid");
+    expect(result?.trace_id).toBe("scan-mid");
   });
 
   it("uses output_start_unix_ns for worker lane midpoint when available", () => {
@@ -275,7 +274,7 @@ describe("hitTest", () => {
 
     const result = hitTest(testLanes, rect, x, y, windowMs, nowMs);
     expect(result).not.toBeNull();
-    expect(result!.trace_id).toBe("out-start");
+    expect(result?.trace_id).toBe("out-start");
   });
 
   it("falls back to scan+xfm for worker midpoint when output_start_unix_ns is missing", () => {
@@ -303,7 +302,7 @@ describe("hitTest", () => {
 
     const result = hitTest(testLanes, rect, x, y, windowMs, nowMs);
     expect(result).not.toBeNull();
-    expect(result!.trace_id).toBe("no-out-start");
+    expect(result?.trace_id).toBe("no-out-start");
   });
 
   it("returns null for a lane with no traces", () => {

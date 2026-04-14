@@ -162,8 +162,8 @@ describe("buildLanes", () => {
     expect(allWorkerIds).toContain("live-worker");
 
     // Scan lane contains all three
-    const scanLane = lanes.find((l) => l.workerId === SCAN_LANE)!;
-    expect(scanLane.traces).toHaveLength(3);
+    const scanLane = lanes.find((l) => l.workerId === SCAN_LANE);
+    expect(scanLane?.traces).toHaveLength(3);
   });
 
   // 9. Multiple traces on the same worker go into one lane

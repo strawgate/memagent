@@ -89,15 +89,15 @@ describe("computeStats", () => {
     it("computes correct avgMs", () => {
       // Both traces: scan=100ms, xfm=50ms, queue=10ms, out=200ms → e2e=360ms each
       const traces = [makeTr({ start_unix_ns: 0 }), makeTr({ start_unix_ns: 1_000_000_000 })];
-      const stats = computeStats(traces)!;
-      expect(stats.avgMs).toBeCloseTo(360, 5);
+      const stats = computeStats(traces);
+      expect(stats?.avgMs).toBeCloseTo(360, 5);
     });
 
     it("computes correct p90Ms for two-item array", () => {
       // sorted = [360ms, 360ms]; index = floor(2*0.9) = 1 → 360ms
       const traces = [makeTr({ start_unix_ns: 0 }), makeTr({ start_unix_ns: 1_000_000_000 })];
-      const stats = computeStats(traces)!;
-      expect(stats.p90Ms).toBeCloseTo(360, 5);
+      const stats = computeStats(traces);
+      expect(stats?.p90Ms).toBeCloseTo(360, 5);
     });
 
     it("computes p90Ms correctly for 10 traces with varying latencies", () => {
@@ -112,26 +112,26 @@ describe("computeStats", () => {
           output_ns: 0,
         });
       });
-      const stats = computeStats(traces)!;
+      const stats = computeStats(traces);
       // sorted = [100,200,...,1000]; index = floor(10*0.9) = 9 → 1000ms
-      expect(stats.p90Ms).toBeCloseTo(1000, 5);
+      expect(stats?.p90Ms).toBeCloseTo(1000, 5);
     });
 
     it("computes correct time percentage breakdowns", () => {
       // scan=100, xfm=50, queue=10, out=200 → total e2e=360
       // scanPct = 100/360*100, xfmPct = 50/360*100, etc.
       const traces = [makeTr({ start_unix_ns: 0 }), makeTr({ start_unix_ns: 1_000_000_000 })];
-      const stats = computeStats(traces)!;
-      expect(stats.scanPct).toBeCloseTo((100 / 360) * 100, 3);
-      expect(stats.xfmPct).toBeCloseTo((50 / 360) * 100, 3);
-      expect(stats.queuePct).toBeCloseTo((10 / 360) * 100, 3);
-      expect(stats.outPct).toBeCloseTo((200 / 360) * 100, 3);
+      const stats = computeStats(traces);
+      expect(stats?.scanPct).toBeCloseTo((100 / 360) * 100, 3);
+      expect(stats?.xfmPct).toBeCloseTo((50 / 360) * 100, 3);
+      expect(stats?.queuePct).toBeCloseTo((10 / 360) * 100, 3);
+      expect(stats?.outPct).toBeCloseTo((200 / 360) * 100, 3);
     });
 
     it("percentages sum to approximately 100", () => {
       const traces = [makeTr({ start_unix_ns: 0 }), makeTr({ start_unix_ns: 2_000_000_000 })];
-      const stats = computeStats(traces)!;
-      const total = stats.scanPct + stats.xfmPct + stats.queuePct + stats.outPct;
+      const stats = computeStats(traces);
+      const total = (stats?.scanPct ?? 0) + (stats?.xfmPct ?? 0) + (stats?.queuePct ?? 0) + (stats?.outPct ?? 0);
       expect(total).toBeCloseTo(100, 5);
     });
 
@@ -150,35 +150,35 @@ describe("computeStats", () => {
         queue_wait_ns: 0,
         output_ns: 0,
       });
-      const stats = computeStats([t1, t2])!;
-      expect(stats.scanPct).toBe(0);
-      expect(stats.xfmPct).toBe(0);
-      expect(stats.queuePct).toBe(0);
-      expect(stats.outPct).toBe(0);
+      const stats = computeStats([t1, t2]);
+      expect(stats?.scanPct).toBe(0);
+      expect(stats?.xfmPct).toBe(0);
+      expect(stats?.queuePct).toBe(0);
+      expect(stats?.outPct).toBe(0);
     });
 
     it("computes batchPerMin — two traces 1 s apart → 120 batches/min", () => {
       const t1 = makeTr({ start_unix_ns: 0 });
       const t2 = makeTr({ start_unix_ns: 1_000_000_000 });
-      const stats = computeStats([t1, t2])!;
+      const stats = computeStats([t1, t2]);
       // window = 1s, batches = 2, rate = 2/1*60 = 120
-      expect(stats.batchPerMin).toBeCloseTo(120, 5);
+      expect(stats?.batchPerMin).toBeCloseTo(120, 5);
     });
 
     it("clamps window to at least 1 s when all start times are equal", () => {
       // Same start_unix_ns → window = 0 → clamped to 1s
       const t1 = makeTr({ start_unix_ns: 5_000_000_000 });
       const t2 = makeTr({ start_unix_ns: 5_000_000_000 });
-      const stats = computeStats([t1, t2])!;
+      const stats = computeStats([t1, t2]);
       // 2 batches / 1 sec * 60 = 120
-      expect(stats.batchPerMin).toBeCloseTo(120, 5);
+      expect(stats?.batchPerMin).toBeCloseTo(120, 5);
     });
   });
 
   describe("error counting", () => {
     it("counts zero errors when no traces have errors", () => {
-      const stats = computeStats([makeTr({ errors: 0 }), makeTr({ errors: 0 })])!;
-      expect(stats.errors).toBe(0);
+      const stats = computeStats([makeTr({ errors: 0 }), makeTr({ errors: 0 })]);
+      expect(stats?.errors).toBe(0);
     });
 
     it("counts each trace with errors > 0 as one error (not sum of error counts)", () => {
@@ -187,14 +187,14 @@ describe("computeStats", () => {
         makeTr({ errors: 0 }),
         makeTr({ errors: 1 }), // counted as 1 errored trace
       ];
-      const stats = computeStats(traces)!;
-      expect(stats.errors).toBe(2);
+      const stats = computeStats(traces);
+      expect(stats?.errors).toBe(2);
     });
 
     it("counts all traces as errors when all have errors", () => {
       const traces = [makeTr({ errors: 1 }), makeTr({ errors: 5 }), makeTr({ errors: 2 })];
-      const stats = computeStats(traces)!;
-      expect(stats.errors).toBe(3);
+      const stats = computeStats(traces);
+      expect(stats?.errors).toBe(3);
     });
 
     it("does not count errors from in-progress traces", () => {
@@ -203,8 +203,8 @@ describe("computeStats", () => {
         makeTr({ errors: 0, start_unix_ns: 1_000_000_000 }),
         makeTr({ errors: 99, in_progress: true, lifecycle_state: "scan_in_progress" }), // excluded
       ];
-      const stats = computeStats(traces)!;
-      expect(stats.errors).toBe(1);
+      const stats = computeStats(traces);
+      expect(stats?.errors).toBe(1);
     });
   });
 });
@@ -252,10 +252,10 @@ describe("buildLanes", () => {
     const t1 = makeTr({ worker_id: 1 });
     const { lanes } = buildLanes([t0a, t0b, t1]);
 
-    const lane0 = lanes.find((l) => l.workerId === 0)!;
-    const lane1 = lanes.find((l) => l.workerId === 1)!;
-    expect(lane0.traces).toHaveLength(2);
-    expect(lane1.traces).toHaveLength(1);
+    const lane0 = lanes.find((l) => l.workerId === 0);
+    const lane1 = lanes.find((l) => l.workerId === 1);
+    expect(lane0?.traces).toHaveLength(2);
+    expect(lane1?.traces).toHaveLength(1);
   });
 
   describe("pending traces", () => {

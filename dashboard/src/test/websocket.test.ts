@@ -107,7 +107,7 @@ describe("useTelemetryWebSocket", () => {
 
     act(() => ws.simulateMessage(JSON.stringify(metricsDoc)));
     expect(result.current.lastMessage).not.toBeNull();
-    expect(result.current.lastMessage!.signal).toBe("metrics");
+    expect(result.current.lastMessage?.signal).toBe("metrics");
   });
 
   it("parses incoming OTLP traces into lastMessage", () => {
@@ -132,7 +132,7 @@ describe("useTelemetryWebSocket", () => {
 
     act(() => ws.simulateMessage(JSON.stringify(tracesDoc)));
     expect(result.current.lastMessage).not.toBeNull();
-    expect(result.current.lastMessage!.signal).toBe("traces");
+    expect(result.current.lastMessage?.signal).toBe("traces");
   });
 
   it("ignores malformed messages", () => {
