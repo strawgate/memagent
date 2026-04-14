@@ -175,8 +175,15 @@ impl ColumnarBatchBuilder {
     }
 
     /// Start a new batch.
+    ///
+    /// Clears all column data, resets dynamic fields (they must be
+    /// re-resolved from scratch each batch), and resets string buffers.
     pub fn begin_batch(&mut self) {
         self.lifecycle.begin_batch();
+        // Reset dynamic fields so the schema doesn't grow unboundedly.
+        // Planned fields are kept; dynamic ones are re-resolved per batch.
+        self.plan.reset_dynamic();
+        self.columns.truncate(self.plan.len());
         for col in &mut self.columns {
             col.clear();
         }
@@ -214,13 +221,11 @@ impl ColumnarBatchBuilder {
     /// Resolve a dynamic field by name and observed kind.
     ///
     /// This is the runtime field-discovery path for JSON/CRI-style producers.
-    /// Returns a stable handle that can be used for writes in the current row.
+    /// Returns a stable handle that can be used for writes in the current batch.
     ///
-    /// Dynamically resolved fields grow the plan and column storage
-    /// monotonically — `begin_batch` clears all column data but does not
-    /// remove columns. This means the schema can grow across batches but
-    /// never shrinks. A future schema-reset API can be added if producers
-    /// need to discard stale dynamic fields between batches.
+    /// Dynamic fields are reset on `begin_batch` — handles from a previous
+    /// batch are invalidated. This matches `StreamingBuilder`'s per-batch
+    /// field resolution and prevents unbounded schema growth.
     pub fn resolve_dynamic(
         &mut self,
         name: &str,
@@ -1311,5 +1316,43 @@ mod tests {
             total,
             total.as_nanos() as f64 / total_rows as f64,
         );
+    }
+
+    #[test]
+    fn dynamic_fields_reset_between_batches() {
+        let plan = BatchPlan::new();
+        let mut b = ColumnarBatchBuilder::new(plan);
+
+        // Batch 1: fields "x" and "y", both written.
+        b.begin_batch();
+        let x = b.resolve_dynamic("x", FieldKind::Int64).unwrap();
+        let y = b.resolve_dynamic("y", FieldKind::Utf8View).unwrap();
+        b.begin_row();
+        b.write_i64(x, 1);
+        b.write_str(y, "hello").unwrap();
+        b.end_row();
+        let batch1 = b.finish_batch().unwrap();
+        assert_eq!(batch1.num_columns(), 2);
+        let names1: Vec<String> = batch1
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert!(names1.contains(&"x".to_string()));
+        assert!(names1.contains(&"y".to_string()));
+
+        // Batch 2: field "z" only — "x" and "y" should be gone.
+        b.begin_batch();
+        assert!(b.plan().lookup("x").is_none(), "x should be reset");
+        assert!(b.plan().lookup("y").is_none(), "y should be reset");
+        let z = b.resolve_dynamic("z", FieldKind::Float64).unwrap();
+        b.begin_row();
+        b.write_f64(z, 3.14);
+        b.end_row();
+        let batch2 = b.finish_batch().unwrap();
+        // Only field "z" — no stale columns.
+        assert_eq!(batch2.num_columns(), 1);
+        assert_eq!(batch2.schema().field(0).name(), "z");
     }
 }

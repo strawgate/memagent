@@ -150,6 +150,9 @@ pub struct BatchPlan {
     /// Name → handle for O(1) lookup.  Keys share the same `Arc<str>`
     /// as the corresponding `FieldEntry::name` to avoid double-allocation.
     index: HashMap<Arc<str>, FieldHandle>,
+    /// Number of planned (schema-fixed) fields. These occupy the first
+    /// `num_planned` slots and are never removed by `reset_dynamic`.
+    num_planned: usize,
 }
 
 impl Default for BatchPlan {
@@ -164,6 +167,7 @@ impl BatchPlan {
         BatchPlan {
             fields: Vec::new(),
             index: HashMap::new(),
+            num_planned: 0,
         }
     }
 
@@ -172,6 +176,7 @@ impl BatchPlan {
         BatchPlan {
             fields: Vec::with_capacity(cap),
             index: HashMap::with_capacity(cap),
+            num_planned: 0,
         }
     }
 
@@ -185,11 +190,35 @@ impl BatchPlan {
         self.fields.is_empty()
     }
 
+    /// Number of planned (schema-fixed) fields.
+    pub fn num_planned(&self) -> usize {
+        self.num_planned
+    }
+
+    /// Remove all dynamic fields, keeping planned fields intact.
+    ///
+    /// Called by `ColumnarBatchBuilder::begin_batch` so that dynamic field
+    /// names are re-resolved from scratch each batch — matching
+    /// `StreamingBuilder`'s `field_index.clear()` behavior. Without this,
+    /// dynamic fields accumulate unboundedly across batches.
+    pub fn reset_dynamic(&mut self) {
+        // Remove dynamic entries from the name index.
+        for entry in &self.fields[self.num_planned..] {
+            self.index.remove(&entry.name);
+        }
+        // Truncate the field list to planned-only.
+        self.fields.truncate(self.num_planned);
+    }
+
     /// Declare a schema-fixed field.
     ///
     /// If the field already exists as planned with the same kind, returns
     /// the existing handle (idempotent).  If it exists with a different
     /// kind or as a dynamic field, returns `Err`.
+    ///
+    /// Planned fields must be declared before any dynamic fields are
+    /// resolved. They form a stable prefix of the field list that
+    /// `reset_dynamic` preserves.
     pub fn declare_planned(
         &mut self,
         name: &str,
@@ -210,6 +239,11 @@ impl BatchPlan {
                 }),
             }
         } else {
+            debug_assert_eq!(
+                self.fields.len(),
+                self.num_planned,
+                "declare_planned called after resolve_dynamic"
+            );
             let handle = self.alloc_handle()?;
             let shared_name: Arc<str> = Arc::from(name);
             self.fields.push(FieldEntry {
@@ -218,6 +252,7 @@ impl BatchPlan {
                 mode: FieldSchemaMode::new_planned(kind),
             });
             self.index.insert(shared_name, handle);
+            self.num_planned += 1;
             Ok(handle)
         }
     }
@@ -440,11 +475,11 @@ mod tests {
     fn fields_iterator_in_declaration_order() {
         let mut plan = BatchPlan::new();
         plan.declare_planned("z", FieldKind::Bool).unwrap();
-        plan.resolve_dynamic("a", FieldKind::Int64).unwrap();
         plan.declare_planned("m", FieldKind::Float64).unwrap();
+        plan.resolve_dynamic("a", FieldKind::Int64).unwrap();
 
         let names: Vec<&str> = plan.fields().map(|(_, name, _)| name).collect();
-        assert_eq!(names, vec!["z", "a", "m"]);
+        assert_eq!(names, vec!["z", "m", "a"]);
     }
 
     #[test]
@@ -494,5 +529,33 @@ mod tests {
             reason: "already dynamic",
         };
         assert!(err2.to_string().contains("already dynamic"));
+    }
+
+    #[test]
+    fn reset_dynamic_removes_dynamic_keeps_planned() {
+        let mut plan = BatchPlan::new();
+        plan.declare_planned("ts", FieldKind::Int64).unwrap();
+        plan.declare_planned("msg", FieldKind::Utf8View).unwrap();
+        plan.resolve_dynamic("level", FieldKind::Utf8View).unwrap();
+        plan.resolve_dynamic("code", FieldKind::Int64).unwrap();
+
+        assert_eq!(plan.len(), 4);
+        assert_eq!(plan.num_planned(), 2);
+
+        plan.reset_dynamic();
+
+        assert_eq!(plan.len(), 2);
+        assert_eq!(plan.num_planned(), 2);
+        // Planned fields survive.
+        assert!(plan.lookup("ts").is_some());
+        assert!(plan.lookup("msg").is_some());
+        // Dynamic fields are gone.
+        assert!(plan.lookup("level").is_none());
+        assert!(plan.lookup("code").is_none());
+
+        // Re-resolving dynamic fields works after reset.
+        let h = plan.resolve_dynamic("level", FieldKind::Int64).unwrap();
+        assert_eq!(h.index(), 2);
+        assert_eq!(plan.len(), 3);
     }
 }
