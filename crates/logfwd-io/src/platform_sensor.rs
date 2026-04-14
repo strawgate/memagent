@@ -405,17 +405,15 @@ impl PlatformSensorInput {
         // pahole output: "	int  exit_code;  /*  1234  4 */"
         for line in stdout.lines() {
             let trimmed = line.trim();
-            if trimmed.contains("exit_code") && trimmed.contains("/*") {
-                if let Some(comment) = trimmed.split("/*").nth(1) {
-                    let parts: Vec<&str> = comment.split_whitespace().collect();
-                    if let Some(offset_str) = parts.first() {
-                        if let Ok(offset) = offset_str.parse::<u32>() {
-                            if offset > 0 && offset < 16384 {
-                                return Ok(offset);
-                            }
-                        }
-                    }
-                }
+            if trimmed.contains("exit_code")
+                && trimmed.contains("/*")
+                && let Some(comment) = trimmed.split("/*").nth(1)
+                && let Some(offset_str) = comment.split_whitespace().next()
+                && let Ok(offset) = offset_str.parse::<u32>()
+                && offset > 0
+                && offset < 16384
+            {
+                return Ok(offset);
             }
         }
 
