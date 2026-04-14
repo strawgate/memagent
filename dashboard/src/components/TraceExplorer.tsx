@@ -139,7 +139,7 @@ export const LABEL_W = 40; // left margin (worker / SCAN labels)
 export const PEND_BOX_W = 72; // right column: pending-batch dot box
 export const STRIDE = LANE_H + LANE_GAP;
 const BAR_R = 3;
-const SECTION_GAP = 6;
+export const SECTION_GAP = 6;
 const BAR_PAD = 3; // row padding; bar height is further scaled by batch size
 
 // ─── layout types (exported for testing) ──────────────────────────────────────
@@ -674,7 +674,7 @@ function drawSwimlane(
   ctx.restore();
 }
 
-function hitTest(
+export function hitTest(
   lanes: Lane[],
   rect: DOMRect,
   clientX: number,
