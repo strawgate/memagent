@@ -588,13 +588,13 @@ fn entry_to_json(
 /// `timestamp` from `_SOURCE_REALTIME_TIMESTAMP`, synthesize `level`
 /// from `PRIORITY`, and drop `__`-prefixed internal fields.
 fn normalize_fields(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
-    let mut timestamp_synthesized = false;
-    let mut level_synthesized = false;
     let mut priority_value: Option<u8> = None;
-    let mut source_ts_value: Option<Vec<u8>> = None;
+    let mut source_ts_usec: Option<i64> = None;
+    let mut has_timestamp = false;
+    let mut has_level = false;
 
     // First pass: lowercase names, capture PRIORITY and _SOURCE_REALTIME_TIMESTAMP,
-    // drop __-prefixed fields.
+    // drop __-prefixed fields, detect pre-existing timestamp/level.
     fields.retain_mut(|(name, value)| {
         // Drop double-underscore internal fields (__CURSOR, __REALTIME_TIMESTAMP, etc).
         if name.starts_with(b"__") {
@@ -606,38 +606,44 @@ fn normalize_fields(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
             priority_value = Some(value[0] - b'0');
         }
 
-        // Capture _SOURCE_REALTIME_TIMESTAMP before lowercasing.
+        // Parse _SOURCE_REALTIME_TIMESTAMP to µs before lowercasing (avoids clone).
         if name == b"_SOURCE_REALTIME_TIMESTAMP" {
-            source_ts_value = Some(value.clone());
+            if let Ok(s) = std::str::from_utf8(value) {
+                source_ts_usec = s.parse::<i64>().ok();
+            }
         }
 
         // Lowercase the field name in-place.
         name.make_ascii_lowercase();
+
+        // Detect pre-existing timestamp/level (after lowercasing).
+        if name == b"timestamp" {
+            has_timestamp = true;
+        }
+        if name == b"level" {
+            has_level = true;
+        }
+
         true
     });
 
     // Synthesize `timestamp` from `_source_realtime_timestamp` (µs epoch → RFC 3339).
-    if let Some(ts_bytes) = source_ts_value {
-        if let Ok(ts_str) = std::str::from_utf8(&ts_bytes) {
-            if let Ok(us) = ts_str.parse::<i64>() {
-                if let Some(rfc3339) = usec_to_rfc3339(us) {
-                    fields.push((b"timestamp".to_vec(), rfc3339.into_bytes()));
-                    timestamp_synthesized = true;
-                }
+    if !has_timestamp {
+        if let Some(us) = source_ts_usec {
+            if let Some(rfc3339) = usec_to_rfc3339(us) {
+                fields.push((b"timestamp".to_vec(), rfc3339.into_bytes()));
             }
         }
     }
-    let _ = timestamp_synthesized; // suppress unused warning if we add logging later
 
     // Synthesize `level` from PRIORITY (syslog 0-7 → OTLP severity text).
-    if let Some(prio) = priority_value {
-        let level_text = syslog_priority_to_level(prio);
-        if !level_text.is_empty() {
-            fields.push((b"level".to_vec(), level_text.as_bytes().to_vec()));
-            level_synthesized = true;
+    if !has_level {
+        if let Some(prio) = priority_value {
+            if let Some(level_text) = syslog_priority_to_level(prio) {
+                fields.push((b"level".to_vec(), level_text.as_bytes().to_vec()));
+            }
         }
     }
-    let _ = level_synthesized;
 }
 
 /// Map syslog priority (0-7) to the OTLP severity text that
@@ -650,14 +656,14 @@ fn normalize_fields(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
 ///   5 = notice                       →  INFO  (no OTLP "notice" level)
 ///   6 = info                         →  INFO
 ///   7 = debug                        →  DEBUG
-fn syslog_priority_to_level(priority: u8) -> &'static str {
+fn syslog_priority_to_level(priority: u8) -> Option<&'static str> {
     match priority {
-        0..=2 => "FATAL",
-        3 => "ERROR",
-        4 => "WARN",
-        5 | 6 => "INFO",
-        7 => "DEBUG",
-        _ => "",
+        0..=2 => Some("FATAL"),
+        3 => Some("ERROR"),
+        4 => Some("WARN"),
+        5 | 6 => Some("INFO"),
+        7 => Some("DEBUG"),
+        _ => None,
     }
 }
 
@@ -1396,8 +1402,7 @@ mod tests {
             .map(|(_, v)| String::from_utf8(v.clone()).unwrap());
         assert!(ts.is_some(), "timestamp field should be synthesized");
         let ts = ts.unwrap();
-        assert!(ts.starts_with("2024-04-12T"), "got: {ts}");
-        assert!(ts.ends_with('Z'), "got: {ts}");
+        assert_eq!(ts, "2024-04-12T00:00:00.000000Z", "got: {ts}");
     }
 
     #[test]
@@ -1439,13 +1444,13 @@ mod tests {
 
     #[test]
     fn syslog_priority_to_level_all_values() {
-        assert_eq!(syslog_priority_to_level(0), "FATAL");
-        assert_eq!(syslog_priority_to_level(3), "ERROR");
-        assert_eq!(syslog_priority_to_level(4), "WARN");
-        assert_eq!(syslog_priority_to_level(5), "INFO");
-        assert_eq!(syslog_priority_to_level(6), "INFO");
-        assert_eq!(syslog_priority_to_level(7), "DEBUG");
-        assert_eq!(syslog_priority_to_level(8), "");
+        assert_eq!(syslog_priority_to_level(0), Some("FATAL"));
+        assert_eq!(syslog_priority_to_level(3), Some("ERROR"));
+        assert_eq!(syslog_priority_to_level(4), Some("WARN"));
+        assert_eq!(syslog_priority_to_level(5), Some("INFO"));
+        assert_eq!(syslog_priority_to_level(6), Some("INFO"));
+        assert_eq!(syslog_priority_to_level(7), Some("DEBUG"));
+        assert_eq!(syslog_priority_to_level(8), None);
     }
 
     // ── backend pref defaults ──────────────────────────────────────────
