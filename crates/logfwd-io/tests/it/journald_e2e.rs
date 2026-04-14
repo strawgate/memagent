@@ -366,7 +366,7 @@ fn subprocess_exclude_units_filters() {
                         .and_then(|u| u.as_str())
                         .map(String::from)
                 })
-                .map(|u| u.contains("ssh"))
+                .map(|u| u == "ssh.service")
                 .unwrap_or(false)
         })
         .collect();

@@ -62,6 +62,7 @@ type FnSeekTail = unsafe extern "C" fn(*mut SdJournal) -> i32;
 type FnSeekCursor = unsafe extern "C" fn(*mut SdJournal, *const libc::c_char) -> i32;
 
 type FnGetCursor = unsafe extern "C" fn(*mut SdJournal, *mut *mut libc::c_char) -> i32;
+type FnTestCursor = unsafe extern "C" fn(*mut SdJournal, *const libc::c_char) -> i32;
 type FnGetData =
     unsafe extern "C" fn(*mut SdJournal, *const libc::c_char, *mut *const u8, *mut usize) -> i32;
 type FnEnumerateData = unsafe extern "C" fn(*mut SdJournal, *mut *const u8, *mut usize) -> i32;
@@ -93,6 +94,7 @@ struct LibSystemd {
     seek_tail: FnSeekTail,
     seek_cursor: FnSeekCursor,
     get_cursor: FnGetCursor,
+    test_cursor: FnTestCursor,
     get_data: FnGetData,
     enumerate_data: FnEnumerateData,
     restart_data: FnRestartData,
@@ -156,6 +158,7 @@ impl LibSystemd {
                 seek_tail: sym!(b"sd_journal_seek_tail\0", FnSeekTail),
                 seek_cursor: sym!(b"sd_journal_seek_cursor\0", FnSeekCursor),
                 get_cursor: sym!(b"sd_journal_get_cursor\0", FnGetCursor),
+                test_cursor: sym!(b"sd_journal_test_cursor\0", FnTestCursor),
                 get_data: sym!(b"sd_journal_get_data\0", FnGetData),
                 enumerate_data: sym!(b"sd_journal_enumerate_data\0", FnEnumerateData),
                 restart_data: sym!(b"sd_journal_restart_data\0", FnRestartData),
@@ -345,6 +348,24 @@ impl Journal {
             libc::free(raw.cast());
         }
         Ok(cursor)
+    }
+
+    /// Test whether the current journal position matches the given cursor.
+    ///
+    /// Returns `true` if the cursor matches, `false` otherwise. Useful after
+    /// [`seek_cursor`](Self::seek_cursor) to determine whether the cursor entry
+    /// still exists or if the journal positioned on the next closest entry.
+    pub fn test_cursor(&mut self, cursor: &str) -> io::Result<bool> {
+        let c_cursor =
+            CString::new(cursor).map_err(|_| io::Error::other("cursor contains null byte"))?;
+        // SAFETY: `self.handle` is valid. `c_cursor` is a valid NUL-terminated
+        // C string that remains live for the duration of this call.
+        let ret = unsafe { (self.lib.test_cursor)(self.handle, c_cursor.as_ptr()) };
+        if ret < 0 {
+            Err(sd_err(ret))
+        } else {
+            Ok(ret > 0)
+        }
     }
 
     /// Get the value of a specific field from the current entry.

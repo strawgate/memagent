@@ -363,6 +363,14 @@ fn native_reader_loop(
                     // Build JSON from entry fields.
                     match entry_to_json(&mut journal, &exclude_units, &mut json_buf) {
                         Ok(Some(())) => {
+                            // Save cursor of this entry before sending. We do
+                            // this per-entry (not at drain-loop exit) because
+                            // cursor() is only reliable while positioned on a
+                            // valid entry (next()→true).
+                            if let Ok(c) = journal.cursor() {
+                                last_cursor = Some(c);
+                            }
+
                             json_buf.push(b'\n');
                             // Move the buffer to avoid cloning; allocate a
                             // fresh one for the next entry.
@@ -389,14 +397,7 @@ fn native_reader_loop(
                         }
                     }
                 }
-                Ok(false) => {
-                    // Save cursor once per drain cycle (not per-entry) to
-                    // avoid an allocation on every entry in the hot path.
-                    if let Ok(c) = journal.cursor() {
-                        last_cursor = Some(c);
-                    }
-                    break; // No more entries; wait.
-                }
+                Ok(false) => break, // No more entries; wait.
                 Err(e) => {
                     tracing::warn!(error = %e, "sd_journal_next error");
                     break;
@@ -413,10 +414,15 @@ fn native_reader_loop(
                 if let Some(ref cursor) = last_cursor {
                     match journal.seek_cursor(cursor) {
                         Ok(()) => {
-                            // seek_cursor positions ON the cursor entry (already
-                            // emitted). Advance past it so the drain loop reads
-                            // only new entries.
-                            let _ = journal.next();
+                            // If the cursor entry still exists, we're
+                            // positioned ON it (already emitted) and must
+                            // skip past it. If it was rotated out,
+                            // seek_cursor positioned us on the next closest
+                            // entry which hasn't been emitted yet — don't
+                            // skip it.
+                            if journal.test_cursor(cursor).unwrap_or(false) {
+                                let _ = journal.next();
+                            }
                         }
                         Err(e) => {
                             tracing::warn!(error = %e, "failed to re-seek after journal invalidate");
