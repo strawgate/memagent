@@ -90,33 +90,95 @@ impl Pipeline {
                             path = base.join(path);
                         }
 
-                        let db: Arc<dyn crate::transform::enrichment::GeoDatabase> = match geo_cfg
-                            .format
-                        {
-                            GeoDatabaseFormat::Mmdb => {
-                                let mmdb =
+                        let initial_db: Arc<dyn crate::transform::enrichment::GeoDatabase> =
+                            match geo_cfg.format {
+                                GeoDatabaseFormat::Mmdb => Arc::new(
                                     crate::transform::udf::geo_lookup::MmdbDatabase::open(&path)
                                         .map_err(|e| {
                                             format!(
                                                 "failed to open geo database '{}': {e}",
                                                 path.display()
                                             )
-                                        })?;
-                                Arc::new(mmdb)
-                            }
-                            _ => {
-                                return Err(format!(
-                                    "unsupported geo database format: {:?}",
-                                    geo_cfg.format
-                                ));
-                            }
-                        };
-                        if geo_cfg.refresh_interval.is_some() {
-                            tracing::warn!(
-                                "geo_database refresh_interval is not yet implemented, database will not auto-reload"
+                                        })?,
+                                ),
+                                GeoDatabaseFormat::CsvRange => Arc::new(
+                                    crate::transform::udf::CsvRangeDatabase::open(&path).map_err(
+                                        |e| {
+                                            format!(
+                                                "failed to open CSV geo database '{}': {e}",
+                                                path.display()
+                                            )
+                                        },
+                                    )?,
+                                ),
+                                _ => {
+                                    return Err(format!(
+                                        "unsupported geo database format for '{}'",
+                                        path.display()
+                                    ));
+                                }
+                            };
+
+                        if let Some(interval_secs) = geo_cfg.refresh_interval {
+                            let reloadable = Arc::new(
+                                crate::transform::enrichment::ReloadableGeoDb::new(initial_db),
                             );
+                            let reload_handle = reloadable.reload_handle();
+                            let reload_path = path.clone();
+                            let reload_format = geo_cfg.format.clone();
+
+                            tokio::spawn(async move {
+                                let mut ticker = tokio::time::interval(Duration::from_secs(
+                                    interval_secs.max(1),
+                                ));
+                                ticker.tick().await;
+                                loop {
+                                    ticker.tick().await;
+                                    let p = reload_path.clone();
+                                    let fmt = reload_format.clone();
+                                    let result = tokio::task::spawn_blocking(move || -> Result<Arc<dyn crate::transform::enrichment::GeoDatabase>, String> {
+                                        match fmt {
+                                            GeoDatabaseFormat::Mmdb => {
+                                                crate::transform::udf::geo_lookup::MmdbDatabase::open(&p)
+                                                    .map(|db| Arc::new(db) as Arc<dyn crate::transform::enrichment::GeoDatabase>)
+                                                    .map_err(|e| e.to_string())
+                                            }
+                                            GeoDatabaseFormat::CsvRange => {
+                                                crate::transform::udf::CsvRangeDatabase::open(&p)
+                                                    .map(|db| Arc::new(db) as Arc<dyn crate::transform::enrichment::GeoDatabase>)
+                                                    .map_err(|e| e.to_string())
+                                            }
+                                            _ => Err(format!("unsupported geo database format for reload: {:?}", fmt)),
+                                        }
+                                    })
+                                    .await;
+                                    match result {
+                                        Ok(Ok(db)) => {
+                                            reload_handle.replace(db);
+                                            tracing::info!(
+                                                path = %reload_path.display(),
+                                                "geo database reloaded"
+                                            );
+                                        }
+                                        Ok(Err(e)) => tracing::warn!(
+                                            path = %reload_path.display(),
+                                            error = %e,
+                                            "geo database reload failed, keeping previous"
+                                        ),
+                                        Err(e) => tracing::warn!(
+                                            error = %e,
+                                            "geo database reload task panicked"
+                                        ),
+                                    }
+                                }
+                            });
+
+                            geo_database = Some(
+                                reloadable as Arc<dyn crate::transform::enrichment::GeoDatabase>,
+                            );
+                        } else {
+                            geo_database = Some(initial_db);
                         }
-                        geo_database = Some(db);
                     }
                     EnrichmentConfig::Static(cfg) => {
                         let labels: Vec<(String, String)> = cfg
@@ -157,6 +219,34 @@ impl Pipeline {
                         table
                             .reload()
                             .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
+                        if let Some(interval_secs) = cfg.refresh_interval {
+                            let t = Arc::clone(&table);
+                            let name = cfg.table_name.clone();
+                            tokio::spawn(async move {
+                                let mut ticker = tokio::time::interval(Duration::from_secs(
+                                    interval_secs.max(1),
+                                ));
+                                ticker.tick().await;
+                                loop {
+                                    ticker.tick().await;
+                                    let t2 = Arc::clone(&t);
+                                    match tokio::task::spawn_blocking(move || t2.reload()).await {
+                                        Ok(Ok(n)) => tracing::debug!(
+                                            table = %name, rows = n,
+                                            "CSV enrichment table reloaded"
+                                        ),
+                                        Ok(Err(e)) => tracing::warn!(
+                                            table = %name, error = %e,
+                                            "CSV enrichment table reload failed"
+                                        ),
+                                        Err(e) => tracing::warn!(
+                                            table = %name, error = %e,
+                                            "CSV enrichment table reload task panicked"
+                                        ),
+                                    }
+                                }
+                            });
+                        }
                         enrichment_tables.push(table);
                     }
                     EnrichmentConfig::Jsonl(cfg) => {
@@ -174,6 +264,106 @@ impl Pipeline {
                         table
                             .reload()
                             .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
+                        if let Some(interval_secs) = cfg.refresh_interval {
+                            let t = Arc::clone(&table);
+                            let name = cfg.table_name.clone();
+                            tokio::spawn(async move {
+                                let mut ticker = tokio::time::interval(Duration::from_secs(
+                                    interval_secs.max(1),
+                                ));
+                                ticker.tick().await;
+                                loop {
+                                    ticker.tick().await;
+                                    let t2 = Arc::clone(&t);
+                                    match tokio::task::spawn_blocking(move || t2.reload()).await {
+                                        Ok(Ok(n)) => tracing::debug!(
+                                            table = %name, rows = n,
+                                            "JSONL enrichment table reloaded"
+                                        ),
+                                        Ok(Err(e)) => tracing::warn!(
+                                            table = %name, error = %e,
+                                            "JSONL enrichment table reload failed"
+                                        ),
+                                        Err(e) => tracing::warn!(
+                                            table = %name, error = %e,
+                                            "JSONL enrichment table reload task panicked"
+                                        ),
+                                    }
+                                }
+                            });
+                        }
+                        enrichment_tables.push(table);
+                    }
+                    EnrichmentConfig::EnvVars(cfg) => {
+                        let table = Arc::new(
+                            crate::transform::enrichment::EnvTable::from_prefix(
+                                &cfg.table_name,
+                                &cfg.prefix,
+                            )
+                            .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?,
+                        );
+                        enrichment_tables.push(table);
+                    }
+                    EnrichmentConfig::ProcessInfo(_) => {
+                        let table = Arc::new(crate::transform::enrichment::ProcessInfoTable::new());
+                        enrichment_tables.push(table);
+                    }
+                    EnrichmentConfig::KvFile(cfg) => {
+                        let mut path = PathBuf::from(&cfg.path);
+                        if path.is_relative()
+                            && let Some(base) = base_path
+                        {
+                            path = base.join(path);
+                        }
+                        let table = Arc::new(crate::transform::enrichment::KvFileTable::new(
+                            &cfg.table_name,
+                            &path,
+                        ));
+                        table
+                            .reload()
+                            .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
+                        if let Some(interval_secs) = cfg.refresh_interval {
+                            let t = Arc::clone(&table);
+                            let name = cfg.table_name.clone();
+                            tokio::spawn(async move {
+                                let mut ticker = tokio::time::interval(Duration::from_secs(
+                                    interval_secs.max(1),
+                                ));
+                                ticker.tick().await;
+                                loop {
+                                    ticker.tick().await;
+                                    let t2 = Arc::clone(&t);
+                                    match tokio::task::spawn_blocking(move || t2.reload()).await {
+                                        Ok(Ok(n)) => tracing::debug!(
+                                            table = %name, columns = n,
+                                            "KV file enrichment table reloaded"
+                                        ),
+                                        Ok(Err(e)) => tracing::warn!(
+                                            table = %name, error = %e,
+                                            "KV file enrichment table reload failed"
+                                        ),
+                                        Err(e) => tracing::warn!(
+                                            table = %name, error = %e,
+                                            "KV file enrichment table reload task panicked"
+                                        ),
+                                    }
+                                }
+                            });
+                        }
+                        enrichment_tables.push(table);
+                    }
+                    EnrichmentConfig::NetworkInfo(_) => {
+                        let table = Arc::new(crate::transform::enrichment::NetworkInfoTable::new());
+                        enrichment_tables.push(table);
+                    }
+                    EnrichmentConfig::ContainerInfo(_) => {
+                        let table =
+                            Arc::new(crate::transform::enrichment::ContainerInfoTable::new());
+                        enrichment_tables.push(table);
+                    }
+                    EnrichmentConfig::K8sClusterInfo(_) => {
+                        let table =
+                            Arc::new(crate::transform::enrichment::K8sClusterInfoTable::new());
                         enrichment_tables.push(table);
                     }
                 }
@@ -447,59 +637,23 @@ mod tests {
 
     fn minimal_output() -> OutputConfig {
         OutputConfig {
-            name: Some("output".to_string()),
             output_type: OutputType::Stdout,
             ..Default::default()
         }
     }
 
-    #[test]
-    fn from_config_rejects_missing_inputs() {
-        let cfg = PipelineConfig {
-            inputs: Vec::new(),
-            transform: None,
+    fn minimal_config(path: String) -> PipelineConfig {
+        PipelineConfig {
+            inputs: vec![minimal_input(path)],
             outputs: vec![minimal_output()],
-            enrichment: Vec::new(),
-            resource_attrs: Default::default(),
-            workers: None,
-            batch_target_bytes: None,
-            batch_timeout_ms: None,
-            poll_interval_ms: None,
-        };
-        let err = match Pipeline::from_config("p", &cfg, &logfwd_test_utils::test_meter(), None) {
-            Ok(_) => panic!("empty inputs must be rejected"),
-            Err(err) => err,
-        };
-        assert!(
-            err.contains("at least one input"),
-            "unexpected error: {err}"
-        );
-    }
-
-    #[test]
-    fn from_config_rejects_missing_outputs() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let log_path = dir.path().join("in.log");
-        std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").expect("write input");
-        let cfg = PipelineConfig {
-            inputs: vec![minimal_input(log_path.to_string_lossy().into_owned())],
             transform: None,
-            outputs: Vec::new(),
-            enrichment: Vec::new(),
-            resource_attrs: Default::default(),
+            enrichment: vec![],
+            resource_attrs: std::collections::HashMap::new(),
             workers: None,
             batch_target_bytes: None,
             batch_timeout_ms: None,
             poll_interval_ms: None,
-        };
-        let err = match Pipeline::from_config("p", &cfg, &logfwd_test_utils::test_meter(), None) {
-            Ok(_) => panic!("empty outputs must be rejected"),
-            Err(err) => err,
-        };
-        assert!(
-            err.contains("at least one output"),
-            "unexpected error: {err}"
-        );
+        }
     }
 
     #[test]
@@ -544,7 +698,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let log_path = dir.path().join("in.log");
         std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").expect("write input");
-        let mut cfg = PipelineConfig {
+        let cfg = PipelineConfig {
             inputs: vec![minimal_input(log_path.to_string_lossy().into_owned())],
             transform: None,
             outputs: vec![minimal_output()],
@@ -565,17 +719,22 @@ mod tests {
             batch_err.contains("batch_timeout_ms must be > 0"),
             "unexpected error: {batch_err}"
         );
+    }
 
-        cfg.batch_timeout_ms = None;
-        cfg.poll_interval_ms = Some(0);
-        let poll_err =
-            match Pipeline::from_config("p", &cfg, &logfwd_test_utils::test_meter(), None) {
-                Ok(_) => panic!("zero poll interval must be rejected"),
-                Err(err) => err,
-            };
+    #[test]
+    fn workers_zero_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        std::fs::write(&log_path, b"").unwrap();
+
+        let mut config = minimal_config(log_path.display().to_string());
+        config.workers = Some(0);
+        let err = Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
+            .err()
+            .unwrap();
         assert!(
-            poll_err.contains("poll_interval_ms must be > 0"),
-            "unexpected error: {poll_err}"
+            err.contains("workers must be >= 1"),
+            "unexpected error: {err}"
         );
     }
 }

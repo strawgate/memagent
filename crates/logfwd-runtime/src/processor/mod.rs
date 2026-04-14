@@ -3,6 +3,12 @@ use logfwd_output::BatchMetadata;
 use smallvec::SmallVec;
 use std::fmt::Debug;
 
+pub mod blocklist;
+pub mod http_enrich;
+
+pub use blocklist::BlocklistProcessor;
+pub use http_enrich::{HttpEnrichConfig, HttpEnrichProcessor};
+
 /// Error types for processor operations.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]

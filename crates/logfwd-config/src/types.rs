@@ -548,7 +548,12 @@ pub struct OutputConfig {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum GeoDatabaseFormat {
+    /// MaxMind GeoIP2 / GeoLite2 `.mmdb` binary format.
     Mmdb,
+    /// CSV file with `ip_range_start`, `ip_range_end` columns plus optional
+    /// `country_code`, `country_name`, `stateprov`, `city`, `latitude`,
+    /// `longitude`, `asn`, `org` columns.  Compatible with DB-IP Lite exports.
+    CsvRange,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -586,6 +591,9 @@ fn default_k8s_table_name() -> String {
 pub struct CsvEnrichmentConfig {
     pub table_name: String,
     pub path: String,
+    /// Reload the file from disk every N seconds. If absent the file is read
+    /// once at startup and never reloaded.
+    pub refresh_interval: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -593,7 +601,53 @@ pub struct CsvEnrichmentConfig {
 pub struct JsonlEnrichmentConfig {
     pub table_name: String,
     pub path: String,
+    /// Reload the file from disk every N seconds. If absent the file is read
+    /// once at startup and never reloaded.
+    pub refresh_interval: Option<u64>,
 }
+
+/// Enriches logs with a single-row table populated from environment variables
+/// whose names begin with `prefix`.  The prefix is stripped and the remainder
+/// lower-cased to form column names.
+///
+/// ```yaml
+/// enrichment:
+///   - type: env_vars
+///     table_name: deploy_meta
+///     prefix: LOGFWD_META_
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvVarsEnrichmentConfig {
+    pub table_name: String,
+    /// Environment variable name prefix to filter on (e.g. `"LOGFWD_META_"`).
+    pub prefix: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessInfoConfig {}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KvFileEnrichmentConfig {
+    pub table_name: String,
+    pub path: String,
+    /// Reload the file from disk every N seconds.
+    pub refresh_interval: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkInfoConfig {}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerInfoConfig {}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct K8sClusterInfoConfig {}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -604,6 +658,18 @@ pub enum EnrichmentConfig {
     K8sPath(K8sPathConfig),
     Csv(CsvEnrichmentConfig),
     Jsonl(JsonlEnrichmentConfig),
+    /// Populate a one-row enrichment table from environment variables.
+    EnvVars(EnvVarsEnrichmentConfig),
+    /// Agent self-metadata: name, version, PID, start time.
+    ProcessInfo(ProcessInfoConfig),
+    /// Parse a KEY=value properties file into a one-row enrichment table.
+    KvFile(KvFileEnrichmentConfig),
+    /// Network interface metadata: hostname, IPs.
+    NetworkInfo(NetworkInfoConfig),
+    /// Container runtime detection: container ID, runtime name.
+    ContainerInfo(ContainerInfoConfig),
+    /// Kubernetes cluster metadata from downward API.
+    K8sClusterInfo(K8sClusterInfoConfig),
 }
 
 #[derive(Debug, Clone, Deserialize)]

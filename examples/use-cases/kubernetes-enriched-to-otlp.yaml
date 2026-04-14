@@ -1,0 +1,58 @@
+# logfwd example
+# Use case: Kubernetes CRI logs with full resource enrichment to OTLP
+#
+# Enriches every log line with host, container, K8s, and OS metadata.
+# Most enrichment tables are one-row snapshot tables resolved at startup;
+# k8s_path is a multi-row lookup table resolved per log file path.
+#
+# Prerequisites:
+#   - Deploy logfwd as a DaemonSet
+#   - Expose K8S_NODE_NAME via fieldRef in the pod spec
+#   - Set K8S_CLUSTER_NAME as a plain env var or via ConfigMap
+#   - Mount /etc/os-release from the host (already available in most images)
+
+pipelines:
+  k8s-logs:
+    inputs:
+      - type: file
+        path: /var/log/containers/*.log
+        format: cri
+
+    enrichment:
+      - type: host_info
+      - type: process_info
+      - type: network_info
+      - type: container_info
+      - type: k8s_cluster_info
+      - type: k8s_path
+      - type: kv_file
+        table_name: os_release
+        path: /etc/os-release
+      - type: static
+        table_name: labels
+        labels:
+          environment: production
+
+    transform: |
+      SELECT
+        l.*,
+        h.hostname,
+        h.os_type,
+        n.primary_ipv4 AS host_ip,
+        c.container_runtime,
+        k.namespace    AS k8s_namespace,
+        k.node_name    AS k8s_node,
+        k.cluster_name AS k8s_cluster,
+        os.pretty_name AS os_name,
+        lbl.environment
+      FROM logs l
+      CROSS JOIN host_info h
+      CROSS JOIN network_info n
+      CROSS JOIN container_info c
+      CROSS JOIN k8s_cluster_info k
+      CROSS JOIN os_release os
+      CROSS JOIN labels lbl
+
+    outputs:
+      - type: otlp
+        endpoint: https://otel-collector:4318/v1/logs
