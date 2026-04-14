@@ -295,8 +295,9 @@
   go(0);
 
   // Auto-start playback after a brief delay (skip if user prefers reduced motion)
+  var startupTimer = null;
   if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    setTimeout(function() { startPlay(); }, 1200);
+    startupTimer = setTimeout(function() { startupTimer = null; startPlay(); }, 1200);
   }
 
   // Scroll sync: map page headings to animation steps
@@ -328,5 +329,11 @@
       if (heading) observer.observe(heading);
     });
   }
+
+  // Cleanup on SPA navigation
+  document.addEventListener('astro:before-swap', function() {
+    if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
+    stopPlay();
+  }, { once: true });
 })();
 </script>

@@ -119,6 +119,8 @@
   var containerEl = el('div', 'tl-container');
   var statsEl = el('div', 'tl-stats');
   var tooltipEl = el('div', 'tl-tooltip');
+  tooltipEl.setAttribute('role', 'status');
+  tooltipEl.setAttribute('aria-live', 'polite');
   var progressEl = el('div', 'tl-progress');
   var progressFill = el('div', 'tl-progress-fill');
   progressEl.appendChild(progressFill);
@@ -227,6 +229,7 @@
     } else if (phase === 'rotating') {
       showTooltip('<b>\u2705 Rotation detected</b> \u2014 logfwd saw inode change from 12345 \u2192 ' + fileInode + '. Drained old file, opened new file at offset 0. <b>No data lost.</b>', 'ok');
       phase = 'new-tailing';
+      updateStats();
       updateProgress();
       timer = setTimeout(tick, 1500);
 
@@ -238,7 +241,7 @@
       updateStats();
       updateProgress();
 
-      if (lineNum <= 2) {
+      if (lineNum <= 4) {
         showTooltip('<b>Tailing new app.log</b> \u2014 Reading from offset 0 on the new inode. Old file is fully drained.', 'ok');
       } else {
         hideTooltip();
@@ -268,10 +271,20 @@
     }
   }
 
-  // Respect reduced motion
+  // Respect reduced motion — show final state statically
   var prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   if (!prefersReducedMotion) {
     timer = setTimeout(tick, 800);
+  } else {
+    // Show a populated static view so users still see the concept
+    for (var rm = 1; rm <= 6; rm++) {
+      addLine(mainFile, rm, genLine(rm));
+      offset += genLine(rm).length + 1;
+      lineNum++; linesRead++;
+    }
+    mainFile.cursor.textContent = '\u25B6 offset: ' + offset;
+    updateStats();
+    showTooltip('<b>Tailing app.log</b> \u2014 logfwd reads new lines as they appear. Animation paused (reduced motion).', '');
   }
 
   // Cleanup

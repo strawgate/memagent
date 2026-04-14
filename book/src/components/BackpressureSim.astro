@@ -673,7 +673,10 @@
     interval = null;
   }
 
+  var reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
   function handleVisibilityChange() {
+    if (reducedMotion) return;
     if (document.hidden) {
       stopSimulation();
     } else {
@@ -681,7 +684,7 @@
     }
   }
 
-  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  if (!reducedMotion) {
     startSimulation();
   }
   document.addEventListener('visibilitychange', handleVisibilityChange);
