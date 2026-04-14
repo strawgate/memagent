@@ -207,6 +207,19 @@ pub struct MemfdCreateEvent {
     pub name: [u8; MAX_FILENAME],
 }
 
+// ── eBPF runtime config (userspace → kernel) ───────────────────────────
+
+/// Configuration passed from userspace to eBPF programs via a BPF Array map.
+/// Index 0 stores this struct.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct EbpfConfig {
+    /// Byte offset of `exit_code` in `task_struct`. Set from BTF at load time.
+    /// When 0, the eBPF program uses -1 (unknown) as the exit_code sentinel.
+    pub task_exit_code_offset: u32,
+    pub pad: u32,
+}
+
 // ── Process info stash (kernel-internal, for kprobe→tracepoint correlation) ─
 
 /// Stashed in a BPF HashMap by the kprobe on `tcp_v4_connect` (which runs in

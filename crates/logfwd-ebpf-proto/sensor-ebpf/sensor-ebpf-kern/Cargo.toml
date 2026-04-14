@@ -10,3 +10,5 @@ sensor-ebpf-common = { path = "../sensor-ebpf-common" }
 [[bin]]
 name = "sensor-ebpf"
 path = "src/main.rs"
+
+[workspace]

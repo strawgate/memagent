@@ -24,11 +24,12 @@
 use aya_ebpf::{
     helpers::{
         bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_get_current_pid_tgid,
-        bpf_get_current_uid_gid, bpf_ktime_get_ns, bpf_probe_read_kernel_str_bytes,
+        bpf_get_current_task, bpf_get_current_uid_gid, bpf_ktime_get_ns,
+        bpf_probe_read_kernel, bpf_probe_read_kernel_str_bytes,
         bpf_probe_read_user_str_bytes,
     },
     macros::{kprobe, map, tracepoint},
-    maps::{HashMap, RingBuf},
+    maps::{Array, HashMap, RingBuf},
     programs::{ProbeContext, TracePointContext},
     EbpfContext,
 };
@@ -48,6 +49,10 @@ static EVENTS: RingBuf = RingBuf::with_byte_size(16 * 1024 * 1024, 0);
 /// tracepoint (softirq context) can attribute connections to the right process.
 #[map]
 static SOCK_OWNERS: HashMap<u64, ConnProcessInfo> = HashMap::with_max_entries(8192, 0);
+
+/// Runtime configuration from userspace (e.g., task_struct field offsets from BTF).
+#[map]
+static CONFIG: Array<EbpfConfig> = Array::with_max_entries(1, 0);
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -170,7 +175,30 @@ fn try_process_exit(_ctx: &TracePointContext) -> Result<(), i64> {
     // written before submit.
     unsafe {
         fill_header(&mut (*event).header, EventKind::ProcessExit);
-        (*event).exit_code = 0;
+
+        // Try to read exit_code from task_struct using BTF-provided offset.
+        // Falls back to -1 sentinel when offset is unavailable or read fails.
+        let mut exit_code: i32 = -1;
+        if let Some(cfg) = CONFIG.get(0) {
+            let offset = cfg.task_exit_code_offset;
+            // Sanity check: offset must be within a reasonable task_struct range.
+            if offset > 0 && offset < 16384 {
+                // SAFETY: bpf_get_current_task returns a pointer to the current
+                // task_struct; offset is from kernel BTF set by userspace loader.
+                let task = bpf_get_current_task();
+                if task != 0 {
+                    let ptr = (task as *const u8).add(offset as usize) as *const i32;
+                    // SAFETY: ptr points into task_struct at the BTF-verified offset.
+                    if let Ok(code) = bpf_probe_read_kernel(ptr) {
+                        // Linux task_struct.exit_code packs: (status << 8) | signal.
+                        // Extract the exit status for userspace.
+                        exit_code = code >> 8;
+                    }
+                }
+            }
+        }
+
+        (*event).exit_code = exit_code;
         (*event).pad = 0;
     }
 
@@ -569,8 +597,10 @@ unsafe fn read_sock_addrs(
     sport: &mut u16,
     dport: &mut u16,
 ) {
-    *sport = u16::from_be(ctx.read_at(24).unwrap_or(0));
-    *dport = u16::from_be(ctx.read_at(26).unwrap_or(0));
+    // The inet_sock_set_state tracepoint stores ports in host byte order
+    // (the kernel's trace_inet_sock_set_state does ntohs() internally).
+    *sport = ctx.read_at(24).unwrap_or(0);
+    *dport = ctx.read_at(26).unwrap_or(0);
     *saddr = ctx.read_at(32).unwrap_or(0);
     *daddr = ctx.read_at(36).unwrap_or(0);
 }

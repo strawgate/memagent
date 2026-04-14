@@ -25,6 +25,14 @@ use std::io::Write;
 use std::net::Ipv4Addr;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+/// Newtype wrapper for `EbpfConfig` to satisfy aya's `Pod` trait (orphan rule).
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct PodEbpfConfig(EbpfConfig);
+
+// SAFETY: EbpfConfig is repr(C), Copy, and contains only primitive types (u32).
+unsafe impl aya::Pod for PodEbpfConfig {}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let json_mode = args.iter().any(|a| a == "--json");
@@ -74,6 +82,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Loading eBPF from {ebpf_path}...");
     let ebpf_bytes = std::fs::read(ebpf_path)?;
     let mut ebpf = Ebpf::load(&ebpf_bytes)?;
+
+    // Configure exit_code offset from kernel BTF BEFORE attaching programs,
+    // so events emitted during startup have valid config.
+    match configure_exit_code(&mut ebpf) {
+        Ok(offset) => eprintln!("  configured exit_code offset: {offset}"),
+        Err(e) => eprintln!("  exit_code offset unavailable (sentinel mode): {e}"),
+    }
 
     // Attach tracepoints.
     let tracepoints: &[(&str, &str, &str)] = &[
@@ -622,4 +637,48 @@ impl EventCounts {
             + self.ptrace
             + self.memfd_create
     }
+}
+
+/// Try to discover the exit_code offset from kernel BTF and write it to the CONFIG map.
+fn configure_exit_code(ebpf: &mut Ebpf) -> Result<u32, Box<dyn std::error::Error>> {
+    let output = std::process::Command::new("pahole")
+        .args(["-C", "task_struct", "/sys/kernel/btf/vmlinux"])
+        .output()?;
+
+    if !output.status.success() {
+        return Err("pahole failed or not installed".into());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut offset: Option<u32> = None;
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("exit_code") && trimmed.contains("/*") {
+            if let Some(comment) = trimmed.split("/*").nth(1) {
+                let parts: Vec<&str> = comment.split_whitespace().collect();
+                if let Some(off) = parts.first().and_then(|s| s.parse::<u32>().ok()) {
+                    if off > 0 && off < 16384 {
+                        offset = Some(off);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    let off = offset.ok_or("exit_code field not found in pahole output")?;
+
+    let config_map = ebpf
+        .map_mut("CONFIG")
+        .ok_or("CONFIG map not found in eBPF binary")?;
+    let mut array: aya::maps::Array<_, PodEbpfConfig> =
+        config_map.try_into().map_err(|e| format!("{e}"))?;
+
+    let cfg = PodEbpfConfig(EbpfConfig {
+        task_exit_code_offset: off,
+        pad: 0,
+    });
+    array.set(0, cfg, 0).map_err(|e| format!("{e}"))?;
+
+    Ok(off)
 }

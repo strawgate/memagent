@@ -25,6 +25,14 @@ use aya::programs::{KProbe, TracePoint};
 use logfwd_types::diagnostics::ComponentHealth;
 use sensor_ebpf_common::*;
 
+/// Newtype wrapper for `EbpfConfig` to satisfy aya's `Pod` trait (orphan rule).
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct PodEbpfConfig(EbpfConfig);
+
+// SAFETY: EbpfConfig is repr(C), Copy, and contains only primitive types (u32).
+unsafe impl aya::Pod for PodEbpfConfig {}
+
 use crate::input::{InputEvent, InputSource};
 
 // ── Configuration ──────────────────────────────────────────────────────
@@ -285,6 +293,16 @@ impl PlatformSensorInput {
 
         let mut skipped = Vec::new();
 
+        // Configure runtime parameters via the CONFIG BPF map BEFORE attaching
+        // any programs, so events emitted during startup have valid config.
+        match Self::configure_ebpf_params(&mut ebpf) {
+            Ok(()) => tracing::debug!("configured eBPF runtime parameters (exit_code offset)"),
+            Err(e) => {
+                tracing::warn!("eBPF config: exit_code offset unavailable, using sentinel: {e}");
+                skipped.push(format!("exit_code offset unavailable: {e}"));
+            }
+        }
+
         // Attach tracepoints.
         for (prog_name, category, tracepoint) in TRACEPOINTS {
             match ebpf.program_mut(prog_name) {
@@ -329,7 +347,81 @@ impl PlatformSensorInput {
             }
         }
 
-        Ok((ebpf, skipped))
+        let warnings = skipped;
+
+        Ok((ebpf, warnings))
+    }
+
+    /// Write runtime configuration to the eBPF CONFIG map.
+    ///
+    /// Discovers the byte offset of `task_struct.exit_code` from kernel BTF
+    /// so the eBPF program can read real exit codes instead of using a sentinel.
+    fn configure_ebpf_params(ebpf: &mut Ebpf) -> io::Result<()> {
+        let offset = Self::find_exit_code_offset()?;
+
+        let config_map = ebpf
+            .map_mut("CONFIG")
+            .ok_or_else(|| io::Error::other("CONFIG map not found in eBPF binary"))?;
+        let mut array: aya::maps::Array<_, PodEbpfConfig> = config_map
+            .try_into()
+            .map_err(|e| io::Error::other(format!("CONFIG map type error: {e}")))?;
+
+        let cfg = PodEbpfConfig(EbpfConfig {
+            task_exit_code_offset: offset,
+            pad: 0,
+        });
+        array
+            .set(0, cfg, 0)
+            .map_err(|e| io::Error::other(format!("CONFIG map write: {e}")))?;
+
+        tracing::info!(offset, "set task_struct.exit_code offset from kernel BTF");
+        Ok(())
+    }
+
+    /// Discover `task_struct.exit_code` offset from `/sys/kernel/btf/vmlinux`.
+    ///
+    /// Uses `pahole` (from the `dwarves` package) to introspect kernel BTF.
+    /// Returns the byte offset on success.
+    fn find_exit_code_offset() -> io::Result<u32> {
+        // Try pahole — the standard tool for BTF struct layout.
+        let output = std::process::Command::new("pahole")
+            .args(["-C", "task_struct", "/sys/kernel/btf/vmlinux"])
+            .output()
+            .map_err(|e| {
+                io::Error::other(format!(
+                    "pahole not available (install dwarves package for exit_code support): {e}"
+                ))
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(io::Error::other(format!(
+                "pahole failed (exit {}): {stderr}",
+                output.status
+            )));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // pahole output: "	int  exit_code;  /*  1234  4 */"
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if trimmed.contains("exit_code") && trimmed.contains("/*") {
+                if let Some(comment) = trimmed.split("/*").nth(1) {
+                    let parts: Vec<&str> = comment.split_whitespace().collect();
+                    if let Some(offset_str) = parts.first() {
+                        if let Ok(offset) = offset_str.parse::<u32>() {
+                            if offset > 0 && offset < 16384 {
+                                return Ok(offset);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Err(io::Error::other(
+            "exit_code field not found in pahole output",
+        ))
     }
 
     /// Drain available events from the ring buffer into an Arrow `RecordBatch`.
@@ -424,7 +516,12 @@ fn parse_event(
             // SAFETY: Length checked >= size_of::<ProcessExitEvent>(); ring buffer is 8-byte aligned.
             let ev = unsafe { &*(ptr.cast::<ProcessExitEvent>()) };
             let mut row = EventRow::from_header(header, "exit", mono_to_wall_offset_ns);
-            row.exit_code = Some(ev.exit_code);
+            // Sentinel -1 means offset was unavailable; treat as null.
+            row.exit_code = if ev.exit_code == -1 {
+                None
+            } else {
+                Some(ev.exit_code)
+            };
             Some(row)
         }
         k if k == EventKind::TcpConnect as u32 && len >= size_of::<TcpConnectEvent>() => {
