@@ -20,6 +20,7 @@
 use aya::Ebpf;
 use aya::maps::RingBuf;
 use aya::programs::{KProbe, TracePoint};
+use sensor_ebpf_common::dns::dns_wire_to_dotted;
 use sensor_ebpf_common::*;
 use std::io::Write;
 use std::net::Ipv4Addr;
@@ -177,7 +178,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let now_wall = wall_clock_ns();
             let comm = comm_str(&header.comm);
-            let comm_esc = if json_mode { json_escape(comm) } else { String::new() };
+            let comm_esc = if json_mode {
+                json_escape(comm)
+            } else {
+                String::new()
+            };
 
             match header.kind {
                 // ── Process exec ──────────────────────────────
@@ -519,12 +524,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     counts.dns_query += 1;
                     let wire_len = (ev.qname_len as usize).min(MAX_DNS_NAME);
                     let wire = &ev.qname[..wire_len];
-                    let (qname, qtype) = dns_wire_to_dotted(wire);
+                    let (qname_opt, qtype_opt) = dns_wire_to_dotted(wire);
+                    let qname = qname_opt.as_deref().unwrap_or("<undecoded>");
+                    let qtype_str = match qtype_opt {
+                        Some(qt) => format!("{qt}"),
+                        None => "?".to_string(),
+                    };
                     let dst = Ipv4Addr::from(ev.dst_addr.to_ne_bytes());
                     if json_mode {
+                        // Emit null JSON values for undecoded fields.
+                        let qname_json = match qname_opt.as_deref() {
+                            Some(s) => format!("\"{}\"", json_escape(s)),
+                            None => "null".to_string(),
+                        };
+                        let qtype_json = match qtype_opt {
+                            Some(qt) => format!("{qt}"),
+                            None => "null".to_string(),
+                        };
                         writeln!(
                             stdout,
-                            r#"{{"ts":{},"kind":"dns_query","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","qname":"{}","qtype":{},"tx_id":{},"dst":"{}:{}"}}"#,
+                            r#"{{"ts":{},"kind":"dns_query","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","qname":{},"qtype":{},"tx_id":{},"dst":"{}:{}"}}"#,
                             now_wall,
                             header.tgid,
                             header.pid,
@@ -532,8 +551,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             header.gid,
                             header.cgroup_id,
                             comm_esc,
-                            json_escape(&qname),
-                            qtype,
+                            qname_json,
+                            qtype_json,
                             ev.tx_id,
                             dst,
                             ev.dst_port
@@ -542,7 +561,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             "DNS   tgid={:<6} comm={:<16} {} type={} txid={:#06x} -> {}:{}",
-                            header.tgid, comm, qname, qtype, ev.tx_id, dst, ev.dst_port
+                            header.tgid, comm, qname, qtype_str, ev.tx_id, dst, ev.dst_port
                         )?;
                     }
                 }
@@ -598,41 +617,7 @@ fn safe_str(buf: &[u8], len: usize) -> &str {
     std::str::from_utf8(&slice[..nul]).unwrap_or("<invalid>")
 }
 
-/// Parse DNS wire-format label-encoded bytes into a dotted domain name.
-///
-/// Returns `(name, qtype)` where `qtype` is the query type extracted after
-/// the name terminator, or 0 if not available.
-fn dns_wire_to_dotted(wire: &[u8]) -> (String, u16) {
-    let mut name = String::with_capacity(wire.len());
-    let mut pos = 0;
-    while pos < wire.len() {
-        let label_len = wire[pos] as usize;
-        if label_len == 0 {
-            pos += 1; // skip the 0-terminator
-            break;
-        }
-        // Compression pointer or invalid — stop parsing.
-        if label_len > 63 || pos + 1 + label_len > wire.len() {
-            return (name, 0);
-        }
-        if !name.is_empty() {
-            name.push('.');
-        }
-        let label = &wire[pos + 1..pos + 1 + label_len];
-        match std::str::from_utf8(label) {
-            Ok(s) => name.push_str(s),
-            Err(_) => return (name, 0),
-        }
-        pos += 1 + label_len;
-    }
-    // Extract qtype (2 bytes big-endian) after the name terminator.
-    let qtype = if pos + 2 <= wire.len() {
-        u16::from_be_bytes([wire[pos], wire[pos + 1]])
-    } else {
-        0
-    };
-    (name, qtype)
-}
+// dns_wire_to_dotted is provided by sensor_ebpf_common::dns::dns_wire_to_dotted
 
 /// Escape a string for safe interpolation into JSON string values.
 fn json_escape(s: &str) -> String {
