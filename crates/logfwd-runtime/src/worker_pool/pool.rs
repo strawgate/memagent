@@ -1528,7 +1528,7 @@ mod tests {
             Some(&"503".to_string())
         );
         assert!(
-            capture.contains_event_message("worker_pool: transient error, retrying with jitter"),
+            capture.contains_event_message("worker_pool: transient error, retrying"),
             "expected retry log event"
         );
         assert!(

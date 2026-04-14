@@ -620,8 +620,11 @@ fn panic_after_initial_success_does_not_advance_checkpoint_past_gap() {
 // - later batches may still deliver,
 // - durable checkpoint never reaches end-of-input because failed gap is held.
 
+/// Transient IoError failures are retried indefinitely. After a burst of
+/// errors the worker eventually succeeds, all batches deliver, and the
+/// checkpoint advances to cover the full input — no data is held or lost.
 #[test]
-fn retry_exhausted_gap_blocks_checkpoint_even_after_later_successes() {
+fn transient_io_errors_retry_until_delivery_succeeds() {
     let mut sim = super::build_sim(90, 1);
 
     let factory = Arc::new(InstrumentedSinkFactory::new(vec![vec![
@@ -665,7 +668,7 @@ fn retry_exhausted_gap_blocks_checkpoint_even_after_later_successes() {
     let run_result = sim.run();
     assert!(
         run_result.is_ok(),
-        "pipeline must terminate under retry-exhaustion path; got {run_result:?}"
+        "pipeline must terminate cleanly; got {run_result:?}"
     );
 
     let delivered = delivered_counter.load(Ordering::Relaxed);
@@ -674,19 +677,15 @@ fn retry_exhausted_gap_blocks_checkpoint_even_after_later_successes() {
 
     assert!(
         calls >= 6,
-        "expected retry-exhaustion attempts plus later sends; calls={calls}"
+        "expected retry attempts plus successful sends; calls={calls}"
     );
     assert!(
-        delivered >= 2,
-        "expected first and later batches to deliver around retry-exhausted gap; delivered={delivered}"
+        delivered >= 3,
+        "all batches should eventually deliver after transient errors; delivered={delivered}"
     );
     assert!(
-        durable.is_some(),
-        "first successful batch should commit checkpoint progress"
-    );
-    assert!(
-        durable.unwrap_or_default() < input_total_bytes,
-        "checkpoint must remain behind full input because retry-exhausted gap is held; durable={durable:?} input_total_bytes={input_total_bytes}"
+        durable.unwrap_or_default() >= input_total_bytes,
+        "checkpoint should advance past all input once every batch delivers; durable={durable:?} input_total_bytes={input_total_bytes}"
     );
     ckpt_handle.assert_monotonic(1);
     ckpt_handle.assert_durable_not_ahead_of_updates(1);
