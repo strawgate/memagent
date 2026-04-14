@@ -257,18 +257,20 @@
   var stepIdx = 0;
   var playing = false;
   var timer = null;
+  var startupTimer = null;
 
   // === BUILD DOM ===
 
   // Controls
   var bar = el('div', 'px-bar');
-  var playBtn = el('button', 'px-play'); playBtn.innerHTML = '\u25B6';
-  var stepBtn = el('button', 'px-step-btn'); stepBtn.textContent = 'Step \u25B6';
+  var playBtn = el('button', 'px-play'); playBtn.innerHTML = '\u25B6'; playBtn.setAttribute('aria-label', 'Play');
+  var stepBtn = el('button', 'px-step-btn'); stepBtn.textContent = 'Step \u25B6'; stepBtn.setAttribute('aria-label', 'Step forward');
   var prog = el('div', 'px-prog'); var progFill = el('div', 'px-prog-fill'); prog.appendChild(progFill);
   var pills = el('div', 'px-pills');
   var pillEls = STEPS.map(function(s, i) {
     var p = el('button', 'px-pill');
     p.textContent = s.label;
+    p.setAttribute('aria-label', 'Step ' + s.label + ': ' + s.title);
     p.onclick = function() { stopAuto(); goStep(i); };
     pills.appendChild(p);
     return p;
@@ -369,7 +371,11 @@
     var s = STEPS[idx];
 
     // Update controls
-    pillEls.forEach(function(p, i) { p.className = 'px-pill' + (i === idx ? ' on' : ''); });
+    pillEls.forEach(function(p, i) {
+      p.className = 'px-pill' + (i === idx ? ' on' : '');
+      if (i === idx) p.setAttribute('aria-current', 'step');
+      else p.removeAttribute('aria-current');
+    });
     progFill.style.width = ((idx + 1) / STEPS.length * 100) + '%';
 
     // Update callout
@@ -505,12 +511,16 @@
   function stopAuto() {
     playing = false;
     if (timer) { clearTimeout(timer); timer = null; }
+    if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
     playBtn.innerHTML = '\u25B6';
+    playBtn.setAttribute('aria-label', 'Play');
   }
 
   function startAuto() {
+    if (playing) return;
     playing = true;
     playBtn.innerHTML = '\u23F8';
+    playBtn.setAttribute('aria-label', 'Pause');
     scheduleNext();
   }
 
@@ -536,7 +546,10 @@
 
   // Init
   goStep(0);
-  setTimeout(function() { startAuto(); }, 1500);
+  startupTimer = setTimeout(function() {
+    startupTimer = null;
+    if (!playing) startAuto();
+  }, 1500);
 
   // Cleanup
   document.addEventListener('astro:before-swap', function() { stopAuto(); }, { once: true });

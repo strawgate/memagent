@@ -42,7 +42,7 @@ Step through the algorithm below to see how quote positions become a string inte
 
 ### How prefix_xor works
 
-The `prefix_xor` function is the key insight borrowed from simdjson. Given a bitmask where each `1` marks a quote position, it produces a bitmask where `1` means "inside a string." It does this with just 6 XOR-shift operations — no loops, no branches.
+The `prefix_xor` function is the key insight borrowed from simdjson. Given a bitmask where each `1` marks a quote position, it produces a running parity mask — bit *i* is set iff an odd number of quotes precede it. A final `& !quotes` step strips the quote positions themselves, yielding the pure string interior mask. All of this takes just 6 XOR-shift operations — no loops, no branches.
 
 Each shift doubles the "reach" of each set bit. After shifting by 1, 2, 4, 8, 16, and 32, every bit between an opening and closing quote has been toggled an odd number of times (setting it to 1), while bits outside strings are toggled an even number of times (remaining 0).
 
