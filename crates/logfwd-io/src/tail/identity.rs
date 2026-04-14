@@ -73,7 +73,14 @@ pub(super) fn compute_fingerprint(file: &mut File, max_bytes: usize) -> io::Resu
     file.seek(SeekFrom::Start(0))?;
 
     let mut buf = vec![0u8; max_bytes];
-    let n = file.read(&mut buf)?;
+    let mut total = 0;
+    while total < buf.len() {
+        match file.read(&mut buf[total..])? {
+            0 => break,
+            n => total += n,
+        }
+    }
+    let n = total;
 
     file.seek(SeekFrom::Start(pos))?;
 
@@ -107,8 +114,9 @@ pub(super) fn identify_file(path: &Path, fingerprint_bytes: usize) -> io::Result
 
 #[cfg(test)]
 mod tests {
-    use super::source_id_from_digests;
+    use super::{compute_fingerprint, source_id_from_digests};
     use logfwd_types::pipeline::SourceId;
+    use std::io::Write;
 
     #[test]
     fn source_id_uses_primary_digest_when_nonzero() {
@@ -123,5 +131,33 @@ mod tests {
     #[test]
     fn source_id_uses_nonzero_sentinel_when_both_digests_are_zero() {
         assert_eq!(source_id_from_digests(0, 0), SourceId(1));
+    }
+
+    #[test]
+    fn compute_fingerprint_is_deterministic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test.log");
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"hello world, this is a test line\n").unwrap();
+        }
+        let mut file = std::fs::File::open(&path).unwrap();
+        let fp1 = compute_fingerprint(&mut file, 256).unwrap();
+        let fp2 = compute_fingerprint(&mut file, 256).unwrap();
+        assert_eq!(fp1, fp2, "consecutive fingerprint calls must be identical");
+        assert_ne!(
+            fp1, 0,
+            "non-empty file must not produce sentinel fingerprint"
+        );
+    }
+
+    #[test]
+    fn compute_fingerprint_empty_file_returns_sentinel() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("empty.log");
+        std::fs::File::create(&path).unwrap();
+        let mut file = std::fs::File::open(&path).unwrap();
+        let fp = compute_fingerprint(&mut file, 256).unwrap();
+        assert_eq!(fp, 0, "empty file must return sentinel fingerprint 0");
     }
 }
