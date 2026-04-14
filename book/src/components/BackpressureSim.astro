@@ -275,11 +275,12 @@
   var pipelineFill = 0;
   var workerFills = [0, 0, 0];
 
-  // Rates are balanced so 100% output speed drains everything.
-  // The bottleneck is the output — when it slows, pressure builds.
-  var IO_RATE = 1.5;      // chunks/tick from I/O
-  var CPU_RATE = 1.5;     // batches/tick CPU can process
-  var OUT_MAX_RATE = 1.6; // output can drain slightly faster than input at full speed
+  // Rates tuned so output must be above ~50% to keep up with input.
+  // At 100% output drains 3x faster than input — recovery is visible.
+  // Below ~50% output, pressure builds; at 0% it's a full outage.
+  var IO_RATE = 1.2;      // chunks/tick from I/O
+  var CPU_RATE = 1.2;     // batches/tick CPU can process
+  var OUT_MAX_RATE = 2.4; // output at 100% drains 2x input rate — fast recovery
 
   var totalProduced = 0;
   var totalDelivered = 0;
