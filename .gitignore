@@ -14,7 +14,6 @@ book/.astro/
 .DS_Store
 crates/logfwd-io/src/dashboard-dist/
 .playwright-mcp/
-.codex/
 *.env
 .env
 es-flamegraph.svg
@@ -27,4 +26,5 @@ error.log
 
 # Research intermediate artifacts (cloud task diffs, extracts)
 **/cloud-artifacts/
+.codex/
 scripts/__pycache__/

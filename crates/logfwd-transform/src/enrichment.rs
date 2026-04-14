@@ -725,11 +725,14 @@ impl EnvTable {
         table_name: impl Into<String>,
         prefix: &str,
     ) -> Result<Self, TransformError> {
-        let mut pairs: Vec<(String, String)> = std::env::vars()
+        let mut pairs: Vec<(String, String)> = std::env::vars_os()
             .filter_map(|(k, v)| {
-                k.strip_prefix(prefix)
+                let k_str = k.to_str()?; // skip non-UTF8 keys
+                let v_str = v.to_str()?; // skip non-UTF8 values
+                k_str
+                    .strip_prefix(prefix)
                     .filter(|s| !s.is_empty()) // skip exact prefix match (empty column name)
-                    .map(|stripped| (stripped.to_lowercase(), v))
+                    .map(|stripped| (stripped.to_lowercase(), v_str.to_owned()))
             })
             .collect();
         pairs.sort_by(|a, b| a.0.cmp(&b.0));
