@@ -400,47 +400,64 @@ export function App() {
     []
   );
 
-  // Process OTLP spans from WebSocket push.
+  // Max traces to retain in the dashboard (prevents unbounded growth).
+  const MAX_TRACES = 1000;
+
+  // Process OTLP spans from WebSocket push (delta delivery).
+  // Server sends only NEW completed spans + all current in-progress spans.
   const processOtlpTraces = useCallback(
     (doc: import("@otlpkit/otlpjson").OtlpTracesDocument) => {
       const incoming = extractTraceRecords(doc);
       setTraces((prev) => {
-        const prevById = new Map(prev.map((t) => [t.trace_id, t]));
-        const next = incoming.map((t) => {
-          const p = prevById.get(t.trace_id);
-          if (
-            p &&
-            p.pipeline === t.pipeline &&
-            p.start_unix_ns === t.start_unix_ns &&
-            p.total_ns === t.total_ns &&
-            p.status === t.status &&
-            p.lifecycle_state === t.lifecycle_state &&
-            p.errors === t.errors &&
-            p.scan_ns === t.scan_ns &&
-            p.transform_ns === t.transform_ns &&
-            p.output_ns === t.output_ns &&
-            p.queue_wait_ns === t.queue_wait_ns &&
-            p.worker_id === t.worker_id &&
-            p.send_ns === t.send_ns &&
-            p.recv_ns === t.recv_ns &&
-            p.took_ms === t.took_ms &&
-            p.retries === t.retries &&
-            p.req_bytes === t.req_bytes &&
-            p.cmp_bytes === t.cmp_bytes &&
-            p.resp_bytes === t.resp_bytes &&
-            p.flush_reason === t.flush_reason &&
-            p.output_start_unix_ns === t.output_start_unix_ns &&
-            p.lifecycle_state_start_unix_ns === t.lifecycle_state_start_unix_ns &&
-            p.scan_rows === t.scan_rows &&
-            p.input_rows === t.input_rows &&
-            p.output_rows === t.output_rows &&
-            p.bytes_in === t.bytes_in
-          ) {
-            return p;
+        // Separate incoming into completed and in-progress.
+        const incomingCompleted: TraceRecord[] = [];
+        const incomingInProgress = new Map<string, TraceRecord>();
+        for (const t of incoming) {
+          if (t.lifecycle_state === "completed") {
+            incomingCompleted.push(t);
+          } else {
+            incomingInProgress.set(t.trace_id, t);
           }
-          return t;
-        });
-        return next;
+        }
+
+        // Start with all previously completed traces (stable, won't be re-sent).
+        const merged: TraceRecord[] = [];
+        for (const t of prev) {
+          if (t.lifecycle_state === "completed") {
+            merged.push(t);
+          }
+          // Drop old in-progress entries — they'll be replaced by the fresh set.
+        }
+
+        // Add new completed traces from this tick.
+        const seen = new Set(merged.map((t) => t.trace_id));
+        for (const t of incomingCompleted) {
+          if (!seen.has(t.trace_id)) {
+            merged.push(t);
+            seen.add(t.trace_id);
+          }
+        }
+
+        // Append fresh in-progress traces.
+        for (const t of incomingInProgress.values()) {
+          if (!seen.has(t.trace_id)) {
+            merged.push(t);
+          }
+        }
+
+        // Cap to most recent traces (in-progress always kept, oldest completed trimmed).
+        if (merged.length > MAX_TRACES) {
+          // Sort: in-progress first, then by start time descending.
+          merged.sort((a, b) => {
+            const aIp = a.lifecycle_state !== "completed" ? 1 : 0;
+            const bIp = b.lifecycle_state !== "completed" ? 1 : 0;
+            if (aIp !== bIp) return bIp - aIp;
+            return Number(BigInt(b.start_unix_ns) - BigInt(a.start_unix_ns));
+          });
+          merged.length = MAX_TRACES;
+        }
+
+        return merged;
       });
 
       // Compute batch latency from completed traces.
@@ -451,7 +468,11 @@ export function App() {
         const avgMs =
           done.reduce((s, t) => s + (Number(t.total_ns ?? "0") || 0), 0) / done.length / 1e6;
         const formatted =
-          avgMs >= 1000 ? `${(avgMs / 1000).toFixed(1)}s` : `${avgMs.toFixed(0)}ms`;
+          avgMs >= 1000
+            ? `${(avgMs / 1000).toFixed(1)}s`
+            : avgMs >= 1
+              ? `${avgMs.toFixed(0)}ms`
+              : `${avgMs.toFixed(1)}ms`;
         pushMetricSample(metricRegistryRef.current, "lat", avgMs, formatted);
       }
 

@@ -80,6 +80,33 @@ impl SpanBuffer {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         buf.iter().cloned().collect()
     }
+
+    /// Returns the current number of buffered spans.
+    pub fn len(&self) -> usize {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+    }
+
+    /// Returns true if the buffer contains no spans.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns spans added since position `since`.
+    ///
+    /// If the buffer was evicted (len < since), returns all spans.
+    /// Updates `since` to the current length.
+    pub fn get_spans_since(&self, since: &mut usize) -> Vec<TraceSpan> {
+        let buf = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let start = if buf.len() < *since { 0 } else { *since };
+        *since = buf.len();
+        buf.iter().skip(start).cloned().collect()
+    }
 }
 
 impl Default for SpanBuffer {

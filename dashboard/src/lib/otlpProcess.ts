@@ -9,7 +9,6 @@
 import {
   collectMetricPoints,
   collectSpans,
-  nanosToMillis,
   toNumber,
 } from "@otlpkit/otlpjson";
 import type { OtlpMetricsDocument, OtlpTracesDocument } from "@otlpkit/otlpjson";

@@ -234,15 +234,18 @@ pub(super) fn sample_metrics(
 }
 
 /// Collect completed spans from the trace buffer + in-progress active batches.
-pub(super) fn collect_spans(
+/// Collect only NEW completed spans since `last_count`, plus all in-progress
+/// active batches. Updates `last_count` for the next call.
+pub(super) fn collect_new_spans(
     trace_buf: Option<&crate::span_exporter::SpanBuffer>,
     pipelines: &[Arc<PipelineMetrics>],
+    last_count: &mut usize,
 ) -> Vec<SpanRecord> {
     let mut spans = Vec::new();
 
-    // Completed spans from the ring buffer.
+    // Only new completed spans since the last call.
     if let Some(buf) = trace_buf {
-        for s in buf.get_spans() {
+        for s in buf.get_spans_since(last_count) {
             let mut attrs: Vec<(&'static str, String)> = Vec::new();
             for kv in &s.attrs {
                 let key = match kv[0].as_str() {
@@ -282,7 +285,7 @@ pub(super) fn collect_spans(
         }
     }
 
-    // In-progress active batches.
+    // In-progress active batches (always sent in full).
     let now = now_nanos();
     for pm in pipelines {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();

@@ -19,16 +19,19 @@ function highlightYaml(yaml: string): string {
 
 export function ConfigView() {
   const [config, setConfig] = useState<ConfigResponse | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    if (!loaded) {
-      setLoaded(true);
-      api.config().then((data) => {
+    api.config().then(
+      (data) => {
         if (data) setConfig(data);
-      });
-    }
-  }, [loaded]);
+        else setFailed(true);
+      },
+      () => setFailed(true)
+    );
+  }, []);
+
+  if (failed && !config) return null;
 
   return (
     <div class="section">

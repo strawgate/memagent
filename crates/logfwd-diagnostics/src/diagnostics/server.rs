@@ -1070,6 +1070,7 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<DiagnosticsState>) {
 async fn sampler_loop(state: Arc<DiagnosticsState>) {
     let mut last_stderr_count: usize = 0;
     let mut ws_last_log_count: usize = 0;
+    let mut ws_last_span_count: usize = 0;
     let mut prev_health = std::collections::HashMap::new();
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -1107,10 +1108,16 @@ async fn sampler_loop(state: Arc<DiagnosticsState>) {
                 .telemetry_tx
                 .send(super::telemetry::metrics_to_otlp_json(&metrics));
 
-            let spans = super::telemetry::collect_spans(state.trace_buf.as_ref(), &state.pipelines);
-            let _ = state
-                .telemetry_tx
-                .send(super::telemetry::spans_to_otlp_json(&spans));
+            let spans = super::telemetry::collect_new_spans(
+                state.trace_buf.as_ref(),
+                &state.pipelines,
+                &mut ws_last_span_count,
+            );
+            if !spans.is_empty() {
+                let _ = state
+                    .telemetry_tx
+                    .send(super::telemetry::spans_to_otlp_json(&spans));
+            }
 
             let logs = super::telemetry::collect_new_logs(&state.stderr, &mut ws_last_log_count);
             if !logs.is_empty() {
