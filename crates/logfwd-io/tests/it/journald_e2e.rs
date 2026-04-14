@@ -223,12 +223,12 @@ fn subprocess_entries_contain_standard_fields() {
     let lines = poll_until_match(&mut input, &tag, Duration::from_secs(10));
     assert!(!lines.is_empty(), "expected journal entries");
 
-    // Find our tagged entries.
+    // Find our tagged entries (field names are lowercased after normalization).
     let our_entries: Vec<serde_json::Value> = lines
         .iter()
         .filter_map(|l| serde_json::from_str(l).ok())
         .filter(|v: &serde_json::Value| {
-            v.get("SYSLOG_IDENTIFIER")
+            v.get("syslog_identifier")
                 .and_then(|s| s.as_str())
                 .map(|s| s == tag)
                 .unwrap_or(false)
@@ -241,30 +241,39 @@ fn subprocess_entries_contain_standard_fields() {
         lines.len()
     );
 
-    // Every entry should have these standard journal fields.
+    // Every entry should have these standard journal fields (lowercased).
     for entry in &our_entries {
         assert!(
-            entry.get("MESSAGE").is_some(),
-            "entry missing MESSAGE field: {entry}"
+            entry.get("message").is_some(),
+            "entry missing message field: {entry}"
         );
         assert!(
-            entry.get("PRIORITY").is_some(),
-            "entry missing PRIORITY field: {entry}"
+            entry.get("priority").is_some(),
+            "entry missing priority field: {entry}"
         );
         assert!(
-            entry.get("_PID").is_some(),
-            "entry missing _PID field: {entry}"
+            entry.get("_pid").is_some(),
+            "entry missing _pid field: {entry}"
         );
         assert!(
-            entry.get("_HOSTNAME").is_some(),
-            "entry missing _HOSTNAME field: {entry}"
+            entry.get("_hostname").is_some(),
+            "entry missing _hostname field: {entry}"
+        );
+        // Synthesized fields from normalization.
+        assert!(
+            entry.get("level").is_some(),
+            "entry missing synthesized level field: {entry}"
+        );
+        assert!(
+            entry.get("timestamp").is_some(),
+            "entry missing synthesized timestamp field: {entry}"
         );
     }
 
     // Verify our message content.
     let messages: Vec<&str> = our_entries
         .iter()
-        .filter_map(|e| e.get("MESSAGE").and_then(|m| m.as_str()))
+        .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
         .collect();
     assert!(
         messages.iter().any(|m| m.contains("test-entry-0")),
@@ -362,7 +371,7 @@ fn subprocess_exclude_units_filters() {
             serde_json::from_str::<serde_json::Value>(l)
                 .ok()
                 .and_then(|v| {
-                    v.get("_SYSTEMD_UNIT")
+                    v.get("_systemd_unit")
                         .and_then(|u| u.as_str())
                         .map(String::from)
                 })
@@ -524,7 +533,7 @@ fn native_entries_contain_standard_fields() {
         .iter()
         .filter_map(|l| serde_json::from_str(l).ok())
         .filter(|v: &serde_json::Value| {
-            v.get("SYSLOG_IDENTIFIER")
+            v.get("syslog_identifier")
                 .and_then(|s| s.as_str())
                 .map(|s| s == tag)
                 .unwrap_or(false)
@@ -534,10 +543,16 @@ fn native_entries_contain_standard_fields() {
     assert!(!our_entries.is_empty(), "expected entries with tag={tag}");
 
     for entry in &our_entries {
-        assert!(entry.get("MESSAGE").is_some(), "missing MESSAGE");
-        assert!(entry.get("PRIORITY").is_some(), "missing PRIORITY");
-        assert!(entry.get("_PID").is_some(), "missing _PID");
-        assert!(entry.get("_HOSTNAME").is_some(), "missing _HOSTNAME");
+        assert!(entry.get("message").is_some(), "missing message");
+        assert!(entry.get("priority").is_some(), "missing priority");
+        assert!(entry.get("_pid").is_some(), "missing _pid");
+        assert!(entry.get("_hostname").is_some(), "missing _hostname");
+        // Synthesized fields from normalization.
+        assert!(entry.get("level").is_some(), "missing synthesized level");
+        assert!(
+            entry.get("timestamp").is_some(),
+            "missing synthesized timestamp"
+        );
     }
 }
 

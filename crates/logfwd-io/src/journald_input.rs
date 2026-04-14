@@ -565,8 +565,106 @@ fn entry_to_json(
         ));
     }
 
+    normalize_fields(&mut fields);
     write_fields_as_json(buf, &fields);
     Ok(Some(()))
+}
+
+// ── Field normalization ───────────────────────────────────────────────
+// Raw journald fields use UPPERCASE names (e.g. `MESSAGE`, `_PID`,
+// `PRIORITY`). We normalize them so that:
+//
+//  1. All field names are lowercased (SQL-friendly, no quoting needed).
+//  2. `message` (née MESSAGE) is a recognized OTLP body variant.
+//  3. `_source_realtime_timestamp` is converted to `timestamp` (RFC 3339)
+//     so the OTLP encoder picks it up as the log record timestamp.
+//  4. `priority` (syslog int 0-7) is mapped to a `level` field with
+//     standard severity text (FATAL/ERROR/WARN/INFO/DEBUG) so the OTLP
+//     encoder can derive severity_number + severity_text.
+//  5. Double-underscore cursor/internal fields (`__CURSOR`, etc.) are
+//     dropped — they are internal to journalctl export format.
+
+/// Normalize journald fields in-place: lowercase names, synthesize
+/// `timestamp` from `_SOURCE_REALTIME_TIMESTAMP`, synthesize `level`
+/// from `PRIORITY`, and drop `__`-prefixed internal fields.
+fn normalize_fields(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
+    let mut priority_value: Option<u8> = None;
+    let mut source_ts_usec: Option<i64> = None;
+    let mut has_timestamp = false;
+    let mut has_level = false;
+
+    // First pass: lowercase names, capture PRIORITY and _SOURCE_REALTIME_TIMESTAMP,
+    // drop __-prefixed fields, detect pre-existing timestamp/level.
+    fields.retain_mut(|(name, value)| {
+        // Drop double-underscore internal fields (__CURSOR, __REALTIME_TIMESTAMP, etc).
+        if name.starts_with(b"__") {
+            return false;
+        }
+
+        // Capture raw PRIORITY value before lowercasing the name.
+        if name == b"PRIORITY" && value.len() == 1 && value[0].is_ascii_digit() {
+            priority_value = Some(value[0] - b'0');
+        }
+
+        // Parse _SOURCE_REALTIME_TIMESTAMP to µs before lowercasing (avoids clone).
+        if name == b"_SOURCE_REALTIME_TIMESTAMP" {
+            if let Ok(s) = std::str::from_utf8(value) {
+                source_ts_usec = s.parse::<i64>().ok();
+            }
+        }
+
+        // Lowercase the field name in-place.
+        name.make_ascii_lowercase();
+
+        // Detect pre-existing timestamp/level (after lowercasing).
+        if name == b"timestamp" {
+            has_timestamp = true;
+        }
+        if name == b"level" {
+            has_level = true;
+        }
+
+        true
+    });
+
+    // Synthesize `timestamp` from `_source_realtime_timestamp` (µs epoch → RFC 3339).
+    if !has_timestamp {
+        if let Some(us) = source_ts_usec {
+            if let Some(rfc3339) = usec_to_rfc3339(us) {
+                fields.push((b"timestamp".to_vec(), rfc3339.into_bytes()));
+            }
+        }
+    }
+
+    // Synthesize `level` from PRIORITY (syslog 0-7 → OTLP severity text).
+    if !has_level {
+        if let Some(prio) = priority_value {
+            if let Some(level_text) = syslog_priority_to_level(prio) {
+                fields.push((b"level".to_vec(), level_text.as_bytes().to_vec()));
+            }
+        }
+    }
+}
+
+/// Map syslog priority (0-7) to the OTLP severity text that
+/// `logfwd_core::otlp::parse_severity` recognizes.
+///
+/// Syslog priorities:
+///   0 = emerg, 1 = alert, 2 = crit  →  FATAL
+///   3 = err                          →  ERROR
+///   4 = warning                      →  WARN
+///   5 = notice                       →  INFO  (no OTLP "notice" level)
+///   6 = info                         →  INFO
+///   7 = debug                        →  DEBUG
+fn syslog_priority_to_level(priority: u8) -> Option<&'static str> {
+    match priority {
+        0..=2 => Some("FATAL"),
+        3 => Some("ERROR"),
+        4 => Some("WARN"),
+        5 | 6 => Some("INFO"),
+        7 => Some("DEBUG"),
+        _ => None,
+    }
 }
 
 /// Serialize a list of `(name, value)` field pairs as a JSON object into `buf`.
@@ -833,7 +931,7 @@ fn read_export_entries(
             if !fields.is_empty() {
                 // Check exclude filter before serializing.
                 if should_emit_export_entry(&fields, exclude_units) {
-                    let json = export_fields_to_json(&fields);
+                    let json = export_fields_to_json(&mut fields);
                     match tx.try_send(json) {
                         Ok(()) => {}
                         Err(TrySendError::Full(json)) => {
@@ -930,9 +1028,10 @@ fn should_emit_export_entry(fields: &[(Vec<u8>, Vec<u8>)], exclude_units: &[Stri
 
 /// Convert a set of export-format fields to a JSON object (newline-terminated).
 ///
-/// Uses the same `write_fields_as_json` serializer as the native backend,
-/// guaranteeing identical output for the same field set.
-fn export_fields_to_json(fields: &[(Vec<u8>, Vec<u8>)]) -> Vec<u8> {
+/// Uses the same `normalize_fields` + `write_fields_as_json` pipeline as the
+/// native backend, guaranteeing identical output for the same field set.
+fn export_fields_to_json(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) -> Vec<u8> {
+    normalize_fields(fields);
     let mut buf = Vec::with_capacity(512);
     write_fields_as_json(&mut buf, fields);
     buf.push(b'\n');
@@ -953,6 +1052,43 @@ fn fixup_unit(unit: &str) -> String {
 /// Spawn `journalctl` with the configured arguments.
 fn spawn_journalctl(config: &JournaldConfig) -> io::Result<Child> {
     build_command(config).spawn()
+}
+
+/// Convert a `_SOURCE_REALTIME_TIMESTAMP` (microseconds since Unix epoch)
+/// to an RFC 3339 string like `2024-04-12T00:00:00.000000Z`.
+///
+/// Returns `None` for negative or unparsable values. Uses a simple
+/// civil-time calculation (no chrono dependency needed at runtime).
+fn usec_to_rfc3339(us: i64) -> Option<String> {
+    if us < 0 {
+        return None;
+    }
+    let secs = us / 1_000_000;
+    let frac_us = (us % 1_000_000) as u32;
+
+    // Convert Unix timestamp to calendar date via days-since-epoch.
+    // Algorithm from Howard Hinnant's `chrono`-compatible date library.
+    let days = secs / 86400;
+    let time_of_day = (secs % 86400) as u32;
+
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    let hour = time_of_day / 3600;
+    let minute = (time_of_day % 3600) / 60;
+    let second = time_of_day % 60;
+
+    Some(format!(
+        "{y:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}.{frac_us:06}Z"
+    ))
 }
 
 /// Sleep for [`RESTART_BACKOFF`], checking the running flag periodically.
@@ -997,35 +1133,37 @@ mod tests {
 
     #[test]
     fn export_fields_to_json_basic() {
-        let fields = vec![
+        let mut fields = vec![
             (b"MESSAGE".to_vec(), b"hello world".to_vec()),
             (b"PRIORITY".to_vec(), b"6".to_vec()),
             (b"_SYSTEMD_UNIT".to_vec(), b"sshd.service".to_vec()),
         ];
-        let json = export_fields_to_json(&fields);
+        let json = export_fields_to_json(&mut fields);
         let text = String::from_utf8(json).unwrap();
         assert!(text.starts_with('{'));
         assert!(text.ends_with("}\n"));
-        // Parse as JSON to verify structure.
         let v: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
-        assert_eq!(v["MESSAGE"], "hello world");
-        assert_eq!(v["PRIORITY"], "6");
-        assert_eq!(v["_SYSTEMD_UNIT"], "sshd.service");
+        // Normalized: field names are lowercased.
+        assert_eq!(v["message"], "hello world");
+        assert_eq!(v["priority"], "6");
+        assert_eq!(v["_systemd_unit"], "sshd.service");
+        // Synthesized: PRIORITY 6 → level INFO.
+        assert_eq!(v["level"], "INFO");
     }
 
     #[test]
     fn export_fields_to_json_escapes_special_chars() {
-        let fields = vec![(b"MESSAGE".to_vec(), b"line1\nline2\ttab\"quote".to_vec())];
-        let json = export_fields_to_json(&fields);
+        let mut fields = vec![(b"MESSAGE".to_vec(), b"line1\nline2\ttab\"quote".to_vec())];
+        let json = export_fields_to_json(&mut fields);
         let text = String::from_utf8(json).unwrap();
         let v: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
-        assert_eq!(v["MESSAGE"], "line1\nline2\ttab\"quote");
+        assert_eq!(v["message"], "line1\nline2\ttab\"quote");
     }
 
     #[test]
     fn export_fields_to_json_empty() {
-        let fields: Vec<(Vec<u8>, Vec<u8>)> = vec![];
-        let json = export_fields_to_json(&fields);
+        let mut fields: Vec<(Vec<u8>, Vec<u8>)> = vec![];
+        let json = export_fields_to_json(&mut fields);
         assert_eq!(&json, b"{}\n");
     }
 
@@ -1174,7 +1312,7 @@ mod tests {
 
     #[test]
     fn write_fields_as_json_roundtrips() {
-        let fields = vec![
+        let mut fields = vec![
             (b"__CURSOR".to_vec(), b"s=abc;i=1".to_vec()),
             (
                 b"__REALTIME_TIMESTAMP".to_vec(),
@@ -1185,17 +1323,22 @@ mod tests {
             (b"_SYSTEMD_UNIT".to_vec(), b"test.service".to_vec()),
         ];
 
-        let json = export_fields_to_json(&fields);
+        let json = export_fields_to_json(&mut fields);
         let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
-        assert_eq!(v["MESSAGE"], "hello world");
-        assert_eq!(v["PRIORITY"], "6");
-        assert_eq!(v["_SYSTEMD_UNIT"], "test.service");
-        assert_eq!(v["__CURSOR"], "s=abc;i=1");
+        // Lowercased field names.
+        assert_eq!(v["message"], "hello world");
+        assert_eq!(v["priority"], "6");
+        assert_eq!(v["_systemd_unit"], "test.service");
+        // __CURSOR dropped (double-underscore internal field).
+        assert!(v.get("__cursor").is_none());
+        assert!(v.get("__CURSOR").is_none());
+        // Synthesized level from PRIORITY 6 (info).
+        assert_eq!(v["level"], "INFO");
     }
 
     #[test]
     fn write_fields_as_json_with_special_characters() {
-        let fields = vec![
+        let mut fields = vec![
             (
                 b"MESSAGE".to_vec(),
                 b"has \"quotes\" and\nnewlines".to_vec(),
@@ -1206,10 +1349,135 @@ mod tests {
             ),
         ];
 
-        let json = export_fields_to_json(&fields);
+        let json = export_fields_to_json(&mut fields);
         let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
-        assert_eq!(v["MESSAGE"], "has \"quotes\" and\nnewlines");
-        assert_eq!(v["_CMDLINE"], "/usr/bin/test --flag=val\\ue");
+        assert_eq!(v["message"], "has \"quotes\" and\nnewlines");
+        assert_eq!(v["_cmdline"], "/usr/bin/test --flag=val\\ue");
+    }
+
+    // ── normalization tests ──────────────────────────────────────────────
+
+    #[test]
+    fn normalize_lowercases_field_names() {
+        let mut fields = vec![
+            (b"MESSAGE".to_vec(), b"hello".to_vec()),
+            (b"_PID".to_vec(), b"42".to_vec()),
+            (b"SYSLOG_IDENTIFIER".to_vec(), b"test".to_vec()),
+        ];
+        normalize_fields(&mut fields);
+        let names: Vec<&[u8]> = fields.iter().map(|(n, _)| n.as_slice()).collect();
+        assert!(names.contains(&b"message".as_slice()));
+        assert!(names.contains(&b"_pid".as_slice()));
+        assert!(names.contains(&b"syslog_identifier".as_slice()));
+    }
+
+    #[test]
+    fn normalize_drops_double_underscore_fields() {
+        let mut fields = vec![
+            (b"MESSAGE".to_vec(), b"hello".to_vec()),
+            (b"__CURSOR".to_vec(), b"s=abc".to_vec()),
+            (b"__REALTIME_TIMESTAMP".to_vec(), b"123".to_vec()),
+            (b"__MONOTONIC_TIMESTAMP".to_vec(), b"456".to_vec()),
+        ];
+        normalize_fields(&mut fields);
+        let names: Vec<&[u8]> = fields.iter().map(|(n, _)| n.as_slice()).collect();
+        assert!(names.contains(&b"message".as_slice()));
+        assert!(!names.iter().any(|n| n.starts_with(b"__")));
+    }
+
+    #[test]
+    fn normalize_synthesizes_timestamp_from_source_realtime() {
+        let mut fields = vec![
+            (b"MESSAGE".to_vec(), b"hello".to_vec()),
+            // 2024-04-12T00:00:00.000000Z in µs
+            (
+                b"_SOURCE_REALTIME_TIMESTAMP".to_vec(),
+                b"1712880000000000".to_vec(),
+            ),
+        ];
+        normalize_fields(&mut fields);
+        let ts = fields
+            .iter()
+            .find(|(n, _)| n == b"timestamp")
+            .map(|(_, v)| String::from_utf8(v.clone()).unwrap());
+        assert!(ts.is_some(), "timestamp field should be synthesized");
+        let ts = ts.unwrap();
+        assert_eq!(ts, "2024-04-12T00:00:00.000000Z", "got: {ts}");
+    }
+
+    #[test]
+    fn normalize_synthesizes_level_from_priority() {
+        for (prio, expected) in [
+            (b'0', "FATAL"),
+            (b'1', "FATAL"),
+            (b'2', "FATAL"),
+            (b'3', "ERROR"),
+            (b'4', "WARN"),
+            (b'5', "INFO"),
+            (b'6', "INFO"),
+            (b'7', "DEBUG"),
+        ] {
+            let mut fields = vec![(b"PRIORITY".to_vec(), vec![prio])];
+            normalize_fields(&mut fields);
+            let level = fields
+                .iter()
+                .find(|(n, _)| n == b"level")
+                .map(|(_, v)| String::from_utf8(v.clone()).unwrap());
+            assert_eq!(
+                level.as_deref(),
+                Some(expected),
+                "PRIORITY={} should map to {expected}",
+                prio as char
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_no_level_without_priority() {
+        let mut fields = vec![(b"MESSAGE".to_vec(), b"hello".to_vec())];
+        normalize_fields(&mut fields);
+        assert!(
+            !fields.iter().any(|(n, _)| n == b"level"),
+            "no level without PRIORITY"
+        );
+    }
+
+    #[test]
+    fn syslog_priority_to_level_all_values() {
+        assert_eq!(syslog_priority_to_level(0), Some("FATAL"));
+        assert_eq!(syslog_priority_to_level(3), Some("ERROR"));
+        assert_eq!(syslog_priority_to_level(4), Some("WARN"));
+        assert_eq!(syslog_priority_to_level(5), Some("INFO"));
+        assert_eq!(syslog_priority_to_level(6), Some("INFO"));
+        assert_eq!(syslog_priority_to_level(7), Some("DEBUG"));
+        assert_eq!(syslog_priority_to_level(8), None);
+    }
+
+    #[test]
+    fn normalize_preserves_existing_timestamp() {
+        let mut fields = vec![
+            (b"TIMESTAMP".to_vec(), b"user-supplied".to_vec()),
+            (
+                b"_SOURCE_REALTIME_TIMESTAMP".to_vec(),
+                b"1712880000000000".to_vec(),
+            ),
+        ];
+        normalize_fields(&mut fields);
+        let timestamps: Vec<_> = fields.iter().filter(|(n, _)| n == b"timestamp").collect();
+        assert_eq!(timestamps.len(), 1, "should not duplicate timestamp");
+        assert_eq!(timestamps[0].1, b"user-supplied");
+    }
+
+    #[test]
+    fn normalize_preserves_existing_level() {
+        let mut fields = vec![
+            (b"LEVEL".to_vec(), b"CUSTOM".to_vec()),
+            (b"PRIORITY".to_vec(), b"3".to_vec()),
+        ];
+        normalize_fields(&mut fields);
+        let levels: Vec<_> = fields.iter().filter(|(n, _)| n == b"level").collect();
+        assert_eq!(levels.len(), 1, "should not duplicate level");
+        assert_eq!(levels[0].1, b"CUSTOM");
     }
 
     // ── backend pref defaults ──────────────────────────────────────────

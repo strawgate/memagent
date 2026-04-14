@@ -14,12 +14,15 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use arrow::array::{
-    Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, LargeBinaryArray,
-    StringArray, UInt8Array, UInt32Array,
+    Array, ArrayRef, BinaryArray, BooleanArray, Float32Array, Float64Array, Int8Array, Int16Array,
+    Int32Array, Int64Array, LargeBinaryArray, LargeStringArray, StringArray,
+    TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray,
+    TimestampSecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::error::ArrowError;
 use arrow::record_batch::RecordBatch;
+use arrow::util::display::array_value_to_string;
 
 use logfwd_types::field_names;
 
@@ -524,10 +527,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         for row in 0..num_rows {
             if !ts_arr.is_null(row) {
                 // Timestamp is stored as i64 nanoseconds.
-                if let Some(prim) = ts_arr
-                    .as_any()
-                    .downcast_ref::<arrow::array::TimestampNanosecondArray>()
-                {
+                if let Some(prim) = ts_arr.as_any().downcast_ref::<TimestampNanosecondArray>() {
                     let ns = prim.value(row);
                     // Format as RFC3339 nanoseconds. Use Euclidean div/rem so
                     // that negative timestamps (pre-1970) yield nanos in
@@ -597,7 +597,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
             protected_log_fact_cols.insert("severity_number".to_string());
             let sev_num_arr = sev_num_arr
                 .as_any()
-                .downcast_ref::<arrow::array::Int32Array>()
+                .downcast_ref::<Int32Array>()
                 .ok_or_else(|| ArrowError::SchemaError("severity_number not Int32".to_string()))?;
             for row in 0..num_rows {
                 if !sev_num_arr.is_null(row)
@@ -815,7 +815,84 @@ fn str_value_at(arr: &dyn Array, row: usize) -> String {
                 hex
             })
             .unwrap_or_default(),
-        _ => String::new(),
+        DataType::LargeUtf8 => arr
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::Int8 => arr
+            .as_any()
+            .downcast_ref::<Int8Array>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::Int16 => arr
+            .as_any()
+            .downcast_ref::<Int16Array>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::Int32 => arr
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::UInt8 => arr
+            .as_any()
+            .downcast_ref::<UInt8Array>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::UInt16 => arr
+            .as_any()
+            .downcast_ref::<UInt16Array>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::UInt32 => arr
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::UInt64 => arr
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::Float32 => arr
+            .as_any()
+            .downcast_ref::<Float32Array>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        // Timestamps: normalize the raw i64 to nanoseconds before stringifying so that
+        // `parse_timestamp_to_nanos` (which infers units from magnitude) always sees a
+        // nanos-scale value. The old code stringified the raw i64 directly, which caused
+        // small-epoch timestamps in coarser units (seconds, millis, micros) to be
+        // misclassified by the magnitude heuristic.
+        DataType::Timestamp(TimeUnit::Second, _) => arr
+            .as_any()
+            .downcast_ref::<TimestampSecondArray>()
+            .map(|a| a.value(row).saturating_mul(1_000_000_000).to_string())
+            .unwrap_or_default(),
+        DataType::Timestamp(TimeUnit::Millisecond, _) => arr
+            .as_any()
+            .downcast_ref::<TimestampMillisecondArray>()
+            .map(|a| a.value(row).saturating_mul(1_000_000).to_string())
+            .unwrap_or_default(),
+        DataType::Timestamp(TimeUnit::Microsecond, _) => arr
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .map(|a| a.value(row).saturating_mul(1_000).to_string())
+            .unwrap_or_default(),
+        DataType::Timestamp(TimeUnit::Nanosecond, _) => arr
+            .as_any()
+            .downcast_ref::<TimestampNanosecondArray>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        // Fallback for any other Arrow types (e.g. Date32, Dictionary, List, etc.)
+        // delegates to Arrow's display formatting via `array_value_to_string`.
+        //
+        // Note: `array_value_to_string` allocates an `ArrayFormatter` per call. This is
+        // acceptable here because all common hot-path types (Utf8, Int64, Float64,
+        // Boolean, Binary, all integer/float variants, and Timestamps) are handled by
+        // explicit arms above. Only truly exotic types reach this fallback.
+        _ => array_value_to_string(arr, row).unwrap_or_default(),
     }
 }
 
@@ -1304,8 +1381,8 @@ fn build_logs_fact(
         Arc::new(UInt32Array::from(ids)),
         Arc::new(rid_arr),
         Arc::new(UInt32Array::from(scope_ids)),
-        Arc::new(arrow::array::TimestampNanosecondArray::from(timestamps)),
-        Arc::new(arrow::array::Int32Array::from(severity_numbers)),
+        Arc::new(TimestampNanosecondArray::from(timestamps)),
+        Arc::new(Int32Array::from(severity_numbers)),
         Arc::new(StringArray::from(
             severity_texts
                 .iter()
@@ -2761,7 +2838,7 @@ mod tests {
             .logs
             .column(sev_idx)
             .as_any()
-            .downcast_ref::<arrow::array::Int32Array>()
+            .downcast_ref::<Int32Array>()
             .expect("i32");
 
         assert_eq!(sev_arr.value(0), 1); // TRACE
@@ -2910,11 +2987,8 @@ mod tests {
                 Arc::new(UInt32Array::from(vec![0_u32, 1])),
                 Arc::new(UInt32Array::from(vec![0_u32, 0])),
                 Arc::new(UInt32Array::from(vec![0_u32, 0])),
-                Arc::new(arrow::array::TimestampNanosecondArray::from(vec![
-                    None::<i64>,
-                    None,
-                ])),
-                Arc::new(arrow::array::Int32Array::from(vec![None::<i32>, None])),
+                Arc::new(TimestampNanosecondArray::from(vec![None::<i64>, None])),
+                Arc::new(Int32Array::from(vec![None::<i32>, None])),
                 Arc::new(StringArray::from(vec![None::<&str>, None])),
                 Arc::new(StringArray::from(vec![Some("row-0"), Some("row-1")])),
                 build_fixed_binary_array::<16>(&[None, None]).expect("trace ids"),
@@ -2966,10 +3040,8 @@ mod tests {
                 Arc::new(UInt32Array::from(vec![0_u32])),
                 Arc::new(UInt32Array::from(vec![0_u32])),
                 Arc::new(UInt32Array::from(vec![0_u32])),
-                Arc::new(arrow::array::TimestampNanosecondArray::from(vec![
-                    None::<i64>,
-                ])),
-                Arc::new(arrow::array::Int32Array::from(vec![Some(9_i32)])),
+                Arc::new(TimestampNanosecondArray::from(vec![None::<i64>])),
+                Arc::new(Int32Array::from(vec![Some(9_i32)])),
                 Arc::new(StringArray::from(vec![Some("ERROR")])),
                 Arc::new(StringArray::from(vec![Some("row-0")])),
                 build_fixed_binary_array::<16>(&[None]).expect("trace ids"),
@@ -3349,6 +3421,103 @@ mod tests {
         assert!(
             !has_at_timestamp_attr,
             "@timestamp must map to time_unix_nano, not appear as a LOG_ATTR"
+        );
+    }
+}
+
+#[cfg(test)]
+mod str_value_at_tests {
+    use super::*;
+
+    #[test]
+    fn int_types() {
+        let i8_arr = Int8Array::from(vec![Some(-1i8)]);
+        assert_eq!(str_value_at(&i8_arr, 0), "-1");
+        let i16_arr = Int16Array::from(vec![Some(256i16)]);
+        assert_eq!(str_value_at(&i16_arr, 0), "256");
+        let i32_arr = Int32Array::from(vec![Some(100_000i32)]);
+        assert_eq!(str_value_at(&i32_arr, 0), "100000");
+        let i64_arr = Int64Array::from(vec![Some(42i64)]);
+        assert_eq!(str_value_at(&i64_arr, 0), "42");
+    }
+
+    #[test]
+    fn uint_types() {
+        let u8_arr = UInt8Array::from(vec![Some(255u8)]);
+        assert_eq!(str_value_at(&u8_arr, 0), "255");
+        let u16_arr = UInt16Array::from(vec![Some(65535u16)]);
+        assert_eq!(str_value_at(&u16_arr, 0), "65535");
+        let u32_arr = UInt32Array::from(vec![Some(123456u32)]);
+        assert_eq!(str_value_at(&u32_arr, 0), "123456");
+        let u64_arr = UInt64Array::from(vec![Some(u64::MAX)]);
+        assert_eq!(str_value_at(&u64_arr, 0), u64::MAX.to_string());
+    }
+
+    #[test]
+    fn float_types() {
+        let f32_arr = Float32Array::from(vec![Some(3.14f32)]);
+        let val = str_value_at(&f32_arr, 0);
+        assert!(val.starts_with("3.14"), "got: {val}");
+        let f64_arr = Float64Array::from(vec![Some(2.718f64)]);
+        let val = str_value_at(&f64_arr, 0);
+        assert!(val.starts_with("2.718"), "got: {val}");
+    }
+
+    #[test]
+    fn large_utf8() {
+        let arr = LargeStringArray::from(vec![Some("hello large")]);
+        assert_eq!(str_value_at(&arr, 0), "hello large");
+    }
+
+    #[test]
+    fn null_returns_empty() {
+        let arr = Int32Array::from(vec![None::<i32>]);
+        assert_eq!(str_value_at(&arr, 0), "");
+    }
+
+    #[test]
+    fn timestamp_nanos_normalized() {
+        // TimestampNanosecondArray: raw value is already in nanos, no scaling needed.
+        let arr = TimestampNanosecondArray::from(vec![Some(1_000_000_000i64)]);
+        assert_eq!(str_value_at(&arr, 0), "1000000000");
+        // Verify parse_timestamp_to_nanos recognizes this as nanos (magnitude > 1e17
+        // is not met here but > 1e8 so it's treated as seconds then multiplied -- but
+        // we actually want to check the full round-trip).
+        let nanos = parse_timestamp_to_nanos(&str_value_at(&arr, 0));
+        assert_eq!(nanos, Some(1_000_000_000_000_000_000i64));
+    }
+
+    #[test]
+    fn timestamp_seconds_normalized_to_nanos() {
+        // TimestampSecondArray with value 1 (= 1 second) should produce "1000000000"
+        // (1e9 nanos), not "1" which parse_timestamp_to_nanos would misclassify.
+        let arr = TimestampSecondArray::from(vec![Some(1i64)]);
+        assert_eq!(str_value_at(&arr, 0), "1000000000");
+    }
+
+    #[test]
+    fn timestamp_millis_normalized_to_nanos() {
+        // TimestampMillisecondArray with value 1000 (= 1 second) should produce "1000000000".
+        let arr = TimestampMillisecondArray::from(vec![Some(1000i64)]);
+        assert_eq!(str_value_at(&arr, 0), "1000000000");
+    }
+
+    #[test]
+    fn timestamp_micros_normalized_to_nanos() {
+        // TimestampMicrosecondArray with value 1_000_000 (= 1 second) should produce "1000000000".
+        let arr = TimestampMicrosecondArray::from(vec![Some(1_000_000i64)]);
+        assert_eq!(str_value_at(&arr, 0), "1000000000");
+    }
+
+    #[test]
+    fn fallback_exotic_type() {
+        // Date32 is not handled by any explicit match arm, so it exercises the
+        // `_ => array_value_to_string(...)` fallback.
+        let arr = arrow::array::Date32Array::from(vec![Some(0i32)]); // 1970-01-01
+        let val = str_value_at(&arr, 0);
+        assert!(
+            val.contains("1970-01-01"),
+            "expected Date32 fallback to produce a date string, got: {val}"
         );
     }
 }

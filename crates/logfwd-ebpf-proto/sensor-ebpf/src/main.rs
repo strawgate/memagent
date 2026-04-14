@@ -20,6 +20,7 @@
 use aya::Ebpf;
 use aya::maps::RingBuf;
 use aya::programs::{KProbe, TracePoint};
+use sensor_ebpf_common::dns::dns_wire_to_dotted;
 use sensor_ebpf_common::*;
 use std::io::Write;
 use std::net::Ipv4Addr;
@@ -107,6 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "sys_enter_memfd_create",
         ),
         ("inet_sock_set_state", "sock", "inet_sock_set_state"),
+        ("sys_enter_sendto", "syscalls", "sys_enter_sendto"),
     ];
 
     for (prog_name, category, tracepoint) in tracepoints {
@@ -176,7 +178,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let now_wall = wall_clock_ns();
             let comm = comm_str(&header.comm);
-            let comm_esc = json_escape(comm);
+            let comm_esc = if json_mode {
+                json_escape(comm)
+            } else {
+                String::new()
+            };
 
             match header.kind {
                 // ── Process exec ──────────────────────────────
@@ -472,8 +478,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // SAFETY: length checked >= size_of::<TcpConnectEvent>(); ring buffer is 8-byte aligned.
                     let ev = unsafe { &*(ptr.cast::<TcpConnectEvent>()) };
                     counts.tcp_connect += 1;
-                    let src = Ipv4Addr::from(ev.saddr.to_be());
-                    let dst = Ipv4Addr::from(ev.daddr.to_be());
+                    let src = Ipv4Addr::from(ev.saddr.to_ne_bytes());
+                    let dst = Ipv4Addr::from(ev.daddr.to_ne_bytes());
                     if json_mode {
                         writeln!(
                             stdout,
@@ -494,8 +500,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // SAFETY: length checked >= size_of::<TcpAcceptEvent>(); ring buffer is 8-byte aligned.
                     let ev = unsafe { &*(ptr.cast::<TcpAcceptEvent>()) };
                     counts.tcp_accept += 1;
-                    let src = Ipv4Addr::from(ev.saddr.to_be());
-                    let dst = Ipv4Addr::from(ev.daddr.to_be());
+                    let src = Ipv4Addr::from(ev.saddr.to_ne_bytes());
+                    let dst = Ipv4Addr::from(ev.daddr.to_ne_bytes());
                     if json_mode {
                         writeln!(
                             stdout,
@@ -507,6 +513,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             stdout,
                             "ACPT  tgid={:<6} comm={:<16} {}:{} <- {}:{}",
                             header.tgid, comm, src, ev.sport, dst, ev.dport
+                        )?;
+                    }
+                }
+
+                // ── DNS query ─────────────────────────────────
+                k if k == EventKind::DnsQuery as u32 && len >= size_of::<DnsQueryEvent>() => {
+                    // SAFETY: length checked >= size_of::<DnsQueryEvent>(); ring buffer is 8-byte aligned.
+                    let ev = unsafe { &*(ptr.cast::<DnsQueryEvent>()) };
+                    counts.dns_query += 1;
+                    let wire_len = (ev.qname_len as usize).min(MAX_DNS_NAME);
+                    let wire = &ev.qname[..wire_len];
+                    let (qname_opt, qtype_opt) = dns_wire_to_dotted(wire);
+                    let qname = qname_opt.as_deref().unwrap_or("<undecoded>");
+                    let qtype_str = match qtype_opt {
+                        Some(qt) => format!("{qt}"),
+                        None => "?".to_string(),
+                    };
+                    let dst = Ipv4Addr::from(ev.dst_addr.to_ne_bytes());
+                    if json_mode {
+                        // Emit null JSON values for undecoded fields.
+                        let qname_json = match qname_opt.as_deref() {
+                            Some(s) => format!("\"{}\"", json_escape(s)),
+                            None => "null".to_string(),
+                        };
+                        let qtype_json = match qtype_opt {
+                            Some(qt) => format!("{qt}"),
+                            None => "null".to_string(),
+                        };
+                        writeln!(
+                            stdout,
+                            r#"{{"ts":{},"kind":"dns_query","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","qname":{},"qtype":{},"tx_id":{},"dst":"{}:{}"}}"#,
+                            now_wall,
+                            header.tgid,
+                            header.pid,
+                            header.uid,
+                            header.gid,
+                            header.cgroup_id,
+                            comm_esc,
+                            qname_json,
+                            qtype_json,
+                            ev.tx_id,
+                            dst,
+                            ev.dst_port
+                        )?;
+                    } else {
+                        writeln!(
+                            stdout,
+                            "DNS   tgid={:<6} comm={:<16} {} type={} txid={:#06x} -> {}:{}",
+                            header.tgid, comm, qname, qtype_str, ev.tx_id, dst, ev.dst_port
                         )?;
                     }
                 }
@@ -532,6 +587,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("  module_load:   {}", counts.module_load);
     eprintln!("  ptrace:        {}", counts.ptrace);
     eprintln!("  memfd_create:  {}", counts.memfd_create);
+    eprintln!("  dns_query:     {}", counts.dns_query);
     eprintln!("  self_filtered: {}", counts.self_filtered);
     eprintln!("  malformed:     {}", counts.malformed);
     eprintln!(
@@ -560,6 +616,8 @@ fn safe_str(buf: &[u8], len: usize) -> &str {
     let nul = slice.iter().position(|&b| b == 0).unwrap_or(end);
     std::str::from_utf8(&slice[..nul]).unwrap_or("<invalid>")
 }
+
+// dns_wire_to_dotted is provided by sensor_ebpf_common::dns::dns_wire_to_dotted
 
 /// Escape a string for safe interpolation into JSON string values.
 fn json_escape(s: &str) -> String {
@@ -618,6 +676,7 @@ struct EventCounts {
     module_load: u64,
     ptrace: u64,
     memfd_create: u64,
+    dns_query: u64,
     self_filtered: u64,
     malformed: u64,
 }
@@ -636,6 +695,7 @@ impl EventCounts {
             + self.module_load
             + self.ptrace
             + self.memfd_create
+            + self.dns_query
     }
 }
 

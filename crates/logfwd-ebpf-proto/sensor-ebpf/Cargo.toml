@@ -7,7 +7,7 @@ publish = false
 
 [dependencies]
 aya = { workspace = true }
-sensor-ebpf-common = { path = "sensor-ebpf-common", version = "0.1.0" }
+sensor-ebpf-common = { path = "sensor-ebpf-common", version = "0.1.0", features = ["std"] }
 
 [lints]
 workspace = true
