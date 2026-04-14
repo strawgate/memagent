@@ -58,6 +58,20 @@ just profile-otlp-local      # CPU profile: file → OTLP with flamegraph
 
 The workspace `default-members` excludes `logfwd-transform` (datafusion) and `logfwd` (binary). Bare `cargo check` / `just clippy` skip them (~30s vs ~3min). Use `--workspace`, `-p logfwd`, or the `-all` just targets when you need the full build. CI always uses `--workspace`.
 
+## Working Efficiently
+
+**TL;DR:** maximize useful context per turn, minimize filler, and keep outputs dense enough that the next action is obvious.
+
+- Make many independent tool calls in the same round. Batch file reads, searches, `git` queries, and metadata checks instead of serializing them one at a time.
+- Read broadly before editing. When a change crosses boundaries, inspect the caller, callee, tests, docs, and config schema together so the first patch is informed.
+- Prefer high-signal commands: `rg`, `rg --files`, targeted `sed -n`, `git diff -- <paths>`, and focused test filters. Avoid noisy recursive dumps.
+- Keep context compact. Summarize large files or command output; quote only the lines needed to justify the next step.
+- Start responses with the answer or status, then the key evidence. Use a short TL;DR for multi-step updates and final handoffs.
+- Use dense bullets over long prose when reporting findings, decisions, changed files, or verification results.
+- Say what changed, where, and how it was verified. Omit generic narration, apologies, and restating the user's request.
+- Ask only when blocked by missing intent or unsafe ambiguity. Otherwise, make the conservative repo-aligned choice and continue.
+- Keep tool output and final responses proportional to risk: concise for simple edits, more detailed for architecture, state-machine, or CI-impacting changes.
+
 ## Repository map
 
 ```
