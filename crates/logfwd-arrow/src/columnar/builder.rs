@@ -270,10 +270,17 @@ impl ColumnarBatchBuilder {
     // -----------------------------------------------------------------------
 
     /// Write an i64 value for the given field in the current row.
+    ///
+    /// If the column's planned kind does not accept i64, the write is
+    /// silently ignored and the dedup slot is NOT consumed — a subsequent
+    /// correct-type write to the same field will still succeed.
     #[inline]
     pub fn write_i64(&mut self, handle: FieldHandle, value: i64) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
+        if !self.columns[handle.index()].accepts_i64() {
+            return;
+        }
         if self.dedup_enabled && self.is_duplicate(handle) {
             return;
         }
@@ -285,6 +292,9 @@ impl ColumnarBatchBuilder {
     pub fn write_f64(&mut self, handle: FieldHandle, value: f64) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
+        if !self.columns[handle.index()].accepts_f64() {
+            return;
+        }
         if self.dedup_enabled && self.is_duplicate(handle) {
             return;
         }
@@ -296,6 +306,9 @@ impl ColumnarBatchBuilder {
     pub fn write_bool(&mut self, handle: FieldHandle, value: bool) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
+        if !self.columns[handle.index()].accepts_bool() {
+            return;
+        }
         if self.dedup_enabled && self.is_duplicate(handle) {
             return;
         }
@@ -316,6 +329,9 @@ impl ColumnarBatchBuilder {
     pub fn write_str(&mut self, handle: FieldHandle, value: &str) -> Result<(), BuilderError> {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
+        if !self.columns[handle.index()].accepts_str() {
+            return Ok(());
+        }
         if self.dedup_enabled && self.is_duplicate(handle) {
             return Ok(());
         }
@@ -350,6 +366,9 @@ impl ColumnarBatchBuilder {
     pub fn write_str_ref(&mut self, handle: FieldHandle, sref: StringRef) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
+        if !self.columns[handle.index()].accepts_str() {
+            return;
+        }
         if self.dedup_enabled && self.is_duplicate(handle) {
             return;
         }
@@ -924,6 +943,28 @@ mod tests {
         let arr = col.as_primitive::<Int64Type>();
         // Planned kind is Int64, but we only wrote a string → int column is all-null.
         assert!(arr.is_null(0));
+    }
+
+    #[test]
+    fn wrong_type_write_does_not_consume_dedup_slot() {
+        // Writing the wrong type should NOT consume the dedup slot.
+        // A subsequent correct-type write to the same field must succeed.
+        let mut plan = BatchPlan::new();
+        let h = plan.declare_planned("x", FieldKind::Int64).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+
+        b.begin_batch();
+        b.begin_row();
+        // Wrong type: string to an Int64 field — should be silently ignored.
+        b.write_str(h, "not an int").unwrap();
+        // Correct type: this must NOT be rejected as a duplicate.
+        b.write_i64(h, 42);
+        b.end_row();
+
+        let batch = b.finish_batch().unwrap();
+        let col = batch.column_by_name("x").unwrap();
+        let arr = col.as_primitive::<Int64Type>();
+        assert_eq!(arr.value(0), 42, "correct-type write after wrong-type must succeed");
     }
 
     // -----------------------------------------------------------------------

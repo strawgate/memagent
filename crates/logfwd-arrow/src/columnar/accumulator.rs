@@ -190,13 +190,53 @@ impl ColumnAccumulator {
     }
 
     // -----------------------------------------------------------------------
+    // Type-acceptance checks
+    // -----------------------------------------------------------------------
+
+    /// Whether this accumulator accepts i64 writes.
+    #[inline(always)]
+    pub fn accepts_i64(&self) -> bool {
+        matches!(
+            self,
+            ColumnAccumulator::Int64 { .. } | ColumnAccumulator::Dynamic { .. }
+        )
+    }
+
+    /// Whether this accumulator accepts f64 writes.
+    #[inline(always)]
+    pub fn accepts_f64(&self) -> bool {
+        matches!(
+            self,
+            ColumnAccumulator::Float64 { .. } | ColumnAccumulator::Dynamic { .. }
+        )
+    }
+
+    /// Whether this accumulator accepts bool writes.
+    #[inline(always)]
+    pub fn accepts_bool(&self) -> bool {
+        matches!(
+            self,
+            ColumnAccumulator::Bool { .. } | ColumnAccumulator::Dynamic { .. }
+        )
+    }
+
+    /// Whether this accumulator accepts string writes.
+    #[inline(always)]
+    pub fn accepts_str(&self) -> bool {
+        matches!(
+            self,
+            ColumnAccumulator::String { .. } | ColumnAccumulator::Dynamic { .. }
+        )
+    }
+
+    // -----------------------------------------------------------------------
     // Typed write methods
     // -----------------------------------------------------------------------
 
-    /// Append an i64 fact.  For planned Int64, goes to the single vec.
-    /// For Dynamic, goes to int_facts.
-    /// For other planned types, the write is silently ignored — the planned
-    /// kind determines the output type, not the write method called.
+    /// Append an i64 fact.
+    ///
+    /// Accepted by `Int64` and `Dynamic` accumulators. For other planned
+    /// types the caller should check `accepts_i64()` first.
     #[inline(always)]
     pub fn push_i64(&mut self, row: u32, value: i64) {
         match self {
@@ -212,7 +252,6 @@ impl ColumnAccumulator {
     }
 
     /// Append an f64 fact.
-    /// For other planned types, the write is silently ignored.
     #[inline(always)]
     pub fn push_f64(&mut self, row: u32, value: f64) {
         match self {
@@ -230,7 +269,6 @@ impl ColumnAccumulator {
     }
 
     /// Append a bool fact.
-    /// For other planned types, the write is silently ignored.
     #[inline(always)]
     pub fn push_bool(&mut self, row: u32, value: bool) {
         match self {
@@ -248,7 +286,6 @@ impl ColumnAccumulator {
     }
 
     /// Append a string ref.
-    /// For other planned types, the write is silently ignored.
     #[inline(always)]
     pub fn push_str(&mut self, row: u32, sref: StringRef) {
         match self {
