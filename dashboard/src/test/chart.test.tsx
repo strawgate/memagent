@@ -1,7 +1,7 @@
 import type { TimeSeriesFrame, TimeSeriesPoint } from "@otlpkit/views";
 import { cleanup, render, screen } from "@testing-library/preact";
 import type { ChartConfig } from "../components/Chart";
-import { CHART_CONSTANTS, Chart } from "../components/Chart";
+import { Chart } from "../components/Chart";
 
 // ─── uPlot mock ──────────────────────────────────────────────────────────────
 

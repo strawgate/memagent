@@ -31,7 +31,7 @@ export function useTelemetryStore(lastMessage: OtlpMessage | null): {
     if (!lastMessage) return;
     store.ingest(lastMessage.data);
     setTick((n) => n + 1);
-  }, [lastMessage]);
+  }, [lastMessage, store]);
 
   return { store, tick };
 }

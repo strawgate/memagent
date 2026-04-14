@@ -131,7 +131,11 @@ describe("computeStats", () => {
     it("percentages sum to approximately 100", () => {
       const traces = [makeTr({ start_unix_ns: 0 }), makeTr({ start_unix_ns: 2_000_000_000 })];
       const stats = computeStats(traces);
-      const total = (stats?.scanPct ?? 0) + (stats?.xfmPct ?? 0) + (stats?.queuePct ?? 0) + (stats?.outPct ?? 0);
+      const total =
+        (stats?.scanPct ?? 0) +
+        (stats?.xfmPct ?? 0) +
+        (stats?.queuePct ?? 0) +
+        (stats?.outPct ?? 0);
       expect(total).toBeCloseTo(100, 5);
     });
 
