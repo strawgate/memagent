@@ -86,7 +86,6 @@ fn run_columnar_zero_copy(num_batches: u64) {
         .unwrap();
 
     let mut b = ColumnarBatchBuilder::new(plan);
-    b.set_dedup_enabled(false);
 
     for batch_idx in 0..num_batches {
         b.begin_batch();
@@ -148,7 +147,6 @@ fn run_columnar_generated(num_batches: u64) {
         .unwrap();
 
     let mut b = ColumnarBatchBuilder::new(plan);
-    b.set_dedup_enabled(false);
 
     for batch_idx in 0..num_batches {
         b.begin_batch();
@@ -213,7 +211,6 @@ fn run_columnar_mixed(num_batches: u64) {
         .unwrap();
 
     let mut b = ColumnarBatchBuilder::new(plan);
-    b.set_dedup_enabled(false);
 
     for batch_idx in 0..num_batches {
         b.begin_batch();
@@ -266,13 +263,16 @@ fn run_streaming_zero_copy(num_batches: u64) {
     let input_buf = build_input_buffer();
     let mut sb = StreamingBuilder::new(None);
 
+    // StreamingBuilder clears its field_index each batch, so resolve_field must
+    // be called per batch. Use a fixed-size array to avoid per-batch Vec alloc.
+    let mut indices = [0usize; 15];
+
     for _batch in 0..num_batches {
         let buf = bytes::Bytes::copy_from_slice(&input_buf);
         sb.begin_batch(buf.clone());
-        let indices: Vec<usize> = FIELD_NAMES
-            .iter()
-            .map(|name| sb.resolve_field(name.as_bytes()))
-            .collect();
+        for (i, name) in FIELD_NAMES.iter().enumerate() {
+            indices[i] = sb.resolve_field(name.as_bytes());
+        }
 
         for row in 0..ROWS_PER_BATCH {
             sb.begin_row();
@@ -307,14 +307,14 @@ fn run_streaming_zero_copy(num_batches: u64) {
 
 fn run_streaming_generated(num_batches: u64) {
     let mut sb = StreamingBuilder::new(None);
+    let mut indices = [0usize; 15];
 
     for _batch in 0..num_batches {
         let dummy = bytes::Bytes::from_static(b"");
         sb.begin_batch(dummy);
-        let indices: Vec<usize> = FIELD_NAMES
-            .iter()
-            .map(|name| sb.resolve_field(name.as_bytes()))
-            .collect();
+        for (i, name) in FIELD_NAMES.iter().enumerate() {
+            indices[i] = sb.resolve_field(name.as_bytes());
+        }
 
         for row in 0..ROWS_PER_BATCH {
             sb.begin_row();

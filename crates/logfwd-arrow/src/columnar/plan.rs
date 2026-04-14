@@ -30,7 +30,9 @@ pub enum FieldKind {
     Float64,
     /// Boolean.
     Bool,
-    /// Variable-length UTF-8 string backed by Arrow `StringViewArray`.
+    /// Variable-length UTF-8 string. When `utf8_trusted` is true (default),
+    /// materialized as `StringViewArray` (zero-copy). When false, materialized
+    /// as `StringArray` with full UTF-8 validation.
     Utf8View,
     /// Variable-length binary backed by Arrow `BinaryViewArray`.
     BinaryView,

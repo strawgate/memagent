@@ -119,6 +119,10 @@ pub struct ColumnarBatchBuilder {
     /// When false, skip per-field dedup checks (producers that guarantee
     /// at most one write per field per row can disable for throughput).
     dedup_enabled: bool,
+    /// When true (default), string materialization produces zero-copy
+    /// `StringViewArray` using `new_unchecked`. When false, produces
+    /// validated `StringArray` with full UTF-8 checking.
+    utf8_trusted: bool,
 }
 
 impl ColumnarBatchBuilder {
@@ -140,6 +144,7 @@ impl ColumnarBatchBuilder {
             original_buf: Buffer::from(Vec::<u8>::new()),
             string_buf: Vec::new(),
             dedup_enabled: true,
+            utf8_trusted: true,
         }
     }
 
@@ -151,6 +156,22 @@ impl ColumnarBatchBuilder {
     /// values are recorded and the second silently wins at materialization.
     pub fn set_dedup_enabled(&mut self, enabled: bool) {
         self.dedup_enabled = enabled;
+    }
+
+    /// Control UTF-8 trust level for string materialization.
+    ///
+    /// When `true` (the default), string columns are materialized as zero-copy
+    /// `StringViewArray` using `new_unchecked`. This is safe when all string
+    /// data comes from trusted boundaries:
+    /// - `write_str(&str)` — Rust's type system guarantees UTF-8.
+    /// - `write_str_ref` — caller guarantees the referenced buffer is valid
+    ///   UTF-8 (e.g., scanner-validated input, OTLP decoder output).
+    ///
+    /// When `false`, strings are copied into a validated `StringArray` with
+    /// full UTF-8 checking. Use this for untrusted producers where the
+    /// referenced buffer may contain arbitrary bytes.
+    pub fn set_utf8_trusted(&mut self, trusted: bool) {
+        self.utf8_trusted = trusted;
     }
 
     /// Start a new batch.
@@ -194,6 +215,12 @@ impl ColumnarBatchBuilder {
     ///
     /// This is the runtime field-discovery path for JSON/CRI-style producers.
     /// Returns a stable handle that can be used for writes in the current row.
+    ///
+    /// Dynamically resolved fields grow the plan and column storage
+    /// monotonically — `begin_batch` clears all column data but does not
+    /// remove columns. This means the schema can grow across batches but
+    /// never shrinks. A future schema-reset API can be added if producers
+    /// need to discard stale dynamic fields between batches.
     pub fn resolve_dynamic(
         &mut self,
         name: &str,
@@ -214,7 +241,9 @@ impl ColumnarBatchBuilder {
     /// Check if a write to `handle` in the current row is a duplicate.
     ///
     /// Returns `true` if the write should be suppressed (duplicate).
-    /// For fields 0–63, uses the bitmask. For fields ≥64, uses last_row.
+    /// For fields 0–63, uses the O(1) bitmask in `RowLifecycle`.
+    /// For fields ≥64, falls back to per-column `last_row` tracking.
+    /// Both paths are correct; the bitmask path is faster for common cases.
     #[inline]
     fn is_duplicate(&mut self, handle: FieldHandle) -> bool {
         let idx = handle.index();
@@ -322,10 +351,13 @@ impl ColumnarBatchBuilder {
         self.columns[handle.index()].push_str(self.lifecycle.row_count(), sref);
     }
 
-    /// Write a null for the given field in the current row.
+    /// Record that a field is explicitly null for the current row.
     ///
-    /// Sparse fields are null by default; this just marks the field as
-    /// written for dedup purposes.
+    /// Sparse fields default to null for rows with no writes, so this is only
+    /// needed to consume the dedup slot (preventing a later non-null write from
+    /// being recorded). When dedup is disabled, this is a no-op — the field
+    /// remains whatever it was before (null if unwritten, or the prior value
+    /// if already written in this row).
     #[inline]
     pub fn write_null(&mut self, handle: FieldHandle) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
@@ -353,12 +385,10 @@ impl ColumnarBatchBuilder {
         let original = std::mem::replace(&mut self.original_buf, Buffer::from(Vec::<u8>::new()));
         let generated = Buffer::from_vec(std::mem::take(&mut self.string_buf));
 
-        // utf8_trusted: true because write_str takes &str (Rust guarantees UTF-8)
-        // and write_str_ref is only used with scanner-validated buffers.
         let mode = FinalizationMode {
             original_buf: original,
             generated_buf: generated,
-            utf8_trusted: true,
+            utf8_trusted: self.utf8_trusted,
         };
 
         let result = self.materialize_all(num_rows, mode)?;

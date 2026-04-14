@@ -195,6 +195,8 @@ impl ColumnAccumulator {
 
     /// Append an i64 fact.  For planned Int64, goes to the single vec.
     /// For Dynamic, goes to int_facts.
+    /// For other planned types, the write is silently ignored — the planned
+    /// kind determines the output type, not the write method called.
     #[inline(always)]
     pub fn push_i64(&mut self, row: u32, value: i64) {
         match self {
@@ -205,12 +207,12 @@ impl ColumnAccumulator {
                 *has_int = true;
                 int_facts.push((row, value));
             }
-            // Wrong-type write to a planned non-Int64 field: no-op.
             _ => {}
         }
     }
 
     /// Append an f64 fact.
+    /// For other planned types, the write is silently ignored.
     #[inline(always)]
     pub fn push_f64(&mut self, row: u32, value: f64) {
         match self {
@@ -228,6 +230,7 @@ impl ColumnAccumulator {
     }
 
     /// Append a bool fact.
+    /// For other planned types, the write is silently ignored.
     #[inline(always)]
     pub fn push_bool(&mut self, row: u32, value: bool) {
         match self {
@@ -245,6 +248,7 @@ impl ColumnAccumulator {
     }
 
     /// Append a string ref.
+    /// For other planned types, the write is silently ignored.
     #[inline(always)]
     pub fn push_str(&mut self, row: u32, sref: StringRef) {
         match self {
