@@ -51,7 +51,12 @@ fn run_columnar_zero_copy(num_batches: u64) {
     let mut plan = BatchPlan::new();
     let int_handles: [FieldHandle; 4] = core::array::from_fn(|i| {
         plan.declare_planned(
-            ["timestamp_ns", "severity_number", "flags", "http.status_code"][i],
+            [
+                "timestamp_ns",
+                "severity_number",
+                "flags",
+                "http.status_code",
+            ][i],
             FieldKind::Int64,
         )
         .unwrap()
@@ -107,7 +112,12 @@ fn run_columnar_generated(num_batches: u64) {
     let mut plan = BatchPlan::new();
     let int_handles: [FieldHandle; 4] = core::array::from_fn(|i| {
         plan.declare_planned(
-            ["timestamp_ns", "severity_number", "flags", "http.status_code"][i],
+            [
+                "timestamp_ns",
+                "severity_number",
+                "flags",
+                "http.status_code",
+            ][i],
             FieldKind::Int64,
         )
         .unwrap()
@@ -165,7 +175,12 @@ fn run_columnar_mixed(num_batches: u64) {
     let mut plan = BatchPlan::new();
     let int_handles: [FieldHandle; 4] = core::array::from_fn(|i| {
         plan.declare_planned(
-            ["timestamp_ns", "severity_number", "flags", "http.status_code"][i],
+            [
+                "timestamp_ns",
+                "severity_number",
+                "flags",
+                "http.status_code",
+            ][i],
             FieldKind::Int64,
         )
         .unwrap()
@@ -260,8 +275,16 @@ fn run_streaming_zero_copy(num_batches: u64) {
             }
             // Subslice directly from the Bytes so offset_of recognizes pointer identity.
             let str_indices = [
-                indices[2], indices[3], indices[5], indices[6], indices[7],
-                indices[8], indices[9], indices[10], indices[11], indices[14],
+                indices[2],
+                indices[3],
+                indices[5],
+                indices[6],
+                indices[7],
+                indices[8],
+                indices[9],
+                indices[10],
+                indices[11],
+                indices[14],
             ];
             for (i, &idx) in str_indices.iter().enumerate() {
                 let start = i * STR_VALUE.len();
@@ -293,8 +316,16 @@ fn run_streaming_generated(num_batches: u64) {
                 sb.append_i64_value_by_idx(idx, row as i64);
             }
             for &idx in &[
-                indices[2], indices[3], indices[5], indices[6], indices[7],
-                indices[8], indices[9], indices[10], indices[11], indices[14],
+                indices[2],
+                indices[3],
+                indices[5],
+                indices[6],
+                indices[7],
+                indices[8],
+                indices[9],
+                indices[10],
+                indices[11],
+                indices[14],
             ] {
                 sb.append_decoded_str_by_idx(idx, STR_VALUE.as_bytes());
             }
