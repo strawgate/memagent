@@ -460,7 +460,7 @@ describe("extractTraceRecords", () => {
     expect(extractTraceRecords(doc)[0].output_start_unix_ns).toBe("1300000000");
   });
 
-  it("omits output_start_unix_ns when no output child", () => {
+  it("omits output_start_unix_ns when no output child and no root attr", () => {
     const doc = tracesDoc([
       rootSpan({
         attributes: [{ key: "pipeline", value: { stringValue: "main" } }],
@@ -468,5 +468,21 @@ describe("extractTraceRecords", () => {
     ]);
 
     expect(extractTraceRecords(doc)[0].output_start_unix_ns).toBeUndefined();
+  });
+
+  it("falls back to root output_start_unix_ns when no output child span", () => {
+    const doc = tracesDoc([
+      rootSpan({
+        endTimeUnixNano: "0",
+        attributes: [
+          { key: "pipeline", value: { stringValue: "main" } },
+          { key: "in_progress", value: { boolValue: true } },
+          { key: "stage", value: { stringValue: "output" } },
+          { key: "output_start_unix_ns", value: { stringValue: "1400000000" } },
+        ],
+      }),
+    ]);
+
+    expect(extractTraceRecords(doc)[0].output_start_unix_ns).toBe("1400000000");
   });
 });

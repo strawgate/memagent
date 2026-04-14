@@ -1134,11 +1134,11 @@ async fn sampler_loop(state: Arc<DiagnosticsState>) {
                 &state.pipelines,
                 &mut ws_last_span_count,
             );
-            if !spans.is_empty() {
-                let _ = state
-                    .telemetry_tx
-                    .send(super::telemetry::spans_to_otlp_json(&spans));
-            }
+            // Always send traces — even empty payloads — so clients can
+            // clear stale in-progress state when all batches complete.
+            let _ = state
+                .telemetry_tx
+                .send(super::telemetry::spans_to_otlp_json(&spans));
 
             let logs = super::telemetry::collect_new_logs(&state.stderr, &mut ws_last_log_cursor);
             if !logs.is_empty() {

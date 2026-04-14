@@ -52,7 +52,7 @@ describe("mergeTraces", () => {
       expect(result.map((t) => t.trace_id)).toEqual(["a", "b"]);
     });
 
-    it("returns prev when incoming is empty", () => {
+    it("keeps completed from prev when incoming is empty", () => {
       const result = mergeTraces([completed("a"), completed("b")], [], 100);
       expect(result).toHaveLength(2);
     });
@@ -117,19 +117,15 @@ describe("mergeTraces", () => {
       expect(result[0].lifecycle_state).toBe("completed");
     });
 
-    it("preserves in-progress NOT in incoming (defensive)", () => {
-      // This is the key defensive fix: if WS drops a message,
-      // an in-progress trace should survive until superseded.
+    it("drops ALL in-progress from prev (server re-sends active each tick)", () => {
+      // This is the key design: synthetic in-progress IDs differ from real
+      // completed IDs, so keeping stale entries would create ghost traces.
       const prev = [scanning("a"), outputting("b")];
-      const incoming = [outputting("a")]; // only 'a' updated, 'b' missing
+      const incoming = [outputting("a")]; // only 'a' updated, 'b' gone
       const result = mergeTraces(prev, incoming, 100);
-      expect(result).toHaveLength(2);
-      const ids = result.map((t) => t.trace_id);
-      expect(ids).toContain("a");
-      expect(ids).toContain("b");
-      // 'a' should be the new version, 'b' the old
-      expect(result.find((t) => t.trace_id === "a")?.lifecycle_state).toBe("output_in_progress");
-      expect(result.find((t) => t.trace_id === "b")?.lifecycle_state).toBe("output_in_progress");
+      expect(result).toHaveLength(1);
+      expect(result[0].trace_id).toBe("a");
+      expect(result[0].lifecycle_state).toBe("output_in_progress");
     });
 
     it("drops stale in-progress when incoming has same trace_id", () => {
@@ -174,6 +170,18 @@ describe("mergeTraces", () => {
       const incoming = [completed("a")]; // now completed
       const result = mergeTraces(prev, incoming, 100);
       expect(result).toHaveLength(1);
+      expect(result[0].lifecycle_state).toBe("completed");
+    });
+
+    it("handles batch completing with different trace_id (synthetic vs real)", () => {
+      // In-progress uses synthetic ID, completed uses real OTLP trace ID.
+      // The in-progress entry must NOT persist as a ghost.
+      const prev = [scanning("synthetic-001")];
+      const incoming = [completed("real-otlp-abc")]; // different ID, same logical batch
+      const result = mergeTraces(prev, incoming, 100);
+      // Only the completed trace survives — synthetic in-progress is dropped
+      expect(result).toHaveLength(1);
+      expect(result[0].trace_id).toBe("real-otlp-abc");
       expect(result[0].lifecycle_state).toBe("completed");
     });
 
@@ -251,7 +259,7 @@ describe("mergeTraces", () => {
       expect(result).toHaveLength(1);
     });
 
-    it("all lifecycle states are handled", () => {
+    it("drops all in-progress from prev when incoming is empty", () => {
       const prev = [
         scanning("a"),
         trace("b", "transform_in_progress"),
@@ -260,7 +268,9 @@ describe("mergeTraces", () => {
         completed("e"),
       ];
       const result = mergeTraces(prev, [], 100);
-      expect(result).toHaveLength(5);
+      // Only completed survives — all in-progress dropped (server didn't re-send them)
+      expect(result).toHaveLength(1);
+      expect(result[0].trace_id).toBe("e");
     });
 
     it("maxTraces = 0 returns empty", () => {
@@ -304,23 +314,22 @@ describe("mergeTraces", () => {
       );
     });
 
-    it("simulates WS message drop (in-progress preserved)", () => {
+    it("simulates WS message drop (in-progress lost, recovers next tick)", () => {
       // Tick 1: two active batches
       let state = mergeTraces([], [scanning("a"), scanning("b")], 100);
       expect(state).toHaveLength(2);
 
-      // Tick 2: WS only delivers 'a' update (b dropped)
+      // Tick 2: WS only delivers 'a' update (b dropped from server = completed/gone)
       state = mergeTraces(state, [outputting("a")], 100);
-      expect(state).toHaveLength(2);
-      expect(state.find((t) => t.trace_id === "a")?.lifecycle_state).toBe("output_in_progress");
-      // 'b' preserved from prev
-      expect(state.find((t) => t.trace_id === "b")?.lifecycle_state).toBe("scan_in_progress");
+      expect(state).toHaveLength(1);
+      expect(state[0].trace_id).toBe("a");
+      expect(state[0].lifecycle_state).toBe("output_in_progress");
 
-      // Tick 3: both delivered again normally
-      state = mergeTraces(state, [completed("a"), outputting("b")], 100);
+      // Tick 3: if 'b' is still active, server resends it
+      state = mergeTraces(state, [completed("a"), scanning("b")], 100);
       expect(state).toHaveLength(2);
       expect(state.find((t) => t.trace_id === "a")?.lifecycle_state).toBe("completed");
-      expect(state.find((t) => t.trace_id === "b")?.lifecycle_state).toBe("output_in_progress");
+      expect(state.find((t) => t.trace_id === "b")?.lifecycle_state).toBe("scan_in_progress");
     });
 
     it("completed traces accumulate across ticks", () => {

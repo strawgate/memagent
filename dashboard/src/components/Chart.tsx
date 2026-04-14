@@ -103,6 +103,10 @@ export function Chart({ frame, config }: Props) {
   const plotRef = useRef<uPlot | null>(null);
   const roRef = useRef<ResizeObserver | null>(null);
   const rafRef = useRef<number>(0);
+  // Store frame in a ref so the RAF loop reads latest data without
+  // tearing down the effect (and uPlot instance) on every update.
+  const frameRef = useRef(frame);
+  frameRef.current = frame;
 
   // RAF loop: creates the plot when data arrives, updates each frame.
   useEffect(() => {
@@ -110,7 +114,7 @@ export function Chart({ frame, config }: Props) {
     const { CHART_HEIGHT, MIN_WINDOW_SEC, MAX_WINDOW_SEC } = CHART_CONSTANTS;
 
     const tick = () => {
-      const pts = frame.series[0]?.points ?? [];
+      const pts = frameRef.current.series[0]?.points ?? [];
 
       if (pts.length < 2) {
         if (plotRef.current) {
@@ -178,7 +182,7 @@ export function Chart({ frame, config }: Props) {
       roRef.current?.disconnect();
       roRef.current = null;
     };
-  }, [frame, config]);
+  }, [config]);
 
   const hasData = (frame.series[0]?.points.length ?? 0) >= 2;
 

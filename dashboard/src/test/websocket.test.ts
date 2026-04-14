@@ -58,28 +58,29 @@ afterEach(() => {
 // ─── tests ───────────────────────────────────────────────────────────────────
 
 describe("useTelemetryWebSocket", () => {
-  it("starts disconnected with null message", () => {
-    const { result } = renderHook(() => useTelemetryWebSocket());
+  it("starts disconnected", () => {
+    const handler = vi.fn();
+    const { result } = renderHook(() => useTelemetryWebSocket(handler));
     expect(result.current.wsConnected).toBe(false);
-    expect(result.current.lastMessage).toBeNull();
   });
 
   it("connects to ws://host/admin/v1/telemetry", () => {
-    renderHook(() => useTelemetryWebSocket());
+    renderHook(() => useTelemetryWebSocket(vi.fn()));
     expect(MockWebSocket.instances).toHaveLength(1);
     expect(MockWebSocket.instances[0].url).toBe("ws://localhost:9090/admin/v1/telemetry");
   });
 
   it("sets wsConnected=true on open", () => {
-    const { result } = renderHook(() => useTelemetryWebSocket());
+    const { result } = renderHook(() => useTelemetryWebSocket(vi.fn()));
     act(() => {
       MockWebSocket.instances[0].simulateOpen();
     });
     expect(result.current.wsConnected).toBe(true);
   });
 
-  it("parses incoming OTLP metrics into lastMessage", () => {
-    const { result } = renderHook(() => useTelemetryWebSocket());
+  it("calls onMessage with parsed OTLP metrics", () => {
+    const handler = vi.fn();
+    renderHook(() => useTelemetryWebSocket(handler));
     const ws = MockWebSocket.instances[0];
 
     act(() => ws.simulateOpen());
@@ -106,12 +107,13 @@ describe("useTelemetryWebSocket", () => {
     };
 
     act(() => ws.simulateMessage(JSON.stringify(metricsDoc)));
-    expect(result.current.lastMessage).not.toBeNull();
-    expect(result.current.lastMessage?.signal).toBe("metrics");
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0][0].signal).toBe("metrics");
   });
 
-  it("parses incoming OTLP traces into lastMessage", () => {
-    const { result } = renderHook(() => useTelemetryWebSocket());
+  it("calls onMessage with parsed OTLP traces", () => {
+    const handler = vi.fn();
+    renderHook(() => useTelemetryWebSocket(handler));
     const ws = MockWebSocket.instances[0];
 
     act(() => ws.simulateOpen());
@@ -131,21 +133,22 @@ describe("useTelemetryWebSocket", () => {
     };
 
     act(() => ws.simulateMessage(JSON.stringify(tracesDoc)));
-    expect(result.current.lastMessage).not.toBeNull();
-    expect(result.current.lastMessage?.signal).toBe("traces");
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(handler.mock.calls[0][0].signal).toBe("traces");
   });
 
   it("ignores malformed messages", () => {
-    const { result } = renderHook(() => useTelemetryWebSocket());
+    const handler = vi.fn();
+    renderHook(() => useTelemetryWebSocket(handler));
     const ws = MockWebSocket.instances[0];
 
     act(() => ws.simulateOpen());
     act(() => ws.simulateMessage("not json"));
-    expect(result.current.lastMessage).toBeNull();
+    expect(handler).not.toHaveBeenCalled();
   });
 
   it("sets wsConnected=false on close and schedules reconnect", () => {
-    const { result } = renderHook(() => useTelemetryWebSocket());
+    const { result } = renderHook(() => useTelemetryWebSocket(vi.fn()));
     const ws = MockWebSocket.instances[0];
 
     act(() => ws.simulateOpen());
@@ -160,7 +163,7 @@ describe("useTelemetryWebSocket", () => {
   });
 
   it("uses exponential backoff on repeated disconnects", () => {
-    renderHook(() => useTelemetryWebSocket());
+    renderHook(() => useTelemetryWebSocket(vi.fn()));
 
     // First disconnect → reconnect after 1s
     act(() => MockWebSocket.instances[0].simulateClose());
@@ -176,7 +179,7 @@ describe("useTelemetryWebSocket", () => {
   });
 
   it("resets backoff on successful connection", () => {
-    renderHook(() => useTelemetryWebSocket());
+    renderHook(() => useTelemetryWebSocket(vi.fn()));
 
     // Disconnect → reconnect after 1s
     act(() => MockWebSocket.instances[0].simulateClose());
@@ -191,7 +194,7 @@ describe("useTelemetryWebSocket", () => {
   });
 
   it("closes WebSocket on unmount", () => {
-    const { unmount } = renderHook(() => useTelemetryWebSocket());
+    const { unmount } = renderHook(() => useTelemetryWebSocket(vi.fn()));
     const ws = MockWebSocket.instances[0];
     act(() => ws.simulateOpen());
 

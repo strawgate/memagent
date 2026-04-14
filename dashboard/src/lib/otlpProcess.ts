@@ -106,6 +106,10 @@ export function extractTraceRecords(doc: OtlpTracesDocument): TraceRecord[] {
     // (e.g. in-progress batches that haven't reached the output stage yet).
     if (workerId === null) workerId = toNumber(root.attributes.worker_id) ?? null;
     if (outputNs === 0) outputNs = attrNum("output_ns");
+    if (outputStartUnixNs === "0") {
+      const rootVal = attr("output_start_unix_ns");
+      if (rootVal) outputStartUnixNs = rootVal;
+    }
 
     const errors = attrNum("errors");
     const inputRows = attrNum("input_rows");

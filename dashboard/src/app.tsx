@@ -110,18 +110,10 @@ export function App() {
   const [pollMs, setPollMs] = useState(POLL_OPTIONS[2].ms); // default 2s
 
   // ── WebSocket telemetry → TelemetryStore ─────────────────────────────────
-  const { lastMessage, wsConnected } = useTelemetryWebSocket();
-  const { store, tick } = useTelemetryStore(lastMessage);
+  const { store, tick, ingest } = useTelemetryStore();
 
-  // Track WS connectivity.
-  useEffect(() => {
-    if (wsConnected) setConnected(true);
-  }, [wsConnected]);
-
-  // Build a synthetic StatsResponse from the latest OTLP metrics in the store.
-  useEffect(() => {
-    if (!lastMessage || lastMessage.signal !== "metrics") return;
-
+  // Build stats from latest OTLP metrics in the store.
+  const updateStats = useCallback(() => {
     const val = (name: string): number => {
       const frame = store.selectLatestValues({ metricName: name });
       return frame.rows[0]?.value ?? 0;
@@ -148,7 +140,7 @@ export function App() {
       mem_active: val("process.memory.active") || undefined,
     });
     setTotalErrors(val("logfwd.output_errors"));
-  }, [lastMessage, store]);
+  }, [store]);
 
   // Max traces to retain in the dashboard (prevents unbounded growth).
   const MAX_TRACES = 1000;
@@ -159,15 +151,26 @@ export function App() {
     setTraces((prev) => mergeTraces(prev, incoming, MAX_TRACES));
   }, []);
 
-  // ── Route WebSocket messages to the correct handler ────────────────────────
+  // Dispatch each WS frame synchronously — no frames are dropped.
+  const handleMessage = useCallback(
+    (msg: import("./lib/useTelemetryWebSocket").OtlpMessage) => {
+      if (msg.signal === "metrics") {
+        ingest(msg.data);
+        updateStats();
+      } else if (msg.signal === "traces") {
+        processOtlpTraces(msg.data);
+      }
+      // Logs are handled by LogViewer via REST polling.
+    },
+    [ingest, updateStats, processOtlpTraces]
+  );
+
+  const { wsConnected } = useTelemetryWebSocket(handleMessage);
+
+  // Track WS connectivity.
   useEffect(() => {
-    if (!lastMessage) return;
-    if (lastMessage.signal === "traces") {
-      processOtlpTraces(lastMessage.data);
-    }
-    // Metrics are handled by TelemetryStore (via useTelemetryStore).
-    // Logs are handled by LogViewer via REST polling.
-  }, [lastMessage, processOtlpTraces]);
+    if (wsConnected) setConnected(true);
+  }, [wsConnected]);
 
   // ── Status polling (always runs — OTLP metrics don't carry pipeline topology) ──
   useEffect(() => {

@@ -28,17 +28,20 @@ export type OtlpMessage =
  *
  * The server pushes OTLP JSON messages (resourceMetrics, resourceSpans,
  * resourceLogs). Each incoming message is parsed via `@otlpkit/otlpjson`
- * and exposed as `lastMessage`.
+ * and dispatched synchronously to `onMessage` — no frames are dropped
+ * even when multiple messages arrive in the same event loop tick.
  *
  * Automatically reconnects with exponential backoff on close or error.
  */
-export function useTelemetryWebSocket(): {
+export function useTelemetryWebSocket(onMessage: (msg: OtlpMessage) => void): {
   wsConnected: boolean;
-  lastMessage: OtlpMessage | null;
 } {
   const [wsConnected, setWsConnected] = useState(false);
-  const [lastMessage, setLastMessage] = useState<OtlpMessage | null>(null);
   const backoffRef = useRef(RECONNECT_BASE_MS);
+  // Store callback in a ref so the WS handler always calls the latest version
+  // without needing to tear down and recreate the connection.
+  const onMessageRef = useRef(onMessage);
+  onMessageRef.current = onMessage;
 
   useEffect(() => {
     let ws: WebSocket | null = null;
@@ -62,11 +65,11 @@ export function useTelemetryWebSocket(): {
           const raw = JSON.parse(ev.data);
           const doc: OtlpDocument = parseOtlpJson(raw);
           if (isMetricsDocument(doc)) {
-            setLastMessage({ signal: "metrics", data: doc });
+            onMessageRef.current({ signal: "metrics", data: doc });
           } else if (isTracesDocument(doc)) {
-            setLastMessage({ signal: "traces", data: doc });
+            onMessageRef.current({ signal: "traces", data: doc });
           } else if (isLogsDocument(doc)) {
-            setLastMessage({ signal: "logs", data: doc });
+            onMessageRef.current({ signal: "logs", data: doc });
           }
         } catch {
           // Ignore malformed messages.
@@ -104,5 +107,5 @@ export function useTelemetryWebSocket(): {
     };
   }, []);
 
-  return { wsConnected, lastMessage };
+  return { wsConnected };
 }
