@@ -226,11 +226,11 @@ export function App() {
             if (statusData) {
               setStatus(statusData);
               setConnected(true);
+              backoff = pollMs;
             } else {
               setConnected(false);
               setStatus(null);
             }
-            backoff = pollMs;
           },
           () => {
             setConnected(false);

@@ -18,6 +18,8 @@ const MAX_BYTES: usize = 1024 * 1024; // 1 MiB
 struct LogBuf {
     lines: VecDeque<String>,
     total_bytes: usize,
+    /// Monotonically increasing count of lines ever pushed (survives eviction).
+    total_pushed: u64,
 }
 
 impl LogBuf {
@@ -25,6 +27,7 @@ impl LogBuf {
         Self {
             lines: VecDeque::new(),
             total_bytes: 0,
+            total_pushed: 0,
         }
     }
 
@@ -44,10 +47,21 @@ impl LogBuf {
         }
         self.total_bytes += line_bytes;
         self.lines.push_back(line);
+        self.total_pushed += 1;
     }
 
     fn get_lines(&self) -> Vec<String> {
         self.lines.iter().cloned().collect()
+    }
+
+    /// Number of lines currently retained in the buffer.
+    fn len(&self) -> usize {
+        self.lines.len()
+    }
+
+    /// Monotonic count of all lines ever pushed (never decreases).
+    fn total_pushed(&self) -> u64 {
+        self.total_pushed
     }
 }
 
@@ -75,6 +89,27 @@ impl CaptureState {
         match self.buf.lock() {
             Ok(buf) => buf.get_lines(),
             Err(_) => vec![],
+        }
+    }
+
+    /// Return (new_lines, new_cursor) for lines pushed after `cursor`.
+    fn get_lines_since(&self, cursor: u64) -> (Vec<String>, u64) {
+        match self.buf.lock() {
+            Ok(buf) => {
+                let total = buf.total_pushed();
+                let retained = buf.len() as u64;
+                // How many new lines were pushed since the cursor?
+                let new_count = total.saturating_sub(cursor);
+                if new_count == 0 {
+                    return (vec![], total);
+                }
+                // We can only return lines still in the buffer.
+                let available = new_count.min(retained);
+                let lines = buf.get_lines();
+                let skip = lines.len().saturating_sub(available as usize);
+                (lines[skip..].to_vec(), total)
+            }
+            Err(_) => (vec![], cursor),
         }
     }
 }
@@ -111,6 +146,12 @@ impl StderrCapture {
     /// Returns all buffered log lines (up to ~1 MiB worth).
     pub fn get_logs(&self) -> Vec<String> {
         self.state.get_lines()
+    }
+
+    /// Return lines pushed after `cursor` and the new cursor value.
+    /// Use this for delta delivery — the cursor is monotonic and survives eviction.
+    pub fn get_logs_since(&self, cursor: u64) -> (Vec<String>, u64) {
+        self.state.get_lines_since(cursor)
     }
 
     /// Is capture currently active?

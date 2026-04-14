@@ -1070,8 +1070,8 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<DiagnosticsState>) {
 // ---------------------------------------------------------------------------
 
 async fn sampler_loop(state: Arc<DiagnosticsState>) {
-    let mut last_stderr_count: usize = 0;
-    let mut ws_last_log_count: usize = 0;
+    let mut last_stderr_cursor: u64 = 0;
+    let mut ws_last_log_cursor: u64 = 0;
     let mut ws_last_span_count: usize = 0;
     let mut prev_health = std::collections::HashMap::new();
     let mut prev_snapshot: Option<super::telemetry::MetricSnapshot> = None;
@@ -1091,7 +1091,7 @@ async fn sampler_loop(state: Arc<DiagnosticsState>) {
         crate::telemetry_buffer::sample_stderr_logs(
             &state.stderr,
             &state.telemetry.logs,
-            &mut last_stderr_count,
+            &mut last_stderr_cursor,
         );
         crate::telemetry_buffer::sample_health_transitions(
             &state.pipelines,
@@ -1140,7 +1140,7 @@ async fn sampler_loop(state: Arc<DiagnosticsState>) {
                     .send(super::telemetry::spans_to_otlp_json(&spans));
             }
 
-            let logs = super::telemetry::collect_new_logs(&state.stderr, &mut ws_last_log_count);
+            let logs = super::telemetry::collect_new_logs(&state.stderr, &mut ws_last_log_cursor);
             if !logs.is_empty() {
                 let _ = state
                     .telemetry_tx

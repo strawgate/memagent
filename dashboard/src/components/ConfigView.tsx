@@ -31,7 +31,16 @@ export function ConfigView() {
     );
   }, []);
 
-  if (failed && !config) return null;
+  if (failed && !config) {
+    return (
+      <div class="section">
+        <div class="heading">Config</div>
+        <div class="yaml" style="color:var(--t4)">
+          Failed to load configuration.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div class="section">

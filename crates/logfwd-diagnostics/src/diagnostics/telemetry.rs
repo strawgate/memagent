@@ -448,26 +448,22 @@ pub(super) fn collect_new_spans(
     spans
 }
 
-/// Collect new stderr log lines since `last_count`.
-/// Updates `last_count` to the current total.
+/// Collect new stderr log lines since `last_cursor`.
+/// Updates `last_cursor` to the new position. The cursor is monotonic and
+/// survives ring-buffer eviction, unlike plain `len()`.
 pub(super) fn collect_new_logs(
     stderr: &crate::stderr_capture::StderrCapture,
-    last_count: &mut usize,
+    last_cursor: &mut u64,
 ) -> Vec<LogRecord> {
-    let all = stderr.get_logs();
-    let new_start = if all.len() < *last_count {
-        0 // buffer was evicted
-    } else {
-        *last_count
-    };
-    *last_count = all.len();
+    let (new_lines, new_cursor) = stderr.get_logs_since(*last_cursor);
+    *last_cursor = new_cursor;
     let ts = now_nanos();
-    all[new_start..]
-        .iter()
+    new_lines
+        .into_iter()
         .map(|line| LogRecord {
             timestamp_unix_ns: ts,
             severity: "INFO",
-            body: line.clone(),
+            body: line,
         })
         .collect()
 }
