@@ -2,7 +2,10 @@
 //!
 //! All types are `repr(C)` for stable ABI across the BPF↔userspace boundary.
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
+
+#[cfg(feature = "std")]
+pub mod dns;
 
 /// Maximum bytes captured from a filename/path in events.
 pub const MAX_FILENAME: usize = 256;
@@ -10,8 +13,9 @@ pub const MAX_FILENAME: usize = 256;
 /// Maximum kernel module name length.
 pub const MAX_MODULE_NAME: usize = 64;
 
-/// Maximum DNS query name length.
-pub const MAX_DNS_NAME: usize = 253;
+/// Maximum DNS question section bytes: up to 255 bytes of wire-format QNAME
+/// (labels + length octets + root terminator) plus 4 bytes for QTYPE/QCLASS.
+pub const MAX_DNS_NAME: usize = 259;
 
 /// Maximum comm (process name) length in Linux.
 pub const COMM_SIZE: usize = 16;
