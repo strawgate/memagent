@@ -1069,6 +1069,7 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<DiagnosticsState>) {
 
 async fn sampler_loop(state: Arc<DiagnosticsState>) {
     let mut last_stderr_count: usize = 0;
+    let mut ws_last_log_count: usize = 0;
     let mut prev_health = std::collections::HashMap::new();
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -1094,27 +1095,29 @@ async fn sampler_loop(state: Arc<DiagnosticsState>) {
             &mut prev_health,
         );
 
-        // Push telemetry via broadcast to any connected WebSocket clients.
-        // Send the same JSON the dashboard REST endpoints serve so the frontend
-        // can switch from polling to push without format changes.
+        // Push OTLP JSON telemetry to WebSocket clients.
+        // Three separate messages: resourceMetrics, resourceSpans, resourceLogs.
         if state.telemetry_tx.receiver_count() > 0 {
-            let status_json = serde_json::to_string(&status_payload(&state)).unwrap_or_default();
-            let stats_json = build_stats_body(&state);
-            let traces_json = build_traces_body(&state);
-
-            // Single envelope message so the client gets an atomic snapshot.
-            let mut msg = String::with_capacity(
-                status_json.len() + stats_json.len() + traces_json.len() + 64,
+            let metrics = super::telemetry::sample_metrics(
+                &state.pipelines,
+                state.memory_stats_fn,
+                state.start_time.elapsed(),
             );
-            msg.push_str(r#"{"status":"#);
-            msg.push_str(&status_json);
-            msg.push_str(r#","stats":"#);
-            msg.push_str(&stats_json);
-            msg.push_str(r#","traces":"#);
-            msg.push_str(&traces_json);
-            msg.push('}');
+            let _ = state
+                .telemetry_tx
+                .send(super::telemetry::metrics_to_otlp_json(&metrics));
 
-            let _ = state.telemetry_tx.send(msg);
+            let spans = super::telemetry::collect_spans(state.trace_buf.as_ref(), &state.pipelines);
+            let _ = state
+                .telemetry_tx
+                .send(super::telemetry::spans_to_otlp_json(&spans));
+
+            let logs = super::telemetry::collect_new_logs(&state.stderr, &mut ws_last_log_count);
+            if !logs.is_empty() {
+                let _ = state
+                    .telemetry_tx
+                    .send(super::telemetry::logs_to_otlp_json(&logs));
+            }
         }
     }
 }

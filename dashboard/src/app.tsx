@@ -15,6 +15,7 @@ import {
   pushMetricSample,
   SYSTEM_METRIC_ORDER,
 } from "./lib/metricRegistry";
+import { extractMetricSnapshot, extractTraceRecords } from "./lib/otlpProcess";
 import { RateTracker } from "./lib/rates";
 import { RingBuffer } from "./lib/ring";
 import { useTelemetryWebSocket } from "./lib/useTelemetryWebSocket";
@@ -316,9 +317,150 @@ export function App() {
   }, []);
 
   // ── WebSocket telemetry (preferred) ────────────────────────────────────────
-  const { wsConnected, lastEnvelope } = useTelemetryWebSocket();
+  const { wsConnected, lastMessage } = useTelemetryWebSocket();
 
-  // Process data from any source (WS push or HTTP poll).
+  // Process OTLP metrics from WebSocket push.
+  const processOtlpMetrics = useCallback(
+    (doc: import("@otlpkit/otlpjson").OtlpMetricsDocument) => {
+      const snap = extractMetricSnapshot(doc);
+      setConnected(true);
+
+      const metricRegistry = metricRegistryRef.current;
+
+      const lps = rates.rate("lps", snap.inputLines);
+      const bps = rates.rate("bps", snap.inputBytes);
+      const eps = rates.rate("eps", snap.outputErrors);
+      const obpsRate = rates.rate("obps", snap.outputBytes);
+
+      if (lps != null) pushMetricSample(metricRegistry, "lps", lps, fmt(lps));
+      if (bps != null) pushMetricSample(metricRegistry, "bps", bps, fmtBytes(bps));
+      if (eps != null) pushMetricSample(metricRegistry, "err", eps, fmt(eps));
+      if (obpsRate != null) pushMetricSample(metricRegistry, "obps", obpsRate, fmtBytes(obpsRate));
+
+      if (snap.cpuUserMs != null && snap.cpuSysMs != null) {
+        const cpuMs = snap.cpuUserMs + snap.cpuSysMs;
+        const cpuRate = rates.rate("cpu_ms", cpuMs);
+        if (cpuRate != null) {
+          const cpuPct = cpuRate / 10;
+          pushMetricSample(metricRegistry, "cpu", cpuPct, cpuPct.toFixed(1));
+        }
+      }
+
+      const memBytes = snap.memAllocated ?? snap.rssBytes;
+      if (memBytes != null) {
+        const limit = snap.memResident
+          ? `/ ${fmtBytes(snap.memResident)} resident`
+          : undefined;
+        pushMetricSample(metricRegistry, "mem", memBytes, fmtBytes(memBytes), limit);
+      }
+
+      pushMetricSample(
+        metricRegistry,
+        "inflight",
+        snap.inflightBatches,
+        snap.inflightBatches.toFixed(0)
+      );
+
+      const batchRate = rates.rate("batches", snap.batches);
+      if (batchRate != null) {
+        const bpm = batchRate * 60;
+        pushMetricSample(metricRegistry, "batches", bpm, fmtCompact(bpm));
+      }
+
+      const stallRate = rates.rate("stalls", snap.backpressureStalls);
+      if (stallRate != null) {
+        pushMetricSample(metricRegistry, "stalls", stallRate, stallRate.toFixed(1));
+      }
+
+      // Build a synthetic StatsResponse for MetricBadges and latency.
+      setStats({
+        uptime_sec: snap.uptimeSeconds,
+        rss_bytes: snap.rssBytes,
+        cpu_user_ms: snap.cpuUserMs,
+        cpu_sys_ms: snap.cpuSysMs,
+        input_lines: snap.inputLines,
+        input_bytes: snap.inputBytes,
+        output_lines: 0,
+        output_bytes: snap.outputBytes,
+        output_errors: snap.outputErrors,
+        batches: snap.batches,
+        scan_sec: snap.scanNanos / 1e9,
+        transform_sec: snap.transformNanos / 1e9,
+        output_sec: snap.outputNanos / 1e9,
+        backpressure_stalls: snap.backpressureStalls,
+        inflight_batches: snap.inflightBatches,
+        mem_resident: snap.memResident ?? undefined,
+        mem_allocated: snap.memAllocated ?? undefined,
+        mem_active: snap.memActive ?? undefined,
+      });
+
+      setTotalErrors(snap.outputErrors);
+      forceUpdate((n) => n + 1);
+    },
+    []
+  );
+
+  // Process OTLP spans from WebSocket push.
+  const processOtlpTraces = useCallback(
+    (doc: import("@otlpkit/otlpjson").OtlpTracesDocument) => {
+      const incoming = extractTraceRecords(doc);
+      setTraces((prev) => {
+        const prevById = new Map(prev.map((t) => [t.trace_id, t]));
+        const next = incoming.map((t) => {
+          const p = prevById.get(t.trace_id);
+          if (
+            p &&
+            p.pipeline === t.pipeline &&
+            p.start_unix_ns === t.start_unix_ns &&
+            p.total_ns === t.total_ns &&
+            p.status === t.status &&
+            p.lifecycle_state === t.lifecycle_state &&
+            p.errors === t.errors &&
+            p.scan_ns === t.scan_ns &&
+            p.transform_ns === t.transform_ns &&
+            p.output_ns === t.output_ns &&
+            p.queue_wait_ns === t.queue_wait_ns &&
+            p.worker_id === t.worker_id &&
+            p.send_ns === t.send_ns &&
+            p.recv_ns === t.recv_ns &&
+            p.took_ms === t.took_ms &&
+            p.retries === t.retries &&
+            p.req_bytes === t.req_bytes &&
+            p.cmp_bytes === t.cmp_bytes &&
+            p.resp_bytes === t.resp_bytes &&
+            p.flush_reason === t.flush_reason &&
+            p.output_start_unix_ns === t.output_start_unix_ns &&
+            p.lifecycle_state_start_unix_ns === t.lifecycle_state_start_unix_ns &&
+            p.scan_rows === t.scan_rows &&
+            p.input_rows === t.input_rows &&
+            p.output_rows === t.output_rows &&
+            p.bytes_in === t.bytes_in
+          ) {
+            return p;
+          }
+          return t;
+        });
+        return next;
+      });
+
+      // Compute batch latency from completed traces.
+      const done = incoming
+        .filter((t) => t.lifecycle_state === "completed" && Number(t.total_ns) > 0)
+        .slice(0, 50);
+      if (done.length > 0) {
+        const avgMs =
+          done.reduce((s, t) => s + (Number(t.total_ns ?? "0") || 0), 0) / done.length / 1e6;
+        const formatted =
+          avgMs >= 1000 ? `${(avgMs / 1000).toFixed(1)}s` : `${avgMs.toFixed(0)}ms`;
+        pushMetricSample(metricRegistryRef.current, "lat", avgMs, formatted);
+      }
+
+      forceUpdate((n) => n + 1);
+    },
+    []
+  );
+
+  // Process data from HTTP polling (status + stats + traces REST endpoints).
   const processData = useCallback(
     (
       statusData: StatusResponse | null,
@@ -463,15 +605,54 @@ export function App() {
     []
   );
 
-  // ── Process WebSocket messages ─────────────────────────────────────────────
+  // ── Route WebSocket messages to the correct handler ────────────────────────
   useEffect(() => {
-    if (!lastEnvelope) return;
-    processData(
-      lastEnvelope.status,
-      lastEnvelope.stats,
-      lastEnvelope.traces?.traces ?? null
-    );
-  }, [lastEnvelope, processData]);
+    if (!lastMessage) return;
+    switch (lastMessage.signal) {
+      case "metrics":
+        processOtlpMetrics(lastMessage.data);
+        break;
+      case "traces":
+        processOtlpTraces(lastMessage.data);
+        break;
+      case "logs":
+        // Logs are handled by LogViewer via REST polling for now.
+        break;
+    }
+  }, [lastMessage, processOtlpMetrics, processOtlpTraces]);
+
+  // ── Status polling (always runs — OTLP metrics don't carry pipeline topology) ──
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    let backoff = pollMs;
+
+    const loop = () => {
+      api
+        .status()
+        .then(
+          (statusData) => {
+            if (statusData) {
+              setStatus(statusData);
+              setConnected(true);
+            }
+            backoff = pollMs;
+          },
+          () => {
+            backoff = Math.min(backoff * 2, 30_000);
+          }
+        )
+        .finally(() => {
+          if (!cancelled) timer = setTimeout(loop, backoff);
+        });
+    };
+
+    loop();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [pollMs]);
 
   // ── HTTP polling fallback (only when WebSocket is disconnected) ────────────
   const poll = useCallback(async () => {

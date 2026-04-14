@@ -110,13 +110,6 @@ export interface ConfigResponse {
   raw_yaml: string;
 }
 
-/** Envelope pushed by the server over the `/admin/v1/telemetry` WebSocket. */
-export interface WsEnvelope {
-  status: StatusResponse;
-  stats: StatsResponse;
-  traces: TracesResponse;
-}
-
 export interface TraceRecord {
   trace_id: string;
   pipeline: string;

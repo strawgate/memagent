@@ -1,27 +1,44 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { WsEnvelope } from "../types";
+import type {
+  OtlpDocument,
+  OtlpLogsDocument,
+  OtlpMetricsDocument,
+  OtlpTracesDocument,
+} from "@otlpkit/otlpjson";
+import {
+  isLogsDocument,
+  isMetricsDocument,
+  isTracesDocument,
+  parseOtlpJson,
+} from "@otlpkit/otlpjson";
 
 /** Minimum delay between reconnect attempts (ms). */
 const RECONNECT_BASE_MS = 1_000;
 /** Maximum delay between reconnect attempts (ms). */
 const RECONNECT_MAX_MS = 30_000;
 
+/** Discriminated union of parsed OTLP messages from the WebSocket. */
+export type OtlpMessage =
+  | { readonly signal: "metrics"; readonly data: OtlpMetricsDocument }
+  | { readonly signal: "traces"; readonly data: OtlpTracesDocument }
+  | { readonly signal: "logs"; readonly data: OtlpLogsDocument };
+
 /**
  * Connect to the diagnostics WebSocket at `/admin/v1/telemetry`.
  *
- * Returns `{ wsConnected, lastEnvelope }`:
- * - `wsConnected`: true when the socket is open
- * - `lastEnvelope`: most recent parsed envelope (null until first message)
+ * The server pushes OTLP JSON messages (resourceMetrics, resourceSpans,
+ * resourceLogs). Each incoming message is parsed via `@otlpkit/otlpjson`
+ * and exposed as `lastMessage`.
  *
  * Automatically reconnects with exponential backoff on close or error.
  * The caller should fall back to HTTP polling when `wsConnected` is false.
  */
 export function useTelemetryWebSocket(): {
   wsConnected: boolean;
-  lastEnvelope: WsEnvelope | null;
+  lastMessage: OtlpMessage | null;
 } {
   const [wsConnected, setWsConnected] = useState(false);
-  const [lastEnvelope, setLastEnvelope] = useState<WsEnvelope | null>(null);
+  const [lastMessage, setLastMessage] = useState<OtlpMessage | null>(null);
   const backoffRef = useRef(RECONNECT_BASE_MS);
 
   useEffect(() => {
@@ -43,8 +60,15 @@ export function useTelemetryWebSocket(): {
 
       ws.onmessage = (ev) => {
         try {
-          const data = JSON.parse(ev.data) as WsEnvelope;
-          setLastEnvelope(data);
+          const raw = JSON.parse(ev.data);
+          const doc: OtlpDocument = parseOtlpJson(raw);
+          if (isMetricsDocument(doc)) {
+            setLastMessage({ signal: "metrics", data: doc });
+          } else if (isTracesDocument(doc)) {
+            setLastMessage({ signal: "traces", data: doc });
+          } else if (isLogsDocument(doc)) {
+            setLastMessage({ signal: "logs", data: doc });
+          }
         } catch {
           // Ignore malformed messages.
         }
@@ -81,5 +105,5 @@ export function useTelemetryWebSocket(): {
     };
   }, []);
 
-  return { wsConnected, lastEnvelope };
+  return { wsConnected, lastMessage };
 }

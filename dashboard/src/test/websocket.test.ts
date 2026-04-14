@@ -58,10 +58,10 @@ afterEach(() => {
 // ─── tests ───────────────────────────────────────────────────────────────────
 
 describe("useTelemetryWebSocket", () => {
-  it("starts disconnected with null envelope", () => {
+  it("starts disconnected with null message", () => {
     const { result } = renderHook(() => useTelemetryWebSocket());
     expect(result.current.wsConnected).toBe(false);
-    expect(result.current.lastEnvelope).toBeNull();
+    expect(result.current.lastMessage).toBeNull();
   });
 
   it("connects to ws://host/admin/v1/telemetry", () => {
@@ -78,20 +78,61 @@ describe("useTelemetryWebSocket", () => {
     expect(result.current.wsConnected).toBe(true);
   });
 
-  it("parses incoming messages into lastEnvelope", () => {
+  it("parses incoming OTLP metrics into lastMessage", () => {
     const { result } = renderHook(() => useTelemetryWebSocket());
     const ws = MockWebSocket.instances[0];
 
     act(() => ws.simulateOpen());
 
-    const envelope = {
-      status: { contract_version: "1", pipelines: [] },
-      stats: { uptime_sec: 42 },
-      traces: { traces: [] },
+    const metricsDoc = {
+      resourceMetrics: [
+        {
+          resource: { attributes: [] },
+          scopeMetrics: [
+            {
+              scope: { name: "logfwd.diagnostics" },
+              metrics: [
+                {
+                  name: "logfwd.uptime_seconds",
+                  gauge: {
+                    dataPoints: [{ timeUnixNano: "1000", asDouble: 42.5 }],
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
     };
 
-    act(() => ws.simulateMessage(JSON.stringify(envelope)));
-    expect(result.current.lastEnvelope).toEqual(envelope);
+    act(() => ws.simulateMessage(JSON.stringify(metricsDoc)));
+    expect(result.current.lastMessage).not.toBeNull();
+    expect(result.current.lastMessage!.signal).toBe("metrics");
+  });
+
+  it("parses incoming OTLP traces into lastMessage", () => {
+    const { result } = renderHook(() => useTelemetryWebSocket());
+    const ws = MockWebSocket.instances[0];
+
+    act(() => ws.simulateOpen());
+
+    const tracesDoc = {
+      resourceSpans: [
+        {
+          resource: { attributes: [] },
+          scopeSpans: [
+            {
+              scope: { name: "logfwd.diagnostics" },
+              spans: [],
+            },
+          ],
+        },
+      ],
+    };
+
+    act(() => ws.simulateMessage(JSON.stringify(tracesDoc)));
+    expect(result.current.lastMessage).not.toBeNull();
+    expect(result.current.lastMessage!.signal).toBe("traces");
   });
 
   it("ignores malformed messages", () => {
@@ -100,7 +141,7 @@ describe("useTelemetryWebSocket", () => {
 
     act(() => ws.simulateOpen());
     act(() => ws.simulateMessage("not json"));
-    expect(result.current.lastEnvelope).toBeNull();
+    expect(result.current.lastMessage).toBeNull();
   });
 
   it("sets wsConnected=false on close and schedules reconnect", () => {
