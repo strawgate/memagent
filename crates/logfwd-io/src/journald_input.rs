@@ -1057,7 +1057,7 @@ fn spawn_journalctl(config: &JournaldConfig) -> io::Result<Child> {
 /// Convert a `_SOURCE_REALTIME_TIMESTAMP` (microseconds since Unix epoch)
 /// to an RFC 3339 string like `2024-04-12T00:00:00.000000Z`.
 ///
-/// Returns `None` for negative or unparseable values. Uses a simple
+/// Returns `None` for negative or unparsable values. Uses a simple
 /// civil-time calculation (no chrono dependency needed at runtime).
 fn usec_to_rfc3339(us: i64) -> Option<String> {
     if us < 0 {
@@ -1451,6 +1451,33 @@ mod tests {
         assert_eq!(syslog_priority_to_level(6), Some("INFO"));
         assert_eq!(syslog_priority_to_level(7), Some("DEBUG"));
         assert_eq!(syslog_priority_to_level(8), None);
+    }
+
+    #[test]
+    fn normalize_preserves_existing_timestamp() {
+        let mut fields = vec![
+            (b"TIMESTAMP".to_vec(), b"user-supplied".to_vec()),
+            (
+                b"_SOURCE_REALTIME_TIMESTAMP".to_vec(),
+                b"1712880000000000".to_vec(),
+            ),
+        ];
+        normalize_fields(&mut fields);
+        let timestamps: Vec<_> = fields.iter().filter(|(n, _)| n == b"timestamp").collect();
+        assert_eq!(timestamps.len(), 1, "should not duplicate timestamp");
+        assert_eq!(timestamps[0].1, b"user-supplied");
+    }
+
+    #[test]
+    fn normalize_preserves_existing_level() {
+        let mut fields = vec![
+            (b"LEVEL".to_vec(), b"CUSTOM".to_vec()),
+            (b"PRIORITY".to_vec(), b"3".to_vec()),
+        ];
+        normalize_fields(&mut fields);
+        let levels: Vec<_> = fields.iter().filter(|(n, _)| n == b"level").collect();
+        assert_eq!(levels.len(), 1, "should not duplicate level");
+        assert_eq!(levels[0].1, b"CUSTOM");
     }
 
     // ── backend pref defaults ──────────────────────────────────────────
