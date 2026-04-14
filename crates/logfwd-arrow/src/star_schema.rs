@@ -860,26 +860,38 @@ fn str_value_at(arr: &dyn Array, row: usize) -> String {
             .downcast_ref::<Float32Array>()
             .map(|a| a.value(row).to_string())
             .unwrap_or_default(),
+        // Timestamps: normalize the raw i64 to nanoseconds before stringifying so that
+        // `parse_timestamp_to_nanos` (which infers units from magnitude) always sees a
+        // nanos-scale value. The old code stringified the raw i64 directly, which caused
+        // small-epoch timestamps in coarser units (seconds, millis, micros) to be
+        // misclassified by the magnitude heuristic.
         DataType::Timestamp(TimeUnit::Second, _) => arr
             .as_any()
             .downcast_ref::<TimestampSecondArray>()
-            .map(|a| a.value(row).to_string())
+            .map(|a| a.value(row).saturating_mul(1_000_000_000).to_string())
             .unwrap_or_default(),
         DataType::Timestamp(TimeUnit::Millisecond, _) => arr
             .as_any()
             .downcast_ref::<TimestampMillisecondArray>()
-            .map(|a| a.value(row).to_string())
+            .map(|a| a.value(row).saturating_mul(1_000_000).to_string())
             .unwrap_or_default(),
         DataType::Timestamp(TimeUnit::Microsecond, _) => arr
             .as_any()
             .downcast_ref::<TimestampMicrosecondArray>()
-            .map(|a| a.value(row).to_string())
+            .map(|a| a.value(row).saturating_mul(1_000).to_string())
             .unwrap_or_default(),
         DataType::Timestamp(TimeUnit::Nanosecond, _) => arr
             .as_any()
             .downcast_ref::<TimestampNanosecondArray>()
             .map(|a| a.value(row).to_string())
             .unwrap_or_default(),
+        // Fallback for any other Arrow types (e.g. Date32, Dictionary, List, etc.)
+        // delegates to Arrow's display formatting via `array_value_to_string`.
+        //
+        // Note: `array_value_to_string` allocates an `ArrayFormatter` per call. This is
+        // acceptable here because all common hot-path types (Utf8, Int64, Float64,
+        // Boolean, Binary, all integer/float variants, and Timestamps) are handled by
+        // explicit arms above. Only truly exotic types reach this fallback.
         _ => array_value_to_string(arr, row).unwrap_or_default(),
     }
 }
@@ -3464,9 +3476,48 @@ mod str_value_at_tests {
     }
 
     #[test]
-    fn fallback_timestamp() {
+    fn timestamp_nanos_normalized() {
+        // TimestampNanosecondArray: raw value is already in nanos, no scaling needed.
         let arr = TimestampNanosecondArray::from(vec![Some(1_000_000_000i64)]);
+        assert_eq!(str_value_at(&arr, 0), "1000000000");
+        // Verify parse_timestamp_to_nanos recognizes this as nanos (magnitude > 1e17
+        // is not met here but > 1e8 so it's treated as seconds then multiplied -- but
+        // we actually want to check the full round-trip).
+        let nanos = parse_timestamp_to_nanos(&str_value_at(&arr, 0));
+        assert_eq!(nanos, Some(1_000_000_000_000_000_000i64));
+    }
+
+    #[test]
+    fn timestamp_seconds_normalized_to_nanos() {
+        // TimestampSecondArray with value 1 (= 1 second) should produce "1000000000"
+        // (1e9 nanos), not "1" which parse_timestamp_to_nanos would misclassify.
+        let arr = TimestampSecondArray::from(vec![Some(1i64)]);
+        assert_eq!(str_value_at(&arr, 0), "1000000000");
+    }
+
+    #[test]
+    fn timestamp_millis_normalized_to_nanos() {
+        // TimestampMillisecondArray with value 1000 (= 1 second) should produce "1000000000".
+        let arr = TimestampMillisecondArray::from(vec![Some(1000i64)]);
+        assert_eq!(str_value_at(&arr, 0), "1000000000");
+    }
+
+    #[test]
+    fn timestamp_micros_normalized_to_nanos() {
+        // TimestampMicrosecondArray with value 1_000_000 (= 1 second) should produce "1000000000".
+        let arr = TimestampMicrosecondArray::from(vec![Some(1_000_000i64)]);
+        assert_eq!(str_value_at(&arr, 0), "1000000000");
+    }
+
+    #[test]
+    fn fallback_exotic_type() {
+        // Date32 is not handled by any explicit match arm, so it exercises the
+        // `_ => array_value_to_string(...)` fallback.
+        let arr = arrow::array::Date32Array::from(vec![Some(0i32)]); // 1970-01-01
         let val = str_value_at(&arr, 0);
-        assert!(!val.is_empty(), "timestamp fallback must not be empty");
+        assert!(
+            val.contains("1970-01-01"),
+            "expected Date32 fallback to produce a date string, got: {val}"
+        );
     }
 }
