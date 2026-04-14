@@ -273,17 +273,9 @@ fn decode_otlp_logs_json(body: &[u8], resource_prefix: &str) -> Result<Vec<u8>, 
                     out.push(b',');
                 }
 
-                if let Some(attrs) = record.get("attributes").and_then(|v| v.as_array()) {
-                    for kv in attrs {
-                        if let (Some(key), Some(val)) =
-                            (kv.get("key").and_then(|k| k.as_str()), kv.get("value"))
-                            && write_json_any_value_field_from_json(&mut out, key, val)?
-                        {
-                            out.push(b',');
-                        }
-                    }
-                }
-
+                // Write protocol fields BEFORE log record attributes so that
+                // first-write-wins semantics prevent attributes from shadowing
+                // trace_id, span_id, flags, scope.name, or scope.version.
                 if let Some(tid) = record.get("traceId").and_then(|v| v.as_str()) {
                     if !tid.is_empty() {
                         let normalized_trace_id = normalize_otlp_hex_id(tid, 32, "traceId")?;
@@ -329,6 +321,17 @@ fn decode_otlp_logs_json(body: &[u8], resource_prefix: &str) -> Result<Vec<u8>, 
                 {
                     write_json_string_field(&mut out, field_names::SCOPE_VERSION, version);
                     out.push(b',');
+                }
+
+                if let Some(attrs) = record.get("attributes").and_then(|v| v.as_array()) {
+                    for kv in attrs {
+                        if let (Some(key), Some(val)) =
+                            (kv.get("key").and_then(|k| k.as_str()), kv.get("value"))
+                            && write_json_any_value_field_from_json(&mut out, key, val)?
+                        {
+                            out.push(b',');
+                        }
+                    }
                 }
 
                 if out.last() == Some(&b',') {
@@ -399,10 +402,14 @@ fn json_any_value_to_string(v: &serde_json::Value) -> Result<Option<String>, Inp
 }
 
 fn json_any_array_to_string(array_value: &serde_json::Value) -> Result<String, InputError> {
-    let values = array_value
-        .get("values")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| InputError::Receiver("invalid OTLP JSON arrayValue".into()))?;
+    // Per protobuf JSON mapping: a missing "values" key means an empty
+    // repeated field (valid). A present-but-non-array "values" is invalid.
+    let values = match array_value.get("values") {
+        None => return Ok("[]".to_string()),
+        Some(v) => v.as_array().ok_or_else(|| {
+            InputError::Receiver("invalid OTLP JSON arrayValue: 'values' is not an array".into())
+        })?,
+    };
 
     let mut out = Vec::with_capacity(values.len());
     for item in values {
@@ -414,10 +421,14 @@ fn json_any_array_to_string(array_value: &serde_json::Value) -> Result<String, I
 }
 
 fn json_any_kvlist_to_string(kvlist_value: &serde_json::Value) -> Result<String, InputError> {
-    let values = kvlist_value
-        .get("values")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| InputError::Receiver("invalid OTLP JSON kvlistValue".into()))?;
+    // Per protobuf JSON mapping: a missing "values" key means an empty
+    // repeated field (valid). A present-but-non-array "values" is invalid.
+    let values = match kvlist_value.get("values") {
+        None => return Ok("[]".to_string()),
+        Some(v) => v.as_array().ok_or_else(|| {
+            InputError::Receiver("invalid OTLP JSON kvlistValue: 'values' is not an array".into())
+        })?,
+    };
 
     let mut out = Vec::with_capacity(values.len());
     for entry in values {
@@ -547,5 +558,132 @@ mod tests {
 
         assert_eq!(id.as_ref(), "0123456789abcdef0123456789abcdef");
         assert!(matches!(id, Cow::Owned(_)));
+    }
+
+    #[test]
+    fn empty_array_value_without_values_key() {
+        let v: serde_json::Value = serde_json::json!({});
+        let result = json_any_array_to_string(&v).expect("empty arrayValue must succeed");
+        assert_eq!(result, "[]");
+    }
+
+    #[test]
+    fn empty_kvlist_value_without_values_key() {
+        let v: serde_json::Value = serde_json::json!({});
+        let result = json_any_kvlist_to_string(&v).expect("empty kvlistValue must succeed");
+        assert_eq!(result, "[]");
+    }
+
+    #[test]
+    fn any_value_empty_array_value() {
+        let v: serde_json::Value = serde_json::json!({"arrayValue": {}});
+        let result = json_any_value_to_string(&v)
+            .expect("must succeed")
+            .expect("must produce Some");
+        assert_eq!(result, "[]");
+    }
+
+    #[test]
+    fn any_value_empty_kvlist_value() {
+        let v: serde_json::Value = serde_json::json!({"kvlistValue": {}});
+        let result = json_any_value_to_string(&v)
+            .expect("must succeed")
+            .expect("must produce Some");
+        assert_eq!(result, "[]");
+    }
+
+    #[test]
+    fn json_literal_empty_array_value() {
+        let v: serde_json::Value = serde_json::json!({"arrayValue": {}});
+        let result = json_any_value_to_json_literal(&v)
+            .expect("must succeed")
+            .expect("must produce Some");
+        assert_eq!(result, serde_json::json!([]));
+    }
+
+    #[test]
+    fn json_literal_empty_kvlist_value() {
+        let v: serde_json::Value = serde_json::json!({"kvlistValue": {}});
+        let result = json_any_value_to_json_literal(&v)
+            .expect("must succeed")
+            .expect("must produce Some");
+        assert_eq!(result, serde_json::json!([]));
+    }
+
+    #[test]
+    fn protocol_fields_not_shadowed_by_attributes() {
+        use arrow::array::{Array, StringArray, StringViewArray};
+        use arrow::datatypes::DataType;
+
+        fn str_val(col: &dyn Array, row: usize) -> String {
+            match col.data_type() {
+                DataType::Utf8 => col
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .expect("Utf8")
+                    .value(row)
+                    .to_string(),
+                DataType::Utf8View => col
+                    .as_any()
+                    .downcast_ref::<StringViewArray>()
+                    .expect("Utf8View")
+                    .value(row)
+                    .to_string(),
+                other => panic!("expected string column, got {other}"),
+            }
+        }
+
+        let json_body = br#"{
+            "resourceLogs": [{
+                "scopeLogs": [{
+                    "scope": { "name": "real-scope", "version": "1.0" },
+                    "logRecords": [{
+                        "body": { "stringValue": "test" },
+                        "traceId": "0123456789abcdef0123456789abcdef",
+                        "spanId": "0123456789abcdef",
+                        "flags": 1,
+                        "attributes": [
+                            { "key": "trace_id", "value": { "stringValue": "fake-trace" } },
+                            { "key": "span_id", "value": { "stringValue": "fake-span" } },
+                            { "key": "flags", "value": { "intValue": "999" } },
+                            { "key": "scope.name", "value": { "stringValue": "fake-scope" } },
+                            { "key": "scope.version", "value": { "stringValue": "fake-ver" } }
+                        ]
+                    }]
+                }]
+            }]
+        }"#;
+
+        let batch = decode_otlp_json(json_body, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect("decode must succeed");
+
+        assert_eq!(batch.num_rows(), 1);
+
+        let trace_col = batch
+            .column_by_name(field_names::TRACE_ID)
+            .expect("trace_id column");
+        assert_eq!(
+            str_val(trace_col.as_ref(), 0),
+            "0123456789abcdef0123456789abcdef",
+            "trace_id must be the protocol field, not the attribute"
+        );
+
+        let span_col = batch
+            .column_by_name(field_names::SPAN_ID)
+            .expect("span_id column");
+        assert_eq!(
+            str_val(span_col.as_ref(), 0),
+            "0123456789abcdef",
+            "span_id must be the protocol field, not the attribute"
+        );
+
+        let scope_col = batch
+            .column_by_name(field_names::SCOPE_NAME)
+            .expect("scope.name column");
+        assert_eq!(
+            str_val(scope_col.as_ref(), 0),
+            "real-scope",
+            "scope.name must be the protocol field, not the attribute"
+        );
     }
 }

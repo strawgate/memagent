@@ -170,6 +170,9 @@ struct HostMetricsCommon {
     schema: Arc<Schema>,
     system: System,
     networks: Networks,
+    /// Wrapping counter used to rotate the budget remainder
+    /// across families so no single family is permanently starved (#1935).
+    poll_count: usize,
 }
 
 #[derive(Debug)]
@@ -630,25 +633,32 @@ impl HostMetricsCommon {
             self.networks.refresh(true);
         }
 
-        // Split budget evenly across active families so no single family starves others.
+        // Split budget evenly across active families, rotating the remainder
+        // so no single family is permanently starved (#1935).
         let per_family_budget = self.cfg.max_rows_per_poll / active_count;
-        // Remainder goes to the first active family to avoid losing rows.
         let remainder = self.cfg.max_rows_per_poll % active_count;
+        let start_idx = self.poll_count % active_count;
+        self.poll_count = self.poll_count.wrapping_add(1);
 
         let mut emitted = 0usize;
-        let mut budget_extra = remainder;
+        let mut family_idx = 0usize;
 
         if enabled.contains(&SignalFamily::Process) {
-            let budget = per_family_budget + std::mem::take(&mut budget_extra);
-            emitted += self.emit_process_rows(control, out, budget);
+            let extra =
+                usize::from((family_idx + active_count - start_idx) % active_count < remainder);
+            emitted += self.emit_process_rows(control, out, per_family_budget + extra);
+            family_idx += 1;
         }
         if enabled.contains(&SignalFamily::Network) {
-            let budget = per_family_budget + std::mem::take(&mut budget_extra);
-            emitted += self.emit_network_rows(control, out, budget);
+            let extra =
+                usize::from((family_idx + active_count - start_idx) % active_count < remainder);
+            emitted += self.emit_network_rows(control, out, per_family_budget + extra);
+            family_idx += 1;
         }
         if enabled.contains(&SignalFamily::File) {
-            let budget = per_family_budget + std::mem::take(&mut budget_extra);
-            emitted += self.emit_disk_io_rows(control, out, budget);
+            let extra =
+                usize::from((family_idx + active_count - start_idx) % active_count < remainder);
+            emitted += self.emit_disk_io_rows(control, out, per_family_budget + extra);
         }
 
         emitted
@@ -1077,6 +1087,7 @@ impl HostMetricsInput {
                     schema: sensor_schema(),
                     system: System::new(),
                     networks: Networks::new_with_refreshed_list(),
+                    poll_count: 0,
                 },
                 state: InitState { control },
             })),
@@ -2273,5 +2284,56 @@ mod tests {
             );
         }
         eprintln!("\n=== DATA AUDIT COMPLETE ===");
+    }
+
+    #[test]
+    fn budget_rotation_distributes_remainder_fairly() {
+        // Simulate the rotation logic with 3 families and budget=2
+        // per_family_budget = 2/3 = 0, remainder = 2
+        // Over 3 polls, each family should get the extra budget twice.
+        let active_count = 3usize;
+        let max_rows = 2usize;
+        let per_family_budget = max_rows / active_count; // 0
+        let remainder = max_rows % active_count; // 2
+
+        // Track how many extra rows each family position gets over 3 cycles.
+        let mut extras = [0usize; 3];
+        for poll_count in 0..active_count {
+            let start_idx = poll_count % active_count;
+            for family_idx in 0..active_count {
+                let extra =
+                    usize::from((family_idx + active_count - start_idx) % active_count < remainder);
+                extras[family_idx] += extra;
+            }
+        }
+
+        // Each family should get exactly 2 extras over 3 polls (fair distribution).
+        assert_eq!(
+            extras,
+            [2, 2, 2],
+            "each family must get equal remainder share over a full rotation"
+        );
+        assert_eq!(
+            per_family_budget, 0,
+            "base budget is zero with budget=2, families=3"
+        );
+
+        // Also verify single cycle: with budget=1 and 3 families, only one family gets 1 per cycle.
+        let max_rows = 1usize;
+        let remainder = max_rows % active_count; // 1
+        let mut totals = [0usize; 3];
+        for poll_count in 0..active_count {
+            let start_idx = poll_count % active_count;
+            for family_idx in 0..active_count {
+                let extra =
+                    usize::from((family_idx + active_count - start_idx) % active_count < remainder);
+                totals[family_idx] += extra;
+            }
+        }
+        assert_eq!(
+            totals,
+            [1, 1, 1],
+            "budget=1 with 3 families: each gets 1 row over 3 polls"
+        );
     }
 }

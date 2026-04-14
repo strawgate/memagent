@@ -164,3 +164,12 @@ transform: |
   FROM logs
   GROUP BY level
 ```
+
+## What's next
+
+| Topic | Where to go |
+|-------|-------------|
+| See all YAML options | [YAML Reference](/memagent/configuration/reference/) |
+| Understand the scanner | [Scanner Deep Dive](/memagent/how-it-works/scanner/) (interactive) |
+| Deploy to production | [Kubernetes DaemonSet](/memagent/deployment/kubernetes/) |
+| Debug transform issues | [Troubleshooting](/memagent/troubleshooting/) |

@@ -1,23 +1,44 @@
 ---
 title: "Contributing"
-description: "Workspace layout, build commands, and development tips"
+description: "Build, test, and contribute to logfwd"
 ---
+
+## Quick reference
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh   # install Rust
+cargo install just                                                  # install task runner
+just install-tools                                                  # install dev tools
+
+just build          # release binary
+just test           # all tests
+just lint           # fmt + clippy + toml + deny + typos
+just ci             # full CI suite
+just bench          # Criterion microbenchmarks
+cargo test -p logfwd-core                  # core crate only (fastest)
+cargo test -p logfwd-io -- tail            # specific test subset
+```
 
 ## Workspace layout
 
 ```
 crates/
-  logfwd/              Binary crate. CLI, async pipeline orchestration.
-  logfwd-core/         Proven kernel. Scanner, parsers, pipeline state machine, OTLP encoding. no_std.
-  logfwd-arrow/        Arrow integration. ScanBuilder impls, SIMD backends, RecordBatch builders.
-  logfwd-config/       YAML config parsing and validation.
-  logfwd-io/           I/O layer. File tailing, TCP/UDP/OTLP inputs, checkpointing, diagnostics.
-  logfwd-transform/    DataFusion SQL transforms, UDFs (grok, regexp_extract, geo_lookup).
-  logfwd-output/       Output sinks (OTLP, Elasticsearch, Loki, JSON lines, stdout).
-  logfwd-bench/        Criterion benchmarks for the scanner pipeline.
+  logfwd/                    Binary crate. CLI, async pipeline orchestration.
+  logfwd-runtime/            Async runtime. Pipeline lifecycle, worker pool, checkpoint I/O.
+  logfwd-core/               Proven kernel. Scanner, parsers, state machine, OTLP encoding. no_std.
+  logfwd-arrow/              Arrow integration. ScanBuilder impls, SIMD backends, RecordBatch builders.
+  logfwd-config/             YAML config parsing and validation.
+  logfwd-types/              Shared types used across crates (pipeline lifecycle, config enums).
+  logfwd-io/                 I/O layer. File tailing, TCP/UDP/OTLP/HTTP inputs, checkpointing.
+  logfwd-diagnostics/        Diagnostics server, HTML dashboard, metrics.
+  logfwd-transform/          DataFusion SQL transforms, UDFs (grok, regexp_extract, geo_lookup).
+  logfwd-output/             Output sinks (OTLP, Elasticsearch, Loki, JSON lines, stdout, file, TCP, UDP).
+  logfwd-bench/              Criterion benchmarks and profiling tools.
   logfwd-competitive-bench/  Comparative benchmarks vs other log agents.
-  logfwd-test-utils/   Shared test utilities.
-  logfwd-ebpf-proto/   eBPF log capture protocol definitions (experimental).
+  logfwd-test-utils/         Shared test utilities.
+  logfwd-ebpf-proto/         eBPF log capture protocol definitions (experimental).
+  logfwd-otap-proto/         OTAP protocol definitions.
+  logfwd-proto-build/        Protobuf code generation build scripts.
 ```
 
 ## Build, test, lint, bench, fuzz

@@ -1,0 +1,190 @@
+---
+// Animated data flow: shows a log line moving through the 4 pipeline stages.
+// Auto-plays in a loop. Each stage transforms the data visually.
+---
+
+<div class="df" id="data-flow-anim"></div>
+
+<style is:global>
+  .df {
+    --df-bg: var(--sl-color-bg-sidebar);
+    --df-border: var(--sl-color-hairline);
+    --df-accent: var(--sl-color-accent);
+    --df-text: var(--sl-color-text);
+    --df-muted: var(--sl-color-gray-3);
+    --df-green: #22c55e;
+    --df-amber: #f59e0b;
+    --df-blue: #60a5fa;
+    --df-purple: #a78bfa;
+    --df-pink: #ec4899;
+    margin: 1rem 0 1.5rem;
+    padding: 1rem;
+    border: 1px solid var(--df-border);
+    border-radius: 10px;
+    background: var(--df-bg);
+    overflow: hidden;
+  }
+  .df * { margin-top: 0 !important; }
+
+  .df-label {
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: var(--df-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.5rem;
+    text-align: center;
+  }
+
+  .df-track {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 80px;
+    position: relative;
+  }
+
+  .df-stage-box {
+    flex: 1;
+    padding: 0.5rem;
+    border: 1px solid var(--df-border);
+    border-radius: 8px;
+    text-align: center;
+    min-height: 72px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    transition: border-color 0.3s, background 0.3s;
+    font-size: 0.68rem;
+  }
+  .df-stage-box.active {
+    border-color: var(--df-accent);
+    background: color-mix(in srgb, var(--df-accent) 8%, var(--df-bg));
+  }
+  .df-stage-box b {
+    font-size: 0.72rem;
+    display: block;
+    margin-bottom: 0.2rem;
+  }
+
+  .df-arrow {
+    color: var(--df-accent);
+    opacity: 0.5;
+    flex-shrink: 0;
+    font-size: 1.2rem;
+    transition: opacity 0.3s;
+  }
+  .df-arrow.active { opacity: 1; }
+
+  .df-data {
+    margin-top: 0.5rem;
+    padding: 0.45rem 0.65rem;
+    border: 1px solid var(--df-border);
+    border-radius: 6px;
+    font-family: var(--sl-font-mono, monospace);
+    font-size: 0.6rem;
+    line-height: 1.5;
+    background: var(--df-bg);
+    overflow-x: auto;
+    white-space: nowrap;
+    transition: all 0.4s ease;
+    min-height: 2.5rem;
+  }
+
+  .df-col { display: inline-block; padding: 0.1rem 0.3rem; border-radius: 3px; margin: 0 1px; }
+  .df-col-str { background: color-mix(in srgb, var(--df-green) 15%, transparent); color: var(--df-green); }
+  .df-col-int { background: color-mix(in srgb, var(--df-blue) 15%, transparent); color: var(--df-blue); }
+  .df-col-float { background: color-mix(in srgb, var(--df-purple) 15%, transparent); color: var(--df-purple); }
+  .df-col-dim { opacity: 0.35; text-decoration: line-through; }
+
+  .df-proto { color: var(--df-accent); font-weight: 600; }
+</style>
+
+<script>
+(function() {
+  var root = document.getElementById('data-flow-anim');
+  if (!root) return;
+
+  function el(tag, cls) { var e = document.createElement(tag); if (cls) e.className = cls; return e; }
+
+  var label = el('div', 'df-label');
+  label.textContent = 'Watch a log line flow through the pipeline';
+  root.appendChild(label);
+
+  var track = el('div', 'df-track');
+  var stages = ['Input', 'Scanner', 'SQL Transform', 'Output'];
+  var subs = ['read bytes', 'JSON → Arrow', 'filter + reshape', 'encode + ship'];
+  var stageEls = [];
+  stages.forEach(function(name, i) {
+    var box = el('div', 'df-stage-box');
+    box.innerHTML = '<b>' + name + '</b>' + subs[i];
+    track.appendChild(box);
+    stageEls.push(box);
+    if (i < stages.length - 1) {
+      var arrow = el('div', 'df-arrow');
+      arrow.textContent = '\u2192';
+      track.appendChild(arrow);
+    }
+  });
+  root.appendChild(track);
+
+  var dataEl = el('div', 'df-data');
+  root.appendChild(dataEl);
+
+  var RAW = '{"level":"ERROR","message":"request failed","status":503,"duration_ms":42.7,"request_id":"abc-123","service":"api"}';
+
+  var SCANNED = '<span class="df-col df-col-str">level: "ERROR"</span> ' +
+    '<span class="df-col df-col-str">message: "request failed"</span> ' +
+    '<span class="df-col df-col-int">status: 503</span> ' +
+    '<span class="df-col df-col-float">duration_ms: 42.7</span> ' +
+    '<span class="df-col df-col-str">request_id: "abc-123"</span> ' +
+    '<span class="df-col df-col-str">service: "api"</span>';
+
+  var FILTERED = '<span class="df-col df-col-str">level: "ERROR"</span> ' +
+    '<span class="df-col df-col-int">status: 503</span> ' +
+    '<span class="df-col df-col-float">duration_ms: 42.7</span> ' +
+    '<span class="df-col df-col-dim">message</span> ' +
+    '<span class="df-col df-col-dim">request_id</span> ' +
+    '<span class="df-col df-col-dim">service</span>';
+
+  var ENCODED = '<span class="df-proto">OTLP protobuf</span> ' +
+    '<span style="opacity:0.6">(42 bytes zstd)</span> ' +
+    '<span style="opacity:0.4">→ collector:4318/v1/logs</span>';
+
+  var STEPS = [
+    { stage: 0, data: RAW, pause: 2500 },
+    { stage: 1, data: SCANNED, pause: 3000 },
+    { stage: 2, data: FILTERED, pause: 3000 },
+    { stage: 3, data: ENCODED, pause: 3000 },
+  ];
+
+  var cur = -1;
+  var timer = null;
+  var arrows = track.querySelectorAll('.df-arrow');
+
+  function show(idx) {
+    cur = idx;
+    var step = STEPS[idx];
+
+    stageEls.forEach(function(el, i) {
+      el.classList.toggle('active', i === step.stage);
+    });
+    arrows.forEach(function(a, i) {
+      a.classList.toggle('active', i < step.stage);
+    });
+
+    if (idx === 0) {
+      dataEl.textContent = step.data;
+    } else {
+      dataEl.innerHTML = step.data;
+    }
+
+    timer = setTimeout(function() {
+      show((idx + 1) % STEPS.length);
+    }, step.pause);
+  }
+
+  show(0);
+})();
+</script>

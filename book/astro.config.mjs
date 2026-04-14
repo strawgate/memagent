@@ -7,7 +7,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: "logfwd",
-      description: "Fast log forwarder with SQL transforms",
+      description: "Tail log files. Transform with SQL. Ship anywhere.",
       social: [
         {
           icon: "github",
@@ -22,21 +22,26 @@ export default defineConfig({
       customCss: ["./src/styles/custom.css"],
       sidebar: [
         {
-          label: "Getting Started",
+          label: "Quick Start",
+          slug: "quick-start",
+        },
+        {
+          label: "How It Works",
           items: [
-            { label: "Choose the Right Guide", slug: "getting-started/which-guide" },
-            { label: "Installation", slug: "getting-started/installation" },
-            { label: "Quick Start", slug: "getting-started/quickstart" },
-            { label: "Your First Pipeline", slug: "getting-started/first-pipeline" },
+            { label: "Pipeline Explorer", slug: "how-it-works" },
+            { label: "Scanner Deep Dive", slug: "how-it-works/scanner" },
+            { label: "Why Tailing Is Hard", slug: "how-it-works/tailing" },
+            { label: "Why Columnar Matters", slug: "how-it-works/columnar" },
+            { label: "Performance", slug: "how-it-works/performance" },
           ],
         },
         {
           label: "Configuration",
           items: [
-            { label: "Config Reference", slug: "configuration/reference" },
+            { label: "SQL Transforms", slug: "configuration/sql-transforms" },
             { label: "Input Types", slug: "configuration/inputs" },
             { label: "Output Types", slug: "configuration/outputs" },
-            { label: "SQL Transforms", slug: "configuration/sql-transforms" },
+            { label: "YAML Reference", slug: "configuration/reference" },
           ],
         },
         {
@@ -48,17 +53,6 @@ export default defineConfig({
           ],
         },
         {
-          label: "Collector University",
-          items: [
-            { label: "How logfwd Works", slug: "architecture" },
-            { label: "Why Tailing Is Hard", slug: "architecture/tailing" },
-            { label: "Why Columnar Storage Matters", slug: "architecture/columnar" },
-            { label: "Scanner Deep Dive", slug: "architecture/scanner" },
-            { label: "Pipeline Design", slug: "architecture/pipeline" },
-            { label: "Performance", slug: "architecture/performance" },
-          ],
-        },
-        {
           label: "Troubleshooting",
           slug: "troubleshooting",
         },
@@ -66,7 +60,6 @@ export default defineConfig({
           label: "Development",
           items: [
             { label: "Contributing", slug: "development/contributing" },
-            { label: "Building & Testing", slug: "development/building" },
             { label: "Benchmarking", slug: "development/benchmarking" },
           ],
         },

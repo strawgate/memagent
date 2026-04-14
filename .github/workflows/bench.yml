@@ -29,6 +29,8 @@ concurrency:
 permissions:
   issues: write
   contents: write
+  pages: write
+  id-token: write
 
 env:
   LINES: ${{ inputs.lines || '20000000' }}
@@ -67,11 +69,10 @@ jobs:
           RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
         run: |
           cargo build --release -p logfwd
-          cp target/release/logfwd target/release/logfwd-clean
           cargo build --release -p logfwd-competitive-bench
           cargo build --release --features dhat-heap -p logfwd
           cp target/release/logfwd target/release/logfwd-dhat
-          cp target/release/logfwd-clean target/release/logfwd
+          cargo build --release -p logfwd
           mkdir -p cached-binaries
           cp target/release/logfwd cached-binaries/
           cp target/release/logfwd-dhat cached-binaries/
@@ -257,7 +258,7 @@ jobs:
           results = {}
           for est_file in glob.glob('target/criterion/**/new/estimates.json', recursive=True):
               parts = est_file.split('/criterion/')[1].split('/new/')[0]
-              bench_name = parts
+              bench_name = parts.replace('/', '/')
               with open(est_file) as f:
                   data = json.load(f)
               mean_ns = data.get('mean', {}).get('point_estimate', 0)
@@ -266,7 +267,7 @@ jobs:
           # Also grab throughput if available.
           for thr_file in glob.glob('target/criterion/**/new/benchmark.json', recursive=True):
               parts = thr_file.split('/criterion/')[1].split('/new/')[0]
-              bench_name = parts
+              bench_name = parts.replace('/', '/')
               with open(thr_file) as f:
                   data = json.load(f)
               tp = data.get('throughput')
@@ -288,7 +289,6 @@ jobs:
         with:
           name: micro-results
           path: |
-            micro_raw.txt
             micro_body.md
             criterion-data.json
           retention-days: 7
@@ -394,68 +394,10 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_SHA: ${{ github.sha }}
 
-      # parse-results currently parses one result file per invocation. Keep
-      # benchmark-action files separate so multiple JSON arrays are never
-      # concatenated before parsing.
-      - name: Parse throughput benchmark output to OTLP (benchkit 0.2.3)
-        id: parse_throughput_otlp
-        uses: strawgate/o11ykit/actions/parse-results@1dabdc45cb73ac44a576d826f3acadd5d159a691
-        with:
-          mode: file
-          results: gh-bench.json
-          format: benchmark-action
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          data-branch: bench-data
-          run-id: ${{ github.run_id }}-${{ github.run_attempt }}--throughput-otlp
-          commit-results: ${{ github.ref == 'refs/heads/main' }}
-          fail-on-zero-datapoints: "false"
-          min-datapoints: "0"
-          summary: "true"
-
-      - name: Parse rate benchmark output to OTLP (benchkit 0.2.3)
-        id: parse_rate_otlp
-        if: hashFiles('rate-results/rate-gh-bench.json') != ''
-        uses: strawgate/o11ykit/actions/parse-results@1dabdc45cb73ac44a576d826f3acadd5d159a691
-        with:
-          mode: file
-          results: rate-results/rate-gh-bench.json
-          format: benchmark-action
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          data-branch: bench-data
-          run-id: ${{ github.run_id }}-${{ github.run_attempt }}--rate-otlp
-          commit-results: ${{ github.ref == 'refs/heads/main' }}
-          fail-on-zero-datapoints: "false"
-          min-datapoints: "0"
-          summary: "true"
-
-      - name: Parse criterion benchmark output to OTLP (benchkit 0.2.3)
-        id: parse_criterion_otlp
-        if: hashFiles('micro/micro_raw.txt') != ''
-        uses: strawgate/o11ykit/actions/parse-results@1dabdc45cb73ac44a576d826f3acadd5d159a691
-        with:
-          mode: file
-          results: micro/micro_raw.txt
-          format: rust
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          data-branch: bench-data
-          run-id: ${{ github.run_id }}-${{ github.run_attempt }}--criterion-otlp
-          commit-results: ${{ github.ref == 'refs/heads/main' }}
-          fail-on-zero-datapoints: "false"
-          min-datapoints: "0"
-          summary: "true"
-
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: benchkit-otlp-${{ github.run_number }}
-          path: /tmp/o11ykit-run-${{ github.run_id }}-${{ github.run_attempt }}--*-otlp.json
-          if-no-files-found: error
-          retention-days: 90
-
       # Commit bench data to the bench-data branch so the dashboard can fetch
       # it live via raw.githubusercontent.com — no Pages redeploy needed.
       - name: Commit results to bench-data branch
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/master'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_ID: ${{ github.run_id }}
@@ -471,55 +413,32 @@ jobs:
           git worktree add /tmp/bench-data origin/bench-data -b bench-data-push
 
           cd /tmp/bench-data
-          mkdir -p data/runs data/rate-runs data/criterion-runs
+          mkdir -p runs rate-runs criterion-runs
 
-          # Copy run data files to canonical data/* paths.
+          # Copy run data files.
           [ -f "$GITHUB_WORKSPACE/dashboard-data.json" ] && \
-            cp "$GITHUB_WORKSPACE/dashboard-data.json" "data/runs/${RUN_ID}.json"
+            cp "$GITHUB_WORKSPACE/dashboard-data.json" "runs/${RUN_ID}.json"
           [ -f "$GITHUB_WORKSPACE/rate-results/rate-bench-result.json" ] && \
-            cp "$GITHUB_WORKSPACE/rate-results/rate-bench-result.json" "data/rate-runs/${RUN_ID}.json"
+            cp "$GITHUB_WORKSPACE/rate-results/rate-bench-result.json" "rate-runs/${RUN_ID}.json"
           [ -f "$GITHUB_WORKSPACE/micro/criterion-data.json" ] && \
-            cp "$GITHUB_WORKSPACE/micro/criterion-data.json" "data/criterion-runs/${RUN_ID}.json"
+            cp "$GITHUB_WORKSPACE/micro/criterion-data.json" "criterion-runs/${RUN_ID}.json"
 
-          # Update canonical data/index.json.
+          # Update index.json with the new run entry.
           python3 - <<'PYEOF'
           import json, os
 
-          index_path = "data/index.json"
+          index_path = "index.json"
           run_id = os.environ["RUN_ID"]
 
-          def load_json(path):
-              try:
-                  with open(path) as f:
-                      return json.load(f)
-              except (FileNotFoundError, json.JSONDecodeError):
-                  return None
-
-          index = load_json(index_path)
-          if not isinstance(index, dict):
+          try:
+              with open(index_path) as f:
+                  index = json.load(f)
+          except (FileNotFoundError, json.JSONDecodeError):
               index = {"runs": [], "rate_runs": [], "criterion_runs": []}
 
           # Ensure all three lists exist.
           for key in ("runs", "rate_runs", "criterion_runs"):
               index.setdefault(key, [])
-
-          # Normalize runs entries to object form expected by o11ykit index shape.
-          normalized_runs = []
-          for entry in index["runs"]:
-              if isinstance(entry, dict):
-                  rid = str(entry.get("id", "")).strip()
-                  if not rid:
-                      continue
-                  obj = dict(entry)
-                  obj.setdefault("id", rid)
-                  if "timestamp" not in obj and obj.get("date"):
-                      obj["timestamp"] = obj.get("date")
-                  normalized_runs.append(obj)
-              else:
-                  rid = str(entry).strip()
-                  if rid:
-                      normalized_runs.append({"id": rid})
-          index["runs"] = normalized_runs
 
           workspace = os.environ.get("GITHUB_WORKSPACE", "")
 
@@ -528,35 +447,24 @@ jobs:
           if os.path.exists(entry_path):
               with open(entry_path) as f:
                   entry = json.load(f)
-              entry_id = str(entry.get("id", "")).strip()
+              entry_id = entry.get("id", "")
               if entry_id:
-                  run_entry = {
-                      "id": entry_id,
-                      "timestamp": entry.get("date"),
-                      "commit": entry.get("commit"),
-                      "ref": "refs/heads/main",
-                  }
-                  run_entry = {k: v for k, v in run_entry.items() if v not in (None, "")}
-                  index["runs"] = [r for r in index["runs"] if r.get("id") != entry_id]
-                  index["runs"].insert(0, run_entry)
+                  index["runs"] = [r for r in index["runs"] if (r.get("id") if isinstance(r, dict) else r) != entry_id]
+                  index["runs"].insert(0, entry_id)
                   index["runs"] = index["runs"][:90]
 
           # Record rate-run id.
-          if os.path.exists(f"data/rate-runs/{run_id}.json"):
+          if os.path.exists(f"rate-runs/{run_id}.json"):
               if run_id not in index["rate_runs"]:
                   index["rate_runs"].append(run_id)
               index["rate_runs"] = index["rate_runs"][-90:]
 
           # Record criterion-run id.
-          if os.path.exists(f"data/criterion-runs/{run_id}.json"):
+          if os.path.exists(f"criterion-runs/{run_id}.json"):
               if run_id not in index["criterion_runs"]:
                   index["criterion_runs"].append(run_id)
               index["criterion_runs"] = index["criterion_runs"][-90:]
 
-          # Convenience field used by dashboard consumers.
-          index["competitive_runs"] = [r.get("id") for r in index["runs"] if isinstance(r, dict) and r.get("id")]
-
-          os.makedirs("data", exist_ok=True)
           with open(index_path, "w") as f:
               json.dump(index, f, indent=2)
 
@@ -570,8 +478,9 @@ jobs:
           git commit -m "bench: add run ${RUN_ID} (${COMMIT})"
           git push origin HEAD:bench-data
 
-      # Note: docs.yml performs the only Pages deployment so docs + dashboard
-      # remain available under the same published site.
+      # The bench dashboard is served as /bench/ within the docs site deployment
+      # (docs.yml). Do not deploy Pages from here — it would overwrite the docs.
+
       # Upload summary for retention.
       - uses: actions/upload-artifact@v7
         with:
@@ -587,9 +496,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Ensure benchmark label exists (gh issue create --label fails otherwise).
-          gh label create benchmark --description "Nightly benchmark reports" --color "1D76DB" 2>/dev/null || true
-
           DATE=$(date -u +%Y-%m-%d)
           COMMIT=$(git rev-parse --short HEAD)
 
@@ -612,7 +518,7 @@ jobs:
           BODY="$(cat <<HEREDOC
           ## Benchmark Results --- ${DATE}
 
-          **Commit:** \`${COMMIT}\` on \`main\`
+          **Commit:** \`${COMMIT}\` on \`master\`
           **Runner:** \`ubuntu-latest\` (matrix: agent x scenario)
           **Iterations:** ${{ env.ITERATIONS }} per cell
           **Dashboard:** https://strawgate.github.io/memagent/bench/

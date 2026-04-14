@@ -2810,8 +2810,8 @@ pipelines:
     }
 
     /// Regression: arrow_ipc output with `compression: gzip` must be rejected.
-    /// Only `zstd` is supported. Before the fix, gzip was silently accepted
-    /// and would fail at runtime.
+    /// Only `zstd` and `none` are supported. Before the fix, gzip was silently
+    /// accepted and would fail at runtime.
     #[test]
     fn arrow_ipc_output_rejects_gzip_compression() {
         let yaml = r#"
@@ -2828,9 +2828,26 @@ pipelines:
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("arrow_ipc output only supports 'zstd'") && msg.contains("'gzip'"),
+            msg.contains("arrow_ipc output only supports 'zstd' or 'none'")
+                && msg.contains("'gzip'"),
             "expected arrow_ipc-specific gzip rejection, got: {msg}"
         );
+    }
+
+    #[test]
+    fn arrow_ipc_output_accepts_none_compression() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: arrow_ipc
+        endpoint: http://localhost:4317
+        compression: none
+"#;
+        Config::load_str(yaml).expect("arrow_ipc output should accept none compression");
     }
 
     #[test]

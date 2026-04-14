@@ -141,12 +141,31 @@ fn walk_query(
     except_fields: &mut Vec<String>,
     where_clause: &mut Option<SqlExpr>,
 ) {
+    // Walk CTE (WITH clause) bodies — columns inside CTEs are referenced.
+    if let Some(ref with) = query.with {
+        for cte in &with.cte_tables {
+            let mut cte_where = None;
+            walk_query(
+                &cte.query,
+                referenced_columns,
+                uses_select_star,
+                except_fields,
+                &mut cte_where,
+            );
+        }
+    }
+
     // Walk ORDER BY — columns may appear only here.
     if let Some(ref order_by) = query.order_by
         && let sqlast::OrderByKind::Expressions(exprs) = &order_by.kind
     {
         for ob in exprs {
-            collect_column_refs(&ob.expr, referenced_columns);
+            collect_column_refs_with_wildcards(
+                &ob.expr,
+                referenced_columns,
+                uses_select_star,
+                except_fields,
+            );
         }
     }
 
@@ -182,27 +201,52 @@ fn walk_set_expr(
                         extract_except_fields(opts, except_fields);
                     }
                     SelectItem::UnnamedExpr(expr) => {
-                        collect_column_refs(expr, referenced_columns);
+                        collect_column_refs_with_wildcards(
+                            expr,
+                            referenced_columns,
+                            uses_select_star,
+                            except_fields,
+                        );
                     }
                     SelectItem::ExprWithAlias { expr, .. } => {
-                        collect_column_refs(expr, referenced_columns);
+                        collect_column_refs_with_wildcards(
+                            expr,
+                            referenced_columns,
+                            uses_select_star,
+                            except_fields,
+                        );
                     }
                 }
             }
 
             if let Some(ref selection) = select.selection {
-                collect_column_refs(selection, referenced_columns);
+                collect_column_refs_with_wildcards(
+                    selection,
+                    referenced_columns,
+                    uses_select_star,
+                    except_fields,
+                );
                 *where_clause = Some(selection.clone());
             }
 
             if let sqlast::GroupByExpr::Expressions(exprs, _) = &select.group_by {
                 for e in exprs {
-                    collect_column_refs(e, referenced_columns);
+                    collect_column_refs_with_wildcards(
+                        e,
+                        referenced_columns,
+                        uses_select_star,
+                        except_fields,
+                    );
                 }
             }
 
             if let Some(ref having) = select.having {
-                collect_column_refs(having, referenced_columns);
+                collect_column_refs_with_wildcards(
+                    having,
+                    referenced_columns,
+                    uses_select_star,
+                    except_fields,
+                );
             }
 
             for table_with_joins in &select.from {
@@ -217,10 +261,20 @@ fn walk_set_expr(
             for sqlast::NamedWindowDefinition(_, named_expr) in &select.named_window {
                 if let sqlast::NamedWindowExpr::WindowSpec(spec) = named_expr {
                     for e in &spec.partition_by {
-                        collect_column_refs(e, referenced_columns);
+                        collect_column_refs_with_wildcards(
+                            e,
+                            referenced_columns,
+                            uses_select_star,
+                            except_fields,
+                        );
                     }
                     for ob in &spec.order_by {
-                        collect_column_refs(&ob.expr, referenced_columns);
+                        collect_column_refs_with_wildcards(
+                            &ob.expr,
+                            referenced_columns,
+                            uses_select_star,
+                            except_fields,
+                        );
                     }
                 }
             }
@@ -401,7 +455,12 @@ fn walk_table_factor(
     match factor {
         sqlast::TableFactor::Table { args, .. } => {
             if let Some(args) = args {
-                collect_function_args(&args.args, referenced_columns);
+                collect_function_args_with_wildcards(
+                    &args.args,
+                    referenced_columns,
+                    uses_select_star,
+                    except_fields,
+                );
             }
         }
         sqlast::TableFactor::Derived { subquery, .. } => {
@@ -425,14 +484,29 @@ fn walk_table_factor(
             );
         }
         sqlast::TableFactor::TableFunction { expr, .. } => {
-            collect_column_refs(expr, referenced_columns);
+            collect_column_refs_with_wildcards(
+                expr,
+                referenced_columns,
+                uses_select_star,
+                except_fields,
+            );
         }
         sqlast::TableFactor::Function { args, .. } => {
-            collect_function_args(args, referenced_columns);
+            collect_function_args_with_wildcards(
+                args,
+                referenced_columns,
+                uses_select_star,
+                except_fields,
+            );
         }
         sqlast::TableFactor::UNNEST { array_exprs, .. } => {
             for expr in array_exprs {
-                collect_column_refs(expr, referenced_columns);
+                collect_column_refs_with_wildcards(
+                    expr,
+                    referenced_columns,
+                    uses_select_star,
+                    except_fields,
+                );
             }
         }
         sqlast::TableFactor::Pivot {
@@ -445,7 +519,12 @@ fn walk_table_factor(
         } => {
             walk_table_factor(table, referenced_columns, uses_select_star, except_fields);
             for agg in aggregate_functions {
-                collect_column_refs(&agg.expr, referenced_columns);
+                collect_column_refs_with_wildcards(
+                    &agg.expr,
+                    referenced_columns,
+                    uses_select_star,
+                    except_fields,
+                );
             }
             for col in value_column {
                 referenced_columns.insert(col.value.clone());
@@ -453,12 +532,22 @@ fn walk_table_factor(
             match value_source {
                 sqlast::PivotValueSource::List(values) => {
                     for value in values {
-                        collect_column_refs(&value.expr, referenced_columns);
+                        collect_column_refs_with_wildcards(
+                            &value.expr,
+                            referenced_columns,
+                            uses_select_star,
+                            except_fields,
+                        );
                     }
                 }
                 sqlast::PivotValueSource::Any(order_by) => {
                     for ob in order_by {
-                        collect_column_refs(&ob.expr, referenced_columns);
+                        collect_column_refs_with_wildcards(
+                            &ob.expr,
+                            referenced_columns,
+                            uses_select_star,
+                            except_fields,
+                        );
                     }
                 }
                 sqlast::PivotValueSource::Subquery(query) => {
@@ -473,7 +562,12 @@ fn walk_table_factor(
                 }
             }
             if let Some(expr) = default_on_null {
-                collect_column_refs(expr, referenced_columns);
+                collect_column_refs_with_wildcards(
+                    expr,
+                    referenced_columns,
+                    uses_select_star,
+                    except_fields,
+                );
             }
         }
         sqlast::TableFactor::Unpivot { table, columns, .. } => {
@@ -484,7 +578,12 @@ fn walk_table_factor(
         }
         sqlast::TableFactor::JsonTable { json_expr, .. }
         | sqlast::TableFactor::OpenJsonTable { json_expr, .. } => {
-            collect_column_refs(json_expr, referenced_columns);
+            collect_column_refs_with_wildcards(
+                json_expr,
+                referenced_columns,
+                uses_select_star,
+                except_fields,
+            );
         }
         sqlast::TableFactor::MatchRecognize {
             table,
@@ -499,16 +598,36 @@ fn walk_table_factor(
         } => {
             walk_table_factor(table, referenced_columns, uses_select_star, except_fields);
             for expr in partition_by {
-                collect_column_refs(expr, referenced_columns);
+                collect_column_refs_with_wildcards(
+                    expr,
+                    referenced_columns,
+                    uses_select_star,
+                    except_fields,
+                );
             }
             for order_expr in order_by {
-                collect_column_refs(&order_expr.expr, referenced_columns);
+                collect_column_refs_with_wildcards(
+                    &order_expr.expr,
+                    referenced_columns,
+                    uses_select_star,
+                    except_fields,
+                );
             }
             for measure in measures {
-                collect_column_refs(&measure.expr, referenced_columns);
+                collect_column_refs_with_wildcards(
+                    &measure.expr,
+                    referenced_columns,
+                    uses_select_star,
+                    except_fields,
+                );
             }
             for symbol_def in symbols {
-                collect_column_refs(&symbol_def.definition, referenced_columns);
+                collect_column_refs_with_wildcards(
+                    &symbol_def.definition,
+                    referenced_columns,
+                    uses_select_star,
+                    except_fields,
+                );
             }
             walk_match_recognize_pattern(pattern);
         }
@@ -538,11 +657,21 @@ fn walk_table_with_joins(
             match_condition, ..
         } = &join.join_operator
         {
-            collect_column_refs(match_condition, referenced_columns);
+            collect_column_refs_with_wildcards(
+                match_condition,
+                referenced_columns,
+                uses_select_star,
+                except_fields,
+            );
         }
 
         if let Some(constraint) = extract_join_constraint(&join.join_operator) {
-            collect_join_constraint_columns(constraint, referenced_columns);
+            collect_join_constraint_columns(
+                constraint,
+                referenced_columns,
+                uses_select_star,
+                except_fields,
+            );
         }
     }
 }
@@ -595,10 +724,12 @@ fn extract_join_constraint(op: &sqlast::JoinOperator) -> Option<&sqlast::JoinCon
 fn collect_join_constraint_columns(
     constraint: &sqlast::JoinConstraint,
     cols: &mut HashSet<String>,
+    uses_select_star: &mut bool,
+    except_fields: &mut Vec<String>,
 ) {
     match constraint {
         sqlast::JoinConstraint::On(expr) => {
-            collect_column_refs(expr, cols);
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
         }
         sqlast::JoinConstraint::Using(using_cols) => {
             for obj_name in using_cols {
@@ -613,33 +744,47 @@ fn collect_join_constraint_columns(
     }
 }
 
-fn collect_function_arg_refs(arg: &sqlast::FunctionArg, cols: &mut HashSet<String>) {
+fn collect_function_arg_refs_with_wildcards(
+    arg: &sqlast::FunctionArg,
+    cols: &mut HashSet<String>,
+    uses_select_star: &mut bool,
+    except_fields: &mut Vec<String>,
+) {
     match arg {
         sqlast::FunctionArg::Unnamed(sqlast::FunctionArgExpr::Expr(e))
         | sqlast::FunctionArg::Named {
             arg: sqlast::FunctionArgExpr::Expr(e),
             ..
         } => {
-            collect_column_refs(e, cols);
+            collect_column_refs_with_wildcards(e, cols, uses_select_star, except_fields);
         }
         sqlast::FunctionArg::ExprNamed { name, arg, .. } => {
-            collect_column_refs(name, cols);
+            collect_column_refs_with_wildcards(name, cols, uses_select_star, except_fields);
             if let sqlast::FunctionArgExpr::Expr(e) = arg {
-                collect_column_refs(e, cols);
+                collect_column_refs_with_wildcards(e, cols, uses_select_star, except_fields);
             }
         }
         _ => {}
     }
 }
 
-fn collect_function_args(args: &[sqlast::FunctionArg], cols: &mut HashSet<String>) {
+fn collect_function_args_with_wildcards(
+    args: &[sqlast::FunctionArg],
+    cols: &mut HashSet<String>,
+    uses_select_star: &mut bool,
+    except_fields: &mut Vec<String>,
+) {
     for arg in args {
-        collect_function_arg_refs(arg, cols);
+        collect_function_arg_refs_with_wildcards(arg, cols, uses_select_star, except_fields);
     }
 }
 
-/// Recursively collect column name references from a SQL expression.
-fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
+fn collect_column_refs_with_wildcards(
+    expr: &SqlExpr,
+    cols: &mut HashSet<String>,
+    uses_select_star: &mut bool,
+    except_fields: &mut Vec<String>,
+) {
     match expr {
         SqlExpr::Identifier(ident) => {
             cols.insert(ident.value.clone());
@@ -651,35 +796,47 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
             }
         }
         SqlExpr::BinaryOp { left, right, .. } => {
-            collect_column_refs(left, cols);
-            collect_column_refs(right, cols);
+            collect_column_refs_with_wildcards(left, cols, uses_select_star, except_fields);
+            collect_column_refs_with_wildcards(right, cols, uses_select_star, except_fields);
         }
         SqlExpr::UnaryOp { expr, .. } => {
-            collect_column_refs(expr, cols);
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
         }
         SqlExpr::Function(func) => {
             match &func.args {
                 sqlast::FunctionArguments::List(arg_list) => {
                     for arg in &arg_list.args {
-                        collect_function_arg_refs(arg, cols);
+                        collect_function_arg_refs_with_wildcards(
+                            arg,
+                            cols,
+                            uses_select_star,
+                            except_fields,
+                        );
                     }
                 }
                 sqlast::FunctionArguments::None => {}
-                sqlast::FunctionArguments::Subquery(_) => {}
+                sqlast::FunctionArguments::Subquery(subquery) => {
+                    collect_columns_from_subquery(subquery, cols, uses_select_star, except_fields);
+                }
             }
             // Walk OVER clause: columns in PARTITION BY and ORDER BY are
             // only referenced in func.over, not in func.args.
             if let Some(sqlast::WindowType::WindowSpec(spec)) = &func.over {
                 for e in &spec.partition_by {
-                    collect_column_refs(e, cols);
+                    collect_column_refs_with_wildcards(e, cols, uses_select_star, except_fields);
                 }
                 for ob in &spec.order_by {
-                    collect_column_refs(&ob.expr, cols);
+                    collect_column_refs_with_wildcards(
+                        &ob.expr,
+                        cols,
+                        uses_select_star,
+                        except_fields,
+                    );
                 }
             }
         }
         SqlExpr::Nested(inner) => {
-            collect_column_refs(inner, cols);
+            collect_column_refs_with_wildcards(inner, cols, uses_select_star, except_fields);
         }
         SqlExpr::IsNull(e)
         | SqlExpr::IsNotNull(e)
@@ -689,27 +846,27 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
         | SqlExpr::IsNotFalse(e)
         | SqlExpr::IsUnknown(e)
         | SqlExpr::IsNotUnknown(e) => {
-            collect_column_refs(e, cols);
+            collect_column_refs_with_wildcards(e, cols, uses_select_star, except_fields);
         }
         SqlExpr::IsDistinctFrom(left, right) | SqlExpr::IsNotDistinctFrom(left, right) => {
-            collect_column_refs(left, cols);
-            collect_column_refs(right, cols);
+            collect_column_refs_with_wildcards(left, cols, uses_select_star, except_fields);
+            collect_column_refs_with_wildcards(right, cols, uses_select_star, except_fields);
         }
         SqlExpr::SimilarTo { expr, pattern, .. } => {
-            collect_column_refs(expr, cols);
-            collect_column_refs(pattern, cols);
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
+            collect_column_refs_with_wildcards(pattern, cols, uses_select_star, except_fields);
         }
         SqlExpr::Between {
             expr, low, high, ..
         } => {
-            collect_column_refs(expr, cols);
-            collect_column_refs(low, cols);
-            collect_column_refs(high, cols);
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
+            collect_column_refs_with_wildcards(low, cols, uses_select_star, except_fields);
+            collect_column_refs_with_wildcards(high, cols, uses_select_star, except_fields);
         }
         SqlExpr::InList { expr, list, .. } => {
-            collect_column_refs(expr, cols);
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
             for e in list {
-                collect_column_refs(e, cols);
+                collect_column_refs_with_wildcards(e, cols, uses_select_star, except_fields);
             }
         }
         SqlExpr::Case {
@@ -719,29 +876,39 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
             ..
         } => {
             if let Some(op) = operand {
-                collect_column_refs(op, cols);
+                collect_column_refs_with_wildcards(op, cols, uses_select_star, except_fields);
             }
             for cw in conditions {
-                collect_column_refs(&cw.condition, cols);
-                collect_column_refs(&cw.result, cols);
+                collect_column_refs_with_wildcards(
+                    &cw.condition,
+                    cols,
+                    uses_select_star,
+                    except_fields,
+                );
+                collect_column_refs_with_wildcards(
+                    &cw.result,
+                    cols,
+                    uses_select_star,
+                    except_fields,
+                );
             }
             if let Some(e) = else_result {
-                collect_column_refs(e, cols);
+                collect_column_refs_with_wildcards(e, cols, uses_select_star, except_fields);
             }
         }
         SqlExpr::Cast { expr, .. } => {
-            collect_column_refs(expr, cols);
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
         }
         SqlExpr::Like { expr, pattern, .. } | SqlExpr::ILike { expr, pattern, .. } => {
-            collect_column_refs(expr, cols);
-            collect_column_refs(pattern, cols);
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
+            collect_column_refs_with_wildcards(pattern, cols, uses_select_star, except_fields);
         }
         SqlExpr::Trim {
             expr, trim_what, ..
         } => {
-            collect_column_refs(expr, cols);
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
             if let Some(tw) = trim_what {
-                collect_column_refs(tw, cols);
+                collect_column_refs_with_wildcards(tw, cols, uses_select_star, except_fields);
             }
         }
         SqlExpr::Substring {
@@ -750,12 +917,12 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
             substring_for,
             ..
         } => {
-            collect_column_refs(expr, cols);
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
             if let Some(f) = substring_from {
-                collect_column_refs(f, cols);
+                collect_column_refs_with_wildcards(f, cols, uses_select_star, except_fields);
             }
             if let Some(f) = substring_for {
-                collect_column_refs(f, cols);
+                collect_column_refs_with_wildcards(f, cols, uses_select_star, except_fields);
             }
         }
         SqlExpr::Overlay {
@@ -764,43 +931,175 @@ fn collect_column_refs(expr: &SqlExpr, cols: &mut HashSet<String>) {
             overlay_from,
             overlay_for,
         } => {
-            collect_column_refs(expr, cols);
-            collect_column_refs(overlay_what, cols);
-            collect_column_refs(overlay_from, cols);
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
+            collect_column_refs_with_wildcards(overlay_what, cols, uses_select_star, except_fields);
+            collect_column_refs_with_wildcards(overlay_from, cols, uses_select_star, except_fields);
             if let Some(f) = overlay_for {
-                collect_column_refs(f, cols);
+                collect_column_refs_with_wildcards(f, cols, uses_select_star, except_fields);
             }
         }
         SqlExpr::Extract { expr, .. } => {
-            collect_column_refs(expr, cols);
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
         }
         SqlExpr::AtTimeZone {
             timestamp,
             time_zone,
         } => {
-            collect_column_refs(timestamp, cols);
-            collect_column_refs(time_zone, cols);
+            collect_column_refs_with_wildcards(timestamp, cols, uses_select_star, except_fields);
+            collect_column_refs_with_wildcards(time_zone, cols, uses_select_star, except_fields);
         }
         SqlExpr::Ceil { expr, .. } | SqlExpr::Floor { expr, .. } => {
-            collect_column_refs(expr, cols);
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
         }
         SqlExpr::Position { expr, r#in } => {
-            collect_column_refs(expr, cols);
-            collect_column_refs(r#in, cols);
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
+            collect_column_refs_with_wildcards(r#in, cols, uses_select_star, except_fields);
         }
-        SqlExpr::InSubquery { expr, .. } => {
-            collect_column_refs(expr, cols);
+        SqlExpr::InSubquery { expr, subquery, .. } => {
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
+            collect_columns_from_subquery(subquery, cols, uses_select_star, except_fields);
         }
         SqlExpr::InUnnest {
             expr, array_expr, ..
         } => {
-            collect_column_refs(expr, cols);
-            collect_column_refs(array_expr, cols);
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
+            collect_column_refs_with_wildcards(array_expr, cols, uses_select_star, except_fields);
         }
         SqlExpr::Convert { expr, .. } | SqlExpr::Collate { expr, .. } => {
-            collect_column_refs(expr, cols);
+            collect_column_refs_with_wildcards(expr, cols, uses_select_star, except_fields);
+        }
+        SqlExpr::Exists { subquery, .. } | SqlExpr::Subquery(subquery) => {
+            collect_columns_from_subquery(subquery, cols, uses_select_star, except_fields);
         }
         // Literals, wildcards, etc. — no column refs.
         _ => {}
+    }
+}
+
+/// Walk a subquery and collect column references from it.
+/// Used by InSubquery, Exists, Subquery (scalar), and FunctionArguments::Subquery.
+fn collect_columns_from_subquery(
+    query: &sqlast::Query,
+    cols: &mut HashSet<String>,
+    uses_select_star: &mut bool,
+    except_fields: &mut Vec<String>,
+) {
+    let mut nested_where = None;
+    walk_query(
+        query,
+        cols,
+        uses_select_star,
+        except_fields,
+        &mut nested_where,
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn refs(sql: &str) -> HashSet<String> {
+        QueryAnalyzer::new(sql).unwrap().referenced_columns
+    }
+
+    #[test]
+    fn cte_columns_are_collected() {
+        let cols =
+            refs("WITH cte AS (SELECT severity, facility FROM logs) SELECT severity FROM cte");
+        assert!(cols.contains("severity"), "missing severity: {cols:?}");
+        assert!(
+            cols.contains("facility"),
+            "missing facility from CTE body: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn multiple_ctes_are_walked() {
+        let cols = refs(
+            "WITH a AS (SELECT host FROM logs), b AS (SELECT pid FROM logs) \
+             SELECT host FROM a",
+        );
+        assert!(cols.contains("host"), "missing host: {cols:?}");
+        assert!(
+            cols.contains("pid"),
+            "missing pid from second CTE: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn in_subquery_body_is_walked() {
+        let cols = refs("SELECT level FROM logs WHERE level IN (SELECT severity FROM alerts)");
+        assert!(cols.contains("level"), "missing level: {cols:?}");
+        assert!(
+            cols.contains("severity"),
+            "missing severity from IN subquery: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn exists_subquery_is_walked() {
+        let cols = refs(
+            "SELECT host FROM logs WHERE EXISTS (SELECT 1 FROM alerts WHERE alerts.src = logs.src)",
+        );
+        assert!(cols.contains("host"), "missing host: {cols:?}");
+        assert!(
+            cols.contains("src"),
+            "missing src from EXISTS subquery: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn not_exists_subquery_is_walked() {
+        let cols = refs(
+            "SELECT host FROM logs \
+             WHERE NOT EXISTS (SELECT 1 FROM alerts WHERE alerts.pid = logs.pid)",
+        );
+        assert!(
+            cols.contains("pid"),
+            "missing pid from NOT EXISTS subquery: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn scalar_subquery_is_walked() {
+        let cols = refs("SELECT host, (SELECT MAX(severity) FROM alerts) AS max_sev FROM logs");
+        assert!(cols.contains("host"), "missing host: {cols:?}");
+        assert!(
+            cols.contains("severity"),
+            "missing severity from scalar subquery: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn in_subquery_select_star_marks_extract_all() {
+        let analyzer =
+            QueryAnalyzer::new("SELECT level FROM logs WHERE level IN (SELECT * FROM alerts)")
+                .unwrap();
+        assert!(
+            analyzer.uses_select_star,
+            "SELECT * in IN subquery must mark extract_all"
+        );
+    }
+
+    #[test]
+    fn exists_subquery_select_star_marks_extract_all() {
+        let analyzer = QueryAnalyzer::new(
+            "SELECT host FROM logs WHERE EXISTS (SELECT * FROM alerts WHERE alerts.pid = logs.pid)",
+        )
+        .unwrap();
+        assert!(
+            analyzer.uses_select_star,
+            "SELECT * in EXISTS subquery must mark extract_all"
+        );
+    }
+
+    #[test]
+    fn scalar_subquery_select_star_marks_extract_all() {
+        let analyzer =
+            QueryAnalyzer::new("SELECT host, (SELECT * FROM alerts) AS alert FROM logs").unwrap();
+        assert!(
+            analyzer.uses_select_star,
+            "SELECT * in scalar subquery must mark extract_all"
+        );
     }
 }

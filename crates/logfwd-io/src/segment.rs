@@ -697,7 +697,10 @@ impl SegmentManager {
 
         // open_new_segment() above ensures current is Some.
         if let Some(ref mut active) = self.current {
-            active.writer.append(batch)?;
+            if let Err(e) = active.writer.append(batch) {
+                self.current = None; // Drop poisoned writer
+                return Err(e);
+            }
         }
 
         Ok(sealed)

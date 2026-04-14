@@ -92,7 +92,8 @@ impl Sink for FileSink {
     fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
         Box::pin(async move {
             let mut file = self.file.lock().await;
-            file.flush().await
+            file.flush().await?;
+            file.sync_data().await
         })
     }
 
@@ -103,7 +104,8 @@ impl Sink for FileSink {
     fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
         Box::pin(async move {
             let mut file = self.file.lock().await;
-            file.flush().await
+            file.flush().await?;
+            file.sync_data().await
         })
     }
 }

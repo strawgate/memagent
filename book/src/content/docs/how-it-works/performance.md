@@ -57,3 +57,12 @@ Memory usage scales with batch size, not total data volume. logfwd processes dat
 | Wide with pushdown (20 fields, 2 projected) | 20 to 2 | 1.4M lines/sec |
 
 Field pushdown recovers most of the throughput loss from wide data. If your SQL only references 2 columns from 20-field logs, you get 1.4M lines/sec instead of 560K.
+
+## What's next
+
+| Topic | Where to go |
+|-------|-------------|
+| See how the scanner works | [Scanner Deep Dive](/memagent/how-it-works/scanner/) (interactive) |
+| Configure SQL transforms | [SQL Transforms](/memagent/configuration/sql-transforms/) |
+| Deploy to production | [Kubernetes DaemonSet](/memagent/deployment/kubernetes/) |
+| Contribute optimizations | [Contributing](/memagent/development/contributing/) |

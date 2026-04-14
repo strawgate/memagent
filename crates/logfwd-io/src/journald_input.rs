@@ -20,7 +20,7 @@ use crossbeam_channel::{Receiver, TrySendError, bounded};
 use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 
 use crate::input::{InputEvent, InputSource};
-use crate::journal_ffi;
+use crate::journal_ffi::{self, SD_JOURNAL_INVALIDATE};
 
 /// Channel capacity between the reader thread and `poll()`.
 const CHANNEL_CAPACITY: usize = 4096;
@@ -343,6 +343,10 @@ fn native_reader_loop(
     // Reusable buffer for JSON serialization.
     let mut json_buf = Vec::with_capacity(4096);
 
+    // Track the last-read cursor so we can recover after INVALIDATE.
+    // Starts as None — only set after actually emitting an entry.
+    let mut last_cursor: Option<String> = None;
+
     loop {
         if !running.load(Ordering::Acquire) {
             return;
@@ -359,6 +363,14 @@ fn native_reader_loop(
                     // Build JSON from entry fields.
                     match entry_to_json(&mut journal, &exclude_units, &mut json_buf) {
                         Ok(Some(())) => {
+                            // Save cursor of this entry before sending. We do
+                            // this per-entry (not at drain-loop exit) because
+                            // cursor() is only reliable while positioned on a
+                            // valid entry (next()→true).
+                            if let Ok(c) = journal.cursor() {
+                                last_cursor = Some(c);
+                            }
+
                             json_buf.push(b'\n');
                             // Move the buffer to avoid cloning; allocate a
                             // fresh one for the next entry.
@@ -395,7 +407,51 @@ fn native_reader_loop(
 
         // Wait for new entries (with periodic timeout to check running flag).
         match journal.wait(NATIVE_WAIT_USEC) {
-            Ok(_) => {} // NOP, APPEND, or INVALIDATE — all handled by next loop iteration
+            Ok(SD_JOURNAL_INVALIDATE) => {
+                // Journal files were rotated/added/removed. The internal file
+                // handle state may be stale, causing next() to return false
+                // even when new entries exist. Re-seek to restore position.
+                if let Some(ref cursor) = last_cursor {
+                    match journal.seek_cursor(cursor) {
+                        Ok(()) => {
+                            // seek_cursor sets up position but does NOT land
+                            // on an entry — must call next() first, which
+                            // returns the cursor entry (if it still exists)
+                            // or the next closest entry.
+                            match journal.next() {
+                                Ok(true) => {
+                                    if journal.test_cursor(cursor).unwrap_or(false) {
+                                        // On the cursor entry (already
+                                        // emitted). The drain loop's next()
+                                        // will advance to new entries.
+                                    } else {
+                                        // Cursor was rotated out; we landed
+                                        // on the first unread entry. Back up
+                                        // so the drain loop's next() returns
+                                        // it instead of skipping it.
+                                        let _ = journal.previous();
+                                    }
+                                }
+                                Ok(false) => {
+                                    // No entries at or after cursor.
+                                }
+                                Err(e) => {
+                                    tracing::warn!(error = %e, "sd_journal_next error during invalidate recovery");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "failed to re-seek after journal invalidate");
+                        }
+                    }
+                } else {
+                    // No entries read yet — restore initial seek position.
+                    if let Err(e) = seek_start(&mut journal, config) {
+                        tracing::warn!(error = %e, "failed to re-seek after journal invalidate");
+                    }
+                }
+            }
+            Ok(_) => {} // NOP or APPEND — next loop iteration will drain.
             Err(e) => {
                 tracing::warn!(error = %e, "sd_journal_wait error");
                 health.store(HEALTH_DEGRADED, Ordering::Release);
@@ -409,7 +465,9 @@ fn native_reader_loop(
 
 /// Open a journal handle with the appropriate flags/directory/namespace.
 fn open_native_journal(config: &JournaldConfig) -> io::Result<journal_ffi::Journal> {
-    let flags = journal_ffi::SD_JOURNAL_LOCAL_ONLY | journal_ffi::SD_JOURNAL_SYSTEM;
+    // SD_JOURNAL_LOCAL_ONLY reads both system and user journals from the
+    // local machine, matching the default behavior of `journalctl --follow`.
+    let flags = journal_ffi::SD_JOURNAL_LOCAL_ONLY;
 
     let mut journal = if let Some(ref dir) = config.journal_directory {
         // sd_journal_open_directory only accepts 0 or SD_JOURNAL_OS_ROOT.

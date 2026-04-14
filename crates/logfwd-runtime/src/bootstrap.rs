@@ -72,6 +72,7 @@ pub async fn run_pipelines(
     } else {
         None
     };
+    let configured_data_dir = config.storage.data_dir.as_ref().map(PathBuf::from);
 
     let shutdown = CancellationToken::new();
 
@@ -188,7 +189,13 @@ pub async fn run_pipelines(
 
     let mut pipelines = Vec::new();
     for (name, pipe_cfg) in &config.pipelines {
-        match Pipeline::from_config(name, pipe_cfg, &meter, base_path) {
+        match Pipeline::from_config_with_data_dir(
+            name,
+            pipe_cfg,
+            &meter,
+            base_path,
+            configured_data_dir.as_deref(),
+        ) {
             Ok(pipeline) => pipelines.push(pipeline),
             Err(e) => return Err(RuntimeError::Config(format!("pipeline '{name}': {e}"))),
         }
