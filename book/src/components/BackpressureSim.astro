@@ -106,7 +106,7 @@
   .bp-slot {
     flex: 1; border-radius: 2px; border: 1px solid var(--bp-border);
     transition: background 0.3s, border-color 0.3s;
-    position: relative;
+    position: relative; overflow: hidden;
   }
   .bp-slot.filled {
     background: var(--bp-green); border-color: var(--bp-green);
@@ -122,14 +122,101 @@
     font-family: var(--sl-font-mono, monospace);
   }
 
-  /* Arrow connectors */
+  /* Activity bar — gentle shimmer showing the stage is alive */
+  .bp-activity {
+    height: 3px; border-radius: 1.5px; margin-top: 0.35rem;
+    background: var(--bp-border); overflow: hidden;
+    position: relative;
+  }
+  .bp-activity-fill {
+    position: absolute; inset: 0; border-radius: 1.5px;
+    background: var(--bp-green);
+    transform-origin: left;
+    transition: transform 0.3s ease, background-color 0.4s;
+  }
+  .bp-activity-fill.flowing {
+    animation: bp-flow 1.5s ease-in-out infinite;
+  }
+  .bp-activity-fill.pressured { background: var(--bp-amber); }
+  .bp-activity-fill.blocked {
+    background: var(--bp-red);
+    animation: bp-blocked-pulse 2s ease-in-out infinite;
+  }
+  @keyframes bp-flow {
+    0%   { transform: scaleX(0.15); translate: 0% 0; }
+    50%  { transform: scaleX(0.5); translate: 50% 0; }
+    100% { transform: scaleX(0.15); translate: 85% 0; }
+  }
+  @keyframes bp-blocked-pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+  }
+
+  /* Arrow connectors with flow animation */
   .bp-arrow {
     display: flex; align-items: center; justify-content: center;
     width: 28px; min-width: 28px; color: var(--bp-muted);
     font-size: 1rem; transition: color 0.3s;
+    position: relative;
   }
   .bp-arrow.pressured { color: var(--bp-amber); }
   .bp-arrow.blocked { color: var(--bp-red); }
+  .bp-arrow-dot {
+    position: absolute; width: 4px; height: 4px; border-radius: 50%;
+    background: var(--bp-green); opacity: 0;
+  }
+  .bp-arrow.flowing .bp-arrow-dot {
+    animation: bp-dot-fly 1.2s ease-in-out infinite;
+  }
+  .bp-arrow.pressured .bp-arrow-dot { background: var(--bp-amber); }
+  .bp-arrow.blocked .bp-arrow-dot { background: var(--bp-red); animation: none; opacity: 0; }
+  @keyframes bp-dot-fly {
+    0%   { opacity: 0; translate: -10px 0; }
+    20%  { opacity: 1; }
+    80%  { opacity: 1; }
+    100% { opacity: 0; translate: 10px 0; }
+  }
+
+  /* Alert callouts — speech bubbles anchored to stages */
+  .bp-alert {
+    position: absolute; bottom: calc(100% + 8px); left: 50%;
+    transform: translateX(-50%); z-index: 10;
+    padding: 0.35rem 0.55rem; border-radius: 6px;
+    font-size: 0.62rem; font-weight: 600; line-height: 1.35;
+    white-space: nowrap; max-width: 220px; white-space: normal;
+    pointer-events: none;
+    animation: bp-alert-in 0.3s ease-out forwards;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+  .bp-alert::after {
+    content: ''; position: absolute; top: 100%; left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent;
+  }
+  .bp-alert.ok {
+    background: var(--bp-green); color: white;
+  }
+  .bp-alert.ok::after { border-top-color: var(--bp-green); }
+  .bp-alert.warn {
+    background: var(--bp-amber); color: #1a1a2e;
+  }
+  .bp-alert.warn::after { border-top-color: var(--bp-amber); }
+  .bp-alert.err {
+    background: var(--bp-red); color: white;
+  }
+  .bp-alert.err::after { border-top-color: var(--bp-red); }
+
+  @keyframes bp-alert-in {
+    from { opacity: 0; translate: 0 4px; }
+    to { opacity: 1; translate: 0 0; }
+  }
+  .bp-alert.exiting {
+    animation: bp-alert-out 0.4s ease-in forwards;
+  }
+  @keyframes bp-alert-out {
+    from { opacity: 1; translate: 0 0; }
+    to { opacity: 0; translate: 0 -4px; }
+  }
 
   /* Stats row */
   .bp-stats {
@@ -150,7 +237,7 @@
 
   /* Event log */
   .bp-log {
-    max-height: 110px; overflow-y: auto;
+    max-height: 90px; overflow-y: auto;
     border: 1px solid var(--bp-border); border-radius: 6px;
     padding: 0.3rem 0.5rem; margin-top: 0.4rem;
   }
@@ -164,26 +251,6 @@
   .bp-log-entry .warn { color: var(--bp-amber); font-weight: 600; }
   .bp-log-entry .err { color: var(--bp-red); font-weight: 600; }
   .bp-log-entry .ok { color: var(--bp-green); }
-
-  /* Explanation panel */
-  .bp-explain {
-    padding: 0.55rem 0.75rem; background: var(--bp-bg);
-    border: 1px solid var(--bp-border); border-radius: 7px;
-    margin-top: 0.5rem; font-size: 0.75rem; line-height: 1.5;
-    transition: border-color 0.3s;
-  }
-  .bp-explain.warn { border-color: var(--bp-amber); }
-  .bp-explain.err { border-color: var(--bp-red); }
-  .bp-explain b { display: block; font-size: 0.78rem; margin-bottom: 0.1rem; }
-
-  /* Batch particles */
-  .bp-batch {
-    position: absolute; width: 8px; height: 8px; border-radius: 2px;
-    background: var(--bp-blue); opacity: 0.9;
-    transition: left 0.3s linear, opacity 0.2s;
-    top: 50%; transform: translateY(-50%);
-    z-index: 2;
-  }
 </style>
 
 <script>
@@ -194,31 +261,34 @@
   function el(tag, cls) { var e = document.createElement(tag); if (cls) e.className = cls; return e; }
 
   // --- State ---
-  var outputSpeed = 100; // 0-100 percent of max throughput
+  var outputSpeed = 100;
   var running = true;
   var tick = 0;
 
-  // Queue capacities (matching real code)
   var IO_CPU_CAP = 4;
   var PIPELINE_CAP = 16;
-  var WORKER_CAP = 1; // per-worker channel capacity = 1
+  var WORKER_CAP = 1;
   var NUM_WORKERS = 3;
 
-  // Queue fill levels
   var ioCpuFill = 0;
   var pipelineFill = 0;
   var workerFills = [0, 0, 0];
 
-  // Production rates per tick
-  var IO_RATE = 2.0; // chunks/tick from I/O
-  var CPU_RATE = 1.8; // batches/tick from CPU
-  var PIPELINE_RATE = 1.5; // batches/tick pipeline throughput
+  // Rates are balanced so 100% output speed drains everything.
+  // The bottleneck is the output — when it slows, pressure builds.
+  var IO_RATE = 1.5;      // chunks/tick from I/O
+  var CPU_RATE = 1.5;     // batches/tick CPU can process
+  var OUT_MAX_RATE = 1.6; // output can drain slightly faster than input at full speed
 
-  // Stats
   var totalProduced = 0;
   var totalDelivered = 0;
   var ioBlocked = false;
   var cpuBlocked = false;
+
+  // Track previous states for transition detection
+  var prevIoState = 'ok';   // ok | pressured | blocked
+  var prevCpuState = 'ok';
+  var prevOutState = 'ok';
 
   // --- Build DOM ---
   var controls = el('div', 'bp-controls');
@@ -267,11 +337,20 @@
     var ql = el('div', 'bp-queue-label'); ql.textContent = queueLabel;
     s.appendChild(ql);
 
-    return { el: s, tag: tag, slots: slots, qlabel: ql };
+    // Activity bar
+    var act = el('div', 'bp-activity');
+    var actFill = el('div', 'bp-activity-fill flowing');
+    act.appendChild(actFill);
+    s.appendChild(act);
+
+    return { el: s, tag: tag, slots: slots, qlabel: ql, actFill: actFill };
   }
 
   function makeArrow() {
-    var a = el('div', 'bp-arrow'); a.textContent = '\u25B6';
+    var a = el('div', 'bp-arrow flowing');
+    a.innerHTML = '\u25B6';
+    var dot = el('div', 'bp-arrow-dot');
+    a.appendChild(dot);
     return a;
   }
 
@@ -296,11 +375,6 @@
   var logEl = el('div', 'bp-log');
   root.appendChild(logEl);
 
-  // Explanation
-  var explainEl = el('div', 'bp-explain');
-  explainEl.innerHTML = '<b>Normal operation</b>All queues are draining faster than they fill. Data flows smoothly from files through SQL transforms to your collector.';
-  root.appendChild(explainEl);
-
   // --- Preset buttons ---
   var presets = [btnFast, btnSlow, btnDown];
   function setPreset(idx) {
@@ -322,10 +396,25 @@
     else if (outputSpeed === 0) btnDown.className = 'bp-btn active';
   };
 
+  // --- Alert system ---
+  function showAlert(stageObj, text, level) {
+    // Remove any existing alert on this stage
+    var old = stageObj.el.querySelector('.bp-alert');
+    if (old) old.remove();
+
+    var a = el('div', 'bp-alert ' + level);
+    a.textContent = text;
+    stageObj.el.appendChild(a);
+
+    // Auto-dismiss after 3.5s
+    setTimeout(function() {
+      a.classList.add('exiting');
+      setTimeout(function() { if (a.parentNode) a.remove(); }, 400);
+    }, 3500);
+  }
+
   // --- Log helper ---
-  var logCount = 0;
   function addLog(msg, cls) {
-    logCount++;
     var entry = el('div', 'bp-log-entry');
     var ts = tick.toString().padStart(4, '0');
     entry.innerHTML = '<span class="ts">t=' + ts + '</span> ' + (cls ? '<span class="' + cls + '">' + msg + '</span>' : msg);
@@ -335,6 +424,13 @@
   }
 
   // --- Update visuals ---
+  function classifyState(fill, cap) {
+    var pct = fill / cap;
+    if (pct >= 1.0) return 'blocked';
+    if (pct > 0.5) return 'pressured';
+    return 'ok';
+  }
+
   function updateStage(stage, fill, cap, label) {
     var pct = fill / cap;
     for (var i = 0; i < stage.slots.length; i++) {
@@ -349,21 +445,30 @@
     if (pct >= 1.0) {
       stage.el.className = 'bp-stage blocked';
       stage.tag.className = 'bp-stage-tag bp-tag-blocked'; stage.tag.textContent = 'BLOCKED';
+      stage.actFill.className = 'bp-activity-fill blocked';
     } else if (pct > 0.5) {
       stage.el.className = 'bp-stage pressured';
       stage.tag.className = 'bp-stage-tag bp-tag-slow'; stage.tag.textContent = 'PRESSURE';
+      stage.actFill.className = 'bp-activity-fill flowing pressured';
     } else {
       stage.el.className = 'bp-stage';
       stage.tag.className = 'bp-stage-tag bp-tag-ok'; stage.tag.textContent = 'OK';
+      stage.actFill.className = 'bp-activity-fill flowing';
     }
   }
 
   function updateArrow(arrowEl, pressure) {
-    arrowEl.className = pressure >= 1.0 ? 'bp-arrow blocked' : (pressure > 0.5 ? 'bp-arrow pressured' : 'bp-arrow');
+    if (pressure >= 1.0) {
+      arrowEl.className = 'bp-arrow blocked';
+    } else if (pressure > 0.5) {
+      arrowEl.className = 'bp-arrow flowing pressured';
+    } else {
+      arrowEl.className = 'bp-arrow flowing';
+    }
   }
 
   function updateStats() {
-    var throughput = (outputSpeed / 100) * PIPELINE_RATE;
+    var throughput = (outputSpeed / 100) * OUT_MAX_RATE;
     var latClass = '';
     var latVal = '';
     if (outputSpeed === 0) { latVal = '\u221E'; latClass = 'red'; }
@@ -375,10 +480,10 @@
     var items = [
       ['Throughput', throughput.toFixed(1) + ' batch/s', throughput < 0.5 ? 'red' : (throughput < 1.0 ? 'amber' : 'green')],
       ['Latency', latVal, latClass],
-      ['Batches produced', '' + totalProduced, ''],
-      ['Batches delivered', '' + totalDelivered, 'green'],
-      ['I/O worker', ioBlocked ? 'BLOCKED' : 'polling', ioBlocked ? 'red' : 'green'],
-      ['CPU worker', cpuBlocked ? 'BLOCKED' : 'scanning', cpuBlocked ? 'red' : 'green'],
+      ['Produced', '' + totalProduced, ''],
+      ['Delivered', '' + totalDelivered, 'green'],
+      ['I/O', ioBlocked ? 'BLOCKED' : 'polling', ioBlocked ? 'red' : 'green'],
+      ['CPU', cpuBlocked ? 'BLOCKED' : 'scanning', cpuBlocked ? 'red' : 'green'],
     ];
     items.forEach(function(item) {
       var s = el('div', 'bp-stat');
@@ -388,51 +493,66 @@
     });
   }
 
-  function updateExplanation() {
-    var outPct = 1 - (outputSpeed / 100);
-    var workerPressure = Math.max.apply(null, workerFills) / WORKER_CAP;
-    var pipePressure = pipelineFill / PIPELINE_CAP;
-    var ioPressure = ioCpuFill / IO_CPU_CAP;
+  // --- Check for state transitions and fire alerts ---
+  function checkTransitions() {
+    var ioState = classifyState(ioCpuFill, IO_CPU_CAP);
+    var cpuState = classifyState(pipelineFill, PIPELINE_CAP);
+    var workerBusy = workerFills.filter(function(f) { return f > 0.1; }).length;
+    var allFull = workerFills.every(function(f) { return f >= WORKER_CAP * 0.9; });
+    var outState = allFull ? 'blocked' : (workerBusy >= 2 ? 'pressured' : 'ok');
 
-    if (outputSpeed === 0) {
-      explainEl.className = 'bp-explain err';
-      explainEl.innerHTML = '<b>\u26D4 Output outage \u2014 full cascade</b>' +
-        'The collector is unreachable. Output workers retry with exponential backoff (capped at 60s), blocking their channels. ' +
-        'The pipeline channel fills to 16/16. CPU workers block on <code>blocking_send</code>. ' +
-        'I/O workers block on the bounded(4) channel. File readers naturally back off \u2014 <b>no data is lost</b>, but new logs queue on disk until the outage clears.';
-    } else if (ioPressure >= 1.0) {
-      explainEl.className = 'bp-explain err';
-      explainEl.innerHTML = '<b>\u26A0 I/O worker blocked \u2014 backpressure reached the source</b>' +
-        'The bounded(4) I/O\u2192CPU channel is full. The I/O worker is stuck in <code>blocking_send</code> and cannot call <code>poll()</code>. ' +
-        'The file reader sees no reads and its adaptive poll cadence backs off. Logs accumulate on disk safely \u2014 logfwd will catch up when pressure clears.';
-    } else if (pipePressure > 0.5) {
-      explainEl.className = 'bp-explain warn';
-      explainEl.innerHTML = '<b>\u26A0 Pipeline channel filling \u2014 pressure building</b>' +
-        'Output workers are slower than the CPU worker. The pipeline channel (' + Math.ceil(pipelineFill) + '/16) is backing up. ' +
-        'If it fills completely, the CPU worker will block, and pressure will cascade to the I/O worker. ' +
-        'This is <b>by design</b> \u2014 bounded channels turn slow outputs into backpressure instead of unbounded memory growth.';
-    } else if (workerPressure > 0.5) {
-      explainEl.className = 'bp-explain warn';
-      explainEl.innerHTML = '<b>Output workers busy</b>' +
-        'MRU dispatch is consolidating work onto fewer workers. <code>try_send</code> scans workers front-to-back; ' +
-        'the first with capacity gets the batch. If all ' + NUM_WORKERS + ' workers are full, the pool spawns up to max or async-waits on the front worker.';
-    } else {
-      explainEl.className = 'bp-explain';
-      explainEl.innerHTML = '<b>Normal operation</b>' +
-        'All queues are draining faster than they fill. Data flows smoothly from files through SQL transforms to your collector. ' +
-        'Try dragging the output speed slider to the left, or click <b>Slow</b> or <b>Outage</b> to see backpressure cascade.';
+    // Output stage transitions
+    if (outState !== prevOutState) {
+      if (outState === 'blocked') {
+        showAlert(outStage, 'All workers full \u2014 retrying with backoff', 'err');
+        addLog('Output workers full \u2014 backpressure starts here', 'err');
+      } else if (outState === 'pressured' && prevOutState === 'ok') {
+        showAlert(outStage, 'Workers busy \u2014 MRU dispatch consolidating', 'warn');
+        addLog('Output workers busy \u2014 MRU consolidation active', 'warn');
+      } else if (outState === 'ok' && prevOutState !== 'ok') {
+        showAlert(outStage, 'Workers draining \u2014 pressure cleared', 'ok');
+        addLog('Output recovered \u2014 workers draining normally', 'ok');
+      }
+      prevOutState = outState;
+    }
+
+    // Pipeline/CPU transitions
+    if (cpuState !== prevCpuState) {
+      if (cpuState === 'blocked') {
+        showAlert(cpuStage, 'Pipeline full! CPU worker blocked on blocking_send', 'err');
+        addLog('CPU worker blocked \u2014 pipeline channel full (' + Math.ceil(pipelineFill) + '/16)', 'err');
+      } else if (cpuState === 'pressured' && prevCpuState === 'ok') {
+        showAlert(cpuStage, 'Pipeline filling \u2014 pressure building', 'warn');
+        addLog('Pipeline channel filling (' + Math.ceil(pipelineFill) + '/16)', 'warn');
+      } else if (cpuState === 'ok' && prevCpuState !== 'ok') {
+        showAlert(cpuStage, 'Pipeline draining \u2014 CPU worker unblocked', 'ok');
+        addLog('CPU worker unblocked \u2014 pipeline draining', 'ok');
+      }
+      prevCpuState = cpuState;
+    }
+
+    // I/O transitions
+    if (ioState !== prevIoState) {
+      if (ioState === 'blocked') {
+        showAlert(ioStage, 'Channel full! I/O worker can\'t call poll()', 'err');
+        addLog('I/O worker blocked \u2014 bounded(4) channel full', 'err');
+      } else if (ioState === 'pressured' && prevIoState === 'ok') {
+        showAlert(ioStage, 'I/O\u2192CPU channel filling', 'warn');
+        addLog('I/O\u2192CPU channel filling (' + Math.ceil(ioCpuFill) + '/4)', 'warn');
+      } else if (ioState === 'ok' && prevIoState !== 'ok') {
+        showAlert(ioStage, 'Channel cleared \u2014 poll() resumed', 'ok');
+        addLog('I/O worker resumed \u2014 reading new data', 'ok');
+      }
+      prevIoState = ioState;
     }
   }
 
   // --- Simulation loop ---
-  var lastLogTick = -10;
-
   function simTick() {
     if (!running) return;
     tick++;
 
-    // Output drain rate depends on speed slider
-    var outDrain = (outputSpeed / 100) * PIPELINE_RATE;
+    var outDrain = (outputSpeed / 100) * OUT_MAX_RATE;
 
     // Output workers drain
     var totalWorkerFill = workerFills.reduce(function(a, b) { return a + b; }, 0);
@@ -446,7 +566,6 @@
     }
 
     // Pipeline drains into workers (MRU dispatch)
-    var pipelineDrain = 0;
     if (pipelineFill > 0) {
       for (var w2 = 0; w2 < NUM_WORKERS; w2++) {
         if (pipelineFill <= 0) break;
@@ -455,7 +574,6 @@
           var send = Math.min(space, pipelineFill, 0.8);
           workerFills[w2] += send;
           pipelineFill -= send;
-          pipelineDrain += send;
         }
       }
     }
@@ -483,26 +601,15 @@
       workerFills[w3] = Math.max(0, Math.min(WORKER_CAP, workerFills[w3]));
     }
 
-    // Log interesting events
-    if (ioBlocked && tick - lastLogTick > 8) {
-      addLog('I/O worker blocked \u2014 bounded(4) channel full', 'warn');
-      lastLogTick = tick;
-    } else if (cpuBlocked && !ioBlocked && tick - lastLogTick > 8) {
-      addLog('CPU worker blocked \u2014 pipeline channel full (' + Math.ceil(pipelineFill) + '/16)', 'warn');
-      lastLogTick = tick;
-    } else if (outputSpeed === 0 && tick - lastLogTick > 12) {
-      addLog('Output unreachable \u2014 workers retrying with backoff', 'err');
-      lastLogTick = tick;
-    } else if (outputSpeed === 100 && pipelineFill < 1 && tick - lastLogTick > 15) {
-      addLog('Pipeline healthy \u2014 ' + totalDelivered + ' batches delivered', 'ok');
-      lastLogTick = tick;
-    }
+    // Check for state transitions and fire alerts
+    checkTransitions();
 
     // Update visuals
-    var workerBusy = workerFills.filter(function(f) { return f > 0.1; }).length;
     updateStage(ioStage, ioCpuFill, IO_CPU_CAP, 'slots');
     updateStage(cpuStage, pipelineFill, PIPELINE_CAP, 'slots');
-    // For output, show busy workers
+
+    // Output stage
+    var workerBusy = workerFills.filter(function(f) { return f > 0.1; }).length;
     outStage.qlabel.textContent = workerBusy + '/' + NUM_WORKERS + ' busy';
     for (var i = 0; i < outStage.slots.length; i++) {
       if (workerFills[i] > 0.5) {
@@ -515,31 +622,33 @@
     if (allWorkersFull) {
       outStage.el.className = 'bp-stage blocked';
       outStage.tag.className = 'bp-stage-tag bp-tag-blocked'; outStage.tag.textContent = 'FULL';
+      outStage.actFill.className = 'bp-activity-fill blocked';
     } else if (workerBusy >= 2) {
       outStage.el.className = 'bp-stage pressured';
       outStage.tag.className = 'bp-stage-tag bp-tag-slow'; outStage.tag.textContent = 'BUSY';
+      outStage.actFill.className = 'bp-activity-fill flowing pressured';
     } else {
       outStage.el.className = 'bp-stage';
       outStage.tag.className = 'bp-stage-tag bp-tag-ok'; outStage.tag.textContent = 'OK';
+      outStage.actFill.className = 'bp-activity-fill flowing';
     }
 
     updateArrow(arrow1, ioCpuFill / IO_CPU_CAP);
     updateArrow(arrow2, pipelineFill / PIPELINE_CAP);
     updateStats();
-    updateExplanation();
   }
 
   // Initial render
   updateStats();
+  addLog('Pipeline started \u2014 drag the slider or click a preset', 'ok');
 
   // Start animation
   var interval = setInterval(simTick, 250);
 
   // Cleanup on page nav (Starlight SPA)
-  function cleanup() {
+  document.addEventListener('astro:before-swap', function() {
     clearInterval(interval);
     running = false;
-  }
-  document.addEventListener('astro:before-swap', cleanup, { once: true });
+  }, { once: true });
 })();
 </script>
