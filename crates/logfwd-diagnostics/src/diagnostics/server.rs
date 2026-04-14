@@ -1094,22 +1094,27 @@ async fn sampler_loop(state: Arc<DiagnosticsState>) {
             &mut prev_health,
         );
 
-        // Push OTLP telemetry via broadcast to any connected WebSocket clients.
+        // Push telemetry via broadcast to any connected WebSocket clients.
+        // Send the same JSON the dashboard REST endpoints serve so the frontend
+        // can switch from polling to push without format changes.
         if state.telemetry_tx.receiver_count() > 0 {
-            let metrics_json =
-                crate::telemetry_buffer::metrics_to_otlp_json(&state.telemetry.metrics.snapshot());
-            let _ = state.telemetry_tx.send(metrics_json);
+            let status_json = serde_json::to_string(&status_payload(&state)).unwrap_or_default();
+            let stats_json = build_stats_body(&state);
+            let traces_json = build_traces_body(&state);
 
-            let spans = crate::telemetry_buffer::collect_all_spans(
-                state.trace_buf.as_ref(),
-                &state.pipelines,
+            // Single envelope message so the client gets an atomic snapshot.
+            let mut msg = String::with_capacity(
+                status_json.len() + stats_json.len() + traces_json.len() + 64,
             );
-            let traces_json = crate::telemetry_buffer::traces_to_otlp_json(&spans);
-            let _ = state.telemetry_tx.send(traces_json);
+            msg.push_str(r#"{"status":"#);
+            msg.push_str(&status_json);
+            msg.push_str(r#","stats":"#);
+            msg.push_str(&stats_json);
+            msg.push_str(r#","traces":"#);
+            msg.push_str(&traces_json);
+            msg.push('}');
 
-            let logs_json =
-                crate::telemetry_buffer::logs_to_otlp_json(&state.telemetry.logs.snapshot());
-            let _ = state.telemetry_tx.send(logs_json);
+            let _ = state.telemetry_tx.send(msg);
         }
     }
 }
