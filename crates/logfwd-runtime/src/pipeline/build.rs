@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -40,7 +40,18 @@ impl Pipeline {
         name: &str,
         config: &PipelineConfig,
         meter: &Meter,
-        base_path: Option<&std::path::Path>,
+        base_path: Option<&Path>,
+    ) -> Result<Self, String> {
+        Self::from_config_with_data_dir(name, config, meter, base_path, None)
+    }
+
+    /// Construct a pipeline from parsed YAML config using an explicit state directory.
+    pub fn from_config_with_data_dir(
+        name: &str,
+        config: &PipelineConfig,
+        meter: &Meter,
+        base_path: Option<&Path>,
+        data_dir: Option<&Path>,
     ) -> Result<Self, String> {
         if config.inputs.is_empty() {
             return Err("at least one input is required".to_string());
@@ -187,11 +198,14 @@ impl Pipeline {
         let mut metrics = PipelineMetrics::new(name, pipeline_sql, meter);
 
         // Open checkpoint store scoped to this pipeline name.
-        let checkpoint_dir = default_data_dir().join(name);
+        let checkpoint_dir = data_dir
+            .map_or_else(default_data_dir, Path::to_path_buf)
+            .join(name);
         // In tests, avoid creating a default data dir unless explicitly requested.
         // In non-test builds, always try to open/create the checkpoint store so
         // first-run persistence works without out-of-band directory creation.
-        let should_open_checkpoint_store = should_open_default_checkpoint_store(&checkpoint_dir);
+        let should_open_checkpoint_store =
+            should_open_checkpoint_store(&checkpoint_dir, data_dir.is_some());
         let checkpoint_store = if should_open_checkpoint_store {
             match FileCheckpointStore::open(&checkpoint_dir) {
                 Ok(s) => Some(Box::new(s) as Box<dyn CheckpointStore>),
@@ -394,7 +408,11 @@ impl Pipeline {
     }
 }
 
-fn should_open_default_checkpoint_store(checkpoint_dir: &std::path::Path) -> bool {
+fn should_open_checkpoint_store(checkpoint_dir: &Path, has_explicit_data_dir: bool) -> bool {
+    if has_explicit_data_dir {
+        return true;
+    }
+
     if std::env::var_os("LOGFWD_DATA_DIR").is_some() {
         return true;
     }
@@ -482,6 +500,43 @@ mod tests {
         assert!(
             err.contains("at least one output"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn from_config_uses_explicit_data_dir_for_checkpoint_store() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log_path = dir.path().join("in.log");
+        let data_dir = dir.path().join("state");
+        std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").expect("write input");
+        let cfg = PipelineConfig {
+            inputs: vec![minimal_input(log_path.to_string_lossy().into_owned())],
+            transform: None,
+            outputs: vec![minimal_output()],
+            enrichment: Vec::new(),
+            resource_attrs: Default::default(),
+            workers: None,
+            batch_target_bytes: None,
+            batch_timeout_ms: None,
+            poll_interval_ms: None,
+        };
+
+        let pipeline = Pipeline::from_config_with_data_dir(
+            "p",
+            &cfg,
+            &logfwd_test_utils::test_meter(),
+            None,
+            Some(&data_dir),
+        )
+        .expect("pipeline should build with explicit data dir");
+
+        assert!(
+            pipeline.checkpoint_store.is_some(),
+            "explicit data dir should open a checkpoint store"
+        );
+        assert!(
+            data_dir.join("p").is_dir(),
+            "checkpoint store should be rooted under the explicit data dir"
         );
     }
 
