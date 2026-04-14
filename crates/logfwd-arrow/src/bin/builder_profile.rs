@@ -338,7 +338,7 @@ fn run_streaming_generated(num_batches: u64) {
             sb.append_f64_value_by_idx(indices[13], row as f64 * 0.001);
             sb.end_row();
         }
-        let batch = sb.finish_batch_detached().unwrap();
+        let batch = sb.finish_batch().unwrap();
         black_box(&batch);
     }
 }
