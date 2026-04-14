@@ -6,6 +6,7 @@ description: "SIMD-accelerated zero-copy JSON to Arrow conversion"
 import ScannerAnimation from '../../../components/ScannerAnimation.astro';
 import PrefixXorAnimation from '../../../components/PrefixXorAnimation.astro';
 import ZeroCopyDiagram from '../../../components/ZeroCopyDiagram.astro';
+import PushdownExplorer from '../../../components/PushdownExplorer.astro';
 
 The scanner converts newline-delimited JSON into Apache Arrow RecordBatches
 using SIMD-accelerated structural classification — **2.8 million lines per second** on a single core.
@@ -69,9 +70,13 @@ The field extractor uses the bitmask to jump directly from colon to colon. For e
 
 No scanning. Each field is extracted in constant time.
 
-:::tip[Field pushdown]
+## Field pushdown
+
 Before scanning, logfwd analyzes your SQL query and builds a `ScanConfig` listing only the columns you reference. Fields not in the config are skipped entirely — no parsing, no memory allocation. On wide data (20+ fields), this gives 2-3x throughput improvement.
-:::
+
+Try it below — select fields or choose a preset to see how pushdown affects throughput on a realistic 20-field log line.
+
+<PushdownExplorer />
 
 ## All fields extracted
 
