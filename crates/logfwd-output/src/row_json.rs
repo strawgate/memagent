@@ -311,9 +311,8 @@ pub fn write_row_json(
         }
         first = false;
 
-        // Key — escape to produce valid JSON if field_name contains special chars.
-        write_json_string(out, &col.field_name)?;
-        out.push(b':');
+        // Key — pre-serialized `"fieldname":` bytes, built once at batch setup.
+        out.extend_from_slice(&col.key_json);
 
         // Value — dispatch on Arrow DataType, not column name suffix
         write_json_value(arr, row, out)?;

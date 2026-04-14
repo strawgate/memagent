@@ -4,6 +4,8 @@ use arrow::record_batch::RecordBatch;
 use logfwd_types::field_names;
 use std::collections::HashSet;
 
+use crate::row_json::write_json_string;
+
 /// Where to find one typed variant of a conflict field.
 pub enum ColVariant {
     /// A top-level flat Arrow column.
@@ -21,6 +23,12 @@ pub enum ColVariant {
 pub struct ColInfo {
     /// Logical field name (e.g. "status", "body").
     pub field_name: String,
+    /// Pre-serialized `"fieldname":` bytes for zero-copy key emission.
+    ///
+    /// Built once at `build_col_infos` time so `write_row_json` can emit
+    /// the key with a single `extend_from_slice` instead of re-running the
+    /// SIMD escape scan on every row.
+    pub key_json: Box<[u8]>,
     /// Variants ordered for JSON output: Int64 > Float64 > Boolean > Utf8.
     pub json_variants: Vec<ColVariant>,
     /// Variants ordered for the virtual coalesced Utf8 column: Utf8 first,
@@ -158,14 +166,29 @@ fn upsert_col_info(
         existing.str_variants.append(&mut str_variants);
         sort_variants(existing);
     } else {
+        let key_json = build_key_json(field_name);
         let mut info = ColInfo {
             field_name: field_name.to_string(),
+            key_json,
             json_variants,
             str_variants,
         };
         sort_variants(&mut info);
         infos.push(info);
     }
+}
+
+/// Pre-serialize `"fieldname":` into a heap-allocated byte slice.
+///
+/// Called once per field at `build_col_infos` time.  The result is stored in
+/// `ColInfo::key_json` so `write_row_json` can emit the JSON key with a single
+/// `extend_from_slice` instead of re-running the SIMD escape scan per row.
+fn build_key_json(field_name: &str) -> Box<[u8]> {
+    let mut buf = Vec::with_capacity(field_name.len() + 3); // " + name + " + :
+    write_json_string(&mut buf, field_name)
+        .expect("field name JSON serialization cannot fail for valid UTF-8 field names");
+    buf.push(b':');
+    buf.into_boxed_slice()
 }
 
 /// Build a grouped, ordered list of output fields from a RecordBatch schema.
