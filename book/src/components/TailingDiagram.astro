@@ -167,7 +167,7 @@
   var autoLineCount = 0;
   var autoEventIdx = 0;
   var AUTO_EVENTS = ['rotate', 'truncate'];
-  var AUTO_THRESHOLDS = [10, 8];
+  var AUTO_THRESHOLDS = [14, 10];
   var mainFile = null, oldFile = null;
   var pendingRemoval = null; // old file panel to remove when overlay is dismissed
   var ticker = null;
@@ -363,17 +363,9 @@
     mainFile.cursor.textContent = '\u25B6 new inode ' + fileInode;
     updateStats();
 
-    if (isAuto) {
-      // Remove old panel after overlay fades
-      var toRemove = oldFile;
-      setTimeout(function() {
-        if (toRemove && toRemove.el.parentNode) toRemove.el.parentNode.removeChild(toRemove.el);
-        if (oldFile === toRemove) oldFile = null;
-      }, 3800);
-    } else {
-      // Old panel stays until user dismisses overlay
-      pendingRemoval = oldFile;
-    }
+    // For both auto and manual: old panel is removed when overlay is dismissed.
+    // Auto overlay dismisses after 3500ms; manual overlay dismissed by ✕ button.
+    pendingRemoval = oldFile;
   }
 
   function triggerTruncate(isAuto) {
@@ -416,7 +408,7 @@
     }
   }
 
-  function startTicker() { if (!ticker) ticker = setInterval(tickFn, 400); }
+  function startTicker() { if (!ticker) ticker = setInterval(tickFn, 700); }
   function stopTicker() { if (ticker) { clearInterval(ticker); ticker = null; } }
 
   // ----- Button handlers -----
