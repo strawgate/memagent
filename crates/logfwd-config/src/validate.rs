@@ -1297,6 +1297,12 @@ fn validate_endpoint_url(endpoint: &str) -> Result<(), String> {
     let parsed =
         Url::parse(endpoint).map_err(|_| format!("endpoint '{safe}' is not a valid URL"))?;
 
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(format!(
+            "endpoint '{safe}' must not include credentials in the URL; use output.auth instead"
+        ));
+    }
+
     let rest = if endpoint
         .get(..8)
         .is_some_and(|p| p.eq_ignore_ascii_case("https://"))

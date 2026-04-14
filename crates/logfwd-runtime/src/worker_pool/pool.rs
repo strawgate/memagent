@@ -493,6 +493,7 @@ impl OutputWorkerPool {
         } else {
             self.output_health.set_pool_health(ComponentHealth::Stopped);
         }
+        self.cancel.cancel();
     }
 
     /// Spawn a new worker task and return a handle.
