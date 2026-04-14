@@ -340,7 +340,7 @@
         { action: 'send', id: 2, msg: 'Sending #2' },
         { action: 'send', id: 3, msg: 'Sending #3 \u2014 all four in-flight' },
         { action: 'ack', id: 1, level: 'warn', msg: '#1 acked but #0 still retrying \u2014 checkpoint frozen' },
-        { action: 'ack', id: 3, level: 'warn', msg: '#3 acked \u2014 #0 still blocks. 3 batches in pending_acks' },
+        { action: 'ack', id: 3, level: 'warn', msg: '#3 acked \u2014 #0 still blocks. 2 batches in pending_acks' },
         { action: 'ack', id: 2, level: 'warn', msg: '#2 acked \u2014 #1,#2,#3 all pending. #0 STILL retrying. At-least-once!' },
         { action: 'ack', id: 0, level: 'success', msg: '#0 finally succeeds! Chain collapses: none \u2192 384KB!' },
       ]
@@ -581,7 +581,7 @@
           var checkId = ids[k];
           if (checkId >= id) break;
           if (checkId <= committedId) continue;
-          if (batches[checkId].state === 'in-flight' || batches[checkId].state === 'queued') {
+          if (batches[checkId].state === 'in-flight') {
             canCommit = false;
             break;
           }
