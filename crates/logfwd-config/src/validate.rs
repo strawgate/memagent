@@ -5,6 +5,8 @@ use crate::types::{
 use std::path::Path;
 use url::Url;
 
+const MAX_READ_BUF_SIZE: usize = 4_194_304;
+
 impl Config {
     /// Validate the loaded configuration.
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
@@ -12,6 +14,15 @@ impl Config {
             if let Err(msg) = validate_endpoint_url(ep) {
                 return Err(ConfigError::Validation(format!(
                     "server.traces_endpoint: {msg}"
+                )));
+            }
+        }
+
+        // Validate server.metrics_endpoint at config time (#1892).
+        if let Some(ep) = &self.server.metrics_endpoint {
+            if let Err(msg) = validate_endpoint_url(ep) {
+                return Err(ConfigError::Validation(format!(
+                    "server.metrics_endpoint: {msg}"
                 )));
             }
         }
@@ -119,6 +130,13 @@ impl Config {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': 'read_buf_size' must be at least 1"
                                 )));
+                            }
+                            if let Some(sz) = f.read_buf_size {
+                                if sz > MAX_READ_BUF_SIZE {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': 'read_buf_size' must not exceed {MAX_READ_BUF_SIZE} (4 MiB)"
+                                    )));
+                                }
                             }
                             if f.per_file_read_budget_bytes == Some(0) {
                                 return Err(ConfigError::Validation(format!(
@@ -626,16 +644,48 @@ impl Config {
                     }
                     if output.output_type == OutputType::ArrowIpc
                         && let Some(c) = output.compression.as_deref()
-                        && c != "zstd"
+                        && !matches!(c, "zstd" | "none")
                     {
                         return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': arrow_ipc output only supports 'zstd' compression, not '{c}'"
+                            "pipeline '{name}' output '{label}': arrow_ipc output only supports 'zstd' or 'none' compression, not '{c}'"
                         )));
                     }
                     if output.output_type != OutputType::Otlp && output.protocol.is_some() {
                         return Err(ConfigError::Validation(format!(
                             "pipeline '{name}' output '{label}': 'protocol' is only supported for otlp outputs"
                         )));
+                    }
+                    // Validate OTLP protocol value (#1876).
+                    if output.output_type == OutputType::Otlp {
+                        if let Some(p) = output.protocol.as_deref() {
+                            if !matches!(p, "http" | "grpc") {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': otlp protocol must be 'http' or 'grpc', got '{p}'"
+                                )));
+                            }
+                        }
+                    }
+                    // Validate compression values per output type (#1876).
+                    if let Some(c) = output.compression.as_deref() {
+                        match output.output_type {
+                            OutputType::Otlp => {
+                                if !matches!(c, "zstd" | "gzip" | "none") {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' output '{label}': otlp compression must be 'zstd', 'gzip', or 'none', got '{c}'"
+                                    )));
+                                }
+                            }
+                            OutputType::Elasticsearch => {
+                                if !matches!(c, "gzip" | "none") {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' output '{label}': elasticsearch compression must be 'gzip' or 'none', got '{c}'"
+                                    )));
+                                }
+                            }
+                            // ArrowIpc allows zstd/none and is validated above.
+                            // Other types either reject compression entirely or accept any.
+                            _ => {}
+                        }
                     }
                     if output.output_type != OutputType::Loki {
                         if output.tenant_id.is_some() {
@@ -1756,6 +1806,145 @@ pipelines:
         assert!(
             msg.contains("table_name must not be empty"),
             "expected 'table_name must not be empty' in error: {msg}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod validate_otlp_protocol_compression_tests {
+    use crate::types::Config;
+
+    #[test]
+    fn otlp_valid_protocol_accepted() {
+        for proto in ["http", "grpc"] {
+            let yaml = format!(
+                "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: otlp\n        endpoint: http://localhost:4317\n        protocol: {proto}\n"
+            );
+            Config::load_str(&yaml)
+                .unwrap_or_else(|e| panic!("protocol '{proto}' should be accepted: {e}"));
+        }
+    }
+
+    #[test]
+    fn otlp_invalid_protocol_rejected() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: otlp\n        endpoint: http://localhost:4317\n        protocol: websocket\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("protocol") && msg.contains("websocket"),
+            "expected protocol rejection for 'websocket': {msg}"
+        );
+    }
+
+    #[test]
+    fn otlp_valid_compression_accepted() {
+        for comp in ["zstd", "gzip", "none"] {
+            let yaml = format!(
+                "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: otlp\n        endpoint: http://localhost:4317\n        compression: {comp}\n"
+            );
+            Config::load_str(&yaml).unwrap_or_else(|e| {
+                panic!("compression '{comp}' should be accepted for otlp: {e}")
+            });
+        }
+    }
+
+    #[test]
+    fn otlp_invalid_compression_rejected() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: otlp\n        endpoint: http://localhost:4317\n        compression: lz4\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("compression") && msg.contains("lz4"),
+            "expected compression rejection for 'lz4': {msg}"
+        );
+    }
+
+    #[test]
+    fn elasticsearch_invalid_compression_rejected() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: elasticsearch\n        endpoint: http://localhost:9200\n        compression: zstd\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("compression") && msg.contains("zstd"),
+            "expected compression rejection for 'zstd' on elasticsearch: {msg}"
+        );
+    }
+
+    #[test]
+    fn elasticsearch_valid_compression_accepted() {
+        for comp in ["gzip", "none"] {
+            let yaml = format!(
+                "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: elasticsearch\n        endpoint: http://localhost:9200\n        compression: {comp}\n"
+            );
+            Config::load_str(&yaml).unwrap_or_else(|e| {
+                panic!("compression '{comp}' should be accepted for elasticsearch: {e}")
+            });
+        }
+    }
+}
+
+#[cfg(test)]
+mod validate_read_buf_size_tests {
+    use crate::types::Config;
+
+    #[test]
+    fn read_buf_size_upper_bound_rejected() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n        read_buf_size: 5000000\n    outputs:\n      - type: stdout\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("read_buf_size") && msg.contains("4194304"),
+            "expected read_buf_size upper bound rejection: {msg}"
+        );
+    }
+
+    #[test]
+    fn read_buf_size_at_max_accepted() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n        read_buf_size: 4194304\n    outputs:\n      - type: stdout\n";
+        Config::load_str(yaml).expect("read_buf_size at exactly 4 MiB should be accepted");
+    }
+
+    #[test]
+    fn read_buf_size_just_over_max_rejected() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n        read_buf_size: 4194305\n    outputs:\n      - type: stdout\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("read_buf_size") && msg.contains("4194304"),
+            "expected read_buf_size upper bound rejection: {msg}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod validate_metrics_endpoint_tests {
+    use crate::types::Config;
+
+    #[test]
+    fn metrics_endpoint_valid_url_accepted() {
+        let yaml = "server:\n  metrics_endpoint: http://localhost:4318/v1/metrics\npipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n";
+        Config::load_str(yaml).expect("valid metrics_endpoint should be accepted");
+    }
+
+    #[test]
+    fn metrics_endpoint_invalid_url_rejected() {
+        let yaml = "server:\n  metrics_endpoint: not-a-url\npipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("metrics_endpoint"),
+            "expected metrics_endpoint rejection: {msg}"
+        );
+    }
+
+    #[test]
+    fn metrics_endpoint_ftp_scheme_rejected() {
+        let yaml = "server:\n  metrics_endpoint: ftp://localhost:21/metrics\npipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("metrics_endpoint") && msg.contains("scheme"),
+            "expected metrics_endpoint scheme rejection: {msg}"
         );
     }
 }
