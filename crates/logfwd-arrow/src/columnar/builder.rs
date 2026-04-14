@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, BooleanArray, Float64Array, Int64Array, NullArray, StringBuilder};
+use arrow::array::{ArrayRef, BooleanArray, Float64Array, Int64Array, NullArray, StringViewArray};
 use arrow::buffer::{Buffer, NullBuffer};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::error::ArrowError;
@@ -272,11 +272,9 @@ impl ColumnarBatchBuilder {
         // the 2-buffer model can distinguish original vs generated at
         // materialization time.
         let raw_offset = self.original_buf.len() + self.string_buf.len();
-        let offset = u32::try_from(raw_offset).map_err(|_| {
-            BuilderError::StringBufferOverflow {
-                buffer_len: self.string_buf.len(),
-                value_len: value.len(),
-            }
+        let offset = u32::try_from(raw_offset).map_err(|_| BuilderError::StringBufferOverflow {
+            buffer_len: self.string_buf.len(),
+            value_len: value.len(),
         })?;
         let len = u32::try_from(value.len()).map_err(|_| BuilderError::StringBufferOverflow {
             buffer_len: self.string_buf.len(),
@@ -315,19 +313,27 @@ impl ColumnarBatchBuilder {
     // Finalization
     // -----------------------------------------------------------------------
 
-    /// Materialize all deferred facts into an Arrow `RecordBatch` (detached).
+    /// Materialize all deferred facts into an Arrow `RecordBatch`.
     ///
-    /// Copies string data into contiguous `StringArray` arrays. The builder's
-    /// internal buffers can be reused after this call.
+    /// When utf8_trusted (the default), produces `StringViewArray` columns that
+    /// reference the source buffers directly — zero per-string byte copying.
+    /// The builder's internal buffers are transferred to Arrow (O(1) for reuse).
     pub fn finish_batch(&mut self) -> Result<RecordBatch, BuilderError> {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InBatch);
         let num_rows = self.lifecycle.row_count() as usize;
 
+        // Copy to aligned Arrow Buffers, then clear (preserving Vec capacity
+        // so the next batch avoids reallocation).
+        let original = Buffer::from(self.original_buf.as_slice());
+        let generated = Buffer::from(self.string_buf.as_slice());
+        self.original_buf.clear();
+        self.string_buf.clear();
+
         // utf8_trusted: true because write_str takes &str (Rust guarantees UTF-8)
         // and write_str_ref is only used with scanner-validated buffers.
         let mode = FinalizationMode::Detached {
-            original_buf: &self.original_buf,
-            generated_buf: &self.string_buf,
+            original_buf: original,
+            generated_buf: generated,
             utf8_trusted: true,
         };
 
@@ -370,7 +376,7 @@ impl ColumnarBatchBuilder {
     fn materialize_all(
         &self,
         num_rows: usize,
-        mode: FinalizationMode<'_>,
+        mode: FinalizationMode,
     ) -> Result<RecordBatch, BuilderError> {
         let mut schema_fields = Vec::with_capacity(self.plan.len());
         let mut arrays = Vec::with_capacity(self.plan.len());
@@ -434,15 +440,8 @@ fn null_column(name: &str, kind: FieldKind, num_rows: usize) -> (Field, ArrayRef
             (Field::new(name, DataType::Boolean, true), Arc::new(arr))
         }
         FieldKind::Utf8View => {
-            // Use StringBuilder for detached mode compatibility.
-            let mut builder = StringBuilder::with_capacity(0, 0);
-            for _ in 0..num_rows {
-                builder.append_null();
-            }
-            (
-                Field::new(name, DataType::Utf8, true),
-                Arc::new(builder.finish()),
-            )
+            let arr = StringViewArray::new_null(num_rows);
+            (Field::new(name, DataType::Utf8View, true), Arc::new(arr))
         }
         FieldKind::BinaryView | FieldKind::FixedBinary(_) => {
             let arr = NullArray::new(num_rows);
@@ -913,8 +912,8 @@ mod tests {
 
         let batch = b.finish_batch().unwrap();
         assert_eq!(batch.num_rows(), 2);
-        let col_a = batch.column_by_name("a").unwrap().as_string::<i32>();
-        let col_b = batch.column_by_name("b").unwrap().as_string::<i32>();
+        let col_a = batch.column_by_name("a").unwrap().as_string_view();
+        let col_b = batch.column_by_name("b").unwrap().as_string_view();
         assert_eq!(col_a.value(0), "hello");
         assert_eq!(col_a.value(1), "world");
         assert_eq!(col_b.value(0), "world");
@@ -946,8 +945,8 @@ mod tests {
 
         let batch = b.finish_batch().unwrap();
         assert_eq!(batch.num_rows(), 2);
-        let r = batch.column_by_name("ref_field").unwrap().as_string::<i32>();
-        let g = batch.column_by_name("gen_field").unwrap().as_string::<i32>();
+        let r = batch.column_by_name("ref_field").unwrap().as_string_view();
+        let g = batch.column_by_name("gen_field").unwrap().as_string_view();
         assert_eq!(r.value(0), "from-input");
         assert_eq!(r.value(1), "input");
         assert_eq!(g.value(0), "generated-value");
