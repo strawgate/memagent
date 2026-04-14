@@ -1,0 +1,563 @@
+---
+// Deep dive into the prefix_xor algorithm: how quote positions become a string interior bitmask.
+// Shows escape detection, the 6-shift XOR propagation, and final masking.
+---
+
+<div class="px" id="prefix-xor-anim"></div>
+
+<style is:global>
+  .px {
+    --px-bg: var(--sl-color-bg-sidebar);
+    --px-border: var(--sl-color-hairline);
+    --px-accent: var(--sl-color-accent);
+    --px-text: var(--sl-color-text);
+    --px-muted: var(--sl-color-gray-3);
+    --px-quote: #e879a0;
+    --px-bs: #f59e0b;
+    --px-escaped: #ef4444;
+    --px-real: #22c55e;
+    --px-interior: #a78bfa;
+    --px-blue: #60a5fa;
+    margin: 1.5rem 0;
+  }
+  .px * { margin-top: 0 !important; }
+
+  /* Controls */
+  .px-bar { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem; }
+  .px-play {
+    width: 30px; height: 30px; border-radius: 50%;
+    border: 1.5px solid var(--px-accent); background: transparent;
+    color: var(--px-accent); cursor: pointer;
+    display: flex; align-items: center; justify-content: center; font-size: 0.75rem;
+  }
+  .px-play:hover { background: color-mix(in srgb, var(--px-accent) 12%, transparent); }
+  .px-prog { flex: 1; height: 3px; background: var(--px-border); border-radius: 2px; overflow: hidden; }
+  .px-prog-fill { height: 100%; width: 0; background: var(--px-accent); transition: width 0.4s ease; }
+  .px-pills { display: flex; gap: 3px; }
+  .px-pill {
+    height: 22px; border-radius: 11px; padding: 0 0.4rem;
+    border: 1px solid var(--px-border); background: transparent;
+    color: var(--px-muted); font-size: 0.55rem; font-weight: 700;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    transition: all 0.2s;
+  }
+  .px-pill:hover { border-color: var(--px-accent); }
+  .px-pill.on { border-color: var(--px-accent); background: var(--px-accent); color: white; }
+  .px-step-btn {
+    padding: 0.2rem 0.5rem; border-radius: 4px; border: 1px solid var(--px-border);
+    background: transparent; color: var(--px-text); font-size: 0.65rem;
+    cursor: pointer; font-weight: 600;
+  }
+  .px-step-btn:hover { border-color: var(--px-accent); }
+
+  /* Byte grid */
+  .px-grid {
+    display: flex; flex-wrap: wrap; gap: 1px; padding: 0.3rem 0;
+    font-family: var(--sl-font-mono, monospace);
+  }
+  .px-byte {
+    display: flex; flex-direction: column; align-items: center;
+    width: 26px; height: 36px; border: 1.5px solid transparent;
+    border-radius: 3px; transition: all 0.35s; background: var(--px-bg);
+    position: relative;
+  }
+  .px-ch { font-size: 0.75rem; font-weight: 500; line-height: 22px; }
+  .px-pos { font-size: 0.4rem; color: var(--px-muted); line-height: 1; }
+
+  .px-byte.q { border-color: var(--px-quote); background: color-mix(in srgb, var(--px-quote) 8%, transparent); }
+  .px-byte.bs { border-color: var(--px-bs); background: color-mix(in srgb, var(--px-bs) 8%, transparent); }
+  .px-byte.esc {
+    border-color: var(--px-escaped); border-style: dashed; opacity: 0.5;
+    text-decoration: line-through; text-decoration-color: var(--px-escaped);
+  }
+  .px-byte.rq { border-color: var(--px-real); background: color-mix(in srgb, var(--px-real) 10%, transparent); }
+  .px-byte.interior {
+    border-color: var(--px-interior); background: color-mix(in srgb, var(--px-interior) 12%, transparent);
+  }
+  .px-byte.masked-struct {
+    border-color: var(--px-interior); border-style: dashed; opacity: 0.5;
+    background: color-mix(in srgb, var(--px-interior) 6%, transparent);
+  }
+  .px-byte.dim { opacity: 0.25; }
+
+  /* Escape arrow animation */
+  .px-byte .px-esc-arrow {
+    position: absolute; top: -2px; right: -14px;
+    font-size: 0.6rem; color: var(--px-bs);
+    animation: px-reach 0.5s ease-out forwards;
+    opacity: 0;
+  }
+  @keyframes px-reach {
+    0% { opacity: 0; transform: translateX(-6px); }
+    50% { opacity: 1; }
+    100% { opacity: 1; transform: translateX(0); }
+  }
+
+  /* Bitmask rows */
+  .px-masks { padding: 0.25rem 0; }
+  .px-mask-row {
+    display: flex; align-items: center; gap: 0.3rem; padding: 0.15rem 0;
+    animation: px-row-in 0.3s ease-out;
+  }
+  @keyframes px-row-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; } }
+  .px-mask-lbl {
+    font-size: 0.58rem; font-weight: 600; color: var(--px-muted);
+    min-width: 80px; text-align: right;
+    font-family: var(--sl-font-mono, monospace);
+  }
+  .px-bits { display: flex; gap: 0px; }
+  .px-bit {
+    width: 15px; height: 17px; display: flex; align-items: center; justify-content: center;
+    font-size: 0.52rem; font-weight: 700; color: var(--px-muted);
+    font-family: var(--sl-font-mono, monospace);
+    transition: all 0.2s; border-radius: 1px;
+  }
+  .px-bit.on { color: var(--px-accent); background: color-mix(in srgb, var(--px-accent) 15%, transparent); }
+  .px-bit.q-on { color: var(--px-quote); background: color-mix(in srgb, var(--px-quote) 15%, transparent); }
+  .px-bit.bs-on { color: var(--px-bs); background: color-mix(in srgb, var(--px-bs) 15%, transparent); }
+  .px-bit.esc-on { color: var(--px-escaped); background: color-mix(in srgb, var(--px-escaped) 12%, transparent); }
+  .px-bit.real-on { color: var(--px-real); background: color-mix(in srgb, var(--px-real) 15%, transparent); }
+  .px-bit.interior-on { color: var(--px-interior); background: color-mix(in srgb, var(--px-interior) 15%, transparent); }
+
+  /* XOR visualization area */
+  .px-xor {
+    padding: 0.5rem; background: var(--px-bg);
+    border: 1px solid var(--px-border); border-radius: 8px;
+    margin: 0.4rem 0; overflow-x: auto;
+  }
+  .px-xor-label {
+    font-size: 0.7rem; font-weight: 700; color: var(--px-text);
+    margin-bottom: 0.4rem;
+  }
+  .px-xor-rows { position: relative; }
+  .px-xor-row {
+    display: flex; align-items: center; gap: 0.3rem; padding: 0.1rem 0;
+    transition: opacity 0.3s;
+  }
+  .px-xor-row.ghost .px-bit {
+    opacity: 0.4;
+  }
+  .px-xor-row.ghost .px-bit.on {
+    color: var(--px-accent); opacity: 0.5;
+    background: color-mix(in srgb, var(--px-accent) 10%, transparent);
+  }
+  .px-xor-divider {
+    height: 1px; background: var(--px-border); margin: 0.15rem 0 0.15rem 83px;
+    width: calc(100% - 83px);
+  }
+
+  /* Changed bit flash */
+  .px-bit.flash {
+    animation: px-flash 0.6s ease-out;
+    color: var(--px-accent); background: color-mix(in srgb, var(--px-accent) 25%, transparent);
+  }
+  @keyframes px-flash {
+    0% { transform: scale(1.4); background: color-mix(in srgb, var(--px-accent) 40%, transparent); }
+    100% { transform: scale(1); }
+  }
+
+  /* Reach indicator */
+  .px-reach {
+    display: flex; align-items: center; gap: 0.4rem;
+    margin-top: 0.3rem; padding-left: 83px;
+  }
+  .px-reach-bar {
+    height: 4px; border-radius: 2px; background: var(--px-accent);
+    transition: width 0.5s ease;
+  }
+  .px-reach-lbl {
+    font-size: 0.55rem; font-weight: 600; color: var(--px-accent);
+    font-family: var(--sl-font-mono, monospace); white-space: nowrap;
+  }
+
+  /* Callout */
+  .px-callout {
+    padding: 0.4rem 0.6rem; border-radius: 6px;
+    font-size: 0.68rem; font-weight: 500; line-height: 1.4;
+    margin: 0.5rem 0; animation: px-callout-in 0.3s ease-out;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  }
+  @keyframes px-callout-in { from { opacity: 0; translate: 0 -4px; } to { opacity: 1; } }
+  .px-callout.info { background: var(--px-blue); color: white; }
+  .px-callout.success { background: var(--px-real); color: white; }
+  .px-callout.warn { background: var(--px-bs); color: #1a1a2e; }
+  .px-callout.accent { background: var(--px-accent); color: white; }
+  .px-callout.purple { background: var(--px-interior); color: white; }
+
+  /* Legend */
+  .px-leg { display: flex; flex-wrap: wrap; gap: 0.5rem; padding: 0.25rem 0; font-size: 0.58rem; color: var(--px-muted); }
+  .px-leg span { display: flex; align-items: center; gap: 0.2rem; }
+  .px-sw { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+</style>
+
+<script>
+(function() {
+  var root = document.getElementById('prefix-xor-anim');
+  if (!root) return;
+
+  function el(tag, cls) { var e = document.createElement(tag); if (cls) e.className = cls; return e; }
+
+  // === DATA ===
+  // {"a":"say \"hi\"","b":1}
+  var STR = '{"a":"say \\"hi\\"","b":1}';
+  var CHARS = STR.split('');
+  var LEN = CHARS.length; // 24
+
+  // Pre-computed bitmasks (verified externally)
+  // Positions: { 0, " 1, a 2, " 3, : 4, " 5, s 6, a 7, y 8, ' ' 9, \ 10, " 11, h 12, i 13, \ 14, " 15, " 16, , 17, " 18, b 19, " 20, : 21, 1 22, } 23
+  var QUOTE_POS = [1, 3, 5, 11, 15, 16, 18, 20];
+  var BS_POS = [10, 14];
+  var ESCAPED_POS = [11, 15]; // positions after backslashes
+  var REAL_Q_POS = [1, 3, 5, 16, 18, 20]; // quotes minus escaped
+
+  // String interior (between real quote pairs): positions 2, 6-15 (inside "a" and "say \"hi\""), 19
+  var IN_STRING_POS = [2, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 19];
+
+  // Structural chars and which are inside strings
+  var STRUCT_CHARS = { '{': true, '}': true, ':': true, ',': true, '"': true };
+
+  // Pre-compute prefix_xor intermediate states using BigInt
+  var realQBig = 0n;
+  REAL_Q_POS.forEach(function(p) { realQBig |= 1n << BigInt(p); });
+  var MASK64 = (1n << 64n) - 1n;
+
+  var XOR_SHIFTS = [1, 2, 4, 8, 16, 32];
+  var XOR_STATES = [realQBig]; // state[0] = initial real_quotes
+  var cur = realQBig;
+  for (var i = 0; i < 6; i++) {
+    var shifted = (cur << BigInt(XOR_SHIFTS[i])) & MASK64;
+    cur = (cur ^ shifted) & MASK64;
+    XOR_STATES.push(cur);
+  }
+
+  function getBit(bigint, pos) {
+    return Number((bigint >> BigInt(pos)) & 1n);
+  }
+
+  function toBitArray(bigint, len) {
+    var arr = [];
+    for (var i = 0; i < len; i++) arr.push(getBit(bigint, i));
+    return arr;
+  }
+
+  // === STEPS ===
+  var STEPS = [
+    { phase: 1, label: '1', title: 'Raw Detection', msg: 'SIMD finds 8 quotes and 2 backslashes in one pass', type: 'info', dur: 3000 },
+    { phase: 2, label: '2', title: 'Escape Filtering', msg: 'Each \\ marks the next byte as escaped \u2014 removing 2 false quotes', type: 'warn', dur: 3500 },
+    { phase: 3, label: '3.1', title: 'XOR shift by 1', msg: 'Each quote bit reaches 1 position \u2014 adjacent cells start filling', type: 'accent', dur: 2500 },
+    { phase: 3, label: '3.2', title: 'XOR shift by 2', msg: 'Reach doubles to 2 \u2014 gaps between nearby quotes start closing', type: 'accent', dur: 2500 },
+    { phase: 3, label: '3.3', title: 'XOR shift by 4', msg: 'Reach doubles to 4 \u2014 the interior is flooding between quote pairs', type: 'accent', dur: 2500 },
+    { phase: 3, label: '3.4', title: 'XOR shift by 8', msg: 'Reach doubles to 8 \u2014 most of the string interior is filled', type: 'accent', dur: 2500 },
+    { phase: 3, label: '3.5', title: 'XOR shift by 16', msg: 'Reach 16 \u2014 already filled for our 24-char string, but essential for 64-byte blocks', type: 'accent', dur: 2000 },
+    { phase: 3, label: '3.6', title: 'XOR shift by 32', msg: 'Reach 32 \u2014 full 64-bit coverage in just 6 operations. O(log n)!', type: 'accent', dur: 2000 },
+    { phase: 4, label: '4a', title: 'Exclude Quotes', msg: 'Remove quote positions from the mask \u2014 they\'re boundaries, not interiors', type: 'success', dur: 3000 },
+    { phase: 4, label: '4b', title: 'String Interior', msg: 'Done! Purple bytes are inside strings. Structural chars there are masked out.', type: 'purple', dur: 4000 },
+  ];
+
+  var stepIdx = 0;
+  var playing = false;
+  var timer = null;
+  var startupTimer = null;
+
+  // === BUILD DOM ===
+
+  // Controls
+  var bar = el('div', 'px-bar');
+  var playBtn = el('button', 'px-play'); playBtn.innerHTML = '\u25B6'; playBtn.setAttribute('aria-label', 'Play');
+  var stepBtn = el('button', 'px-step-btn'); stepBtn.textContent = 'Step \u25B6'; stepBtn.setAttribute('aria-label', 'Step forward');
+  var prog = el('div', 'px-prog'); var progFill = el('div', 'px-prog-fill'); prog.appendChild(progFill);
+  var pills = el('div', 'px-pills');
+  var pillEls = STEPS.map(function(s, i) {
+    var p = el('button', 'px-pill');
+    p.textContent = s.label;
+    p.setAttribute('aria-label', 'Step ' + s.label + ': ' + s.title);
+    p.onclick = function() { stopAuto(); goStep(i); };
+    pills.appendChild(p);
+    return p;
+  });
+  bar.appendChild(playBtn); bar.appendChild(stepBtn); bar.appendChild(prog); bar.appendChild(pills);
+  root.appendChild(bar);
+
+  // Callout
+  var calloutEl = el('div', 'px-callout info');
+  root.appendChild(calloutEl);
+
+  // Byte grid
+  var gridEl = el('div', 'px-grid');
+  var byteEls = CHARS.map(function(c, i) {
+    var b = el('div', 'px-byte');
+    var ch = el('span', 'px-ch');
+    ch.textContent = c === ' ' ? '\u00B7' : c;
+    var pos = el('span', 'px-pos'); pos.textContent = '' + i;
+    b.appendChild(ch); b.appendChild(pos);
+    gridEl.appendChild(b);
+    return b;
+  });
+  root.appendChild(gridEl);
+
+  // Masks area
+  var masksEl = el('div', 'px-masks');
+  root.appendChild(masksEl);
+
+  // XOR visualization area
+  var xorEl = el('div', 'px-xor');
+  xorEl.style.display = 'none';
+  var xorLabel = el('div', 'px-xor-label');
+  var xorRows = el('div', 'px-xor-rows');
+  xorEl.appendChild(xorLabel);
+  xorEl.appendChild(xorRows);
+  var reachEl = el('div', 'px-reach');
+  var reachBar = el('div', 'px-reach-bar');
+  var reachLbl = el('span', 'px-reach-lbl');
+  reachEl.appendChild(reachBar); reachEl.appendChild(reachLbl);
+  xorEl.appendChild(reachEl);
+  root.appendChild(xorEl);
+
+  // Legend
+  var leg = el('div', 'px-leg');
+  leg.innerHTML = '<span><i class="px-sw" style="background:var(--px-quote)"></i> Quote</span>' +
+    '<span><i class="px-sw" style="background:var(--px-bs)"></i> Backslash</span>' +
+    '<span><i class="px-sw" style="background:var(--px-escaped)"></i> Escaped</span>' +
+    '<span><i class="px-sw" style="background:var(--px-real)"></i> Real quote</span>' +
+    '<span><i class="px-sw" style="background:var(--px-interior)"></i> String interior</span>';
+  root.appendChild(leg);
+
+  // === HELPERS ===
+
+  function makeMaskRow(label, bits, colorClass) {
+    var row = el('div', 'px-mask-row');
+    var lbl = el('span', 'px-mask-lbl'); lbl.textContent = label;
+    var bitsDiv = el('div', 'px-bits');
+    for (var i = 0; i < LEN; i++) {
+      var b = el('span', 'px-bit' + (bits[i] ? ' ' + colorClass : ''));
+      b.textContent = bits[i] ? '1' : '\u00B7';
+      bitsDiv.appendChild(b);
+    }
+    row.appendChild(lbl); row.appendChild(bitsDiv);
+    return row;
+  }
+
+  function makeXorRow(label, bits, cls) {
+    var row = el('div', 'px-xor-row' + (cls ? ' ' + cls : ''));
+    var lbl = el('span', 'px-mask-lbl'); lbl.textContent = label;
+    var bitsDiv = el('div', 'px-bits');
+    var bitEls = [];
+    for (var i = 0; i < LEN; i++) {
+      var b = el('span', 'px-bit' + (bits[i] ? ' on' : ''));
+      b.textContent = bits[i] ? '1' : '\u00B7';
+      bitsDiv.appendChild(b);
+      bitEls.push(b);
+    }
+    row.appendChild(lbl); row.appendChild(bitsDiv);
+    row._bitEls = bitEls;
+    return row;
+  }
+
+  function posSet(arr) { var s = {}; arr.forEach(function(p) { s[p] = true; }); return s; }
+  var isQuote = posSet(QUOTE_POS);
+  var isBS = posSet(BS_POS);
+  var isEscaped = posSet(ESCAPED_POS);
+  var isRealQ = posSet(REAL_Q_POS);
+  var isInterior = posSet(IN_STRING_POS);
+
+  // === STEP LOGIC ===
+
+  function resetByteGrid() {
+    byteEls.forEach(function(b) { b.className = 'px-byte'; var a = b.querySelector('.px-esc-arrow'); if (a) a.remove(); });
+  }
+
+  function goStep(idx) {
+    stepIdx = idx;
+    var s = STEPS[idx];
+
+    // Update controls
+    pillEls.forEach(function(p, i) {
+      p.className = 'px-pill' + (i === idx ? ' on' : '');
+      if (i === idx) p.setAttribute('aria-current', 'step');
+      else p.removeAttribute('aria-current');
+    });
+    progFill.style.width = ((idx + 1) / STEPS.length * 100) + '%';
+
+    // Update callout
+    calloutEl.className = 'px-callout ' + s.type;
+    calloutEl.innerHTML = '<b>' + s.title + '</b> \u2014 ' + s.msg;
+
+    // Reset
+    resetByteGrid();
+    masksEl.innerHTML = '';
+    xorEl.style.display = 'none';
+
+    if (s.phase === 1) {
+      // Phase 1: Raw detection — highlight quotes and backslashes
+      byteEls.forEach(function(b, i) {
+        if (isQuote[i]) b.classList.add('q');
+        else if (isBS[i]) b.classList.add('bs');
+        else b.classList.add('dim');
+      });
+      var qBits = []; var bBits = [];
+      for (var i = 0; i < LEN; i++) { qBits.push(isQuote[i] ? 1 : 0); bBits.push(isBS[i] ? 1 : 0); }
+      masksEl.appendChild(makeMaskRow('quote_bits', qBits, 'q-on'));
+      masksEl.appendChild(makeMaskRow('bs_bits', bBits, 'bs-on'));
+
+    } else if (s.phase === 2) {
+      // Phase 2: Escape filtering
+      byteEls.forEach(function(b, i) {
+        if (isEscaped[i]) {
+          b.classList.add('esc');
+        } else if (isRealQ[i]) {
+          b.classList.add('rq');
+        } else if (isBS[i]) {
+          b.classList.add('bs');
+          // Add reach arrow
+          var arrow = el('span', 'px-esc-arrow');
+          arrow.textContent = '\u2192';
+          b.appendChild(arrow);
+        } else if (isQuote[i] && !isRealQ[i] && !isEscaped[i]) {
+          b.classList.add('q');
+        } else {
+          b.classList.add('dim');
+        }
+      });
+      var escBits = []; var realBits = [];
+      for (var i = 0; i < LEN; i++) { escBits.push(isEscaped[i] ? 1 : 0); realBits.push(isRealQ[i] ? 1 : 0); }
+      masksEl.appendChild(makeMaskRow('escaped', escBits, 'esc-on'));
+      masksEl.appendChild(makeMaskRow('real_quotes', realBits, 'real-on'));
+
+    } else if (s.phase === 3) {
+      // Phase 3: prefix_xor propagation
+      var xorIdx = idx - 2; // 0-5 for the 6 shifts
+      var shiftAmt = XOR_SHIFTS[xorIdx];
+      var prevState = XOR_STATES[xorIdx];
+      var nextState = XOR_STATES[xorIdx + 1];
+      var shiftedState = (prevState << BigInt(shiftAmt)) & MASK64;
+
+      // Show byte grid with real quotes highlighted
+      byteEls.forEach(function(b, i) {
+        if (isRealQ[i]) b.classList.add('rq');
+        // Show already-filled interior from current state
+        else if (getBit(prevState, i)) b.classList.add('interior');
+        else b.classList.add('dim');
+      });
+
+      // Show XOR area
+      xorEl.style.display = '';
+      xorLabel.textContent = 'bitmask ^= bitmask << ' + shiftAmt;
+      xorRows.innerHTML = '';
+
+      var prevBits = toBitArray(prevState, LEN);
+      var shiftedBits = toBitArray(shiftedState, LEN);
+      var nextBits = toBitArray(nextState, LEN);
+
+      var currentRow = makeXorRow('current', prevBits, '');
+      var shiftedRow = makeXorRow('<< ' + shiftAmt, shiftedBits, 'ghost');
+      var divider = el('div', 'px-xor-divider');
+      var resultRow = makeXorRow('XOR result', nextBits, '');
+
+      xorRows.appendChild(currentRow);
+      xorRows.appendChild(shiftedRow);
+      xorRows.appendChild(divider);
+      xorRows.appendChild(resultRow);
+
+      // Flash changed bits
+      for (var i = 0; i < LEN; i++) {
+        if (prevBits[i] !== nextBits[i] && nextBits[i] === 1) {
+          resultRow._bitEls[i].classList.add('flash');
+        }
+      }
+
+      // Reach indicator
+      var reachPx = Math.min(shiftAmt, LEN) * 15;
+      reachBar.style.width = reachPx + 'px';
+      reachLbl.textContent = 'reach: ' + shiftAmt + ' positions';
+
+    } else if (s.phase === 4 && idx === 8) {
+      // Phase 4a: Exclude quotes from mask
+      var pxResult = XOR_STATES[6];
+      var inStringMask = pxResult & ~realQBig & MASK64;
+      byteEls.forEach(function(b, i) {
+        if (isRealQ[i]) {
+          b.classList.add('rq');
+        } else if (getBit(inStringMask, i)) {
+          b.classList.add('interior');
+        } else {
+          b.classList.add('dim');
+        }
+      });
+      var pxBits = toBitArray(pxResult, LEN);
+      var inBits = toBitArray(inStringMask, LEN);
+      masksEl.appendChild(makeMaskRow('prefix_xor', pxBits, 'on'));
+      masksEl.appendChild(makeMaskRow('& !quotes', inBits, 'interior-on'));
+
+    } else if (s.phase === 4 && idx === 9) {
+      // Phase 4b: Final overlay on byte grid
+      byteEls.forEach(function(b, i) {
+        if (isInterior[i]) {
+          // Check if it's a structural char inside string — it's masked
+          if (STRUCT_CHARS[CHARS[i]]) {
+            b.classList.add('masked-struct');
+          } else {
+            b.classList.add('interior');
+          }
+        } else if (isRealQ[i]) {
+          b.classList.add('rq');
+        }
+        // Non-interior, non-quote bytes stay normal — no dim
+      });
+    }
+  }
+
+  // === CONTROLS ===
+
+  function stopAuto() {
+    playing = false;
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
+    playBtn.innerHTML = '\u25B6';
+    playBtn.setAttribute('aria-label', 'Play');
+  }
+
+  function startAuto() {
+    if (playing) return;
+    playing = true;
+    playBtn.innerHTML = '\u23F8';
+    playBtn.setAttribute('aria-label', 'Pause');
+    scheduleNext();
+  }
+
+  function scheduleNext() {
+    if (!playing) return;
+    timer = setTimeout(function() {
+      if (!playing) return;
+      if (stepIdx >= STEPS.length - 1) { stopAuto(); return; }
+      goStep(stepIdx + 1);
+      scheduleNext();
+    }, STEPS[stepIdx].dur);
+  }
+
+  playBtn.onclick = function() {
+    if (playing) { stopAuto(); }
+    else { if (stepIdx >= STEPS.length - 1) goStep(0); startAuto(); }
+  };
+  stepBtn.onclick = function() {
+    stopAuto();
+    if (stepIdx >= STEPS.length - 1) goStep(0);
+    else goStep(stepIdx + 1);
+  };
+
+  // Init
+  goStep(0);
+  var prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!prefersReducedMotion) {
+    startupTimer = setTimeout(function() {
+      startupTimer = null;
+      if (!playing) startAuto();
+    }, 1500);
+  }
+
+  // Cleanup
+  document.addEventListener('astro:before-swap', function() {
+    stopAuto();
+    if (startupTimer) { clearTimeout(startupTimer); startupTimer = null; }
+  }, { once: true });
+})();
+</script>

@@ -4,6 +4,7 @@ description: "SIMD-accelerated zero-copy JSON to Arrow conversion"
 ---
 
 import ScannerAnimation from '../../../components/ScannerAnimation.astro';
+import PrefixXorAnimation from '../../../components/PrefixXorAnimation.astro';
 import ZeroCopyDiagram from '../../../components/ZeroCopyDiagram.astro';
 
 The scanner converts newline-delimited JSON into Apache Arrow RecordBatches
@@ -33,7 +34,23 @@ Finding the next comma in a traditional parser means scanning forward byte-by-by
 
 ## String interior mask
 
-Not all structural characters are real. The colon inside `"request failed"` is part of a string value, not a key-value separator. logfwd uses `prefix_xor` — a chain of 6 XOR shifts — to compute which bytes are inside JSON strings.
+Not all structural characters are real. A comma inside `"hello, world"` is part of a string value, not a field separator. logfwd uses a pipeline of bit-manipulation tricks — escape detection, prefix XOR propagation, and cross-block carry — to compute which bytes are inside JSON strings.
+
+Step through the algorithm below to see how quote positions become a string interior bitmask.
+
+<PrefixXorAnimation />
+
+### How prefix_xor works
+
+The `prefix_xor` function is the key insight borrowed from simdjson. Given the filtered real-quote bitmask, it produces a running parity mask — bit *i* is set iff an odd number of real quotes have been seen at or before *i*. A final `& !quotes` step strips the quote positions themselves, yielding the pure string interior mask. All of this takes just 6 XOR-shift operations — no loops, no branches.
+
+Each shift doubles the "reach" of each set bit. After shifting by 1, 2, 4, 8, 16, and 32, every bit between an opening and closing quote has been toggled an odd number of times (setting it to 1), while bits outside strings are toggled an even number of times (remaining 0).
+
+This is a prefix-sum in GF(2) — the XOR equivalent of a running total. It's O(log n) operations for n bits, compared to O(n) for a naive character-by-character toggle.
+
+:::note[Formally verified]
+`prefix_xor` is proven correct by Kani bounded model checking over all 2^64 inputs. The proof (`verify_prefix_xor` in `structural.rs`) confirms it matches a naive bit-by-bit running XOR oracle.
+:::
 
 Structural characters inside strings get masked out. Only the real structural positions survive.
 
