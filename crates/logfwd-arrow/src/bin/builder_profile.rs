@@ -13,6 +13,7 @@
 use std::env;
 use std::hint::black_box;
 
+use arrow::buffer::Buffer;
 use logfwd_arrow::columnar::accumulator::StringRef;
 use logfwd_arrow::columnar::builder::ColumnarBatchBuilder;
 use logfwd_arrow::columnar::plan::{BatchPlan, FieldHandle, FieldKind};
@@ -46,6 +47,7 @@ fn str_refs_for_row() -> [StringRef; STR_COUNT] {
 // ---------------------------------------------------------------------------
 fn run_columnar_zero_copy(num_batches: u64) {
     let input_buf = build_input_buffer();
+    let input_arrow = Buffer::from_vec(input_buf);
     let refs = str_refs_for_row();
 
     let mut plan = BatchPlan::new();
@@ -88,7 +90,7 @@ fn run_columnar_zero_copy(num_batches: u64) {
 
     for batch_idx in 0..num_batches {
         b.begin_batch();
-        b.set_original_buffer(&input_buf);
+        b.set_original_buffer(input_arrow.clone());
         for row in 0..ROWS_PER_BATCH {
             b.begin_row();
             let base = (batch_idx as i64) * (ROWS_PER_BATCH as i64) + row as i64;
@@ -172,6 +174,7 @@ fn run_columnar_generated(num_batches: u64) {
 // ---------------------------------------------------------------------------
 fn run_columnar_mixed(num_batches: u64) {
     let input_buf = build_input_buffer();
+    let input_arrow = Buffer::from_vec(input_buf);
     let refs = str_refs_for_row();
 
     let mut plan = BatchPlan::new();
@@ -214,7 +217,7 @@ fn run_columnar_mixed(num_batches: u64) {
 
     for batch_idx in 0..num_batches {
         b.begin_batch();
-        b.set_original_buffer(&input_buf);
+        b.set_original_buffer(input_arrow.clone());
         for row in 0..ROWS_PER_BATCH {
             b.begin_row();
             let base = (batch_idx as i64) * (ROWS_PER_BATCH as i64) + row as i64;

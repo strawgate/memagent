@@ -97,12 +97,15 @@ impl ColumnAccumulator {
                 facts: Vec::with_capacity(256),
                 last_row: u32::MAX,
             },
-            FieldKind::Utf8View | FieldKind::BinaryView | FieldKind::FixedBinary(_) => {
-                ColumnAccumulator::String {
-                    facts: Vec::with_capacity(256),
-                    last_row: u32::MAX,
-                }
-            }
+            FieldKind::Utf8View => ColumnAccumulator::String {
+                facts: Vec::with_capacity(256),
+                last_row: u32::MAX,
+            },
+            // TODO(#1844): implement dedicated binary accumulator variants
+            FieldKind::BinaryView | FieldKind::FixedBinary(_) => ColumnAccumulator::String {
+                facts: Vec::with_capacity(256),
+                last_row: u32::MAX,
+            },
         }
     }
 
@@ -371,6 +374,8 @@ pub enum MaterializeError {
     },
     /// Buffer data was not valid UTF-8 at the referenced range.
     InvalidUtf8 { offset: u32, len: u32 },
+    /// Concatenated string bytes exceed `i32::MAX`, making Utf8 offsets invalid.
+    OffsetOverflow,
 }
 
 impl std::fmt::Display for MaterializeError {
@@ -386,6 +391,12 @@ impl std::fmt::Display for MaterializeError {
             ),
             MaterializeError::InvalidUtf8 { offset, len } => {
                 write!(f, "invalid UTF-8 at StringRef(offset={offset}, len={len})")
+            }
+            MaterializeError::OffsetOverflow => {
+                write!(
+                    f,
+                    "string data exceeds i32::MAX bytes for Utf8 offset array"
+                )
             }
         }
     }
@@ -415,8 +426,17 @@ pub struct FinalizationMode {
 // Array builders (free functions, no &self)
 // ---------------------------------------------------------------------------
 
+/// Check whether facts cover rows 0..num_rows exactly (no gaps, no duplicates).
+///
+/// Facts are appended in row order. If `facts.len() == num_rows` and the last
+/// fact targets row `num_rows - 1`, the pigeonhole principle guarantees every
+/// row is present exactly once (rows are monotonically non-decreasing).
+fn is_dense<T>(facts: &[(u32, T)], num_rows: usize) -> bool {
+    facts.len() == num_rows && (num_rows == 0 || facts[num_rows - 1].0 as usize == num_rows - 1)
+}
+
 fn build_int64(facts: &[(u32, i64)], num_rows: usize) -> (ArrayRef, DataType) {
-    let dense = facts.len() == num_rows;
+    let dense = is_dense(facts, num_rows);
     let mut values = vec![0i64; num_rows];
     if dense {
         debug_assert!(
@@ -453,7 +473,7 @@ fn build_int64(facts: &[(u32, i64)], num_rows: usize) -> (ArrayRef, DataType) {
 }
 
 fn build_float64(facts: &[(u32, f64)], num_rows: usize) -> (ArrayRef, DataType) {
-    let dense = facts.len() == num_rows;
+    let dense = is_dense(facts, num_rows);
     let mut values = vec![0.0f64; num_rows];
     if dense {
         debug_assert!(
@@ -490,7 +510,7 @@ fn build_float64(facts: &[(u32, f64)], num_rows: usize) -> (ArrayRef, DataType) 
 }
 
 fn build_bool(facts: &[(u32, bool)], num_rows: usize) -> (ArrayRef, DataType) {
-    let dense = facts.len() == num_rows;
+    let dense = is_dense(facts, num_rows);
     let mut values = vec![false; num_rows];
     if dense {
         debug_assert!(
@@ -556,7 +576,7 @@ fn build_string_view_trusted(
     generated_buf: &Buffer,
 ) -> Result<(ArrayRef, DataType), MaterializeError> {
     let original_len = original_buf.len();
-    let dense = facts.len() == num_rows;
+    let dense = is_dense(facts, num_rows);
 
     // Register source buffers as StringViewArray blocks.
     // block 0 = original, block 1 = generated (if non-empty).
@@ -719,7 +739,7 @@ fn build_string_array_validated(
     generated_buf: &Buffer,
 ) -> Result<(ArrayRef, DataType), MaterializeError> {
     let original_len = original_buf.len();
-    let dense = facts.len() == num_rows;
+    let dense = is_dense(facts, num_rows);
     let mut offsets: Vec<i32> = Vec::with_capacity(num_rows + 1);
     let mut values: Vec<u8> =
         Vec::with_capacity(facts.iter().map(|(_, sref)| sref.len as usize).sum());
@@ -732,14 +752,16 @@ fn build_string_array_validated(
     if dense {
         // Dense fast path: skip per-row branch check.
         for &(_, sref) in facts {
-            offsets.push(values.len() as i32);
+            let off = i32::try_from(values.len()).map_err(|_| MaterializeError::OffsetOverflow)?;
+            offsets.push(off);
             let bytes = read_str_bytes(original_buf, generated_buf, original_len, sref)?;
             values.extend_from_slice(bytes);
         }
     } else {
         let mut vi = 0;
         for row in 0..num_rows as u32 {
-            offsets.push(values.len() as i32);
+            let off = i32::try_from(values.len()).map_err(|_| MaterializeError::OffsetOverflow)?;
+            offsets.push(off);
             if vi < facts.len() && facts[vi].0 == row {
                 let sref = facts[vi].1;
                 let bytes = read_str_bytes(original_buf, generated_buf, original_len, sref)?;
@@ -751,7 +773,8 @@ fn build_string_array_validated(
             }
         }
     }
-    offsets.push(values.len() as i32);
+    let final_off = i32::try_from(values.len()).map_err(|_| MaterializeError::OffsetOverflow)?;
+    offsets.push(final_off);
 
     // Validate UTF-8 for external bytes.
     if !original_buf.is_empty() && std::str::from_utf8(&values).is_err() {

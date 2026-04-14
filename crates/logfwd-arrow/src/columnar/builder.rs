@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, BooleanArray, Float64Array, Int64Array, NullArray, StringViewArray};
+use arrow::array::{ArrayRef, BooleanArray, Float64Array, Int64Array, StringViewArray};
 use arrow::buffer::{Buffer, NullBuffer};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::error::ArrowError;
@@ -109,7 +109,9 @@ pub struct ColumnarBatchBuilder {
     columns: Vec<ColumnAccumulator>,
     /// Optional original input buffer for zero-copy string references.
     /// `write_str_ref` offsets below `original_buf.len()` point here.
-    original_buf: Vec<u8>,
+    /// Stored as an Arrow `Buffer` (ref-counted) — O(1) to pass through
+    /// to StringViewArray without copying.
+    original_buf: Buffer,
     /// Generated buffer for string values written via `write_str`.
     /// StringRef offsets at or above `original_buf.len()` point here
     /// (shifted by original_buf.len()).
@@ -135,7 +137,7 @@ impl ColumnarBatchBuilder {
             plan,
             lifecycle: RowLifecycle::new(),
             columns,
-            original_buf: Vec::new(),
+            original_buf: Buffer::from(Vec::<u8>::new()),
             string_buf: Vec::new(),
             dedup_enabled: true,
         }
@@ -157,7 +159,7 @@ impl ColumnarBatchBuilder {
         for col in &mut self.columns {
             col.clear();
         }
-        self.original_buf.clear();
+        self.original_buf = Buffer::from(Vec::<u8>::new());
         self.string_buf.clear();
     }
 
@@ -165,14 +167,15 @@ impl ColumnarBatchBuilder {
     ///
     /// Call after `begin_batch` and before any writes. `write_str_ref` with
     /// offsets below `original_buf.len()` will reference this buffer at
-    /// materialization time.
-    pub fn set_original_buffer(&mut self, buf: &[u8]) {
+    /// materialization time. The buffer is ref-counted (Arrow `Buffer`) —
+    /// no copy on set, and O(1) pass-through to `StringViewArray`.
+    pub fn set_original_buffer(&mut self, buf: Buffer) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InBatch);
         debug_assert!(
             self.original_buf.is_empty(),
             "set_original_buffer called twice in the same batch"
         );
-        self.original_buf.extend_from_slice(buf);
+        self.original_buf = buf;
     }
 
     /// Start a new row.
@@ -285,7 +288,14 @@ impl ColumnarBatchBuilder {
         // Generated string offsets are shifted by original_buf.len() so that
         // the 2-buffer model can distinguish original vs generated at
         // materialization time.
-        let raw_offset = self.original_buf.len() + self.string_buf.len();
+        let raw_offset = self
+            .original_buf
+            .len()
+            .checked_add(self.string_buf.len())
+            .ok_or(BuilderError::StringBufferOverflow {
+                buffer_len: self.string_buf.len(),
+                value_len: value.len(),
+            })?;
         let offset = u32::try_from(raw_offset).map_err(|_| BuilderError::StringBufferOverflow {
             buffer_len: self.string_buf.len(),
             value_len: value.len(),
@@ -338,12 +348,10 @@ impl ColumnarBatchBuilder {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InBatch);
         let num_rows = self.lifecycle.row_count() as usize;
 
-        // Copy to aligned Arrow Buffers, then clear (preserving Vec capacity
-        // so the next batch avoids reallocation).
-        let original = Buffer::from(self.original_buf.as_slice());
-        let generated = Buffer::from(self.string_buf.as_slice());
-        self.original_buf.clear();
-        self.string_buf.clear();
+        // Transfer buffers to Arrow — O(1) for the ref-counted original,
+        // O(1) move for the generated Vec.
+        let original = std::mem::replace(&mut self.original_buf, Buffer::from(Vec::<u8>::new()));
+        let generated = Buffer::from_vec(std::mem::take(&mut self.string_buf));
 
         // utf8_trusted: true because write_str takes &str (Rust guarantees UTF-8)
         // and write_str_ref is only used with scanner-validated buffers.
@@ -429,9 +437,16 @@ fn null_column(name: &str, kind: FieldKind, num_rows: usize) -> (Field, ArrayRef
             let arr = StringViewArray::new_null(num_rows);
             (Field::new(name, DataType::Utf8View, true), Arc::new(arr))
         }
-        FieldKind::BinaryView | FieldKind::FixedBinary(_) => {
-            let arr = NullArray::new(num_rows);
-            (Field::new(name, DataType::Null, true), Arc::new(arr))
+        FieldKind::BinaryView => {
+            let arr = arrow::array::BinaryViewArray::new_null(num_rows);
+            (Field::new(name, DataType::BinaryView, true), Arc::new(arr))
+        }
+        FieldKind::FixedBinary(n) => {
+            let arr = arrow::array::FixedSizeBinaryArray::new_null(n as i32, num_rows);
+            (
+                Field::new(name, DataType::FixedSizeBinary(n as i32), true),
+                Arc::new(arr),
+            )
         }
     }
 }
@@ -889,7 +904,7 @@ mod tests {
         let input = b"hello world";
 
         b.begin_batch();
-        b.set_original_buffer(input);
+        b.set_original_buffer(Buffer::from(input.as_slice()));
         b.begin_row();
         b.write_i64(ts, 1000);
         b.write_str_ref(msg, StringRef { offset: 0, len: 5 });
@@ -946,7 +961,7 @@ mod tests {
         let mut b = ColumnarBatchBuilder::new(plan);
 
         b.begin_batch();
-        b.set_original_buffer(input);
+        b.set_original_buffer(Buffer::from(input.as_slice()));
         b.begin_row();
         b.write_str_ref(a, StringRef { offset: 0, len: 5 });
         b.write_str_ref(b_h, StringRef { offset: 5, len: 5 });
@@ -979,7 +994,7 @@ mod tests {
         let mut b = ColumnarBatchBuilder::new(plan);
 
         b.begin_batch();
-        b.set_original_buffer(input);
+        b.set_original_buffer(Buffer::from(input.as_slice()));
         b.begin_row();
         b.write_str_ref(ref_field, StringRef { offset: 0, len: 10 });
         b.write_str(gen_field, "generated-value").unwrap();
