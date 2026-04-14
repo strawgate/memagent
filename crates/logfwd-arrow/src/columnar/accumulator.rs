@@ -444,23 +444,28 @@ pub enum FinalizationMode {
 fn build_int64(facts: &[(u32, i64)], num_rows: usize) -> (ArrayRef, DataType) {
     let dense = facts.len() == num_rows;
     let mut values = vec![0i64; num_rows];
-    let mut valid = if dense {
-        Vec::new()
+    if dense {
+        for (i, &(_, v)) in facts.iter().enumerate() {
+            values[i] = v;
+        }
     } else {
-        vec![false; num_rows]
-    };
-    for &(row, v) in facts {
-        let r = row as usize;
-        if r < num_rows {
-            values[r] = v;
-            if !dense {
-                valid[r] = true;
+        for &(row, v) in facts {
+            let r = row as usize;
+            if r < num_rows {
+                values[r] = v;
             }
         }
     }
     let nulls = if dense {
         None
     } else {
+        let mut valid = vec![false; num_rows];
+        for &(row, _) in facts {
+            let r = row as usize;
+            if r < num_rows {
+                valid[r] = true;
+            }
+        }
         Some(NullBuffer::from(valid))
     };
     (
@@ -472,23 +477,28 @@ fn build_int64(facts: &[(u32, i64)], num_rows: usize) -> (ArrayRef, DataType) {
 fn build_float64(facts: &[(u32, f64)], num_rows: usize) -> (ArrayRef, DataType) {
     let dense = facts.len() == num_rows;
     let mut values = vec![0.0f64; num_rows];
-    let mut valid = if dense {
-        Vec::new()
+    if dense {
+        for (i, &(_, v)) in facts.iter().enumerate() {
+            values[i] = v;
+        }
     } else {
-        vec![false; num_rows]
-    };
-    for &(row, v) in facts {
-        let r = row as usize;
-        if r < num_rows {
-            values[r] = v;
-            if !dense {
-                valid[r] = true;
+        for &(row, v) in facts {
+            let r = row as usize;
+            if r < num_rows {
+                values[r] = v;
             }
         }
     }
     let nulls = if dense {
         None
     } else {
+        let mut valid = vec![false; num_rows];
+        for &(row, _) in facts {
+            let r = row as usize;
+            if r < num_rows {
+                valid[r] = true;
+            }
+        }
         Some(NullBuffer::from(valid))
     };
     (
@@ -500,23 +510,28 @@ fn build_float64(facts: &[(u32, f64)], num_rows: usize) -> (ArrayRef, DataType) 
 fn build_bool(facts: &[(u32, bool)], num_rows: usize) -> (ArrayRef, DataType) {
     let dense = facts.len() == num_rows;
     let mut values = vec![false; num_rows];
-    let mut valid = if dense {
-        Vec::new()
+    if dense {
+        for (i, &(_, v)) in facts.iter().enumerate() {
+            values[i] = v;
+        }
     } else {
-        vec![false; num_rows]
-    };
-    for &(row, v) in facts {
-        let r = row as usize;
-        if r < num_rows {
-            values[r] = v;
-            if !dense {
-                valid[r] = true;
+        for &(row, v) in facts {
+            let r = row as usize;
+            if r < num_rows {
+                values[r] = v;
             }
         }
     }
     let nulls = if dense {
         None
     } else {
+        let mut valid = vec![false; num_rows];
+        for &(row, _) in facts {
+            let r = row as usize;
+            if r < num_rows {
+                valid[r] = true;
+            }
+        }
         Some(NullBuffer::from(valid))
     };
     (
@@ -614,10 +629,13 @@ fn build_string_view_trusted(
         Some(1u32)
     };
 
+    // Pre-zero + indexed write is faster than collect() because memset_avx2
+    // zeroes 16KB in ~200 instructions while the Result iterator adapter
+    // (GenericShunt) adds ~25M instructions of overhead.
     let mut views: Vec<u128> = vec![0u128; num_rows];
 
     if dense {
-        // Fast path: every row has a value, facts[i] corresponds to row i.
+        // Dense fast path: every row has a value, facts[i] corresponds to row i.
         for (i, &(_, sref)) in facts.iter().enumerate() {
             views[i] = make_string_view(
                 sref,
@@ -643,7 +661,6 @@ fn build_string_view_trusted(
                 )?;
                 vi += 1;
             }
-            // else: views[row] remains 0 (null)
         }
     }
 
@@ -689,7 +706,7 @@ fn build_string_view_trusted(
 /// Construct a u128 StringView for a given StringRef.
 ///
 /// Strings ≤ 12 bytes are inlined. Longer strings reference a buffer block.
-#[inline]
+#[inline(always)]
 fn make_string_view(
     sref: StringRef,
     original_buf: &[u8],
@@ -699,64 +716,59 @@ fn make_string_view(
     gen_block: Option<u32>,
 ) -> Result<u128, MaterializeError> {
     let len = sref.len;
-    let start = sref.offset as usize;
-    let end = start
-        .checked_add(len as usize)
-        .ok_or(MaterializeError::StringRefOutOfBounds {
-            offset: sref.offset,
-            len: sref.len,
-            buffer_len: original_buf.len() + generated_buf.len(),
-        })?;
-
-    // Resolve which buffer and the bytes.
-    let (bytes, block_idx, block_offset) = if start < original_len {
-        let b = original_buf
-            .get(start..end)
-            .ok_or(MaterializeError::StringRefOutOfBounds {
-                offset: sref.offset,
-                len: sref.len,
-                buffer_len: original_buf.len(),
-            })?;
-        (b, orig_block, sref.offset)
-    } else {
-        let dec_start = start - original_len;
-        let dec_end = end - original_len;
-        let b = generated_buf.get(dec_start..dec_end).ok_or(
-            MaterializeError::StringRefOutOfBounds {
-                offset: sref.offset,
-                len: sref.len,
-                buffer_len: generated_buf.len(),
-            },
-        )?;
-        (
-            b,
-            gen_block.ok_or(MaterializeError::StringRefOutOfBounds {
-                offset: sref.offset,
-                len: sref.len,
-                buffer_len: 0,
-            })?,
-            dec_start as u32,
-        )
-    };
-
     if len == 0 {
         return Ok(0u128);
     }
 
+    let start = sref.offset as usize;
+
+    // Resolve buffer, block index, and local offset.
+    let (buf, block_idx, local_offset) = if start < original_len {
+        (original_buf, orig_block, sref.offset)
+    } else {
+        let dec_start = (start - original_len) as u32;
+        match gen_block {
+            Some(gb) => (generated_buf, gb, dec_start),
+            None => {
+                return Err(MaterializeError::StringRefOutOfBounds {
+                    offset: sref.offset,
+                    len: sref.len,
+                    buffer_len: 0,
+                });
+            }
+        }
+    };
+
+    let local_start = local_offset as usize;
+    let local_end = local_start + len as usize;
+    if local_end > buf.len() {
+        return Err(MaterializeError::StringRefOutOfBounds {
+            offset: sref.offset,
+            len: sref.len,
+            buffer_len: buf.len(),
+        });
+    }
+
+    // Build the u128 view using arithmetic — avoids byte array + copy_from_slice.
     Ok(if len <= 12 {
-        // Inline: pack length + data directly into the view.
+        // Inline: [len:4][data:12] packed little-endian.
         let mut view_bytes = [0u8; 16];
         view_bytes[0..4].copy_from_slice(&len.to_le_bytes());
-        view_bytes[4..4 + len as usize].copy_from_slice(bytes);
+        view_bytes[4..4 + len as usize].copy_from_slice(&buf[local_start..local_end]);
         u128::from_le_bytes(view_bytes)
     } else {
-        // Buffer reference: length + 4-byte prefix + block index + offset.
-        let mut view_bytes = [0u8; 16];
-        view_bytes[0..4].copy_from_slice(&len.to_le_bytes());
-        view_bytes[4..8].copy_from_slice(&bytes[..4]);
-        view_bytes[8..12].copy_from_slice(&block_idx.to_le_bytes());
-        view_bytes[12..16].copy_from_slice(&block_offset.to_le_bytes());
-        u128::from_le_bytes(view_bytes)
+        // Buffer ref: [len:4][prefix:4][block_idx:4][offset:4] packed little-endian.
+        // Use arithmetic to avoid array copies.
+        let prefix = u32::from_le_bytes([
+            buf[local_start],
+            buf[local_start + 1],
+            buf[local_start + 2],
+            buf[local_start + 3],
+        ]);
+        (len as u128)
+            | ((prefix as u128) << 32)
+            | ((block_idx as u128) << 64)
+            | ((local_offset as u128) << 96)
     })
 }
 

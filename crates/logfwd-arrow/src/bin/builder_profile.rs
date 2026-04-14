@@ -84,6 +84,7 @@ fn run_columnar_zero_copy(num_batches: u64) {
         .unwrap();
 
     let mut b = ColumnarBatchBuilder::new(plan);
+    b.set_dedup_enabled(false);
 
     for batch_idx in 0..num_batches {
         b.begin_batch();
@@ -145,6 +146,7 @@ fn run_columnar_generated(num_batches: u64) {
         .unwrap();
 
     let mut b = ColumnarBatchBuilder::new(plan);
+    b.set_dedup_enabled(false);
 
     for batch_idx in 0..num_batches {
         b.begin_batch();
@@ -208,6 +210,7 @@ fn run_columnar_mixed(num_batches: u64) {
         .unwrap();
 
     let mut b = ColumnarBatchBuilder::new(plan);
+    b.set_dedup_enabled(false);
 
     for batch_idx in 0..num_batches {
         b.begin_batch();

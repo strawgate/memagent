@@ -114,6 +114,9 @@ pub struct ColumnarBatchBuilder {
     /// StringRef offsets at or above `original_buf.len()` point here
     /// (shifted by original_buf.len()).
     string_buf: Vec<u8>,
+    /// When false, skip per-field dedup checks (producers that guarantee
+    /// at most one write per field per row can disable for throughput).
+    dedup_enabled: bool,
 }
 
 impl ColumnarBatchBuilder {
@@ -134,7 +137,18 @@ impl ColumnarBatchBuilder {
             columns,
             original_buf: Vec::new(),
             string_buf: Vec::new(),
+            dedup_enabled: true,
         }
+    }
+
+    /// Disable per-field dedup checks.
+    ///
+    /// Producers that guarantee at most one write per field per row (e.g., OTLP
+    /// decoders, CSV parsers) can disable dedup for ~8% throughput improvement.
+    /// If a field is written twice in the same row with dedup disabled, both
+    /// values are recorded and the second silently wins at materialization.
+    pub fn set_dedup_enabled(&mut self, enabled: bool) {
+        self.dedup_enabled = enabled;
     }
 
     /// Start a new batch.
@@ -223,7 +237,7 @@ impl ColumnarBatchBuilder {
     pub fn write_i64(&mut self, handle: FieldHandle, value: i64) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
-        if self.is_duplicate(handle) {
+        if self.dedup_enabled && self.is_duplicate(handle) {
             return;
         }
         self.columns[handle.index()].push_i64(self.lifecycle.row_count(), value);
@@ -234,7 +248,7 @@ impl ColumnarBatchBuilder {
     pub fn write_f64(&mut self, handle: FieldHandle, value: f64) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
-        if self.is_duplicate(handle) {
+        if self.dedup_enabled && self.is_duplicate(handle) {
             return;
         }
         self.columns[handle.index()].push_f64(self.lifecycle.row_count(), value);
@@ -245,7 +259,7 @@ impl ColumnarBatchBuilder {
     pub fn write_bool(&mut self, handle: FieldHandle, value: bool) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
-        if self.is_duplicate(handle) {
+        if self.dedup_enabled && self.is_duplicate(handle) {
             return;
         }
         self.columns[handle.index()].push_bool(self.lifecycle.row_count(), value);
@@ -265,7 +279,7 @@ impl ColumnarBatchBuilder {
     pub fn write_str(&mut self, handle: FieldHandle, value: &str) -> Result<(), BuilderError> {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
-        if self.is_duplicate(handle) {
+        if self.dedup_enabled && self.is_duplicate(handle) {
             return Ok(());
         }
         // Generated string offsets are shifted by original_buf.len() so that
@@ -292,7 +306,7 @@ impl ColumnarBatchBuilder {
     pub fn write_str_ref(&mut self, handle: FieldHandle, sref: StringRef) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
-        if self.is_duplicate(handle) {
+        if self.dedup_enabled && self.is_duplicate(handle) {
             return;
         }
         self.columns[handle.index()].push_str(self.lifecycle.row_count(), sref);
@@ -306,7 +320,9 @@ impl ColumnarBatchBuilder {
     pub fn write_null(&mut self, handle: FieldHandle) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
-        let _ = self.is_duplicate(handle);
+        if self.dedup_enabled {
+            let _ = self.is_duplicate(handle);
+        }
     }
 
     // -----------------------------------------------------------------------
