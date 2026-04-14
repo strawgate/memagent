@@ -127,7 +127,8 @@ impl Pipeline {
                             let reload_path = path.clone();
                             let reload_format = geo_cfg.format.clone();
 
-                            tokio::spawn(async move {
+                            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                                handle.spawn(async move {
                                 let mut ticker = tokio::time::interval(Duration::from_secs(
                                     interval_secs.max(1),
                                 ));
@@ -172,6 +173,7 @@ impl Pipeline {
                                     }
                                 }
                             });
+                            }
 
                             geo_database = Some(
                                 reloadable as Arc<dyn crate::transform::enrichment::GeoDatabase>,
@@ -222,30 +224,33 @@ impl Pipeline {
                         if let Some(interval_secs) = cfg.refresh_interval {
                             let t = Arc::clone(&table);
                             let name = cfg.table_name.clone();
-                            tokio::spawn(async move {
-                                let mut ticker = tokio::time::interval(Duration::from_secs(
-                                    interval_secs.max(1),
-                                ));
-                                ticker.tick().await;
-                                loop {
+                            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                                handle.spawn(async move {
+                                    let mut ticker = tokio::time::interval(Duration::from_secs(
+                                        interval_secs.max(1),
+                                    ));
                                     ticker.tick().await;
-                                    let t2 = Arc::clone(&t);
-                                    match tokio::task::spawn_blocking(move || t2.reload()).await {
-                                        Ok(Ok(n)) => tracing::debug!(
-                                            table = %name, rows = n,
-                                            "CSV enrichment table reloaded"
-                                        ),
-                                        Ok(Err(e)) => tracing::warn!(
-                                            table = %name, error = %e,
-                                            "CSV enrichment table reload failed"
-                                        ),
-                                        Err(e) => tracing::warn!(
-                                            table = %name, error = %e,
-                                            "CSV enrichment table reload task panicked"
-                                        ),
+                                    loop {
+                                        ticker.tick().await;
+                                        let t2 = Arc::clone(&t);
+                                        match tokio::task::spawn_blocking(move || t2.reload()).await
+                                        {
+                                            Ok(Ok(n)) => tracing::debug!(
+                                                table = %name, rows = n,
+                                                "CSV enrichment table reloaded"
+                                            ),
+                                            Ok(Err(e)) => tracing::warn!(
+                                                table = %name, error = %e,
+                                                "CSV enrichment table reload failed"
+                                            ),
+                                            Err(e) => tracing::warn!(
+                                                table = %name, error = %e,
+                                                "CSV enrichment table reload task panicked"
+                                            ),
+                                        }
                                     }
-                                }
-                            });
+                                });
+                            }
                         }
                         enrichment_tables.push(table);
                     }
@@ -267,30 +272,33 @@ impl Pipeline {
                         if let Some(interval_secs) = cfg.refresh_interval {
                             let t = Arc::clone(&table);
                             let name = cfg.table_name.clone();
-                            tokio::spawn(async move {
-                                let mut ticker = tokio::time::interval(Duration::from_secs(
-                                    interval_secs.max(1),
-                                ));
-                                ticker.tick().await;
-                                loop {
+                            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                                handle.spawn(async move {
+                                    let mut ticker = tokio::time::interval(Duration::from_secs(
+                                        interval_secs.max(1),
+                                    ));
                                     ticker.tick().await;
-                                    let t2 = Arc::clone(&t);
-                                    match tokio::task::spawn_blocking(move || t2.reload()).await {
-                                        Ok(Ok(n)) => tracing::debug!(
-                                            table = %name, rows = n,
-                                            "JSONL enrichment table reloaded"
-                                        ),
-                                        Ok(Err(e)) => tracing::warn!(
-                                            table = %name, error = %e,
-                                            "JSONL enrichment table reload failed"
-                                        ),
-                                        Err(e) => tracing::warn!(
-                                            table = %name, error = %e,
-                                            "JSONL enrichment table reload task panicked"
-                                        ),
+                                    loop {
+                                        ticker.tick().await;
+                                        let t2 = Arc::clone(&t);
+                                        match tokio::task::spawn_blocking(move || t2.reload()).await
+                                        {
+                                            Ok(Ok(n)) => tracing::debug!(
+                                                table = %name, rows = n,
+                                                "JSONL enrichment table reloaded"
+                                            ),
+                                            Ok(Err(e)) => tracing::warn!(
+                                                table = %name, error = %e,
+                                                "JSONL enrichment table reload failed"
+                                            ),
+                                            Err(e) => tracing::warn!(
+                                                table = %name, error = %e,
+                                                "JSONL enrichment table reload task panicked"
+                                            ),
+                                        }
                                     }
-                                }
-                            });
+                                });
+                            }
                         }
                         enrichment_tables.push(table);
                     }
@@ -325,30 +333,33 @@ impl Pipeline {
                         if let Some(interval_secs) = cfg.refresh_interval {
                             let t = Arc::clone(&table);
                             let name = cfg.table_name.clone();
-                            tokio::spawn(async move {
-                                let mut ticker = tokio::time::interval(Duration::from_secs(
-                                    interval_secs.max(1),
-                                ));
-                                ticker.tick().await;
-                                loop {
+                            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                                handle.spawn(async move {
+                                    let mut ticker = tokio::time::interval(Duration::from_secs(
+                                        interval_secs.max(1),
+                                    ));
                                     ticker.tick().await;
-                                    let t2 = Arc::clone(&t);
-                                    match tokio::task::spawn_blocking(move || t2.reload()).await {
-                                        Ok(Ok(n)) => tracing::debug!(
-                                            table = %name, columns = n,
-                                            "KV file enrichment table reloaded"
-                                        ),
-                                        Ok(Err(e)) => tracing::warn!(
-                                            table = %name, error = %e,
-                                            "KV file enrichment table reload failed"
-                                        ),
-                                        Err(e) => tracing::warn!(
-                                            table = %name, error = %e,
-                                            "KV file enrichment table reload task panicked"
-                                        ),
+                                    loop {
+                                        ticker.tick().await;
+                                        let t2 = Arc::clone(&t);
+                                        match tokio::task::spawn_blocking(move || t2.reload()).await
+                                        {
+                                            Ok(Ok(n)) => tracing::debug!(
+                                                table = %name, columns = n,
+                                                "KV file enrichment table reloaded"
+                                            ),
+                                            Ok(Err(e)) => tracing::warn!(
+                                                table = %name, error = %e,
+                                                "KV file enrichment table reload failed"
+                                            ),
+                                            Err(e) => tracing::warn!(
+                                                table = %name, error = %e,
+                                                "KV file enrichment table reload task panicked"
+                                            ),
+                                        }
                                     }
-                                }
-                            });
+                                });
+                            }
                         }
                         enrichment_tables.push(table);
                     }

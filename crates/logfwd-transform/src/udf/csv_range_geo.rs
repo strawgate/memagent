@@ -171,6 +171,17 @@ impl CsvRangeDatabase {
         // Sort by start address for binary search.
         ranges.sort_unstable_by_key(|e| e.start);
 
+        // Reject overlapping ranges — they cause ambiguous lookups with binary search.
+        for pair in ranges.windows(2) {
+            if pair[0].end >= pair[1].start {
+                return Err(TransformError::Enrichment(format!(
+                    "CSV geo database contains overlapping IP ranges: range ending at {} overlaps range starting at {}",
+                    u128_to_ip_string(pair[0].end),
+                    u128_to_ip_string(pair[1].start),
+                )));
+            }
+        }
+
         Ok(CsvRangeDatabase { ranges })
     }
 
@@ -234,6 +245,17 @@ fn ip_to_u128(addr: IpAddr) -> u128 {
 /// Parse an IP string to `u128`, accepting both IPv4 and IPv6.
 fn parse_ip_to_u128(s: &str) -> Option<u128> {
     IpAddr::from_str(s.trim()).ok().map(ip_to_u128)
+}
+
+/// Convert a `u128` back to an IP string for error messages.
+///
+/// Values in the IPv4-mapped range (`::ffff:0:0/96`) are rendered as IPv4.
+fn u128_to_ip_string(val: u128) -> String {
+    let addr = std::net::Ipv6Addr::from(val);
+    match addr.to_ipv4_mapped() {
+        Some(v4) => v4.to_string(),
+        None => addr.to_string(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -341,5 +363,36 @@ ip_range_start,ip_range_end,country_code,country_name,city,stateprov,latitude,lo
         let csv = b"ip_range_start,ip_range_end,country_code\n";
         let db = CsvRangeDatabase::load_from_reader(&csv[..]).unwrap();
         assert!(db.is_empty());
+    }
+
+    #[test]
+    fn overlapping_ranges_rejected() {
+        let csv = b"ip_range_start,ip_range_end,country_code\n\
+            1.0.0.0,1.0.0.255,AU\n\
+            1.0.0.128,1.0.1.255,NZ\n";
+        let result = CsvRangeDatabase::load_from_reader(&csv[..]);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("overlapping"),
+            "expected overlap error, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn adjacent_ranges_accepted() {
+        let csv = b"ip_range_start,ip_range_end,country_code\n\
+            1.0.0.0,1.0.0.127,AU\n\
+            1.0.0.128,1.0.0.255,NZ\n";
+        let db = CsvRangeDatabase::load_from_reader(&csv[..]).unwrap();
+        assert_eq!(db.len(), 2);
+        assert_eq!(
+            db.lookup("1.0.0.1").unwrap().country_code.as_deref(),
+            Some("AU")
+        );
+        assert_eq!(
+            db.lookup("1.0.0.200").unwrap().country_code.as_deref(),
+            Some("NZ")
+        );
     }
 }
