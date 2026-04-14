@@ -330,12 +330,21 @@ pub(super) async fn process_item(
                 retries_count += 1;
                 let sleep_for = retry_dur.min(max_retry_delay);
                 output_health.apply_worker_event(worker_id, OutputHealthEvent::Retrying);
-                tracing::warn!(
-                    worker_id,
-                    ?sleep_for,
-                    retries = retries_count,
-                    "worker_pool: rate-limited, retrying"
-                );
+                if retries_count <= WARN_RETRY_LIMIT {
+                    tracing::warn!(
+                        worker_id,
+                        ?sleep_for,
+                        retries = retries_count,
+                        "worker_pool: rate-limited, retrying"
+                    );
+                } else {
+                    tracing::debug!(
+                        worker_id,
+                        ?sleep_for,
+                        retries = retries_count,
+                        "worker_pool: rate-limited, retrying"
+                    );
+                }
                 tokio::select! {
                     biased;
                     () = cancel.cancelled() => {
