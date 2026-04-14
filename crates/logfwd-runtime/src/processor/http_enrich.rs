@@ -237,7 +237,7 @@ impl HttpEnrichProcessor {
                     match resp
                         .into_body()
                         .as_reader()
-                        .take(limit + 1)
+                        .take(limit.saturating_add(1))
                         .read_to_string(&mut buf)
                     {
                         Ok(n) if n as u64 > limit => LookupResult::Error(format!(
