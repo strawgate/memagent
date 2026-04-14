@@ -74,7 +74,6 @@ fn compile_grok(pattern: &str) -> Result<CompiledGrok, crate::TransformError> {
 ///
 /// The pattern uses Logstash-style `%{PATTERN:name}` syntax. The return type
 /// is a Struct with one Utf8 field per named capture group.
-#[derive(Debug)]
 pub struct GrokUdf {
     signature: Signature,
     /// Per-pattern grok cache.  DataFusion shares the same `ScalarUDFImpl`
@@ -83,6 +82,26 @@ pub struct GrokUdf {
     /// calls with different patterns.  Keying by pattern string handles multiple
     /// patterns correctly while still avoiding recompilation across batches.
     grok_cache: Mutex<HashMap<String, Arc<CompiledGrok>>>,
+}
+
+impl std::fmt::Debug for GrokUdf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GrokUdf").finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for GrokUdf {
+    fn eq(&self, other: &Self) -> bool {
+        self.signature == other.signature
+    }
+}
+
+impl Eq for GrokUdf {}
+
+impl std::hash::Hash for GrokUdf {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.signature.hash(state);
+    }
 }
 
 impl Default for GrokUdf {

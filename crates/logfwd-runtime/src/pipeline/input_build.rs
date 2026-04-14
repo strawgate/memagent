@@ -507,12 +507,12 @@ pub(super) fn build_input_state(
             use logfwd_io::journald_input::{JournaldBackendPref, JournaldConfig, JournaldInput};
 
             // Fix #14: Reject non-JSON formats for journald — it always emits JSON.
-            if let Some(ref fmt) = cfg.format {
-                if !matches!(fmt, Format::Json) {
-                    return Err(format!(
-                        "input '{name}': journald input only supports json format (got {fmt:?})"
-                    ));
-                }
+            if let Some(ref fmt) = cfg.format
+                && !matches!(fmt, Format::Json)
+            {
+                return Err(format!(
+                    "input '{name}': journald input only supports json format (got {fmt:?})"
+                ));
             }
 
             let jd_cfg = j.journald.as_ref();

@@ -498,13 +498,12 @@ impl Pipeline {
                 // worker slots are freed promptly and back-pressure is relieved before
                 // we ingest or flush more data.
                 ack = self.pool.ack_rx_mut().recv() => {
-                    if let Some(ack) = ack {
-                        if self.apply_pool_ack(ack).await {
+                    if let Some(ack) = ack
+                        && self.apply_pool_ack(ack).await {
                             shutdown.cancel();
                             should_drain_input_channel = false;
                             break;
                         }
-                    }
                 }
 
                 () = shutdown.cancelled() => {
@@ -762,18 +761,18 @@ impl Pipeline {
             };
             if let Some(receipt) = receipt {
                 let advance = machine.apply_ack(receipt);
-                if advance.advanced {
-                    if let Some(offset) = advance.checkpoint {
-                        advances.push((advance.source.0, offset));
-                        if let Some(ref mut store) = self.checkpoint_store {
-                            store.update(SourceCheckpoint {
-                                source_id: advance.source.0,
-                                path: None, // path is metadata, not required for restore
-                                offset,
-                            });
-                        }
-                        any_advanced = true;
+                if advance.advanced
+                    && let Some(offset) = advance.checkpoint
+                {
+                    advances.push((advance.source.0, offset));
+                    if let Some(ref mut store) = self.checkpoint_store {
+                        store.update(SourceCheckpoint {
+                            source_id: advance.source.0,
+                            path: None, // path is metadata, not required for restore
+                            offset,
+                        });
                     }
+                    any_advanced = true;
                 }
             }
         }
@@ -787,10 +786,10 @@ impl Pipeline {
         // Advance the timer even on failure to prevent retry flooding.
         if any_advanced && self.last_checkpoint_flush.elapsed() >= self.checkpoint_flush_interval {
             self.last_checkpoint_flush = tokio::time::Instant::now();
-            if let Some(ref mut store) = self.checkpoint_store {
-                if let Err(e) = store.flush() {
-                    tracing::warn!(error = %e, "pipeline: checkpoint flush error");
-                }
+            if let Some(ref mut store) = self.checkpoint_store
+                && let Err(e) = store.flush()
+            {
+                tracing::warn!(error = %e, "pipeline: checkpoint flush error");
             }
         }
         (held > 0, advances)

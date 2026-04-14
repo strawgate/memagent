@@ -71,6 +71,21 @@ impl std::fmt::Debug for GeoLookupUdf {
     }
 }
 
+impl PartialEq for GeoLookupUdf {
+    fn eq(&self, other: &Self) -> bool {
+        self.signature == other.signature && Arc::ptr_eq(&self.db, &other.db)
+    }
+}
+
+impl Eq for GeoLookupUdf {}
+
+impl std::hash::Hash for GeoLookupUdf {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.signature.hash(state);
+        Arc::as_ptr(&self.db).hash(state);
+    }
+}
+
 impl GeoLookupUdf {
     /// Create a new UDF wrapping the given database backend.
     pub fn new(db: Arc<dyn GeoDatabase>) -> Self {

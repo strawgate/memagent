@@ -243,18 +243,17 @@ impl Pipeline {
             }
 
             // Resolve journal_directory relative to config base_path.
-            if let InputTypeConfig::Journald(ref mut j) = resolved_cfg.type_config {
-                if let Some(ref mut jd) = j.journald {
-                    if let Some(ref dir) = jd.journal_directory {
-                        let mut path = PathBuf::from(dir);
-                        if path.is_relative()
-                            && let Some(base) = base_path
-                        {
-                            path = base.join(path);
-                        }
-                        jd.journal_directory = Some(path.to_string_lossy().into_owned());
-                    }
+            if let InputTypeConfig::Journald(ref mut j) = resolved_cfg.type_config
+                && let Some(ref mut jd) = j.journald
+                && let Some(ref dir) = jd.journal_directory
+            {
+                let mut path = PathBuf::from(dir);
+                if path.is_relative()
+                    && let Some(base) = base_path
+                {
+                    path = base.join(path);
                 }
+                jd.journal_directory = Some(path.to_string_lossy().into_owned());
             }
 
             let input_name = input_cfg

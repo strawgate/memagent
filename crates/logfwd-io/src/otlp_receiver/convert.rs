@@ -57,10 +57,10 @@ pub(super) fn convert_request_to_batch(
                 } else {
                     record.observed_time_unix_nano
                 };
-                if let Ok(ts) = i64::try_from(ts_raw) {
-                    if ts > 0 {
-                        builder.append_i64_value_by_idx(timestamp_idx, ts);
-                    }
+                if let Ok(ts) = i64::try_from(ts_raw)
+                    && ts > 0
+                {
+                    builder.append_i64_value_by_idx(timestamp_idx, ts);
                 }
 
                 // observed_time_unix_nano — always written separately.

@@ -8,7 +8,7 @@ use datafusion::logical_expr::{
 };
 
 /// UDF: int(col) — safe cast from Utf8 to Int64, returns NULL on failure.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) struct IntCastUdf {
     signature: Signature,
 }
@@ -65,7 +65,7 @@ impl ScalarUDFImpl for IntCastUdf {
 }
 
 /// UDF: float(col) — safe cast from Utf8 to Float64, returns NULL on failure.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) struct FloatCastUdf {
     signature: Signature,
 }

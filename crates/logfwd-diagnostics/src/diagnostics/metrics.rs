@@ -333,13 +333,13 @@ impl PipelineMetrics {
 
     /// Called by the worker pool when a worker picks up a batch for output.
     pub fn assign_worker_to_active_batch(&self, batch_id: u64, worker_id: usize, now_unix_ns: u64) {
-        if let Ok(mut m) = self.active_batches.lock() {
-            if let Some(b) = m.get_mut(&batch_id) {
-                b.stage = "output";
-                b.worker_id = Some(worker_id as u64);
-                b.output_start_unix_ns = now_unix_ns;
-                b.stage_start_unix_ns = now_unix_ns;
-            }
+        if let Ok(mut m) = self.active_batches.lock()
+            && let Some(b) = m.get_mut(&batch_id)
+        {
+            b.stage = "output";
+            b.worker_id = Some(worker_id as u64);
+            b.output_start_unix_ns = now_unix_ns;
+            b.stage_start_unix_ns = now_unix_ns;
         }
     }
 
@@ -350,16 +350,16 @@ impl PipelineMetrics {
         elapsed_ns: u64,
         now_unix_ns: u64,
     ) {
-        if let Ok(mut m) = self.active_batches.lock() {
-            if let Some(b) = m.get_mut(&id) {
-                match b.stage {
-                    "scan" => b.scan_ns = elapsed_ns,
-                    "transform" => b.transform_ns = elapsed_ns,
-                    _ => {}
-                }
-                b.stage = next_stage;
-                b.stage_start_unix_ns = now_unix_ns;
+        if let Ok(mut m) = self.active_batches.lock()
+            && let Some(b) = m.get_mut(&id)
+        {
+            match b.stage {
+                "scan" => b.scan_ns = elapsed_ns,
+                "transform" => b.transform_ns = elapsed_ns,
+                _ => {}
             }
+            b.stage = next_stage;
+            b.stage_start_unix_ns = now_unix_ns;
         }
     }
 

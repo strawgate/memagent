@@ -527,7 +527,12 @@ fn walk_table_factor(
                 );
             }
             for col in value_column {
-                referenced_columns.insert(col.value.clone());
+                collect_column_refs_with_wildcards(
+                    col,
+                    referenced_columns,
+                    uses_select_star,
+                    except_fields,
+                );
             }
             match value_source {
                 sqlast::PivotValueSource::List(values) => {
@@ -573,7 +578,12 @@ fn walk_table_factor(
         sqlast::TableFactor::Unpivot { table, columns, .. } => {
             walk_table_factor(table, referenced_columns, uses_select_star, except_fields);
             for col in columns {
-                referenced_columns.insert(col.value.clone());
+                collect_column_refs_with_wildcards(
+                    &col.expr,
+                    referenced_columns,
+                    uses_select_star,
+                    except_fields,
+                );
             }
         }
         sqlast::TableFactor::JsonTable { json_expr, .. }
@@ -631,6 +641,8 @@ fn walk_table_factor(
             }
             walk_match_recognize_pattern(pattern);
         }
+        // New sqlparser variants that don't require column reference extraction.
+        sqlast::TableFactor::XmlTable { .. } | sqlast::TableFactor::SemanticView { .. } => {}
     }
 }
 
@@ -716,7 +728,8 @@ fn extract_join_constraint(op: &sqlast::JoinOperator) -> Option<&sqlast::JoinCon
         | J::LeftAnti(c)
         | J::RightAnti(c)
         | J::AsOf { constraint: c, .. } => Some(c),
-        J::CrossJoin | J::CrossApply | J::OuterApply => None,
+        J::StraightJoin(c) => Some(c),
+        J::CrossJoin(_) | J::CrossApply | J::OuterApply => None,
     }
 }
 

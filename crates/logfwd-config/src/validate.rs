@@ -10,38 +10,38 @@ const MAX_READ_BUF_SIZE: usize = 4_194_304;
 impl Config {
     /// Validate the loaded configuration.
     pub(crate) fn validate(&self) -> Result<(), ConfigError> {
-        if let Some(ep) = &self.server.traces_endpoint {
-            if let Err(msg) = validate_endpoint_url(ep) {
-                return Err(ConfigError::Validation(format!(
-                    "server.traces_endpoint: {msg}"
-                )));
-            }
+        if let Some(ep) = &self.server.traces_endpoint
+            && let Err(msg) = validate_endpoint_url(ep)
+        {
+            return Err(ConfigError::Validation(format!(
+                "server.traces_endpoint: {msg}"
+            )));
         }
 
         // Validate server.metrics_endpoint at config time (#1892).
-        if let Some(ep) = &self.server.metrics_endpoint {
-            if let Err(msg) = validate_endpoint_url(ep) {
-                return Err(ConfigError::Validation(format!(
-                    "server.metrics_endpoint: {msg}"
-                )));
-            }
+        if let Some(ep) = &self.server.metrics_endpoint
+            && let Err(msg) = validate_endpoint_url(ep)
+        {
+            return Err(ConfigError::Validation(format!(
+                "server.metrics_endpoint: {msg}"
+            )));
         }
 
         // Validate server.diagnostics bind address at config time so that
         // `validate` catches typos before the server tries to bind at runtime.
-        if let Some(addr) = &self.server.diagnostics {
-            if let Err(msg) = validate_bind_addr(addr) {
-                return Err(ConfigError::Validation(format!(
-                    "server.diagnostics: {msg}"
-                )));
-            }
+        if let Some(addr) = &self.server.diagnostics
+            && let Err(msg) = validate_bind_addr(addr)
+        {
+            return Err(ConfigError::Validation(format!(
+                "server.diagnostics: {msg}"
+            )));
         }
 
         // Validate server.log_level is a recognised level (#481).
-        if let Some(level) = &self.server.log_level {
-            if let Err(msg) = validate_log_level(level) {
-                return Err(ConfigError::Validation(format!("server.log_level: {msg}")));
-            }
+        if let Some(level) = &self.server.log_level
+            && let Err(msg) = validate_log_level(level)
+        {
+            return Err(ConfigError::Validation(format!("server.log_level: {msg}")));
         }
 
         // Validate storage.data_dir is either absent/non-existent or an existing directory.
@@ -90,12 +90,12 @@ impl Config {
                         "pipeline '{name}': batch_target_bytes must be greater than 0"
                     )));
                 }
-                if let Some(sql) = &pipe.transform {
-                    if sql.trim().is_empty() {
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}': transform SQL cannot be empty"
-                        )));
-                    }
+                if let Some(sql) = &pipe.transform
+                    && sql.trim().is_empty()
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "pipeline '{name}': transform SQL cannot be empty"
+                    )));
                 }
                 if pipe.inputs.is_empty() {
                     return Err(ConfigError::Validation(format!(
@@ -131,12 +131,12 @@ impl Config {
                                     "pipeline '{name}' input '{label}': 'read_buf_size' must be at least 1"
                                 )));
                             }
-                            if let Some(sz) = f.read_buf_size {
-                                if sz > MAX_READ_BUF_SIZE {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': 'read_buf_size' must not exceed {MAX_READ_BUF_SIZE} (4 MiB)"
-                                    )));
-                                }
+                            if let Some(sz) = f.read_buf_size
+                                && sz > MAX_READ_BUF_SIZE
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': 'read_buf_size' must not exceed {MAX_READ_BUF_SIZE} (4 MiB)"
+                                )));
                             }
                             if f.per_file_read_budget_bytes == Some(0) {
                                 return Err(ConfigError::Validation(format!(
@@ -305,14 +305,13 @@ impl Config {
                                             "pipeline '{name}' input '{label}': generator.timestamp.step_ms must not be zero"
                                         )));
                                     }
-                                    if let Some(start) = &ts.start {
-                                        if !start.eq_ignore_ascii_case("now") {
-                                            if let Err(e) = validate_iso8601_timestamp(start) {
-                                                return Err(ConfigError::Validation(format!(
-                                                    "pipeline '{name}' input '{label}': generator.timestamp.start: {e}"
-                                                )));
-                                            }
-                                        }
+                                    if let Some(start) = &ts.start
+                                        && !start.eq_ignore_ascii_case("now")
+                                        && let Err(e) = validate_iso8601_timestamp(start)
+                                    {
+                                        return Err(ConfigError::Validation(format!(
+                                            "pipeline '{name}' input '{label}': generator.timestamp.start: {e}"
+                                        )));
                                     }
                                 }
                             }
@@ -477,12 +476,12 @@ impl Config {
                                 }
                             }
                             // Journald always produces JSON; reject other formats at config time.
-                            if let Some(fmt) = &input.format {
-                                if !matches!(fmt, Format::Json) {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': journald input only supports format: json (got {fmt:?})"
-                                    )));
-                                }
+                            if let Some(fmt) = &input.format
+                                && !matches!(fmt, Format::Json)
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': journald input only supports format: json (got {fmt:?})"
+                                )));
                             }
                         }
                     }
@@ -495,12 +494,12 @@ impl Config {
                     }
 
                     // Reject whitespace-only per-input SQL (mirrors pipeline-level check).
-                    if let Some(sql) = &input.sql {
-                        if sql.trim().is_empty() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' input '{label}': per-input sql cannot be empty"
-                            )));
-                        }
+                    if let Some(sql) = &input.sql
+                        && sql.trim().is_empty()
+                    {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' input '{label}': per-input sql cannot be empty"
+                        )));
                     }
                 }
 
@@ -617,12 +616,12 @@ impl Config {
                                     output.output_type,
                                 )));
                             }
-                            if let Some(ep) = &output.endpoint {
-                                if let Err(msg) = validate_host_port(ep) {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' output '{label}': {msg}",
-                                    )));
-                                }
+                            if let Some(ep) = &output.endpoint
+                                && let Err(msg) = validate_host_port(ep)
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': {msg}",
+                                )));
                             }
                         }
                         // Http and Parquet are not yet implemented — already
@@ -656,14 +655,13 @@ impl Config {
                         )));
                     }
                     // Validate OTLP protocol value (#1876).
-                    if output.output_type == OutputType::Otlp {
-                        if let Some(p) = output.protocol.as_deref() {
-                            if !matches!(p, "http" | "grpc") {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': otlp protocol must be 'http' or 'grpc', got '{p}'"
-                                )));
-                            }
-                        }
+                    if output.output_type == OutputType::Otlp
+                        && let Some(p) = output.protocol.as_deref()
+                        && !matches!(p, "http" | "grpc")
+                    {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': otlp protocol must be 'http' or 'grpc', got '{p}'"
+                        )));
                     }
                     // Validate compression values per output type (#1876).
                     if let Some(c) = output.compression.as_deref() {

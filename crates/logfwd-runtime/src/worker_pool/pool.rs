@@ -324,27 +324,27 @@ impl OutputWorkerPool {
         }
 
         // --- Step 2: spawn a new worker if under limit ---
-        if self.workers.len() < self.max_workers {
-            if let Ok(handle) = self.spawn_worker() {
-                match handle.tx.try_send(msg) {
-                    Ok(()) => {
-                        self.workers.push_front(handle);
-                        return;
-                    }
-                    Err(mpsc::error::TrySendError::Full(returned)) => {
-                        // Extremely unlikely for a fresh channel, but preserve the work item.
-                        msg = returned;
-                        self.workers.push_front(handle);
-                    }
-                    Err(mpsc::error::TrySendError::Closed(returned)) => {
-                        // Worker exited before first dispatch; preserve the work item and
-                        // continue into the existing back-pressure/rejection paths.
-                        msg = returned;
-                    }
+        if self.workers.len() < self.max_workers
+            && let Ok(handle) = self.spawn_worker()
+        {
+            match handle.tx.try_send(msg) {
+                Ok(()) => {
+                    self.workers.push_front(handle);
+                    return;
+                }
+                Err(mpsc::error::TrySendError::Full(returned)) => {
+                    // Extremely unlikely for a fresh channel, but preserve the work item.
+                    msg = returned;
+                    self.workers.push_front(handle);
+                }
+                Err(mpsc::error::TrySendError::Closed(returned)) => {
+                    // Worker exited before first dispatch; preserve the work item and
+                    // continue into the existing back-pressure/rejection paths.
+                    msg = returned;
                 }
             }
-            // Sink factory failed — fall through to back-pressure path.
         }
+        // Sink factory failed — fall through to back-pressure path.
 
         // --- Step 3: at max or spawn failed — async-wait on MRU worker ---
         if let Some(front) = self.workers.front() {
@@ -448,10 +448,10 @@ impl OutputWorkerPool {
         // Phase 2 — wait with timeout.
         let drain_fut = async {
             while let Some(res) = self.join_set.join_next().await {
-                if let Err(e) = res {
-                    if e.is_panic() {
-                        tracing::error!(error = ?e, "worker_pool: worker panicked during drain");
-                    }
+                if let Err(e) = res
+                    && e.is_panic()
+                {
+                    tracing::error!(error = ?e, "worker_pool: worker panicked during drain");
                 }
             }
         };
@@ -472,10 +472,10 @@ impl OutputWorkerPool {
             self.cancel.cancel();
             let _ = tokio::time::timeout(DRAIN_CANCEL_GRACE, async {
                 while let Some(res) = self.join_set.join_next().await {
-                    if let Err(e) = res {
-                        if e.is_panic() {
-                            tracing::error!(error = ?e, "worker_pool: worker panicked");
-                        }
+                    if let Err(e) = res
+                        && e.is_panic()
+                    {
+                        tracing::error!(error = ?e, "worker_pool: worker panicked");
                     }
                 }
             })

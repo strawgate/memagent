@@ -30,7 +30,6 @@ use regex::Regex;
 /// `<text>` and `<regex-literal>` may be Utf8, Utf8View, or LargeUtf8
 /// expressions; `<group-index>` is Int64 (`0` = full match, `1+` = capture).
 /// Returns NULL when the pattern does not match or the group index is out of range.
-#[derive(Debug)]
 pub struct RegexpExtractUdf {
     signature: Signature,
     /// Per-pattern regex cache.  DataFusion shares the same `ScalarUDFImpl`
@@ -39,6 +38,26 @@ pub struct RegexpExtractUdf {
     /// silently apply it to all subsequent calls with different patterns.
     /// Keying the cache by pattern string correctly handles multiple patterns.
     regex_cache: Mutex<HashMap<String, Arc<Regex>>>,
+}
+
+impl std::fmt::Debug for RegexpExtractUdf {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegexpExtractUdf").finish_non_exhaustive()
+    }
+}
+
+impl PartialEq for RegexpExtractUdf {
+    fn eq(&self, other: &Self) -> bool {
+        self.signature == other.signature
+    }
+}
+
+impl Eq for RegexpExtractUdf {}
+
+impl std::hash::Hash for RegexpExtractUdf {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.signature.hash(state);
+    }
 }
 
 impl Default for RegexpExtractUdf {

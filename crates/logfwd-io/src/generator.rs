@@ -381,12 +381,12 @@ impl GeneratorInput {
             GeneratorComplexity::Complex => {
                 let bytes_in = 128 + seq.wrapping_mul(17) % 8192;
                 let bytes_out = 64 + seq.wrapping_mul(31) % 4096;
-                if seq % 5 == 0 {
+                if seq.is_multiple_of(5) {
                     let _ = write!(
                         self.buf,
                         r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"headers":{{"content-type":"application/json","x-request-id":"{rid:016x}"}},"tags":["web","{service}","{level}"]}}"#,
                     );
-                } else if seq % 7 == 0 {
+                } else if seq.is_multiple_of(7) {
                     let upstream_ms = 1 + seq.wrapping_mul(19) % 200;
                     let _ = write!(
                         self.buf,

@@ -213,14 +213,14 @@ fn decode_otlp_logs_json(body: &[u8], resource_prefix: &str) -> Result<Vec<u8>, 
                         )
                     })?;
                 }
-                if ts_val == 0 {
-                    if let Some(obs) = record.get("observedTimeUnixNano") {
-                        ts_val = parse_protojson_u64(obs).ok_or_else(|| {
-                            InputError::Receiver(
-                                "invalid OTLP JSON observedTimeUnixNano: not a valid uint64".into(),
-                            )
-                        })?;
-                    }
+                if ts_val == 0
+                    && let Some(obs) = record.get("observedTimeUnixNano")
+                {
+                    ts_val = parse_protojson_u64(obs).ok_or_else(|| {
+                        InputError::Receiver(
+                            "invalid OTLP JSON observedTimeUnixNano: not a valid uint64".into(),
+                        )
+                    })?;
                 }
                 if ts_val > 0 {
                     write_json_key(&mut out, field_names::TIMESTAMP);
@@ -276,27 +276,19 @@ fn decode_otlp_logs_json(body: &[u8], resource_prefix: &str) -> Result<Vec<u8>, 
                 // Write protocol fields BEFORE log record attributes so that
                 // first-write-wins semantics prevent attributes from shadowing
                 // trace_id, span_id, flags, scope.name, or scope.version.
-                if let Some(tid) = record.get("traceId").and_then(|v| v.as_str()) {
-                    if !tid.is_empty() {
-                        let normalized_trace_id = normalize_otlp_hex_id(tid, 32, "traceId")?;
-                        write_json_string_field(
-                            &mut out,
-                            field_names::TRACE_ID,
-                            &normalized_trace_id,
-                        );
-                        out.push(b',');
-                    }
+                if let Some(tid) = record.get("traceId").and_then(|v| v.as_str())
+                    && !tid.is_empty()
+                {
+                    let normalized_trace_id = normalize_otlp_hex_id(tid, 32, "traceId")?;
+                    write_json_string_field(&mut out, field_names::TRACE_ID, &normalized_trace_id);
+                    out.push(b',');
                 }
-                if let Some(sid) = record.get("spanId").and_then(|v| v.as_str()) {
-                    if !sid.is_empty() {
-                        let normalized_span_id = normalize_otlp_hex_id(sid, 16, "spanId")?;
-                        write_json_string_field(
-                            &mut out,
-                            field_names::SPAN_ID,
-                            &normalized_span_id,
-                        );
-                        out.push(b',');
-                    }
+                if let Some(sid) = record.get("spanId").and_then(|v| v.as_str())
+                    && !sid.is_empty()
+                {
+                    let normalized_span_id = normalize_otlp_hex_id(sid, 16, "spanId")?;
+                    write_json_string_field(&mut out, field_names::SPAN_ID, &normalized_span_id);
+                    out.push(b',');
                 }
 
                 if let Some(flags) = record.get("flags") {

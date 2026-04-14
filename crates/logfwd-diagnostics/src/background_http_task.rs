@@ -36,10 +36,10 @@ impl BackgroundHttpTask {
     /// This is idempotent: repeated calls after the first are no-ops.
     pub(crate) fn shutdown_and_join(&mut self) {
         self.signal_shutdown();
-        if let Some(handle) = self.handle.take() {
-            if let Err(_panic) = handle.join() {
-                tracing::error!("diagnostics HTTP worker panicked during shutdown");
-            }
+        if let Some(handle) = self.handle.take()
+            && let Err(_panic) = handle.join()
+        {
+            tracing::error!("diagnostics HTTP worker panicked during shutdown");
         }
     }
 }
