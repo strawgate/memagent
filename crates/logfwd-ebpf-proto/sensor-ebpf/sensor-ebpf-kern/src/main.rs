@@ -46,7 +46,8 @@ const TCP_CLOSE: i32 = 7;
 /// Minimum DNS header size (ID + flags + 4 count fields = 12 bytes).
 const DNS_HEADER_SIZE: usize = 12;
 /// Maximum bytes to read from UDP payload for DNS parsing.
-const MAX_DNS_READ: usize = 280; // 12 header + 253 name + 4 qtype/qclass + margin
+/// 12 (header) + 259 (MAX_DNS_NAME: 255 wire QNAME + 4 qtype/qclass) + margin.
+const MAX_DNS_READ: usize = 284;
 
 // sockaddr_in constants
 const AF_INET: u16 = 2;
@@ -631,6 +632,15 @@ pub fn sys_enter_sendto(ctx: TracePointContext) -> u32 {
 }
 
 fn try_dns_query(ctx: &TracePointContext) -> Result<(), i64> {
+    // NOTE: This tracepoint fires on *all* sendto() calls, not just UDP.
+    // We filter on AF_INET + port 53, but do not verify socket type (SOCK_DGRAM).
+    // Checking sock->type requires resolving fd -> struct socket via
+    // task->files->fdt->fd[fd], which needs multiple bpf_probe_read_kernel calls
+    // and risks verifier rejection. In practice, TCP DNS uses connect()+send()
+    // rather than sendto(), so false positives from TCP sendto to port 53 are
+    // negligible. If TCP DNS filtering becomes necessary, hook sys_enter_write
+    // with fd tracking instead (see #1940).
+
     // SAFETY: tracepoint field reads at fixed kernel ABI offsets.
     let dest_addr_ptr: u64 = unsafe { ctx.read_at(48)? };
     if dest_addr_ptr == 0 {
@@ -727,7 +737,7 @@ fn try_dns_query(ctx: &TracePointContext) -> Result<(), i64> {
         (*event).qname_len = copy_len as u16;
 
         // Unrolled copy: the verifier needs a fixed bound with no internal
-        // branching. Copy up to MAX_DNS_NAME (253) bytes to avoid truncation.
+        // branching. Copy up to MAX_DNS_NAME (259) bytes to avoid truncation.
         // This loop has only a single conditional break, so the verifier handles
         // it without path explosion (unlike the label-parsing loop).
         let mut k = 0usize;
