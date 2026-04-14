@@ -179,3 +179,21 @@ path = "crates/logfwd-runtime/src/pipeline/health.rs"
 status = "required"
 reason = "Pipeline input-loop health transitions are an isolated local reducer with bounded Kani invariants."
 issue = 1440
+
+[[seams]]
+path = "crates/logfwd-arrow/src/lib.rs"
+status = "required"
+reason = "check_dup_bits bitmask logic is a bounded pure seam with oracle-verified Kani proofs."
+issue = 2072
+
+[[seams]]
+path = "crates/logfwd-arrow/src/columnar/accumulator.rs"
+status = "required"
+reason = "make_string_view u128 packing and buffer selection are bounded pure seams with oracle-verified Kani proofs."
+issue = 2072
+
+[[seams]]
+path = "crates/logfwd-arrow/src/columnar/row_protocol.rs"
+status = "required"
+reason = "RowLifecycle state machine transitions are bounded pure seams with symbolic action sequence proofs."
+issue = 2072
