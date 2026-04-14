@@ -1,6 +1,6 @@
 ---
-// Auto-playing tailing simulation: shows normal tailing, then rotation, then recovery.
-// Fixed-height viewport with tooltips pointing at interesting events.
+// Tailing simulation: continuous log fill with play/pause, auto-events (rotate/truncate),
+// and manual event buttons. Rotation/truncation shown as an overlay on the log panels.
 ---
 
 <div class="tl" id="tailing-diagram"></div>
@@ -20,10 +20,58 @@
   }
   .tl * { margin-top: 0 !important; }
 
-  /* Main layout: fixed-height container */
-  .tl-container {
+  /* Control bar */
+  .tl-controls {
+    display: flex; gap: 0.35rem; align-items: center;
+    margin-bottom: 0.6rem; flex-wrap: wrap;
+  }
+  .tl-btn {
+    padding: 0.25rem 0.6rem; border-radius: 5px;
+    border: 1px solid var(--tl-border); background: transparent;
+    color: var(--tl-text); font-size: 0.7rem; cursor: pointer;
+    font-weight: 600; transition: border-color 0.15s, background 0.15s;
+  }
+  .tl-btn:hover { border-color: var(--tl-accent); }
+  .tl-btn.active {
+    border-color: var(--tl-accent);
+    background: color-mix(in srgb, var(--tl-accent) 15%, transparent);
+  }
+  .tl-btn.event { border-color: var(--tl-amber); color: var(--tl-amber); }
+  .tl-btn.event:hover { background: color-mix(in srgb, var(--tl-amber) 12%, transparent); }
+  .tl-btn-sep { width: 1px; height: 20px; background: var(--tl-border); margin: 0 0.1rem; }
+
+  /* Panels wrapper — position:relative so overlay can cover it */
+  .tl-panels { position: relative; margin-bottom: 0.5rem; min-height: 230px; }
+  .tl-panels-inner {
     display: flex; gap: 0.75rem; flex-wrap: wrap;
     align-items: flex-start;
+  }
+
+  /* Overlay */
+  .tl-overlay {
+    position: absolute; inset: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.45); border-radius: 8px;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.25s;
+  }
+  .tl-overlay.visible { opacity: 1; }
+  .tl-overlay-inner {
+    background: var(--tl-bg); border: 2px solid var(--tl-amber);
+    border-radius: 8px; padding: 0.75rem 1.1rem; text-align: center;
+    max-width: 300px; box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  }
+  .tl-overlay-inner.ok { border-color: var(--tl-green); }
+  .tl-overlay-title {
+    font-size: 0.82rem; font-weight: 700; margin-bottom: 0.3rem;
+    color: var(--tl-text);
+  }
+  .tl-overlay-body {
+    font-size: 0.67rem; color: var(--tl-muted); line-height: 1.55;
+  }
+  .tl-overlay-body code {
+    font-family: var(--sl-font-mono, monospace); font-size: 0.65rem;
+    color: var(--tl-text);
   }
 
   /* File panel */
@@ -33,7 +81,7 @@
     background: var(--tl-bg); transition: border-color 0.3s, opacity 0.5s;
   }
   .tl-file.active { border-color: var(--tl-green); }
-  .tl-file.old { border-color: var(--tl-amber); opacity: 0.6; }
+  .tl-file.old { border-color: var(--tl-amber); opacity: 0.55; }
 
   .tl-file-head {
     display: flex; justify-content: space-between; align-items: center;
@@ -44,18 +92,15 @@
   .tl-fname { font-family: var(--sl-font-mono, monospace); }
   .tl-fmeta { font-size: 0.58rem; color: var(--tl-muted); font-weight: 400; }
 
-  /* Fixed-height log viewport — never grows */
+  /* Fixed-height log viewport — fills from bottom, never grows */
   .tl-lines {
     font-family: var(--sl-font-mono, monospace); font-size: 0.58rem;
-    line-height: 1.5; height: 180px; overflow-y: hidden;
-    position: relative;
+    line-height: 1.5; height: 160px; overflow-y: hidden; position: relative;
   }
-  .tl-lines-inner {
-    position: absolute; bottom: 0; left: 0; right: 0;
-  }
+  .tl-lines-inner { position: absolute; bottom: 0; left: 0; right: 0; }
   .tl-line { display: flex; gap: 0.25rem; }
   .tl-line-num { color: var(--tl-muted); min-width: 18px; text-align: right; user-select: none; }
-  .tl-line-text { white-space: nowrap; }
+  .tl-line-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 300px; }
   .tl-line.new .tl-line-text { color: var(--tl-green); font-weight: 600; }
 
   .tl-cursor {
@@ -75,29 +120,14 @@
   .tl-stat-val { font-weight: 700; font-family: var(--sl-font-mono, monospace); }
   .tl-stat-val.green { color: var(--tl-green); }
 
-  /* Tooltip — positioned relative to the container */
-  .tl-tooltip {
-    position: relative;
-    padding: 0.5rem 0.7rem; margin-top: 0.5rem;
-    background: var(--tl-bg); border: 1.5px solid var(--tl-border);
-    border-radius: 7px; font-size: 0.75rem; line-height: 1.45;
-    opacity: 0; transform: translateY(4px);
-    transition: opacity 0.3s, transform 0.3s, border-color 0.3s;
-    min-height: 2.2rem;
-  }
-  .tl-tooltip.visible { opacity: 1; transform: translateY(0); }
-  .tl-tooltip.warn { border-color: var(--tl-amber); }
-  .tl-tooltip.ok { border-color: var(--tl-green); }
-  .tl-tooltip b { font-size: 0.78rem; }
-
-  /* Progress bar */
+  /* Progress bar — shows time-to-next-auto-event */
   .tl-progress {
     height: 3px; background: var(--tl-border); border-radius: 2px;
     overflow: hidden; margin-top: 0.5rem;
   }
   .tl-progress-fill {
     height: 100%; width: 0; background: var(--tl-accent);
-    transition: width 0.3s linear;
+    transition: width 0.4s linear;
   }
 </style>
 
@@ -108,46 +138,80 @@
 
   function el(tag, cls) { var e = document.createElement(tag); if (cls) e.className = cls; return e; }
 
-  var LEVELS = ['INFO', 'INFO', 'DEBUG', 'INFO', 'WARN', 'INFO', 'INFO', 'ERROR', 'INFO', 'INFO'];
-  var MSGS = ['request handled', 'conn opened', 'query exec', 'cache hit', 'slow resp', 'health ok', 'batch done', 'conn refused', 'session new', 'auth ok'];
+  var LEVELS = ['INFO','INFO','DEBUG','INFO','WARN','INFO','INFO','ERROR','INFO','INFO'];
+  var MSGS = ['request handled','conn opened','query exec','cache hit','slow resp','health ok','batch done','conn refused','session new','auth ok'];
 
   function genLine(n) {
     return '{"level":"' + LEVELS[n % LEVELS.length] + '","msg":"' + MSGS[n % MSGS.length] + '","n":' + n + '}';
   }
 
-  // Build DOM
-  var containerEl = el('div', 'tl-container');
+  // State
+  var playing = true;
+  var autoMode = true;
+  var lineNum = 1, offset = 0, linesRead = 0, fileInode = 12345;
+  var autoLineCount = 0;
+  var autoEventIdx = 0;
+  var AUTO_EVENTS = ['rotate', 'truncate'];
+  var AUTO_THRESHOLDS = [10, 8];
+  var mainFile = null, oldFile = null;
+  var ticker = null;
+
+  // ----- Build DOM -----
+  var ctrlEl = el('div', 'tl-controls');
+
+  var btnPlay = el('button', 'tl-btn active');
+  btnPlay.type = 'button'; btnPlay.textContent = '\u23F8 Pause';
+  btnPlay.setAttribute('aria-pressed', 'true');
+
+  var btnAuto = el('button', 'tl-btn active');
+  btnAuto.type = 'button'; btnAuto.textContent = 'Auto';
+  btnAuto.title = 'Auto-fire rotate/truncate events after N lines';
+  btnAuto.setAttribute('aria-pressed', 'true');
+
+  var sep = el('div', 'tl-btn-sep');
+
+  var btnRotate = el('button', 'tl-btn event');
+  btnRotate.type = 'button'; btnRotate.textContent = '\u21BB Rotate';
+  btnRotate.title = 'Simulate logrotate: rename app.log \u2192 app.log.1 and create new file';
+
+  var btnTruncate = el('button', 'tl-btn event');
+  btnTruncate.type = 'button'; btnTruncate.textContent = '\u2702 Truncate';
+  btnTruncate.title = 'Simulate truncate: same inode, file content wiped, offset reset';
+
+  ctrlEl.appendChild(btnPlay);
+  ctrlEl.appendChild(btnAuto);
+  ctrlEl.appendChild(sep);
+  ctrlEl.appendChild(btnRotate);
+  ctrlEl.appendChild(btnTruncate);
+  root.appendChild(ctrlEl);
+
+  // Panels wrapper
+  var panelsEl = el('div', 'tl-panels');
+  var panelsInner = el('div', 'tl-panels-inner');
+  panelsEl.appendChild(panelsInner);
+
+  // Overlay (absolute, covers panelsEl)
+  var overlayEl = el('div', 'tl-overlay');
+  overlayEl.setAttribute('role', 'status');
+  overlayEl.setAttribute('aria-live', 'polite');
+  var overlayInner = el('div', 'tl-overlay-inner');
+  var overlayTitle = el('div', 'tl-overlay-title');
+  var overlayBody = el('div', 'tl-overlay-body');
+  overlayInner.appendChild(overlayTitle);
+  overlayInner.appendChild(overlayBody);
+  overlayEl.appendChild(overlayInner);
+  panelsEl.appendChild(overlayEl);
+  root.appendChild(panelsEl);
+
   var statsEl = el('div', 'tl-stats');
-  var tooltipEl = el('div', 'tl-tooltip');
-  tooltipEl.setAttribute('role', 'status');
-  tooltipEl.setAttribute('aria-live', 'polite');
+  root.appendChild(statsEl);
+
   var progressEl = el('div', 'tl-progress');
   var progressFill = el('div', 'tl-progress-fill');
   progressEl.appendChild(progressFill);
-  root.appendChild(containerEl);
-  root.appendChild(statsEl);
-  root.appendChild(tooltipEl);
   root.appendChild(progressEl);
 
-  var lineNum = 1, offset = 0, linesRead = 0, fileInode = 12345;
-  var ROTATE_AT = 10;
-  var TOTAL_STEPS = ROTATE_AT + 2 + 6; // tailing + rotate + new tailing
-  var step = 0;
-  var phase = 'tailing';
-  var mainFile = null, oldFile = null, timer = null;
-
-  function showTooltip(html, cls) {
-    tooltipEl.className = 'tl-tooltip' + (cls ? ' ' + cls : '');
-    tooltipEl.innerHTML = html;
-    // Force reflow then show
-    void tooltipEl.offsetHeight;
-    tooltipEl.classList.add('visible');
-  }
-
-  function hideTooltip() {
-    tooltipEl.classList.remove('visible');
-  }
-
+  // ----- File panel -----
   function createFileEl(name, inode, cls) {
     var f = el('div', 'tl-file ' + cls);
     var head = el('div', 'tl-file-head');
@@ -160,13 +224,36 @@
     linesWrap.appendChild(linesInner);
     f.appendChild(linesWrap);
     var cursor = el('div', 'tl-cursor');
+    cursor.textContent = '\u25B6 reading...';
     f.appendChild(cursor);
     return { el: f, linesInner: linesInner, cursor: cursor, fname: fname, fmeta: fmeta };
   }
 
+  function addLine(fileObj, num, text) {
+    // Remove "new" highlight from previous last line
+    var prev = fileObj.linesInner.lastChild;
+    if (prev) prev.className = 'tl-line';
+
+    var line = el('div', 'tl-line new');
+    var numEl = el('span', 'tl-line-num'); numEl.textContent = '' + num;
+    var textEl = el('span', 'tl-line-text'); textEl.textContent = text;
+    line.appendChild(numEl); line.appendChild(textEl);
+    fileObj.linesInner.appendChild(line);
+
+    while (fileObj.linesInner.children.length > 22) {
+      fileObj.linesInner.removeChild(fileObj.linesInner.firstChild);
+    }
+  }
+
   function updateStats() {
     statsEl.innerHTML = '';
-    [['Lines read', linesRead, 'green'], ['Offset', offset + ' B', ''], ['Inode', fileInode, ''], ['Phase', phase.replace('-', ' '), phase.indexOf('tailing') >= 0 ? 'green' : '']].forEach(function(item) {
+    var items = [
+      ['Lines read', linesRead, 'green'],
+      ['Offset', offset + ' B', ''],
+      ['Inode', fileInode, ''],
+      ['Mode', autoMode ? 'auto' : 'manual', autoMode ? 'green' : ''],
+    ];
+    items.forEach(function(item) {
       var s = el('div', 'tl-stat');
       var l = el('div', 'tl-stat-label'); l.textContent = item[0];
       var v = el('div', 'tl-stat-val' + (item[2] ? ' ' + item[2] : '')); v.textContent = '' + item[1];
@@ -174,122 +261,168 @@
     });
   }
 
-  function addLine(fileObj, num, text) {
-    var line = el('div', 'tl-line new');
-    var numEl = el('span', 'tl-line-num'); numEl.textContent = '' + num;
-    var textEl = el('span', 'tl-line-text'); textEl.textContent = text;
-    line.appendChild(numEl); line.appendChild(textEl);
-    fileObj.linesInner.appendChild(line);
-  }
-
   function updateProgress() {
-    step++;
-    var pct = Math.min(100, (step / TOTAL_STEPS) * 100);
-    progressFill.style.width = pct + '%';
+    if (!autoMode) { progressFill.style.width = '0%'; return; }
+    if (!playing) return;
+    var threshold = AUTO_THRESHOLDS[autoEventIdx % AUTO_THRESHOLDS.length];
+    progressFill.style.width = Math.min(100, (autoLineCount / threshold) * 100) + '%';
   }
 
-  // Init
-  showTooltip('<b>Tailing app.log</b> \u2014 logfwd reads new lines as they appear.');
-  mainFile = createFileEl('app.log', fileInode, 'active');
-  containerEl.appendChild(mainFile.el);
-  mainFile.cursor.textContent = '\u25B6 reading...';
-  updateStats();
-
-  function tick() {
-    if (phase === 'tailing') {
-      addLine(mainFile, lineNum, genLine(lineNum));
-      offset += genLine(lineNum).length + 1;
-      lineNum++; linesRead++;
-      mainFile.cursor.textContent = '\u25B6 offset: ' + offset;
-      updateStats();
-      updateProgress();
-
-      if (lineNum > ROTATE_AT) {
-        phase = 'rotating';
-        showTooltip('<b>\u26A0 Log rotation!</b> \u2014 logrotate renames <code>app.log</code> \u2192 <code>app.log.1</code> and creates a new empty file. The inode changes. A naive <code>tail -f</code> would keep reading the old file and miss new data.', 'warn');
-
-        mainFile.el.className = 'tl-file old';
-        mainFile.fname.textContent = 'app.log.1';
-        mainFile.fmeta.textContent = 'inode: ' + fileInode + ' (old)';
-        mainFile.cursor.textContent = '\u25B6 EOF \u2014 drained';
-
-        fileInode = 67890;
-        oldFile = mainFile;
-        mainFile = createFileEl('app.log', fileInode, 'active');
-        containerEl.insertBefore(mainFile.el, oldFile.el);
-        mainFile.cursor.textContent = '\u25B6 new inode ' + fileInode;
-        offset = 0; lineNum = 1;
-        updateStats();
-        updateProgress();
-        timer = setTimeout(tick, 2500);
-        return;
-      }
-      timer = setTimeout(tick, 400);
-
-    } else if (phase === 'rotating') {
-      showTooltip('<b>\u2705 Rotation detected</b> \u2014 logfwd saw inode change from 12345 \u2192 ' + fileInode + '. Drained old file, opened new file at offset 0. <b>No data lost.</b>', 'ok');
-      phase = 'new-tailing';
-      updateStats();
-      updateProgress();
-      timer = setTimeout(tick, 1500);
-
-    } else if (phase === 'new-tailing') {
-      addLine(mainFile, lineNum, genLine(lineNum));
-      offset += genLine(lineNum).length + 1;
-      lineNum++; linesRead++;
-      mainFile.cursor.textContent = '\u25B6 offset: ' + offset;
-      updateStats();
-      updateProgress();
-
-      if (lineNum <= 4) {
-        showTooltip('<b>Tailing new app.log</b> \u2014 Reading from offset 0 on the new inode. Old file is fully drained.', 'ok');
-      } else {
-        hideTooltip();
-      }
-
-      if (lineNum > 6) {
-        phase = 'done';
-        showTooltip('<b>Done!</b> \u2014 logfwd handled rotation seamlessly: drained old file, detected new inode, resumed tailing. <b>' + linesRead + ' lines read, zero lost.</b>', 'ok');
-        timer = setTimeout(function() {
-          // Reset for next loop
-          containerEl.innerHTML = '';
-          hideTooltip();
-          progressFill.style.width = '0%';
-          step = 0;
-          lineNum = 1; offset = 0; linesRead = 0; fileInode = 12345;
-          phase = 'tailing';
-          showTooltip('<b>Tailing app.log</b> \u2014 logfwd reads new lines as they appear.');
-          mainFile = createFileEl('app.log', fileInode, 'active');
-          containerEl.appendChild(mainFile.el);
-          mainFile.cursor.textContent = '\u25B6 reading...';
-          updateStats();
-          timer = setTimeout(tick, 800);
-        }, 5000);
-        return;
-      }
-      timer = setTimeout(tick, 400);
-    }
+  // ----- Overlay -----
+  var overlayTimer = null;
+  function showOverlay(title, body, level, duration) {
+    if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
+    overlayInner.className = 'tl-overlay-inner ' + (level || 'warn');
+    overlayTitle.textContent = title;
+    overlayBody.innerHTML = body;
+    void overlayEl.offsetHeight;
+    overlayEl.classList.add('visible');
+    overlayTimer = setTimeout(function() {
+      overlayEl.classList.remove('visible');
+      overlayTimer = null;
+    }, duration || 2500);
   }
 
-  // Respect reduced motion — show final state statically
-  var prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if (!prefersReducedMotion) {
-    timer = setTimeout(tick, 800);
-  } else {
-    // Show a populated static view so users still see the concept
-    for (var rm = 1; rm <= 6; rm++) {
-      addLine(mainFile, rm, genLine(rm));
-      offset += genLine(rm).length + 1;
-      lineNum++; linesRead++;
-    }
+  // ----- Event triggers -----
+  function triggerRotate() {
+    if (!mainFile) return;
+    var oldInode = fileInode;
+    fileInode = (fileInode === 12345 ? 67890 : 12345);
+
+    showOverlay(
+      '\u26A0 logrotate: rotation detected',
+      '<code>app.log</code> \u2192 <code>app.log.1</code><br>' +
+      'inode\u00A0' + oldInode + '\u00A0\u2192\u00A0' + fileInode + '<br>' +
+      'logfwd drains old file, opens new at offset\u00A00. No data lost.',
+      'warn', 2400
+    );
+
+    mainFile.el.className = 'tl-file old';
+    mainFile.fname.textContent = 'app.log.1';
+    mainFile.fmeta.textContent = 'inode: ' + oldInode + ' (old)';
+    mainFile.cursor.textContent = '\u25B6 EOF \u2014 drained';
+    oldFile = mainFile;
+
+    mainFile = createFileEl('app.log', fileInode, 'active');
+    offset = 0; lineNum = 1;
+    panelsInner.insertBefore(mainFile.el, oldFile.el);
+    mainFile.cursor.textContent = '\u25B6 new inode ' + fileInode;
+    updateStats();
+
+    var toRemove = oldFile;
+    setTimeout(function() {
+      if (toRemove && toRemove.el.parentNode) {
+        toRemove.el.parentNode.removeChild(toRemove.el);
+        if (oldFile === toRemove) oldFile = null;
+      }
+    }, 3200);
+  }
+
+  function triggerTruncate() {
+    if (!mainFile) return;
+    showOverlay(
+      '\u2702 Truncation detected',
+      'File size shrank, inode unchanged\u00A0(' + fileInode + ').<br>' +
+      'logfwd offset\u00A0>\u00A0file size \u2014 resets to\u00A00.<br>' +
+      'Reads fresh content from the beginning.',
+      'ok', 2200
+    );
+    mainFile.linesInner.innerHTML = '';
+    offset = 0; lineNum = 1;
+    mainFile.cursor.textContent = '\u25B6 truncated \u2014 offset:\u00A00';
+    updateStats();
+  }
+
+  // ----- Ticker -----
+  function tickFn() {
+    if (!playing || !mainFile) return;
+
+    var lineText = genLine(lineNum);
+    addLine(mainFile, lineNum, lineText);
+    offset += lineText.length + 1;
+    lineNum++; linesRead++;
     mainFile.cursor.textContent = '\u25B6 offset: ' + offset;
     updateStats();
-    showTooltip('<b>Tailing app.log</b> \u2014 logfwd reads new lines as they appear. Animation paused (reduced motion).', '');
+    autoLineCount++;
+    updateProgress();
+
+    if (autoMode) {
+      var threshold = AUTO_THRESHOLDS[autoEventIdx % AUTO_THRESHOLDS.length];
+      if (autoLineCount >= threshold) {
+        autoLineCount = 0;
+        var eventName = AUTO_EVENTS[autoEventIdx % AUTO_EVENTS.length];
+        autoEventIdx++;
+        if (eventName === 'rotate') triggerRotate();
+        else triggerTruncate();
+      }
+    }
   }
 
-  // Cleanup
+  function startTicker() { if (!ticker) ticker = setInterval(tickFn, 400); }
+  function stopTicker() { if (ticker) { clearInterval(ticker); ticker = null; } }
+
+  // ----- Button handlers -----
+  btnPlay.onclick = function() {
+    playing = !playing;
+    if (playing) {
+      btnPlay.textContent = '\u23F8 Pause';
+      btnPlay.className = 'tl-btn active';
+      btnPlay.setAttribute('aria-pressed', 'true');
+      startTicker();
+    } else {
+      btnPlay.textContent = '\u25B6 Play';
+      btnPlay.className = 'tl-btn';
+      btnPlay.setAttribute('aria-pressed', 'false');
+      stopTicker();
+    }
+  };
+
+  btnAuto.onclick = function() {
+    autoMode = !autoMode;
+    autoLineCount = 0;
+    btnAuto.className = 'tl-btn' + (autoMode ? ' active' : '');
+    btnAuto.setAttribute('aria-pressed', autoMode ? 'true' : 'false');
+    updateProgress();
+  };
+
+  btnRotate.onclick = function() { triggerRotate(); autoLineCount = 0; updateProgress(); };
+  btnTruncate.onclick = function() { triggerTruncate(); autoLineCount = 0; updateProgress(); };
+
+  function handleVisibility() {
+    if (document.hidden) stopTicker();
+    else if (playing) startTicker();
+  }
+
+  // ----- Init -----
+  mainFile = createFileEl('app.log', fileInode, 'active');
+  panelsInner.appendChild(mainFile.el);
+  updateStats();
+  updateProgress();
+
+  var reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!reducedMotion) {
+    document.addEventListener('visibilitychange', handleVisibility);
+    startTicker();
+  } else {
+    playing = false;
+    btnPlay.textContent = '\u25B6 Play';
+    btnPlay.className = 'tl-btn';
+    btnPlay.setAttribute('aria-pressed', 'false');
+    for (var rm = 1; rm <= 8; rm++) {
+      var rmText = genLine(rm);
+      addLine(mainFile, rm, rmText);
+      offset += rmText.length + 1;
+      lineNum++; linesRead++;
+    }
+    mainFile.cursor.textContent = '\u25B6 offset: ' + offset + ' (reduced motion)';
+    updateStats();
+  }
+
+  // ----- Cleanup -----
   document.addEventListener('astro:before-swap', function() {
-    if (timer) { clearTimeout(timer); timer = null; }
+    document.removeEventListener('visibilitychange', handleVisibility);
+    stopTicker();
+    if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
   }, { once: true });
 })();
 </script>
