@@ -635,7 +635,16 @@ impl Config {
                     }
 
                     // Reject fields that don't apply to this output type.
-                    if output.output_type != OutputType::Elasticsearch {
+                    if output.output_type == OutputType::Elasticsearch {
+                        // It is Elasticsearch
+                        if let Some(action) = output.action.as_deref()
+                            && !matches!(action, "index" | "create")
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': elasticsearch action must be 'index' or 'create', got '{action}'"
+                            )));
+                        }
+                    } else {
                         if output.index.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': 'index' is only supported for elasticsearch outputs"
@@ -660,15 +669,6 @@ impl Config {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': 'max_bulk_bytes' is only supported for elasticsearch outputs"
                             )));
-                        }
-                    } else {
-                        // It is Elasticsearch
-                        if let Some(action) = output.action.as_deref() {
-                            if !matches!(action, "index" | "create") {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': elasticsearch action must be 'index' or 'create', got '{action}'"
-                                )));
-                            }
                         }
                     }
 

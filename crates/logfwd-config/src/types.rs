@@ -553,16 +553,12 @@ pub struct OutputConfig {
     pub static_labels: Option<HashMap<String, String>>,
     pub label_columns: Option<Vec<String>>,
     /// Elasticsearch: Ingest Node pipeline name.
-    #[serde(default)]
     pub pipeline: Option<String>,
     /// Elasticsearch: Action to perform in bulk API (`index` or `create`). Default is `index`.
-    #[serde(default)]
     pub action: Option<String>,
     /// Elasticsearch: Timeout for bulk requests in seconds. Default is 30.
-    #[serde(default)]
     pub timeout_sec: Option<u64>,
     /// Elasticsearch: Maximum uncompressed bulk payload size in bytes. Default is 5242880 (5 MiB).
-    #[serde(default)]
     pub max_bulk_bytes: Option<usize>,
 }
 
