@@ -291,6 +291,22 @@ pub struct GeneratorInputConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct HostMetricsInputConfig {
+    /// Glob patterns for process names to include (e.g., `["nginx*", "python"]`).
+    #[serde(default)]
+    pub include_process_names: Option<Vec<String>>,
+    /// Glob patterns for process names to exclude.
+    #[serde(default)]
+    pub exclude_process_names: Option<Vec<String>>,
+    /// Specific event types to enable (e.g., `["process_exec", "tcp_connect"]`).
+    #[serde(default)]
+    pub include_event_types: Option<Vec<String>>,
+    /// Specific event types to disable.
+    #[serde(default)]
+    pub exclude_event_types: Option<Vec<String>>,
+    /// Ring buffer size in kilobytes.
+    #[serde(default)]
+    pub ring_buffer_size_kb: Option<usize>,
+
     /// Sensor sample cadence. Defaults to 10_000 when omitted.
     pub poll_interval_ms: Option<u64>,
     /// Deprecated no-op retained for backward compatibility.

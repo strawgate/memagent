@@ -408,6 +408,17 @@ impl Config {
                                     )));
                                 }
                             }
+                            if s.sensor.as_ref().and_then(|cfg| cfg.ring_buffer_size_kb) == Some(0)
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': sensor.ring_buffer_size_kb must be at least 1"
+                                )));
+                            }
+                            if s.sensor.as_ref().and_then(|cfg| cfg.poll_interval_ms) == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': sensor.poll_interval_ms must be at least 1"
+                                )));
+                            }
                         }
                         InputTypeConfig::ArrowIpc(a) => {
                             if let Err(msg) = validate_bind_addr(&a.listen) {

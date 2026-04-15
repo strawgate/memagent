@@ -473,6 +473,24 @@ pub(super) fn build_input_state(
                     ebpf_binary_path: ebpf_path.into(),
                     max_events_per_poll: max_events,
                     filter_self: true,
+                    include_process_names: s
+                        .sensor
+                        .as_ref()
+                        .and_then(|c| c.include_process_names.clone()),
+                    exclude_process_names: s
+                        .sensor
+                        .as_ref()
+                        .and_then(|c| c.exclude_process_names.clone()),
+                    include_event_types: s
+                        .sensor
+                        .as_ref()
+                        .and_then(|c| c.include_event_types.clone()),
+                    exclude_event_types: s
+                        .sensor
+                        .as_ref()
+                        .and_then(|c| c.exclude_event_types.clone()),
+                    ring_buffer_size_kb: s.sensor.as_ref().and_then(|c| c.ring_buffer_size_kb),
+                    poll_interval_ms: s.sensor.as_ref().and_then(|c| c.poll_interval_ms),
                 };
 
                 let source = PlatformSensorInput::new(name, sensor_cfg).map_err(|e| {
@@ -613,6 +631,11 @@ fn build_host_metrics_config(
             .and_then(|c| c.max_rows_per_poll)
             .filter(|&n| n > 0)
             .unwrap_or(256),
+        include_process_names: cfg.and_then(|c| c.include_process_names.clone()),
+        exclude_process_names: cfg.and_then(|c| c.exclude_process_names.clone()),
+        include_event_types: cfg.and_then(|c| c.include_event_types.clone()),
+        exclude_event_types: cfg.and_then(|c| c.exclude_event_types.clone()),
+        ring_buffer_size_kb: cfg.and_then(|c| c.ring_buffer_size_kb),
     }
 }
 
