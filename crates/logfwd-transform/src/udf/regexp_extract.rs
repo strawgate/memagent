@@ -740,8 +740,9 @@ mod verification {
     ///  - always returns the exact value for non-negative values in usize range
     ///
     /// This covers the fix at the group-index extraction site in
-    /// `RegexpExtractUDF::invoke` (changed from `*v as usize` which was UB
-    /// for negative values in debug builds and wrapped in release).
+    /// `RegexpExtractUDF::invoke` (changed from `*v as usize` which produced
+    /// a very large usize for negative values via defined 2's-complement
+    /// wrapping, silently selecting a non-existent capture group).
     #[kani::proof]
     fn verify_group_index_conversion() {
         let v: i64 = kani::any();

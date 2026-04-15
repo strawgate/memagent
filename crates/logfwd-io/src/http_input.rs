@@ -1133,8 +1133,8 @@ mod verification {
     /// the body is bounded by Content-Length / request size limits).
     ///
     /// The UNSAFE case — where a single chunk is larger than the cap — is
-    /// documented as a known gap: the production code should use
-    /// `saturating_add` here instead of `+=`.
+    /// handled by the production code using `saturating_add` (line 290),
+    /// which caps accumulation at `usize::MAX` so the loop exits cleanly.
     #[kani::proof]
     fn verify_drain_accumulator_safe_under_chunk_cap() {
         let cap: usize = kani::any();
