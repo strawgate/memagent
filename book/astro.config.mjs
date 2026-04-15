@@ -4,6 +4,15 @@ import starlight from "@astrojs/starlight";
 export default defineConfig({
   site: 'https://strawgate.github.io',
   base: '/memagent',
+  redirects: {
+    '/how-it-works/':             '/learn/',
+    '/how-it-works/backpressure/': '/learn/backpressure/',
+    '/how-it-works/checkpoints/':  '/learn/checkpoints/',
+    '/how-it-works/columnar/':     '/learn/columnar/',
+    '/how-it-works/performance/':  '/learn/performance/',
+    '/how-it-works/scanner/':      '/learn/scanner/',
+    '/how-it-works/tailing/':      '/learn/tailing/',
+  },
   integrations: [
     starlight({
       title: "logfwd",

@@ -178,31 +178,30 @@ function init() {
 
   // UI-only state
   let playing = true;
-  let linesRead = 0;
   let mainFile: ReturnType<typeof createFileEl> | null = null;
   let oldFile: ReturnType<typeof createFileEl> | null = null;
   let pendingRemoval: ReturnType<typeof createFileEl> | null = null;
   let ticker: ReturnType<typeof setInterval> | null = null;
 
   // ----- DOM -----
-  var ctrlEl = el('div', 'tl-controls');
-  var btnPlay = el('button', 'tl-btn active');
+  const ctrlEl = el('div', 'tl-controls');
+  const btnPlay = el('button', 'tl-btn active');
   btnPlay.type = 'button'; btnPlay.textContent = '\u23F8 Pause';
   btnPlay.setAttribute('aria-pressed', 'true');
   ctrlEl.appendChild(btnPlay);
   root.appendChild(ctrlEl);
 
   // Panels
-  var panelsEl = el('div', 'tl-panels');
-  var panelsInner = el('div', 'tl-panels-inner');
+  const panelsEl = el('div', 'tl-panels');
+  const panelsInner = el('div', 'tl-panels-inner');
   panelsEl.appendChild(panelsInner);
-  var overlayEl = el('div', 'tl-overlay');
+  const overlayEl = el('div', 'tl-overlay');
   overlayEl.setAttribute('role', 'status');
   overlayEl.setAttribute('aria-live', 'polite');
-  var overlayInner = el('div', 'tl-overlay-inner');
-  var overlayTitle = el('div', 'tl-overlay-title');
-  var overlayBody = el('div', 'tl-overlay-body');
-  var overlayClose = el('button', 'tl-overlay-close');
+  const overlayInner = el('div', 'tl-overlay-inner');
+  const overlayTitle = el('div', 'tl-overlay-title');
+  const overlayBody = el('div', 'tl-overlay-body');
+  const overlayClose = el('button', 'tl-overlay-close');
   overlayClose.type = 'button'; overlayClose.textContent = '\u00D7';
   overlayClose.setAttribute('aria-label', 'Dismiss');
   overlayInner.appendChild(overlayTitle); overlayInner.appendChild(overlayBody); overlayInner.appendChild(overlayClose);
@@ -211,46 +210,46 @@ function init() {
   root.appendChild(panelsEl);
 
   // Auto-rotate row
-  var autoRowEl = el('div', 'tl-autorow');
-  var autoBarTrack = el('div', 'tl-autobar-track');
-  var autoBarFill = el('div', 'tl-autobar-fill');
+  const autoRowEl = el('div', 'tl-autorow');
+  const autoBarTrack = el('div', 'tl-autobar-track');
+  const autoBarFill = el('div', 'tl-autobar-fill');
   autoBarTrack.appendChild(autoBarFill);
-  var autoBarLabel = el('span', 'tl-autorow-label');
+  const autoBarLabel = el('span', 'tl-autorow-label');
   autoRowEl.appendChild(autoBarTrack); autoRowEl.appendChild(autoBarLabel);
   root.appendChild(autoRowEl);
 
   // Full-width rotate button
-  var rotateBtnEl = el('button', 'tl-action-btn');
+  const rotateBtnEl = el('button', 'tl-action-btn');
   rotateBtnEl.type = 'button'; rotateBtnEl.textContent = '\u21BB Rotate the Log';
   root.appendChild(rotateBtnEl);
 
-  var statsEl = el('div', 'tl-stats');
+  const statsEl = el('div', 'tl-stats');
   root.appendChild(statsEl);
 
   // ----- File panel -----
   function createFileEl(name, inode, cls) {
-    var f = el('div', 'tl-file ' + cls);
-    var head = el('div', 'tl-file-head');
-    var fname = el('span', 'tl-fname'); fname.textContent = name;
-    var fmeta = el('span', 'tl-fmeta'); fmeta.textContent = 'inode:\u00A0' + inode;
+    const f = el('div', 'tl-file ' + cls);
+    const head = el('div', 'tl-file-head');
+    const fname = el('span', 'tl-fname'); fname.textContent = name;
+    const fmeta = el('span', 'tl-fmeta'); fmeta.textContent = 'inode:\u00A0' + inode;
     head.appendChild(fname); head.appendChild(fmeta);
     f.appendChild(head);
-    var linesWrap = el('div', 'tl-lines');
-    var linesInner = el('div', 'tl-lines-inner');
+    const linesWrap = el('div', 'tl-lines');
+    const linesInner = el('div', 'tl-lines-inner');
     linesWrap.appendChild(linesInner);
     f.appendChild(linesWrap);
-    var cursor = el('div', 'tl-cursor');
+    const cursor = el('div', 'tl-cursor');
     cursor.textContent = '\u25B6 reading\u2026';
     f.appendChild(cursor);
     return { el: f, linesInner: linesInner, cursor: cursor, fname: fname, fmeta: fmeta };
   }
 
   function addLine(fileObj, num, text) {
-    var prev = fileObj.linesInner.lastChild;
+    const prev = fileObj.linesInner.lastChild;
     if (prev) prev.className = 'tl-line';
-    var line = el('div', 'tl-line new');
-    var numEl = el('span', 'tl-line-num'); numEl.textContent = '' + num;
-    var textEl = el('span', 'tl-line-text'); textEl.textContent = text;
+    const line = el('div', 'tl-line new');
+    const numEl = el('span', 'tl-line-num'); numEl.textContent = '' + num;
+    const textEl = el('span', 'tl-line-text'); textEl.textContent = text;
     line.appendChild(numEl); line.appendChild(textEl);
     fileObj.linesInner.appendChild(line);
     while (fileObj.linesInner.children.length > 22) {
@@ -284,13 +283,13 @@ function init() {
   }
 
   // ----- Overlay -----
-  var overlayTimer = null;
+  let overlayTimer = null;
   function dismissOverlay() {
     if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
     overlayEl.classList.remove('visible');
     overlayClose.className = 'tl-overlay-close';
     if (pendingRemoval) {
-      var toRemove = pendingRemoval; pendingRemoval = null;
+      const toRemove = pendingRemoval; pendingRemoval = null;
       setTimeout(function () {
         if (toRemove.el.parentNode) toRemove.el.parentNode.removeChild(toRemove.el);
         if (oldFile === toRemove) oldFile = null;

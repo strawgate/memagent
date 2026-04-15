@@ -161,25 +161,25 @@ function init() {
   let ticker: ReturnType<typeof setInterval> | null = null;
 
   // ----- DOM -----
-  var ctrlEl = el('div', 'td-controls');
-  var btnPlay = el('button', 'td-btn active');
+  let ctrlEl = el('div', 'td-controls');
+  let btnPlay = el('button', 'td-btn active');
   btnPlay.type = 'button'; btnPlay.textContent = '\u23F8 Pause';
   btnPlay.setAttribute('aria-pressed', 'true');
   ctrlEl.appendChild(btnPlay);
   root.appendChild(ctrlEl);
 
   // Panels
-  var panelsEl = el('div', 'td-panels');
-  var panelsInner = el('div', 'td-panels-inner');
+  let panelsEl = el('div', 'td-panels');
+  let panelsInner = el('div', 'td-panels-inner');
   panelsEl.appendChild(panelsInner);
 
-  var overlayEl = el('div', 'td-overlay');
+  let overlayEl = el('div', 'td-overlay');
   overlayEl.setAttribute('role', 'status');
   overlayEl.setAttribute('aria-live', 'polite');
-  var overlayInner = el('div', 'td-overlay-inner');
-  var overlayTitle = el('div', 'td-overlay-title');
-  var overlayBody = el('div', 'td-overlay-body');
-  var overlayClose = el('button', 'td-overlay-close');
+  let overlayInner = el('div', 'td-overlay-inner');
+  let overlayTitle = el('div', 'td-overlay-title');
+  let overlayBody = el('div', 'td-overlay-body');
+  let overlayClose = el('button', 'td-overlay-close');
   overlayClose.type = 'button'; overlayClose.textContent = '\u00D7';
   overlayClose.setAttribute('aria-label', 'Dismiss');
   overlayInner.appendChild(overlayTitle);
@@ -190,11 +190,11 @@ function init() {
   root.appendChild(panelsEl);
 
   // Full-width truncate button
-  var truncateBtnEl = el('button', 'td-action-btn');
+  let truncateBtnEl = el('button', 'td-action-btn');
   truncateBtnEl.type = 'button'; truncateBtnEl.textContent = '\u2702 Truncate the Log';
   root.appendChild(truncateBtnEl);
 
-  var statsEl = el('div', 'td-stats');
+  let statsEl = el('div', 'td-stats');
   root.appendChild(statsEl);
 
   // ----- File panel -----
@@ -205,11 +205,11 @@ function init() {
     const fmeta = el('span', 'td-fmeta'); fmeta.textContent = 'inode:\u00A0' + sim.fileInode;
     head.appendChild(fname); head.appendChild(fmeta);
     f.appendChild(head);
-    var linesWrap = el('div', 'td-lines');
-    var linesInner = el('div', 'td-lines-inner');
+    let linesWrap = el('div', 'td-lines');
+    let linesInner = el('div', 'td-lines-inner');
     linesWrap.appendChild(linesInner);
     f.appendChild(linesWrap);
-    var cursor = el('div', 'td-cursor');
+    let cursor = el('div', 'td-cursor');
     cursor.textContent = '\u25B6 reading\u2026';
     f.appendChild(cursor);
     return { el: f, linesInner: linesInner, cursor: cursor, fmeta: fmeta };
@@ -217,11 +217,11 @@ function init() {
 
   function addLine(num, text) {
     if (!fileObj) return;
-    var prev = fileObj.linesInner.lastChild;
+    let prev = fileObj.linesInner.lastChild;
     if (prev) prev.className = 'td-line';
-    var line = el('div', 'td-line new');
-    var numEl = el('span', 'td-line-num'); numEl.textContent = '' + num;
-    var textEl = el('span', 'td-line-text'); textEl.textContent = text;
+    let line = el('div', 'td-line new');
+    let numEl = el('span', 'td-line-num'); numEl.textContent = '' + num;
+    let textEl = el('span', 'td-line-text'); textEl.textContent = text;
     line.appendChild(numEl); line.appendChild(textEl);
     fileObj.linesInner.appendChild(line);
     while (fileObj.linesInner.children.length > 22) {
@@ -251,7 +251,7 @@ function init() {
   }
 
   // ----- Overlay -----
-  var overlayTimer = null;
+  let overlayTimer = null;
   function dismissOverlay() {
     if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
     overlayEl.classList.remove('visible');

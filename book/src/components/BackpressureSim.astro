@@ -312,69 +312,69 @@ function init() {
   const sim = makeSim();
   let running = true;
 
-  var SRC_MODES = [
+  let SRC_MODES = [
     { id: 'file',  label: 'File',  name: 'File Input'  },
     { id: 'udp',   label: 'UDP',   name: 'UDP Input'   },
     { id: 'otlp',  label: 'OTLP',  name: 'OTLP Input'  },
   ];
 
   // DOM refs for source viz (rebuilt on mode switch)
-  var srcNameEl, srcVizEl, srcTabBtns;
-  var fileLogRow1, fileLogRow2, fileCursorRow, fileMiniMore;
-  var filePrevRead = 0, fileLogBuf = ['', ''];
-  var FILE_LOG_MSGS = [
+  let srcNameEl, srcVizEl, srcTabBtns;
+  let fileLogRow1, fileLogRow2, fileCursorRow, fileMiniMore;
+  let filePrevRead = 0, fileLogBuf = ['', ''];
+  let FILE_LOG_MSGS = [
     'INFO  checkpoint flushed', 'WARN  slow consumer backoff',
     'INFO  batch queued ok',    'DEBUG scan: 512 rows',
     'INFO  SQL transform ok',   'DEBUG inotify IN_MODIFY',
     'INFO  output dispatch ok', 'WARN  pipeline 8/16 full',
     'INFO  flush complete',     'DEBUG poll() returned 1',
   ];
-  var udpMiniFill, udpMiniDropCount;
-  var otlpMiniLogEl;
+  let udpMiniFill, udpMiniDropCount;
+  let otlpMiniLogEl;
 
   function fakeLogLine(n) {
-    var t = 8 * 3600 + 23 * 60 + 40 + Math.floor(n / 4);
-    var h = Math.floor(t / 3600) % 24;
-    var m = Math.floor((t % 3600) / 60);
-    var s = t % 60;
-    var ts = (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+    let t = 8 * 3600 + 23 * 60 + 40 + Math.floor(n / 4);
+    let h = Math.floor(t / 3600) % 24;
+    let m = Math.floor((t % 3600) / 60);
+    let s = t % 60;
+    let ts = (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
     return ts + ' ' + FILE_LOG_MSGS[n % FILE_LOG_MSGS.length];
   }
 
   // --- Build control bar ---
-  var controls = el('div', 'bp-controls');
-  var lbl = el('label', 'bp-label'); lbl.htmlFor = 'bp-output-speed'; lbl.textContent = 'Output Speed';
-  var sliderWrap = el('div', 'bp-slider-wrap');
-  var slider = el('input', 'bp-slider');
+  let controls = el('div', 'bp-controls');
+  let lbl = el('label', 'bp-label'); lbl.htmlFor = 'bp-output-speed'; lbl.textContent = 'Output Speed';
+  let sliderWrap = el('div', 'bp-slider-wrap');
+  let slider = el('input', 'bp-slider');
   slider.id = 'bp-output-speed';
   slider.type = 'range'; slider.min = '0'; slider.max = '100'; slider.value = '100';
-  var speedVal = el('span', 'bp-speed-val'); speedVal.textContent = '100%';
+  let speedVal = el('span', 'bp-speed-val'); speedVal.textContent = '100%';
   sliderWrap.appendChild(slider); sliderWrap.appendChild(speedVal);
 
-  var btns = el('div', 'bp-btns');
-  var btnFast = el('button', 'bp-btn active'); btnFast.type = 'button'; btnFast.textContent = 'Fast'; btnFast.setAttribute('aria-pressed', 'true');
-  var btnSlow = el('button', 'bp-btn'); btnSlow.type = 'button'; btnSlow.textContent = 'Slow'; btnSlow.setAttribute('aria-pressed', 'false');
-  var btnDown = el('button', 'bp-btn'); btnDown.type = 'button'; btnDown.textContent = 'Outage'; btnDown.setAttribute('aria-pressed', 'false');
+  let btns = el('div', 'bp-btns');
+  let btnFast = el('button', 'bp-btn active'); btnFast.type = 'button'; btnFast.textContent = 'Fast'; btnFast.setAttribute('aria-pressed', 'true');
+  let btnSlow = el('button', 'bp-btn'); btnSlow.type = 'button'; btnSlow.textContent = 'Slow'; btnSlow.setAttribute('aria-pressed', 'false');
+  let btnDown = el('button', 'bp-btn'); btnDown.type = 'button'; btnDown.textContent = 'Outage'; btnDown.setAttribute('aria-pressed', 'false');
   btns.appendChild(btnFast); btns.appendChild(btnSlow); btns.appendChild(btnDown);
 
   controls.appendChild(lbl); controls.appendChild(sliderWrap); controls.appendChild(btns);
   root.appendChild(controls);
 
   // --- Build pipeline ---
-  var pipeline = el('div', 'bp-pipeline');
+  let pipeline = el('div', 'bp-pipeline');
 
   // Source panel (replaces generic I/O Worker)
-  var srcEl = el('div', 'bp-stage');
-  var srcHead = el('div', 'bp-stage-head');
+  let srcEl = el('div', 'bp-stage');
+  let srcHead = el('div', 'bp-stage-head');
   srcNameEl = el('span', 'bp-stage-name'); srcNameEl.textContent = 'File Input';
-  var srcTagEl = el('span', 'bp-stage-tag bp-tag-ok'); srcTagEl.textContent = 'OK';
+  let srcTagEl = el('span', 'bp-stage-tag bp-tag-ok'); srcTagEl.textContent = 'OK';
   srcHead.appendChild(srcNameEl); srcHead.appendChild(srcTagEl);
   srcEl.appendChild(srcHead);
 
   // Source mode tabs
-  var srcTabsEl = el('div', 'bp-source-tabs');
+  let srcTabsEl = el('div', 'bp-source-tabs');
   srcTabBtns = SRC_MODES.map(function(m) {
-    var btn = el('button', 'bp-source-tab' + (m.id === sim.sourceMode ? ' active' : ''));
+    let btn = el('button', 'bp-source-tab' + (m.id === sim.sourceMode ? ' active' : ''));
     btn.type = 'button'; btn.textContent = m.label;
     btn.setAttribute('aria-pressed', m.id === sim.sourceMode ? 'true' : 'false');
     btn.onclick = function() { switchSourceMode(m.id); };
@@ -388,50 +388,50 @@ function init() {
   srcEl.appendChild(srcVizEl);
 
   // Activity bar (slot queue removed — source viz in srcVizEl handles the visual)
-  var srcActBar = el('div', 'bp-activity');
-  var srcActFill = el('div', 'bp-activity-fill flowing');
+  let srcActBar = el('div', 'bp-activity');
+  let srcActFill = el('div', 'bp-activity-fill flowing');
   srcActBar.appendChild(srcActFill);
   srcEl.appendChild(srcActBar);
 
   // ioStage — slots=[] so updateStage skips slot loop; coloring done inline in simTick
-  var ioStage = { el: srcEl, tag: srcTagEl, slots: [], actFill: srcActFill };
+  let ioStage = { el: srcEl, tag: srcTagEl, slots: [], actFill: srcActFill };
 
   function makeStage(name, desc, cap, queueLabel) {
-    var s = el('div', 'bp-stage');
-    var head = el('div', 'bp-stage-head');
-    var nm = el('span', 'bp-stage-name'); nm.textContent = name;
-    var tag = el('span', 'bp-stage-tag bp-tag-ok'); tag.textContent = 'OK';
+    let s = el('div', 'bp-stage');
+    let head = el('div', 'bp-stage-head');
+    let nm = el('span', 'bp-stage-name'); nm.textContent = name;
+    let tag = el('span', 'bp-stage-tag bp-tag-ok'); tag.textContent = 'OK';
     head.appendChild(nm); head.appendChild(tag);
     s.appendChild(head);
-    var d = el('div', 'bp-stage-desc'); d.textContent = desc;
+    let d = el('div', 'bp-stage-desc'); d.textContent = desc;
     s.appendChild(d);
-    var q = el('div', 'bp-queue');
-    var slots = [];
+    let q = el('div', 'bp-queue');
+    let slots = [];
     for (var i = 0; i < cap; i++) {
-      var slot = el('div', 'bp-slot');
+      let slot = el('div', 'bp-slot');
       q.appendChild(slot); slots.push(slot);
     }
     s.appendChild(q);
-    var ql = el('div', 'bp-queue-label'); ql.textContent = queueLabel;
+    let ql = el('div', 'bp-queue-label'); ql.textContent = queueLabel;
     s.appendChild(ql);
-    var act = el('div', 'bp-activity');
-    var actFill = el('div', 'bp-activity-fill flowing');
+    let act = el('div', 'bp-activity');
+    let actFill = el('div', 'bp-activity-fill flowing');
     act.appendChild(actFill); s.appendChild(act);
     return { el: s, tag: tag, slots: slots, qlabel: ql, actFill: actFill };
   }
 
   function makeArrow() {
-    var a = el('div', 'bp-arrow flowing');
+    let a = el('div', 'bp-arrow flowing');
     a.innerHTML = '\u25B6';
-    var dot = el('div', 'bp-arrow-dot');
+    let dot = el('div', 'bp-arrow-dot');
     a.appendChild(dot);
     return a;
   }
 
-  var arrow1 = makeArrow();
-  var cpuStage = makeStage('CPU Worker', 'scan \u2192 SQL transform', PIPELINE_CAP, '0/' + PIPELINE_CAP + ' slots');
-  var arrow2 = makeArrow();
-  var outStage = makeStage('Output Pool', NUM_WORKERS + ' workers \u00D7 MRU dispatch', NUM_WORKERS, '0/' + NUM_WORKERS + ' busy');
+  let arrow1 = makeArrow();
+  let cpuStage = makeStage('CPU Worker', 'scan \u2192 SQL transform', PIPELINE_CAP, '0/' + PIPELINE_CAP + ' slots');
+  let arrow2 = makeArrow();
+  let outStage = makeStage('Output Pool', NUM_WORKERS + ' workers \u00D7 MRU dispatch', NUM_WORKERS, '0/' + NUM_WORKERS + ' busy');
 
   pipeline.appendChild(ioStage.el);
   pipeline.appendChild(arrow1);
@@ -440,17 +440,17 @@ function init() {
   pipeline.appendChild(outStage.el);
   root.appendChild(pipeline);
 
-  var statsEl = el('div', 'bp-stats');
+  let statsEl = el('div', 'bp-stats');
   root.appendChild(statsEl);
 
-  var logEl = el('div', 'bp-log');
+  let logEl = el('div', 'bp-log');
   root.appendChild(logEl);
 
   // --- Preset buttons ---
-  var presets = [btnFast, btnSlow, btnDown];
+  let presets = [btnFast, btnSlow, btnDown];
   function setPreset(idx) {
     presets.forEach(function (b, i) {
-      var active = i === idx;
+      let active = i === idx;
       b.className = 'bp-btn' + (active ? ' active' : '');
       b.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
@@ -477,7 +477,7 @@ function init() {
     sim.sourceMode = newMode;
     sim.reset();
     SRC_MODES.forEach(function (m, i) {
-      var active = m.id === newMode;
+      let active = m.id === newMode;
       srcTabBtns[i].className = 'bp-source-tab' + (active ? ' active' : '');
       srcTabBtns[i].setAttribute('aria-pressed', active ? 'true' : 'false');
       if (active) srcNameEl.textContent = m.name;
@@ -494,7 +494,7 @@ function init() {
     otlpMiniLogEl = null;
 
     if (sim.sourceMode === 'file') {
-      var viz = el('div', 'bp-file-viz');
+      let viz = el('div', 'bp-file-viz');
       fileLogRow1 = el('div', 'bp-file-old');
       fileLogRow2 = el('div', 'bp-file-old');
       fileCursorRow = el('div', 'bp-file-cursor-row');
@@ -503,16 +503,16 @@ function init() {
       viz.appendChild(fileCursorRow); viz.appendChild(fileMiniMore);
       srcVizEl.appendChild(viz);
     } else if (sim.sourceMode === 'udp') {
-      var row = el('div', 'bp-mini-udp');
-      var gwrap = el('div', 'bp-mini-gauge-wrap');
-      var gauge = el('div', 'bp-mini-gauge');
+      let row = el('div', 'bp-mini-udp');
+      let gwrap = el('div', 'bp-mini-gauge-wrap');
+      let gauge = el('div', 'bp-mini-gauge');
       udpMiniFill = el('div', 'bp-mini-gauge-fill');
       gauge.appendChild(udpMiniFill); gwrap.appendChild(gauge);
-      var glbl = el('div', 'bp-queue-label'); glbl.textContent = 'kernel buffer';
+      let glbl = el('div', 'bp-queue-label'); glbl.textContent = 'kernel buffer';
       gwrap.appendChild(glbl); row.appendChild(gwrap);
-      var dbox = el('div', 'bp-mini-drops');
+      let dbox = el('div', 'bp-mini-drops');
       udpMiniDropCount = el('div', 'bp-mini-drops-count zero'); udpMiniDropCount.textContent = '0';
-      var dlbl = el('div', 'bp-mini-drops-label'); dlbl.textContent = 'dropped';
+      let dlbl = el('div', 'bp-mini-drops-label'); dlbl.textContent = 'dropped';
       dbox.appendChild(udpMiniDropCount); dbox.appendChild(dlbl);
       row.appendChild(dbox); srcVizEl.appendChild(row);
     } else {
@@ -523,8 +523,8 @@ function init() {
 
   function addOtlpEntry(batch, status, note) {
     if (!otlpMiniLogEl) return;
-    var row = el('div', 'bp-mini-req');
-    var sCls = status === 200 ? 's200' : 's429';
+    let row = el('div', 'bp-mini-req');
+    let sCls = status === 200 ? 's200' : 's429';
     row.innerHTML = 'req\u00A0#' + batch + '\u00A0\u00A0<span class="' + sCls + '">' + status + '</span>' +
       (note ? '\u00A0<span class="rnote">' + note + '</span>' : '');
     otlpMiniLogEl.appendChild(row);
@@ -534,7 +534,7 @@ function init() {
   function updateSourceViz() {
     if (sim.sourceMode === 'file') {
       if (!fileCursorRow) return;
-      var readInt = Math.floor(sim.fileRead);
+      let readInt = Math.floor(sim.fileRead);
       if (!sim.ioBlocked) {
         while (readInt > filePrevRead) {
           fileLogBuf[0] = fileLogBuf[1];
@@ -544,7 +544,7 @@ function init() {
       }
       fileLogRow1.textContent = fileLogBuf[0];
       fileLogRow2.textContent = fileLogBuf[1];
-      var gap = Math.round(sim.fileWritten - sim.fileRead);
+      let gap = Math.round(sim.fileWritten - sim.fileRead);
       if (sim.ioBlocked && gap > 0) {
         fileCursorRow.className = 'bp-file-cursor-row stalled';
         fileCursorRow.textContent = '\u25B6 ' + fakeLogLine(readInt) + ' \u2190 stalled';
@@ -560,7 +560,7 @@ function init() {
       }
     } else if (sim.sourceMode === 'udp') {
       if (!udpMiniFill) return;
-      var fillPct = (sim.udpBuf / UDP_CAP) * 100;
+      let fillPct = (sim.udpBuf / UDP_CAP) * 100;
       udpMiniFill.style.height = fillPct + '%';
       udpMiniFill.className = 'bp-mini-gauge-fill' + (fillPct > 90 ? ' full' : fillPct > 60 ? ' warn' : '');
       udpMiniDropCount.textContent = '' + Math.round(sim.udpDrops);
@@ -571,9 +571,9 @@ function init() {
 
   // --- Alert system ---
   function showAlert(stageObj, text, level) {
-    var old = stageObj.el.querySelector('.bp-alert');
+    let old = stageObj.el.querySelector('.bp-alert');
     if (old) old.remove();
-    var a = el('div', 'bp-alert ' + level);
+    let a = el('div', 'bp-alert ' + level);
     a.textContent = text;
     stageObj.el.appendChild(a);
     setTimeout(function() {
@@ -584,8 +584,8 @@ function init() {
 
   // --- Log helper ---
   function addLog(msg, cls) {
-    var entry = el('div', 'bp-log-entry');
-    var ts = sim.tickCount.toString().padStart(4, '0');
+    let entry = el('div', 'bp-log-entry');
+    let ts = sim.tickCount.toString().padStart(4, '0');
     entry.innerHTML = '<span class="ts">t=' + ts + '</span> ' + (cls ? '<span class="' + cls + '">' + msg + '</span>' : msg);
     logEl.appendChild(entry);
     if (logEl.children.length > 40) logEl.removeChild(logEl.firstChild);
@@ -608,7 +608,7 @@ function init() {
       else                           { showAlert(cpuStage, 'Pipeline draining \u2014 CPU worker unblocked', 'ok');       addLog('CPU worker unblocked \u2014 pipeline draining', 'ok'); }
     } else if (e.stage === 'io') {
       if (e.to === 'blocked') {
-        var srcMsg = e.sourceMode === 'file' ? 'File read stalling \u2014 falling behind'
+        let srcMsg = e.sourceMode === 'file' ? 'File read stalling \u2014 falling behind'
                    : e.sourceMode === 'udp'  ? 'UDP buffer filling \u2014 drops imminent'
                    :                           'Returning 429 to upstream';
         showAlert(ioStage, srcMsg, 'err');
@@ -617,7 +617,7 @@ function init() {
         showAlert(ioStage, 'I/O\u2192CPU channel filling', 'warn');
         addLog('I/O\u2192CPU channel filling', 'warn');
       } else {
-        var recoverMsg = e.sourceMode === 'file' ? 'File reader catching up'
+        let recoverMsg = e.sourceMode === 'file' ? 'File reader catching up'
                        : e.sourceMode === 'udp'  ? 'UDP buffer draining'
                        :                           'OTLP accepting again';
         showAlert(ioStage, recoverMsg, 'ok');
@@ -628,7 +628,7 @@ function init() {
 
   // --- Render helpers ---
   function updateStage(stage, fill, cap, label) {
-    var pct = fill / cap;
+    let pct = fill / cap;
     for (var i = 0; i < stage.slots.length; i++) {
       if (i < Math.ceil(fill)) {
         stage.slots[i].className = pct >= 1.0 ? 'bp-slot full' : (pct > 0.6 ? 'bp-slot filling' : 'bp-slot filled');
@@ -648,13 +648,13 @@ function init() {
 
   // Sets stage border, tag badge, and activity bar colours in one call.
   // tagText overrides the default label (e.g. 'FULL' / 'BUSY' for the output pool).
-  var _stateClasses = {
+  let _stateClasses = {
     blocked:   ['bp-stage blocked',   'bp-stage-tag bp-tag-blocked',  'bp-activity-fill blocked',         'BLOCKED'],
     pressured: ['bp-stage pressured', 'bp-stage-tag bp-tag-pressure', 'bp-activity-fill flowing pressured','PRESSURE'],
     ok:        ['bp-stage',           'bp-stage-tag bp-tag-ok',       'bp-activity-fill flowing',          'OK'],
   };
   function setStageState(stage, state, tagText) {
-    var c = _stateClasses[state];
+    let c = _stateClasses[state];
     stage.el.className      = c[0];
     stage.tag.className     = c[1];
     stage.tag.textContent   = tagText || c[3];
@@ -663,20 +663,20 @@ function init() {
 
   // --- Render: stats bar ---
   function updateStats() {
-    var throughput = (sim.outputSpeed / 100) * OUT_MAX_RATE * 4;
-    var latClass = '', latVal = '';
+    let throughput = (sim.outputSpeed / 100) * OUT_MAX_RATE * 4;
+    let latClass = '', latVal = '';
     if (sim.outputSpeed === 0)       { latVal = '\u221E';    latClass = 'red'; }
     else if (sim.outputSpeed < 30)   { latVal = '>500ms';   latClass = 'red'; }
     else if (sim.outputSpeed < 70)   { latVal = '~200ms';   latClass = 'amber'; }
     else                             { latVal = '<50ms';    latClass = 'green'; }
 
-    var srcStat = '', srcCls = '';
+    let srcStat = '', srcCls = '';
     if (sim.sourceMode === 'file') {
-      var fgap = Math.round(sim.fileWritten - sim.fileRead);
+      let fgap = Math.round(sim.fileWritten - sim.fileRead);
       srcStat = sim.ioBlocked ? (fgap > 0 ? fgap + ' behind' : 'stalled') : 'caught up';
       srcCls  = sim.ioBlocked ? (fgap > 30 ? 'red' : 'amber') : 'green';
     } else if (sim.sourceMode === 'udp') {
-      var drops = Math.round(sim.udpDrops);
+      let drops = Math.round(sim.udpDrops);
       srcStat = drops > 0 ? drops + ' dropped' : (sim.ioBlocked ? 'filling' : 'ok');
       srcCls  = drops > 0 ? 'red' : (sim.ioBlocked ? 'amber' : 'green');
     } else {
@@ -685,7 +685,7 @@ function init() {
     }
 
     statsEl.innerHTML = '';
-    var items = [
+    let items = [
       ['Throughput', throughput.toFixed(1) + ' batch/s', throughput < 0.5 ? 'red' : (throughput < 1.0 ? 'amber' : 'green')],
       ['Latency',   latVal,                              latClass],
       ['Produced',  '' + Math.round(sim.totalProduced),  ''],
@@ -694,9 +694,9 @@ function init() {
       ['CPU',       sim.cpuBlocked ? 'BLOCKED' : 'scanning', sim.cpuBlocked ? 'red' : 'green'],
     ];
     items.forEach(function (item) {
-      var s = el('div', 'bp-stat');
-      var l = el('div', 'bp-stat-label'); l.textContent = item[0];
-      var v = el('div', 'bp-stat-val' + (item[2] ? ' ' + item[2] : '')); v.textContent = item[1];
+      let s = el('div', 'bp-stat');
+      let l = el('div', 'bp-stat-label'); l.textContent = item[0];
+      let v = el('div', 'bp-stat-val' + (item[2] ? ' ' + item[2] : '')); v.textContent = item[1];
       s.appendChild(l); s.appendChild(v); statsEl.appendChild(s);
     });
   }
@@ -705,21 +705,21 @@ function init() {
   function render() {
     updateSourceViz();
 
-    var ioState = sim.ioBlocked ? 'blocked' : (sim.ioCpuFillSnap / IO_CPU_CAP > 0.5 ? 'pressured' : 'ok');
+    let ioState = sim.ioBlocked ? 'blocked' : (sim.ioCpuFillSnap / IO_CPU_CAP > 0.5 ? 'pressured' : 'ok');
     setStageState(ioStage, ioState);
 
     updateStage(cpuStage, sim.pipelineFill, PIPELINE_CAP, 'slots');
 
-    var workerBusy = sim.workerFills.filter(function (f) { return f > 0.1; }).length;
+    let workerBusy = sim.workerFills.filter(function (f) { return f > 0.1; }).length;
     outStage.qlabel.textContent = workerBusy + '/' + NUM_WORKERS + ' busy';
     for (var i = 0; i < outStage.slots.length; i++) {
-      var wf = sim.workerFills[i];
+      let wf = sim.workerFills[i];
       outStage.slots[i].className = wf > 0.5
         ? (wf >= WORKER_CAP ? 'bp-slot full' : 'bp-slot filling')
         : (wf > 0.1 ? 'bp-slot filled' : 'bp-slot');
     }
-    var allWorkersFull = sim.workerFills.every(function (f) { return f >= WORKER_CAP * 0.9; });
-    var outState = allWorkersFull ? 'blocked' : (workerBusy >= 2 ? 'pressured' : 'ok');
+    let allWorkersFull = sim.workerFills.every(function (f) { return f >= WORKER_CAP * 0.9; });
+    let outState = allWorkersFull ? 'blocked' : (workerBusy >= 2 ? 'pressured' : 'ok');
     setStageState(outStage, outState, allWorkersFull ? 'FULL' : (workerBusy >= 2 ? 'BUSY' : null));
 
     updateArrow(arrow1, sim.ioCpuFill / IO_CPU_CAP);
@@ -730,7 +730,7 @@ function init() {
   // --- Main loop ---
   function step() {
     if (!running) return;
-    var events = sim.tick();
+    let events = sim.tick();
     events.forEach(handleEvent);
     render();
   }
@@ -740,11 +740,11 @@ function init() {
   render();
   addLog('Pipeline started \u2014 drag the slider or click a preset', 'ok');
 
-  var interval = null;
+  let interval = null;
   function startSimulation() { if (interval !== null || document.hidden) return; interval = setInterval(step, 250); }
   function stopSimulation()  { if (interval === null) return; clearInterval(interval); interval = null; }
 
-  var reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   function handleVisibilityChange() {
     if (reducedMotion) return;
     if (document.hidden) stopSimulation(); else startSimulation();

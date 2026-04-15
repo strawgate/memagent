@@ -97,6 +97,7 @@ export function makeSim(): SimState {
       s.pipelineFill = 0; s.workerFills = [0, 0, 0];
       s.ioBlocked = false; s.cpuBlocked = false;
       s.totalProduced = 0; s.totalDelivered = 0;
+      s.tickCount = 0;
       s.fileWritten = 0; s.fileRead = 0;
       s.udpBuf = 0; s.udpDrops = 0;
       s.otlpBatchNum = 0; s.otlpAccepted = 0; s.otlpRejected = 0;

@@ -137,9 +137,9 @@ function init() {
   // --- Build DOM ---
 
   // Presets
-  var presetsRow = el('div', 'pd-presets');
-  var presetBtns = PRESETS.map(function(p) {
-    var btn = el('button', 'pd-preset');
+  let presetsRow = el('div', 'pd-presets');
+  let presetBtns = PRESETS.map(function(p) {
+    let btn = el('button', 'pd-preset');
     btn.type = 'button';
     btn.textContent = p.name;
     btn.title = p.desc;
@@ -151,17 +151,17 @@ function init() {
   root.appendChild(presetsRow);
 
   // SQL display
-  var sqlEl = el('div', 'pd-sql');
+  let sqlEl = el('div', 'pd-sql');
   root.appendChild(sqlEl);
 
   // Throughput meter
-  var meterEl = el('div', 'pd-meter');
-  var meterLabel = el('div', 'pd-meter-label'); meterLabel.textContent = 'Throughput';
-  var meterTrack = el('div', 'pd-meter-track');
-  var meterFill = el('div', 'pd-meter-fill');
+  let meterEl = el('div', 'pd-meter');
+  let meterLabel = el('div', 'pd-meter-label'); meterLabel.textContent = 'Throughput';
+  let meterTrack = el('div', 'pd-meter-track');
+  let meterFill = el('div', 'pd-meter-fill');
   meterTrack.appendChild(meterFill);
-  var meterVal = el('div', 'pd-meter-val');
-  var meterPct = el('div', 'pd-meter-pct');
+  let meterVal = el('div', 'pd-meter-val');
+  let meterPct = el('div', 'pd-meter-pct');
   meterEl.appendChild(meterLabel);
   meterEl.appendChild(meterTrack);
   meterEl.appendChild(meterVal);
@@ -169,30 +169,30 @@ function init() {
   root.appendChild(meterEl);
 
   // Stats row
-  var statsEl = el('div', 'pd-stats');
+  let statsEl = el('div', 'pd-stats');
   root.appendChild(statsEl);
 
   // JSON blob
-  var jsonEl = el('div', 'pd-json');
-  var fieldSpans = [];
+  let jsonEl = el('div', 'pd-json');
+  let fieldSpans = [];
 
   // Build the JSON display
-  var openBrace = document.createTextNode('{ ');
+  let openBrace = document.createTextNode('{ ');
   jsonEl.appendChild(openBrace);
 
   FIELDS.forEach(function(f, i) {
-    var fieldSpan = el('span', 'pd-json-field extracted');
+    let fieldSpan = el('span', 'pd-json-field extracted');
     fieldSpan.setAttribute('role', 'checkbox');
     fieldSpan.setAttribute('aria-checked', 'true');
     fieldSpan.setAttribute('aria-label', f.name + ' (' + f.type + ')');
     fieldSpan.tabIndex = 0;
     fieldSpan.style.position = 'relative';
 
-    var keySpan = el('span', 'pd-json-key');
+    let keySpan = el('span', 'pd-json-key');
     keySpan.textContent = '"' + f.name + '"';
-    var colonSpan = el('span', 'pd-json-punct');
+    let colonSpan = el('span', 'pd-json-punct');
     colonSpan.textContent = ': ';
-    var valSpan = el('span', f.isNum ? 'pd-json-val-num' : 'pd-json-val');
+    let valSpan = el('span', f.isNum ? 'pd-json-val-num' : 'pd-json-val');
     valSpan.textContent = f.val;
 
     fieldSpan.appendChild(keySpan);
@@ -208,7 +208,7 @@ function init() {
     fieldSpans.push({ el: fieldSpan, field: f });
 
     if (i < FIELDS.length - 1) {
-      var comma = el('span', 'pd-json-punct');
+      let comma = el('span', 'pd-json-punct');
       comma.textContent = ', ';
       jsonEl.appendChild(comma);
     }
@@ -218,12 +218,12 @@ function init() {
     }
   });
 
-  var closeBrace = document.createTextNode(' }');
+  let closeBrace = document.createTextNode(' }');
   jsonEl.appendChild(closeBrace);
   root.appendChild(jsonEl);
 
   // Callout
-  var calloutEl = el('div', 'pd-callout');
+  let calloutEl = el('div', 'pd-callout');
   root.appendChild(calloutEl);
 
   // --- Logic ---
