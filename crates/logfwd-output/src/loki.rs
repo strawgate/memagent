@@ -545,7 +545,7 @@ impl LokiSinkFactory {
                     std::time::Duration::from_secs(
                         mins.parse::<u64>()
                             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?
-                            * 60,
+                            .saturating_mul(60),
                     )
                 } else {
                     return Err(io::Error::new(
