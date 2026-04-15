@@ -1,6 +1,4 @@
 //! Reusable cardinality-modeling helpers for realistic synthetic data generation.
-//!
-//! Re-exports the `cardinality_helpers` sub-module from the original bench crate.
 
 pub mod cardinality_helpers {
     //! Reusable helper primitives for realistic synthetic-cardinality modeling.

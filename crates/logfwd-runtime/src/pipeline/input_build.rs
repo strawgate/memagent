@@ -10,6 +10,7 @@ use logfwd_config::{
 use logfwd_diagnostics::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
+use logfwd_io::generator::GeneratorProfile;
 use logfwd_io::input::{FileInput, InputSource};
 use logfwd_io::tail::TailConfig;
 
@@ -209,7 +210,7 @@ pub(super) fn build_input_state(
         InputTypeConfig::Generator(g) => {
             use logfwd_io::generator::{
                 GeneratorAttributeValue, GeneratorComplexity, GeneratorConfig,
-                GeneratorGeneratedField, GeneratorInput, GeneratorProfile, GeneratorTimestamp,
+                GeneratorGeneratedField, GeneratorInput, GeneratorTimestamp,
                 parse_iso8601_to_epoch_ms,
             };
             let generator_cfg = g.generator.as_ref();

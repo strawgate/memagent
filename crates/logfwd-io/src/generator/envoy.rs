@@ -855,7 +855,11 @@ pub(super) fn write_envoy_line(
     if state.burst_remaining == 0 {
         state.current_scenario = weighted_choice_pick(rng, ENVOY_SCENARIOS);
         let burst_span = profile.burst_max.saturating_sub(profile.burst_min);
-        let burst_len = profile.burst_min + rng.usize(..=burst_span.max(1));
+        let burst_len = if burst_span == 0 {
+            profile.burst_min
+        } else {
+            profile.burst_min + rng.usize(..=burst_span)
+        };
         state.burst_remaining = burst_len.max(1);
         state.current_source_bucket = rng.usize(..profile.source_ip_pool_size.max(1));
         state.current_client_bucket = rng.usize(..profile.user_agent_pool_size.max(1));

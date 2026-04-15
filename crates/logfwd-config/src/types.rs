@@ -280,7 +280,7 @@ pub struct GeneratorInputConfig {
     pub attributes: HashMap<String, GeneratorAttributeValueConfig>,
     pub sequence: Option<GeneratorSequenceConfig>,
     pub event_created_unix_nano_field: Option<String>,
-    /// Timestamp configuration for the `logs` profile.
+    /// Timestamp configuration (only applies to the `logs` profile; ignored by other profiles).
     pub timestamp: Option<GeneratorTimestampConfig>,
 }
 
