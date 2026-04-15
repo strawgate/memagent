@@ -76,6 +76,16 @@ pub fn build_sink_factory(
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!("output '{name}': loki requires 'endpoint'"))
             })?;
+            let compression = match cfg.compression.as_deref() {
+                Some("gzip") => Compression::Gzip,
+                Some("snappy") => Compression::Snappy,
+                Some("none") | None => Compression::None,
+                Some(other) => {
+                    return Err(OutputError::Construction(format!(
+                        "output '{name}': unsupported compression '{other}'"
+                    )));
+                }
+            };
             let factory = LokiSinkFactory::new(
                 name.to_string(),
                 endpoint.clone(),
@@ -87,6 +97,14 @@ pub fn build_sink_factory(
                     .collect(),
                 cfg.label_columns.clone().unwrap_or_default(),
                 auth_headers,
+                compression,
+                cfg.request_timeout_ms,
+                cfg.batch_size_bytes,
+                cfg.max_batch_age_ms.or(cfg.batch_timeout_ms),
+                cfg.retry_attempts,
+                cfg.retry_initial_backoff_ms,
+                cfg.retry_max_backoff_ms,
+                cfg.queue_capacity,
                 stats,
             )
             .map_err(|e| {

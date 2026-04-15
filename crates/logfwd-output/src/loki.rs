@@ -47,7 +47,7 @@ use logfwd_core::otlp::parse_timestamp_nanos;
 use logfwd_types::diagnostics::ComponentStats;
 use logfwd_types::field_names;
 
-use super::{BatchMetadata, build_col_infos, coalesce_as_str, write_row_json};
+use super::{BatchMetadata, Compression, build_col_infos, coalesce_as_str, write_row_json};
 
 // ---------------------------------------------------------------------------
 // LokiStream helpers
@@ -150,6 +150,21 @@ struct LokiConfig {
     static_labels: Vec<(String, String)>,
     label_columns: Vec<String>,
     headers: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
+    compression: Compression,
+    #[allow(dead_code)]
+    request_timeout_ms: Option<u64>,
+    #[allow(dead_code)]
+    batch_size_bytes: Option<usize>,
+    #[allow(dead_code)]
+    batch_timeout_ms: Option<u64>,
+    #[allow(dead_code)]
+    retry_attempts: Option<usize>,
+    #[allow(dead_code)]
+    retry_initial_backoff_ms: Option<u64>,
+    #[allow(dead_code)]
+    retry_max_backoff_ms: Option<u64>,
+    #[allow(dead_code)]
+    queue_capacity: Option<usize>,
 }
 
 /// Async Loki sink using reqwest.
@@ -411,7 +426,26 @@ impl LokiSink {
         if let Some(tenant_id) = &self.config.tenant_id {
             req = req.header("X-Scope-OrgID", tenant_id.as_str());
         }
-        req = req.body(payload);
+
+        let payload_bytes = match self.config.compression {
+            Compression::Gzip => {
+                req = req.header("Content-Encoding", "gzip");
+                let mut encoder =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+                io::Write::write_all(&mut encoder, payload.as_bytes())?;
+                encoder.finish()?
+            }
+            Compression::Snappy => {
+                req = req.header("Content-Encoding", "snappy");
+                let mut encoder = snap::raw::Encoder::new();
+                encoder
+                    .compress_vec(payload.as_bytes())
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?
+            }
+            _ => payload.into_bytes(),
+        };
+
+        req = req.body(payload_bytes);
 
         let response = req.send().await.map_err(io::Error::other)?;
 
@@ -495,6 +529,7 @@ impl LokiSinkFactory {
     /// - `static_labels`: Labels added to every stream
     /// - `label_columns`: Record columns to use as stream labels
     /// - `headers`: Additional HTTP headers (authentication etc.)
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         endpoint: String,
@@ -502,10 +537,20 @@ impl LokiSinkFactory {
         static_labels: Vec<(String, String)>,
         label_columns: Vec<String>,
         headers: Vec<(String, String)>,
+        compression: Compression,
+        request_timeout_ms: Option<u64>,
+        batch_size_bytes: Option<usize>,
+        batch_timeout_ms: Option<u64>,
+        retry_attempts: Option<usize>,
+        retry_initial_backoff_ms: Option<u64>,
+        retry_max_backoff_ms: Option<u64>,
+        queue_capacity: Option<usize>,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_millis(
+                request_timeout_ms.unwrap_or(30_000),
+            ))
             .build()
             .map_err(io::Error::other)?;
 
@@ -529,6 +574,14 @@ impl LokiSinkFactory {
                     static_labels,
                     label_columns,
                     headers: parsed_headers,
+                    compression,
+                    request_timeout_ms,
+                    batch_size_bytes,
+                    batch_timeout_ms,
+                    retry_attempts,
+                    retry_initial_backoff_ms,
+                    retry_max_backoff_ms,
+                    queue_capacity,
                 }
             }),
             client: Arc::new(client),
@@ -612,6 +665,28 @@ fn escape_json_raw(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_loki_sink_factory_timeout() {
+        let factory = LokiSinkFactory::new(
+            "test_loki".to_string(),
+            "http://localhost:3100".to_string(),
+            None,
+            vec![],
+            vec![],
+            vec![],
+            Compression::Gzip,
+            Some(5000),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Arc::new(ComponentStats::new()),
+        );
+        assert!(factory.is_ok());
+    }
 
     #[test]
     fn sort_dedup_already_sorted_no_op() {
@@ -856,6 +931,14 @@ mod tests {
             static_labels: vec![],
             label_columns: vec![],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -905,6 +988,14 @@ mod tests {
             static_labels: vec![],
             label_columns: vec![],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -961,6 +1052,14 @@ mod tests {
             static_labels: vec![],
             label_columns: vec![],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -1026,6 +1125,14 @@ mod tests {
             static_labels: vec![],
             label_columns: vec!["service.name".to_string()],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -1065,6 +1172,14 @@ mod tests {
             static_labels: vec![("service.name".to_string(), "frontend".to_string())],
             label_columns: vec![],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -1103,6 +1218,14 @@ mod tests {
             static_labels: vec![],
             label_columns: vec!["service.name".to_string(), "service-name".to_string()],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -1140,6 +1263,14 @@ mod tests {
             static_labels: vec![],
             label_columns: vec![],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -1185,6 +1316,14 @@ mod tests {
             static_labels: vec![],
             label_columns: vec![],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -1237,6 +1376,14 @@ mod tests {
             static_labels: vec![("env".to_string(), "prod".to_string())],
             label_columns: vec!["env".to_string()],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -1269,6 +1416,14 @@ mod tests {
             static_labels: vec![("service.name".to_string(), "frontend".to_string())],
             label_columns: vec!["service_name".to_string()],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -1307,6 +1462,14 @@ mod tests {
             static_labels: vec![],
             label_columns: vec!["namespace".to_string()],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -1349,6 +1512,14 @@ mod tests {
             static_labels: vec![],
             label_columns: vec![],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -1397,6 +1568,14 @@ mod tests {
             static_labels: vec![],
             label_columns: vec![],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -1448,6 +1627,14 @@ mod tests {
             static_labels: vec![],
             label_columns: vec![],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -1490,6 +1677,14 @@ mod tests {
             static_labels: vec![],
             label_columns: vec![],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -1532,6 +1727,14 @@ mod tests {
             static_labels: vec![],
             label_columns: vec![],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),
@@ -1574,6 +1777,14 @@ mod tests {
             static_labels: vec![],
             label_columns: vec![],
             headers: vec![],
+            compression: Compression::None,
+            request_timeout_ms: None,
+            batch_size_bytes: None,
+            batch_timeout_ms: None,
+            retry_attempts: None,
+            retry_initial_backoff_ms: None,
+            retry_max_backoff_ms: None,
+            queue_capacity: None,
         });
         let sink = LokiSink::new(
             "test".to_string(),

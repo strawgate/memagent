@@ -30,6 +30,7 @@ httpdate = "1"
 flate2 = "1"
 tokio-stream = "0.1.18"
 serde = { workspace = true, features = ["derive"] }
+snap = { version = "1.1.1", default-features = false }
 
 [dev-dependencies]
 proptest = "1"

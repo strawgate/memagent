@@ -553,6 +553,30 @@ pub struct OutputConfig {
     #[serde(default)]
     pub auth: Option<AuthConfig>,
     pub tenant_id: Option<String>,
+    /// Maximum size of a batch in bytes before flushing.
+    #[serde(default)]
+    pub batch_size_bytes: Option<usize>,
+    /// Maximum time in milliseconds to wait before flushing a batch.
+    #[serde(default)]
+    pub batch_timeout_ms: Option<u64>,
+    /// Alias for batch_timeout_ms.
+    #[serde(default)]
+    pub max_batch_age_ms: Option<u64>,
+    /// Maximum number of retries for transient errors.
+    #[serde(default)]
+    pub retry_attempts: Option<usize>,
+    /// Initial backoff delay in milliseconds for retries.
+    #[serde(default)]
+    pub retry_initial_backoff_ms: Option<u64>,
+    /// Maximum backoff delay in milliseconds for retries.
+    #[serde(default)]
+    pub retry_max_backoff_ms: Option<u64>,
+    /// HTTP request timeout in milliseconds.
+    #[serde(default)]
+    pub request_timeout_ms: Option<u64>,
+    /// Maximum number of batches to queue in memory before applying backpressure.
+    #[serde(default)]
+    pub queue_capacity: Option<usize>,
     pub static_labels: Option<HashMap<String, String>>,
     pub label_columns: Option<Vec<String>>,
 }

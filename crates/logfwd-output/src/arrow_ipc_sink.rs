@@ -109,6 +109,9 @@ impl ArrowIpcSink {
                 encoder.write_all(&self.ipc_buf)?;
                 encoder.finish()
             }
+            Compression::Snappy => Err(io::Error::other(
+                "snappy compression is not supported by arrow_ipc sink",
+            )),
             Compression::None => Ok(self.ipc_buf.clone()),
         }
     }

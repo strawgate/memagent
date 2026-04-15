@@ -674,12 +674,12 @@ pipelines:
     }
 
     #[test]
-    fn loki_output_rejects_compression() {
-        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: loki\n  endpoint: http://localhost:3100\n  compression: gzip\n";
+    fn loki_output_rejects_unsupported_compression() {
+        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: loki\n  endpoint: http://localhost:3100\n  compression: zstd\n";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("'compression' is not supported for loki outputs"),
+            msg.contains("loki output only supports 'gzip', 'snappy', or 'none' compression"),
             "unexpected: {msg}"
         );
     }

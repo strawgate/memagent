@@ -649,9 +649,20 @@ impl Config {
                             "pipeline '{name}' output '{label}': 'index' is only supported for elasticsearch outputs"
                         )));
                     }
-                    if output.output_type == OutputType::Loki && output.compression.is_some() {
+                    if output.output_type == OutputType::Loki
+                        && let Some(c) = output.compression.as_deref()
+                        && !matches!(c, "gzip" | "snappy" | "none")
+                    {
                         return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': 'compression' is not supported for loki outputs"
+                            "pipeline '{name}' output '{label}': loki output only supports 'gzip', 'snappy', or 'none' compression, not '{c}'"
+                        )));
+                    }
+                    if output.output_type == OutputType::Loki
+                        && let Some(t) = output.request_timeout_ms
+                        && t == 0
+                    {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': request_timeout_ms must be greater than 0"
                         )));
                     }
                     if output.output_type == OutputType::ArrowIpc
@@ -1906,6 +1917,28 @@ mod validate_otlp_protocol_compression_tests {
             Config::load_str(&yaml)
                 .unwrap_or_else(|e| panic!("protocol '{proto}' should be accepted: {e}"));
         }
+    }
+
+    #[test]
+    fn loki_valid_compression_accepted() {
+        for comp in ["none", "gzip", "snappy"] {
+            let yaml = format!(
+                "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: loki\n        endpoint: http://localhost:3100\n        compression: {comp}\n"
+            );
+            Config::load_str(&yaml).unwrap_or_else(|e| {
+                panic!("compression '{comp}' should be accepted for loki: {e}")
+            });
+        }
+    }
+
+    #[test]
+    fn loki_invalid_compression_rejected() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: loki\n        endpoint: http://localhost:3100\n        compression: zstd\n";
+        let err = Config::load_str(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("loki output only supports 'gzip', 'snappy', or 'none' compression"),
+            "Expected Loki compression rejection message, got: {err}"
+        );
     }
 
     #[test]

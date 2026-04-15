@@ -16,6 +16,7 @@ pub struct BatchMetadata {
 pub enum Compression {
     Zstd,
     Gzip,
+    Snappy,
     None,
 }
 

@@ -365,6 +365,9 @@ impl OtapSink {
                 encoder.write_all(&self.proto_buf)?;
                 encoder.finish()
             }
+            Compression::Snappy => Err(io::Error::other(
+                "snappy compression is not supported by otap sink",
+            )),
             Compression::None => Ok(self.proto_buf.clone()),
         }
     }
@@ -379,6 +382,7 @@ impl OtapSink {
         match self.config.compression {
             Compression::Zstd => req = req.header("Content-Encoding", "zstd"),
             Compression::Gzip => req = req.header("Content-Encoding", "gzip"),
+            Compression::Snappy => {}
             Compression::None => {}
         }
 
