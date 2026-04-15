@@ -563,6 +563,8 @@ SELECT float(duration) AS duration_ms FROM logs
 Enrichment tables are made available as SQL tables that can be joined in the transform
 query. They are declared under the top-level `enrichment` key.
 
+Supported enrichment types: `k8s_path`, `host_info`, `static`, `geo_database`, `csv`, `jsonl`.
+
 ```yaml
 enrichment:
   - type: k8s_path
@@ -593,11 +595,13 @@ Columns exposed by `k8s`:
 
 ### `host_info` enrichment
 
-Exposes the hostname of the machine running logfwd.
+Exposes information about the machine running logfwd.
 
 | Column | Description |
 |--------|-------------|
 | `hostname` | System hostname. |
+| `os_type` | Operating system type (e.g. `linux`, `macos`, `windows`). |
+| `os_arch` | CPU architecture (e.g. `x86_64`, `aarch64`). |
 
 ### `static` enrichment
 
@@ -616,6 +620,60 @@ enrichment:
 ```sql
 SELECT l.*, lbl.environment, lbl.cluster
 FROM logs l CROSS JOIN labels lbl
+```
+
+### `geo_database` enrichment
+
+Looks up geographic metadata from a MaxMind-compatible `.mmdb` database file.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `format` | string | Database format. Only `mmdb` is supported. |
+| `path` | string | Path to the `.mmdb` file. |
+| `refresh_interval` | integer | Optional interval in seconds to reload the database. |
+
+```yaml
+enrichment:
+  - type: geo_database
+    format: mmdb
+    path: /etc/logfwd/GeoLite2-City.mmdb
+```
+
+### `csv` enrichment
+
+Loads a CSV file as an in-memory lookup table.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `table_name` | string | SQL table name to use in queries. |
+| `path` | string | Path to the CSV file. The first row must be a header row. |
+
+```yaml
+enrichment:
+  - type: csv
+    table_name: assets
+    path: /etc/logfwd/assets.csv
+```
+
+```sql
+SELECT l.*, a.owner
+FROM logs l JOIN assets a ON l.host = a.hostname
+```
+
+### `jsonl` enrichment
+
+Loads a JSON Lines file as an in-memory lookup table. Each line must be a JSON object.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `table_name` | string | SQL table name to use in queries. |
+| `path` | string | Path to the `.jsonl` file. |
+
+```yaml
+enrichment:
+  - type: jsonl
+    table_name: ip_owners
+    path: /etc/logfwd/ip_owners.jsonl
 ```
 
 ---

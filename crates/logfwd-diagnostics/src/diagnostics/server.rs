@@ -1079,7 +1079,6 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<DiagnosticsState>) {
     // buffered history (resync on connect).
     let mut span_cursor: usize = 0;
     let mut log_cursor: u64 = 0;
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
 
     // Send initial span/log snapshot immediately on connect (cursor=0 → full
     // buffer). Then the interval fires every 1s for deltas.

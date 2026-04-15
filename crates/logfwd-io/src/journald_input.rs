@@ -457,6 +457,7 @@ fn native_reader_loop(
                 health.store(HEALTH_DEGRADED, Ordering::Release);
                 // Brief sleep to avoid spinning on persistent errors.
                 std::thread::sleep(Duration::from_millis(100));
+                tracing::trace!("sd_journal_wait recovered, restoring health to OK");
                 health.store(HEALTH_OK, Ordering::Release);
             }
         }
@@ -971,7 +972,7 @@ fn read_export_entries(
                 );
                 // Skip past the oversized field data + trailing newline.
                 // Read in chunks to avoid huge allocations.
-                let mut remaining = data_len_u64 + 1; // +1 for trailing \n
+                let mut remaining = data_len_u64.saturating_add(1); // +1 for trailing \n
                 let mut discard = vec![0u8; 64 * 1024];
                 while remaining > 0 {
                     let chunk = remaining.min(discard.len() as u64) as usize;
