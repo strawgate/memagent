@@ -246,6 +246,15 @@ impl Config {
                                     "pipeline '{name}' input '{label}': generator.attributes float values must be finite"
                                 )));
                             }
+                                if let Some((key, _)) =
+                                    generator.attributes.iter().find(|(_, v)| {
+                                        matches!(v, GeneratorAttributeValueConfig::Unsupported(_))
+                                    })
+                                {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': generator.attributes '{key}' has an unsupported type (expected scalar value)"
+                                    )));
+                                }
                                 if !is_record_profile
                                     && (!generator.attributes.is_empty()
                                         || generator.sequence.is_some()
@@ -706,6 +715,17 @@ impl Config {
                             )));
                         }
                     }
+
+                    if let Some(labels) = &output.static_labels {
+                        for (k, v) in labels {
+                            if k.trim().is_empty() || v.trim().is_empty() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': 'static_labels' keys and values must not be empty"
+                                )));
+                            }
+                        }
+                    }
+
                     if !matches!(output.output_type, OutputType::File | OutputType::Parquet)
                         && output.path.is_some()
                     {

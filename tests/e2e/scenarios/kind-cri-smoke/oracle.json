@@ -1,0 +1,16 @@
+{
+  "scenario": "kind-cri-smoke",
+  "policy": "exact_once_ordered",
+  "selector": {
+    "field": "scenario",
+    "value": "kind-cri-smoke"
+  },
+  "order_key": "seq",
+  "source_key": "source_id",
+  "identity_keys": ["scenario", "source_id", "event_id"],
+  "required_fields": ["scenario", "source_id", "event_id", "seq", "level", "message"],
+  "compare_keys": ["scenario", "source_id", "event_id", "seq", "level", "message"],
+  "source_policy": "exact_once_ordered",
+  "source_compare_keys": ["scenario", "source_id", "event_id", "seq", "level", "message"],
+  "source_required_fields": ["scenario", "source_id", "event_id", "seq", "level", "message"]
+}

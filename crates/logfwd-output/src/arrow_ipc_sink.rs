@@ -105,7 +105,7 @@ impl ArrowIpcSink {
         match self.config.compression {
             Compression::Zstd => zstd::bulk::compress(&self.ipc_buf, 1).map_err(io::Error::other),
             Compression::Gzip => {
-                let mut encoder = GzEncoder::new(Vec::new(), GzLevel::default());
+                let mut encoder = GzEncoder::new(Vec::new(), GzLevel::fast());
                 encoder.write_all(&self.ipc_buf)?;
                 encoder.finish()
             }
@@ -340,6 +340,50 @@ pub fn deserialize_ipc(bytes: &[u8]) -> io::Result<Vec<RecordBatch>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn arrow_ipc_gzip_compression() {
+        use arrow::array::StringArray;
+        use arrow::record_batch::RecordBatch;
+        use std::sync::Arc;
+
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)])),
+            vec![
+                Arc::new(StringArray::from(vec![Some("hello"), Some("world")]))
+                    as arrow::array::ArrayRef,
+            ],
+        )
+        .unwrap();
+
+        let config_none = Arc::new(ArrowIpcSinkConfig {
+            endpoint: "http://localhost:9999".to_string(),
+            compression: Compression::None,
+            headers: Vec::new(),
+        });
+        let config_gzip = Arc::new(ArrowIpcSinkConfig {
+            endpoint: "http://localhost:9999".to_string(),
+            compression: Compression::Gzip,
+            headers: Vec::new(),
+        });
+
+        let client = reqwest::Client::new();
+        let stats = Arc::new(ComponentStats::new());
+
+        let mut sink_none =
+            ArrowIpcSink::new("t1".to_string(), config_none, client.clone(), stats.clone());
+        let mut sink_gzip = ArrowIpcSink::new("t2".to_string(), config_gzip, client, stats);
+
+        sink_none.serialize_batch(&batch).unwrap();
+        sink_gzip.serialize_batch(&batch).unwrap();
+
+        let uncompressed = sink_none.maybe_compress().unwrap();
+        let compressed = sink_gzip.maybe_compress().unwrap();
+
+        assert!(!compressed.is_empty());
+        assert_ne!(uncompressed.len(), compressed.len());
+        assert_ne!(uncompressed, compressed);
+    }
+
     use super::*;
     use arrow::array::{Float64Array, Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
@@ -406,6 +450,36 @@ mod tests {
                 decoded.column(col_idx).as_ref(),
                 batch.column(col_idx).as_ref(),
                 "column {col_idx} mismatch after zstd roundtrip"
+            );
+        }
+    }
+
+    #[test]
+    fn roundtrip_arrow_ipc_with_gzip() {
+        let batch = make_test_batch();
+        let ipc_bytes = serialize_ipc(&batch).expect("serialize should succeed");
+
+        // Compress with gzip
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut encoder, &ipc_bytes).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        // Decompress with gzip
+        use std::io::Read;
+        let mut decoder = flate2::read::GzDecoder::new(compressed.as_slice());
+        let mut decompressed = Vec::new();
+        decoder.read_to_end(&mut decompressed).unwrap();
+
+        let batches = deserialize_ipc(&decompressed).expect("deserialize should succeed");
+        assert_eq!(batches.len(), 1);
+
+        let decoded = &batches[0];
+        assert_eq!(decoded.num_rows(), batch.num_rows());
+        for col_idx in 0..batch.num_columns() {
+            assert_eq!(
+                decoded.column(col_idx).as_ref(),
+                batch.column(col_idx).as_ref(),
+                "column {col_idx} mismatch after gzip roundtrip"
             );
         }
     }
