@@ -262,6 +262,15 @@ impl Config {
                                     "pipeline '{name}' input '{label}': generator.attributes float values must be finite"
                                 )));
                             }
+                                if let Some((key, _)) =
+                                    generator.attributes.iter().find(|(_, v)| {
+                                        matches!(v, GeneratorAttributeValueConfig::Unsupported(_))
+                                    })
+                                {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': generator.attributes '{key}' has an unsupported type (expected scalar value)"
+                                    )));
+                                }
                                 if !is_record_profile
                                     && (!generator.attributes.is_empty()
                                         || generator.sequence.is_some()
@@ -722,6 +731,17 @@ impl Config {
                             )));
                         }
                     }
+
+                    if let Some(labels) = &output.static_labels {
+                        for (k, v) in labels {
+                            if k.trim().is_empty() || v.trim().is_empty() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': 'static_labels' keys and values must not be empty"
+                                )));
+                            }
+                        }
+                    }
+
                     if !matches!(output.output_type, OutputType::File | OutputType::Parquet)
                         && output.path.is_some()
                     {
@@ -2025,5 +2045,113 @@ mod validate_metrics_endpoint_tests {
             msg.contains("metrics_endpoint") && msg.contains("scheme"),
             "expected metrics_endpoint scheme rejection: {msg}"
         );
+    }
+}
+
+#[cfg(test)]
+mod additional_tests {
+    use super::*;
+    use crate::types::{InputTypeConfig, FileTypeConfig, MultilineConfig, MultilineMatchMode};
+    use crate::ConfigError;
+
+    // Helper for testing file input validation
+    fn validate_file_input(f: &FileTypeConfig) -> Result<(), ConfigError> {
+        let name = "test_pipe";
+        let label = "test_in";
+
+        if f.path.trim().is_empty() {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{name}' input '{label}': file input 'path' must not be empty"
+            )));
+        }
+        if f.poll_interval_ms == Some(0) {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{name}' input '{label}': 'poll_interval_ms' must be at least 1"
+            )));
+        }
+        if f.read_buf_size == Some(0) {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{name}' input '{label}': 'read_buf_size' must be at least 1"
+            )));
+        }
+        if let Some(sz) = f.read_buf_size {
+            if sz > crate::validate::MAX_READ_BUF_SIZE {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{name}' input '{label}': 'read_buf_size' must not exceed {} (4 MiB)",
+                    crate::validate::MAX_READ_BUF_SIZE
+                )));
+            }
+        }
+        if f.per_file_read_budget_bytes == Some(0) {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{name}' input '{label}': 'per_file_read_budget_bytes' must be at least 1"
+            )));
+        }
+        if f.max_open_files == Some(0) {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{name}' input '{label}': max_open_files must be at least 1"
+            )));
+        }
+        if let Some(encoding) = &f.encoding {
+            let valid_encodings = ["utf-8", "utf8", "ascii"];
+            if !valid_encodings.contains(&encoding.to_lowercase().as_str()) {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{name}' input '{label}': unsupported encoding '{encoding}'"
+                )));
+            }
+        }
+        if let Some(m) = &f.multiline {
+            if let Err(err) = regex::Regex::new(&m.pattern) {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{name}' input '{label}': invalid multiline pattern '{}': {err}",
+                    m.pattern
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_file_input_validation() {
+        let mut f = FileTypeConfig {
+            path: "/tmp/foo".to_string(),
+            poll_interval_ms: None,
+            read_buf_size: None,
+            per_file_read_budget_bytes: None,
+            adaptive_fast_polls_max: None,
+            max_open_files: None,
+            glob_rescan_interval_ms: None,
+            start_position: None,
+            encoding: None,
+            follow_symlinks: None,
+            ignore_older_than_secs: None,
+            multiline: None,
+        };
+
+        // Valid initially
+        assert!(validate_file_input(&f).is_ok());
+
+        // Invalid encoding
+        f.encoding = Some("latin1".to_string());
+        assert!(validate_file_input(&f).is_err());
+
+        f.encoding = Some("utf-8".to_string());
+        assert!(validate_file_input(&f).is_ok());
+
+        // Invalid regex
+        f.multiline = Some(MultilineConfig {
+            pattern: "[invalid regex".to_string(),
+            negate: false,
+            match_mode: MultilineMatchMode::Before,
+        });
+        assert!(validate_file_input(&f).is_err());
+
+        f.multiline = Some(MultilineConfig {
+            pattern: "^started".to_string(),
+            negate: false,
+            match_mode: MultilineMatchMode::Before,
+        });
+        assert!(validate_file_input(&f).is_ok());
     }
 }

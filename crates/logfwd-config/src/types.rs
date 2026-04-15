@@ -220,6 +220,7 @@ pub enum GeneratorAttributeValueConfig {
     Integer(i64),
     Float(f64),
     Bool(bool),
+    Unsupported(serde_yaml_ng::Value),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -262,6 +263,8 @@ pub struct HttpInputConfig {
     pub strict_path: Option<bool>,
     pub method: Option<HttpMethodConfig>,
     pub max_request_body_size: Option<usize>,
+    /// Max bytes to drain per poll call. Default matches OTLP receiver (1GB).
+    pub max_drained_bytes_per_poll: Option<usize>,
     pub response_code: Option<u16>,
     /// Optional static body returned on successful ingest.
     /// Must be omitted when `response_code` is `204`.
@@ -488,6 +491,7 @@ pub struct FileTypeConfig {
     #[serde(default)]
     pub multiline: Option<MultilineConfig>,
 }
+
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -729,7 +733,7 @@ pub enum EnrichmentConfig {
     K8sClusterInfo(K8sClusterInfoConfig),
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineConfig {
     #[serde(default, deserialize_with = "deserialize_one_or_many")]

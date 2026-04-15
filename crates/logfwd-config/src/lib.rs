@@ -18,7 +18,7 @@ mod validate;
 pub(crate) use env::expand_env_vars;
 pub use types::{
     ArrowIpcTypeConfig, AuthConfig, Config, ConfigError, ContainerInfoConfig, CsvEnrichmentConfig,
-    EnrichmentConfig, EnvVarsEnrichmentConfig, FileTypeConfig, Format,
+    EnrichmentConfig, EnvVarsEnrichmentConfig, FileTypeConfig, FileStartPosition, MultilineConfig, MultilineMatchMode, Format,
     GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorInputConfig,
     GeneratorProfileConfig, GeneratorSequenceConfig, GeneratorTypeConfig, GeoDatabaseConfig,
     GeoDatabaseFormat, HostInfoConfig, HostMetricsInputConfig, HttpInputConfig, HttpMethodConfig,
@@ -2888,3 +2888,5 @@ pipelines:
         );
     }
 }
+mod tests_generator_unsupported;
+mod tests_static_labels;

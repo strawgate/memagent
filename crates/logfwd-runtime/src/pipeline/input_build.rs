@@ -168,12 +168,11 @@ pub(super) fn build_input_state(
         InputTypeConfig::File(f) => {
             let path = require_non_empty(name, "file", "path", Some(&f.path))?;
             let format = cfg.format.clone().unwrap_or(Format::Auto);
-            let mut tail_config = TailConfig {
+                        let mut tail_config = TailConfig {
                 start_from_end: f
                     .start_position
                     .as_ref()
-                    .map(|pos| matches!(pos, logfwd_config::FileStartPosition::End))
-                    .unwrap_or(true),
+                    .is_none_or(|pos| matches!(pos, logfwd_config::FileStartPosition::End)),
                 poll_interval_ms: f.poll_interval_ms.unwrap_or(DEFAULT_FILE_POLL_INTERVAL_MS),
                 read_buf_size: f.read_buf_size.unwrap_or(DEFAULT_READ_BUF_SIZE),
                 per_file_read_budget_bytes: f
@@ -391,6 +390,9 @@ pub(super) fn build_input_state(
                 }
                 if let Some(max_request_body_size) = http.max_request_body_size {
                     options.max_request_body_size = max_request_body_size;
+                }
+                if let Some(max_drained_bytes_per_poll) = http.max_drained_bytes_per_poll {
+                    options.max_drained_bytes_per_poll = max_drained_bytes_per_poll;
                 }
                 if let Some(response_code) = http.response_code {
                     options.response_code = response_code;

@@ -18,7 +18,7 @@ mod state;
 mod tailer;
 
 pub use identity::ByteOffset;
-pub use tailer::{FileTailer, MultilineConfig, MultilineMatchMode, TailConfig, TailEvent};
+pub use tailer::{FileTailer, TailConfig, TailEvent, MultilineConfig, MultilineMatchMode};
 
 #[cfg(test)]
 mod tests;

@@ -584,6 +584,7 @@ const wasmBase = import.meta.env.BASE_URL.replace(/\/$/, '') + '/wasm/logfwd-con
 </style>
 
 <script type="module">
+(async () => {
   // Resolve WASM path from the data attribute set by Astro's frontmatter.
   // This makes the path work both in dev (base='/') and on GitHub Pages (base='/memagent').
   const wasmBase = document.getElementById('config-builder').dataset.wasmBase;
@@ -769,6 +770,20 @@ const wasmBase = import.meta.env.BASE_URL.replace(/\/$/, '') + '/wasm/logfwd-con
     }
   }
 
+  // ── YAML scalar serializer ────────────────────────────────────
+  // Quotes a value when it contains characters that would break YAML structure:
+  // empty string (YAML null without quotes), ': ' (key separator), ' #' or
+  // leading '#' (comment trigger), newlines, or leading/trailing whitespace.
+  // Coerces to string defensively so number/boolean defaults don't throw.
+  function yamlScalar(val) {
+    const s = val == null ? '' : String(val);
+    if (s === '' || /: | #|^#|\n|\r/.test(s) || s !== s.trim()) {
+      return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+                    .replace(/\n/g, '\\n').replace(/\r/g, '\\r') + '"';
+    }
+    return s;
+  }
+
   // ── Apply field values to a YAML snippet ──────────────────────
   // Matches "key: defaultValue" in the snippet to avoid collisions when the
   // default value appears elsewhere (e.g. "json" in both path and format).
@@ -780,7 +795,7 @@ const wasmBase = import.meta.env.BASE_URL.replace(/\/$/, '') + '/wasm/logfwd-con
         ? values[field.key]
         : field.default;
       const search  = field.key + ': ' + field.default;
-      const replace = field.key + ': ' + val;
+      const replace = field.key + ': ' + yamlScalar(val);
       result = result.split(search).join(replace);
     }
     return result;
@@ -813,7 +828,8 @@ const wasmBase = import.meta.env.BASE_URL.replace(/\/$/, '') + '/wasm/logfwd-con
 
     try {
       validate_config(yaml);
-      validationBadge.textContent = '✓ valid';
+      // SQL syntax is not validated server-side in WASM — make that visible.
+      validationBadge.textContent = sql ? '✓ valid (SQL not verified)' : '✓ valid';
       validationBadge.className = 'cb-badge cb-valid';
       validationMsg.hidden = true;
     } catch (err) {
@@ -939,4 +955,13 @@ const wasmBase = import.meta.env.BASE_URL.replace(/\/$/, '') + '/wasm/logfwd-con
   }
 
   setup();
+})().catch(e => {
+  console.error(e);
+  const message = e instanceof Error ? e.message : String(e);
+  const st = document.getElementById('cb-status');
+  if (st) {
+    st.textContent = `Failed to load config builder: ${message}`;
+    st.style.color = 'var(--sl-color-red)';
+  }
+});
 </script>
