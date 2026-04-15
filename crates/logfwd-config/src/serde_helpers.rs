@@ -43,9 +43,9 @@ where
             let num: u64 = num_part.parse().map_err(DeError::custom)?;
             let ms = match unit_part.trim() {
                 "ms" | "" => num,
-                "s" | "sec" | "secs" => num * 1000,
-                "m" | "min" | "mins" => num * 60_000,
-                "h" | "hr" | "hrs" => num * 3_600_000,
+                "s" | "sec" | "secs" => num.saturating_mul(1000),
+                "m" | "min" | "mins" => num.saturating_mul(60_000),
+                "h" | "hr" | "hrs" => num.saturating_mul(3_600_000),
                 other => {
                     return Err(DeError::custom(format!(
                         "unknown duration unit '{}'",

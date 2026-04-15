@@ -553,8 +553,27 @@ fn seek_start(journal: &mut journal_ffi::Journal, config: &JournaldConfig) -> io
     #[allow(clippy::collapsible_if)]
     if let Some(cursor_path) = &config.cursor_path {
         if let Ok(cursor) = std::fs::read_to_string(cursor_path) {
-            if !cursor.trim().is_empty() {
-                if let Ok(()) = journal.seek_cursor(cursor.trim()) {
+            let cursor = cursor.trim().to_owned();
+            if !cursor.is_empty() {
+                if let Ok(()) = journal.seek_cursor(&cursor) {
+                    // seek_cursor positions *before* the cursor entry; next()
+                    // is required to land on an actual entry.  The cursor
+                    // entry itself was already emitted in the prior run, so we
+                    // must skip it.  If the entry was rotated away we'll land
+                    // on the next-closest entry instead — back up so the drain
+                    // loop's next() returns that unread entry.
+                    if let Ok(true) = journal.next() {
+                        if !journal.test_cursor(&cursor).unwrap_or(true) {
+                            // We're NOT on the cursor entry (it was
+                            // rotated out); back up so the drain loop
+                            // does not skip this new entry.
+                            let _ = journal.previous();
+                        }
+                        // If test_cursor is true we're on the already-
+                        // emitted entry; the drain loop's next() will
+                        // advance to the first unread one.
+                    }
+                    // Ok(false) or Err: no entries; drain loop waits
                     return Ok(());
                 }
             }

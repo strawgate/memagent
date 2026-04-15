@@ -99,7 +99,11 @@ pub fn build_sink_factory(
             let endpoint = if let Some(ep) = cfg.endpoint.as_ref() {
                 ep.clone()
             } else if let (Some(host), Some(port)) = (cfg.host.as_ref(), cfg.port) {
-                format!("http://{host}:{port}")
+                if host.contains(':') {
+                    format!("http://[{host}]:{port}")
+                } else {
+                    format!("http://{host}:{port}")
+                }
             } else {
                 return Err(OutputError::Construction(format!(
                     "output '{name}': arrow_ipc requires either 'endpoint' or both 'host' and 'port'"
@@ -160,7 +164,11 @@ pub fn build_sink_factory(
             let endpoint = if let Some(ep) = &cfg.endpoint {
                 ep.clone()
             } else if let (Some(host), Some(port)) = (&cfg.host, cfg.port) {
-                format!("{host}:{port}")
+                if host.contains(':') {
+                    format!("[{host}]:{port}")
+                } else {
+                    format!("{host}:{port}")
+                }
             } else {
                 return Err(OutputError::Construction(format!(
                     "output '{name}': udp requires 'endpoint' or both 'host' and 'port'"
@@ -270,7 +278,11 @@ pub fn build_sink_factory(
             let endpoint = if let Some(ep) = &cfg.endpoint {
                 ep.clone()
             } else if let (Some(host), Some(port)) = (&cfg.host, cfg.port) {
-                format!("{host}:{port}")
+                if host.contains(':') {
+                    format!("[{host}]:{port}")
+                } else {
+                    format!("{host}:{port}")
+                }
             } else {
                 return Err(OutputError::Construction(format!(
                     "output '{name}': tcp requires 'endpoint' or both 'host' and 'port'"
