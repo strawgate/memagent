@@ -1459,7 +1459,7 @@ mod tests {
         b.append_int_by_idx(si, b"42");
         b.end_row();
         b.begin_row();
-        b.append_float_by_idx(si, b"1.234");
+        b.append_float_by_idx(si, b"3.14");
         b.end_row();
         b.begin_row();
         b.append_str_by_idx(si, &buf[0..4]);
@@ -1517,7 +1517,7 @@ mod tests {
         b.end_row();
 
         b.begin_row();
-        b.append_float_by_idx(idx, b"1.234");
+        b.append_float_by_idx(idx, b"3.14");
         b.end_row();
 
         b.begin_row();
@@ -1966,7 +1966,7 @@ mod tests {
         b.begin_batch(buf);
         let idx = b.resolve_field(b"lat");
         b.begin_row();
-        b.append_float_by_idx(idx, b"1.234");
+        b.append_float_by_idx(idx, b"3.14");
         b.end_row();
         b.begin_row();
         b.end_row(); // missing → null
@@ -1978,7 +1978,7 @@ mod tests {
             .as_any()
             .downcast_ref::<Float64Array>()
             .unwrap();
-        assert!((col.value(0) - 1.234).abs() < 1e-10);
+        assert!((col.value(0) - 3.14).abs() < 1e-10);
         assert!(col.is_null(1));
     }
 

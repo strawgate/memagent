@@ -1654,14 +1654,14 @@ mod write_row_json_tests {
     #[test]
     fn float32_serializes_as_number() {
         use arrow::array::Float32Array;
-        let batch = make_batch(vec![("val", Arc::new(Float32Array::from(vec![1.234_f32])))]);
+        let batch = make_batch(vec![("val", Arc::new(Float32Array::from(vec![3.14_f32])))]);
         let json = render(&batch, 0);
         let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
         assert!(
             v["val"].is_number(),
             "Float32 should serialize as JSON number, got {json}"
         );
-        let diff = (v["val"].as_f64().unwrap() - 1.234_f64).abs();
+        let diff = (v["val"].as_f64().unwrap() - 3.14_f64).abs();
         assert!(
             diff < 0.001,
             "Float32 value should be ~3.14, got {}",
@@ -1834,7 +1834,7 @@ mod write_row_json_tests {
         let batch = make_batch(vec![
             ("dur_int", Arc::new(Int64Array::from(vec![42]))),
             ("label_str", Arc::new(StringArray::from(vec!["hello"]))),
-            ("score_float", Arc::new(Float64Array::from(vec![1.234]))),
+            ("score_float", Arc::new(Float64Array::from(vec![3.14]))),
         ]);
         let json = render(&batch, 0);
         let v: serde_json::Value = serde_json::from_str(&json).expect("must be valid JSON");
@@ -1848,7 +1848,7 @@ mod write_row_json_tests {
             "alias 'label_str' must be preserved, got: {json}"
         );
         assert!(
-            (v["score_float"].as_f64().unwrap() - 1.234).abs() < 0.01,
+            (v["score_float"].as_f64().unwrap() - 3.14).abs() < 0.01,
             "alias 'score_float' must be preserved, got: {json}"
         );
     }

@@ -1,20 +1,32 @@
 use serde::{Deserialize, Serialize};
 
-
+/// Response model for the `/live` endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LiveResponse {
     pub status: String,
-    pub reason: String,
-    pub observed_at_unix_ns: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uptime_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_at_unix_ns: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_version: Option<String>,
 }
 
+/// Response model for the `/ready` endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadyResponse {
     pub status: String,
     pub reason: String,
     pub observed_at_unix_ns: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub contract_version: Option<String>,
 }
 
+/// Represents the aggregate health of all components in the pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComponentHealthResponse {
     pub status: String,
@@ -23,6 +35,7 @@ pub struct ComponentHealthResponse {
     pub observed_at_unix_ns: String,
 }
 
+/// Snapshot of allocator memory statistics in bytes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryResponse {
     pub resident: usize,
@@ -30,6 +43,7 @@ pub struct MemoryResponse {
     pub active: usize,
 }
 
+/// System-level process metrics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemResponse {
     pub uptime_seconds: u64,
@@ -38,6 +52,7 @@ pub struct SystemResponse {
     pub memory: Option<MemoryResponse>,
 }
 
+/// Input component metrics and health.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InputResponse {
     pub name: String,
@@ -51,6 +66,7 @@ pub struct InputResponse {
     pub parse_errors: u64,
 }
 
+/// Output component metrics and health.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputResponse {
     pub name: String,
@@ -62,6 +78,7 @@ pub struct OutputResponse {
     pub errors: u64,
 }
 
+/// Transform component metrics and health.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransformResponse {
     pub sql: String,
@@ -72,6 +89,7 @@ pub struct TransformResponse {
     pub filter_drop_rate: f64,
 }
 
+/// Pipeline batch processing metrics.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchesResponse {
     pub total: u64,
@@ -87,6 +105,7 @@ pub struct BatchesResponse {
     pub rows_total: u64,
 }
 
+/// Pipeline stage processing duration in seconds.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StageSecondsResponse {
     pub scan: f64,
@@ -96,6 +115,7 @@ pub struct StageSecondsResponse {
     pub send: f64,
 }
 
+/// Complete metrics and health for a single pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineResponse {
     pub name: String,
@@ -107,6 +127,7 @@ pub struct PipelineResponse {
     pub backpressure_stalls: u64,
 }
 
+/// Response model for the `/admin/v1/status` endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusResponse {
     pub live: LiveResponse,
@@ -118,4 +139,5 @@ pub struct StatusResponse {
     pub contract_version: Option<String>,
 }
 
+/// Explicit contract version marker for stable diagnostic surfaces.
 pub const DIAGNOSTICS_CONTRACT_VERSION: &str = "1";

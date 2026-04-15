@@ -12,8 +12,10 @@ use opentelemetry::metrics::{Counter, Meter};
 // paths keep working.
 pub use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 
-pub mod policy;
 pub mod models;
+pub mod policy;
+
+
 
 // ---------------------------------------------------------------------------
 // Pipeline-level metrics (shared between pipeline thread and diagnostics)
@@ -547,10 +549,17 @@ impl DiagnosticsServer {
 
     fn serve_live(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
         let uptime = self.start_time.elapsed().as_secs();
-        let body = format!(
-            r#"{{"status":"live","uptime_seconds":{},"version":"{}"}}"#,
-            uptime, VERSION,
-        );
+
+        let response_model = models::LiveResponse {
+            status: "live".to_string(),
+            uptime_seconds: Some(uptime),
+            version: Some(VERSION.to_string()),
+            reason: Some("process_running".to_string()),
+            observed_at_unix_ns: Some(now_nanos().to_string()),
+            contract_version: Some(models::DIAGNOSTICS_CONTRACT_VERSION.to_string()),
+        };
+
+        let body = serde_json::to_string(&response_model).unwrap_or_default();
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
         let resp = tiny_http::Response::from_string(body).with_header(header);
@@ -576,20 +585,20 @@ impl DiagnosticsServer {
         let reason = policy::ready_reason(&self.pipelines);
         let observed_at_unix_ns = now_nanos();
 
+        let response_model = models::ReadyResponse {
+            status: if ready { "ready".to_string() } else { "not_ready".to_string() },
+            reason: reason.to_string(),
+            observed_at_unix_ns: observed_at_unix_ns.to_string(),
+            contract_version: Some(models::DIAGNOSTICS_CONTRACT_VERSION.to_string()),
+        };
+
+        let body = serde_json::to_string(&response_model).unwrap_or_default();
         let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
             .map_err(|()| io::Error::other("invalid HTTP header"))?;
         if ready {
-            let body = format!(
-                r#"{{"status":"ready","reason":"{}","observed_at_unix_ns":"{}"}}"#,
-                reason, observed_at_unix_ns
-            );
             let resp = tiny_http::Response::from_string(body).with_header(header);
             request.respond(resp)?;
         } else {
-            let body = format!(
-                r#"{{"status":"not_ready","reason":"{}","observed_at_unix_ns":"{}"}}"#,
-                reason, observed_at_unix_ns
-            );
             let resp = tiny_http::Response::from_string(body)
                 .with_status_code(503)
                 .with_header(header);
@@ -955,34 +964,28 @@ impl DiagnosticsServer {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos() as u64;
-        let mut pipelines_json = Vec::new();
+
+        let mut pipelines_models = Vec::new();
 
         for pm in &self.pipelines {
-            let inputs_json: Vec<String> = pm
+            let inputs_models: Vec<models::InputResponse> = pm
                 .inputs
                 .iter()
                 .map(|(name, typ, stats)| {
-                    format!(
-                        r#"{{"name":"{}","type":"{}","health":"{}","lines_total":{},"bytes_total":{},"errors":{},"rotations":{},"parse_errors":{}}}"#,
-                        esc(name),
-                        esc(typ),
-                        stats.health().as_str(),
-                        stats.lines(),
-                        stats.bytes(),
-                        stats.errors(),
-                        stats.rotations(),
-                        stats.parse_errors(),
-                    )
+                    models::InputResponse {
+                        name: name.clone(),
+                        typ: typ.clone(),
+                        health: stats.health().as_str().to_string(),
+                        lines_total: stats.lines(),
+                        bytes_total: stats.bytes(),
+                        errors: stats.errors(),
+                        rotations: stats.rotations(),
+                        parse_errors: stats.parse_errors(),
+                    }
                 })
                 .collect();
 
             let lines_in = pm.transform_in.lines();
-            // lines_out: derived from output-sink stats (single increment path —
-            // each sink calls inc_lines once on successful delivery). For fan-out
-            // pipelines, the maximum across all outputs is used as a proxy for
-            // "lines delivered to the most successful output". This may undercount
-            // in partial-failure fan-out scenarios where outputs succeed at
-            // different rates.
             let lines_out: u64 = pm
                 .outputs
                 .iter()
@@ -995,19 +998,18 @@ impl DiagnosticsServer {
                 0.0
             };
 
-            let outputs_json: Vec<String> = pm
+            let outputs_models: Vec<models::OutputResponse> = pm
                 .outputs
                 .iter()
                 .map(|(name, typ, stats)| {
-                    format!(
-                        r#"{{"name":"{}","type":"{}","health":"{}","lines_total":{},"bytes_total":{},"errors":{}}}"#,
-                        esc(name),
-                        esc(typ),
-                        stats.health().as_str(),
-                        stats.lines(),
-                        stats.bytes(),
-                        stats.errors(),
-                    )
+                    models::OutputResponse {
+                        name: name.clone(),
+                        typ: typ.clone(),
+                        health: stats.health().as_str().to_string(),
+                        lines_total: stats.lines(),
+                        bytes_total: stats.bytes(),
+                        errors: stats.errors(),
+                    }
                 })
                 .collect();
 
@@ -1026,11 +1028,6 @@ impl DiagnosticsServer {
 
             let last_batch_ns = pm.last_batch_time_ns.load(Ordering::Relaxed);
 
-            // Compute batch latency using a consistent snapshot since they are
-            // updated at different times. We retry until batches remains the same,
-            // capping at 64 attempts to avoid spinning indefinitely under contention.
-            // Observability counters only — stale reads are acceptable.
-            // Use Relaxed uniformly to match all other load sites in this file.
             let mut latency_batches = pm.batches_total.load(Ordering::Relaxed);
             let mut batch_latency_total;
             let mut attempts = 0;
@@ -1054,35 +1051,40 @@ impl DiagnosticsServer {
             let backpressure = pm.backpressure_stalls.load(Ordering::Relaxed);
             let transform_health = policy::transform_health(pm);
 
-            pipelines_json.push(format!(
-                r#"{{"name":"{}","inputs":[{}],"transform":{{"sql":"{}","health":"{}","lines_in":{},"lines_out":{},"errors":{},"filter_drop_rate":{:.3}}},"outputs":[{}],"batches":{{"total":{},"avg_rows":{:.1},"flush_by_size":{},"flush_by_timeout":{},"dropped_batches_total":{},"scan_errors_total":{},"parse_errors_total":{},"last_batch_time_ns":{},"batch_latency_avg_ns":{},"inflight":{},"rows_total":{}}},"stage_seconds":{{"scan":{:.6},"transform":{:.6},"output":{:.6},"queue_wait":{:.6},"send":{:.6}}},"backpressure_stalls":{}}}"#,
-                esc(&pm.name),
-                inputs_json.join(","),
-                esc(&pm.transform_sql),
-                transform_health.as_str(),
-                lines_in,
-                lines_out,
-                pm.transform_errors.load(Ordering::Relaxed),
-                drop_rate,
-                outputs_json.join(","),
-                batches,
-                avg_rows,
-                pm.flush_by_size.load(Ordering::Relaxed),
-                pm.flush_by_timeout.load(Ordering::Relaxed),
-                pm.dropped_batches_total.load(Ordering::Relaxed),
-                pm.scan_errors_total.load(Ordering::Relaxed),
-                pm.parse_errors_total.load(Ordering::Relaxed),
-                last_batch_ns,
-                batch_latency_avg_ns,
-                inflight,
-                batch_rows,
-                scan_s,
-                transform_s,
-                output_s,
-                queue_wait_s,
-                send_s,
-                backpressure,
-            ));
+            pipelines_models.push(models::PipelineResponse {
+                name: pm.name.clone(),
+                inputs: inputs_models,
+                transform: models::TransformResponse {
+                    sql: pm.transform_sql.clone(),
+                    health: transform_health.as_str().to_string(),
+                    lines_in,
+                    lines_out,
+                    errors: pm.transform_errors.load(Ordering::Relaxed),
+                    filter_drop_rate: drop_rate,
+                },
+                outputs: outputs_models,
+                batches: models::BatchesResponse {
+                    total: batches,
+                    avg_rows,
+                    flush_by_size: pm.flush_by_size.load(Ordering::Relaxed),
+                    flush_by_timeout: pm.flush_by_timeout.load(Ordering::Relaxed),
+                    dropped_batches_total: pm.dropped_batches_total.load(Ordering::Relaxed),
+                    scan_errors_total: pm.scan_errors_total.load(Ordering::Relaxed),
+                    parse_errors_total: pm.parse_errors_total.load(Ordering::Relaxed),
+                    last_batch_time_ns: last_batch_ns,
+                    batch_latency_avg_ns,
+                    inflight,
+                    rows_total: batch_rows,
+                },
+                stage_seconds: models::StageSecondsResponse {
+                    scan: scan_s,
+                    transform: transform_s,
+                    output: output_s,
+                    queue_wait: queue_wait_s,
+                    send: send_s,
+                },
+                backpressure_stalls: backpressure,
+            });
         }
 
         let ready = if policy::is_ready(&self.pipelines) {
@@ -1095,34 +1097,45 @@ impl DiagnosticsServer {
         let component_reason = policy::health_reason(component_health);
         let readiness_impact = policy::readiness_impact(component_health);
 
-        format!(
-            r#"{{"live":{{"status":"live","reason":"process_running","observed_at_unix_ns":"{}"}},"ready":{{"status":"{}","reason":"{}","observed_at_unix_ns":"{}"}},"component_health":{{"status":"{}","reason":"{}","readiness_impact":"{}","observed_at_unix_ns":"{}"}},"pipelines":[{}],"system":{{"uptime_seconds":{},"version":"{}"{}}}}}"#,
-            observed_at_unix_ns,
-            ready,
-            ready_reason,
-            observed_at_unix_ns,
-            component_health.as_str(),
-            component_reason,
-            readiness_impact,
-            observed_at_unix_ns,
-            pipelines_json.join(","),
-            uptime,
-            VERSION,
-            self.memory_json(),
-        )
+        let memory_model = self.memory_stats_fn.and_then(|f| f()).map(|m| models::MemoryResponse {
+            resident: m.resident,
+            allocated: m.allocated,
+            active: m.active,
+        });
+
+        let response = models::StatusResponse {
+            live: models::LiveResponse {
+                status: "live".to_string(),
+                reason: Some("process_running".to_string()),
+                uptime_seconds: None,
+                version: None,
+                observed_at_unix_ns: Some(observed_at_unix_ns.to_string()),
+                contract_version: None,
+            },
+            ready: models::ReadyResponse {
+                status: ready.to_string(),
+                reason: ready_reason.to_string(),
+                observed_at_unix_ns: observed_at_unix_ns.to_string(),
+                contract_version: None,
+            },
+            component_health: models::ComponentHealthResponse {
+                status: component_health.as_str().to_string(),
+                reason: component_reason.to_string(),
+                readiness_impact: readiness_impact.to_string(),
+                observed_at_unix_ns: observed_at_unix_ns.to_string(),
+            },
+            pipelines: pipelines_models,
+            system: models::SystemResponse {
+                uptime_seconds: uptime,
+                version: VERSION.to_string(),
+                memory: memory_model,
+            },
+            contract_version: Some(models::DIAGNOSTICS_CONTRACT_VERSION.to_string()),
+        };
+
+        serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string())
     }
 
-    /// Returns a JSON fragment (starting with a comma) for allocator memory
-    /// stats, or an empty string if no stats function is registered.
-    fn memory_json(&self) -> String {
-        match self.memory_stats_fn.and_then(|f| f()) {
-            Some(m) => format!(
-                r#","memory":{{"resident":{},"allocated":{},"active":{}}}"#,
-                m.resident, m.allocated, m.active,
-            ),
-            None => String::new(),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1461,6 +1474,65 @@ mod tests {
     }
 
     #[test]
+    fn test_live_endpoint_contract() {
+        let server = server_with_test_pipeline();
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/live");
+        assert_eq!(status, 200);
+
+        let v: serde_json::Value = serde_json::from_str(&body).expect("invalid JSON from /live");
+        assert_eq!(v["status"], "live");
+        assert!(v.get("uptime_seconds").is_some());
+        assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(v["contract_version"], models::DIAGNOSTICS_CONTRACT_VERSION);
+    }
+
+    #[test]
+    fn test_ready_endpoint_contract() {
+        let meter = opentelemetry::global::meter("test");
+        let pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
+        let mut server = DiagnosticsServer::new("127.0.0.1:0");
+        server.add_pipeline(Arc::new(pm));
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/ready");
+        assert_eq!(status, 200);
+
+        let v: serde_json::Value = serde_json::from_str(&body).expect("invalid JSON from /ready");
+        assert_eq!(v["status"], "ready");
+        assert!(v.get("reason").is_some());
+        assert!(v.get("observed_at_unix_ns").is_some());
+        assert_eq!(v["contract_version"], models::DIAGNOSTICS_CONTRACT_VERSION);
+    }
+
+    #[test]
+    fn test_status_endpoint_contract() {
+        let server = server_with_test_pipeline();
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/admin/v1/status");
+        assert_eq!(status, 200);
+
+        let v: serde_json::Value = serde_json::from_str(&body).expect("invalid JSON from /admin/v1/status");
+        assert!(v.get("live").is_some());
+        assert!(v.get("ready").is_some());
+        assert!(v.get("component_health").is_some());
+        assert!(v.get("pipelines").is_some());
+        assert!(v.get("system").is_some());
+        assert_eq!(v["contract_version"], models::DIAGNOSTICS_CONTRACT_VERSION);
+    }
+
+    #[test]
     fn test_live_endpoint() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -1548,8 +1620,8 @@ mod tests {
             "body: {}",
             body
         );
-        assert!(body.contains(r#""queue_wait":0.050000"#), "body: {}", body);
-        assert!(body.contains(r#""send":0.150000"#), "body: {}", body);
+        assert!(body.contains(r#""queue_wait":0.05"#), "body: {}", body);
+        assert!(body.contains(r#""send":0.15"#), "body: {}", body);
     }
 
     #[test]
