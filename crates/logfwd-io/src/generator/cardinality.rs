@@ -1,3 +1,5 @@
+//! Reusable cardinality-modeling helpers for realistic synthetic data generation.
+
 pub mod cardinality_helpers {
     //! Reusable helper primitives for realistic synthetic-cardinality modeling.
     //!
@@ -70,6 +72,7 @@ pub mod cardinality_helpers {
     }
 
     impl<T> RankedPool<T> {
+        /// Create a new ranked pool with the given items and skew.
         pub fn new(items: Vec<T>, skew: Skew) -> Self {
             assert!(!items.is_empty(), "RankedPool requires at least one item");
 
@@ -100,6 +103,7 @@ pub mod cardinality_helpers {
             }
         }
 
+        /// Sample an index from the pool using rank-weighted probabilities.
         pub fn sample_index(&self, rng: &mut fastrand::Rng) -> usize {
             let ticket = rng.u64(..self.total);
             match self.cumulative.binary_search(&ticket) {
@@ -108,6 +112,7 @@ pub mod cardinality_helpers {
             }
         }
 
+        /// Sample a reference to a value from the pool.
         pub fn sample<'a>(&'a self, rng: &mut fastrand::Rng) -> &'a T {
             &self.items[self.sample_index(rng)]
         }
@@ -122,6 +127,7 @@ pub mod cardinality_helpers {
     }
 
     impl<T> LeasedRankedPool<T> {
+        /// Create a new leased ranked pool.
         pub fn new(items: Vec<T>, skew: Skew, tenure: RangeInclusive<usize>) -> Self {
             Self {
                 pool: RankedPool::new(items, skew),
@@ -131,6 +137,7 @@ pub mod cardinality_helpers {
             }
         }
 
+        /// Sample the next value, respecting the lease tenure.
         pub fn next<'a>(&'a mut self, rng: &mut fastrand::Rng) -> &'a T {
             if self.remaining == 0 {
                 self.current = self.pool.sample_index(rng);
@@ -153,6 +160,7 @@ pub mod cardinality_helpers {
     }
 
     impl<T> LeasePool<T> {
+        /// Create a new lease pool.
         pub fn new(items: Vec<T>, tenure: RangeInclusive<usize>) -> Self {
             assert!(!items.is_empty(), "LeasePool requires at least one item");
             Self {
@@ -176,6 +184,7 @@ pub mod cardinality_helpers {
             self.remaining = sample_range(rng, &self.tenure).max(1);
         }
 
+        /// Sample the next value, respecting the lease tenure.
         pub fn next<'a>(&'a mut self, rng: &mut fastrand::Rng) -> &'a T {
             if self.remaining == 0 {
                 self.rotate(rng);
@@ -196,6 +205,7 @@ pub mod cardinality_helpers {
     }
 
     impl Sparsity {
+        /// Create a new sparsity gate.
         pub fn new(numerator: u32, denominator: u32) -> Self {
             assert!(denominator > 0, "denominator must be positive");
             assert!(numerator <= denominator, "probability must be <= 1");
@@ -205,6 +215,7 @@ pub mod cardinality_helpers {
             }
         }
 
+        /// Return true with probability numerator/denominator.
         pub fn enabled(&self, rng: &mut fastrand::Rng) -> bool {
             rng.u32(..self.denominator) < self.numerator
         }
@@ -233,6 +244,7 @@ pub mod cardinality_helpers {
     }
 
     impl CardinalityProfile {
+        /// Returns a cardinality profile suitable for infra-like workloads.
         pub fn infra_like() -> Self {
             Self {
                 cardinality_scale: 1,
@@ -247,6 +259,7 @@ pub mod cardinality_helpers {
             }
         }
 
+        /// Returns a cardinality profile scaled by the given factor.
         pub fn for_scale(scale: usize) -> Self {
             let scale = scale.max(1);
             Self {
@@ -328,6 +341,7 @@ pub mod cardinality_helpers {
     }
 
     impl CardinalityState {
+        /// Create a new cardinality state from the given profile.
         pub fn new(profile: CardinalityProfile) -> Self {
             let scale = profile.cardinality_scale.max(1);
             let phase_hot_tenure = profile.phase_hot_tenure.clone();
@@ -422,6 +436,7 @@ pub mod cardinality_helpers {
             }
         }
 
+        /// Sample the next row from the cardinality model.
         pub fn sample<'a>(&'a mut self, rng: &mut fastrand::Rng) -> CardinalitySample<'a> {
             let phase = *self.phase_pool.next(rng);
             let service_idx = *self.service_pool.next(rng);

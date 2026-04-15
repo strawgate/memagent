@@ -295,7 +295,11 @@ impl Config {
                                     }
                                 }
                                 if let Some(ts) = &generator.timestamp {
-                                    if is_record_profile {
+                                    let is_logs_profile = matches!(
+                                        generator.profile,
+                                        Some(GeneratorProfileConfig::Logs) | None
+                                    );
+                                    if !is_logs_profile {
                                         return Err(ConfigError::Validation(format!(
                                             "pipeline '{name}' input '{label}': generator.timestamp is only supported for the logs profile"
                                         )));

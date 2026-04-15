@@ -1,21 +1,27 @@
-const LEVELS: &[&str] = &["INFO", "WARN", "ERROR", "DEBUG", "TRACE"];
-const STREAMS: &[&str] = &["stdout", "stderr"];
-const NAMESPACES: &[&str] = &[
+//! Shared constants, utility functions, and CloudTrail data types for generators.
+
+use std::fmt::Write as _;
+
+use super::cardinality::cardinality_helpers::SamplePhase;
+
+pub const LEVELS: &[&str] = &["INFO", "WARN", "ERROR", "DEBUG", "TRACE"];
+pub const STREAMS: &[&str] = &["stdout", "stderr"];
+pub const NAMESPACES: &[&str] = &[
     "default",
     "kube-system",
     "monitoring",
     "app-prod",
     "data-pipeline",
 ];
-const PODS: &[&str] = &[
+pub const PODS: &[&str] = &[
     "api-gateway-7b8c9d-abc12",
     "worker-5f6a7b-def34",
     "frontend-3c4d5e-ghi56",
     "scheduler-1a2b3c-jkl78",
     "ingester-9e0f1a-mno90",
 ];
-const CONTAINERS: &[&str] = &["main", "sidecar", "init", "envoy"];
-const PATHS: &[&str] = &[
+pub const CONTAINERS: &[&str] = &["main", "sidecar", "init", "envoy"];
+pub const PATHS: &[&str] = &[
     "/api/users",
     "/api/orders",
     "/api/health",
@@ -25,17 +31,17 @@ const PATHS: &[&str] = &[
     "/api/v2/ingest",
     "/graphql",
 ];
-const METHODS: &[&str] = &["GET", "POST", "PUT", "DELETE", "PATCH"];
-const SERVICES: &[&str] = &[
+pub const METHODS: &[&str] = &["GET", "POST", "PUT", "DELETE", "PATCH"];
+pub const SERVICES: &[&str] = &[
     "api-gateway",
     "user-service",
     "order-service",
     "auth-service",
     "metrics-collector",
 ];
-const STATUS_CODES: &[u16] = &[200, 200, 200, 201, 204, 400, 401, 403, 404, 500, 502, 503];
+pub const STATUS_CODES: &[u16] = &[200, 200, 200, 201, 204, 400, 401, 403, 404, 500, 502, 503];
 
-const STACK_TRACE: &str = "java.lang.NullPointerException: Cannot invoke method on null object\n\
+pub const STACK_TRACE: &str = "java.lang.NullPointerException: Cannot invoke method on null object\n\
     \tat com.example.service.UserHandler.getUser(UserHandler.java:142)\n\
     \tat com.example.service.UserHandler.handleRequest(UserHandler.java:87)\n\
     \tat com.example.framework.Router.dispatch(Router.java:234)\n\
@@ -43,10 +49,10 @@ const STACK_TRACE: &str = "java.lang.NullPointerException: Cannot invoke method 
     \tat com.example.framework.HttpServer$Worker.run(HttpServer.java:678)\n\
     \tat java.base/java.lang.Thread.run(Thread.java:829)";
 
-const CLOUDTRAIL_EVENT_VERSION: &str = "1.11";
-const CLOUDTRAIL_REGIONS_GLOBAL: &[&str] = &["us-east-1"];
-const CLOUDTRAIL_REGIONS_REGIONAL: &[&str] = &["us-east-1", "us-west-2", "eu-west-1"];
-const CLOUDTRAIL_REGIONS_MULTI: &[&str] = &[
+pub const CLOUDTRAIL_EVENT_VERSION: &str = "1.11";
+pub const CLOUDTRAIL_REGIONS_GLOBAL: &[&str] = &["us-east-1"];
+pub const CLOUDTRAIL_REGIONS_REGIONAL: &[&str] = &["us-east-1", "us-west-2", "eu-west-1"];
+pub const CLOUDTRAIL_REGIONS_MULTI: &[&str] = &[
     "us-east-1",
     "us-west-2",
     "eu-west-1",
@@ -54,7 +60,7 @@ const CLOUDTRAIL_REGIONS_MULTI: &[&str] = &[
     "ca-central-1",
     "ap-northeast-1",
 ];
-const CLOUDTRAIL_PUBLIC_IPS: &[&str] = &[
+pub const CLOUDTRAIL_PUBLIC_IPS: &[&str] = &[
     "198.51.100.10",
     "198.51.100.12",
     "198.51.100.18",
@@ -62,7 +68,7 @@ const CLOUDTRAIL_PUBLIC_IPS: &[&str] = &[
     "203.0.113.37",
     "203.0.113.42",
 ];
-const CLOUDTRAIL_USER_AGENTS: &[&str] = &[
+pub const CLOUDTRAIL_USER_AGENTS: &[&str] = &[
     "aws-cli/2.15.0 Python/3.11.8 Linux/6.6",
     "Boto3/1.34.0 Python/3.11.8 Linux/6.6",
     "console.amazonaws.com",
@@ -170,7 +176,7 @@ impl CloudTrailProfile {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum CloudTrailIdentityKind {
+pub enum CloudTrailIdentityKind {
     Root,
     IamUser,
     AssumedRole,
@@ -179,7 +185,7 @@ enum CloudTrailIdentityKind {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum CloudTrailServiceKind {
+pub enum CloudTrailServiceKind {
     Ec2,
     S3,
     Iam,
@@ -191,22 +197,22 @@ enum CloudTrailServiceKind {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CloudTrailActionSpec {
-    event_name: &'static str,
-    read_only: bool,
-    data_event: bool,
-    resource_type: &'static str,
+pub struct CloudTrailActionSpec {
+    pub event_name: &'static str,
+    pub read_only: bool,
+    pub data_event: bool,
+    pub resource_type: &'static str,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct CloudTrailServiceSpec {
-    event_source: &'static str,
-    weight: usize,
-    kind: CloudTrailServiceKind,
-    actions: &'static [CloudTrailActionSpec],
+pub struct CloudTrailServiceSpec {
+    pub event_source: &'static str,
+    pub weight: usize,
+    pub kind: CloudTrailServiceKind,
+    pub actions: &'static [CloudTrailActionSpec],
 }
 
-const EC2_ACTIONS: &[CloudTrailActionSpec] = &[
+pub const EC2_ACTIONS: &[CloudTrailActionSpec] = &[
     CloudTrailActionSpec {
         event_name: "DescribeInstances",
         read_only: true,
@@ -239,7 +245,7 @@ const EC2_ACTIONS: &[CloudTrailActionSpec] = &[
     },
 ];
 
-const S3_ACTIONS: &[CloudTrailActionSpec] = &[
+pub const S3_ACTIONS: &[CloudTrailActionSpec] = &[
     CloudTrailActionSpec {
         event_name: "GetObject",
         read_only: true,
@@ -272,7 +278,7 @@ const S3_ACTIONS: &[CloudTrailActionSpec] = &[
     },
 ];
 
-const IAM_ACTIONS: &[CloudTrailActionSpec] = &[
+pub const IAM_ACTIONS: &[CloudTrailActionSpec] = &[
     CloudTrailActionSpec {
         event_name: "GetUser",
         read_only: true,
@@ -305,7 +311,7 @@ const IAM_ACTIONS: &[CloudTrailActionSpec] = &[
     },
 ];
 
-const STS_ACTIONS: &[CloudTrailActionSpec] = &[
+pub const STS_ACTIONS: &[CloudTrailActionSpec] = &[
     CloudTrailActionSpec {
         event_name: "AssumeRole",
         read_only: false,
@@ -326,7 +332,7 @@ const STS_ACTIONS: &[CloudTrailActionSpec] = &[
     },
 ];
 
-const KMS_ACTIONS: &[CloudTrailActionSpec] = &[
+pub const KMS_ACTIONS: &[CloudTrailActionSpec] = &[
     CloudTrailActionSpec {
         event_name: "Decrypt",
         read_only: true,
@@ -353,7 +359,7 @@ const KMS_ACTIONS: &[CloudTrailActionSpec] = &[
     },
 ];
 
-const LAMBDA_ACTIONS: &[CloudTrailActionSpec] = &[
+pub const LAMBDA_ACTIONS: &[CloudTrailActionSpec] = &[
     CloudTrailActionSpec {
         event_name: "Invoke",
         read_only: true,
@@ -380,7 +386,7 @@ const LAMBDA_ACTIONS: &[CloudTrailActionSpec] = &[
     },
 ];
 
-const RDS_ACTIONS: &[CloudTrailActionSpec] = &[
+pub const RDS_ACTIONS: &[CloudTrailActionSpec] = &[
     CloudTrailActionSpec {
         event_name: "DescribeDBInstances",
         read_only: true,
@@ -407,7 +413,7 @@ const RDS_ACTIONS: &[CloudTrailActionSpec] = &[
     },
 ];
 
-const CLOUDTRAIL_ACTIONS: &[CloudTrailActionSpec] = &[
+pub const CLOUDTRAIL_ACTIONS: &[CloudTrailActionSpec] = &[
     CloudTrailActionSpec {
         event_name: "LookupEvents",
         read_only: true,
@@ -428,7 +434,7 @@ const CLOUDTRAIL_ACTIONS: &[CloudTrailActionSpec] = &[
     },
 ];
 
-const SERVICE_BALANCED: &[CloudTrailServiceSpec] = &[
+pub const SERVICE_BALANCED: &[CloudTrailServiceSpec] = &[
     CloudTrailServiceSpec {
         event_source: "ec2.amazonaws.com",
         weight: 4,
@@ -479,7 +485,7 @@ const SERVICE_BALANCED: &[CloudTrailServiceSpec] = &[
     },
 ];
 
-const SERVICE_SECURITY_HEAVY: &[CloudTrailServiceSpec] = &[
+pub const SERVICE_SECURITY_HEAVY: &[CloudTrailServiceSpec] = &[
     CloudTrailServiceSpec {
         event_source: "iam.amazonaws.com",
         weight: 6,
@@ -524,7 +530,7 @@ const SERVICE_SECURITY_HEAVY: &[CloudTrailServiceSpec] = &[
     },
 ];
 
-const SERVICE_STORAGE_HEAVY: &[CloudTrailServiceSpec] = &[
+pub const SERVICE_STORAGE_HEAVY: &[CloudTrailServiceSpec] = &[
     CloudTrailServiceSpec {
         event_source: "s3.amazonaws.com",
         weight: 7,
@@ -563,7 +569,7 @@ const SERVICE_STORAGE_HEAVY: &[CloudTrailServiceSpec] = &[
     },
 ];
 
-const SERVICE_COMPUTE_HEAVY: &[CloudTrailServiceSpec] = &[
+pub const SERVICE_COMPUTE_HEAVY: &[CloudTrailServiceSpec] = &[
     CloudTrailServiceSpec {
         event_source: "ec2.amazonaws.com",
         weight: 6,
@@ -606,23 +612,23 @@ const SERVICE_COMPUTE_HEAVY: &[CloudTrailServiceSpec] = &[
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn pick<'a>(rng: &mut fastrand::Rng, items: &'a [&str]) -> &'a str {
+pub fn pick<'a>(rng: &mut fastrand::Rng, items: &'a [&str]) -> &'a str {
     items[rng.usize(..items.len())]
 }
 
-fn pick_by_idx<'a>(items: &'a [&str], idx: usize) -> &'a str {
+pub fn pick_by_idx<'a>(items: &'a [&str], idx: usize) -> &'a str {
     items[idx % items.len()]
 }
 
-fn pick_u16(rng: &mut fastrand::Rng, items: &[u16]) -> u16 {
+pub fn pick_u16(rng: &mut fastrand::Rng, items: &[u16]) -> u16 {
     items[rng.usize(..items.len())]
 }
 
-fn round_tenths(value: f64) -> f64 {
+pub fn round_tenths(value: f64) -> f64 {
     (value * 10.0).round() / 10.0
 }
 
-fn level_for_phase(phase: SamplePhase) -> &'static str {
+pub fn level_for_phase(phase: SamplePhase) -> &'static str {
     match phase {
         SamplePhase::Hot => "INFO",
         SamplePhase::Warm => "WARN",
@@ -630,22 +636,22 @@ fn level_for_phase(phase: SamplePhase) -> &'static str {
     }
 }
 
-fn user_label(idx: usize) -> String {
+pub fn user_label(idx: usize) -> String {
     format!("user-{idx:03}")
 }
 
-fn append_user_label(out: &mut String, idx: usize) {
+pub fn append_user_label(out: &mut String, idx: usize) {
     out.clear();
     let _ = write!(out, "user-{idx:03}");
 }
 
-fn append_timestamp_utc(out: &mut String, sec: usize, nano: u32) {
+pub fn append_timestamp_utc(out: &mut String, sec: usize, nano: u32) {
     out.clear();
     let _ = write!(out, "2024-01-15T10:30:{sec:02}.{nano:09}Z");
 }
 
 /// Escape a string for JSON embedding (handles `\n`, `\t`, `\`, `"`).
-fn json_escape(s: &str, out: &mut String) {
+pub fn json_escape(s: &str, out: &mut String) {
     for ch in s.chars() {
         match ch {
             '"' => out.push_str("\\\""),
@@ -658,14 +664,8 @@ fn json_escape(s: &str, out: &mut String) {
     }
 }
 
-trait WeightedChoice {
+pub trait WeightedChoice {
     fn weight(&self) -> usize;
-}
-
-impl WeightedChoice for EnvoyAccessScenario {
-    fn weight(&self) -> usize {
-        self.weight
-    }
 }
 
 impl WeightedChoice for CloudTrailServiceSpec {
@@ -674,7 +674,7 @@ impl WeightedChoice for CloudTrailServiceSpec {
     }
 }
 
-fn weighted_pick<T: Copy>(rng: &mut fastrand::Rng, items: &[(T, usize)]) -> T {
+pub fn weighted_pick<T: Copy>(rng: &mut fastrand::Rng, items: &[(T, usize)]) -> T {
     debug_assert!(!items.is_empty());
     let total: usize = items.iter().map(|(_, weight)| *weight).sum();
     let mut roll = rng.usize(..total.max(1));
@@ -688,8 +688,11 @@ fn weighted_pick<T: Copy>(rng: &mut fastrand::Rng, items: &[(T, usize)]) -> T {
     items[items.len() - 1].0
 }
 
-fn weighted_choice_pick<T: WeightedChoice + Copy>(rng: &mut fastrand::Rng, items: &[T]) -> T {
-    debug_assert!(!items.is_empty());
+pub fn weighted_choice_pick<T: WeightedChoice + Copy>(rng: &mut fastrand::Rng, items: &[T]) -> T {
+    assert!(
+        !items.is_empty(),
+        "weighted_choice_pick requires non-empty items"
+    );
     let total: usize = items.iter().map(WeightedChoice::weight).sum();
     let mut roll = rng.usize(..total.max(1));
     for item in items {
@@ -702,12 +705,12 @@ fn weighted_choice_pick<T: WeightedChoice + Copy>(rng: &mut fastrand::Rng, items
     items[items.len() - 1]
 }
 
-fn append_uuid_like(rng: &mut fastrand::Rng, out: &mut String) {
+pub fn append_uuid_like(rng: &mut fastrand::Rng, out: &mut String) {
     out.clear();
     append_uuid_like_value(rng.u128(..), out);
 }
 
-fn append_uuid_like_value(value: u128, out: &mut String) {
+pub fn append_uuid_like_value(value: u128, out: &mut String) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
     let bytes = value.to_be_bytes();
@@ -720,17 +723,16 @@ fn append_uuid_like_value(value: u128, out: &mut String) {
     }
 }
 
-fn uuid_like_from_value(value: u128) -> String {
+pub fn uuid_like_from_value(value: u128) -> String {
     let mut out = String::with_capacity(36);
     append_uuid_like_value(value, &mut out);
     out
 }
 
-fn append_ipv4(out: &mut String, a: u8, b: u8, c: u8, d: u8, port: u16) {
+pub fn append_ipv4(out: &mut String, a: u8, b: u8, c: u8, d: u8, port: u16) {
     let _ = write!(out, "{a}.{b}.{c}.{d}:{port}");
 }
 
-fn append_ipv4_without_port(out: &mut String, a: u8, b: u8, c: u8, d: u8) {
+pub fn append_ipv4_without_port(out: &mut String, a: u8, b: u8, c: u8, d: u8) {
     let _ = write!(out, "{a}.{b}.{c}.{d}");
 }
-
