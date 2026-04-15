@@ -24,31 +24,41 @@ export function SystemStrip({ store, tick: _tick, uptimeSec }: Props) {
 
   // Memory (prefer jemalloc allocated, fallback to RSS).
   const memFrame = store.selectTimeSeries({
-    metricName: "process.memory.allocated",
+    metricName: "logfwd.memory.allocated",
     intervalMs: 2000,
     reduce: "last",
   });
   const memPoints = memFrame.series[0]?.points.map((p) => p.value) ?? [];
   const memLatest = memPoints.length > 0 ? memPoints[memPoints.length - 1] : 0;
 
-  // Fallback to RSS if jemalloc not available.
-  let memLabel = "Alloc";
-  let displayPoints = memPoints;
-  let displayLatest = memLatest;
-  if (memPoints.length === 0) {
-    const rssFrame = store.selectTimeSeries({
-      metricName: "process.memory.rss",
-      intervalMs: 2000,
-      reduce: "last",
-    });
-    displayPoints = rssFrame.series[0]?.points.map((p) => p.value) ?? [];
-    displayLatest = displayPoints.length > 0 ? displayPoints[displayPoints.length - 1] : 0;
+  // RSS for comparison.
+  const rssFrame = store.selectTimeSeries({
+    metricName: "logfwd.memory.resident",
+    intervalMs: 2000,
+    reduce: "last",
+  });
+  const rssPoints = rssFrame.series[0]?.points.map((p) => p.value) ?? [];
+  const rssLatest = rssPoints.length > 0 ? rssPoints[rssPoints.length - 1] : 0;
+
+  // Display: show allocated if available, else RSS.
+  let memLabel: string;
+  let displayPoints: number[];
+  let displayLatest: number;
+  let memSecondary = "";
+  if (memPoints.length > 0 && memLatest > 0) {
+    memLabel = "Alloc";
+    displayPoints = memPoints;
+    displayLatest = memLatest;
+    if (rssLatest > 0) memSecondary = ` / ${fmtBytesCompact(rssLatest)} RSS`;
+  } else {
     memLabel = "RSS";
+    displayPoints = rssPoints;
+    displayLatest = rssLatest;
   }
 
   // Inflight batches.
   const inflightFrame = store.selectTimeSeries({
-    metricName: "logfwd.inflight_batches",
+    metricName: "logfwd.batch.inflight",
     intervalMs: 2000,
     reduce: "last",
   });
@@ -82,7 +92,10 @@ export function SystemStrip({ store, tick: _tick, uptimeSec }: Props) {
           color="var(--purple)"
           style="area"
         />
-        <span class="sys-value">{fmtBytesCompact(displayLatest)}</span>
+        <span class="sys-value">
+          {fmtBytesCompact(displayLatest)}
+          {memSecondary && <span class="sys-secondary">{memSecondary}</span>}
+        </span>
       </div>
 
       <div class="sys-divider" />

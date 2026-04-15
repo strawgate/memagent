@@ -3,7 +3,6 @@ import { api } from "./api";
 import type { ChartConfig } from "./components/Chart";
 import { ChartGrid } from "./components/ChartGrid";
 import { ConfigView } from "./components/ConfigView";
-import { DataLossIndicator } from "./components/DataLossIndicator";
 import { LogViewer } from "./components/LogViewer";
 import { PipelineView } from "./components/PipelineView";
 import { StatusBar } from "./components/StatusBar";
@@ -89,15 +88,23 @@ const SYSTEM_CHARTS: ChartConfig[] = [
     yRange: [0, 10],
   },
   {
-    metricName: "process.memory.allocated",
-    label: "Memory",
+    metricName: "logfwd.memory.allocated",
+    label: "Memory (Allocated)",
     color: "#10b981",
     unit: "",
     fmtAxis: fmtBytesCompact,
     yRange: [0, 67108864],
   },
   {
-    metricName: "logfwd.inflight_batches",
+    metricName: "logfwd.memory.resident",
+    label: "Memory (RSS)",
+    color: "#06b6d4",
+    unit: "",
+    fmtAxis: fmtBytesCompact,
+    yRange: [0, 67108864],
+  },
+  {
+    metricName: "logfwd.batch.inflight",
     label: "Inflight Batches",
     color: "#f97316",
     unit: "",
@@ -148,10 +155,10 @@ export function App() {
       transform_sec: 0,
       output_sec: 0,
       backpressure_stalls: sum("logfwd.backpressure_stalls"),
-      inflight_batches: sum("logfwd.inflight_batches"),
-      mem_resident: val("process.memory.resident") || undefined,
-      mem_allocated: val("process.memory.allocated") || undefined,
-      mem_active: val("process.memory.active") || undefined,
+      inflight_batches: sum("logfwd.batch.inflight"),
+      mem_resident: val("logfwd.memory.resident") || undefined,
+      mem_allocated: val("logfwd.memory.allocated") || undefined,
+      mem_active: val("logfwd.memory.active") || undefined,
     });
     setTotalErrors(sum("logfwd.output_errors"));
   }, [store]);
@@ -252,11 +259,6 @@ export function App() {
         uptime={uptime}
       />
       <main>
-        {/* ── Data Loss — the #1 question: "Am I losing data?" ── */}
-        {status?.pipelines && status.pipelines.length > 0 && (
-          <DataLossIndicator pipelines={status.pipelines} />
-        )}
-
         {/* ── Pipeline charts ── */}
         <div class="section">
           <div class="heading">Pipeline Metrics</div>
@@ -281,6 +283,59 @@ export function App() {
 
         {/* ── System strip — compact CPU / Memory / Inflight / Uptime ── */}
         <SystemStrip store={store} tick={tick} uptimeSec={uptime} />
+
+        {/* ── Global stage time breakdown ── */}
+        {(() => {
+          const stages = status?.pipelines?.reduce(
+            (acc, p) => {
+              if (p.stage_seconds) {
+                acc.scan += p.stage_seconds.scan;
+                acc.transform += p.stage_seconds.transform;
+                acc.output += p.stage_seconds.output;
+              }
+              return acc;
+            },
+            { scan: 0, transform: 0, output: 0 }
+          );
+          const total = stages ? stages.scan + stages.transform + stages.output : 0;
+          if (!stages || total === 0) return null;
+          const scanPct = (stages.scan / total) * 100;
+          const xfmPct = (stages.transform / total) * 100;
+          const outPct = (stages.output / total) * 100;
+          return (
+            <div class="global-stages">
+              <span class="global-stages-label">Time Breakdown</span>
+              <span class="stage-bar global-stage-bar">
+                <span
+                  class="stage-seg scan"
+                  style={{ width: `${scanPct}%` }}
+                  title={`Scan: ${scanPct.toFixed(0)}%`}
+                />
+                <span
+                  class="stage-seg xfm"
+                  style={{ width: `${xfmPct}%` }}
+                  title={`Transform: ${xfmPct.toFixed(0)}%`}
+                />
+                <span
+                  class="stage-seg out"
+                  style={{ width: `${outPct}%` }}
+                  title={`Output: ${outPct.toFixed(0)}%`}
+                />
+              </span>
+              <span class="global-stages-legend">
+                <span class="stage-legend-item">
+                  <span class="stage-dot scan" /> Scan {scanPct.toFixed(0)}%
+                </span>
+                <span class="stage-legend-item">
+                  <span class="stage-dot xfm" /> Transform {xfmPct.toFixed(0)}%
+                </span>
+                <span class="stage-legend-item">
+                  <span class="stage-dot out" /> Output {outPct.toFixed(0)}%
+                </span>
+              </span>
+            </div>
+          );
+        })()}
 
         {/* ── Pipelines — collapsible, expanded by default unless >3 ── */}
         {status?.pipelines.map((p, i) => (

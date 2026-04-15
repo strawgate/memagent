@@ -22,9 +22,9 @@ export function fmtBytes(b: number | null | undefined): string {
 }
 
 export function fmtBytesCompact(b: number): string {
-  if (b >= 1073741824) return `${(b / 1073741824).toFixed(1)}G`;
-  if (b >= 1048576) return `${(b / 1048576).toFixed(0)}M`;
-  if (b >= 1024) return `${(b / 1024).toFixed(0)}K`;
+  if (b >= 1073741824) return `${(b / 1073741824).toFixed(1)}GB`;
+  if (b >= 1048576) return `${(b / 1048576).toFixed(0)}MB`;
+  if (b >= 1024) return `${(b / 1024).toFixed(0)}KB`;
   return `${Math.round(b)}B`;
 }
 

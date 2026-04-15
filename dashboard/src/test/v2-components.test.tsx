@@ -419,7 +419,7 @@ describe("SystemStrip", () => {
 
   it("shows memory value from allocated metric", () => {
     const store = makeMockStore({
-      "process.memory.allocated": [41943040, 42991616],
+      "logfwd.memory.allocated": [41943040, 42991616],
     });
     render(<SystemStrip store={store as never} tick={1} uptimeSec={100} />);
     // Label should be "Alloc" (not RSS) when allocated data is available.
@@ -428,7 +428,7 @@ describe("SystemStrip", () => {
 
   it("falls back to RSS label when no allocated data", () => {
     const store = makeMockStore({
-      "process.memory.rss": [50_000_000],
+      "logfwd.memory.resident": [50_000_000],
     });
     render(<SystemStrip store={store as never} tick={1} uptimeSec={100} />);
     expect(screen.getByText("RSS")).toBeInTheDocument();
@@ -445,7 +445,7 @@ describe("SystemStrip", () => {
     const store = makeMockStore({
       "logfwd.cpu_percent": [1, 2, 3],
       "process.memory.allocated": [100, 200],
-      "logfwd.inflight_batches": [2, 3, 4],
+      "logfwd.batch.inflight": [2, 3, 4],
     });
     const { container } = render(<SystemStrip store={store as never} tick={1} uptimeSec={100} />);
     // Three sparkline canvases (CPU, Memory, Inflight — Uptime has no sparkline).
