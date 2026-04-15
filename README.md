@@ -247,18 +247,18 @@ For ready-made starters, see [`examples/use-cases/`](examples/use-cases/README.m
 
 **Start here by goal**
 
-- Not sure where to begin: [Choose the Right Guide](book/src/content/docs/index.mdx)
+- Not sure where to begin: [Choose the Right Guide](book/src/content/docs/quick-start.mdx)
 - Run logfwd quickly: [Quick Start](book/src/content/docs/quick-start.mdx)
-- Build a safer production baseline: [Your First Pipeline](book/src/content/docs/index.mdx)
+- Build a safer production baseline: [Your First Pipeline](book/src/content/docs/deployment/docker.md)
 - Debug failures: [Troubleshooting](book/src/content/docs/troubleshooting.md)
 
 **User guides** — [book/src/content/docs/](book/src/content/docs/)
 
 | Guide | Description |
 |-------|-------------|
-| [Choose the Right Guide](book/src/content/docs/index.mdx) | Goal-based chooser for operators, contributors, and evaluators |
+| [Choose the Right Guide](book/src/content/docs/quick-start.mdx) | Goal-based starting point for operators, contributors, and evaluators |
 | [Quick Start](book/src/content/docs/quick-start.mdx) | Working pipeline in 10 minutes with copy/paste commands |
-| [Your First Pipeline](book/src/content/docs/index.mdx) | Production config with monitoring and validation |
+| [Your First Pipeline](book/src/content/docs/deployment/docker.md) | Production config with monitoring and validation |
 | [Configuration Reference](book/src/content/docs/configuration/reference.mdx) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
 | [SQL Transforms](book/src/content/docs/configuration/sql-transforms.md) | DataFusion SQL examples, column naming, UDFs |
 | [Deployment](book/src/content/docs/deployment/kubernetes.md) | Kubernetes DaemonSet, Docker, resource sizing |
