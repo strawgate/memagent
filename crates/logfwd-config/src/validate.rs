@@ -497,6 +497,7 @@ impl Config {
                                 )));
                             }
                         }
+                        InputTypeConfig::S3(_) => {}
                     }
 
                     // Reject input formats that are not yet implemented.
