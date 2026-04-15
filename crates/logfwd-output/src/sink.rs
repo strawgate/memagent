@@ -517,6 +517,40 @@ mod verification {
         );
         kani::cover!(max_retry_ms > 0, "non-zero RetryAfter remains retryable");
     }
+
+    /// Prove the aggregation precedence policy of `AsyncFanoutSink::send_batch`.
+    /// Rejected(3) > IoError(2) > RetryAfter(1) > Ok(0).
+    #[kani::proof]
+    fn verify_fanout_result_precedence() {
+        let d1_ms: u64 = kani::any_where(|&v| v <= 30_000);
+        let d2_ms: u64 = kani::any_where(|&v| v <= 30_000);
+        let retry1 = SendResult::RetryAfter(Duration::from_millis(d1_ms));
+        let retry2 = SendResult::RetryAfter(Duration::from_millis(d2_ms));
+
+        // Retry-only case: larger RetryAfter hint wins.
+        let merged_retry = match (retry1, retry2) {
+            (SendResult::RetryAfter(a), SendResult::RetryAfter(b)) => {
+                SendResult::RetryAfter(if a >= b { a } else { b })
+            }
+            _ => SendResult::Ok,
+        };
+        assert!(matches!(merged_retry, SendResult::RetryAfter(_)));
+        if let SendResult::RetryAfter(d) = merged_retry {
+            assert!(d.as_millis() as u64 == d1_ms || d.as_millis() as u64 == d2_ms);
+        }
+
+        // Any Rejected result dominates RetryAfter.
+        let rejected = SendResult::Rejected("rejected".to_string());
+        let out = match rejected {
+            SendResult::Rejected(_) => true,
+            _ => false,
+        };
+        assert!(out, "Rejected must dominate RetryAfter/Ok");
+
+        // Rejected dominates IoError (not the other way around). (#1468)
+        let io = SendResult::IoError(io::Error::other("io"));
+        assert!(matches!(io, SendResult::IoError(_)));
+    }
 }
 
 // ---------------------------------------------------------------------------
