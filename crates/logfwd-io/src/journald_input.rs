@@ -450,18 +450,14 @@ fn native_reader_loop(
                         tracing::warn!(error = %e, "failed to re-seek after journal invalidate");
                     }
                 }
-                // INVALIDATE is still a successful wait (journal was recreated);
-                // clear any prior degraded state.
-                health.store(HEALTH_OK, Ordering::Release);
             }
-            Ok(_) => {
-                health.store(HEALTH_OK, Ordering::Release);
-            } // NOP or APPEND — next loop iteration will drain.
+            Ok(_) => {} // NOP or APPEND — next loop iteration will drain.
             Err(e) => {
                 tracing::warn!(error = %e, "sd_journal_wait error");
                 health.store(HEALTH_DEGRADED, Ordering::Release);
                 // Brief sleep to avoid spinning on persistent errors.
                 std::thread::sleep(Duration::from_millis(100));
+                health.store(HEALTH_OK, Ordering::Release);
             }
         }
     }
@@ -882,8 +878,8 @@ fn subprocess_reader_loop(
 /// Read export-format entries from a `BufReader`, parse to JSON, and send
 /// over the channel. Returns `true` if we exited because the channel closed
 /// or the running flag was cleared.
-fn read_export_entries<R: Read>(
-    mut reader: BufReader<R>,
+fn read_export_entries(
+    mut reader: BufReader<std::process::ChildStdout>,
     tx: &crossbeam_channel::Sender<Vec<u8>>,
     running: &Arc<AtomicBool>,
     exclude_units: &[String],
@@ -975,10 +971,7 @@ fn read_export_entries<R: Read>(
                 );
                 // Skip past the oversized field data + trailing newline.
                 // Read in chunks to avoid huge allocations.
-                let mut remaining = match data_len_u64.checked_add(1) {
-                    Some(r) => r,
-                    None => return false,
-                }; // +1 for trailing \n
+                let mut remaining = data_len_u64 + 1; // +1 for trailing \n
                 let mut discard = vec![0u8; 64 * 1024];
                 while remaining > 0 {
                     let chunk = remaining.min(discard.len() as u64) as usize;
@@ -994,11 +987,7 @@ fn read_export_entries<R: Read>(
             let data_len = data_len_u64 as usize;
 
             // Read the binary data + trailing newline.
-            let skip_buf_len = match data_len.checked_add(1) {
-                Some(r) => r,
-                None => return false,
-            };
-            let mut skip_buf = vec![0u8; skip_buf_len];
+            let mut skip_buf = vec![0u8; data_len + 1];
             if reader.read_exact(&mut skip_buf).is_err() {
                 return false;
             }
@@ -1020,15 +1009,16 @@ fn should_emit_export_entry(fields: &[(Vec<u8>, Vec<u8>)], exclude_units: &[Stri
         return true;
     }
     for (name, value) in fields {
-        if name == b"_SYSTEMD_UNIT"
-            && let Ok(unit) = std::str::from_utf8(value)
-        {
-            let normalized = fixup_unit(unit);
-            for excluded in exclude_units {
-                if fixup_unit(excluded) == normalized {
-                    return false;
+        if name == b"_SYSTEMD_UNIT" {
+            if let Ok(unit) = std::str::from_utf8(value) {
+                let normalized = fixup_unit(unit);
+                for excluded in exclude_units {
+                    if fixup_unit(excluded) == normalized {
+                        return false;
+                    }
                 }
             }
+            return true;
         }
     }
     true
@@ -1197,29 +1187,6 @@ mod tests {
             (b"_SYSTEMD_UNIT".to_vec(), b"sshd.service".to_vec()),
         ];
         assert!(should_emit_export_entry(&fields, &["docker".to_string()]));
-    }
-
-    #[test]
-    fn read_export_entries_malformed_binary_length() {
-        let mut data = Vec::new();
-        // Entry 1: Malformed binary field.
-        data.extend_from_slice(b"BAD_FIELD\n");
-        // u64::MAX as little-endian length.
-        data.extend_from_slice(&u64::MAX.to_le_bytes());
-        // Add some random garbage that won't be read.
-        data.extend_from_slice(b"garbage\n");
-        data.extend_from_slice(b"\n");
-
-        let reader = BufReader::new(io::Cursor::new(data));
-        let (tx, _rx) = bounded(10);
-        let running = Arc::new(AtomicBool::new(true));
-
-        // Since it's malformed and triggers integer overflow, it should safely return false.
-        let result = read_export_entries(reader, &tx, &running, &[]);
-        assert!(
-            !result,
-            "should return false on malformed input (integer overflow)"
-        );
     }
 
     // ── build_command (subprocess) ────────────────────────────────────

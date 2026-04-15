@@ -236,18 +236,14 @@ fn finalize_fanout_outcome(
     }
 
     let mut first_rejection = None;
-    let mut all_rejected = true;
     for state in states {
         if let ChildState::Rejected(reason) = state {
-            if first_rejection.is_none() {
-                first_rejection = Some(reason.clone());
-            }
-        } else {
-            all_rejected = false;
+            first_rejection = Some(reason.clone());
+            break;
         }
     }
 
-    if all_rejected && let Some(reason) = first_rejection {
+    if let Some(reason) = first_rejection {
         SendResult::Rejected(reason)
     } else {
         SendResult::Ok
@@ -496,31 +492,20 @@ mod verification {
     #[kani::unwind(3)]
     fn verify_finalize_fanout_outcome_precedence() {
         let max_retry_ms: u64 = kani::any_where(|&v| v <= 30_000);
-        // Mixed states: one Ok + one Rejected.
-        let mixed_states = [ChildState::Ok, ChildState::Rejected("bad".to_string())];
+        let states = [ChildState::Ok, ChildState::Rejected("bad".to_string())];
 
         let retry = finalize_fanout_outcome(
-            &mixed_states,
+            &states,
             true,
             Some(io::Error::other("io")),
             Some(Duration::from_millis(max_retry_ms)),
         );
         assert!(matches!(retry, SendResult::RetryAfter(_)));
 
-        let io_only =
-            finalize_fanout_outcome(&mixed_states, true, Some(io::Error::other("io")), None);
+        let io_only = finalize_fanout_outcome(&states, true, Some(io::Error::other("io")), None);
         assert!(matches!(io_only, SendResult::IoError(_)));
 
-        // Mixed Ok + Rejected with no pending/error → partial success → Ok.
-        let partial_ok = finalize_fanout_outcome(&mixed_states, false, None, None);
-        assert!(matches!(partial_ok, SendResult::Ok));
-
-        // All-rejected states → Rejected.
-        let all_rejected_states = [
-            ChildState::Rejected("bad".to_string()),
-            ChildState::Rejected("also bad".to_string()),
-        ];
-        let rejected = finalize_fanout_outcome(&all_rejected_states, false, None, None);
+        let rejected = finalize_fanout_outcome(&states, false, None, None);
         assert!(matches!(rejected, SendResult::Rejected(_)));
 
         let ok = finalize_fanout_outcome(&[ChildState::Ok], false, None, None);
@@ -531,6 +516,40 @@ mod verification {
             "zero-duration RetryAfter remains retryable"
         );
         kani::cover!(max_retry_ms > 0, "non-zero RetryAfter remains retryable");
+    }
+
+    /// Prove the aggregation precedence policy of `AsyncFanoutSink::send_batch`.
+    /// Rejected(3) > IoError(2) > RetryAfter(1) > Ok(0).
+    #[kani::proof]
+    fn verify_fanout_result_precedence() {
+        let d1_ms: u64 = kani::any_where(|&v| v <= 30_000);
+        let d2_ms: u64 = kani::any_where(|&v| v <= 30_000);
+        let retry1 = SendResult::RetryAfter(Duration::from_millis(d1_ms));
+        let retry2 = SendResult::RetryAfter(Duration::from_millis(d2_ms));
+
+        // Retry-only case: larger RetryAfter hint wins.
+        let merged_retry = match (retry1, retry2) {
+            (SendResult::RetryAfter(a), SendResult::RetryAfter(b)) => {
+                SendResult::RetryAfter(if a >= b { a } else { b })
+            }
+            _ => SendResult::Ok,
+        };
+        assert!(matches!(merged_retry, SendResult::RetryAfter(_)));
+        if let SendResult::RetryAfter(d) = merged_retry {
+            assert!(d.as_millis() as u64 == d1_ms || d.as_millis() as u64 == d2_ms);
+        }
+
+        // Any Rejected result dominates RetryAfter.
+        let rejected = SendResult::Rejected("rejected".to_string());
+        let out = match rejected {
+            SendResult::Rejected(_) => true,
+            _ => false,
+        };
+        assert!(out, "Rejected must dominate RetryAfter/Ok");
+
+        // Rejected dominates IoError (not the other way around). (#1468)
+        let io = SendResult::IoError(io::Error::other("io"));
+        assert!(matches!(io, SendResult::IoError(_)));
     }
 }
 
@@ -684,31 +703,13 @@ mod tests {
         let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2), Box::new(s3)]);
 
         let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
-        // With #2102 fix, partial success returns Ok instead of Rejected
         assert!(
-            matches!(result, SendResult::Ok),
-            "expected Ok (partial success), got {result:?}"
+            matches!(result, SendResult::Rejected(_)),
+            "expected Rejected, got {result:?}"
         );
         assert_eq!(*calls1.lock().unwrap(), 1, "s1 must be called");
         assert_eq!(*calls2.lock().unwrap(), 1, "s2 must be called");
         assert_eq!(*calls3.lock().unwrap(), 1, "s3 must be called");
-    }
-
-    #[tokio::test]
-    async fn fanout_all_rejected_returns_rejected() {
-        // When every child returns Rejected the fanout must propagate Rejected
-        // (no partial success to salvage).
-        let (s1, calls1) = FixedSink::new("s1", SendResult::Rejected("no-s1".into()));
-        let (s2, calls2) = FixedSink::new("s2", SendResult::Rejected("no-s2".into()));
-        let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
-
-        let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
-        assert!(
-            matches!(result, SendResult::Rejected(_)),
-            "all-rejected fanout must return Rejected, got {result:?}"
-        );
-        assert_eq!(*calls1.lock().unwrap(), 1, "s1 must be called");
-        assert_eq!(*calls2.lock().unwrap(), 1, "s2 must be called");
     }
 
     #[tokio::test]

@@ -106,17 +106,6 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 |------|-------------|
 | eBPF kernel programs. Requires nightly + `bpfel-unknown-none` target. Excluded from workspace. | Cargo.toml `exclude` |
 
-## logfwd-config-wasm
-
-| Rule | Enforcement |
-|------|-------------|
-| Compile target: `wasm32-unknown-unknown` only | `wasm-pack build --target web` |
-| No `std::fs`, `tokio`, or `std::thread` | Compile target (wasm32 removes these APIs) |
-| Template sync: `INPUT_TEMPLATES`/`OUTPUT_TEMPLATES` must mirror `crates/logfwd/src/config_templates.rs` | Code review |
-| Validation parity: only expose formats and output types that pass `Config::validate` | Code review |
-| Output artifacts go to `book/public/wasm/logfwd-config/`; `.js` and `.wasm` committed there | Build command + gitignore allowlist |
-| No `serde-wasm-bindgen`: uses JSON round-trip via `js_sys::JSON::parse` | Code review |
-
 ## Adding a new crate
 
 1. Define its purpose in one sentence

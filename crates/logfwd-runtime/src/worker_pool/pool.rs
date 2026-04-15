@@ -214,7 +214,6 @@ pub struct OutputWorkerPool {
     metrics: Arc<PipelineMetrics>,
     /// Aggregated output health across live worker-local slots.
     output_health: Arc<OutputHealthTracker>,
-    is_draining: bool,
 }
 
 impl OutputWorkerPool {
@@ -251,7 +250,6 @@ impl OutputWorkerPool {
             max_retry_delay: Duration::from_secs(30),
             metrics,
             output_health,
-            is_draining: false,
         }
     }
 
@@ -269,7 +267,7 @@ impl OutputWorkerPool {
     /// and emits an [`AckItem`] with [`DeliveryOutcome::PoolClosed`] unless the
     /// ack channel is already closed too.
     pub async fn submit(&mut self, item: WorkItem) {
-        if self.cancel.is_cancelled() || self.is_draining {
+        if self.cancel.is_cancelled() {
             // Pool has been drained — reject the item immediately rather than
             // silently losing it. This keeps the at-least-once invariant intact
             // even for callers that mistakenly submit after drain.
@@ -434,10 +432,6 @@ impl OutputWorkerPool {
     /// 2. **Wait**: join all worker tasks (with `graceful_timeout`).
     /// 3. **Force**: cancel any tasks still running after the timeout.
     pub async fn drain(&mut self, graceful_timeout: Duration) {
-        // Set is_draining immediately so any concurrent submit() calls that
-        // race with the start of drain are rejected, closing the window between
-        // the guard check in submit() and the actual teardown below.
-        self.is_draining = true;
         self.output_health
             .set_pool_health(ComponentHealth::Stopping);
         let mut forced_abort = false;

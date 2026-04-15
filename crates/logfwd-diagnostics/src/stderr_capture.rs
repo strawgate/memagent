@@ -18,10 +18,6 @@ const MAX_BYTES: usize = 1024 * 1024; // 1 MiB
 struct LogBuf {
     lines: VecDeque<String>,
     total_bytes: usize,
-    /// Monotonically increasing count of lines ever pushed (survives eviction).
-    total_pushed: u64,
-    /// Monotonically increasing count of lines evicted or dropped.
-    lines_dropped: u64,
 }
 
 impl LogBuf {
@@ -29,8 +25,6 @@ impl LogBuf {
         Self {
             lines: VecDeque::new(),
             total_bytes: 0,
-            total_pushed: 0,
-            lines_dropped: 0,
         }
     }
 
@@ -38,40 +32,22 @@ impl LogBuf {
         let line_bytes = line.len() + 1; // +1 accounts for the stripped newline
         // Drop lines that would alone exceed the cap — they can never fit.
         if line_bytes > MAX_BYTES {
-            self.lines_dropped += 1;
             return;
         }
         // Evict oldest lines until there is room for the new one.
         while self.total_bytes + line_bytes > MAX_BYTES {
             if let Some(removed) = self.lines.pop_front() {
                 self.total_bytes = self.total_bytes.saturating_sub(removed.len() + 1);
-                self.lines_dropped += 1;
             } else {
                 break;
             }
         }
         self.total_bytes += line_bytes;
         self.lines.push_back(line);
-        self.total_pushed += 1;
     }
 
     fn get_lines(&self) -> Vec<String> {
         self.lines.iter().cloned().collect()
-    }
-
-    /// Number of lines currently retained in the buffer.
-    fn len(&self) -> usize {
-        self.lines.len()
-    }
-
-    /// Monotonic count of all lines ever pushed (never decreases).
-    fn total_pushed(&self) -> u64 {
-        self.total_pushed
-    }
-
-    /// Monotonic count of lines evicted from the buffer or dropped (oversized).
-    fn count_lines_dropped(&self) -> u64 {
-        self.lines_dropped
     }
 }
 
@@ -99,34 +75,6 @@ impl CaptureState {
         match self.buf.lock() {
             Ok(buf) => buf.get_lines(),
             Err(_) => vec![],
-        }
-    }
-
-    /// Return (new_lines, new_cursor) for lines pushed after `cursor`.
-    fn get_lines_since(&self, cursor: u64) -> (Vec<String>, u64) {
-        match self.buf.lock() {
-            Ok(buf) => {
-                let total = buf.total_pushed();
-                let retained = buf.len() as u64;
-                // How many new lines were pushed since the cursor?
-                let new_count = total.saturating_sub(cursor);
-                if new_count == 0 {
-                    return (vec![], total);
-                }
-                // We can only return lines still in the buffer.
-                let available = new_count.min(retained);
-                let lines = buf.get_lines();
-                let skip = lines.len().saturating_sub(available as usize);
-                (lines[skip..].to_vec(), total)
-            }
-            Err(_) => (vec![], cursor),
-        }
-    }
-
-    fn count_lines_dropped(&self) -> u64 {
-        match self.buf.lock() {
-            Ok(buf) => buf.count_lines_dropped(),
-            Err(poisoned) => poisoned.into_inner().count_lines_dropped(),
         }
     }
 }
@@ -163,17 +111,6 @@ impl StderrCapture {
     /// Returns all buffered log lines (up to ~1 MiB worth).
     pub fn get_logs(&self) -> Vec<String> {
         self.state.get_lines()
-    }
-
-    /// Return lines pushed after `cursor` and the new cursor value.
-    /// Use this for delta delivery — the cursor is monotonic and survives eviction.
-    pub fn get_logs_since(&self, cursor: u64) -> (Vec<String>, u64) {
-        self.state.get_lines_since(cursor)
-    }
-
-    /// Monotonic count of log lines evicted from the buffer or dropped.
-    pub fn count_lines_dropped(&self) -> u64 {
-        self.state.count_lines_dropped()
     }
 
     /// Is capture currently active?
@@ -468,111 +405,5 @@ mod tests {
         state.push_line("world".into());
         let lines = state.get_lines();
         assert_eq!(lines, vec!["hello", "world"]);
-    }
-
-    // ── get_lines_since cursor edge cases ──────────────────────────
-
-    #[test]
-    fn cursor_zero_returns_all() {
-        let state = CaptureState::new();
-        state.push_line("a".into());
-        state.push_line("b".into());
-        let (lines, cursor) = state.get_lines_since(0);
-        assert_eq!(lines, vec!["a", "b"]);
-        assert_eq!(cursor, 2);
-    }
-
-    #[test]
-    fn cursor_at_total_returns_empty() {
-        let state = CaptureState::new();
-        state.push_line("a".into());
-        state.push_line("b".into());
-        let (lines, cursor) = state.get_lines_since(2);
-        assert!(lines.is_empty());
-        assert_eq!(cursor, 2);
-    }
-
-    #[test]
-    fn cursor_partial_returns_new_lines_only() {
-        let state = CaptureState::new();
-        state.push_line("a".into());
-        state.push_line("b".into());
-        state.push_line("c".into());
-        let (lines, cursor) = state.get_lines_since(1);
-        assert_eq!(lines, vec!["b", "c"]);
-        assert_eq!(cursor, 3);
-    }
-
-    #[test]
-    fn cursor_behind_eviction_returns_available() {
-        // Push enough lines to evict earlier ones, then query with a
-        // cursor that references already-evicted data.
-        let state = CaptureState::new();
-        let line_bytes = 10usize; // "line XXXX" = 9 + 1 newline
-        let n = MAX_BYTES / line_bytes + 100;
-        for i in 0..n {
-            state.push_line(format!("line {:04}", i));
-        }
-        // Cursor 0 means "give me everything since the beginning" but some
-        // lines have been evicted. We should get exactly the retained lines.
-        let (lines, cursor) = state.get_lines_since(0);
-        assert_eq!(cursor, n as u64);
-        // Every retained line should be present and the count should be
-        // bounded by buffer capacity.
-        let retained = {
-            let buf = state.buf.lock().unwrap();
-            buf.len()
-        };
-        assert_eq!(lines.len(), retained);
-    }
-
-    #[test]
-    fn cursor_future_returns_empty() {
-        // A cursor beyond total_pushed should return no lines.
-        let state = CaptureState::new();
-        state.push_line("x".into());
-        let (lines, cursor) = state.get_lines_since(999);
-        assert!(lines.is_empty());
-        assert_eq!(cursor, 1);
-    }
-
-    // ── count_lines_dropped counter ──────────────────────────────────
-
-    #[test]
-    fn oversized_line_increments_drop_count() {
-        let mut buf = LogBuf::new();
-        let big = "x".repeat(MAX_BYTES + 1);
-        buf.push(big);
-        assert_eq!(buf.count_lines_dropped(), 1);
-        assert_eq!(buf.total_pushed, 0);
-    }
-
-    #[test]
-    fn eviction_increments_drop_count() {
-        let mut buf = LogBuf::new();
-        let line_bytes = 10usize; // "line XXXX" = 9 + 1 newline
-        let n = MAX_BYTES / line_bytes + 500;
-        for i in 0..n {
-            buf.push(format!("line {:04}", i));
-        }
-        // Some lines were evicted — drop count should be positive.
-        assert!(
-            buf.count_lines_dropped() > 0,
-            "count_lines_dropped={}",
-            buf.count_lines_dropped()
-        );
-        // Total pushed minus retained equals dropped.
-        assert_eq!(
-            buf.count_lines_dropped(),
-            buf.total_pushed - buf.len() as u64,
-        );
-    }
-
-    #[test]
-    fn no_eviction_zero_drops() {
-        let state = CaptureState::new();
-        state.push_line("hello".into());
-        state.push_line("world".into());
-        assert_eq!(state.count_lines_dropped(), 0);
     }
 }

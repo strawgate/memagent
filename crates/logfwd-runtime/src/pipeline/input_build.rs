@@ -10,7 +10,6 @@ use logfwd_config::{
 use logfwd_diagnostics::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
-use logfwd_io::generator::GeneratorProfile;
 use logfwd_io::input::{FileInput, InputSource};
 use logfwd_io::tail::TailConfig;
 
@@ -50,30 +49,6 @@ fn make_format(
         }
     };
     Ok(proc)
-}
-
-fn validate_generator_format(
-    name: &str,
-    profile: &GeneratorProfile,
-    format: &Format,
-) -> Result<(), String> {
-    match (profile, format) {
-        // CRI profile emits CRI-framed lines; only Format::Cri is valid.
-        (GeneratorProfile::CriK8s, Format::Cri) => {}
-        (GeneratorProfile::CriK8s, _) => {
-            return Err(format!(
-                "input '{name}': format {format:?} is not supported for cri_k8s generator (expected cri)"
-            ));
-        }
-        // All other profiles emit JSON lines.
-        (_, Format::Json) => {}
-        (_, _) => {
-            return Err(format!(
-                "input '{name}': format {format:?} is not supported for generator inputs (expected json)"
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> Result<(), String> {
@@ -207,7 +182,7 @@ pub(super) fn build_input_state(
         InputTypeConfig::Generator(g) => {
             use logfwd_io::generator::{
                 GeneratorAttributeValue, GeneratorComplexity, GeneratorConfig,
-                GeneratorGeneratedField, GeneratorInput, GeneratorTimestamp,
+                GeneratorGeneratedField, GeneratorInput, GeneratorProfile, GeneratorTimestamp,
                 parse_iso8601_to_epoch_ms,
             };
             let generator_cfg = g.generator.as_ref();
@@ -226,11 +201,6 @@ pub(super) fn build_input_state(
                 },
                 profile: match generator_cfg.and_then(|c| c.profile.clone()) {
                     Some(GeneratorProfileConfig::Record) => GeneratorProfile::Record,
-                    Some(GeneratorProfileConfig::Envoy) => GeneratorProfile::Envoy,
-                    Some(GeneratorProfileConfig::CriK8s) => GeneratorProfile::CriK8s,
-                    Some(GeneratorProfileConfig::Wide) => GeneratorProfile::Wide,
-                    Some(GeneratorProfileConfig::Narrow) => GeneratorProfile::Narrow,
-                    Some(GeneratorProfileConfig::CloudTrail) => GeneratorProfile::CloudTrail,
                     Some(GeneratorProfileConfig::Logs) | None => GeneratorProfile::Logs,
                     // Non-exhaustive config enum: future variants default to
                     // Logs to preserve backward-compatible behavior.
@@ -297,16 +267,9 @@ pub(super) fn build_input_state(
                         }
                     }
                 },
-                seed: 42,
             };
-            let format = match cfg.format.clone() {
-                Some(f) => f,
-                None => match config.profile {
-                    GeneratorProfile::CriK8s => Format::Cri,
-                    _ => Format::Json,
-                },
-            };
-            validate_generator_format(name, &config.profile, &format)?;
+            let format = cfg.format.clone().unwrap_or(Format::Json);
+            validate_input_format(name, InputType::Generator, &format)?;
             let source = GeneratorInput::new(name, config);
             (Box::new(source), format, 4 * 1024 * 1024)
         }
@@ -369,9 +332,6 @@ pub(super) fn build_input_state(
                 }
                 if let Some(max_request_body_size) = http.max_request_body_size {
                     options.max_request_body_size = max_request_body_size;
-                }
-                if let Some(max_drained_bytes_per_poll) = http.max_drained_bytes_per_poll {
-                    options.max_drained_bytes_per_poll = max_drained_bytes_per_poll;
                 }
                 if let Some(response_code) = http.response_code {
                     options.response_code = response_code;

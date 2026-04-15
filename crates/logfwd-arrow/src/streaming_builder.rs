@@ -262,15 +262,6 @@ impl StreamingBuilder {
                 || self.lifecycle.state() == BuilderState::InRow,
             "resolve_field called outside of an active batch"
         );
-        // COLUMN NAME NOTE: The raw JSON key bytes are used verbatim as the
-        // output Arrow column name.  ScanConfig::is_wanted matches field names
-        // case-insensitively, so if a single input batch contains both `level`
-        // and `Level` they will pass the wanted filter independently and each
-        // call to resolve_field will allocate a *separate* column (because the
-        // HashMap lookup here is case-sensitive).  This means the two variants
-        // end up in distinct columns rather than being merged.  This is a known
-        // limitation: callers that need deterministic column naming should
-        // normalise JSON key casing before scanning, or post-process the batch.
         if let Some(&idx) = self.field_index.get(key) {
             return idx;
         }
@@ -372,39 +363,6 @@ impl StreamingBuilder {
         if std::str::from_utf8(value).is_err() {
             return;
         }
-        // SAFETY: from_utf8 above confirmed valid UTF-8.
-        unsafe { self.append_decoded_str_inner(idx, value) }
-    }
-
-    /// Append a pre-validated string (e.g. a prost `String` or `&str`) as a
-    /// decoded field value without re-running the UTF-8 validation check.
-    ///
-    /// **Caller contract**: `value` must be valid UTF-8. Violating this produces
-    /// corrupt Arrow arrays (undefined behaviour in downstream consumers).
-    #[inline(always)]
-    pub fn append_prevalidated_str_by_idx(&mut self, idx: usize, value: &str) {
-        debug_assert_eq!(
-            self.lifecycle.state(),
-            BuilderState::InRow,
-            "append_prevalidated_str_by_idx called outside of a row"
-        );
-        if check_dup_bits(self.lifecycle.written_bits_mut(), idx) {
-            return;
-        }
-        if idx >= u64::BITS as usize && self.fields[idx].last_row == self.lifecycle.row_count() {
-            return;
-        }
-        // SAFETY: value is &str — guaranteed valid UTF-8 by the type system.
-        unsafe { self.append_decoded_str_inner(idx, value.as_bytes()) }
-    }
-
-    /// Inner append path shared by `append_decoded_str_by_idx` (post-validation)
-    /// and `append_prevalidated_str_by_idx` (type-guaranteed UTF-8).
-    ///
-    /// # Safety
-    /// `value` must be valid UTF-8.
-    #[inline(always)]
-    unsafe fn append_decoded_str_inner(&mut self, idx: usize, value: &[u8]) {
         let Ok(len) = u32::try_from(value.len()) else {
             return;
         };
@@ -1216,14 +1174,7 @@ impl StreamingBuilder {
             let dec_end = end.checked_sub(buf_len)?;
             self.decoded_buf.get(dec_start..dec_end)?
         };
-        // SAFETY: All bytes written to `buf` originate from the original input,
-        // which is either a validated UTF-8 JSON/protobuf payload or explicit
-        // ASCII literals.  Bytes in `decoded_buf` are written only through
-        // `append_decoded_str_inner`, which is called either after
-        // `from_utf8` validation (in `append_decoded_str_by_idx`) or with a
-        // `&str` argument (in `append_prevalidated_str_by_idx`).  Therefore
-        // all bytes stored here are guaranteed valid UTF-8.
-        Some(unsafe { std::str::from_utf8_unchecked(bytes) })
+        std::str::from_utf8(bytes).ok()
     }
 }
 

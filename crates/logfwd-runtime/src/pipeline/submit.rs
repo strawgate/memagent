@@ -142,7 +142,6 @@ impl Pipeline {
 
         let batch_span = tracing::info_span!(
             "batch",
-            pipeline = %self.name,
             scan_ns = scan_ns,
             transform_ns = transform_ns,
             input_rows = input_rows,

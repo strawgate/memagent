@@ -106,6 +106,13 @@ impl FileReader {
                 0
             } else {
                 tracing::warn!(path = %path.display(), evicted_identity = ?evicted.identity, current_identity = ?identity, "evicted offset identity mismatch — ignoring saved offset");
+
+                // Eviction staleness fix: If the file identity mismatched, the old identity's
+                // state is removed from `evicted_offsets` globally so the "new file"
+                // truly starts from the beginning without stale state causing truncation.
+                self.evicted_offsets
+                    .retain(|_, e| e.identity != evicted.identity);
+
                 if start_from_end {
                     file.seek(SeekFrom::End(0))?
                 } else {

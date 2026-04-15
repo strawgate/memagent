@@ -62,7 +62,7 @@ ERROR  request handled POST /api/v1/orders/10121  status=503 duration_ms=78
 ...
 ```
 
-Only error records with slow durations made it through — everything else was filtered by the SQL transform. See the [Quick Start guide](book/src/content/docs/quick-start.mdx) to keep going.
+Only error records with slow durations made it through — everything else was filtered by the SQL transform. See the [Quick Start guide](book/src/content/docs/getting-started/quickstart.md) to keep going.
 
 ---
 
@@ -124,7 +124,7 @@ cargo build --release -p logfwd
 cargo build --release -p logfwd --no-default-features
 ```
 
-See [Installation](book/src/content/docs/quick-start.mdx) for all platforms and options.
+See [Installation](book/src/content/docs/getting-started/installation.mdx) for all platforms and options.
 
 ---
 
@@ -247,18 +247,18 @@ For ready-made starters, see [`examples/use-cases/`](examples/use-cases/README.m
 
 **Start here by goal**
 
-- Not sure where to begin: [Choose the Right Guide](book/src/content/docs/quick-start.mdx)
-- Run logfwd quickly: [Quick Start](book/src/content/docs/quick-start.mdx)
-- Build a safer production baseline: [Your First Pipeline](book/src/content/docs/deployment/docker.md)
+- Not sure where to begin: [Choose the Right Guide](book/src/content/docs/getting-started/which-guide.md)
+- Run logfwd quickly: [Quick Start](book/src/content/docs/getting-started/quickstart.md)
+- Build a safer production baseline: [Your First Pipeline](book/src/content/docs/getting-started/first-pipeline.md)
 - Debug failures: [Troubleshooting](book/src/content/docs/troubleshooting.md)
 
 **User guides** — [book/src/content/docs/](book/src/content/docs/)
 
 | Guide | Description |
 |-------|-------------|
-| [Choose the Right Guide](book/src/content/docs/quick-start.mdx) | Goal-based starting point for operators, contributors, and evaluators |
-| [Quick Start](book/src/content/docs/quick-start.mdx) | Working pipeline in 10 minutes with copy/paste commands |
-| [Your First Pipeline](book/src/content/docs/deployment/docker.md) | Production config with monitoring and validation |
+| [Choose the Right Guide](book/src/content/docs/getting-started/which-guide.md) | Goal-based chooser for operators, contributors, and evaluators |
+| [Quick Start](book/src/content/docs/getting-started/quickstart.md) | Working pipeline in 10 minutes with copy/paste commands |
+| [Your First Pipeline](book/src/content/docs/getting-started/first-pipeline.md) | Production config with monitoring and validation |
 | [Configuration Reference](book/src/content/docs/configuration/reference.mdx) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
 | [SQL Transforms](book/src/content/docs/configuration/sql-transforms.md) | DataFusion SQL examples, column naming, UDFs |
 | [Deployment](book/src/content/docs/deployment/kubernetes.md) | Kubernetes DaemonSet, Docker, resource sizing |

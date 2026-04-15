@@ -64,8 +64,8 @@ bind mount eliminates both problems.
 Your configuration must reference the same directory:
 
 ```yaml
-storage:
-  data_dir: /var/lib/logfwd
+server:
+  checkpoint_dir: /var/lib/logfwd
 ```
 
 ## Resource constraints

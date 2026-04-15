@@ -3,18 +3,6 @@ use logfwd_output::BatchMetadata;
 use smallvec::SmallVec;
 use std::fmt::Debug;
 
-/// Blocklist-based enrichment processor: marks rows whose source column
-/// value appears in a preloaded CSV blocklist.
-pub mod blocklist;
-/// HTTP enrichment processor: per-key HTTP lookups with caching and
-/// concurrency control.
-pub mod http_enrich;
-
-/// Processor that annotates records using a preloaded blocklist.
-pub use blocklist::BlocklistProcessor;
-/// Configuration and processor for per-row HTTP enrichment.
-pub use http_enrich::{HttpEnrichConfig, HttpEnrichProcessor};
-
 /// Error types for processor operations.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
