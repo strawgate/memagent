@@ -22,6 +22,8 @@ export interface ChartConfig {
   readonly yRange?: [number, number];
   /** When set, `selectTimeSeries` splits by this attribute (e.g. "pipeline"). */
   readonly splitBy?: string;
+  /** Optional annotation shown after the current value (e.g. "/ 16GB"). */
+  readonly annotation?: string;
 }
 
 /** Palette for multi-pipeline series. Cycles through these colors. */
@@ -130,10 +132,10 @@ interface Props {
 function buildAlignedData(
   frame: TimeSeriesFrame,
   now: number
-): { data: uPlot.AlignedData; seriesCount: number; age: number } {
+): { data: uPlot.AlignedData; seriesCount: number; age: number; lastValues: (number | null)[] } {
   const allSeries = frame.series;
   const seriesCount = allSeries.length;
-  if (seriesCount === 0) return { data: [[]], seriesCount: 0, age: 0 };
+  if (seriesCount === 0) return { data: [[]], seriesCount: 0, age: 0, lastValues: [] };
 
   // Collect all unique timestamps across all series.
   const timeSet = new Set<number>();
@@ -144,7 +146,7 @@ function buildAlignedData(
   }
   const times = Array.from(timeSet).sort((a, b) => a - b);
   const n = times.length;
-  if (n === 0) return { data: [[]], seriesCount, age: 0 };
+  if (n === 0) return { data: [[]], seriesCount, age: 0, lastValues: [] };
 
   const age = now - times[0] / 1000;
 
@@ -154,12 +156,15 @@ function buildAlignedData(
   xs[n] = now;
 
   const data: (number | null)[][] = [xs];
+  // Collect each series' last value for lerp tracking.
+  const lastValues: (number | null)[] = [];
   for (const s of allSeries) {
     const lookup = new Map<number, number>();
     for (const p of s.points) {
       if (p.timeMs != null) lookup.set(p.timeMs, p.value);
     }
     const lastVal = s.points.length > 0 ? s.points[s.points.length - 1].value : null;
+    lastValues.push(lastVal);
 
     // Find the last timestamp index where this series has actual data.
     let lastIdx = -1;
@@ -183,7 +188,50 @@ function buildAlignedData(
     data.push(ys, ye);
   }
 
-  return { data: data as uPlot.AlignedData, seriesCount, age };
+  return { data: data as uPlot.AlignedData, seriesCount, age, lastValues };
+}
+
+/** Duration over which new data points lerp from old to new values. */
+const LERP_DURATION_MS = 500;
+
+/** Lerp state: tracks per-series transition from old → new values. */
+interface LerpState {
+  /** Per-series: value we're lerping FROM. */
+  fromValues: (number | null)[];
+  /** Per-series: value we're lerping TO. */
+  toValues: (number | null)[];
+  /** Timestamp (ms) when the lerp started. */
+  startMs: number;
+}
+
+/**
+ * Apply lerp interpolation to the last real data point of each series.
+ * Mutates `data` in place for the current animation frame.
+ */
+function applyLerp(
+  data: uPlot.AlignedData,
+  lerp: LerpState,
+  nowMs: number,
+  seriesCount: number
+): void {
+  const t = Math.min(1, (nowMs - lerp.startMs) / LERP_DURATION_MS);
+  // Ease-out cubic for a smooth deceleration.
+  const ease = 1 - (1 - t) ** 3;
+  const xs = data[0] as number[];
+  const n = xs.length;
+  if (n < 2) return;
+
+  // The last "real" data index is n-2 (n-1 is the synthetic "now" point).
+  const lastRealIdx = n - 2;
+
+  for (let s = 0; s < seriesCount; s++) {
+    const from = lerp.fromValues[s];
+    const to = lerp.toValues[s];
+    if (from == null || to == null) continue;
+    const ySeries = data[1 + s * 2] as (number | null)[];
+    if (!ySeries) continue;
+    ySeries[lastRealIdx] = from + (to - from) * ease;
+  }
 }
 
 export function Chart({ frame, config }: Props) {
@@ -192,6 +240,8 @@ export function Chart({ frame, config }: Props) {
   const roRef = useRef<ResizeObserver | null>(null);
   const rafRef = useRef<number>(0);
   const seriesCountRef = useRef(0);
+  const placeholderRef = useRef<HTMLDivElement>(null);
+  const lerpRef = useRef<LerpState | null>(null);
   // Store frame in a ref so the RAF loop reads latest data without
   // tearing down the effect (and uPlot instance) on every update.
   const frameRef = useRef(frame);
@@ -210,6 +260,7 @@ export function Chart({ frame, config }: Props) {
 
     const tick = () => {
       const now = Date.now() / 1000;
+      const nowMs = Date.now();
       const currentFrame = frameRef.current;
 
       // Reuse cached aligned data if the frame hasn't changed.
@@ -220,8 +271,19 @@ export function Chart({ frame, config }: Props) {
         const xs = aligned.data[0] as number[];
         if (xs.length > 0) xs[xs.length - 1] = now;
       } else {
+        // Capture previous last values before rebuilding.
+        const prevResult = cachedAlignedRef.current?.result;
         aligned = buildAlignedData(currentFrame, now);
         cachedAlignedRef.current = { frame: currentFrame, result: aligned };
+
+        // Start lerp: transition from previous frame's last values to new ones.
+        if (prevResult?.lastValues && aligned.lastValues) {
+          lerpRef.current = {
+            fromValues: prevResult.lastValues,
+            toValues: aligned.lastValues,
+            startMs: nowMs,
+          };
+        }
       }
       const { data, seriesCount } = aligned;
       // Recompute age from live `now` so the x-axis window stays current
@@ -229,6 +291,15 @@ export function Chart({ frame, config }: Props) {
       const xs = data[0] as number[];
       const age = xs.length > 0 ? now - xs[0] : 0;
       const totalPoints = xs.length;
+
+      // Apply lerp interpolation if active.
+      if (lerpRef.current && totalPoints >= 2) {
+        if (nowMs - lerpRef.current.startMs < LERP_DURATION_MS) {
+          applyLerp(data, lerpRef.current, nowMs, seriesCount);
+        } else {
+          lerpRef.current = null;
+        }
+      }
 
       if (totalPoints < 2) {
         if (plotRef.current) {
@@ -238,7 +309,10 @@ export function Chart({ frame, config }: Props) {
           roRef.current?.disconnect();
           roRef.current = null;
         }
+        if (placeholderRef.current) placeholderRef.current.style.display = "";
       } else {
+        // Hide placeholder as soon as we have data (avoids flash).
+        if (placeholderRef.current) placeholderRef.current.style.display = "none";
         // Rebuild uPlot if series count changed (pipelines added/removed).
         if (plotRef.current && seriesCount !== seriesCountRef.current) {
           plotRef.current.destroy();
@@ -286,17 +360,11 @@ export function Chart({ frame, config }: Props) {
     };
   }, [config]);
 
-  // Count unique timestamps — aligns with buildAlignedData's data[0].length check.
-  const timeSet = new Set<number>();
-  for (const s of frame.series) {
-    for (const p of s.points) {
-      if (p.timeMs != null) timeSet.add(p.timeMs);
-    }
-  }
-
   return (
     <div ref={containerRef} class="chart-container">
-      {timeSet.size < 2 && <div class="chart-placeholder">waiting for data…</div>}
+      <div ref={placeholderRef} class="chart-placeholder">
+        waiting for data…
+      </div>
     </div>
   );
 }

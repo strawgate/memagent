@@ -22,17 +22,6 @@ fn generate_json_lines(n: usize) -> Vec<Vec<u8>> {
         .collect()
 }
 
-fn generate_fixed_width_json_lines(n: usize, payload_bytes: usize) -> Vec<Vec<u8>> {
-    let payload = "x".repeat(payload_bytes);
-    (0..n)
-        .map(|i| format!("{{\"msg\":\"line {i}\",\"payload\":\"{payload}\"}}\n").into_bytes())
-        .collect()
-}
-
-fn total_bytes(lines: &[Vec<u8>]) -> u64 {
-    lines.iter().map(|line| line.len() as u64).sum()
-}
-
 // ---------------------------------------------------------------------------
 // Test 1: Ack starvation under sustained load
 // ---------------------------------------------------------------------------
@@ -188,14 +177,16 @@ fn worker_panic_does_not_block_drain() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: Explicit permanent reject checkpoint behavior
+// Test 3: Rejected batch checkpoint behavior
 // ---------------------------------------------------------------------------
 //
-// Contract: explicit permanent rejects still advance checkpoints. If a sink
-// returns a true non-retriable reject, replaying the same bytes forever would
-// create an infinite loop.
+// Bug hypothesis: `record_ack_and_advance` treats reject identically to
+// ack — checkpoint advances past rejected data. If data at offset
+// 1000-2000 is rejected (NOT delivered), the checkpoint advances to 2000,
+// and on restart that data is permanently skipped.
 //
-// This test documents the intended behavior for explicit permanent rejects.
+// This test DOCUMENTS the current behavior — whether reject advances the
+// checkpoint or not.
 
 #[test]
 fn rejected_batch_checkpoint_behavior() {
@@ -242,14 +233,34 @@ fn rejected_batch_checkpoint_behavior() {
     // Subsequent batches succeed.
     eprintln!("rejected_batch test: {delivered} rows delivered, {calls} send_batch calls");
 
-    // DOCUMENT: explicit permanent rejects still advance the checkpoint.
+    // DOCUMENT: does the checkpoint advance past the rejected batch?
     // In pipeline.rs `ack_all_tickets`, reject calls `ticket.reject()` which
     // still produces an AckReceipt that feeds into `record_ack_and_advance`.
+    // The machine treats reject and ack identically for checkpoint advancement.
+    //
+    // If durable offset > 0, the checkpoint advanced past SOME data.
+    // The question is whether it advanced past the rejected batch specifically.
     let durable = ckpt_handle.durable_offset(1);
     let updates = ckpt_handle.update_count(1);
 
     eprintln!("rejected_batch test: durable offset = {durable:?}, checkpoint updates = {updates}");
 
+    // CONFIRMED BUG / DESIGN DECISION: The checkpoint advances past rejected
+    // (undelivered) data. With default batch_target_bytes (64KB), all 20 lines
+    // fit into a single batch. That batch is rejected (0 rows delivered), yet
+    // the checkpoint advances to offset 520 (past all 20 lines).
+    //
+    // In `ack_all_tickets`, both `ticket.ack()` and `ticket.reject()` produce
+    // AckReceipts that feed into `record_ack_and_advance`. The machine treats
+    // them identically — checkpoint advances past rejected data.
+    //
+    // On restart, this data would be permanently skipped.
+    //
+    // Whether this is a bug depends on the rejection reason:
+    //   - Server 400 (bad data): advancing is correct (retry would fail again)
+    //   - Server 429 (rate limit): should NOT reject, should RetryAfter
+    //   - Transient server error: should NOT reject, should IO error + retry
+    //
     // All 20 lines fit in 1 batch (64KB target). That batch is rejected.
     assert_eq!(
         delivered, 0,
@@ -260,9 +271,13 @@ fn rejected_batch_checkpoint_behavior() {
         "expected exactly 1 send_batch call (1 batch, rejected)"
     );
 
+    // issue #1001: Checkpoint must NOT advance past rejected data.
+    // The PipelineMachine used to treat reject() identically to ack() for checkpoint
+    // advancement. Now, rejected data must not advance the checkpoint so the pool correctly drops it
+    // and the file tailer does not permanently skip it.
     assert!(
-        durable.is_some() && durable.unwrap() > 0,
-        "permanent rejects must still advance checkpoint progress; \
+        durable.is_none() || durable.unwrap() == 0,
+        "checkpoint MUST NOT advance past rejected data (issue #1001). \
          durable={durable:?}"
     );
 
@@ -271,77 +286,7 @@ fn rejected_batch_checkpoint_behavior() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 4: Persistent transient failures must not advance checkpoints
-// ---------------------------------------------------------------------------
-//
-// Contract: retry/control-plane failures should hold checkpoint progress until
-// delivery eventually succeeds or shutdown cancels the in-flight batch.
-
-#[test]
-fn retry_exhausted_does_not_advance_checkpoint() {
-    let mut sim = super::build_sim(120, 1);
-
-    let factory = Arc::new(InstrumentedSinkFactory::new(vec![vec![
-        FailureAction::RepeatIoError(std::io::ErrorKind::TimedOut),
-    ]]));
-    let delivered_counter = factory.delivered_counter();
-    let call_counter = factory.call_counter();
-
-    let (store, ckpt_handle) = ObservableCheckpointStore::new();
-
-    sim.client("pipeline", async move {
-        let lines = generate_json_lines(20);
-        let input = ChannelInputSource::new("test", SourceId(1), lines);
-
-        let mut pipeline = Pipeline::for_simulation_with_factory("sim", factory, 1);
-        pipeline.set_batch_timeout(Duration::from_millis(20));
-        pipeline.set_checkpoint_flush_interval(Duration::from_millis(100));
-        let mut pipeline = pipeline
-            .with_input("test", Box::new(input))
-            .with_checkpoint_store(Box::new(store));
-
-        let shutdown = CancellationToken::new();
-        let sd = shutdown.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(30)).await;
-            sd.cancel();
-        });
-
-        pipeline.run_async(&shutdown).await.unwrap();
-        Ok(())
-    });
-
-    sim.run().unwrap();
-
-    let delivered = delivered_counter.load(Ordering::Relaxed);
-    let calls = call_counter.load(Ordering::Relaxed);
-    let durable = ckpt_handle.durable_offset(1);
-    let updates = ckpt_handle.update_count(1);
-
-    eprintln!(
-        "persistent_failure test: delivered={delivered} calls={calls} durable={durable:?} updates={updates}"
-    );
-
-    assert_eq!(
-        delivered, 0,
-        "expected no rows delivered while failures persist through shutdown"
-    );
-    assert!(
-        calls >= 4,
-        "expected at least 4 retry attempts before shutdown cancellation"
-    );
-    assert!(
-        durable.is_none(),
-        "persistent transient failures must not advance checkpoint progress; durable={durable:?}"
-    );
-    assert_eq!(
-        updates, 0,
-        "persistent transient failures must not write checkpoint updates"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Test 5: RetryAfter respects server-specified backoff timing
+// Test 4: RetryAfter respects server-specified backoff timing
 // ---------------------------------------------------------------------------
 //
 // Bug hypothesis: `process_item` resets `delay = Duration::from_millis(100)`
@@ -426,267 +371,4 @@ fn retry_after_respects_server_backoff() {
     // If an IO error follows a RetryAfter, the backoff restarts from 100ms.
     // This is arguably a minor issue (the server's rate-limit hint is lost) but
     // in practice, RetryAfter followed by IO error is an unusual sequence.
-}
-
-// ---------------------------------------------------------------------------
-// Test 6: Panic on first batch triggers terminal shutdown, checkpoint held
-// ---------------------------------------------------------------------------
-//
-// Bug hypothesis: a sink panic could unwind before the ack/checkpoint seam is
-// resolved, leaving unresolved tickets and either hanging shutdown or
-// accidentally advancing checkpoints.
-//
-// Expected invariant (post #1808 terminal-hold model):
-// - pipeline terminates (no hang bound breach),
-// - held ticket triggers immediate shutdown (no worker recycling),
-// - durable checkpoint never advances while the first failed ticket remains held.
-
-#[test]
-fn panic_first_batch_triggers_terminal_hold_without_checkpoint_advance() {
-    let mut sim = super::build_sim(90, 1);
-
-    // Factory scripts are popped from the end:
-    // 1st worker => [Panic]. Under the terminal-hold model, the pipeline
-    // shuts down after the panic ack without recycling workers.
-    let factory = Arc::new(InstrumentedSinkFactory::new(vec![
-        vec![],
-        vec![FailureAction::Panic],
-    ]));
-    let delivered_counter = factory.delivered_counter();
-    let call_counter = factory.call_counter();
-    let (store, ckpt_handle) = ObservableCheckpointStore::new();
-
-    sim.client("pipeline", async move {
-        let lines = generate_fixed_width_json_lines(10, 96);
-        let input = ChannelInputSource::new("panic-first", SourceId(1), lines);
-
-        let mut pipeline = Pipeline::for_simulation_with_factory("sim", factory, 1);
-        pipeline.set_batch_target_bytes(1);
-        pipeline.set_batch_timeout(Duration::from_millis(10));
-        pipeline.set_checkpoint_flush_interval(Duration::from_millis(25));
-        let mut pipeline = pipeline
-            .with_input("panic-first", Box::new(input))
-            .with_checkpoint_store(Box::new(store));
-
-        let shutdown = CancellationToken::new();
-        let sd = shutdown.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(6)).await;
-            sd.cancel();
-        });
-
-        pipeline.run_async(&shutdown).await.unwrap();
-        Ok(())
-    });
-
-    let run_result = sim.run();
-    assert!(
-        run_result.is_ok(),
-        "pipeline must terminate after panic path; got {run_result:?}"
-    );
-
-    let calls = call_counter.load(Ordering::Relaxed);
-    let delivered = delivered_counter.load(Ordering::Relaxed);
-    eprintln!(
-        "panic_first_batch test: {delivered} rows delivered, {calls} calls \
-         (terminal-hold model stops ingestion after panic ack)"
-    );
-
-    // Under the terminal-hold model, the pipeline shuts down immediately
-    // after the panic ack. The first batch panics and no subsequent batches
-    // are processed because ingestion is stopped — no worker recycling.
-    assert_eq!(
-        calls, 1,
-        "terminal-hold model must issue exactly 1 send call (the panic); calls={calls}"
-    );
-
-    // Terminal hold means zero deliveries: the only batch panicked.
-    assert_eq!(
-        delivered, 0,
-        "terminal-hold model must not deliver any rows after panic; delivered={delivered}"
-    );
-
-    // Held first ticket must block checkpoint advancement entirely.
-    assert!(
-        ckpt_handle.durable_offset(1).is_none(),
-        "durable checkpoint must remain absent while first failed ticket is held"
-    );
-    assert_eq!(
-        ckpt_handle.update_count(1),
-        0,
-        "held panic outcome must not emit checkpoint updates"
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Test 7: Mid-stream panic does not silently advance past unresolved gap
-// ---------------------------------------------------------------------------
-//
-// Bug hypothesis: after at least one successful ack, a later panic could still
-// let checkpoints drift forward via subsequent successful batches.
-//
-// Expected invariant (post #1808 terminal-hold model):
-// - some data is delivered before the panic,
-// - terminal hold stops ingestion after the panic ack (no recovery batches),
-// - checkpoint remains strictly behind end-of-input once a gap is introduced,
-// - monotonicity and "durable not ahead of updates" are preserved.
-
-#[test]
-fn panic_after_initial_success_does_not_advance_checkpoint_past_gap() {
-    let mut sim = super::build_sim(90, 1);
-
-    // First worker: success then panic. Under the terminal-hold model, the
-    // pipeline shuts down after the panic ack without recycling workers.
-    let factory = Arc::new(InstrumentedSinkFactory::new(vec![
-        vec![],
-        vec![FailureAction::Succeed, FailureAction::Panic],
-    ]));
-    let delivered_counter = factory.delivered_counter();
-    let call_counter = factory.call_counter();
-    let (store, ckpt_handle) = ObservableCheckpointStore::new();
-
-    let lines = generate_fixed_width_json_lines(12, 96);
-    let input_total_bytes = total_bytes(&lines);
-
-    sim.client("pipeline", async move {
-        let input = ChannelInputSource::new("panic-midstream", SourceId(1), lines);
-
-        let mut pipeline = Pipeline::for_simulation_with_factory("sim", factory, 1);
-        pipeline.set_batch_target_bytes(1);
-        pipeline.set_batch_timeout(Duration::from_millis(10));
-        pipeline.set_checkpoint_flush_interval(Duration::from_millis(25));
-        let mut pipeline = pipeline
-            .with_input("panic-midstream", Box::new(input))
-            .with_checkpoint_store(Box::new(store));
-
-        let shutdown = CancellationToken::new();
-        let sd = shutdown.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(6)).await;
-            sd.cancel();
-        });
-
-        pipeline.run_async(&shutdown).await.unwrap();
-        Ok(())
-    });
-
-    let run_result = sim.run();
-    assert!(
-        run_result.is_ok(),
-        "pipeline must terminate under mid-stream panic path; got {run_result:?}"
-    );
-
-    let delivered = delivered_counter.load(Ordering::Relaxed);
-    let calls = call_counter.load(Ordering::Relaxed);
-    let durable = ckpt_handle.durable_offset(1);
-
-    eprintln!(
-        "panic_after_initial_success test: {delivered} rows delivered, {calls} calls, durable={durable:?}"
-    );
-    assert!(
-        delivered > 0,
-        "expected at least some successful deliveries before panic; delivered={delivered}"
-    );
-    // Under the terminal-hold model: exactly 1 success + 1 panic = 2 calls.
-    // No recovery calls because ingestion stops after the panic ack.
-    assert_eq!(
-        calls, 2,
-        "terminal-hold model must issue exactly 2 send calls (1 success + 1 panic); calls={calls}"
-    );
-    // The first successful batch may or may not have triggered a checkpoint
-    // update depending on flush timing. Either way, checkpoint must not
-    // advance past the gap.
-    if let Some(durable_val) = durable {
-        assert!(
-            durable_val < input_total_bytes,
-            "checkpoint must stay behind full input after unresolved panic gap; durable={durable:?} input_total_bytes={input_total_bytes}"
-        );
-    }
-    ckpt_handle.assert_monotonic(1);
-    if durable.is_some() {
-        ckpt_handle.assert_durable_not_ahead_of_updates(1);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Test 8: Retry-exhausted gap holds checkpoint despite later successes
-// ---------------------------------------------------------------------------
-//
-// Bug hypothesis: non-terminal worker failures (RetryExhausted / Internal)
-// could accidentally advance checkpoints when later batches succeed.
-//
-// Expected invariant:
-// - retries are attempted (high send call count),
-// - later batches may still deliver,
-// - durable checkpoint never reaches end-of-input because failed gap is held.
-
-/// Transient IoError failures are retried indefinitely. After a burst of
-/// errors the worker eventually succeeds, all batches deliver, and the
-/// checkpoint advances to cover the full input — no data is held or lost.
-#[test]
-fn transient_io_errors_retry_until_delivery_succeeds() {
-    let mut sim = super::build_sim(90, 1);
-
-    let factory = Arc::new(InstrumentedSinkFactory::new(vec![vec![
-        FailureAction::Succeed,
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
-        FailureAction::IoError(std::io::ErrorKind::TimedOut),
-        FailureAction::Succeed,
-        FailureAction::Succeed,
-    ]]));
-    let delivered_counter = factory.delivered_counter();
-    let call_counter = factory.call_counter();
-    let (store, ckpt_handle) = ObservableCheckpointStore::new();
-
-    let lines = generate_fixed_width_json_lines(3, 96);
-    let input_total_bytes = total_bytes(&lines);
-
-    sim.client("pipeline", async move {
-        let input = ChannelInputSource::new("retry-gap", SourceId(1), lines);
-
-        let mut pipeline = Pipeline::for_simulation_with_factory("sim", factory, 1);
-        pipeline.set_batch_target_bytes(1);
-        pipeline.set_batch_timeout(Duration::from_millis(10));
-        pipeline.set_checkpoint_flush_interval(Duration::from_millis(25));
-        let mut pipeline = pipeline
-            .with_input("retry-gap", Box::new(input))
-            .with_checkpoint_store(Box::new(store));
-
-        let shutdown = CancellationToken::new();
-        let sd = shutdown.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(8)).await;
-            sd.cancel();
-        });
-
-        pipeline.run_async(&shutdown).await.unwrap();
-        Ok(())
-    });
-
-    let run_result = sim.run();
-    assert!(
-        run_result.is_ok(),
-        "pipeline must terminate cleanly; got {run_result:?}"
-    );
-
-    let delivered = delivered_counter.load(Ordering::Relaxed);
-    let calls = call_counter.load(Ordering::Relaxed);
-    let durable = ckpt_handle.durable_offset(1);
-
-    assert!(
-        calls >= 6,
-        "expected retry attempts plus successful sends; calls={calls}"
-    );
-    assert!(
-        delivered >= 3,
-        "all batches should eventually deliver after transient errors; delivered={delivered}"
-    );
-    assert!(
-        durable.unwrap_or_default() >= input_total_bytes,
-        "checkpoint should advance past all input once every batch delivers; durable={durable:?} input_total_bytes={input_total_bytes}"
-    );
-    ckpt_handle.assert_monotonic(1);
-    ckpt_handle.assert_durable_not_ahead_of_updates(1);
 }

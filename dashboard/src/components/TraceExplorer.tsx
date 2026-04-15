@@ -78,7 +78,7 @@ export function computeStats(traces: TraceRecord[]) {
   const p90ns = sorted[Math.floor(sorted.length * 0.9)] ?? 0;
   return {
     batchPerMin: (done.length / windowSec) * 60,
-    avgMs: totalNs / done.length / 1e6,
+    avgMs: done.length > 0 ? totalNs / done.length / 1e6 : 0,
     p90Ms: p90ns / 1e6,
     scanPct: totalNs > 0 ? (scanNs / totalNs) * 100 : 0,
     xfmPct: totalNs > 0 ? (xfmNs / totalNs) * 100 : 0,
@@ -741,6 +741,11 @@ function DetailPanel({ t }: { t: TraceRecord }) {
   const hasSendRecv = Number(t.send_ns ?? 0) > 0 || Number(t.recv_ns ?? 0) > 0;
   return (
     <div class="t2-detail">
+      <div class="t2-detail-summary">
+        <b>{fmtRows(t.input_rows)} lines</b>
+        {t.bytes_in > 0 && <span> · {fmtBytes(t.bytes_in)}</span>}
+        <span> · {fmtNs(e2e)} e2e</span>
+      </div>
       <div class="t2-stage-boxes">
         <div class="t2-stage-box" style={`border-top:2px solid ${C.scan}`}>
           <div class="t2-stage-label">scan</div>
@@ -843,7 +848,8 @@ const DEFAULT_WORKERS = 16;
 function autoWindow(traces: TraceRecord[]): number {
   const done = traces.filter((t) => Number(t.total_ns) > 0);
   if (done.length === 0) return WINDOW_OPTIONS[1].ms; // default 30s until data arrives
-  const avgMs = done.reduce((s, t) => s + Number(t.total_ns), 0) / done.length / 1e6;
+  const avgMs =
+    done.length > 0 ? done.reduce((s, t) => s + Number(t.total_ns), 0) / done.length / 1e6 : 0;
   if (avgMs < 500) return WINDOW_OPTIONS[0].ms; // <0.5s batches → 5s window
   if (avgMs < 3_000) return WINDOW_OPTIONS[1].ms; // <3s batches → 30s window
   if (avgMs < 12_000) return WINDOW_OPTIONS[2].ms; // <12s batches → 2m window

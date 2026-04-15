@@ -13,5 +13,15 @@ jobs:
     uses: elastic/ai-github-actions/.github/workflows/gh-aw-code-quality-audit.lock.yml@main
     with:
       title-prefix: "[code-quality]"
+      additional-instructions: |
+        This is a high-performance Rust log forwarder (logfwd). Focus on:
+        - Correctness: integer overflow in offset/size arithmetic, off-by-one errors in framing/scanning, incorrect error propagation (swallowed errors, wrong error kinds)
+        - Performance: unnecessary heap allocations or clones in hot paths (framer, scanner, batch assembly), blocking calls on async tasks, unbounded channel or buffer growth
+        - Reliability: missing backpressure handling, unchecked unwrap/expect in non-test code, panic paths in production code paths
+        - API quality: inconsistent config field naming vs peer inputs/outputs, missing serde defaults on new config fields, public types lacking doc comments
+        - Concurrency: incorrect use of Arc/Mutex, missed cancellation token checks, shutdown races
+
+        Skip: test-only code, benchmark harnesses, generated protobuf files under crates/logfwd-otap-proto/, and TLA+ specs under tla/.
+        Severity threshold: medium — skip trivial style nits.
     secrets:
       COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}

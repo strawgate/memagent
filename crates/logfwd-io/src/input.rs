@@ -67,6 +67,14 @@ pub enum InputEvent {
 }
 
 /// Trait for input sources that produce raw bytes.
+#[derive(Debug, Clone)]
+pub struct TlsInputConfig {
+    pub cert_file: Option<String>,
+    pub key_file: Option<String>,
+    pub client_ca_file: Option<String>,
+    pub require_client_auth: bool,
+}
+
 pub trait InputSource: Send {
     /// Poll for new events. Returns empty vec if no new data.
     fn poll(&mut self) -> io::Result<Vec<InputEvent>>;

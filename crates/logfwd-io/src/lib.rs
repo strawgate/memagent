@@ -29,6 +29,9 @@ pub mod poll_cadence;
 pub(crate) mod polling_input_health;
 pub(crate) mod receiver_health;
 pub(crate) mod receiver_http;
+/// High-performance S3 (and S3-compatible) object storage input.
+#[cfg(feature = "s3")]
+pub mod s3_input;
 /// Checkpoint segment file format, writer, reader, and recovery.
 pub mod segment;
 pub mod tail;
