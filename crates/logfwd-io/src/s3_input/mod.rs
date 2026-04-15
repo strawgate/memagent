@@ -254,6 +254,12 @@ struct MessageTracker {
     successes: std::sync::atomic::AtomicUsize,
 }
 
+/// Completion signal for list-mode cursor tracking.
+struct KeyCompletion {
+    key: String,
+    success: bool,
+}
+
 // ── Constructor ────────────────────────────────────────────────────────────
 
 impl S3Input {
@@ -345,7 +351,7 @@ impl S3Input {
                     // Spawn discovery task.
                     // Completed-key channel for list-mode cursor advancement.
                     let (completed_tx, completed_rx) =
-                        tokio::sync::mpsc::channel::<String>(max_objects * 4);
+                        tokio::sync::mpsc::channel::<KeyCompletion>(max_objects * 4);
 
                     let (sqs_for_orch, completed_tx_for_orch, discovery_handle) =
                         if sqs_queue_url_is_set {
@@ -588,7 +594,7 @@ async fn run_list_discovery(
     prefix: Option<String>,
     start_after_init: Option<String>,
     work_tx: tokio::sync::mpsc::Sender<ObjectWork>,
-    mut completed_rx: tokio::sync::mpsc::Receiver<String>,
+    mut completed_rx: tokio::sync::mpsc::Receiver<KeyCompletion>,
     is_running: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
     name: String,
@@ -600,7 +606,12 @@ async fn run_list_discovery(
     let mut dispatched: Vec<String> = Vec::new();
     let mut completed_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Deduplicate: skip keys that are still in flight from a previous poll cycle.
+    // Keys stay in in_flight until the watermark cursor advances past them,
+    // preventing re-discovery of completed-but-not-yet-cursored keys.
     let mut in_flight: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Keys that failed are removed from in_flight (so they can be retried)
+    // but not added to completed_set (so cursor doesn't advance past them).
+    let mut failed_set: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     while is_running.load(Ordering::Relaxed) {
         let mut continuation: Option<String> = None;
@@ -632,7 +643,7 @@ async fn run_list_discovery(
                 }
                 Ok((objects, next_token)) => {
                     for obj in &objects {
-                        // Skip keys still being processed from a previous poll cycle.
+                        // Skip keys still being processed or awaiting cursor advancement.
                         if in_flight.contains(&obj.key) {
                             continue;
                         }
@@ -644,9 +655,14 @@ async fn run_list_discovery(
                         // draining to prevent deadlock when the work channel
                         // is full and completions are pending.
                         let permit = loop {
-                            while let Ok(key) = completed_rx.try_recv() {
-                                completed_set.insert(key.clone());
-                                in_flight.remove(&key);
+                            while let Ok(kc) = completed_rx.try_recv() {
+                                if kc.success {
+                                    completed_set.insert(kc.key);
+                                } else {
+                                    // Failed: allow retry by removing from in_flight.
+                                    failed_set.insert(kc.key.clone());
+                                    in_flight.remove(&kc.key);
+                                }
                             }
 
                             tokio::select! {
@@ -656,9 +672,13 @@ async fn run_list_discovery(
                                         Err(_) => return, // orchestrator shut down
                                     }
                                 }
-                                Some(key) = completed_rx.recv() => {
-                                    completed_set.insert(key.clone());
-                                    in_flight.remove(&key);
+                                Some(kc) = completed_rx.recv() => {
+                                    if kc.success {
+                                        completed_set.insert(kc.key);
+                                    } else {
+                                        failed_set.insert(kc.key.clone());
+                                        in_flight.remove(&kc.key);
+                                    }
                                 }
                             }
                         };
@@ -671,9 +691,13 @@ async fn run_list_discovery(
                     }
 
                     // Final drain + watermark advance.
-                    while let Ok(key) = completed_rx.try_recv() {
-                        completed_set.insert(key.clone());
-                        in_flight.remove(&key);
+                    while let Ok(kc) = completed_rx.try_recv() {
+                        if kc.success {
+                            completed_set.insert(kc.key);
+                        } else {
+                            failed_set.insert(kc.key.clone());
+                            in_flight.remove(&kc.key);
+                        }
                     }
                     while let Some(front) = dispatched.first() {
                         if completed_set.contains(front) {
@@ -681,6 +705,13 @@ async fn run_list_discovery(
                             completed_set.remove(&key);
                             in_flight.remove(&key);
                             start_after = Some(key);
+                        } else if failed_set.contains(front) {
+                            // Failed key: remove from dispatched to unblock the
+                            // watermark but don't advance start_after so the
+                            // key is re-listed on the next poll cycle.
+                            let key = dispatched.remove(0);
+                            failed_set.remove(&key);
+                            // in_flight was already cleared when failure arrived.
                         } else {
                             break;
                         }
@@ -708,7 +739,7 @@ async fn run_orchestrator(
     s3: Arc<S3Client>,
     sqs: Option<Arc<SqsClient>>,
     in_progress: Arc<tokio::sync::Mutex<Vec<String>>>,
-    completed_tx: Option<tokio::sync::mpsc::Sender<String>>,
+    completed_tx: Option<tokio::sync::mpsc::Sender<KeyCompletion>>,
     mut work_rx: tokio::sync::mpsc::Receiver<ObjectWork>,
     out_tx: mpsc::SyncSender<ChunkPayload>,
     semaphore: Arc<Semaphore>,
@@ -761,6 +792,17 @@ async fn run_orchestrator(
                 health.store(ComponentHealth::Degraded.as_repr(), Ordering::Relaxed);
                 // Don't delete the SQS message — it will become visible again
                 // after the visibility timeout expires (once we stop heartbeating).
+
+                // Report failed key so list-mode can remove it from in_flight
+                // and retry on the next poll cycle.
+                if let Some(ref tx) = completed_tx {
+                    let _ = tx
+                        .send(KeyCompletion {
+                            key: work.key.clone(),
+                            success: false,
+                        })
+                        .await;
+                }
             } else {
                 // Restore health after a successful fetch.
                 health.store(ComponentHealth::Healthy.as_repr(), Ordering::Relaxed);
@@ -772,7 +814,12 @@ async fn run_orchestrator(
 
                 // Report successfully-processed key for list-mode cursor advancement.
                 if let Some(ref tx) = completed_tx {
-                    let _ = tx.send(work.key.clone()).await;
+                    let _ = tx
+                        .send(KeyCompletion {
+                            key: work.key.clone(),
+                            success: true,
+                        })
+                        .await;
                 }
             }
 
