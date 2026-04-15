@@ -287,7 +287,7 @@ impl Sink for FileSink {
         Box::pin(async move {
             let mut writer_guard = self.writer.lock().await;
             if let Some(writer) = writer_guard.as_mut() {
-                writer.flush().await?;
+                tokio::io::AsyncWriteExt::flush(writer).await?;
             }
             Ok(())
         })
