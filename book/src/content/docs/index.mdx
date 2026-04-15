@@ -163,9 +163,7 @@ hero:
 
   .home-preview-card {
     display: flex;
-    gap: 0.75rem;
-    align-items: flex-start;
-    padding: 0.6rem;
+    flex-direction: column;
     margin-bottom: 0.5rem;
     border-radius: 8px;
     border: 1px solid var(--sl-color-hairline);
@@ -179,23 +177,20 @@ hero:
     background: color-mix(in srgb, var(--sl-color-accent) 6%, var(--sl-color-bg-sidebar));
   }
   .home-preview-img-wrap {
-    flex-shrink: 0;
-    width: 120px;
-    height: 72px;
-    border-radius: 4px;
+    width: 100%;
+    height: 180px;
     overflow: hidden;
-    border: 1px solid var(--sl-color-hairline);
     background: #1e1e2e;
+    border-bottom: 1px solid var(--sl-color-hairline);
   }
   .home-preview-img-wrap img {
     width: 100%;
     height: 100%;
     object-fit: cover;
-    object-position: top center;
+    object-position: top left;
     display: block;
   }
   .home-preview-text {
-    flex: 1;
-    min-width: 0;
+    padding: 0.55rem 0.75rem 0.65rem;
   }
 `}</style>
