@@ -78,7 +78,7 @@ export function computeStats(traces: TraceRecord[]) {
   const p90ns = sorted[Math.floor(sorted.length * 0.9)] ?? 0;
   return {
     batchPerMin: (done.length / windowSec) * 60,
-    avgMs: totalNs / done.length / 1e6,
+    avgMs: done.length > 0 ? totalNs / done.length / 1e6 : 0,
     p90Ms: p90ns / 1e6,
     scanPct: totalNs > 0 ? (scanNs / totalNs) * 100 : 0,
     xfmPct: totalNs > 0 ? (xfmNs / totalNs) * 100 : 0,
@@ -843,7 +843,8 @@ const DEFAULT_WORKERS = 16;
 function autoWindow(traces: TraceRecord[]): number {
   const done = traces.filter((t) => Number(t.total_ns) > 0);
   if (done.length === 0) return WINDOW_OPTIONS[1].ms; // default 30s until data arrives
-  const avgMs = done.reduce((s, t) => s + Number(t.total_ns), 0) / done.length / 1e6;
+  const avgMs =
+    done.length > 0 ? done.reduce((s, t) => s + Number(t.total_ns), 0) / done.length / 1e6 : 0;
   if (avgMs < 500) return WINDOW_OPTIONS[0].ms; // <0.5s batches → 5s window
   if (avgMs < 3_000) return WINDOW_OPTIONS[1].ms; // <3s batches → 30s window
   if (avgMs < 12_000) return WINDOW_OPTIONS[2].ms; // <12s batches → 2m window

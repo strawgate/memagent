@@ -670,7 +670,13 @@ impl HostMetricsCommon {
         out: &mut Vec<SensorRow>,
         limit: usize,
     ) -> usize {
-        let mut procs: Vec<(&sysinfo::Pid, &Process)> = self.system.processes().iter().collect();
+        const MAX_PROCESS_ROWS: usize = 1000;
+        let mut procs: Vec<(&sysinfo::Pid, &Process)> = self
+            .system
+            .processes()
+            .iter()
+            .take(MAX_PROCESS_ROWS)
+            .collect();
         procs.sort_unstable_by_key(|(pid, _)| pid.as_u32());
 
         let mut emitted = 0usize;

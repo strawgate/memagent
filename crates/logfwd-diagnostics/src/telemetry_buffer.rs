@@ -844,25 +844,43 @@ pub fn collect_all_spans(
 
 /// Sample new stderr lines into the log buffer.
 ///
-/// Tracks the last seen line count to avoid re-pushing already-sampled lines.
-/// Each new line becomes a `LogPoint` with `Severity::Info`.
+/// Uses a monotonic cursor (`u64`) from `get_logs_since` so that ring-buffer
+/// evictions can never stall delivery or produce duplicate `LogPoint` entries.
+/// Each new line becomes a `LogPoint` with `Severity::Info`. Lines evicted
+/// before we could read them are reported as a single `Severity::Warn` record.
 pub fn sample_stderr_logs(
     stderr: &crate::stderr_capture::StderrCapture,
     buf: &RingBuffer<LogPoint>,
-    last_cursor: &mut u64,
+    cursor: &mut u64,
 ) {
-    let (new_lines, new_cursor) = stderr.get_logs_since(*last_cursor);
-    *last_cursor = new_cursor;
+    let (new_lines, new_cursor) = stderr.get_logs_since(*cursor);
     let now = now_nanos();
 
-    for line in new_lines {
+    // Detect lines evicted between the last cursor and now.
+    let pushed = new_cursor.saturating_sub(*cursor);
+    let evicted = pushed.saturating_sub(new_lines.len() as u64);
+    if evicted > 0 {
         buf.push(LogPoint {
-            severity: Severity::Info,
-            body: line,
+            severity: Severity::Warn,
+            body: format!(
+                "Ring buffer evicted {} stderr lines before they could be read",
+                evicted
+            ),
             attributes: vec![("source", "stderr".to_string())],
             time_unix_nano: now,
         });
     }
+
+    for line in &new_lines {
+        buf.push(LogPoint {
+            severity: Severity::Info,
+            body: line.clone(),
+            attributes: vec![("source", "stderr".to_string())],
+            time_unix_nano: now,
+        });
+    }
+
+    *cursor = new_cursor;
 }
 
 /// Detect component health transitions and emit log records for changes.
