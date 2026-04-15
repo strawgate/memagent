@@ -61,6 +61,13 @@ impl Config {
             }
         }
 
+        // Validate storage.checkpoint_flush_interval_ms is non-zero when set.
+        if self.storage.checkpoint_flush_interval_ms == Some(0) {
+            return Err(ConfigError::Validation(
+                "storage.checkpoint_flush_interval_ms must be greater than zero".into(),
+            ));
+        }
+
         if self.pipelines.is_empty() {
             return Err(ConfigError::Validation(
                 "at least one pipeline must be defined".into(),
@@ -497,6 +504,53 @@ impl Config {
                                 )));
                             }
                         }
+                        InputTypeConfig::S3(s) => {
+                            let s3_cfg = &s.s3;
+                            if let Some(interval) = s3_cfg.poll_interval_ms
+                                && interval == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.poll_interval_ms must be at least 1"
+                                )));
+                            }
+                            if let Some(ref comp) = s3_cfg.compression {
+                                let valid = ["auto", "gzip", "zstd", "snappy", "none"];
+                                if !valid.iter().any(|v| v.eq_ignore_ascii_case(comp)) {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': unknown s3.compression value '{comp}' \
+                                         (valid: auto, gzip, zstd, snappy, none)"
+                                    )));
+                                }
+                            }
+                            if let Some(ps) = s3_cfg.part_size_bytes
+                                && ps == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.part_size_bytes must be at least 1"
+                                )));
+                            }
+                            if let Some(f) = s3_cfg.max_concurrent_fetches
+                                && f == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.max_concurrent_fetches must be at least 1"
+                                )));
+                            }
+                            if let Some(o) = s3_cfg.max_concurrent_objects
+                                && o == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.max_concurrent_objects must be at least 1"
+                                )));
+                            }
+                            if let Some(vt) = s3_cfg.visibility_timeout_secs
+                                && vt < 30
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.visibility_timeout_secs must be at least 30"
+                                )));
+                            }
+                        }
                     }
 
                     // Reject input formats that are not yet implemented.
@@ -679,10 +733,10 @@ impl Config {
                     }
                     if output.output_type == OutputType::ArrowIpc
                         && let Some(c) = output.compression.as_deref()
-                        && !matches!(c, "zstd" | "none")
+                        && !matches!(c, "lz4" | "zstd" | "none")
                     {
                         return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': arrow_ipc output only supports 'zstd' or 'none' compression, not '{c}'"
+                            "pipeline '{name}' output '{label}': arrow_ipc output only supports 'lz4', 'zstd', or 'none' compression, not '{c}'"
                         )));
                     }
                     if output.output_type != OutputType::Otlp && output.protocol.is_some() {
@@ -717,51 +771,10 @@ impl Config {
                                 }
                             }
                             // ArrowIpc allows zstd/none and is validated above.
-                            // Parquet allows multiple formats and is validated above.
                             // Other types either reject compression entirely or accept any.
                             _ => {}
                         }
                     }
-
-                    if output.output_type == OutputType::Parquet {
-                        // Validate Parquet specific field bounds.
-                        if let Some(rgs) = output.row_group_size
-                            && rgs == 0
-                        {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': parquet 'row_group_size' must be greater than 0"
-                            )));
-                        }
-                        if let Some(mfs) = output.max_file_size_bytes
-                            && mfs == 0
-                        {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': parquet 'max_file_size_bytes' must be greater than 0"
-                            )));
-                        }
-                    } else {
-                        if output.row_group_size.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'row_group_size' is only supported for parquet outputs"
-                            )));
-                        }
-                        if output.max_file_size_bytes.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'max_file_size_bytes' is only supported for parquet outputs"
-                            )));
-                        }
-                        if output.max_file_duration.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'max_file_duration' is only supported for parquet outputs"
-                            )));
-                        }
-                        if output.partition_by.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'partition_by' is only supported for parquet outputs"
-                            )));
-                        }
-                    }
-
                     if output.output_type != OutputType::Loki {
                         if output.tenant_id.is_some() {
                             return Err(ConfigError::Validation(format!(
@@ -824,6 +837,78 @@ impl Config {
                         return Err(ConfigError::Validation(format!(
                             "pipeline '{name}' output '{label}': 'compression' is not supported for this output type"
                         )));
+                    }
+
+                    if output.output_type != OutputType::ArrowIpc {
+                        if output.host.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'host' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                        if output.port.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'port' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                        if output.write_legacy_ipc_format.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'write_legacy_ipc_format' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                        if output.buffer_size_bytes.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'buffer_size_bytes' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                        if output.batch_size.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'batch_size' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                        if output.write_schema_on_connect.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'write_schema_on_connect' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                    }
+
+                    if output.output_type == OutputType::Parquet {
+                        // Validate Parquet specific field bounds.
+                        if let Some(rgs) = output.row_group_size
+                            && rgs == 0
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': parquet 'row_group_size' must be greater than 0"
+                            )));
+                        }
+                        if let Some(mfs) = output.max_file_size_bytes
+                            && mfs == 0
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': parquet 'max_file_size_bytes' must be greater than 0"
+                            )));
+                        }
+                    } else {
+                        if output.row_group_size.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'row_group_size' is only supported for parquet outputs"
+                            )));
+                        }
+                        if output.max_file_size_bytes.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'max_file_size_bytes' is only supported for parquet outputs"
+                            )));
+                        }
+                        if output.max_file_duration.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'max_file_duration' is only supported for parquet outputs"
+                            )));
+                        }
+                        if output.partition_by.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'partition_by' is only supported for parquet outputs"
+                            )));
+                        }
                     }
                 }
 
@@ -2092,6 +2177,40 @@ mod validate_metrics_endpoint_tests {
         assert!(
             msg.contains("metrics_endpoint") && msg.contains("scheme"),
             "expected metrics_endpoint scheme rejection: {msg}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod validate_storage_checkpoint_flush_interval_tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_flush_interval_ms_zero_rejected() {
+        let yaml = "storage:\n  checkpoint_flush_interval_ms: 0\npipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("checkpoint_flush_interval_ms") && msg.contains("greater than zero"),
+            "expected zero interval rejection: {msg}"
+        );
+    }
+
+    #[test]
+    fn checkpoint_flush_interval_ms_nonzero_accepted() {
+        let yaml = "storage:\n  checkpoint_flush_interval_ms: 100\npipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n";
+        assert!(
+            Config::load_str(yaml).is_ok(),
+            "non-zero checkpoint_flush_interval_ms should be accepted"
+        );
+    }
+
+    #[test]
+    fn checkpoint_flush_interval_ms_absent_accepted() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n";
+        assert!(
+            Config::load_str(yaml).is_ok(),
+            "omitting checkpoint_flush_interval_ms should use default"
         );
     }
 }

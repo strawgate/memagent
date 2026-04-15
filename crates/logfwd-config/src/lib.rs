@@ -25,9 +25,9 @@ pub use types::{
     HttpTypeConfig, InputConfig, InputType, InputTypeConfig, JournaldBackendConfig,
     JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sClusterInfoConfig,
     K8sPathConfig, KvFileEnrichmentConfig, NetworkInfoConfig, OtlpProtobufDecodeModeConfig,
-    OtlpTypeConfig, OutputConfig, OutputType, PipelineConfig, ProcessInfoConfig, SensorTypeConfig,
-    ServerConfig, StaticEnrichmentConfig, StorageConfig, TcpTypeConfig, TlsInputConfig,
-    UdpTypeConfig,
+    OtlpTypeConfig, OutputConfig, OutputType, PipelineConfig, ProcessInfoConfig, S3InputConfig,
+    S3TypeConfig, SensorTypeConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig,
+    TcpTypeConfig, TlsInputConfig, UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 
@@ -475,6 +475,31 @@ output:
     }
 
     #[test]
+    fn validation_unimplemented_output_type() {
+        // Each placeholder type should be caught by Config::validate() before
+        // pipeline construction, not silently accepted.
+        for otype in ["http"] {
+            let yaml = format!(
+                "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  endpoint: http://x\n  path: /tmp/x\n"
+            );
+            let result = Config::load_str(&yaml);
+            assert!(
+                result.is_err(),
+                "validation should reject unimplemented type '{otype}'"
+            );
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("not yet implemented"),
+                "error message should mention 'not yet implemented' for '{otype}': {msg}"
+            );
+            assert!(
+                msg.contains(otype),
+                "error message should include the type name '{otype}': {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn validation_unimplemented_input_format() {
         // Unimplemented input formats must be rejected at config validation time,
         // not silently treated as JSON which would corrupt data.
@@ -519,11 +544,29 @@ output:
             ("file", "path: /tmp/x.ndjson"),
             ("tcp", "endpoint: 127.0.0.1:5140"),
             ("udp", "endpoint: 127.0.0.1:5140"),
+            ("parquet", "path: /tmp/x.parquet"),
         ] {
             let yaml = format!(
                 "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  {extra}\n"
             );
             Config::load_str(&yaml).unwrap_or_else(|e| panic!("failed for {otype}: {e}"));
+        }
+
+        // Placeholder output types must be rejected at validation time.
+        for otype in ["http"] {
+            let yaml = format!(
+                "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  endpoint: http://x\n  path: /tmp/x\n"
+            );
+            let result = Config::load_str(&yaml);
+            assert!(
+                result.is_err(),
+                "expected error for unimplemented type {otype}"
+            );
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("not yet implemented"),
+                "expected 'not yet implemented' for {otype}: {msg}"
+            );
         }
     }
 
@@ -544,6 +587,24 @@ output:
                 "expected unknown variant error for {alias}: {err}"
             );
         }
+    }
+
+    #[test]
+    fn http_output_is_rejected() {
+        let yaml = r"
+input:
+  type: file
+  path: /tmp/x.log
+output:
+  type: http
+  endpoint: http://localhost:9200
+";
+        let err = Config::load_str(yaml).expect_err("http output should be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not yet implemented"),
+            "error should mention 'not yet implemented': {msg}"
+        );
     }
 
     #[test]
@@ -2796,7 +2857,7 @@ pipelines:
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("arrow_ipc output only supports 'zstd' or 'none'")
+            msg.contains("arrow_ipc output only supports 'lz4', 'zstd', or 'none'")
                 && msg.contains("'gzip'"),
             "expected arrow_ipc-specific gzip rejection, got: {msg}"
         );
@@ -2819,6 +2880,45 @@ pipelines:
     }
 
     #[test]
+    fn arrow_ipc_output_accepts_lz4_compression() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: arrow_ipc
+        endpoint: http://localhost:4317
+        compression: lz4
+"#;
+        Config::load_str(yaml).expect("arrow_ipc output should accept lz4 compression");
+    }
+
+    #[test]
+    fn non_arrow_ipc_output_rejects_arrow_ipc_fields() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+    outputs:
+      - type: stdout
+        host: localhost
+        batch_size: 100
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("'host' is only supported for arrow_ipc outputs")
+                || err
+                    .to_string()
+                    .contains("'batch_size' is only supported for arrow_ipc outputs"),
+            "expected arrow_ipc specific field rejection: {err}"
+        );
+    }
+
+    #[test]
     fn csv_enrichment_whitespace_path_rejected() {
         let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: csv\n        table_name: assets\n        path: \"   \"\n";
         let err = Config::load_str(yaml).unwrap_err();
@@ -2829,4 +2929,5 @@ pipelines:
     }
 }
 mod tests_generator_unsupported;
+mod tests_otlp_config;
 mod tests_static_labels;
