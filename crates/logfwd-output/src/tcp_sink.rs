@@ -23,19 +23,39 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// Write timeout per `write_all` call.
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
+use logfwd_config::{OutputEncoding, TcpFraming, TlsClientConfig};
+
 pub struct TcpSink {
     name: String,
     addr: String,
     stream: Option<TcpStream>,
     buf: Vec<u8>,
     stats: Arc<ComponentStats>,
+    #[allow(dead_code)]
+    tls: Option<TlsClientConfig>,
+    max_retries: Option<usize>,
+    retry_backoff_ms: Option<u64>,
+    connect_timeout_ms: Option<u64>,
+    #[allow(dead_code)]
+    keepalive: Option<bool>,
+    framing: Option<TcpFraming>,
+    #[allow(dead_code)]
+    encoding: Option<OutputEncoding>,
 }
 
 impl TcpSink {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: impl Into<String>,
         addr: impl Into<String>,
         stats: Arc<ComponentStats>,
+        tls: Option<TlsClientConfig>,
+        max_retries: Option<usize>,
+        retry_backoff_ms: Option<u64>,
+        connect_timeout_ms: Option<u64>,
+        keepalive: Option<bool>,
+        framing: Option<TcpFraming>,
+        encoding: Option<OutputEncoding>,
     ) -> Self {
         Self {
             name: name.into(),
@@ -43,12 +63,23 @@ impl TcpSink {
             stream: None,
             buf: Vec::with_capacity(64 * 1024),
             stats,
+            tls,
+            max_retries,
+            retry_backoff_ms,
+            connect_timeout_ms,
+            keepalive,
+            framing,
+            encoding,
         }
     }
 
     /// Open a new connection, replacing any existing one.
     async fn connect(&mut self) -> io::Result<()> {
-        let result = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(&self.addr)).await;
+        let connect_timeout = self
+            .connect_timeout_ms
+            .map_or(CONNECT_TIMEOUT, Duration::from_millis);
+
+        let result = tokio::time::timeout(connect_timeout, TcpStream::connect(&self.addr)).await;
 
         let stream = match result {
             Ok(Ok(s)) => s,
@@ -62,7 +93,9 @@ impl TcpSink {
         };
 
         stream.set_nodelay(true)?;
+
         self.stream = Some(stream);
+
         Ok(())
     }
 
@@ -91,25 +124,39 @@ impl TcpSink {
             }
         }
 
-        // Single retry with a fresh connection.
-        self.connect().await?;
-        if let Some(ref mut stream) = self.stream {
-            let result = tokio::time::timeout(WRITE_TIMEOUT, stream.write_all(&self.buf)).await;
-            match result {
-                Ok(Ok(())) => return Ok(()),
-                Ok(Err(e)) => {
-                    self.stream = None;
-                    return Err(e);
-                }
-                Err(_) => {
-                    self.stream = None;
-                    return Err(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "TCP write timed out",
-                    ));
+        // Retry logic based on max_retries
+        let max_retries = self.max_retries.unwrap_or(1);
+        let mut backoff_ms = self.retry_backoff_ms.unwrap_or(100);
+
+        for attempt in 0..max_retries {
+            self.connect().await?;
+            if let Some(ref mut stream) = self.stream {
+                let result = tokio::time::timeout(WRITE_TIMEOUT, stream.write_all(&self.buf)).await;
+                match result {
+                    Ok(Ok(())) => return Ok(()),
+                    Ok(Err(e)) => {
+                        self.stream = None;
+                        if attempt == max_retries - 1 {
+                            return Err(e);
+                        }
+                    }
+                    Err(_) => {
+                        self.stream = None;
+                        if attempt == max_retries - 1 {
+                            return Err(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                "TCP write timed out",
+                            ));
+                        }
+                    }
                 }
             }
+            if attempt < max_retries - 1 {
+                tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                backoff_ms = std::cmp::min(backoff_ms * 2, 5000); // Max backoff 5s
+            }
         }
+
         Ok(())
     }
 }
@@ -127,11 +174,26 @@ impl Sink for TcpSink {
 
             self.buf.clear();
             let cols = build_col_infos(batch);
+            let mut scratch = Vec::new();
+
             for row in 0..batch.num_rows() {
-                if let Err(e) = write_row_json(batch, row, &cols, &mut self.buf) {
+                scratch.clear();
+                if let Err(e) = write_row_json(batch, row, &cols, &mut scratch) {
                     return SendResult::from_io_error(e);
                 }
-                self.buf.push(b'\n');
+                scratch.push(b'\n');
+
+                // Add framing bytes if necessary
+                if matches!(self.framing, Some(TcpFraming::OctetCount)) {
+                    self.buf
+                        .extend_from_slice(scratch.len().to_string().as_bytes());
+                    self.buf.push(b' ');
+                }
+                self.buf.extend_from_slice(&scratch);
+                if matches!(self.framing, Some(TcpFraming::NullByte)) {
+                    self.buf.pop(); // Remove newline
+                    self.buf.push(b'\0');
+                }
             }
 
             if let Err(e) = self.write_with_retry().await {
@@ -178,11 +240,41 @@ pub struct TcpSinkFactory {
     name: String,
     addr: String,
     stats: Arc<ComponentStats>,
+    tls: Option<TlsClientConfig>,
+    max_retries: Option<usize>,
+    retry_backoff_ms: Option<u64>,
+    connect_timeout_ms: Option<u64>,
+    keepalive: Option<bool>,
+    framing: Option<TcpFraming>,
+    encoding: Option<OutputEncoding>,
 }
 
 impl TcpSinkFactory {
-    pub fn new(name: String, addr: String, stats: Arc<ComponentStats>) -> Self {
-        Self { name, addr, stats }
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        name: String,
+        addr: String,
+        stats: Arc<ComponentStats>,
+        tls: Option<TlsClientConfig>,
+        max_retries: Option<usize>,
+        retry_backoff_ms: Option<u64>,
+        connect_timeout_ms: Option<u64>,
+        keepalive: Option<bool>,
+        framing: Option<TcpFraming>,
+        encoding: Option<OutputEncoding>,
+    ) -> Self {
+        Self {
+            name,
+            addr,
+            stats,
+            tls,
+            max_retries,
+            retry_backoff_ms,
+            connect_timeout_ms,
+            keepalive,
+            framing,
+            encoding,
+        }
     }
 }
 
@@ -192,6 +284,13 @@ impl SinkFactory for TcpSinkFactory {
             self.name.clone(),
             self.addr.clone(),
             Arc::clone(&self.stats),
+            self.tls.clone(),
+            self.max_retries,
+            self.retry_backoff_ms,
+            self.connect_timeout_ms,
+            self.keepalive,
+            self.framing.clone(),
+            self.encoding.clone(),
         )))
     }
 

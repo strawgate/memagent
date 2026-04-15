@@ -152,7 +152,13 @@ pub fn build_sink_factory(
                     "output '{name}': udp requires 'endpoint' or both 'host' and 'port'"
                 )));
             };
-            let factory = UdpSinkFactory::new(name.to_string(), endpoint, stats);
+            let factory = UdpSinkFactory::new(
+                name.to_string(),
+                endpoint,
+                stats,
+                cfg.max_datagram_size,
+                cfg.encoding.clone(),
+            );
             Ok(Arc::new(factory))
         }
         OutputType::Otlp => {
@@ -260,6 +266,13 @@ pub fn build_sink_factory(
                 name.to_string(),
                 endpoint,
                 stats,
+                cfg.tls.clone(),
+                cfg.max_retries,
+                cfg.retry_backoff_ms,
+                cfg.connect_timeout_ms,
+                cfg.keepalive,
+                cfg.framing.clone(),
+                cfg.encoding.clone(),
             )))
         }
         OutputType::Null => Ok(Arc::new(NullSinkFactory::new(name.to_string(), stats))),

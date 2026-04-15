@@ -24,6 +24,8 @@ use crate::{BatchMetadata, build_col_infos, write_row_json};
 /// tunneling headers (VXLAN, GRE), etc.
 const MAX_DATAGRAM_PAYLOAD: usize = 1400;
 
+use logfwd_config::OutputEncoding;
+
 pub struct UdpSink {
     name: String,
     socket: UdpSocket,
@@ -34,6 +36,9 @@ pub struct UdpSink {
     /// Accumulation buffer for the current datagram being assembled.
     dgram_buf: Vec<u8>,
     stats: Arc<ComponentStats>,
+    max_datagram_size: Option<usize>,
+    #[allow(dead_code)]
+    encoding: Option<OutputEncoding>,
 }
 
 impl UdpSink {
@@ -45,17 +50,24 @@ impl UdpSink {
         name: impl Into<String>,
         target: impl Into<String>,
         stats: Arc<ComponentStats>,
+        max_datagram_size: Option<usize>,
+        encoding: Option<OutputEncoding>,
     ) -> io::Result<Self> {
         let std_socket = std::net::UdpSocket::bind("0.0.0.0:0")?;
         std_socket.set_nonblocking(true)?;
         let socket = UdpSocket::from_std(std_socket)?;
+
+        let max_size = max_datagram_size.unwrap_or(MAX_DATAGRAM_PAYLOAD);
+
         Ok(Self {
             name: name.into(),
             socket,
             target: target.into(),
             row_buf: Vec::with_capacity(2048),
-            dgram_buf: Vec::with_capacity(MAX_DATAGRAM_PAYLOAD),
+            dgram_buf: Vec::with_capacity(max_size),
             stats,
+            max_datagram_size,
+            encoding,
         })
     }
 
@@ -110,17 +122,19 @@ impl UdpSink {
             let row_len = self.row_buf.len();
             total_bytes += row_len as u64;
 
+            let max_size = self.max_datagram_size.unwrap_or(MAX_DATAGRAM_PAYLOAD);
+
             // If this single row exceeds the MTU, send it alone as an
             // oversized datagram (up to 65507). The network may fragment it
             // but that is better than silently dropping data.
-            if row_len > MAX_DATAGRAM_PAYLOAD {
+            if row_len > max_size {
                 self.flush_dgram().await?;
                 self.send_packet(&self.row_buf).await?;
                 continue;
             }
 
             // Would adding this row overflow the current datagram?
-            if self.dgram_buf.len() + row_len > MAX_DATAGRAM_PAYLOAD {
+            if self.dgram_buf.len() + row_len > max_size {
                 self.flush_dgram().await?;
             }
 
@@ -173,15 +187,25 @@ pub struct UdpSinkFactory {
     name: String,
     target: String,
     stats: Arc<ComponentStats>,
+    max_datagram_size: Option<usize>,
+    encoding: Option<OutputEncoding>,
 }
 
 impl UdpSinkFactory {
     /// Create a new factory.
-    pub fn new(name: String, target: String, stats: Arc<ComponentStats>) -> Self {
+    pub fn new(
+        name: String,
+        target: String,
+        stats: Arc<ComponentStats>,
+        max_datagram_size: Option<usize>,
+        encoding: Option<OutputEncoding>,
+    ) -> Self {
         UdpSinkFactory {
             name,
             target,
             stats,
+            max_datagram_size,
+            encoding,
         }
     }
 }
@@ -192,6 +216,8 @@ impl SinkFactory for UdpSinkFactory {
             self.name.clone(),
             self.target.clone(),
             Arc::clone(&self.stats),
+            self.max_datagram_size,
+            self.encoding.clone(),
         )?;
         Ok(Box::new(sink))
     }
@@ -232,8 +258,14 @@ mod tests {
         let addr = receiver.local_addr().unwrap();
         receiver.set_nonblocking(true).unwrap();
 
-        let mut sink =
-            UdpSink::new("test", addr.to_string(), Arc::new(ComponentStats::new())).unwrap();
+        let mut sink = UdpSink::new(
+            "test",
+            addr.to_string(),
+            Arc::new(ComponentStats::new()),
+            None,
+            None,
+        )
+        .unwrap();
         let batch = make_batch(5);
         sink.do_send_batch(&batch).await.unwrap();
 
@@ -260,8 +292,14 @@ mod tests {
         let addr = receiver.local_addr().unwrap();
         receiver.set_nonblocking(true).unwrap();
 
-        let mut sink =
-            UdpSink::new("test", addr.to_string(), Arc::new(ComponentStats::new())).unwrap();
+        let mut sink = UdpSink::new(
+            "test",
+            addr.to_string(),
+            Arc::new(ComponentStats::new()),
+            None,
+            None,
+        )
+        .unwrap();
         // Create enough rows that they cannot all fit in 1400 bytes.
         let batch = make_batch(100);
         sink.do_send_batch(&batch).await.unwrap();
@@ -294,6 +332,8 @@ mod tests {
             "test-udp".to_string(),
             "127.0.0.1:9999".to_string(),
             Arc::new(ComponentStats::new()),
+            None,
+            None,
         );
         assert_eq!(factory.name(), "test-udp");
         assert!(!factory.is_single_use());

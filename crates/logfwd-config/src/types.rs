@@ -168,29 +168,29 @@ pub enum Format {
     Text,
 }
 
-/// Specifies the encoding format for network output sinks (TCP, UDP).
+/// Encoding formats supported by TCP/UDP outputs.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputEncoding {
-    /// Encode logs as JSON objects.
+    /// Standard JSON format.
     Json,
-    /// Encode logs as plain text.
+    /// Plain text format.
     Text,
-    /// Encode logs in Syslog RFC 5424 format.
+    /// Syslog format according to RFC 5424.
     SyslogRfc5424,
-    /// Encode logs in Syslog RFC 3164 format.
+    /// Syslog format according to RFC 3164.
     SyslogRfc3164,
 }
 
-/// Specifies the framing technique for TCP outputs to delineate messages.
+/// Framing options supported by TCP outputs.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TcpFraming {
-    /// Delineate messages with a newline character (`\n`).
+    /// Messages delimited by a newline character.
     Newline,
-    /// Delineate messages by prepending the message length in bytes (Syslog octet counting).
+    /// Messages delimited by their length in bytes (Syslog octet framing).
     OctetCount,
-    /// Delineate messages with a null byte (`\0`).
+    /// Messages delimited by a null byte.
     NullByte,
 }
 
@@ -300,6 +300,15 @@ pub struct HttpInputConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct GeneratorInputConfig {
+    #[serde(default)]
+    pub events_per_second: Option<u64>,
+    #[serde(default)]
+    pub num_lines: Option<u64>,
+    #[serde(default)]
+    pub message_template: Option<String>,
+    #[serde(default)]
+    pub field_count: Option<usize>,
+
     pub events_per_sec: Option<u64>,
     pub batch_size: Option<usize>,
     pub total_events: Option<u64>,
@@ -351,19 +360,20 @@ pub struct TlsInputConfig {
     pub require_client_auth: bool,
 }
 
-/// TLS settings for outbound client connections (e.g., TCP output).
+/// Configuration for an outbound TLS client connection.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsClientConfig {
-    /// Path to the client certificate file.
+    /// Path to a file containing the client's TLS certificate.
     pub cert_file: Option<String>,
-    /// Path to the client private key file.
+    /// Path to a file containing the client's private TLS key.
     pub key_file: Option<String>,
-    /// Path to the CA file used to verify the server certificate.
-    pub ca_file: Option<String>,
-    /// Whether to skip TLS verification (insecure).
+    /// Path to a file containing the Certificate Authority (CA) certificate
+    /// to use for verifying the server's certificate.
+    pub client_ca_file: Option<String>,
+    /// Whether to require client-side authentication.
     #[serde(default)]
-    pub insecure_skip_verify: bool,
+    pub require_client_auth: bool,
 }
 
 /// Journald (systemd journal) input configuration.
@@ -377,6 +387,18 @@ pub struct JournaldInputConfig {
     /// Systemd units to exclude.
     #[serde(default)]
     pub exclude_units: Vec<String>,
+    /// Syslog identifiers (`SYSLOG_IDENTIFIER=`) to include.
+    #[serde(default)]
+    pub identifiers: Vec<String>,
+    /// Priority/log levels (e.g. `0`, `3`, `info`, `err`) to include.
+    #[serde(default)]
+    pub priorities: Vec<String>,
+    /// Path to persist the cursor. Allows resuming after restarts.
+    #[serde(default)]
+    pub cursor_path: Option<String>,
+    /// Include `_BOOT_ID` field in output (default: false).
+    #[serde(default)]
+    pub include_boot_id: bool,
     /// Only include entries from the current boot (default: true).
     #[serde(default = "default_true")]
     pub current_boot_only: bool,
@@ -422,6 +444,10 @@ impl Default for JournaldInputConfig {
         Self {
             include_units: Vec::new(),
             exclude_units: Vec::new(),
+            identifiers: Vec::new(),
+            priorities: Vec::new(),
+            cursor_path: None,
+            include_boot_id: false,
             current_boot_only: true,
             since_now: false,
             journalctl_path: None,
@@ -541,6 +567,14 @@ pub struct OtlpTypeConfig {
     pub resource_prefix: Option<String>,
     /// Experimental OTLP protobuf decode strategy. Defaults to `prost`.
     pub protobuf_decode_mode: Option<OtlpProtobufDecodeModeConfig>,
+    #[serde(default)]
+    pub max_recv_message_size_bytes: Option<usize>,
+    #[serde(default)]
+    pub tls: Option<TlsInputConfig>,
+    #[serde(default)]
+    pub grpc_keepalive_time_ms: Option<u64>,
+    #[serde(default)]
+    pub grpc_max_concurrent_streams: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -597,34 +631,34 @@ pub struct OutputConfig {
     pub static_labels: Option<HashMap<String, String>>,
     pub label_columns: Option<Vec<String>>,
 
-    /// Host to connect to (alternative to `endpoint` for TCP/UDP).
+    /// Host name or IP to connect to (alternative to `endpoint`).
     #[serde(default)]
     pub host: Option<String>,
-    /// Port to connect to (alternative to `endpoint` for TCP/UDP).
+    /// Port number to connect to (alternative to `endpoint`).
     #[serde(default)]
     pub port: Option<u16>,
-    /// TLS configuration for the output connection.
+    /// TLS connection configuration for the output sink.
     #[serde(default)]
     pub tls: Option<TlsClientConfig>,
-    /// Maximum number of connection retries.
+    /// Maximum number of retries before dropping a batch or failing.
     #[serde(default)]
     pub max_retries: Option<usize>,
-    /// Backoff in milliseconds before retrying a connection.
+    /// Initial backoff interval (in ms) when retrying a connection or request.
     #[serde(default)]
     pub retry_backoff_ms: Option<u64>,
-    /// Connection timeout in milliseconds.
+    /// Maximum time (in ms) to wait for a connection to be established.
     #[serde(default)]
     pub connect_timeout_ms: Option<u64>,
-    /// Whether to enable TCP keepalive.
+    /// Whether to enable TCP keepalive probes.
     #[serde(default)]
     pub keepalive: Option<bool>,
-    /// Framing technique to delineate messages over TCP.
+    /// The message framing protocol for continuous byte streams like TCP.
     #[serde(default)]
     pub framing: Option<TcpFraming>,
-    /// Maximum payload size in bytes per datagram (UDP).
+    /// Maximum size of a single UDP datagram payload in bytes.
     #[serde(default)]
     pub max_datagram_size: Option<usize>,
-    /// Message encoding format (JSON, Text, Syslog, etc.).
+    /// How to encode log messages (e.g., json, syslog_rfc5424).
     #[serde(default)]
     pub encoding: Option<OutputEncoding>,
 }

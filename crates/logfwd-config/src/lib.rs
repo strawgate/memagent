@@ -25,9 +25,9 @@ pub use types::{
     HttpTypeConfig, InputConfig, InputType, InputTypeConfig, JournaldBackendConfig,
     JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sClusterInfoConfig,
     K8sPathConfig, KvFileEnrichmentConfig, NetworkInfoConfig, OtlpProtobufDecodeModeConfig,
-    OtlpTypeConfig, OutputConfig, OutputType, PipelineConfig, ProcessInfoConfig, SensorTypeConfig,
-    ServerConfig, StaticEnrichmentConfig, StorageConfig, TcpTypeConfig, TlsInputConfig,
-    UdpTypeConfig,
+    OtlpTypeConfig, OutputConfig, OutputEncoding, OutputType, PipelineConfig, ProcessInfoConfig,
+    SensorTypeConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig, TcpFraming,
+    TcpTypeConfig, TlsClientConfig, TlsInputConfig, UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 
@@ -2923,4 +2923,5 @@ pipelines:
     }
 }
 mod tests_generator_unsupported;
+mod tests_otlp_config;
 mod tests_static_labels;
