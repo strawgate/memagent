@@ -67,6 +67,14 @@ pub struct JournaldConfig {
     pub include_units: Vec<String>,
     /// Systemd units to exclude.
     pub exclude_units: Vec<String>,
+    /// Syslog identifiers to include.
+    pub identifiers: Vec<String>,
+    /// Priority/log levels to include.
+    pub priorities: Vec<String>,
+    /// Path to persist the cursor.
+    pub cursor_path: Option<String>,
+    /// Include `_BOOT_ID` field in output.
+    pub include_boot_id: bool,
     /// Only read entries from the current boot.
     pub current_boot_only: bool,
     /// Start reading from "now" (skip history).
@@ -86,6 +94,10 @@ impl Default for JournaldConfig {
         Self {
             include_units: Vec::new(),
             exclude_units: Vec::new(),
+            identifiers: Vec::new(),
+            priorities: Vec::new(),
+            cursor_path: None,
+            include_boot_id: false,
             current_boot_only: true,
             since_now: false,
             journalctl_path: "journalctl".to_string(),
@@ -327,6 +339,20 @@ fn native_reader_loop(
         return;
     }
 
+    for id in &config.identifiers {
+        let match_str = format!("SYSLOG_IDENTIFIER={id}");
+        if let Err(e) = journal.add_match(match_str.as_bytes()) {
+            tracing::warn!(error = %e, "failed to apply syslog identifier match filter");
+        }
+    }
+
+    for p in &config.priorities {
+        let match_str = format!("PRIORITY={p}");
+        if let Err(e) = journal.add_match(match_str.as_bytes()) {
+            tracing::warn!(error = %e, "failed to apply priority match filter");
+        }
+    }
+
     // Seek to starting position.
     if let Err(e) = seek_start(&mut journal, config) {
         tracing::error!(error = %e, "failed to seek journal");
@@ -361,7 +387,12 @@ fn native_reader_loop(
             match journal.next() {
                 Ok(true) => {
                     // Build JSON from entry fields.
-                    match entry_to_json(&mut journal, &exclude_units, &mut json_buf) {
+                    match entry_to_json(
+                        &mut journal,
+                        &exclude_units,
+                        config.include_boot_id,
+                        &mut json_buf,
+                    ) {
                         Ok(Some(())) => {
                             // Save cursor of this entry before sending. We do
                             // this per-entry (not at drain-loop exit) because
@@ -403,6 +434,11 @@ fn native_reader_loop(
                     break;
                 }
             }
+        }
+
+        // Persist cursor if we're waiting for new events.
+        if let (Some(c), Some(p)) = (&last_cursor, &config.cursor_path) {
+            let _ = std::fs::write(p, c);
         }
 
         // Wait for new entries (with periodic timeout to check running flag).
@@ -450,14 +486,18 @@ fn native_reader_loop(
                         tracing::warn!(error = %e, "failed to re-seek after journal invalidate");
                     }
                 }
+                // INVALIDATE is still a successful wait (journal was recreated);
+                // clear any prior degraded state.
+                health.store(HEALTH_OK, Ordering::Release);
             }
-            Ok(_) => {} // NOP or APPEND — next loop iteration will drain.
+            Ok(_) => {
+                health.store(HEALTH_OK, Ordering::Release);
+            } // NOP or APPEND — next loop iteration will drain.
             Err(e) => {
                 tracing::warn!(error = %e, "sd_journal_wait error");
                 health.store(HEALTH_DEGRADED, Ordering::Release);
                 // Brief sleep to avoid spinning on persistent errors.
                 std::thread::sleep(Duration::from_millis(100));
-                health.store(HEALTH_OK, Ordering::Release);
             }
         }
     }
@@ -510,6 +550,17 @@ fn apply_unit_matches(
 
 /// Seek to the starting position based on config.
 fn seek_start(journal: &mut journal_ffi::Journal, config: &JournaldConfig) -> io::Result<()> {
+    #[allow(clippy::collapsible_if)]
+    if let Some(cursor_path) = &config.cursor_path {
+        if let Ok(cursor) = std::fs::read_to_string(cursor_path) {
+            if !cursor.trim().is_empty() {
+                if let Ok(()) = journal.seek_cursor(cursor.trim()) {
+                    return Ok(());
+                }
+            }
+        }
+    }
+
     if config.since_now {
         // Seek to tail, then the read loop will pick up only new entries.
         journal.seek_tail()?;
@@ -530,6 +581,7 @@ fn seek_start(journal: &mut journal_ffi::Journal, config: &JournaldConfig) -> io
 fn entry_to_json(
     journal: &mut journal_ffi::Journal,
     exclude_units: &[String],
+    include_boot_id: bool,
     buf: &mut Vec<u8>,
 ) -> io::Result<Option<()>> {
     // First pass: check exclude filter before full serialization.
@@ -565,7 +617,7 @@ fn entry_to_json(
         ));
     }
 
-    normalize_fields(&mut fields);
+    normalize_fields(&mut fields, include_boot_id);
     write_fields_as_json(buf, &fields);
     Ok(Some(()))
 }
@@ -587,7 +639,7 @@ fn entry_to_json(
 /// Normalize journald fields in-place: lowercase names, synthesize
 /// `timestamp` from `_SOURCE_REALTIME_TIMESTAMP`, synthesize `level`
 /// from `PRIORITY`, and drop `__`-prefixed internal fields.
-fn normalize_fields(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
+fn normalize_fields(fields: &mut Vec<(Vec<u8>, Vec<u8>)>, include_boot_id: bool) {
     let mut priority_value: Option<u8> = None;
     let mut source_ts_usec: Option<i64> = None;
     let mut has_timestamp = false;
@@ -598,6 +650,10 @@ fn normalize_fields(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {
     fields.retain_mut(|(name, value)| {
         // Drop double-underscore internal fields (__CURSOR, __REALTIME_TIMESTAMP, etc).
         if name.starts_with(b"__") {
+            return false;
+        }
+
+        if !include_boot_id && name == b"_BOOT_ID" {
             return false;
         }
 
@@ -784,6 +840,23 @@ fn build_command(config: &JournaldConfig) -> Command {
         cmd.arg(format!("_SYSTEMD_UNIT={}", fixup_unit(unit)));
     }
 
+    for id in &config.identifiers {
+        cmd.arg(format!("SYSLOG_IDENTIFIER={id}"));
+    }
+
+    for p in &config.priorities {
+        cmd.arg(format!("PRIORITY={p}"));
+    }
+
+    #[allow(clippy::collapsible_if)]
+    if let Some(cursor_path) = &config.cursor_path {
+        if let Ok(cursor) = std::fs::read_to_string(cursor_path) {
+            if !cursor.trim().is_empty() {
+                cmd.arg(format!("--after-cursor={}", cursor.trim()));
+            }
+        }
+    }
+
     cmd
 }
 
@@ -852,7 +925,7 @@ fn subprocess_reader_loop(
         });
 
         let reader = BufReader::with_capacity(256 * 1024, stdout);
-        let exited_cleanly = read_export_entries(reader, &tx, &running, &config.exclude_units);
+        let exited_cleanly = read_export_entries(reader, &tx, &running, &config);
 
         // Atomically take the PID before kill+wait so Drop cannot race.
         child_pid.swap(0, Ordering::AcqRel);
@@ -878,18 +951,23 @@ fn subprocess_reader_loop(
 /// Read export-format entries from a `BufReader`, parse to JSON, and send
 /// over the channel. Returns `true` if we exited because the channel closed
 /// or the running flag was cleared.
-fn read_export_entries(
-    mut reader: BufReader<std::process::ChildStdout>,
+fn read_export_entries<R: Read>(
+    mut reader: BufReader<R>,
     tx: &crossbeam_channel::Sender<Vec<u8>>,
     running: &Arc<AtomicBool>,
-    exclude_units: &[String],
+    config: &JournaldConfig,
 ) -> bool {
     // Accumulate fields for the current entry.
     let mut fields: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(32);
     let mut line_buf = Vec::with_capacity(1024);
+    let mut last_cursor: Option<String> = None;
+    let exclude_units = &config.exclude_units;
 
     loop {
         if !running.load(Ordering::Acquire) {
+            if let (Some(c), Some(p)) = (&last_cursor, &config.cursor_path) {
+                let _ = std::fs::write(p, c);
+            }
             return true;
         }
 
@@ -904,6 +982,9 @@ fn read_export_entries(
 
         if bytes_read == 0 {
             // EOF — process exited.
+            if let (Some(c), Some(p)) = (&last_cursor, &config.cursor_path) {
+                let _ = std::fs::write(p, c);
+            }
             return false;
         }
 
@@ -929,7 +1010,10 @@ fn read_export_entries(
             if !fields.is_empty() {
                 // Check exclude filter before serializing.
                 if should_emit_export_entry(&fields, exclude_units) {
-                    let json = export_fields_to_json(&mut fields);
+                    let (json, cursor) = export_fields_to_json(&mut fields, config.include_boot_id);
+                    if let Some(c) = cursor {
+                        last_cursor = Some(c);
+                    }
                     match tx.try_send(json) {
                         Ok(()) => {}
                         Err(TrySendError::Full(json)) => {
@@ -971,7 +1055,10 @@ fn read_export_entries(
                 );
                 // Skip past the oversized field data + trailing newline.
                 // Read in chunks to avoid huge allocations.
-                let mut remaining = data_len_u64 + 1; // +1 for trailing \n
+                let mut remaining = match data_len_u64.checked_add(1) {
+                    Some(r) => r,
+                    None => return false,
+                }; // +1 for trailing \n
                 let mut discard = vec![0u8; 64 * 1024];
                 while remaining > 0 {
                     let chunk = remaining.min(discard.len() as u64) as usize;
@@ -987,7 +1074,11 @@ fn read_export_entries(
             let data_len = data_len_u64 as usize;
 
             // Read the binary data + trailing newline.
-            let mut skip_buf = vec![0u8; data_len + 1];
+            let skip_buf_len = match data_len.checked_add(1) {
+                Some(r) => r,
+                None => return false,
+            };
+            let mut skip_buf = vec![0u8; skip_buf_len];
             if reader.read_exact(&mut skip_buf).is_err() {
                 return false;
             }
@@ -1009,16 +1100,15 @@ fn should_emit_export_entry(fields: &[(Vec<u8>, Vec<u8>)], exclude_units: &[Stri
         return true;
     }
     for (name, value) in fields {
-        if name == b"_SYSTEMD_UNIT" {
-            if let Ok(unit) = std::str::from_utf8(value) {
-                let normalized = fixup_unit(unit);
-                for excluded in exclude_units {
-                    if fixup_unit(excluded) == normalized {
-                        return false;
-                    }
+        if name == b"_SYSTEMD_UNIT"
+            && let Ok(unit) = std::str::from_utf8(value)
+        {
+            let normalized = fixup_unit(unit);
+            for excluded in exclude_units {
+                if fixup_unit(excluded) == normalized {
+                    return false;
                 }
             }
-            return true;
         }
     }
     true
@@ -1028,12 +1118,24 @@ fn should_emit_export_entry(fields: &[(Vec<u8>, Vec<u8>)], exclude_units: &[Stri
 ///
 /// Uses the same `normalize_fields` + `write_fields_as_json` pipeline as the
 /// native backend, guaranteeing identical output for the same field set.
-fn export_fields_to_json(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) -> Vec<u8> {
-    normalize_fields(fields);
+fn export_fields_to_json(
+    fields: &mut Vec<(Vec<u8>, Vec<u8>)>,
+    include_boot_id: bool,
+) -> (Vec<u8>, Option<String>) {
+    let mut cursor = None;
+    for (name, value) in fields.iter() {
+        if name == b"__CURSOR" {
+            if let Ok(c) = std::str::from_utf8(value) {
+                cursor = Some(c.to_string());
+            }
+            break;
+        }
+    }
+    normalize_fields(fields, include_boot_id);
     let mut buf = Vec::with_capacity(512);
     write_fields_as_json(&mut buf, fields);
     buf.push(b'\n');
-    buf
+    (buf, cursor)
 }
 
 // ── Shared helpers ────────────────────────────────────────────────────
@@ -1136,7 +1238,7 @@ mod tests {
             (b"PRIORITY".to_vec(), b"6".to_vec()),
             (b"_SYSTEMD_UNIT".to_vec(), b"sshd.service".to_vec()),
         ];
-        let json = export_fields_to_json(&mut fields);
+        let (json, _) = export_fields_to_json(&mut fields, false);
         let text = String::from_utf8(json).unwrap();
         assert!(text.starts_with('{'));
         assert!(text.ends_with("}\n"));
@@ -1152,7 +1254,7 @@ mod tests {
     #[test]
     fn export_fields_to_json_escapes_special_chars() {
         let mut fields = vec![(b"MESSAGE".to_vec(), b"line1\nline2\ttab\"quote".to_vec())];
-        let json = export_fields_to_json(&mut fields);
+        let (json, _) = export_fields_to_json(&mut fields, false);
         let text = String::from_utf8(json).unwrap();
         let v: serde_json::Value = serde_json::from_str(text.trim()).unwrap();
         assert_eq!(v["message"], "line1\nline2\ttab\"quote");
@@ -1161,7 +1263,7 @@ mod tests {
     #[test]
     fn export_fields_to_json_empty() {
         let mut fields: Vec<(Vec<u8>, Vec<u8>)> = vec![];
-        let json = export_fields_to_json(&mut fields);
+        let (json, _) = export_fields_to_json(&mut fields, false);
         assert_eq!(&json, b"{}\n");
     }
 
@@ -1187,6 +1289,29 @@ mod tests {
             (b"_SYSTEMD_UNIT".to_vec(), b"sshd.service".to_vec()),
         ];
         assert!(should_emit_export_entry(&fields, &["docker".to_string()]));
+    }
+
+    #[test]
+    fn read_export_entries_malformed_binary_length() {
+        let mut data = Vec::new();
+        // Entry 1: Malformed binary field.
+        data.extend_from_slice(b"BAD_FIELD\n");
+        // u64::MAX as little-endian length.
+        data.extend_from_slice(&u64::MAX.to_le_bytes());
+        // Add some random garbage that won't be read.
+        data.extend_from_slice(b"garbage\n");
+        data.extend_from_slice(b"\n");
+
+        let reader = BufReader::new(io::Cursor::new(data));
+        let (tx, _rx) = bounded(10);
+        let running = Arc::new(AtomicBool::new(true));
+
+        // Since it's malformed and triggers integer overflow, it should safely return false.
+        let result = read_export_entries(reader, &tx, &running, &JournaldConfig::default());
+        assert!(
+            !result,
+            "should return false on malformed input (integer overflow)"
+        );
     }
 
     // ── build_command (subprocess) ────────────────────────────────────
@@ -1218,6 +1343,24 @@ mod tests {
             .collect();
         assert!(args.contains(&"--since=now".to_string()));
         assert!(!args.contains(&"--since=2000-01-01".to_string()));
+    }
+
+    #[test]
+    fn build_command_with_new_options() {
+        let config = JournaldConfig {
+            identifiers: vec!["my-app".to_string()],
+            priorities: vec!["err".to_string(), "warning".to_string()],
+            cursor_path: None, // file handling is mocked or ignored here because we need an actual file for the test
+            ..Default::default()
+        };
+        let cmd = build_command(&config);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect();
+        assert!(args.contains(&"SYSLOG_IDENTIFIER=my-app".to_string()));
+        assert!(args.contains(&"PRIORITY=err".to_string()));
+        assert!(args.contains(&"PRIORITY=warning".to_string()));
     }
 
     #[test]
@@ -1321,7 +1464,7 @@ mod tests {
             (b"_SYSTEMD_UNIT".to_vec(), b"test.service".to_vec()),
         ];
 
-        let json = export_fields_to_json(&mut fields);
+        let (json, _) = export_fields_to_json(&mut fields, false);
         let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
         // Lowercased field names.
         assert_eq!(v["message"], "hello world");
@@ -1347,7 +1490,7 @@ mod tests {
             ),
         ];
 
-        let json = export_fields_to_json(&mut fields);
+        let (json, _) = export_fields_to_json(&mut fields, false);
         let v: serde_json::Value = serde_json::from_slice(&json).unwrap();
         assert_eq!(v["message"], "has \"quotes\" and\nnewlines");
         assert_eq!(v["_cmdline"], "/usr/bin/test --flag=val\\ue");
@@ -1362,7 +1505,7 @@ mod tests {
             (b"_PID".to_vec(), b"42".to_vec()),
             (b"SYSLOG_IDENTIFIER".to_vec(), b"test".to_vec()),
         ];
-        normalize_fields(&mut fields);
+        normalize_fields(&mut fields, false);
         let names: Vec<&[u8]> = fields.iter().map(|(n, _)| n.as_slice()).collect();
         assert!(names.contains(&b"message".as_slice()));
         assert!(names.contains(&b"_pid".as_slice()));
@@ -1377,7 +1520,7 @@ mod tests {
             (b"__REALTIME_TIMESTAMP".to_vec(), b"123".to_vec()),
             (b"__MONOTONIC_TIMESTAMP".to_vec(), b"456".to_vec()),
         ];
-        normalize_fields(&mut fields);
+        normalize_fields(&mut fields, false);
         let names: Vec<&[u8]> = fields.iter().map(|(n, _)| n.as_slice()).collect();
         assert!(names.contains(&b"message".as_slice()));
         assert!(!names.iter().any(|n| n.starts_with(b"__")));
@@ -1393,7 +1536,7 @@ mod tests {
                 b"1712880000000000".to_vec(),
             ),
         ];
-        normalize_fields(&mut fields);
+        normalize_fields(&mut fields, false);
         let ts = fields
             .iter()
             .find(|(n, _)| n == b"timestamp")
@@ -1416,7 +1559,7 @@ mod tests {
             (b'7', "DEBUG"),
         ] {
             let mut fields = vec![(b"PRIORITY".to_vec(), vec![prio])];
-            normalize_fields(&mut fields);
+            normalize_fields(&mut fields, false);
             let level = fields
                 .iter()
                 .find(|(n, _)| n == b"level")
@@ -1433,7 +1576,7 @@ mod tests {
     #[test]
     fn normalize_no_level_without_priority() {
         let mut fields = vec![(b"MESSAGE".to_vec(), b"hello".to_vec())];
-        normalize_fields(&mut fields);
+        normalize_fields(&mut fields, false);
         assert!(
             !fields.iter().any(|(n, _)| n == b"level"),
             "no level without PRIORITY"
@@ -1460,7 +1603,7 @@ mod tests {
                 b"1712880000000000".to_vec(),
             ),
         ];
-        normalize_fields(&mut fields);
+        normalize_fields(&mut fields, false);
         let timestamps: Vec<_> = fields.iter().filter(|(n, _)| n == b"timestamp").collect();
         assert_eq!(timestamps.len(), 1, "should not duplicate timestamp");
         assert_eq!(timestamps[0].1, b"user-supplied");
@@ -1472,7 +1615,7 @@ mod tests {
             (b"LEVEL".to_vec(), b"CUSTOM".to_vec()),
             (b"PRIORITY".to_vec(), b"3".to_vec()),
         ];
-        normalize_fields(&mut fields);
+        normalize_fields(&mut fields, false);
         let levels: Vec<_> = fields.iter().filter(|(n, _)| n == b"level").collect();
         assert_eq!(levels.len(), 1, "should not duplicate level");
         assert_eq!(levels[0].1, b"CUSTOM");

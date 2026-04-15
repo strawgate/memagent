@@ -31,7 +31,9 @@ use std::io::Write;
 use std::time::{Duration, Instant};
 
 use logfwd_arrow::scanner::Scanner;
-use logfwd_bench::generators;
+use logfwd_bench::make_metadata;
+use logfwd_io::generator::cri::{gen_narrow, gen_production_mixed};
+use logfwd_io::generator::wide::gen_wide;
 use logfwd_transform::SqlTransform;
 
 // ---------------------------------------------------------------------------
@@ -163,11 +165,11 @@ fn main() {
     );
 
     let data = if use_wide {
-        generators::gen_wide(batch_lines, 42)
+        gen_wide(batch_lines, 42)
     } else if use_mixed {
-        generators::gen_production_mixed(batch_lines, 42)
+        gen_production_mixed(batch_lines, 42)
     } else {
-        generators::gen_narrow(batch_lines, 42)
+        gen_narrow(batch_lines, 42)
     };
     let data_bytes = bytes::Bytes::from(data);
     let input_bytes_per_batch = data_bytes.len() as u64;
@@ -188,7 +190,7 @@ fn main() {
     let scan_config = transform.scan_config();
     let mut scanner = Scanner::new(scan_config);
     let mut null_sink = logfwd_bench::NullSink;
-    let metadata = generators::make_metadata();
+    let metadata = make_metadata();
 
     // Warm up: run one batch to initialise DataFusion, JIT, etc.
     {
