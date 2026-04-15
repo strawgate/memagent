@@ -500,14 +500,26 @@ mod tests {
         let struct_arr = parsed.as_struct();
 
         let method = struct_arr.column_by_name("method").unwrap();
-        assert_eq!(arrow::util::display::array_value_to_string(method, 0).unwrap(), "GET");
-        assert_eq!(arrow::util::display::array_value_to_string(method, 1).unwrap(), "POST");
+        assert_eq!(
+            arrow::util::display::array_value_to_string(method, 0).unwrap(),
+            "GET"
+        );
+        assert_eq!(
+            arrow::util::display::array_value_to_string(method, 1).unwrap(),
+            "POST"
+        );
         assert!(method.is_null(2)); // no match
         assert!(method.is_null(3)); // NULL input
 
         let status = struct_arr.column_by_name("status").unwrap();
-        assert_eq!(arrow::util::display::array_value_to_string(status, 0).unwrap(), "200");
-        assert_eq!(arrow::util::display::array_value_to_string(status, 1).unwrap(), "500");
+        assert_eq!(
+            arrow::util::display::array_value_to_string(status, 0).unwrap(),
+            "200"
+        );
+        assert_eq!(
+            arrow::util::display::array_value_to_string(status, 1).unwrap(),
+            "500"
+        );
     }
 
     #[test]
@@ -714,20 +726,6 @@ mod tests {
                 col.is_null(row),
                 "row {row}: NULL pattern must propagate NULL"
             );
-        }
-    }
-}
-
-#[cfg(test)]
-fn get_string_value(arr: &std::sync::Arc<dyn arrow::array::Array>, row: usize) -> Option<String> {
-    use arrow::datatypes::DataType;
-    if arr.is_null(row) {
-        None
-    } else {
-        match arr.data_type() {
-            DataType::Utf8 => Some(arr.as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(row).to_string()),
-            DataType::Utf8View => Some(arr.as_any().downcast_ref::<arrow::array::StringViewArray>().unwrap().value(row).to_string()),
-            _ => None,
         }
     }
 }

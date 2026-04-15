@@ -601,8 +601,14 @@ mod tests {
         let s = geo.as_struct();
 
         let cc = s.column_by_name("country_code").unwrap();
-        assert_eq!(arrow::util::display::array_value_to_string(cc, 0).unwrap(), "US");
-        assert_eq!(arrow::util::display::array_value_to_string(cc, 1).unwrap(), "DE");
+        assert_eq!(
+            arrow::util::display::array_value_to_string(cc, 0).unwrap(),
+            "US"
+        );
+        assert_eq!(
+            arrow::util::display::array_value_to_string(cc, 1).unwrap(),
+            "DE"
+        );
 
         let lat = s
             .column_by_name("latitude")
@@ -848,19 +854,5 @@ mod tests {
         assert!(cc.is_null(1)); // unknown
         assert!(cc.is_null(2)); // null input
         assert_eq!(cc.value(3), "DE");
-    }
-}
-
-#[cfg(test)]
-fn get_string_value(arr: &std::sync::Arc<dyn arrow::array::Array>, row: usize) -> Option<String> {
-    use arrow::datatypes::DataType;
-    if arr.is_null(row) {
-        None
-    } else {
-        match arr.data_type() {
-            DataType::Utf8 => Some(arr.as_any().downcast_ref::<arrow::array::StringArray>().unwrap().value(row).to_string()),
-            DataType::Utf8View => Some(arr.as_any().downcast_ref::<arrow::array::StringViewArray>().unwrap().value(row).to_string()),
-            _ => None,
-        }
     }
 }
