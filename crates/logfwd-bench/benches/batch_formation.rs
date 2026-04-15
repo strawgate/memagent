@@ -10,9 +10,8 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use logfwd_arrow::scanner::Scanner;
-use logfwd_bench::{NullSink, make_metadata, make_otlp_sink};
+use logfwd_bench::{NullSink, generators, make_otlp_sink};
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_io::generator::cri::gen_production_mixed;
 use logfwd_output::Compression;
 use logfwd_transform::SqlTransform;
 
@@ -27,7 +26,7 @@ fn bench_batch_scan(c: &mut Criterion) {
     let batch_sizes: &[usize] = &[100, 500, 1_000, 5_000, 10_000, 50_000, 100_000];
 
     for &n in batch_sizes {
-        let data = gen_production_mixed(n, 42);
+        let data = generators::gen_production_mixed(n, 42);
 
         group.throughput(Throughput::Bytes(data.len() as u64));
         group.bench_with_input(BenchmarkId::new("scan", n), &data, |b, data| {
@@ -54,11 +53,11 @@ fn bench_batch_transform(c: &mut Criterion) {
     let mut group = c.benchmark_group("batch_transform");
     group.sample_size(50);
 
-    let meta = make_metadata();
+    let meta = generators::make_metadata();
     let batch_sizes: &[usize] = &[100, 500, 1_000, 5_000, 10_000, 50_000];
 
     for &n in batch_sizes {
-        let data = gen_production_mixed(n, 42);
+        let data = generators::gen_production_mixed(n, 42);
 
         group.throughput(Throughput::Bytes(data.len() as u64));
 
@@ -105,11 +104,11 @@ fn bench_batch_pipeline(c: &mut Criterion) {
     let mut group = c.benchmark_group("batch_pipeline");
     group.sample_size(50);
 
-    let meta = make_metadata();
+    let meta = generators::make_metadata();
     let batch_sizes: &[usize] = &[100, 500, 1_000, 5_000, 10_000, 50_000];
 
     for &n in batch_sizes {
-        let data = gen_production_mixed(n, 42);
+        let data = generators::gen_production_mixed(n, 42);
 
         group.throughput(Throughput::Bytes(data.len() as u64));
 

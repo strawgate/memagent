@@ -18,11 +18,10 @@ use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use logfwd_arrow::scanner::Scanner;
-use logfwd_bench::make_otlp_sink;
+use logfwd_bench::{generators, make_otlp_sink};
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
-use logfwd_io::generator::cri::{gen_cri_k8s, gen_narrow, gen_production_mixed};
 use logfwd_io::input::{InputEvent, InputSource};
 use logfwd_output::{BatchMetadata, Compression};
 use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
@@ -250,7 +249,7 @@ struct Scenario {
 
 impl Scenario {
     fn passthrough_full_lines(lines: usize) -> Self {
-        let data = gen_production_mixed(lines, 42);
+        let data = generators::gen_production_mixed(lines, 42);
         let chunks = chunk_on_line_boundaries(&data, DEFAULT_CHUNK_BYTES);
         Self {
             name: "passthrough_complete",
@@ -263,7 +262,7 @@ impl Scenario {
     }
 
     fn passthrough_remainder_heavy(lines: usize) -> Self {
-        let data = gen_production_mixed(lines, 7);
+        let data = generators::gen_production_mixed(lines, 7);
         let chunks = chunk_fixed(&data, REMAINDER_CHUNK_BYTES);
         Self {
             name: "passthrough_remainder",
@@ -276,7 +275,7 @@ impl Scenario {
     }
 
     fn passthrough_json(lines: usize) -> Self {
-        let data = gen_narrow(lines, 9);
+        let data = generators::gen_narrow(lines, 9);
         let chunks = chunk_on_line_boundaries(&data, DEFAULT_CHUNK_BYTES);
         Self {
             name: "passthrough_narrow_json",
@@ -289,7 +288,7 @@ impl Scenario {
     }
 
     fn passthrough_narrow_raw(lines: usize) -> Self {
-        let data = gen_narrow(lines, 9);
+        let data = generators::gen_narrow(lines, 9);
         let chunks = chunk_on_line_boundaries(&data, DEFAULT_CHUNK_BYTES);
         Self {
             name: "passthrough_narrow_raw",
@@ -302,7 +301,7 @@ impl Scenario {
     }
 
     fn cri_full(lines: usize) -> Self {
-        let data = gen_cri_k8s(lines, 11);
+        let data = generators::gen_cri_k8s(lines, 11);
         let chunks = chunk_on_line_boundaries(&data, DEFAULT_CHUNK_BYTES);
         Self {
             name: "cri_full",
@@ -457,7 +456,7 @@ struct CopySiteRow {
 }
 
 fn measure_copy_site_candidates(lines: usize) -> Vec<CopySiteRow> {
-    let data = gen_narrow(lines, 99);
+    let data = generators::gen_narrow(lines, 99);
     let iterations = DEFAULT_ITERATIONS * 2;
     vec![
         CopySiteRow {
@@ -734,7 +733,7 @@ mod tests {
 
     #[test]
     fn aligned_chunker_keeps_all_bytes() {
-        let data = gen_narrow(128, 1);
+        let data = generators::gen_narrow(128, 1);
         let chunks = chunk_on_line_boundaries(&data, 1024);
         let rebuilt: Vec<u8> = chunks.into_iter().flatten().collect();
         assert_eq!(rebuilt, data);
@@ -742,7 +741,7 @@ mod tests {
 
     #[test]
     fn fixed_chunker_keeps_all_bytes() {
-        let data = gen_narrow(128, 2);
+        let data = generators::gen_narrow(128, 2);
         let chunks = chunk_fixed(&data, 97);
         let rebuilt: Vec<u8> = chunks.into_iter().flatten().collect();
         assert_eq!(rebuilt, data);
@@ -750,7 +749,7 @@ mod tests {
 
     #[test]
     fn copy_site_fast_path_is_lossless() {
-        let data = gen_narrow(256, 3);
+        let data = generators::gen_narrow(256, 3);
         assert_eq!(
             current_round_trip(&data),
             owned_input_fast_path(data.clone())
