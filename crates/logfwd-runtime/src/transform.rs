@@ -1,5 +1,5 @@
 #[cfg(feature = "datafusion")]
-pub use logfwd_transform::SqlTransform;
+pub use logfwd_transform::{QueryAnalyzer, SqlTransform, TransformError};
 
 #[cfg(feature = "datafusion")]
 pub mod enrichment {
@@ -16,7 +16,7 @@ pub mod udf {
 }
 
 #[cfg(not(feature = "datafusion"))]
-mod passthrough {
+pub(crate) mod passthrough {
     use std::collections::HashSet;
     use std::fmt;
 
