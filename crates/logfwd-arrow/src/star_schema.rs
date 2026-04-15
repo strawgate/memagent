@@ -3470,6 +3470,12 @@ mod str_value_at_tests {
     }
 
     #[test]
+    fn str_from_array_large_utf8() {
+        let arr = LargeStringArray::from(vec![Some("hello large str_from_array")]);
+        assert_eq!(str_from_array(&arr, 0), "hello large str_from_array");
+    }
+
+    #[test]
     fn float_types() {
         let f32_arr = Float32Array::from(vec![Some(3.14f32)]);
         let val = str_value_at(&f32_arr, 0);

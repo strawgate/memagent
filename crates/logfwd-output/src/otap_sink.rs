@@ -558,6 +558,16 @@ impl SinkFactory for OtapSinkFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn integer_overflow_varint_len() {
+        let data = vec![
+            0x1a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
+        ];
+        let err = generated_fast::decode_batch_arrow_records_generated_fast(&data).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(err.to_string(), "overflow");
+    }
     use arrow::array::{Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use logfwd_arrow::star_schema::{flat_to_star, star_to_flat};

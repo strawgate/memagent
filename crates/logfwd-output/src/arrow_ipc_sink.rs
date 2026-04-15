@@ -411,6 +411,36 @@ mod tests {
     }
 
     #[test]
+    fn roundtrip_arrow_ipc_with_gzip() {
+        let batch = make_test_batch();
+        let ipc_bytes = serialize_ipc(&batch).expect("serialize should succeed");
+
+        // Compress with gzip
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut encoder, &ipc_bytes).unwrap();
+        let compressed = encoder.finish().unwrap();
+
+        // Decompress with gzip
+        use std::io::Read;
+        let mut decoder = flate2::read::GzDecoder::new(compressed.as_slice());
+        let mut decompressed = Vec::new();
+        decoder.read_to_end(&mut decompressed).unwrap();
+
+        let batches = deserialize_ipc(&decompressed).expect("deserialize should succeed");
+        assert_eq!(batches.len(), 1);
+
+        let decoded = &batches[0];
+        assert_eq!(decoded.num_rows(), batch.num_rows());
+        for col_idx in 0..batch.num_columns() {
+            assert_eq!(
+                decoded.column(col_idx).as_ref(),
+                batch.column(col_idx).as_ref(),
+                "column {col_idx} mismatch after gzip roundtrip"
+            );
+        }
+    }
+
+    #[test]
     fn empty_batch_serializes_to_empty() {
         let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Utf8, true)]));
         let batch = RecordBatch::new_empty(schema);
