@@ -133,6 +133,22 @@ pub struct HostMetricsConfig {
     pub emit_signal_rows: bool,
     /// Upper bound on data rows emitted per collection cycle.
     pub max_rows_per_poll: usize,
+    /// Optional list of scrapers to run (e.g. `["cpu", "memory", "disk", "network", "filesystem"]`).
+    pub scrapers: Option<Vec<String>>,
+    /// Cadence for metrics collection.
+    pub collection_interval: Duration,
+    /// List of disk devices to include.
+    pub disk_include_devices: Option<Vec<String>>,
+    /// List of disk devices to exclude.
+    pub disk_exclude_devices: Option<Vec<String>>,
+    /// List of network interfaces to include.
+    pub network_include_interfaces: Option<Vec<String>>,
+    /// List of network interfaces to exclude.
+    pub network_exclude_interfaces: Option<Vec<String>>,
+    /// List of filesystem mount points to include.
+    pub filesystem_include_mount_points: Option<Vec<String>>,
+    /// List of filesystem mount points to exclude.
+    pub filesystem_exclude_mount_points: Option<Vec<String>>,
 }
 
 impl Default for HostMetricsConfig {
@@ -144,6 +160,14 @@ impl Default for HostMetricsConfig {
             enabled_families: None,
             emit_signal_rows: true,
             max_rows_per_poll: 256,
+            scrapers: None,
+            collection_interval: Duration::from_millis(10_000),
+            disk_include_devices: None,
+            disk_exclude_devices: None,
+            network_include_interfaces: None,
+            network_exclude_interfaces: None,
+            filesystem_include_mount_points: None,
+            filesystem_exclude_mount_points: None,
         }
     }
 }

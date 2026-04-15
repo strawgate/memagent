@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
 
-use logfwd_bench::generators::cloudtrail::{
+use logfwd_io::generator::cloudtrail::{
     gen_cloudtrail_audit_with_profile, gen_cloudtrail_batch_with_profile,
 };
-use logfwd_bench::generators::{CloudTrailProfile, CloudTrailRegionMix, CloudTrailServiceMix};
+use logfwd_io::generator::shared::{CloudTrailProfile, CloudTrailRegionMix, CloudTrailServiceMix};
 use serde_json::Value;
 
 const DEFAULT_LINES: usize = 50_000;

@@ -1176,7 +1176,7 @@ mod tests {
             .expect("logfwd.batch.total must be sampled");
         match batch_total.value {
             MetricValue::U64(v) => assert_eq!(v, 10),
-            _ => panic!("expected U64"),
+            MetricValue::F64(_) => panic!("expected U64"),
         }
 
         // Verify backpressure is included
@@ -1186,7 +1186,7 @@ mod tests {
             .expect("logfwd.backpressure.stalls must be sampled");
         match bp.value {
             MetricValue::U64(v) => assert_eq!(v, 3),
-            _ => panic!("expected U64"),
+            MetricValue::F64(_) => panic!("expected U64"),
         }
 
         let fast_repolls = points
@@ -1195,7 +1195,7 @@ mod tests {
             .expect("logfwd.input.poll_cadence.fast_repolls must be sampled");
         match fast_repolls.value {
             MetricValue::U64(v) => assert_eq!(v, 5),
-            _ => panic!("expected U64"),
+            MetricValue::F64(_) => panic!("expected U64"),
         }
 
         let idle_sleeps = points
@@ -1204,7 +1204,7 @@ mod tests {
             .expect("logfwd.input.poll_cadence.idle_sleeps must be sampled");
         match idle_sleeps.value {
             MetricValue::U64(v) => assert_eq!(v, 2),
-            _ => panic!("expected U64"),
+            MetricValue::F64(_) => panic!("expected U64"),
         }
 
         // All points should have pipeline attribute
@@ -1262,7 +1262,7 @@ mod tests {
             .unwrap();
         match resident.value {
             MetricValue::U64(v) => assert_eq!(v, 1_000_000),
-            _ => panic!("expected U64"),
+            MetricValue::F64(_) => panic!("expected U64"),
         }
 
         // Pipeline-level error counters should be present.
@@ -1318,7 +1318,7 @@ mod tests {
             .expect("expected health gauge for file_input");
         match input_health.value {
             MetricValue::U64(v) => assert_eq!(v, ComponentHealth::Degraded as u64),
-            _ => panic!("expected U64"),
+            MetricValue::F64(_) => panic!("expected U64"),
         }
     }
 

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use logfwd_bench::{generators, make_otlp_sink};
+use logfwd_bench::{make_metadata, make_otlp_sink};
 use logfwd_io::otlp_receiver::{
     decode_protobuf_bytes_to_batch_projected_only_experimental, decode_protobuf_to_batch,
     decode_protobuf_to_batch_projected_detached_experimental,
@@ -260,7 +260,7 @@ fn run_with_flamegraph(
 fn run_profile(fixture: &FixtureData, mode: Mode, iterations: usize) -> ProfileResult {
     // Warm reusable encoder buffers before allocation measurement so this
     // captures steady-state decode/encode work, not sink capacity growth.
-    let metadata = generators::make_metadata();
+    let metadata = make_metadata();
     let mut sink = make_otlp_sink(Compression::None);
     if matches!(
         mode,
@@ -415,7 +415,7 @@ fn build_fixture(profile: FixtureProfile) -> FixtureData {
 }
 
 fn assert_encode_paths_match(batch: &arrow::record_batch::RecordBatch, fixture_name: &str) {
-    let metadata = generators::make_metadata();
+    let metadata = make_metadata();
     let mut handwritten_sink = make_otlp_sink(Compression::None);
     handwritten_sink.encode_batch(batch, &metadata);
     let handwritten_request = ExportLogsServiceRequest::decode(handwritten_sink.encoded_payload())

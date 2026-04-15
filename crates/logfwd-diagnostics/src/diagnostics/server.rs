@@ -2519,7 +2519,7 @@ output:
 
         let metrics = &rm[0]["scopeMetrics"][0]["metrics"];
         assert!(
-            metrics.as_array().map_or(false, |a| !a.is_empty()),
+            metrics.as_array().is_some_and(|a| !a.is_empty()),
             "expected at least one metric"
         );
     }
@@ -2558,7 +2558,7 @@ output:
 
         let spans = &parsed["resourceSpans"][0]["scopeSpans"][0]["spans"];
         assert!(
-            spans.as_array().map_or(false, |a| !a.is_empty()),
+            spans.as_array().is_some_and(|a| !a.is_empty()),
             "expected at least one span, got: {body}"
         );
 
