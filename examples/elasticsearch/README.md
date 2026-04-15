@@ -114,8 +114,8 @@ pipelines:
     transform: SELECT * FROM logs WHERE status >= 200
     outputs:
       - type: elasticsearch
-      endpoint: http://elasticsearch:9200
-      index: nginx-access
+        endpoint: http://elasticsearch:9200
+        index: nginx-access
 ```
 
 ## Performance Tuning
