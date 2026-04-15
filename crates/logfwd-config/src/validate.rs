@@ -523,7 +523,7 @@ impl Config {
                         .map_or_else(|| format!("#{i}"), String::from);
 
                     // Reject placeholder output types that are not yet implemented.
-                    if matches!(output.output_type, OutputType::Parquet | OutputType::Http) {
+                    if matches!(output.output_type, OutputType::Http) {
                         return Err(ConfigError::Validation(format!(
                             "pipeline '{name}' output '{label}': {} output type is not yet implemented",
                             output.output_type,
@@ -637,10 +637,35 @@ impl Config {
                                 )));
                             }
                         }
-                        // Http and Parquet are not yet implemented — already
-                        // rejected by the check above; these arms are unreachable
+                        OutputType::Parquet => {
+                            match &output.path {
+                                None => {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' output '{label}': parquet output requires 'path'",
+                                    )));
+                                }
+                                Some(p) if p.trim().is_empty() => {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' output '{label}': parquet output 'path' must not be empty"
+                                    )));
+                                }
+                                _ => {}
+                            }
+                            if let Some(c) = output.compression.as_deref()
+                                && !matches!(
+                                    c,
+                                    "snappy" | "gzip" | "zstd" | "uncompressed" | "none"
+                                )
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': parquet compression must be 'snappy', 'gzip', 'zstd', 'uncompressed', or 'none', got '{c}'"
+                                )));
+                            }
+                        }
+                        // Http is not yet implemented — already
+                        // rejected by the check above; this arm is unreachable
                         // but required for exhaustiveness.
-                        OutputType::Http | OutputType::Parquet => {}
+                        OutputType::Http => {}
                     }
 
                     // Reject fields that don't apply to this output type.
@@ -694,10 +719,58 @@ impl Config {
                                 }
                             }
                             // ArrowIpc allows zstd/none and is validated above.
+                            // Parquet allows multiple formats and is validated above.
                             // Other types either reject compression entirely or accept any.
                             _ => {}
                         }
                     }
+
+                    if output.output_type == OutputType::Parquet {
+                        // Validate Parquet specific field bounds.
+                        if let Some(rgs) = output.row_group_size
+                            && rgs == 0
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': parquet 'row_group_size' must be greater than 0"
+                            )));
+                        }
+                        if let Some(mfs) = output.max_file_size_bytes
+                            && mfs == 0
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': parquet 'max_file_size_bytes' must be greater than 0"
+                            )));
+                        }
+                        if let Some(mfd) = output.max_file_duration_seconds
+                            && mfd == 0
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': parquet 'max_file_duration_seconds' must be greater than 0"
+                            )));
+                        }
+                    } else {
+                        if output.row_group_size.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'row_group_size' is only supported for parquet outputs"
+                            )));
+                        }
+                        if output.max_file_size_bytes.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'max_file_size_bytes' is only supported for parquet outputs"
+                            )));
+                        }
+                        if output.max_file_duration_seconds.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'max_file_duration_seconds' is only supported for parquet outputs"
+                            )));
+                        }
+                        if output.partition_by.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'partition_by' is only supported for parquet outputs"
+                            )));
+                        }
+                    }
+
                     if output.output_type != OutputType::Loki {
                         if output.tenant_id.is_some() {
                             return Err(ConfigError::Validation(format!(
@@ -2028,6 +2101,103 @@ mod validate_metrics_endpoint_tests {
         assert!(
             msg.contains("metrics_endpoint") && msg.contains("scheme"),
             "expected metrics_endpoint scheme rejection: {msg}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod validate_parquet_tests {
+    use crate::Config;
+
+    #[test]
+    fn parquet_output_valid_config_accepted() {
+        let yaml = "
+input:
+  type: generator
+output:
+  type: parquet
+  path: /tmp/parquet
+  compression: snappy
+  row_group_size: 100000
+  max_file_size_bytes: 104857600
+  max_file_duration_seconds: 3600
+  partition_by: [\"dt\"]
+";
+        let config = Config::load_str(yaml).unwrap();
+        assert_eq!(config.pipelines.len(), 1);
+    }
+
+    #[test]
+    fn parquet_output_invalid_compression_rejected() {
+        let yaml = "
+input:
+  type: generator
+output:
+  type: parquet
+  path: /tmp/parquet
+  compression: brotli
+";
+        let result = Config::load_str(yaml);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains(
+            "parquet compression must be 'snappy', 'gzip', 'zstd', 'uncompressed', or 'none'"
+        ));
+    }
+
+    #[test]
+    fn parquet_output_missing_path_rejected() {
+        let yaml = "
+input:
+  type: generator
+output:
+  type: parquet
+";
+        let result = Config::load_str(yaml);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("parquet output requires 'path'")
+        );
+    }
+
+    #[test]
+    fn parquet_output_zero_bounds_rejected() {
+        let yaml = "
+input:
+  type: generator
+output:
+  type: parquet
+  path: /tmp/parquet
+  row_group_size: 0
+";
+        let result = Config::load_str(yaml);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("parquet 'row_group_size' must be greater than 0")
+        );
+    }
+
+    #[test]
+    fn stdout_output_with_parquet_fields_rejected() {
+        let yaml = "
+input:
+  type: generator
+output:
+  type: stdout
+  row_group_size: 1000
+";
+        let result = Config::load_str(yaml);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("'row_group_size' is only supported for parquet outputs")
         );
     }
 }

@@ -555,6 +555,18 @@ pub struct OutputConfig {
     pub tenant_id: Option<String>,
     pub static_labels: Option<HashMap<String, String>>,
     pub label_columns: Option<Vec<String>>,
+    /// Number of rows to write to a Parquet row group before creating a new one.
+    #[serde(default)]
+    pub row_group_size: Option<usize>,
+    /// Target maximum file size in bytes before a new Parquet file is created.
+    #[serde(default)]
+    pub max_file_size_bytes: Option<usize>,
+    /// Maximum duration in seconds a Parquet file can be kept open before it is rolled.
+    #[serde(default)]
+    pub max_file_duration_seconds: Option<u64>,
+    /// Fields to partition Parquet output paths by.
+    #[serde(default)]
+    pub partition_by: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
