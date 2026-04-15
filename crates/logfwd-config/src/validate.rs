@@ -522,9 +522,16 @@ impl Config {
                         .as_deref()
                         .map_or_else(|| format!("#{i}"), String::from);
 
+                    // Reject placeholder output types that are not yet implemented.
+                    if matches!(output.output_type, OutputType::Http) {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': {} output type is not yet implemented",
+                            output.output_type,
+                        )));
+                    }
+
                     match output.output_type {
                         OutputType::Otlp
-                        | OutputType::Http
                         | OutputType::Elasticsearch
                         | OutputType::Loki
                         | OutputType::ArrowIpc => {
@@ -630,6 +637,8 @@ impl Config {
                                 )));
                             }
                         }
+                        // Http is rejected above as not yet implemented.
+                        OutputType::Http => unreachable!("Http output rejected before match"),
                         OutputType::Parquet => {
                             match &output.path {
                                 None => {
