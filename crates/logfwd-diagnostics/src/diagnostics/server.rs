@@ -51,7 +51,9 @@ fn redact_yaml_value(value: &mut serde_yaml_ng::Value, in_auth_block: bool) {
                 *value = serde_yaml_ng::Value::String(REDACTED_SECRET.to_string());
             }
             serde_yaml_ng::Value::Null => {}
-            serde_yaml_ng::Value::Tagged(_) => {} // Or we can ignore, config usually doesn't have tagged values.
+            serde_yaml_ng::Value::Tagged(tagged) => {
+                redact_yaml_value(&mut tagged.value, true);
+            }
         }
         return;
     }
@@ -1295,6 +1297,7 @@ output:
         secret_key: "nested-secret"
         flag: true
         number: 42
+        tagged_secret: !!str "tagged-secret-value"
     aws:
       access_key_id: "AKIAIOSFODNN7EXAMPLE"
       secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
@@ -1324,13 +1327,26 @@ output:
             !redacted.contains("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
             "aws secret key must not be exposed"
         );
-        assert!(
-            !redacted.contains("true"),
-            "boolean auth fields must be redacted"
+        // Verify specific auth field values are redacted (not broad token absence,
+        // which would be brittle if unrelated YAML happened to contain those tokens).
+        let redacted_yaml: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&redacted).expect("redacted output must be valid YAML");
+        let auth = &redacted_yaml["output"]["auth"];
+        let nested = &auth["some_new_auth_block"]["nested"];
+        assert_eq!(
+            nested["flag"].as_str(),
+            Some(REDACTED_SECRET),
+            "boolean auth field 'flag' must be redacted to the sentinel"
         );
-        assert!(
-            !redacted.contains("42"),
-            "number auth fields must be redacted"
+        assert_eq!(
+            nested["number"].as_str(),
+            Some(REDACTED_SECRET),
+            "numeric auth field 'number' must be redacted to the sentinel"
+        );
+        assert_eq!(
+            nested["tagged_secret"].as_str(),
+            Some(REDACTED_SECRET),
+            "tagged auth field 'tagged_secret' must be redacted to the sentinel"
         );
         assert!(
             !redacted.contains("user:pass@"),
