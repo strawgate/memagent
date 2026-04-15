@@ -460,8 +460,8 @@ mod tests {
         let ipc_bytes = serialize_ipc(&batch).expect("serialize should succeed");
 
         // Compress with gzip
-        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        std::io::Write::write_all(&mut encoder, &ipc_bytes).unwrap();
+        let mut encoder = GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        Write::write_all(&mut encoder, &ipc_bytes).unwrap();
         let compressed = encoder.finish().unwrap();
 
         // Decompress with gzip
