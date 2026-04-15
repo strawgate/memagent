@@ -11,8 +11,6 @@ pub mod udf {
     pub mod geo_lookup {
         pub use logfwd_transform::udf::geo_lookup::MmdbDatabase;
     }
-    /// CSV IP-range geo database backend for CLI facade wiring.
-    pub use logfwd_transform::udf::CsvRangeDatabase;
 }
 
 #[cfg(not(feature = "datafusion"))]

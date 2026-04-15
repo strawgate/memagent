@@ -8,12 +8,8 @@ use std::sync::Arc;
 use logfwd_output::{BatchMetadata, Compression, OtlpProtocol, OtlpSink};
 use logfwd_types::diagnostics::ComponentStats;
 
+pub mod cardinality;
 pub mod generators;
-
-/// Re-export cardinality helpers from logfwd-io for backward compatibility.
-pub mod cardinality {
-    pub use logfwd_io::generator::cardinality::*;
-}
 
 // ---------------------------------------------------------------------------
 // Shared benchmark helpers

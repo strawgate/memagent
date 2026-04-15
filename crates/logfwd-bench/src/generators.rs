@@ -1,37 +1,28 @@
 //! Deterministic data generators for benchmarks.
 //!
-//! All generators are re-exported from `logfwd-io`. See that crate for
-//! implementation details and documentation.
+//! Every generator uses a seeded [`fastrand::Rng`] so that identical
+//! `(count, seed)` pairs always produce byte-identical output. This ensures
+//! reproducible benchmark results across runs and CI.
 
+use std::fmt::Write;
 use std::sync::Arc;
 
+use arrow::array::{ArrayRef, Float64Array, Int64Array, StringArray, StringBuilder};
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::record_batch::RecordBatch;
 use logfwd_output::BatchMetadata;
 
-pub use logfwd_io::generator::cardinality::cardinality_helpers::{
-    CardinalityProfile, CardinalityState, SamplePhase,
-};
-pub use logfwd_io::generator::cri::{
-    gen_cri_k8s, gen_narrow, gen_narrow_batch, gen_production_mixed, gen_production_mixed_batch,
-};
-pub use logfwd_io::generator::envoy::{
-    EnvoyAccessProfile, gen_envoy_access, gen_envoy_access_batch,
-    gen_envoy_access_batch_with_profile, gen_envoy_access_with_profile,
-};
-pub use logfwd_io::generator::shared::{
-    CloudTrailProfile, CloudTrailRegionMix, CloudTrailServiceMix,
-};
-pub use logfwd_io::generator::wide::{gen_wide, gen_wide_batch};
+use crate::cardinality::cardinality_helpers::{CardinalityProfile, CardinalityState, SamplePhase};
 
 pub mod cloudtrail;
 
-/// Create benchmark-standard `BatchMetadata` with typical K8s resource attributes.
-pub fn make_metadata() -> BatchMetadata {
-    BatchMetadata {
-        resource_attrs: Arc::new(vec![
-            ("service.name".into(), "bench-service".into()),
-            ("service.version".into(), "1.0.0".into()),
-            ("host.name".into(), "bench-node-01".into()),
-        ]),
-        observed_time_ns: 1_705_312_200_000_000_000, // 2024-01-15T10:30:00Z
-    }
-}
+include!("generators/shared_profiles.rs");
+include!("generators/envoy_access.rs");
+include!("generators/cri_mixed_narrow.rs");
+include!("generators/wide_metadata.rs");
+
+#[cfg(test)]
+pub(crate) mod test_support;
+
+#[cfg(test)]
+mod generator_tests;

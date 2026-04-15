@@ -729,3 +729,29 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+fn get_string_value(arr: &std::sync::Arc<dyn arrow::array::Array>, row: usize) -> Option<String> {
+    use arrow::datatypes::DataType;
+    if arr.is_null(row) {
+        None
+    } else {
+        match arr.data_type() {
+            DataType::Utf8 => Some(
+                arr.as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap()
+                    .value(row)
+                    .to_string(),
+            ),
+            DataType::Utf8View => Some(
+                arr.as_any()
+                    .downcast_ref::<arrow::array::StringViewArray>()
+                    .unwrap()
+                    .value(row)
+                    .to_string(),
+            ),
+            _ => None,
+        }
+    }
+}
