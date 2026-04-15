@@ -573,6 +573,7 @@ pub(super) fn build_input_state(
 
             #[cfg(feature = "s3")]
             {
+
                 use logfwd_io::s3_input::decompress::Compression;
                 use logfwd_io::s3_input::{S3Input, S3InputSettings};
 

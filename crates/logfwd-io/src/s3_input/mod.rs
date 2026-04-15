@@ -294,49 +294,57 @@ impl S3Input {
                         Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
                     // Spawn discovery task.
-                    let (sqs_for_orch, discovery_handle) = if sqs_queue_url_is_set {
-                        let sqs = sqs_client.expect("sqs_client set when queue_url set");
-                        let sqs_orch = Arc::clone(&sqs);
-                        let is_running_d = Arc::clone(&is_running_bg);
-                        let health_d = Arc::clone(&health_bg);
-                        let work_tx_d = work_tx.clone();
-                        let name_d = name_bg.clone();
-                        let in_progress_d = Arc::clone(&in_progress);
-                        let handle = tokio::spawn(async move {
-                            run_sqs_discovery(
-                                sqs,
-                                in_progress_d,
-                                work_tx_d,
-                                is_running_d,
-                                health_d,
-                                name_d,
-                                visibility_timeout,
-                            )
-                            .await;
-                        });
-                        (Some(sqs_orch), handle)
-                    } else {
-                        let s3 = Arc::clone(&s3_client);
-                        let is_running_d = Arc::clone(&is_running_bg);
-                        let health_d = Arc::clone(&health_bg);
-                        let work_tx_d = work_tx.clone();
-                        let name_d = name_bg.clone();
-                        let handle = tokio::spawn(async move {
-                            run_list_discovery(
-                                s3,
-                                bucket,
-                                prefix,
-                                start_after_init,
-                                work_tx_d,
-                                is_running_d,
-                                health_d,
-                                name_d,
-                                poll_interval_ms,
-                            )
-                            .await;
-                        });
-                        (None, handle)
-                    };
+                    // Completed-key channel for list-mode cursor advancement.
+                    let (completed_tx, completed_rx) =
+                        tokio::sync::mpsc::channel::<String>(max_objects * 4);
+
+                    let (sqs_for_orch, completed_tx_for_orch, discovery_handle) =
+                        if sqs_queue_url_is_set {
+                            let sqs = sqs_client.expect("sqs_client set when queue_url set");
+                            let sqs_orch = Arc::clone(&sqs);
+                            let is_running_d = Arc::clone(&is_running_bg);
+                            let health_d = Arc::clone(&health_bg);
+                            let work_tx_d = work_tx.clone();
+                            let name_d = name_bg.clone();
+                            let in_progress_d = Arc::clone(&in_progress);
+                            let handle = tokio::spawn(async move {
+                                run_sqs_discovery(
+                                    sqs,
+                                    in_progress_d,
+                                    work_tx_d,
+                                    is_running_d,
+                                    health_d,
+                                    name_d,
+                                    visibility_timeout,
+                                )
+                                .await;
+                            });
+                            // SQS mode doesn't need cursor advancement.
+                            drop(completed_rx);
+                            (Some(sqs_orch), None, handle)
+                        } else {
+                            let s3 = Arc::clone(&s3_client);
+                            let is_running_d = Arc::clone(&is_running_bg);
+                            let health_d = Arc::clone(&health_bg);
+                            let work_tx_d = work_tx.clone();
+                            let name_d = name_bg.clone();
+                            let handle = tokio::spawn(async move {
+                                run_list_discovery(
+                                    s3,
+                                    bucket,
+                                    prefix,
+                                    start_after_init,
+                                    work_tx_d,
+                                    completed_rx,
+                                    is_running_d,
+                                    health_d,
+                                    name_d,
+                                    poll_interval_ms,
+                                )
+                                .await;
+                            });
+                            (None, Some(completed_tx), handle)
+                        };
                     // Drop our copy so the orchestrator exits when discovery stops.
                     drop(work_tx);
 
@@ -344,6 +352,7 @@ impl S3Input {
                         s3_client,
                         sqs_for_orch,
                         in_progress,
+                        completed_tx_for_orch,
                         work_rx,
                         tx,
                         semaphore,
@@ -462,6 +471,16 @@ async fn run_sqs_discovery(
         };
 
         for msg in messages {
+            // If the message has no actionable S3 records (e.g. non-ObjectCreated
+            // events, test notifications, or malformed payloads), delete it
+            // immediately to prevent infinite redelivery.
+            if msg.records.is_empty() {
+                if let Err(e) = sqs.delete_message(&msg.receipt_handle).await {
+                    warn!(name = %name, error = %e, "SQS delete empty message failed");
+                }
+                continue;
+            }
+
             // Register receipt handle for heartbeats before dispatching.
             {
                 let mut guard = in_progress.lock().await;
@@ -495,6 +514,7 @@ async fn run_list_discovery(
     prefix: Option<String>,
     start_after_init: Option<String>,
     work_tx: tokio::sync::mpsc::Sender<ObjectWork>,
+    mut completed_rx: tokio::sync::mpsc::Receiver<String>,
     is_running: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
     name: String,
@@ -540,8 +560,15 @@ async fn run_list_discovery(
                         if work_tx.send(work).await.is_err() {
                             return;
                         }
-                        // Advance cursor so we don't re-process on the next cycle.
-                        start_after = Some(obj.key.clone());
+                        // Note: cursor is NOT advanced here. The orchestrator
+                        // reports back successfully-processed keys via
+                        // completed_rx, and we advance below.
+                    }
+
+                    // Drain any completed keys reported by the orchestrator
+                    // and advance the cursor to the latest one.
+                    while let Ok(key) = completed_rx.try_recv() {
+                        start_after = Some(key);
                     }
 
                     if let Some(token) = next_token {
@@ -566,6 +593,7 @@ async fn run_orchestrator(
     s3: Arc<S3Client>,
     sqs: Option<Arc<SqsClient>>,
     in_progress: Arc<tokio::sync::Mutex<Vec<String>>>,
+    completed_tx: Option<tokio::sync::mpsc::Sender<String>>,
     mut work_rx: tokio::sync::mpsc::Receiver<ObjectWork>,
     out_tx: mpsc::SyncSender<ChunkPayload>,
     semaphore: Arc<Semaphore>,
@@ -590,6 +618,7 @@ async fn run_orchestrator(
         let s3 = Arc::clone(&s3);
         let sqs = sqs.clone();
         let in_progress = Arc::clone(&in_progress);
+        let completed_tx = completed_tx.clone();
         let out_tx = out_tx.clone();
         let health = Arc::clone(&health);
         let name = name.clone();
@@ -626,6 +655,11 @@ async fn run_orchestrator(
                         warn!(name = %name, error = %e, "SQS delete message failed");
                     }
                 }
+
+                // Report successfully-processed key for list-mode cursor advancement.
+                if let Some(ref tx) = completed_tx {
+                    let _ = tx.send(work.key.clone()).await;
+                }
             }
 
             // Remove from in-progress heartbeat set regardless of outcome.
@@ -652,7 +686,7 @@ async fn fetch_object(
         size = s3.head_object(key).await.unwrap_or(0);
     }
 
-    let compression = compression_override.unwrap_or_else(|| detect_compression(key, None));
+    let compression = compression_override.unwrap_or_else(|| detect_compression(key, None, None));
 
     // TODO: Stream decompression incrementally instead of buffering the entire
     // object in memory. This will reduce peak memory for large objects.

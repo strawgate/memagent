@@ -304,8 +304,16 @@ impl S3Client {
             .map_err(|e| io::Error::other(format!("S3 GET range {key} {start}-{end}: {e}")))?;
 
         let status = resp.status();
-        // AWS returns 206 for partial content; 200 is also acceptable.
-        if !status.is_success() && status.as_u16() != 206 {
+        // AWS returns 206 Partial Content for range requests.
+        // 200 OK means the server ignored the Range header and returned the
+        // full object — treat as an error to avoid silent data corruption in
+        // the parallel range assembly.
+        if status.as_u16() == 200 {
+            return Err(io::Error::other(format!(
+                "S3 GET range {key} {start}-{end}: server returned 200 OK instead of 206 Partial Content (range ignored)"
+            )));
+        }
+        if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(io::Error::other(format!(
                 "S3 GET range {key}: HTTP {status}: {body}"

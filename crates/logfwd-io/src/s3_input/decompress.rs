@@ -32,13 +32,31 @@ impl Compression {
     }
 }
 
-/// Detect compression from the object key extension and optional `Content-Type`.
+/// Detect compression from the object key extension, optional `Content-Encoding`,
+/// and optional `Content-Type`.
 ///
-/// Priority: key extension > content-type > `Compression::None`.
+/// Priority: content-encoding > key extension > content-type > `Compression::None`.
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
-pub fn detect_compression(key: &str, content_type: Option<&str>) -> Compression {
-    // Check key extension first (most reliable for S3 objects).
-    // Use lowercase comparison to handle mixed-case keys.
+pub fn detect_compression(
+    key: &str,
+    content_encoding: Option<&str>,
+    content_type: Option<&str>,
+) -> Compression {
+    // Content-Encoding is the most authoritative signal.
+    if let Some(ce) = content_encoding {
+        let ce = ce.to_ascii_lowercase();
+        if ce.contains("gzip") {
+            return Compression::Gzip;
+        }
+        if ce.contains("zstd") {
+            return Compression::Zstd;
+        }
+        if ce.contains("snappy") {
+            return Compression::Snappy;
+        }
+    }
+
+    // Check key extension (most reliable for S3 objects).
     let key_lower = key.to_ascii_lowercase();
     if key_lower.ends_with(".gz") || key_lower.ends_with(".gzip") {
         return Compression::Gzip;
