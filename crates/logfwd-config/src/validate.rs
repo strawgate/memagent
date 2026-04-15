@@ -61,6 +61,14 @@ impl Config {
             }
         }
 
+        if let Some(interval) = self.storage.checkpoint_flush_interval
+            && interval.is_zero()
+        {
+            return Err(ConfigError::Validation(
+                "storage.checkpoint_flush_interval must be greater than 0".into(),
+            ));
+        }
+
         if self.pipelines.is_empty() {
             return Err(ConfigError::Validation(
                 "at least one pipeline must be defined".into(),
@@ -246,15 +254,6 @@ impl Config {
                                     "pipeline '{name}' input '{label}': generator.attributes float values must be finite"
                                 )));
                             }
-                                if let Some((key, _)) =
-                                    generator.attributes.iter().find(|(_, v)| {
-                                        matches!(v, GeneratorAttributeValueConfig::Unsupported(_))
-                                    })
-                                {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': generator.attributes '{key}' has an unsupported type (expected scalar value)"
-                                    )));
-                                }
                                 if !is_record_profile
                                     && (!generator.attributes.is_empty()
                                         || generator.sequence.is_some()
@@ -304,11 +303,7 @@ impl Config {
                                     }
                                 }
                                 if let Some(ts) = &generator.timestamp {
-                                    let is_logs_profile = matches!(
-                                        generator.profile,
-                                        Some(GeneratorProfileConfig::Logs) | None
-                                    );
-                                    if !is_logs_profile {
+                                    if is_record_profile {
                                         return Err(ConfigError::Validation(format!(
                                             "pipeline '{name}' input '{label}': generator.timestamp is only supported for the logs profile"
                                         )));
@@ -759,17 +754,6 @@ impl Config {
                             )));
                         }
                     }
-
-                    if let Some(labels) = &output.static_labels {
-                        for (k, v) in labels {
-                            if k.trim().is_empty() || v.trim().is_empty() {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': 'static_labels' keys and values must not be empty"
-                                )));
-                            }
-                        }
-                    }
-
                     if !matches!(output.output_type, OutputType::File | OutputType::Parquet)
                         && output.path.is_some()
                     {
@@ -816,11 +800,6 @@ impl Config {
                                     "pipeline '{name}' enrichment #{j}: geo_database 'path' must not be empty"
                                 )));
                             }
-                            if geo_cfg.refresh_interval == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
-                                )));
-                            }
                             // Only check existence for absolute paths; relative paths
                             // are resolved against base_path in Pipeline::from_config.
                             let p = Path::new(&geo_cfg.path);
@@ -854,11 +833,6 @@ impl Config {
                                     "pipeline '{name}' enrichment #{j}: csv 'path' must not be empty"
                                 )));
                             }
-                            if cfg.refresh_interval == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
-                                )));
-                            }
                             let p = Path::new(&cfg.path);
                             if p.is_absolute() && !p.exists() {
                                 return Err(ConfigError::Validation(format!(
@@ -878,11 +852,6 @@ impl Config {
                                     "pipeline '{name}' enrichment #{j}: jsonl 'path' must not be empty"
                                 )));
                             }
-                            if cfg.refresh_interval == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
-                                )));
-                            }
                             let p = Path::new(&cfg.path);
                             if p.is_absolute() && !p.exists() {
                                 return Err(ConfigError::Validation(format!(
@@ -892,53 +861,13 @@ impl Config {
                             }
                         }
                         EnrichmentConfig::K8sPath(cfg) => {
-                            if cfg.table_name.trim().is_empty() {
+                            if cfg.table_name.is_empty() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' enrichment #{j}: table_name must not be empty"
                                 )));
                             }
                         }
                         EnrichmentConfig::HostInfo(_) => {}
-                        EnrichmentConfig::ProcessInfo(_) => {}
-                        EnrichmentConfig::NetworkInfo(_) => {}
-                        EnrichmentConfig::ContainerInfo(_) => {}
-                        EnrichmentConfig::K8sClusterInfo(_) => {}
-                        EnrichmentConfig::EnvVars(cfg) => {
-                            if cfg.table_name.trim().is_empty() {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: table_name must not be empty"
-                                )));
-                            }
-                            if cfg.prefix.trim().is_empty() {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: env_vars 'prefix' must not be empty"
-                                )));
-                            }
-                        }
-                        EnrichmentConfig::KvFile(cfg) => {
-                            if cfg.table_name.trim().is_empty() {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: table_name must not be empty"
-                                )));
-                            }
-                            if cfg.path.trim().is_empty() {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: kv_file 'path' must not be empty"
-                                )));
-                            }
-                            if cfg.refresh_interval == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
-                                )));
-                            }
-                            let p = Path::new(&cfg.path);
-                            if p.is_absolute() && !p.exists() {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: kv_file not found: {}",
-                                    cfg.path,
-                                )));
-                            }
-                        }
                     }
                 }
 

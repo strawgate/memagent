@@ -15,182 +15,22 @@ hero:
       variant: minimal
 ---
 
-<div class="home-grid">
+import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 
-  <div class="home-col">
+<CardGrid>
+  <LinkCard title="SQL Transforms" description="Write standard SQL to filter, reshape, and enrich every batch. No vendor DSL — just SELECT, WHERE, GROUP BY, and custom UDFs." href="/memagent/configuration/sql-transforms/" />
+  <LinkCard title="SIMD-Powered Scanner" description="Parse JSON and CRI at 2.8M lines/sec per core. Zero-copy Arrow RecordBatches via platform-native SIMD." href="/memagent/how-it-works/scanner/" />
+  <LinkCard title="Single Binary" description="One static binary, no runtime dependencies. Build, configure, run. Ships as a container image for Kubernetes DaemonSets." href="/memagent/quick-start/" />
+  <LinkCard title="OTLP Native" description="First-class OpenTelemetry support. Protobuf encoding with zstd compression. Works with any OTLP-compatible collector." href="/memagent/configuration/outputs/" />
+</CardGrid>
 
-    <h2 class="home-col-title">Use It</h2>
+## See how it works
 
-    <a class="home-link-card" href="/memagent/quick-start/">
-      <span class="home-link-label">Quick Start</span>
-      <span class="home-link-desc">Install, run your first pipeline, and ship logs in 15 minutes</span>
-    </a>
-    <a class="home-link-card" href="/memagent/configuration/sql-transforms/">
-      <span class="home-link-label">SQL Transforms</span>
-      <span class="home-link-desc">SELECT, WHERE, GROUP BY, JOINs, UDFs — full SQL on every batch</span>
-    </a>
-    <a class="home-link-card" href="/memagent/configuration/inputs/">
-      <span class="home-link-label">Input Types</span>
-      <span class="home-link-desc">File, TCP, UDP, OTLP, HTTP, Arrow IPC, sensor, generator</span>
-    </a>
-    <a class="home-link-card" href="/memagent/configuration/outputs/">
-      <span class="home-link-label">Output Types</span>
-      <span class="home-link-desc">OTLP, Elasticsearch, Loki, stdout, file, TCP, UDP, Arrow IPC</span>
-    </a>
-    <a class="home-link-card" href="/memagent/configuration/reference/">
-      <span class="home-link-label">YAML Reference</span>
-      <span class="home-link-desc">Every config field, input/output option, and server setting</span>
-    </a>
-    <a class="home-link-card" href="/memagent/deployment/kubernetes/">
-      <span class="home-link-label">Deploy to Kubernetes</span>
-      <span class="home-link-desc">DaemonSet config, resource sizing, and collector integration</span>
-    </a>
-    <a class="home-link-card" href="/memagent/troubleshooting/">
-      <span class="home-link-label">Troubleshooting</span>
-      <span class="home-link-desc">Diagnose pipeline stalls, checkpoint issues, and output errors</span>
-    </a>
+Interactive visualizations that show what happens inside the pipeline. Not diagrams — live, clickable explorations of the actual architecture.
 
-  </div>
-
-  <div class="home-col">
-
-    <h2 class="home-col-title">Understand It</h2>
-
-    <a class="home-preview-card" href="/memagent/learn/tailing/">
-      <div class="home-preview-img-wrap">
-        <img src="/memagent/img/learn/tailing-preview.png" alt="Tailing simulator" loading="lazy" />
-      </div>
-      <div class="home-preview-text">
-        <span class="home-link-label">Tailing</span>
-        <span class="home-link-desc">Watch logfwd handle rotation and truncation live — inode tracking, offset resets, atomic checkpoints</span>
-      </div>
-    </a>
-
-    <a class="home-preview-card" href="/memagent/learn/scanner/">
-      <div class="home-preview-img-wrap">
-        <img src="/memagent/img/learn/scanner-preview.png" alt="Field pushdown explorer" loading="lazy" />
-      </div>
-      <div class="home-preview-text">
-        <span class="home-link-label">Scanner & Field Pushdown</span>
-        <span class="home-link-desc">Step through SIMD JSON parsing, then toggle fields to see how pushdown cuts bytes and boosts throughput</span>
-      </div>
-    </a>
-
-    <a class="home-preview-card" href="/memagent/learn/backpressure/">
-      <div class="home-preview-img-wrap">
-        <img src="/memagent/img/learn/backpressure-preview.png" alt="Backpressure simulator" loading="lazy" />
-      </div>
-      <div class="home-preview-text">
-        <span class="home-link-label">Backpressure in Action</span>
-        <span class="home-link-desc">Slide output speed to slow or outage — watch pressure cascade from outputs back to the file reader</span>
-      </div>
-    </a>
-
-    <a class="home-preview-card" href="/memagent/learn/columnar/">
-      <div class="home-preview-img-wrap">
-        <img src="/memagent/img/learn/columnar-preview.png" alt="Columnar storage diagram" loading="lazy" />
-      </div>
-      <div class="home-preview-text">
-        <span class="home-link-label">Columnar Storage</span>
-        <span class="home-link-desc">Compare row vs column layout and see why Arrow makes SQL transforms essentially free</span>
-      </div>
-    </a>
-
-    <a class="home-preview-card" href="/memagent/learn/checkpoints/">
-      <div class="home-preview-img-wrap">
-        <img src="/memagent/img/learn/checkpoints-preview.png" alt="Checkpoint ordering simulator" loading="lazy" />
-      </div>
-      <div class="home-preview-text">
-        <span class="home-link-label">Checkpoint Ordering</span>
-        <span class="home-link-desc">Step through out-of-order ACKs and see why the committed watermark can never skip an unresolved batch</span>
-      </div>
-    </a>
-
-  </div>
-
-</div>
-
-<style>{`
-  .home-grid {
-    display: grid;
-    grid-template-columns: 1fr 1.4fr;
-    gap: 2.5rem;
-    margin-top: 2.5rem;
-    align-items: start;
-  }
-  @media (max-width: 800px) {
-    .home-grid { grid-template-columns: 1fr; }
-  }
-
-  .home-col-title {
-    font-size: 0.7rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    color: var(--sl-color-gray-3);
-    margin-bottom: 0.75rem;
-    border-bottom: 1px solid var(--sl-color-hairline);
-    padding-bottom: 0.5rem;
-  }
-
-  .home-link-card {
-    display: block;
-    padding: 0.6rem 0.75rem;
-    margin-bottom: 0.35rem;
-    border-radius: 6px;
-    border: 1px solid var(--sl-color-hairline);
-    background: var(--sl-color-bg-sidebar);
-    text-decoration: none;
-    transition: border-color 0.15s, background 0.15s;
-  }
-  .home-link-card:hover {
-    border-color: var(--sl-color-accent);
-    background: color-mix(in srgb, var(--sl-color-accent) 6%, var(--sl-color-bg-sidebar));
-  }
-  .home-link-label {
-    display: block;
-    font-size: 0.82rem;
-    font-weight: 600;
-    color: var(--sl-color-text);
-    margin-bottom: 0.1rem;
-  }
-  .home-link-desc {
-    display: block;
-    font-size: 0.72rem;
-    color: var(--sl-color-gray-3);
-    line-height: 1.4;
-  }
-
-  .home-preview-card {
-    display: flex;
-    flex-direction: column;
-    margin-bottom: 0.5rem;
-    border-radius: 8px;
-    border: 1px solid var(--sl-color-hairline);
-    background: var(--sl-color-bg-sidebar);
-    text-decoration: none;
-    transition: border-color 0.15s, background 0.15s;
-    overflow: hidden;
-  }
-  .home-preview-card:hover {
-    border-color: var(--sl-color-accent);
-    background: color-mix(in srgb, var(--sl-color-accent) 6%, var(--sl-color-bg-sidebar));
-  }
-  .home-preview-img-wrap {
-    width: 100%;
-    height: 180px;
-    overflow: hidden;
-    background: #1e1e2e;
-    border-bottom: 1px solid var(--sl-color-hairline);
-  }
-  .home-preview-img-wrap img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    object-position: top left;
-    display: block;
-  }
-  .home-preview-text {
-    padding: 0.55rem 0.75rem 0.65rem;
-  }
-`}</style>
+<CardGrid>
+  <LinkCard title="Pipeline Explorer" description="Click through every stage — inputs, scanner, SQL transform, outputs — and drill into each component." href="/memagent/how-it-works/" />
+  <LinkCard title="Scanner Deep Dive" description="Step through SIMD structural detection, string masking, and field extraction on a real log line." href="/memagent/how-it-works/scanner/" />
+  <LinkCard title="Why Tailing Is Hard" description="Watch logfwd handle file rotation, truncation, and crash recovery in a live animation." href="/memagent/how-it-works/tailing/" />
+  <LinkCard title="Why Columnar Matters" description="Compare row vs. column layout and see why Arrow makes SQL transforms fast." href="/memagent/how-it-works/columnar/" />
+</CardGrid>

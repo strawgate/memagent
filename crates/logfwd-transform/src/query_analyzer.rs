@@ -90,7 +90,6 @@ impl QueryAnalyzer {
                 .referenced_columns
                 .iter()
                 .map(|name| strip_type_suffix(name))
-                .map(|name| name.to_ascii_lowercase())
                 .filter(|name| seen.insert(name.clone()))
                 .map(|name| FieldSpec {
                     name,

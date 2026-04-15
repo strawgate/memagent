@@ -22,12 +22,11 @@ RUN --mount=type=cache,target=/src/target \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS}" \
     CARGO_PROFILE_RELEASE_DEBUG="${CARGO_PROFILE_RELEASE_DEBUG}" \
     RUSTFLAGS="${RUSTFLAGS}" \
-    cargo build --locked --release --features cpu-profiling -p logfwd --bin logfwd && \
+    cargo build --locked --release -p logfwd --bin logfwd && \
     strip target/release/logfwd && \
     cp target/release/logfwd /logfwd
 
-FROM debian:12-slim
-RUN useradd --system --no-create-home --uid 65532 nonroot
+FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=builder /logfwd /usr/local/bin/logfwd
 USER nonroot
 EXPOSE 9090

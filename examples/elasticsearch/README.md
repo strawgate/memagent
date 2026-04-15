@@ -96,26 +96,26 @@ Route different log types to different indices:
 ```yaml
 pipelines:
   errors:
-    inputs:
-      - type: file
-        path: /var/log/app/*.log
-        format: json
+    input:
+      type: file
+      path: /var/log/app/*.log
+      format: json
     transform: SELECT * FROM logs WHERE level = 'ERROR'
-    outputs:
-      - type: elasticsearch
-        endpoint: http://elasticsearch:9200
-        index: app-errors
+    output:
+      type: elasticsearch
+      endpoint: http://elasticsearch:9200
+      index: app-errors
 
   access_logs:
-    inputs:
-      - type: file
-        path: /var/log/nginx/access.log
-        format: json
+    input:
+      type: file
+      path: /var/log/nginx/access.log
+      format: json
     transform: SELECT * FROM logs WHERE status >= 200
-    outputs:
-      - type: elasticsearch
-        endpoint: http://elasticsearch:9200
-        index: nginx-access
+    output:
+      type: elasticsearch
+      endpoint: http://elasticsearch:9200
+      index: nginx-access
 ```
 
 ## Performance Tuning

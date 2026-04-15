@@ -95,7 +95,7 @@ pub(crate) const OUTPUT_TEMPLATES: &[OutputTemplate] = &[
         id: "elasticsearch",
         label: "Elasticsearch",
         description: "Index logs in Elasticsearch for full-text search.",
-        snippet: "output:\n  type: elasticsearch\n  endpoint: http://localhost:9200\n  index: logs\n",
+        snippet: "output:\n  type: elasticsearch\n  endpoint: http://localhost:9200\n  index: logs-%Y.%m.%d\n",
     },
     OutputTemplate {
         id: "stdout",
