@@ -1,3 +1,18 @@
+//! Wide JSON log generator — 20+ fields, ~600 bytes per line.
+
+use std::fmt::Write as _;
+use std::sync::Arc;
+
+use arrow::array::{ArrayRef, Float64Array, Int64Array, StringBuilder};
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::record_batch::RecordBatch;
+
+use super::cardinality::cardinality_helpers::{CardinalityProfile, CardinalityState, SamplePhase};
+use super::shared::{
+    METHODS, NAMESPACES, PATHS, SERVICES, append_timestamp_utc, append_user_label, level_for_phase,
+    pick, pick_by_idx, round_tenths, user_label,
+};
+
 // ---------------------------------------------------------------------------
 // gen_wide — Wide JSON lines (20+ fields, ~600 bytes/line)
 // ---------------------------------------------------------------------------
@@ -246,17 +261,54 @@ pub fn gen_wide_batch(count: usize, seed: u64) -> RecordBatch {
 }
 
 // ---------------------------------------------------------------------------
-// Metadata helper
+// Streaming support for GeneratorInput
 // ---------------------------------------------------------------------------
 
-/// Create benchmark-standard `BatchMetadata` with typical K8s resource attributes.
-pub fn make_metadata() -> BatchMetadata {
-    BatchMetadata {
-        resource_attrs: Arc::new(vec![
-            ("service.name".into(), "bench-service".into()),
-            ("service.version".into(), "1.0.0".into()),
-            ("host.name".into(), "bench-node-01".into()),
-        ]),
-        observed_time_ns: 1_705_312_200_000_000_000, // 2024-01-15T10:30:00Z
-    }
+/// Write a single wide JSON log line into `buf`.
+///
+/// `event_index` is used for the timestamp seconds component.
+pub(super) fn write_wide_line(
+    buf: &mut Vec<u8>,
+    rng: &mut fastrand::Rng,
+    cardinality: &mut CardinalityState,
+    event_index: usize,
+) {
+    let sample = cardinality.sample(rng);
+    let i = event_index;
+    let sec = i % 60;
+    let nano = rng.u32(..1_000_000_000);
+    let level = level_for_phase(sample.phase);
+    let path = pick_by_idx(PATHS, sample.path_idx);
+    let method = pick(rng, METHODS);
+    let status = sample.status_code;
+    let duration = rng.f64()
+        * match sample.phase {
+            SamplePhase::Hot => 300.0,
+            SamplePhase::Warm => 900.0,
+            SamplePhase::Cold => 3500.0,
+        };
+    let ns = pick_by_idx(NAMESPACES, sample.namespace_idx);
+    let service = pick_by_idx(SERVICES, sample.service_idx);
+    let user = user_label(sample.user_idx);
+
+    let _ = write!(
+        buf as &mut dyn std::io::Write,
+        r#"{{"timestamp":"2024-01-15T10:30:{sec:02}.{nano:09}Z","level":"{level}","message":"{method} {path} HTTP/1.1","status":{status},"duration_ms":{duration:.1},"cluster":"{}","node":"{}","namespace":"{ns}","pod":"{}","container":"{}","service":"{service}","trace_id":"{:032x}","span_id":"{:016x}","request_id":"req-{:08x}","session_id":{},"user":"{user}","bytes_sent":{},"bytes_received":{},"user_agent":"Mozilla/5.0 (X11; Linux x86_64)","content_type":"application/json","remote_addr":"10.{}.{}.{}","host":"api.example.com","protocol":"HTTP/1.1","tls_version":"TLSv1.3","upstream_latency_ms":{:.1},"retry_count":{},"error_count":{}}}"#,
+        sample.cluster,
+        sample.node,
+        sample.pod,
+        sample.container,
+        sample.trace_id,
+        sample.span_id,
+        sample.request_id as u32,
+        sample.session_id,
+        rng.u32(..65536),
+        rng.u32(..65536),
+        rng.u8(..),
+        rng.u8(..),
+        rng.u8(..),
+        rng.f64() * 200.0,
+        sample.retry_count,
+        sample.error_count,
+    );
 }

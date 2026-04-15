@@ -2831,6 +2831,7 @@ dependencies = [
  "chrono",
  "crossbeam-channel",
  "dhat",
+ "fastrand",
  "flate2",
  "globset",
  "http-body-util",

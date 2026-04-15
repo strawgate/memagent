@@ -201,6 +201,11 @@ pub(super) fn build_input_state(
                 },
                 profile: match generator_cfg.and_then(|c| c.profile.clone()) {
                     Some(GeneratorProfileConfig::Record) => GeneratorProfile::Record,
+                    Some(GeneratorProfileConfig::Envoy) => GeneratorProfile::Envoy,
+                    Some(GeneratorProfileConfig::CriK8s) => GeneratorProfile::CriK8s,
+                    Some(GeneratorProfileConfig::Wide) => GeneratorProfile::Wide,
+                    Some(GeneratorProfileConfig::Narrow) => GeneratorProfile::Narrow,
+                    Some(GeneratorProfileConfig::CloudTrail) => GeneratorProfile::CloudTrail,
                     Some(GeneratorProfileConfig::Logs) | None => GeneratorProfile::Logs,
                     // Non-exhaustive config enum: future variants default to
                     // Logs to preserve backward-compatible behavior.
@@ -267,6 +272,7 @@ pub(super) fn build_input_state(
                         }
                     }
                 },
+                seed: 42,
             };
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Generator, &format)?;
