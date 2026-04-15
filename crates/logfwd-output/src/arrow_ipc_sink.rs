@@ -128,12 +128,12 @@ impl ArrowIpcSink {
 
     /// Compress the IPC buffer with zstd if configured.
     fn maybe_compress(&self) -> io::Result<Vec<u8>> {
+        use std::io::Write as _;
         match self.config.compression {
             Compression::Zstd => zstd::bulk::compress(&self.ipc_buf, 1).map_err(io::Error::other),
             Compression::Gzip => {
                 let mut encoder =
                     flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-                use std::io::Write as _;
                 encoder.write_all(&self.ipc_buf)?;
                 encoder.finish()
             }
