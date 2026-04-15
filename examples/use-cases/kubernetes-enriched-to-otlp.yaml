@@ -56,7 +56,7 @@ pipelines:
       CROSS JOIN process_info p
       CROSS JOIN container_info c
       CROSS JOIN k8s_cluster_info k
-      LEFT JOIN k8s_path kp ON l._path = kp.path
+      LEFT JOIN k8s_path kp ON l._source_path = kp.log_path_prefix
       CROSS JOIN os_release os
       CROSS JOIN labels lbl
 
