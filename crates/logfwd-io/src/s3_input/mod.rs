@@ -31,6 +31,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, mpsc};
 
 use logfwd_types::diagnostics::ComponentHealth;
+use logfwd_types::pipeline::SourceId;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tracing::{error, warn};
@@ -62,6 +63,20 @@ const DEFAULT_REGION: &str = "us-east-1";
 const OUTPUT_CHUNK_SIZE: usize = 256 * 1024;
 /// SQS heartbeat interval in seconds.
 const SQS_HEARTBEAT_SECS: u64 = 60;
+
+/// Derive a stable `SourceId` from an S3 object key.
+///
+/// Uses FNV-1a 64-bit hash (no extra deps) for fast, deterministic hashing.
+fn source_id_from_key(key: &str) -> SourceId {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x00000100000001B3;
+    let mut hash = FNV_OFFSET;
+    for byte in key.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    SourceId(hash)
+}
 
 // ── Settings struct ────────────────────────────────────────────────────────
 
@@ -209,15 +224,24 @@ pub struct S3Input {
 struct ChunkPayload {
     bytes: Vec<u8>,
     accounted_bytes: u64,
+    /// S3 key hashed to SourceId so FramedInput maintains per-object parser state.
+    source_id: SourceId,
 }
 
 /// A unit of work: one S3 object to fetch.
-#[allow(dead_code)]
 struct ObjectWork {
     key: String,
     size: u64,
-    /// SQS receipt handle — present in SQS mode so we can delete/extend it.
-    receipt_handle: Option<String>,
+    /// Shared tracker for the parent SQS message, if in SQS mode.
+    /// Deletion happens when all records from the message are processed.
+    message_tracker: Option<Arc<MessageTracker>>,
+}
+
+/// Tracks completion of all records within a single SQS message.
+/// Only deletes the message when all records have been successfully processed.
+struct MessageTracker {
+    receipt_handle: String,
+    remaining: std::sync::atomic::AtomicUsize,
 }
 
 // ── Constructor ────────────────────────────────────────────────────────────
@@ -408,7 +432,7 @@ impl InputSource for S3Input {
             drained += 1;
             events.push(InputEvent::Data {
                 bytes: payload.bytes,
-                source_id: None,
+                source_id: Some(payload.source_id),
                 accounted_bytes: payload.accounted_bytes,
             });
         }
@@ -502,11 +526,18 @@ async fn run_sqs_discovery(
                 guard.push(msg.receipt_handle.clone());
             }
 
+            // Create a shared tracker for all records in this SQS message.
+            // The message is only deleted when all records are successfully processed.
+            let tracker = Arc::new(MessageTracker {
+                receipt_handle: msg.receipt_handle.clone(),
+                remaining: std::sync::atomic::AtomicUsize::new(msg.records.len()),
+            });
+
             for record in msg.records {
                 let work = ObjectWork {
                     key: record.key,
                     size: record.size,
-                    receipt_handle: Some(msg.receipt_handle.clone()),
+                    message_tracker: Some(Arc::clone(&tracker)),
                 };
                 if work_tx.send(work).await.is_err() {
                     // Orchestrator shut down.
@@ -536,6 +567,10 @@ async fn run_list_discovery(
     poll_interval_ms: u64,
 ) {
     let mut start_after: Option<String> = start_after_init;
+    // Track dispatched keys in S3 sort order and completed keys.
+    // Cursor only advances past the contiguous prefix of completed keys.
+    let mut dispatched: Vec<String> = Vec::new();
+    let mut completed_set: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     while is_running.load(Ordering::Relaxed) {
         let mut continuation: Option<String> = None;
@@ -567,23 +602,48 @@ async fn run_list_discovery(
                 }
                 Ok((objects, next_token)) => {
                     for obj in &objects {
-                        let work = ObjectWork {
+                        dispatched.push(obj.key.clone());
+
+                        // Acquire a send permit, interleaving with completion
+                        // draining to prevent deadlock when the work channel
+                        // is full and completions are pending.
+                        let permit = loop {
+                            while let Ok(key) = completed_rx.try_recv() {
+                                completed_set.insert(key);
+                            }
+
+                            tokio::select! {
+                                result = work_tx.reserve() => {
+                                    match result {
+                                        Ok(p) => break p,
+                                        Err(_) => return, // orchestrator shut down
+                                    }
+                                }
+                                Some(key) = completed_rx.recv() => {
+                                    completed_set.insert(key);
+                                }
+                            }
+                        };
+
+                        permit.send(ObjectWork {
                             key: obj.key.clone(),
                             size: obj.size,
-                            receipt_handle: None,
-                        };
-                        if work_tx.send(work).await.is_err() {
-                            return;
-                        }
-                        // Note: cursor is NOT advanced here. The orchestrator
-                        // reports back successfully-processed keys via
-                        // completed_rx, and we advance below.
+                            message_tracker: None,
+                        });
                     }
 
-                    // Drain any completed keys reported by the orchestrator
-                    // and advance the cursor to the latest one.
+                    // Final drain + watermark advance.
                     while let Ok(key) = completed_rx.try_recv() {
-                        start_after = Some(key);
+                        completed_set.insert(key);
+                    }
+                    while let Some(front) = dispatched.first() {
+                        if completed_set.contains(front) {
+                            let key = dispatched.remove(0);
+                            completed_set.remove(&key);
+                            start_after = Some(key);
+                        } else {
+                            break;
+                        }
                     }
 
                     if let Some(token) = next_token {
@@ -664,10 +724,15 @@ async fn run_orchestrator(
                 // Restore health after a successful fetch.
                 health.store(ComponentHealth::Healthy.as_repr(), Ordering::Relaxed);
 
-                // Delete the SQS message only after successful fetch + dispatch.
-                if let (Some(sqs), Some(receipt)) = (&sqs, &work.receipt_handle) {
-                    if let Err(e) = sqs.delete_message(receipt).await {
-                        warn!(name = %name, error = %e, "SQS delete message failed");
+                // For SQS messages with multiple records, only delete the
+                // message once ALL records have been successfully processed.
+                if let (Some(sqs), Some(tracker)) = (&sqs, &work.message_tracker) {
+                    let prev = tracker.remaining.fetch_sub(1, Ordering::AcqRel);
+                    if prev == 1 {
+                        // Last record in this message — safe to delete.
+                        if let Err(e) = sqs.delete_message(&tracker.receipt_handle).await {
+                            warn!(name = %name, error = %e, "SQS delete message failed");
+                        }
                     }
                 }
 
@@ -677,10 +742,16 @@ async fn run_orchestrator(
                 }
             }
 
-            // Remove from in-progress heartbeat set regardless of outcome.
-            if let Some(receipt) = &work.receipt_handle {
-                let mut guard = in_progress.lock().await;
-                guard.retain(|h| h != receipt);
+            // Remove from in-progress heartbeat set only when all records
+            // from the SQS message are complete (success or error).
+            // On success the counter was decremented above; on error it was not,
+            // so the receipt stays for heartbeat extension until visibility timeout.
+            if let Some(tracker) = &work.message_tracker {
+                // remaining == 0 means all records finished successfully.
+                if tracker.remaining.load(Ordering::Acquire) == 0 {
+                    let mut guard = in_progress.lock().await;
+                    guard.retain(|h| h != &tracker.receipt_handle);
+                }
             }
         });
     }
@@ -696,12 +767,31 @@ async fn fetch_object(
     compression_override: Option<Compression>,
     out_tx: mpsc::SyncSender<ChunkPayload>,
 ) -> io::Result<()> {
-    // If size is unknown (0 from SQS notification), issue a HEAD first.
-    if size == 0 {
+    // If size is unknown (0 from SQS notification) or no compression override,
+    // issue a HEAD to discover metadata.
+    let (content_encoding, content_type) = if compression_override.is_none() || size == 0 {
+        match s3.head_object_metadata(key).await {
+            Ok(meta) => {
+                if size == 0 {
+                    size = meta.content_length;
+                }
+                (meta.content_encoding, meta.content_type)
+            }
+            Err(_) => {
+                // HEAD failed — proceed with defaults.
+                (None, None)
+            }
+        }
+    } else if size == 0 {
         size = s3.head_object(key).await.unwrap_or(0);
-    }
+        (None, None)
+    } else {
+        (None, None)
+    };
 
-    let compression = compression_override.unwrap_or_else(|| detect_compression(key, None, None));
+    let compression = compression_override.unwrap_or_else(|| {
+        detect_compression(key, content_encoding.as_deref(), content_type.as_deref())
+    });
 
     // TODO: Stream decompression incrementally instead of buffering the entire
     // object in memory. This will reduce peak memory for large objects.
@@ -732,6 +822,7 @@ async fn fetch_object(
         let payload = ChunkPayload {
             bytes: chunk.to_vec(),
             accounted_bytes: ab,
+            source_id: source_id_from_key(key),
         };
         let out_tx = out_tx.clone();
         let send_result = tokio::task::spawn_blocking(move || out_tx.send(payload))
@@ -739,7 +830,7 @@ async fn fetch_object(
             .map_err(|e| io::Error::other(format!("spawn_blocking send: {e}")))?;
         if send_result.is_err() {
             // Consumer dropped — pipeline is shutting down.
-            break;
+            return Err(io::Error::other("output channel closed"));
         }
     }
 

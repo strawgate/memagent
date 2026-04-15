@@ -26,6 +26,17 @@ pub struct S3Object {
     pub size: u64,
 }
 
+/// Metadata returned by `HEAD` object.
+#[derive(Debug)]
+pub struct ObjectMeta {
+    /// Object size in bytes.
+    pub content_length: u64,
+    /// `Content-Encoding` header value (e.g. `"gzip"`, `"zstd"`).
+    pub content_encoding: Option<String>,
+    /// `Content-Type` header value.
+    pub content_type: Option<String>,
+}
+
 /// Lightweight S3 client with AWS SigV4 signing.
 pub struct S3Client {
     client: reqwest::Client,
@@ -355,6 +366,12 @@ impl S3Client {
 
     /// Issue a `HEAD` request and return the `Content-Length`.
     pub async fn head_object(&self, key: &str) -> io::Result<u64> {
+        let meta = self.head_object_metadata(key).await?;
+        Ok(meta.content_length)
+    }
+
+    /// Issue a `HEAD` request and return object metadata.
+    pub async fn head_object_metadata(&self, key: &str) -> io::Result<ObjectMeta> {
         let host = self.host();
         let signing_path = self.object_signing_path(key);
 
@@ -382,11 +399,106 @@ impl S3Client {
             return Err(io::Error::other(format!("S3 HEAD {key}: HTTP {status}")));
         }
 
-        resp.headers()
+        let content_length = resp
+            .headers()
             .get(reqwest::header::CONTENT_LENGTH)
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.parse::<u64>().ok())
-            .ok_or_else(|| io::Error::other(format!("S3 HEAD {key}: missing Content-Length")))
+            .unwrap_or(0);
+
+        let content_encoding = resp
+            .headers()
+            .get(reqwest::header::CONTENT_ENCODING)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+
+        Ok(ObjectMeta {
+            content_length,
+            content_encoding,
+            content_type,
+        })
+    }
+
+    /// Upload an object using a `PUT` request with SigV4 signing.
+    ///
+    /// Used by benchmarks to seed test data into MinIO.
+    pub async fn put_object(&self, key: &str, data: &[u8]) -> io::Result<()> {
+        let host = self.host();
+        let signing_path = self.object_signing_path(key);
+
+        let headers = self.signed_headers(
+            "PUT",
+            &signing_path,
+            "",
+            &BTreeMap::new(),
+            data,
+            "s3",
+            &host,
+        )?;
+        let url = self.object_url(key);
+
+        let resp = self
+            .client
+            .put(&url)
+            .headers(headers)
+            .body(data.to_vec())
+            .send()
+            .await
+            .map_err(|e| io::Error::other(format!("S3 PUT {key}: {e}")))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(io::Error::other(format!(
+                "S3 PUT {key}: HTTP {status}: {body}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Create the bucket (path-style PUT). Ignores `BucketAlreadyOwnedByYou`.
+    ///
+    /// Used by benchmarks to set up MinIO test buckets.
+    pub async fn create_bucket(&self) -> io::Result<()> {
+        let host = self.host();
+        let signing_path = if self.path_style {
+            format!("/{}", self.bucket)
+        } else {
+            "/".to_string()
+        };
+
+        let headers =
+            self.signed_headers("PUT", &signing_path, "", &BTreeMap::new(), b"", "s3", &host)?;
+
+        let url = if self.path_style {
+            format!("{}/{}", self.endpoint_base, self.bucket)
+        } else {
+            self.endpoint_base.clone()
+        };
+
+        let resp = self
+            .client
+            .put(&url)
+            .headers(headers)
+            .send()
+            .await
+            .map_err(|e| io::Error::other(format!("S3 create bucket: {e}")))?;
+
+        let status = resp.status();
+        // 200 OK or 409 Conflict (BucketAlreadyOwnedByYou) are both fine.
+        if !status.is_success() && status.as_u16() != 409 {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(io::Error::other(format!(
+                "S3 create bucket: HTTP {status}: {body}"
+            )));
+        }
+        Ok(())
     }
 
     /// List objects using `ListObjectsV2`.

@@ -11,7 +11,6 @@
 //! MINIO_ENDPOINT=http://localhost:9000 cargo bench --bench s3_input --features s3
 //! ```
 
-use std::io::Write;
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -59,25 +58,6 @@ async fn setup_bench_objects() -> Option<()> {
     let access_key = minio_access_key();
     let secret_key = minio_secret_key();
 
-    // Use reqwest to create the bucket via MinIO API.
-    let client = reqwest::Client::builder().use_rustls_tls().build().ok()?;
-
-    // Try a simple request to see if MinIO is up.
-    let probe = client.get(format!("{endpoint}/")).send().await;
-
-    if probe.is_err() {
-        eprintln!("s3_bench: MinIO not reachable at {endpoint} — skipping");
-        return None;
-    }
-
-    // Create bucket (ignore errors if it already exists).
-    let _create = client
-        .put(format!("{endpoint}/{BENCH_BUCKET}"))
-        .header("Content-Length", "0")
-        .basic_auth(&access_key, Some(&secret_key))
-        .send()
-        .await;
-
     let s3 = S3Client::new(
         BENCH_BUCKET,
         "us-east-1",
@@ -88,6 +68,12 @@ async fn setup_bench_objects() -> Option<()> {
         64,
     )
     .ok()?;
+
+    // Probe MinIO health and create the bucket.
+    if s3.create_bucket().await.is_err() {
+        eprintln!("s3_bench: MinIO not reachable at {endpoint} — skipping");
+        return None;
+    }
 
     // Upload test objects of various sizes.
     for (name, size_bytes) in &[
@@ -100,16 +86,7 @@ async fn setup_bench_objects() -> Option<()> {
             continue;
         }
         let data = generate_log_bytes(*size_bytes);
-        upload_object_raw(
-            &client,
-            &endpoint,
-            BENCH_BUCKET,
-            name,
-            &data,
-            &access_key,
-            &secret_key,
-        )
-        .await?;
+        s3.put_object(name, &data).await.ok()?;
     }
 
     Some(())
@@ -126,32 +103,6 @@ fn generate_log_bytes(size: usize) -> Vec<u8> {
         out.extend_from_slice(&line[..to_write]);
     }
     out
-}
-
-/// Upload bytes to MinIO using a raw PUT request with basic auth for local MinIO.
-async fn upload_object_raw(
-    client: &reqwest::Client,
-    endpoint: &str,
-    bucket: &str,
-    key: &str,
-    data: &[u8],
-    access_key: &str,
-    secret_key: &str,
-) -> Option<()> {
-    let url = format!("{endpoint}/{bucket}/{key}");
-    let resp = client
-        .put(&url)
-        .header("Content-Length", data.len().to_string())
-        .basic_auth(access_key, Some(secret_key))
-        .body(data.to_vec())
-        .send()
-        .await
-        .ok()?;
-    if resp.status().is_success() || resp.status().as_u16() == 200 {
-        Some(())
-    } else {
-        None
-    }
 }
 
 // ── Benchmarks ────────────────────────────────────────────────────────────
