@@ -106,6 +106,10 @@ pub struct GeneratorConfig {
     pub batch_size: usize,
     /// Total events to generate. 0 = infinite.
     pub total_events: u64,
+    /// Template for message string.
+    pub message_template: Option<String>,
+    /// Number of extra synthetic fields.
+    pub field_count: Option<usize>,
     /// Controls the size and shape of generated JSON lines.
     pub complexity: GeneratorComplexity,
     /// Which event shape to emit.
@@ -128,6 +132,8 @@ impl Default for GeneratorConfig {
             events_per_sec: 0,
             batch_size: 1000,
             total_events: 0,
+            message_template: None,
+            field_count: None,
             complexity: GeneratorComplexity::default(),
             profile: GeneratorProfile::default(),
             attributes: HashMap::new(),
@@ -424,6 +430,8 @@ impl GeneratorInput {
                     self.counter,
                     self.config.complexity,
                     &self.config.timestamp,
+                    self.config.message_template.as_deref(),
+                    self.config.field_count,
                     &mut self.done,
                 );
             }
@@ -1074,6 +1082,59 @@ mod tests {
                     "line {i} is not valid JSON: {line}"
                 );
             }
+        } else {
+            panic!("expected Data event");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests_custom_generator {
+    use super::*;
+
+    #[test]
+    fn custom_message_template() {
+        let mut input = GeneratorInput::new(
+            "test-template",
+            GeneratorConfig {
+                batch_size: 1,
+                total_events: 1,
+                message_template: Some("custom static message".to_string()),
+                ..Default::default()
+            },
+        );
+
+        let events = input.poll().unwrap();
+        assert_eq!(events.len(), 1);
+        if let InputEvent::Data { bytes, .. } = &events[0] {
+            let text = String::from_utf8_lossy(bytes);
+            let val: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(val["message"], "custom static message");
+        } else {
+            panic!("expected Data event");
+        }
+    }
+
+    #[test]
+    fn custom_field_count() {
+        let mut input = GeneratorInput::new(
+            "test-field-count",
+            GeneratorConfig {
+                batch_size: 1,
+                total_events: 1,
+                field_count: Some(2),
+                ..Default::default()
+            },
+        );
+
+        let events = input.poll().unwrap();
+        assert_eq!(events.len(), 1);
+        if let InputEvent::Data { bytes, .. } = &events[0] {
+            let text = String::from_utf8_lossy(bytes);
+            let val: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(val["field_0"], "val_0");
+            assert_eq!(val["field_1"], "val_1");
+            assert_eq!(val.get("field_2"), None);
         } else {
             panic!("expected Data event");
         }

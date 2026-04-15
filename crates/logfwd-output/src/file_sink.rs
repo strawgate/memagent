@@ -287,7 +287,7 @@ impl Sink for FileSink {
         Box::pin(async move {
             let mut writer_guard = self.writer.lock().await;
             if let Some(writer) = writer_guard.as_mut() {
-                tokio::io::AsyncWriteExt::flush(writer).await?;
+                AsyncWriteExt::flush(writer).await?;
             }
             Ok(())
         })
@@ -393,21 +393,21 @@ impl FileSinkFactory {
 
 impl SinkFactory for FileSinkFactory {
     fn create(&self) -> io::Result<Box<dyn Sink>> {
-        let writer = self.writer.try_lock().unwrap().take().unwrap_or_else(|| {
-            let mut opts = std::fs::OpenOptions::new();
-            opts.create(true).write(true);
-            if self.append {
-                opts.append(true);
-            } else {
-                opts.truncate(true);
+        let writer = match self.writer.try_lock().ok().and_then(|mut lock| lock.take()) {
+            Some(w) => w,
+            None => {
+                let mut opts = std::fs::OpenOptions::new();
+                opts.create(true).write(true);
+                if self.append {
+                    opts.append(true);
+                } else {
+                    opts.truncate(true);
+                }
+                let std_file = opts.open(&self.current_path)?;
+                let file = tokio::fs::File::from_std(std_file);
+                FileSink::create_writer(file, &self.compression)
             }
-            // Add a fallback in case tests are spinning up without creating the file correctly
-            let std_file = opts.open(&self.current_path).unwrap_or_else(|_| {
-                std::fs::File::create("/dev/null").unwrap()
-            });
-            let file = tokio::fs::File::from_std(std_file);
-            FileSink::create_writer(file, &self.compression)
-        });
+        };
 
         Ok(Box::new(FileSink::with_message_field(
             self.name.clone(),
