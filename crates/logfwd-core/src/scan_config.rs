@@ -54,11 +54,11 @@ impl ScanConfig {
             return true;
         }
         for fs in &self.wanted_fields {
-            if key == fs.name.as_bytes() {
+            if key.eq_ignore_ascii_case(fs.name.as_bytes()) {
                 return true;
             }
             for a in &fs.aliases {
-                if key == a.as_bytes() {
+                if key.eq_ignore_ascii_case(a.as_bytes()) {
                     return true;
                 }
             }
