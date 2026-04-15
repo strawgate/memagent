@@ -94,6 +94,8 @@ proptest = "1"
 tiny_http = "0.12"
 aya = "0.13.1"
 sysinfo = "0.38"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+csv = "1"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

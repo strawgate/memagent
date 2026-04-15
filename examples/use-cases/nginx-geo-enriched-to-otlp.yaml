@@ -1,0 +1,43 @@
+# logfwd example
+# Use case: Web access logs with GeoIP enrichment to OTLP
+#
+# Parses Nginx/Apache access logs, enriches client IPs with geographic
+# location using a MaxMind GeoLite2-City database, and ships to an OTLP
+# collector. The geo database reloads daily without restart.
+#
+# Prerequisites:
+#   - Download GeoLite2-City.mmdb from https://dev.maxmind.com/geoip
+#   - Place at /data/GeoLite2-City.mmdb (or update path below)
+
+pipelines:
+  access-logs:
+    inputs:
+      - type: file
+        path: /var/log/nginx/access.log
+        format: json
+
+    # Uncomment the geo_database and csv blocks after placing the required files,
+    # then update the SQL below to use geo_lookup() and join known_bots:
+    #   geo_lookup(l.remote_addr).country_code AS geo_country,
+    #   LEFT JOIN known_bots b ON l.http_user_agent = b.user_agent
+    enrichment:
+      # - type: geo_database
+      #   format: mmdb
+      #   path: /data/GeoLite2-City.mmdb
+      #   refresh_interval: 86400
+      - type: host_info
+      # - type: csv
+      #   table_name: known_bots
+      #   path: /etc/logfwd/known-bots.csv
+      #   refresh_interval: 3600
+
+    transform: |
+      SELECT
+        l.*,
+        h.hostname
+      FROM logs l
+      CROSS JOIN host_info h
+
+    outputs:
+      - type: otlp
+        endpoint: https://otel-collector:4318/v1/logs
