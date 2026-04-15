@@ -1060,8 +1060,27 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<DiagnosticsState>) {
     let mut span_cursor: usize = 0;
     let mut log_cursor: u64 = 0;
     let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
-    // The first tick fires immediately — skip it so we don't double-send.
-    interval.tick().await;
+
+    // Send initial span/log snapshot immediately on connect (cursor=0 → full
+    // buffer). Then the interval fires every 2s for deltas.
+    {
+        let spans = super::telemetry::collect_new_spans(
+            state.trace_buf.as_ref(),
+            &state.pipelines,
+            &mut span_cursor,
+        );
+        let span_json = super::telemetry::spans_to_otlp_json(&spans);
+        if socket.send(Message::Text(span_json.into())).await.is_err() {
+            return;
+        }
+        let logs = super::telemetry::collect_new_logs(&state.stderr, &mut log_cursor);
+        if !logs.is_empty() {
+            let log_json = super::telemetry::logs_to_otlp_json(&logs);
+            if socket.send(Message::Text(log_json.into())).await.is_err() {
+                return;
+            }
+        }
+    }
 
     loop {
         tokio::select! {

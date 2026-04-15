@@ -161,11 +161,21 @@ function buildAlignedData(
     }
     const lastVal = s.points.length > 0 ? s.points[s.points.length - 1].value : null;
 
+    // Find the last timestamp index where this series has actual data.
+    let lastIdx = -1;
+    for (let i = n - 1; i >= 0; i--) {
+      if (lookup.has(times[i])) {
+        lastIdx = i;
+        break;
+      }
+    }
+
     const ys = new Array<number | null>(n + 1);
     const ye = new Array<number | null>(n + 1);
     for (let i = 0; i < n; i++) {
       ys[i] = lookup.get(times[i]) ?? null;
-      ye[i] = i === n - 1 ? lastVal : null;
+      // Anchor projection at this series' own last data point.
+      ye[i] = i === lastIdx ? lastVal : null;
     }
     ys[n] = null;
     ye[n] = lastVal;
@@ -253,11 +263,17 @@ export function Chart({ frame, config }: Props) {
     };
   }, [config]);
 
-  const totalPoints = frame.series.reduce((sum, s) => sum + s.points.length, 0);
+  // Count unique timestamps — aligns with buildAlignedData's data[0].length check.
+  const timeSet = new Set<number>();
+  for (const s of frame.series) {
+    for (const p of s.points) {
+      if (p.timeMs != null) timeSet.add(p.timeMs);
+    }
+  }
 
   return (
     <div ref={containerRef} class="chart-container">
-      {totalPoints < 2 && <div class="chart-placeholder">waiting for data…</div>}
+      {timeSet.size < 2 && <div class="chart-placeholder">waiting for data…</div>}
     </div>
   );
 }
