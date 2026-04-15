@@ -15,8 +15,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 
 use logfwd_bench::generators;
 use logfwd_core::cri::{CriReassembler, parse_cri_line};
-use logfwd_core::reassembler::AggregateResult;
 use logfwd_core::framer::NewlineFramer;
+use logfwd_core::reassembler::AggregateResult;
 
 // ---------------------------------------------------------------------------
 // Helpers
