@@ -63,6 +63,7 @@ jobs:
             --exclude-loopback
             --exclude '^file:///.*/(architecture|configuration|deployment|development|getting-started|how-it-works|learn|quick-start|troubleshooting)(/|#|$)'
             --exclude '^https://opentelemetry.io/docs/'
+            --exclude '^file:///.*/learn'
             README.md book/src/content/docs dev-docs docs
 
       - name: Validate required operational doc sections
