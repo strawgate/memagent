@@ -14,7 +14,7 @@ mod server;
 mod tests;
 #[cfg(any(feature = "otlp-research", test))]
 use bytes::Bytes;
-#[cfg(test)]
+#[cfg(any(test, kani))]
 use convert::*;
 use decode::decode_otlp_logs_to_batch;
 #[cfg(any(feature = "otlp-research", test))]
@@ -571,9 +571,7 @@ mod poll_tests {
 }
 
 #[cfg(kani)]
-#[cfg(kani)]
 mod verification {
-    use super::*;
     use super::*;
 
     #[kani::proof]
