@@ -214,15 +214,27 @@ pub(crate) fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) -
         // the fallback `array_value_to_string` which heap-allocates per call.
         // StreamingBuilder uses Utf8View; these three arms cover all common cases.
         DataType::Utf8 => {
-            let v = arr.as_any().downcast_ref::<StringArray>().unwrap().value(row);
+            let v = arr
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(row);
             write_json_string(out, v)?;
         }
         DataType::LargeUtf8 => {
-            let v = arr.as_any().downcast_ref::<LargeStringArray>().unwrap().value(row);
+            let v = arr
+                .as_any()
+                .downcast_ref::<LargeStringArray>()
+                .unwrap()
+                .value(row);
             write_json_string(out, v)?;
         }
         DataType::Utf8View => {
-            let v = arr.as_any().downcast_ref::<StringViewArray>().unwrap().value(row);
+            let v = arr
+                .as_any()
+                .downcast_ref::<StringViewArray>()
+                .unwrap()
+                .value(row);
             write_json_string(out, v)?;
         }
         DataType::Struct(schema_fields) => {
