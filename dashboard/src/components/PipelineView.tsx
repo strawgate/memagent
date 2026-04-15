@@ -1,8 +1,11 @@
+import type { TelemetryStore } from "@otlpkit/views";
 import { useRef, useState } from "preact/hooks";
 import { fmt, fmtBytes } from "../lib/format";
 import { RateTracker } from "../lib/rates";
 import type { ComponentData, PipelineData, TraceRecord } from "../types";
 import { BottleneckBadge } from "./BottleneckBadge";
+import { Collapsible } from "./Collapsible";
+import { Sparkline } from "./Sparkline";
 import { TraceExplorer } from "./TraceExplorer";
 
 const POLL_OPTIONS = [
@@ -17,6 +20,8 @@ interface Props {
   traces: TraceRecord[];
   pollMs: number;
   setPollMs: (ms: number) => void;
+  store: TelemetryStore;
+  tick: number;
 }
 
 const Arrow = () => (
@@ -28,7 +33,6 @@ const Arrow = () => (
   </div>
 );
 
-// Human-readable label for component types coming from the server.
 function typeLabel(type: string): string {
   const map: Record<string, string> = {
     file: "File",
@@ -46,12 +50,45 @@ function typeLabel(type: string): string {
   return map[type.toLowerCase()] ?? type;
 }
 
-// Names like "input_0", "output_1" are auto-generated and not worth showing.
 function isGenericName(name: string): boolean {
   return /^(input|output)_\d+$/.test(name);
 }
 
-export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) {
+/** Health dot: green/yellow/red based on error presence. */
+function HealthDot({ errors, rate }: { errors: number; rate?: number | null }) {
+  const color = errors > 0 ? "var(--err)" : rate != null && rate === 0 ? "var(--t4)" : "var(--ok)";
+  return (
+    <span
+      class="health-dot"
+      style={{ backgroundColor: color }}
+      title={errors > 0 ? `${errors} errors` : "healthy"}
+    />
+  );
+}
+
+/** Extract sparkline data for a metric, optionally filtered by pipeline. */
+function useSparkline(store: TelemetryStore, metricName: string, pipeline?: string): number[] {
+  const frame = store.selectTimeSeries({
+    metricName,
+    intervalMs: 2000,
+    reduce: "last",
+    ...(pipeline ? { splitBy: "pipeline" } : {}),
+  });
+  // Find the series matching our pipeline, or take first.
+  const series = pipeline
+    ? (frame.series.find((s) => s.key === pipeline) ?? frame.series[0])
+    : frame.series[0];
+  return series?.points.map((p) => p.value) ?? [];
+}
+
+export function PipelineView({
+  pipeline: p,
+  traces,
+  pollMs,
+  setPollMs,
+  store,
+  tick: _tick,
+}: Props) {
   const [sel, setSel] = useState<string | null>(null);
   const ratesRef = useRef(new RateTracker());
 
@@ -62,12 +99,35 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
     return v != null ? `${fmt(v)}/s` : "-";
   };
 
+  // Sparkline data for this pipeline.
+  const inputRateSpark = useSparkline(store, "logfwd.input_lines_per_sec", p.name);
+  const outputRateSpark = useSparkline(store, "logfwd.output_bytes_per_sec", p.name);
+  const errorSpark = useSparkline(store, "logfwd.output_errors_per_sec", p.name);
+  const stallSpark = useSparkline(store, "logfwd.backpressure_stalls_per_sec", p.name);
+
+  // Stage breakdown from status data.
+  const stages = p.stage_seconds;
+  const totalStageTime = stages ? stages.scan + stages.transform + stages.output : 0;
+  const stageBar =
+    stages && totalStageTime > 0
+      ? {
+          scanPct: (stages.scan / totalStageTime) * 100,
+          xfmPct: (stages.transform / totalStageTime) * 100,
+          outPct: (stages.output / totalStageTime) * 100,
+        }
+      : null;
+
+  const totalErrors = p.outputs.reduce((s, o) => s + o.errors, 0);
+  const latencyMs = p.batches?.batch_latency_avg_ns ? p.batches.batch_latency_avg_ns / 1e6 : null;
+
   return (
-    <div class="section">
-      <div class="heading heading-flex">
-        Pipeline: {p.name}
+    <div class="pipeline-card">
+      <div class="pipeline-header">
+        <span class="pipeline-name">{p.name}</span>
         {p.bottleneck && <BottleneckBadge b={p.bottleneck} />}
       </div>
+
+      {/* ── Flow diagram with sparklines ── */}
       <div class="pipe-flow">
         {p.inputs.map((inp, i) => (
           <>
@@ -77,20 +137,22 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
               class={`pn inp ${sel === `i${i}` ? "selected" : ""}`}
               onClick={() => toggle(`i${i}`)}
             >
-              <span class="pn-type">{typeLabel(inp.type)}</span>
+              <span class="pn-top">
+                <HealthDot errors={inp.errors} />
+                <span class="pn-type">{typeLabel(inp.type)}</span>
+              </span>
               {!isGenericName(inp.name) && <span class="pn-name">{inp.name}</span>}
-              <span class="pn-row">
-                <span>lines</span>
-                <b>{fmt(inp.lines_total)}</b>
-              </span>
-              <span class="pn-row">
-                <span>bytes</span>
-                <b>{fmtBytes(inp.bytes_total)}</b>
-              </span>
               <span class="pn-row">
                 <span>rate</span>
                 <b>{compRate(inp, "lines_total")}</b>
               </span>
+              <Sparkline
+                values={inputRateSpark}
+                width={56}
+                height={14}
+                color="var(--ok)"
+                style="area"
+              />
             </button>
           </>
         ))}
@@ -100,14 +162,17 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
           class={`pn xfm ${sel === "t" ? "selected" : ""}`}
           onClick={() => toggle("t")}
         >
-          <span class="pn-type">SQL</span>
-          <span class="pn-row">
-            <span>in</span>
-            <b>{fmt(p.transform.lines_in)}</b>
+          <span class="pn-top">
+            <HealthDot errors={0} rate={p.transform.lines_in > 0 ? 1 : null} />
+            <span class="pn-type">SQL</span>
           </span>
           <span class="pn-row">
-            <span>out</span>
-            <b>{fmt(p.transform.lines_out)}</b>
+            <span>pass</span>
+            <b>
+              {p.transform.lines_in > 0
+                ? `${((1 - p.transform.filter_drop_rate) * 100).toFixed(1)}%`
+                : "-"}
+            </b>
           </span>
           <span class="pn-row">
             <span>drop</span>
@@ -125,26 +190,86 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
               class={`pn out ${sel === `o${i}` ? "selected" : ""}`}
               onClick={() => toggle(`o${i}`)}
             >
-              <span class="pn-type">{typeLabel(out.type)}</span>
+              <span class="pn-top">
+                <HealthDot errors={out.errors} />
+                <span class="pn-type">{typeLabel(out.type)}</span>
+              </span>
               {!isGenericName(out.name) && <span class="pn-name">{out.name}</span>}
               <span class="pn-row">
-                <span>lines</span>
-                <b>{fmt(out.lines_total)}</b>
+                <span>rate</span>
+                <b>{compRate(out, "bytes_total")}</b>
               </span>
-              <span class="pn-row">
-                <span>bytes</span>
-                <b>{fmtBytes(out.bytes_total)}</b>
-              </span>
-              <span class="pn-row">
-                <span>errors</span>
-                <b style={out.errors > 0 ? "color:var(--err)" : ""}>{out.errors}</b>
-              </span>
+              <Sparkline
+                values={outputRateSpark}
+                width={56}
+                height={14}
+                color="var(--purple)"
+                style="area"
+              />
             </button>
           </>
         ))}
       </div>
 
-      {/* Inspector panels */}
+      {/* ── Inline stats strip ── */}
+      <div class="pipe-stats">
+        {latencyMs != null && (
+          <span class="pipe-stat">
+            <span class="pipe-stat-label">Latency</span>
+            <b>{latencyMs.toFixed(1)}ms</b>
+          </span>
+        )}
+        {p.batches?.inflight != null && (
+          <span class="pipe-stat">
+            <span class="pipe-stat-label">Inflight</span>
+            <b>{p.batches.inflight}</b>
+          </span>
+        )}
+        {(p.backpressure_stalls ?? 0) > 0 && (
+          <span class="pipe-stat">
+            <span class="pipe-stat-label">Stalls</span>
+            <Sparkline
+              values={stallSpark}
+              width={40}
+              height={12}
+              color="var(--warn)"
+              errThreshold={1}
+            />
+            <b class="text-warn">{p.backpressure_stalls}</b>
+          </span>
+        )}
+        {totalErrors > 0 && (
+          <span class="pipe-stat">
+            <span class="pipe-stat-label">Errors</span>
+            <Sparkline values={errorSpark} width={40} height={12} color="var(--err)" />
+            <b class="text-err">{totalErrors}</b>
+          </span>
+        )}
+        {stageBar && (
+          <span class="pipe-stat pipe-stat-stages">
+            <span class="pipe-stat-label">Stages</span>
+            <span class="stage-bar">
+              <span
+                class="stage-seg scan"
+                style={{ width: `${stageBar.scanPct}%` }}
+                title={`Scan: ${stageBar.scanPct.toFixed(0)}%`}
+              />
+              <span
+                class="stage-seg xfm"
+                style={{ width: `${stageBar.xfmPct}%` }}
+                title={`Transform: ${stageBar.xfmPct.toFixed(0)}%`}
+              />
+              <span
+                class="stage-seg out"
+                style={{ width: `${stageBar.outPct}%` }}
+                title={`Output: ${stageBar.outPct.toFixed(0)}%`}
+              />
+            </span>
+          </span>
+        )}
+      </div>
+
+      {/* ── Inspector panels (click a node) ── */}
       {sel === "t" && (
         <div class="inspector">
           <div class="insp-header">
@@ -167,16 +292,16 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
               <div class="ik-l">Drop Rate</div>
               <div class="ik-v">{(p.transform.filter_drop_rate * 100).toFixed(1)}%</div>
             </div>
-            {p.stage_seconds?.scan != null && (
+            {stages?.scan != null && (
               <div class="insp-kv">
                 <div class="ik-l">Scan Time</div>
-                <div class="ik-v">{p.stage_seconds.scan.toFixed(3)}s</div>
+                <div class="ik-v">{stages.scan.toFixed(3)}s</div>
               </div>
             )}
-            {p.stage_seconds?.transform != null && (
+            {stages?.transform != null && (
               <div class="insp-kv">
                 <div class="ik-l">Transform Time</div>
-                <div class="ik-v">{p.stage_seconds.transform.toFixed(3)}s</div>
+                <div class="ik-v">{stages.transform.toFixed(3)}s</div>
               </div>
             )}
           </div>
@@ -185,7 +310,7 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
 
       {sel?.startsWith("i") &&
         (() => {
-          const idx = parseInt(sel.slice(1), 10);
+          const idx = Number.parseInt(sel.slice(1), 10);
           const inp = p.inputs[idx];
           if (!inp) return null;
           return (
@@ -201,16 +326,6 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
               </div>
               <div class="insp-grid">
                 <div class="insp-kv">
-                  <div class="ik-l">Type</div>
-                  <div class="ik-v">{typeLabel(inp.type)}</div>
-                </div>
-                {!isGenericName(inp.name) && (
-                  <div class="insp-kv">
-                    <div class="ik-l">Name</div>
-                    <div class="ik-v">{inp.name}</div>
-                  </div>
-                )}
-                <div class="insp-kv">
                   <div class="ik-l">Lines</div>
                   <div class="ik-v">{fmt(inp.lines_total)}</div>
                 </div>
@@ -222,6 +337,12 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
                   <div class="ik-l">Errors</div>
                   <div class="ik-v">{inp.errors}</div>
                 </div>
+                {inp.parse_errors != null && inp.parse_errors > 0 && (
+                  <div class="insp-kv">
+                    <div class="ik-l">Parse Errors</div>
+                    <div class="ik-v text-warn">{inp.parse_errors}</div>
+                  </div>
+                )}
               </div>
             </div>
           );
@@ -229,7 +350,7 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
 
       {sel?.startsWith("o") &&
         (() => {
-          const idx = parseInt(sel.slice(1), 10);
+          const idx = Number.parseInt(sel.slice(1), 10);
           const out = p.outputs[idx];
           if (!out) return null;
           return (
@@ -244,16 +365,6 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
                 </button>
               </div>
               <div class="insp-grid">
-                <div class="insp-kv">
-                  <div class="ik-l">Type</div>
-                  <div class="ik-v">{typeLabel(out.type)}</div>
-                </div>
-                {!isGenericName(out.name) && (
-                  <div class="insp-kv">
-                    <div class="ik-l">Name</div>
-                    <div class="ik-v">{out.name}</div>
-                  </div>
-                )}
                 <div class="insp-kv">
                   <div class="ik-l">Lines</div>
                   <div class="ik-v">{fmt(out.lines_total)}</div>
@@ -273,27 +384,30 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
           );
         })()}
 
-      {/* Batch traces — always visible */}
+      {/* ── Collapsible batch monitor ── */}
       {traces.length > 0 && (
-        <div class="pipe-traces">
-          <div class="pipe-traces-header">
-            <span>Batch Traces</span>
-            <span class="pipe-traces-count">{traces.length} recent</span>
-            <div class="t2-window-picker" style="margin-left:auto">
-              {POLL_OPTIONS.map((o) => (
-                <button
-                  type="button"
-                  key={o.label}
-                  class={`t2-win-btn${pollMs === o.ms ? " active" : ""}`}
-                  onClick={() => setPollMs(o.ms)}
-                >
-                  {o.label}
-                </button>
-              ))}
+        <Collapsible
+          title="Batch Monitor"
+          badge={<span class="trace-count">{traces.length} recent</span>}
+        >
+          <div class="pipe-traces">
+            <div class="pipe-traces-header">
+              <div class="t2-window-picker">
+                {POLL_OPTIONS.map((o) => (
+                  <button
+                    type="button"
+                    key={o.label}
+                    class={`t2-win-btn${pollMs === o.ms ? " active" : ""}`}
+                    onClick={() => setPollMs(o.ms)}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
             </div>
+            <TraceExplorer traces={traces} />
           </div>
-          <TraceExplorer traces={traces} />
-        </div>
+        </Collapsible>
       )}
     </div>
   );

@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { api } from "./api";
-import type { ChartConfig } from "./components/Chart";
-import { ChartGrid } from "./components/ChartGrid";
+import { Collapsible } from "./components/Collapsible";
 import { ConfigView } from "./components/ConfigView";
+import { DataLossIndicator } from "./components/DataLossIndicator";
 import { LogViewer } from "./components/LogViewer";
-import { MetricBadges } from "./components/MetricBadges";
 import { PipelineView } from "./components/PipelineView";
 import { StatusBar } from "./components/StatusBar";
-import { fmtBytesCompact, fmtCompact } from "./lib/format";
+import { SystemStrip } from "./components/SystemStrip";
 import { mergeTraces } from "./lib/mergeTraces";
 import { extractTraceRecords } from "./lib/otlpProcess";
 import { useTelemetryStore } from "./lib/useTelemetryStore";
@@ -19,92 +18,6 @@ const POLL_OPTIONS = [
   { label: "1s", ms: 1000 },
   { label: "2s", ms: 2000 },
   { label: "5s", ms: 5000 },
-];
-
-// ── Chart configurations (pure data — no mutable state) ────────────────────
-
-const PIPELINE_CHARTS: ChartConfig[] = [
-  {
-    metricName: "logfwd.input_lines_per_sec",
-    label: "Lines / sec",
-    color: "#3b82f6",
-    unit: "/s",
-    fmtAxis: fmtCompact,
-    yRange: [0, 1000],
-    splitBy: "pipeline",
-  },
-  {
-    metricName: "logfwd.input_bytes_per_sec",
-    label: "Input Bytes/s",
-    color: "#8b5cf6",
-    unit: "/s",
-    fmtAxis: fmtBytesCompact,
-    yRange: [0, 102400],
-    splitBy: "pipeline",
-  },
-  {
-    metricName: "logfwd.output_bytes_per_sec",
-    label: "Output Bytes/s",
-    color: "#22c55e",
-    unit: "/s",
-    fmtAxis: fmtBytesCompact,
-    yRange: [0, 102400],
-    splitBy: "pipeline",
-  },
-  {
-    metricName: "logfwd.output_errors_per_sec",
-    label: "Errors / sec",
-    color: "#ef4444",
-    unit: "/s",
-    fmtAxis: fmtCompact,
-    yRange: [0, 10],
-    splitBy: "pipeline",
-  },
-  {
-    metricName: "logfwd.batches_per_min",
-    label: "Batch Rate",
-    color: "#a78bfa",
-    unit: "/min",
-    fmtAxis: fmtCompact,
-    yRange: [0, 10],
-    splitBy: "pipeline",
-  },
-  {
-    metricName: "logfwd.backpressure_stalls_per_sec",
-    label: "Scan Stalls",
-    color: "#fb7185",
-    unit: "/s",
-    fmtAxis: (v) => v.toFixed(1),
-    yRange: [0, 1],
-    splitBy: "pipeline",
-  },
-];
-
-const SYSTEM_CHARTS: ChartConfig[] = [
-  {
-    metricName: "logfwd.cpu_percent",
-    label: "Process CPU",
-    color: "#f59e0b",
-    unit: "%",
-    fmtAxis: (v) => v.toFixed(1),
-    yRange: [0, 10],
-  },
-  {
-    metricName: "process.memory.allocated",
-    label: "Memory",
-    color: "#10b981",
-    unit: "",
-    fmtAxis: fmtBytesCompact,
-    yRange: [0, 67108864],
-  },
-  {
-    metricName: "logfwd.inflight_batches",
-    label: "Inflight Batches",
-    color: "#f97316",
-    unit: "",
-    fmtAxis: (v) => v.toFixed(0),
-    yRange: [0, 10],
-  },
 ];
 
 export function App() {
@@ -120,14 +33,15 @@ export function App() {
 
   // Build stats from latest OTLP metrics in the store.
   const updateStats = useCallback(() => {
-    /** Get latest value for a metric (single series, no pipeline split). */
     const val = (name: string): number => {
       const frame = store.selectLatestValues({ metricName: name });
       return frame.rows[0]?.value ?? 0;
     };
-    /** Sum latest values across all pipeline series for a metric. */
     const sum = (name: string): number => {
-      const frame = store.selectLatestValues({ metricName: name, splitBy: "pipeline" });
+      const frame = store.selectLatestValues({
+        metricName: name,
+        splitBy: "pipeline",
+      });
       return frame.rows.reduce((acc, r) => acc + r.value, 0);
     };
 
@@ -154,16 +68,13 @@ export function App() {
     setTotalErrors(sum("logfwd.output_errors"));
   }, [store]);
 
-  // Max traces to retain in the dashboard (prevents unbounded growth).
   const MAX_TRACES = 1000;
 
-  // Process OTLP spans from WebSocket push (delta delivery).
   const processOtlpTraces = useCallback((doc: import("@otlpkit/otlpjson").OtlpTracesDocument) => {
     const incoming = extractTraceRecords(doc);
     setTraces((prev) => mergeTraces(prev, incoming, MAX_TRACES));
   }, []);
 
-  // Dispatch each WS frame synchronously — no frames are dropped.
   const handleMessage = useCallback(
     (msg: import("./lib/useTelemetryWebSocket").OtlpMessage) => {
       if (msg.signal === "metrics") {
@@ -172,18 +83,13 @@ export function App() {
       } else if (msg.signal === "traces") {
         processOtlpTraces(msg.data);
       }
-      // Logs are handled by LogViewer via REST polling.
     },
     [ingest, updateStats, processOtlpTraces]
   );
 
   const { wsConnected } = useTelemetryWebSocket(handleMessage);
 
-  // `connected` means the status API is reachable. `wsConnected` tracks the
-  // live WebSocket independently. The StatusBar shows a separate pill when
-  // the WS drops while the API is still up.
-
-  // ── Status polling (always runs — OTLP metrics don't carry pipeline topology) ──
+  // ── Status polling ──
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
@@ -239,20 +145,12 @@ export function App() {
         uptime={uptime}
       />
       <main>
-        <MetricBadges stats={stats} />
+        {/* ── Data Loss — the #1 question: "Am I losing data?" ── */}
+        {status?.pipelines && status.pipelines.length > 0 && (
+          <DataLossIndicator pipelines={status.pipelines} />
+        )}
 
-        <div class="section">
-          <div class="heading">Pipeline Metrics</div>
-          <ChartGrid store={store} charts={PIPELINE_CHARTS} tick={tick} />
-        </div>
-
-        <div class="section">
-          <div class="heading">System Metrics</div>
-          <ChartGrid store={store} charts={SYSTEM_CHARTS} tick={tick} />
-        </div>
-
-        <LogViewer />
-
+        {/* ── Pipelines — one card per pipeline with inline sparklines ── */}
         {status?.pipelines.map((p, i) => (
           <PipelineView
             key={p.name}
@@ -260,10 +158,22 @@ export function App() {
             traces={traces.filter((t) => t.pipeline === p.name || (t.pipeline === "" && i === 0))}
             pollMs={pollMs}
             setPollMs={setPollMs}
+            store={store}
+            tick={tick}
           />
         ))}
 
-        <ConfigView />
+        {/* ── System strip — compact CPU / Memory / Inflight / Uptime ── */}
+        <SystemStrip store={store} tick={tick} uptimeSec={uptime} />
+
+        {/* ── Collapsible utility sections ── */}
+        <Collapsible title="Logs">
+          <LogViewer />
+        </Collapsible>
+
+        <Collapsible title="Configuration">
+          <ConfigView />
+        </Collapsible>
       </main>
     </>
   );
