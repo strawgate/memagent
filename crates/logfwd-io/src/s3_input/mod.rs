@@ -213,7 +213,7 @@ impl S3InputSettings {
 /// S3 input source that tails objects from an S3-compatible bucket.
 pub struct S3Input {
     name: String,
-    rx: mpsc::Receiver<ChunkPayload>,
+    rx: Option<mpsc::Receiver<ChunkPayload>>,
     health: Arc<AtomicU8>,
     is_running: Arc<AtomicBool>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
@@ -416,7 +416,7 @@ impl S3Input {
 
         Ok(Self {
             name,
-            rx,
+            rx: Some(rx),
             health,
             is_running,
             thread_handle: Some(handle),
@@ -430,8 +430,11 @@ impl InputSource for S3Input {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
         let mut events = Vec::with_capacity(MAX_DRAIN_PER_POLL);
         let mut drained = 0usize;
+        let Some(ref rx) = self.rx else {
+            return Ok(events);
+        };
         while drained < MAX_DRAIN_PER_POLL {
-            let Ok(payload) = self.rx.try_recv() else {
+            let Ok(payload) = rx.try_recv() else {
                 break;
             };
             drained += 1;
@@ -458,6 +461,10 @@ impl Drop for S3Input {
         self.health
             .store(ComponentHealth::Stopping.as_repr(), Ordering::Relaxed);
         self.is_running.store(false, Ordering::Relaxed);
+        // Drop the receiver first so that any background senders blocked on a
+        // full channel will observe the disconnect and unblock, preventing a
+        // deadlock when we join the worker thread below.
+        drop(self.rx.take());
         if let Some(handle) = self.thread_handle.take() {
             let _ = handle.join();
         }
@@ -745,21 +752,9 @@ async fn run_orchestrator(
                 // Restore health after a successful fetch.
                 health.store(ComponentHealth::Healthy.as_repr(), Ordering::Relaxed);
 
-                // For SQS messages with multiple records, only delete the
-                // message once ALL records have been successfully processed.
-                // Note: we track successes separately from the decrement below.
-                if let (Some(sqs), Some(tracker)) = (&sqs, &work.message_tracker) {
-                    // Mark this record as successful.
+                // Mark this record as successful for SQS tracker.
+                if let Some(tracker) = &work.message_tracker {
                     tracker.successes.fetch_add(1, Ordering::AcqRel);
-                    // Check if all records completed and all succeeded.
-                    let remaining_after = tracker.remaining.load(Ordering::Acquire);
-                    let success_count = tracker.successes.load(Ordering::Acquire);
-                    let total = tracker.total;
-                    if remaining_after == 0 && success_count == total {
-                        if let Err(e) = sqs.delete_message(&tracker.receipt_handle).await {
-                            warn!(name = %name, error = %e, "SQS delete message failed");
-                        }
-                    }
                 }
 
                 // Report successfully-processed key for list-mode cursor advancement.
@@ -769,13 +764,24 @@ async fn run_orchestrator(
             }
 
             // Always decrement remaining so heartbeat cleanup happens once
-            // all records are done (success or failure).
+            // all records are done (success or failure). Must happen after the
+            // success increment above so the delete check sees the final count.
             if let Some(tracker) = &work.message_tracker {
                 let prev = tracker.remaining.fetch_sub(1, Ordering::AcqRel);
                 if prev == 1 {
                     // All records from this message have completed — stop heartbeating.
                     let mut guard = in_progress.lock().await;
                     guard.retain(|h| h != &tracker.receipt_handle);
+
+                    // If all records succeeded, delete the SQS message.
+                    let success_count = tracker.successes.load(Ordering::Acquire);
+                    if success_count == tracker.total {
+                        if let Some(sqs) = &sqs {
+                            if let Err(e) = sqs.delete_message(&tracker.receipt_handle).await {
+                                warn!(name = %name, error = %e, "SQS delete message failed");
+                            }
+                        }
+                    }
                 }
             }
         });
