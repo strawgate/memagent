@@ -2789,7 +2789,7 @@ pipelines:
 input:
   type: host_metrics
   sensor:
-    scrapers: ["cpu", "memory"]
+    scrapers: ["CPU", "Memory", "cpu", "memory"]
     collection_interval_ms: 5000
     disk_include_devices: ["sda1"]
 output:
@@ -2804,7 +2804,12 @@ output:
         let sensor = host_metrics.sensor.as_ref().unwrap();
         assert_eq!(
             sensor.scrapers,
-            Some(vec!["cpu".to_string(), "memory".to_string()])
+            Some(vec![
+                "CPU".to_string(),
+                "Memory".to_string(),
+                "cpu".to_string(),
+                "memory".to_string()
+            ])
         );
         assert_eq!(sensor.collection_interval_ms, Some(5000));
         assert_eq!(sensor.disk_include_devices, Some(vec!["sda1".to_string()]));
@@ -2950,4 +2955,5 @@ pipelines:
     }
 }
 mod tests_generator_unsupported;
+mod tests_otlp_config;
 mod tests_static_labels;

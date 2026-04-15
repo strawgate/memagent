@@ -418,13 +418,14 @@ impl Config {
                                     s.sensor.as_ref().and_then(|cfg| cfg.scrapers.as_ref())
                                 {
                                     for scraper in scrapers {
-                                        let normalized = scraper.trim();
+                                        let normalized = scraper.trim().to_lowercase();
                                         if !matches!(
-                                            normalized,
+                                            normalized.as_str(),
                                             "cpu" | "memory" | "disk" | "network" | "filesystem"
                                         ) {
                                             return Err(ConfigError::Validation(format!(
-                                                "pipeline '{name}' input '{label}': unknown scraper '{normalized}' (supported: cpu, memory, disk, network, filesystem)"
+                                                "pipeline '{name}' input '{label}': unknown scraper '{}' (supported: cpu, memory, disk, network, filesystem)",
+                                                scraper.trim()
                                             )));
                                         }
                                     }
