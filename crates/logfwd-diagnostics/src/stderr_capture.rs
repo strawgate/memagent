@@ -447,4 +447,70 @@ mod tests {
         let lines = state.get_lines();
         assert_eq!(lines, vec!["hello", "world"]);
     }
+
+    // ── get_lines_since cursor edge cases ──────────────────────────
+
+    #[test]
+    fn cursor_zero_returns_all() {
+        let state = CaptureState::new();
+        state.push_line("a".into());
+        state.push_line("b".into());
+        let (lines, cursor) = state.get_lines_since(0);
+        assert_eq!(lines, vec!["a", "b"]);
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn cursor_at_total_returns_empty() {
+        let state = CaptureState::new();
+        state.push_line("a".into());
+        state.push_line("b".into());
+        let (lines, cursor) = state.get_lines_since(2);
+        assert!(lines.is_empty());
+        assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn cursor_partial_returns_new_lines_only() {
+        let state = CaptureState::new();
+        state.push_line("a".into());
+        state.push_line("b".into());
+        state.push_line("c".into());
+        let (lines, cursor) = state.get_lines_since(1);
+        assert_eq!(lines, vec!["b", "c"]);
+        assert_eq!(cursor, 3);
+    }
+
+    #[test]
+    fn cursor_behind_eviction_returns_available() {
+        // Push enough lines to evict earlier ones, then query with a
+        // cursor that references already-evicted data.
+        let state = CaptureState::new();
+        let line_bytes = 10usize; // "line XXXX" = 9 + 1 newline
+        let n = MAX_BYTES / line_bytes + 100;
+        for i in 0..n {
+            state.push_line(format!("line {:04}", i));
+        }
+        // Cursor 0 means "give me everything since the beginning" but some
+        // lines have been evicted. We should get exactly the retained lines.
+        let (lines, cursor) = state.get_lines_since(0);
+        assert_eq!(cursor, n as u64);
+        // Every retained line should be present and the count should be
+        // bounded by buffer capacity.
+        let retained = {
+            let buf = state.buf.lock().unwrap();
+            buf.len()
+        };
+        assert_eq!(lines.len(), retained);
+    }
+
+    #[test]
+    fn cursor_future_returns_empty() {
+        // A cursor beyond total_pushed should return no lines.
+        let state = CaptureState::new();
+        state.push_line("x".into());
+        let (lines, cursor) = state.get_lines_since(999);
+        assert!(lines.is_empty());
+        assert_eq!(cursor, 1);
+    }
 }

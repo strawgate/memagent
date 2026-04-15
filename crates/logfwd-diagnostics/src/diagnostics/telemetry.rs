@@ -368,6 +368,10 @@ pub(super) fn collect_new_spans(
         for s in buf.get_spans_since(last_count) {
             let mut attrs: Vec<(&'static str, String)> = Vec::new();
             for kv in &s.attrs {
+                // Allowlist: only forward known span attributes to the dashboard.
+                // Unknown attributes (e.g. internal SDK metadata) are intentionally
+                // dropped to keep the OTLP JSON payload compact. Update this list
+                // when new user-facing attributes are added to batch spans.
                 let key = match kv[0].as_str() {
                     "pipeline" => "pipeline",
                     "bytes_in" => "bytes_in",
@@ -458,6 +462,9 @@ pub(super) fn collect_new_logs(
     let (new_lines, new_cursor) = stderr.get_logs_since(*last_cursor);
     *last_cursor = new_cursor;
     let ts = now_nanos();
+    // All stderr lines share a single timestamp and "INFO" severity because
+    // the capture layer cannot reliably parse log levels from arbitrary stderr
+    // output. A per-line parser could be added later if severity matters.
     new_lines
         .into_iter()
         .map(|line| LogRecord {

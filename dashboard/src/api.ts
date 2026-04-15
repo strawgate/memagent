@@ -18,8 +18,15 @@ async function getWithReason<T>(
     const res = await fetch(url);
     if (!res.ok) {
       try {
-        const body = await res.json();
-        return { data: null, errorMessage: body?.message ?? `HTTP ${res.status}` };
+        const body: unknown = await res.json();
+        const msg =
+          typeof body === "object" &&
+          body !== null &&
+          "message" in body &&
+          typeof (body as { message?: unknown }).message === "string"
+            ? (body as { message: string }).message
+            : `HTTP ${res.status}`;
+        return { data: null, errorMessage: msg };
       } catch {
         return { data: null, errorMessage: `HTTP ${res.status}` };
       }

@@ -22,13 +22,21 @@ export function ConfigView() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
+    let mounted = true;
     api.config().then(
       ({ data, errorMessage }) => {
+        if (!mounted) return;
         if (data) setConfig(data);
         else setErrorMsg(errorMessage ?? "Failed to load configuration.");
       },
-      () => setErrorMsg("Failed to load configuration.")
+      () => {
+        if (!mounted) return;
+        setErrorMsg("Failed to load configuration.");
+      }
     );
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   if (errorMsg && !config) {

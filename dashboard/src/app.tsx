@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "preact/hooks";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { api } from "./api";
 import type { ChartConfig } from "./components/Chart";
 import { ChartGrid } from "./components/ChartGrid";
@@ -167,9 +167,13 @@ export function App() {
 
   const { wsConnected } = useTelemetryWebSocket(handleMessage);
 
-  // Track WS connectivity.
+  // Track WS connectivity — dashboard shows connected only when both
+  // the WebSocket and the status poll are healthy.
+  const wsConnectedRef = useRef(wsConnected);
+  wsConnectedRef.current = wsConnected;
+
   useEffect(() => {
-    if (wsConnected) setConnected(true);
+    setConnected((prev) => (wsConnected ? prev : false));
   }, [wsConnected]);
 
   // ── Status polling (always runs — OTLP metrics don't carry pipeline topology) ──
@@ -185,7 +189,7 @@ export function App() {
           (statusData) => {
             if (statusData) {
               setStatus(statusData);
-              setConnected(true);
+              setConnected(wsConnectedRef.current);
               backoff = pollMs;
             } else {
               setConnected(false);
