@@ -1,15 +1,26 @@
 ---
-title: "Why Tailing a Log File Is Hard"
+title: "Tailing"
 description: "Rotation, truncation, crash recovery — and how logfwd handles all of them"
 ---
 
 import TailingDiagram from '../../../components/TailingDiagram.astro';
+import TruncationDemo from '../../../components/TruncationDemo.astro';
 
 Everyone thinks `tail -f` is simple. Open a file, read new lines, done. But in production, log files get rotated, truncated, and the tailer crashes. Each scenario breaks naive implementations in a different way.
 
-Watch the simulation below to see what goes wrong — and how logfwd handles it.
+## Rotation
+
+When logrotate renames `app.log` to `app.log.1` and creates a fresh `app.log`, a naive tailer keeps reading the old file by path — or stops entirely. logfwd tracks files by **inode**, not path, so it detects the new file on the next poll, drains whatever remains in the old file, then opens the new one at offset 0. No data lost.
+
+The simulation auto-rotates after 30 lines. You can also trigger it manually.
 
 <TailingDiagram />
+
+## Truncation
+
+Truncation is different: the file path and inode stay the same, but the file is suddenly smaller than the last recorded offset. A naive tailer would either block waiting for more data or keep seeking past end-of-file. logfwd detects that the current offset exceeds the file size and rewinds to 0 — no new file, no inode change.
+
+<TruncationDemo />
 
 ## How logfwd tracks file identity
 

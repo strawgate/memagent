@@ -4,6 +4,9 @@ description: "Install logfwd, run your first pipeline, and ship logs in about 15
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
+import DataFlowAnimation from '../../components/DataFlowAnimation.astro';
+
+<DataFlowAnimation />
 
 :::note
 The product is **logfwd**. The GitHub repository is named `memagent` for historical reasons. Docker images, URLs, and `git clone` commands reference `memagent`; the binary and all user-facing output say `logfwd`.
@@ -271,7 +274,7 @@ The simple layout (`input`/`output` at top level) and advanced layout (`pipeline
 
 | Topic | Where to go |
 |-------|-------------|
-| Understand the pipeline internals | [Pipeline Explorer](/memagent/how-it-works/) (interactive) |
+| Understand the pipeline internals | [Pipeline Explorer](/memagent/learn/) (interactive) |
 | Learn the full SQL transform syntax | [SQL Transforms](/memagent/configuration/sql-transforms/) |
 | See all YAML config options | [YAML Reference](/memagent/configuration/reference/) |
 | Deploy to Kubernetes | [Kubernetes DaemonSet](/memagent/deployment/kubernetes/) |
