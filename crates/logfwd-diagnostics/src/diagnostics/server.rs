@@ -526,13 +526,28 @@ fn status_payload(state: &DiagnosticsState) -> StatusSnapshotResponse {
         let stalls_per_sec = backpressure as f64 / uptime_s_nonzero;
 
         let (bottleneck_stage, bottleneck_reason): (&str, String) = if queue_wait_ratio > 0.5 {
-            (
-                "output",
-                format!(
-                    "workers spending {:.0}% of wall-time in output queue",
-                    queue_wait_ratio * 100.0
-                ),
-            )
+            // Distinguish true output bottleneck from pipeline throughput saturation.
+            // High queue_wait with negligible output time means workers contend for the
+            // channel (throughput saturation), not that the output destination is slow.
+            let output_ratio = output_s / uptime_s_nonzero;
+            if output_ratio > 0.1 {
+                (
+                    "output",
+                    format!(
+                        "output consuming {:.0}% of worker time, queue wait {:.0}%",
+                        output_ratio * 100.0,
+                        queue_wait_ratio * 100.0
+                    ),
+                )
+            } else {
+                (
+                    "none",
+                    format!(
+                        "pipeline saturated ({:.0}% queue contention, output itself is fast)",
+                        queue_wait_ratio * 100.0
+                    ),
+                )
+            }
         } else if stalls_per_sec > 10.0 {
             (
                 "input",
@@ -1067,10 +1082,10 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<DiagnosticsState>) {
     // buffered history (resync on connect).
     let mut span_cursor: usize = 0;
     let mut log_cursor: u64 = 0;
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
 
     // Send initial span/log snapshot immediately on connect (cursor=0 → full
-    // buffer). Then the interval fires every 2s for deltas.
+    // buffer). Then the interval fires every 1s for deltas.
     {
         let spans = super::telemetry::collect_new_spans(
             state.trace_buf.as_ref(),
@@ -1142,7 +1157,7 @@ async fn sampler_loop(state: Arc<DiagnosticsState>) {
     let mut prev_health = std::collections::HashMap::new();
     let mut prev_snapshot: Option<super::telemetry::MetricSnapshot> = None;
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
         // Always sample metrics + logs into the history/telemetry buffers.
         sample_metrics(&state.pipelines, &state.history, state.memory_stats_fn);

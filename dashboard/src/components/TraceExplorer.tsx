@@ -741,6 +741,11 @@ function DetailPanel({ t }: { t: TraceRecord }) {
   const hasSendRecv = Number(t.send_ns ?? 0) > 0 || Number(t.recv_ns ?? 0) > 0;
   return (
     <div class="t2-detail">
+      <div class="t2-detail-summary">
+        <b>{fmtRows(t.input_rows)} lines</b>
+        {t.bytes_in > 0 && <span> · {fmtBytes(t.bytes_in)}</span>}
+        <span> · {fmtNs(e2e)} e2e</span>
+      </div>
       <div class="t2-stage-boxes">
         <div class="t2-stage-box" style={`border-top:2px solid ${C.scan}`}>
           <div class="t2-stage-label">scan</div>
