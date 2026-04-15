@@ -1425,12 +1425,16 @@ mod proptests {
     use proptest::prelude::*;
 
     /// Strategy for generating a field kind.
+    /// Covers all `FieldKind` variants so new additions cause a compile error
+    /// rather than being silently ignored.
     fn field_kind_strategy() -> impl Strategy<Value = FieldKind> {
         prop_oneof![
             Just(FieldKind::Int64),
             Just(FieldKind::Float64),
             Just(FieldKind::Bool),
             Just(FieldKind::Utf8View),
+            Just(FieldKind::BinaryView),
+            Just(FieldKind::FixedBinary(16)),
         ]
     }
 
@@ -1446,11 +1450,13 @@ mod proptests {
             // Deterministic kind selection from seed.
             let kinds: Vec<FieldKind> = (0..num_fields)
                 .map(|i| {
-                    match (seed.wrapping_mul(i as u64 + 1)) % 4 {
+                    match (seed.wrapping_mul(i as u64 + 1)) % 6 {
                         0 => FieldKind::Int64,
                         1 => FieldKind::Float64,
                         2 => FieldKind::Bool,
-                        _ => FieldKind::Utf8View,
+                        3 => FieldKind::Utf8View,
+                        4 => FieldKind::BinaryView,
+                        _ => FieldKind::FixedBinary(16),
                     }
                 })
                 .collect();
@@ -1506,7 +1512,9 @@ mod proptests {
                             b.write_str(h, &val).unwrap();
                             expected_str[fi][row] = Some(val);
                         }
-                        _ => {}
+                        // No typed write methods for binary kinds yet;
+                        // all values remain null, verified below.
+                        FieldKind::BinaryView | FieldKind::FixedBinary(_) => {}
                     }
                 }
                 b.end_row();
@@ -1582,7 +1590,14 @@ mod proptests {
                             }
                         }
                     }
-                    _ => {}
+                    // Binary kinds have no write methods yet, so every
+                    // cell must be null.
+                    FieldKind::BinaryView | FieldKind::FixedBinary(_) => {
+                        for row in 0..num_rows {
+                            prop_assert!(col.is_null(row),
+                                "binary field {} row {} should be null (no write method)", fi, row);
+                        }
+                    }
                 }
             }
         }
