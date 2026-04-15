@@ -726,14 +726,17 @@ const wasmBase = import.meta.env.BASE_URL.replace(/\/$/, '') + '/wasm/logfwd-con
     for (const field of fields) {
       const row = document.createElement('div');
       row.className = 'cb-config-row';
+      const controlId = `${panel.id}-${field.key}`;
 
       const label = document.createElement('label');
       label.className = 'cb-config-label';
+      label.htmlFor = controlId;
       label.textContent = field.label;
       row.appendChild(label);
 
       if (field.options?.length) {
         const select = document.createElement('select');
+        select.id = controlId;
         select.className = 'cb-config-input';
         const current = values[field.key] ?? field.default;
         for (const opt of field.options) {
@@ -750,6 +753,7 @@ const wasmBase = import.meta.env.BASE_URL.replace(/\/$/, '') + '/wasm/logfwd-con
         row.appendChild(select);
       } else {
         const input = document.createElement('input');
+        input.id = controlId;
         input.className = 'cb-config-input';
         input.type = 'text';
         input.placeholder = field.placeholder || field.default;

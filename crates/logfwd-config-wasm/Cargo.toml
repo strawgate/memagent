@@ -10,7 +10,7 @@ crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [dependencies]
-logfwd-config = { path = "../logfwd-config" }
+logfwd-config = { version = "0.1.0", path = "../logfwd-config" }
 wasm-bindgen = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
