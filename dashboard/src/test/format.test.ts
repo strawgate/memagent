@@ -38,10 +38,10 @@ describe("fmt", () => {
     it("returns '999.9M' for 999_900_000", () => expect(fmt(999_900_000)).toBe("999.9M"));
   });
 
-  describe("G suffix at 1,000,000,000 threshold", () => {
-    it("returns '1.0G' for 1e9", () => expect(fmt(1e9)).toBe("1.0G"));
-    it("returns '5.0G' for 5e9", () => expect(fmt(5e9)).toBe("5.0G"));
-    it("handles very large values", () => expect(fmt(1e15)).toBe("1000000.0G"));
+  describe("B suffix at 1,000,000,000 threshold", () => {
+    it("returns '1.0B' for 1e9", () => expect(fmt(1e9)).toBe("1.0B"));
+    it("returns '5.0B' for 5e9", () => expect(fmt(5e9)).toBe("5.0B"));
+    it("handles very large values", () => expect(fmt(1e15)).toBe("1000000.0B"));
   });
 
   describe("negative values", () => {

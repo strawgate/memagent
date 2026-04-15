@@ -671,12 +671,61 @@ main {
   display: flex;
   align-items: center;
   gap: 8px;
+  margin-bottom: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+}
+.pipeline-card.open .pipeline-header {
   margin-bottom: 10px;
 }
 .pipeline-name {
   font-size: 14px;
   font-weight: 700;
   color: var(--t1);
+}
+.pipeline-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--t3);
+}
+.pipeline-flow-label {
+  font-family: var(--mono);
+  color: var(--t2);
+}
+.pipeline-eps {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Show More charts button */
+.show-more-btn {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 6px 0;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  color: var(--t3);
+  font-size: 11px;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.15s;
+}
+.show-more-btn:hover {
+  color: var(--t1);
+  border-color: var(--t3);
 }
 
 /* Health dot — colored circle on pipeline nodes */

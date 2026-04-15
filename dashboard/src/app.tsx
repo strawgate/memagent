@@ -1,24 +1,112 @@
 import { useCallback, useEffect, useState } from "preact/hooks";
 import { api } from "./api";
-import { Collapsible } from "./components/Collapsible";
+import type { ChartConfig } from "./components/Chart";
+import { ChartGrid } from "./components/ChartGrid";
 import { ConfigView } from "./components/ConfigView";
 import { DataLossIndicator } from "./components/DataLossIndicator";
 import { LogViewer } from "./components/LogViewer";
 import { PipelineView } from "./components/PipelineView";
 import { StatusBar } from "./components/StatusBar";
 import { SystemStrip } from "./components/SystemStrip";
+import { fmtBytesCompact, fmtCompact } from "./lib/format";
 import { mergeTraces } from "./lib/mergeTraces";
 import { extractTraceRecords } from "./lib/otlpProcess";
 import { useTelemetryStore } from "./lib/useTelemetryStore";
 import { useTelemetryWebSocket } from "./lib/useTelemetryWebSocket";
 import type { StatsResponse, StatusResponse, TraceRecord } from "./types";
 
-const POLL_OPTIONS = [
-  { label: "500ms", ms: 500 },
-  { label: "1s", ms: 1000 },
-  { label: "2s", ms: 2000 },
-  { label: "5s", ms: 5000 },
+// ── Chart configurations (pure data) ────────────────────────────────────────
+
+/** Always-visible primary charts. */
+const PRIMARY_CHARTS: ChartConfig[] = [
+  {
+    metricName: "logfwd.input_lines_per_sec",
+    label: "Lines / sec",
+    color: "#3b82f6",
+    unit: "/s",
+    fmtAxis: fmtCompact,
+    yRange: [0, 1000],
+    splitBy: "pipeline",
+  },
+  {
+    metricName: "logfwd.input_bytes_per_sec",
+    label: "Input Bytes/s",
+    color: "#8b5cf6",
+    unit: "/s",
+    fmtAxis: fmtBytesCompact,
+    yRange: [0, 102400],
+    splitBy: "pipeline",
+  },
+  {
+    metricName: "logfwd.output_bytes_per_sec",
+    label: "Output Bytes/s",
+    color: "#22c55e",
+    unit: "/s",
+    fmtAxis: fmtBytesCompact,
+    yRange: [0, 102400],
+    splitBy: "pipeline",
+  },
 ];
+
+/** Charts shown only when "Show More" is toggled or they have non-zero values. */
+const EXTRA_CHARTS: ChartConfig[] = [
+  {
+    metricName: "logfwd.output_errors_per_sec",
+    label: "Errors / sec",
+    color: "#ef4444",
+    unit: "/s",
+    fmtAxis: fmtCompact,
+    yRange: [0, 10],
+    splitBy: "pipeline",
+  },
+  {
+    metricName: "logfwd.batches_per_min",
+    label: "Batch Rate",
+    color: "#a78bfa",
+    unit: "/min",
+    fmtAxis: fmtCompact,
+    yRange: [0, 10],
+    splitBy: "pipeline",
+  },
+  {
+    metricName: "logfwd.backpressure_stalls_per_sec",
+    label: "Scan Stalls",
+    color: "#fb7185",
+    unit: "/s",
+    fmtAxis: (v) => v.toFixed(1),
+    yRange: [0, 1],
+    splitBy: "pipeline",
+  },
+];
+
+const SYSTEM_CHARTS: ChartConfig[] = [
+  {
+    metricName: "logfwd.cpu_percent",
+    label: "Process CPU",
+    color: "#f59e0b",
+    unit: "%",
+    fmtAxis: (v) => v.toFixed(1),
+    yRange: [0, 10],
+  },
+  {
+    metricName: "process.memory.allocated",
+    label: "Memory",
+    color: "#10b981",
+    unit: "",
+    fmtAxis: fmtBytesCompact,
+    yRange: [0, 67108864],
+  },
+  {
+    metricName: "logfwd.inflight_batches",
+    label: "Inflight Batches",
+    color: "#f97316",
+    unit: "",
+    fmtAxis: (v) => v.toFixed(0),
+    yRange: [0, 10],
+  },
+];
+
+const POLL_MS = 2000;
 
 export function App() {
   const [connected, setConnected] = useState(false);
@@ -26,7 +114,7 @@ export function App() {
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [traces, setTraces] = useState<TraceRecord[]>([]);
   const [totalErrors, setTotalErrors] = useState(0);
-  const [pollMs, setPollMs] = useState(POLL_OPTIONS[2].ms); // default 2s
+  const [showMoreCharts, setShowMoreCharts] = useState(false);
 
   // ── WebSocket telemetry → TelemetryStore ─────────────────────────────────
   const { store, tick, ingest } = useTelemetryStore();
@@ -93,7 +181,7 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
-    let backoff = pollMs;
+    let backoff = POLL_MS;
 
     const loop = () => {
       api
@@ -103,7 +191,7 @@ export function App() {
             if (statusData) {
               setStatus(statusData);
               setConnected(true);
-              backoff = pollMs;
+              backoff = POLL_MS;
             } else {
               setConnected(false);
               setStatus(null);
@@ -124,13 +212,32 @@ export function App() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [pollMs]);
+  }, []);
 
   const version = status?.system?.version ?? "?";
   const uptime = stats?.uptime_sec ?? status?.system?.uptime_seconds ?? 0;
   const componentHealth = status?.component_health.status ?? "failed";
   const ready = status?.ready.status ?? "not_ready";
   const statusReason = status?.ready.reason ?? status?.component_health.reason ?? "";
+
+  // Decide which extra charts to show: always show charts with non-zero data,
+  // or show all when user clicks "Show More".
+  const visibleExtras = showMoreCharts
+    ? EXTRA_CHARTS
+    : EXTRA_CHARTS.filter((cfg) => {
+        const frame = store.selectTimeSeries({
+          metricName: cfg.metricName,
+          intervalMs: 2000,
+          reduce: "last",
+          ...(cfg.splitBy ? { splitBy: cfg.splitBy } : {}),
+        });
+        return frame.series.some((s) => s.points.some((pt) => pt.value > 0));
+      });
+
+  const hasHiddenCharts = !showMoreCharts && visibleExtras.length < EXTRA_CHARTS.length;
+
+  const pipelineCount = status?.pipelines?.length ?? 0;
+  const defaultExpanded = pipelineCount <= 3;
 
   return (
     <>
@@ -150,30 +257,47 @@ export function App() {
           <DataLossIndicator pipelines={status.pipelines} />
         )}
 
-        {/* ── Pipelines — one card per pipeline with inline sparklines ── */}
+        {/* ── Pipeline charts ── */}
+        <div class="section">
+          <div class="heading">Pipeline Metrics</div>
+          <ChartGrid store={store} charts={[...PRIMARY_CHARTS, ...visibleExtras]} tick={tick} />
+          {hasHiddenCharts && (
+            <button type="button" class="show-more-btn" onClick={() => setShowMoreCharts(true)}>
+              Show More Charts
+            </button>
+          )}
+          {showMoreCharts && visibleExtras.length === EXTRA_CHARTS.length && (
+            <button type="button" class="show-more-btn" onClick={() => setShowMoreCharts(false)}>
+              Show Less
+            </button>
+          )}
+        </div>
+
+        {/* ── System charts ── */}
+        <div class="section">
+          <div class="heading">System Metrics</div>
+          <ChartGrid store={store} charts={SYSTEM_CHARTS} tick={tick} />
+        </div>
+
+        {/* ── System strip — compact CPU / Memory / Inflight / Uptime ── */}
+        <SystemStrip store={store} tick={tick} uptimeSec={uptime} />
+
+        {/* ── Pipelines — collapsible, expanded by default unless >3 ── */}
         {status?.pipelines.map((p, i) => (
           <PipelineView
             key={p.name}
             pipeline={p}
             traces={traces.filter((t) => t.pipeline === p.name || (t.pipeline === "" && i === 0))}
-            pollMs={pollMs}
-            setPollMs={setPollMs}
             store={store}
             tick={tick}
+            defaultExpanded={defaultExpanded}
+            pipelineCount={pipelineCount}
           />
         ))}
 
-        {/* ── System strip — compact CPU / Memory / Inflight / Uptime ── */}
-        <SystemStrip store={store} tick={tick} uptimeSec={uptime} />
-
-        {/* ── Collapsible utility sections ── */}
-        <Collapsible title="Logs">
-          <LogViewer />
-        </Collapsible>
-
-        <Collapsible title="Configuration">
-          <ConfigView />
-        </Collapsible>
+        {/* ── Logs & Config — visible by default ── */}
+        <LogViewer />
+        <ConfigView />
       </main>
     </>
   );

@@ -4,24 +4,18 @@ import { fmt, fmtBytes } from "../lib/format";
 import { RateTracker } from "../lib/rates";
 import type { ComponentData, PipelineData, TraceRecord } from "../types";
 import { BottleneckBadge } from "./BottleneckBadge";
-import { Collapsible } from "./Collapsible";
 import { Sparkline } from "./Sparkline";
 import { TraceExplorer } from "./TraceExplorer";
-
-const POLL_OPTIONS = [
-  { label: "500ms", ms: 500 },
-  { label: "1s", ms: 1000 },
-  { label: "2s", ms: 2000 },
-  { label: "5s", ms: 5000 },
-];
 
 interface Props {
   pipeline: PipelineData;
   traces: TraceRecord[];
-  pollMs: number;
-  setPollMs: (ms: number) => void;
   store: TelemetryStore;
   tick: number;
+  /** Whether this pipeline section starts expanded. */
+  defaultExpanded: boolean;
+  /** Total number of pipelines. */
+  pipelineCount: number;
 }
 
 const Arrow = () => (
@@ -81,14 +75,25 @@ function useSparkline(store: TelemetryStore, metricName: string, pipeline?: stri
   return series?.points.map((p) => p.value) ?? [];
 }
 
-export function PipelineView({
-  pipeline: p,
-  traces,
-  pollMs,
-  setPollMs,
-  store,
-  tick: _tick,
-}: Props) {
+/** Build a friendly "Input → Output" summary for the collapsed header. */
+function pipelineSummary(p: PipelineData): string {
+  const inputName =
+    p.inputs.length === 1
+      ? isGenericName(p.inputs[0].name)
+        ? typeLabel(p.inputs[0].type)
+        : p.inputs[0].name
+      : `${p.inputs.length} inputs`;
+  const outputName =
+    p.outputs.length === 1
+      ? isGenericName(p.outputs[0].name)
+        ? typeLabel(p.outputs[0].type)
+        : p.outputs[0].name
+      : `${p.outputs.length} outputs`;
+  return `${inputName} → ${outputName}`;
+}
+
+export function PipelineView({ pipeline: p, traces, store, tick: _tick, defaultExpanded }: Props) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
   const [sel, setSel] = useState<string | null>(null);
   const ratesRef = useRef(new RateTracker());
 
@@ -98,6 +103,12 @@ export function PipelineView({
     const v = ratesRef.current.rate(`${comp.name}_${field}`, comp[field]);
     return v != null ? `${fmt(v)}/s` : "-";
   };
+
+  // Compute current EPS (events/lines per second) across all inputs.
+  const inputEps = p.inputs.reduce((sum, inp) => {
+    const v = ratesRef.current.rate(`${inp.name}_lines_total`, inp.lines_total);
+    return sum + (v ?? 0);
+  }, 0);
 
   // Sparkline data for this pipeline.
   const inputRateSpark = useSparkline(store, "logfwd.input_lines_per_sec", p.name);
@@ -121,293 +132,296 @@ export function PipelineView({
   const latencyMs = p.batches?.batch_latency_avg_ns ? p.batches.batch_latency_avg_ns / 1e6 : null;
 
   return (
-    <div class="pipeline-card">
-      <div class="pipeline-header">
+    <div class={`pipeline-card ${expanded ? "open" : ""}`}>
+      {/* ── Collapsible header ── */}
+      <button
+        type="button"
+        class="pipeline-header"
+        onClick={() => setExpanded(!expanded)}
+        aria-expanded={expanded}
+      >
+        <span class="collapsible-arrow">{expanded ? "▾" : "▸"}</span>
         <span class="pipeline-name">{p.name}</span>
-        {p.bottleneck && <BottleneckBadge b={p.bottleneck} />}
-      </div>
+        {!expanded && (
+          <span class="pipeline-summary">
+            <span class="pipeline-flow-label">{pipelineSummary(p)}</span>
+            <span class="pipeline-eps">{fmt(inputEps)} EPS</span>
+            {p.bottleneck && p.bottleneck.stage !== "none" && <BottleneckBadge b={p.bottleneck} />}
+          </span>
+        )}
+        {expanded && p.bottleneck && <BottleneckBadge b={p.bottleneck} />}
+      </button>
 
-      {/* ── Flow diagram with sparklines ── */}
-      <div class="pipe-flow">
-        {p.inputs.map((inp, i) => (
-          <>
-            {i > 0 && <Arrow />}
+      {expanded && (
+        <>
+          {/* ── Flow diagram with sparklines ── */}
+          <div class="pipe-flow">
+            {p.inputs.map((inp, i) => (
+              <>
+                {i > 0 && <Arrow />}
+                <button
+                  type="button"
+                  class={`pn inp ${sel === `i${i}` ? "selected" : ""}`}
+                  onClick={() => toggle(`i${i}`)}
+                >
+                  <span class="pn-top">
+                    <HealthDot errors={inp.errors} />
+                    <span class="pn-type">{typeLabel(inp.type)}</span>
+                  </span>
+                  {!isGenericName(inp.name) && <span class="pn-name">{inp.name}</span>}
+                  <span class="pn-row">
+                    <span>rate</span>
+                    <b>{compRate(inp, "lines_total")}</b>
+                  </span>
+                  <Sparkline
+                    values={inputRateSpark}
+                    width={56}
+                    height={14}
+                    color="var(--ok)"
+                    style="area"
+                  />
+                </button>
+              </>
+            ))}
+            <Arrow />
             <button
               type="button"
-              class={`pn inp ${sel === `i${i}` ? "selected" : ""}`}
-              onClick={() => toggle(`i${i}`)}
+              class={`pn xfm ${sel === "t" ? "selected" : ""}`}
+              onClick={() => toggle("t")}
             >
               <span class="pn-top">
-                <HealthDot errors={inp.errors} />
-                <span class="pn-type">{typeLabel(inp.type)}</span>
+                <HealthDot errors={0} rate={p.transform.lines_in > 0 ? 1 : null} />
+                <span class="pn-type">SQL</span>
               </span>
-              {!isGenericName(inp.name) && <span class="pn-name">{inp.name}</span>}
               <span class="pn-row">
-                <span>rate</span>
-                <b>{compRate(inp, "lines_total")}</b>
+                <span>pass</span>
+                <b>
+                  {p.transform.lines_in > 0
+                    ? `${((1 - p.transform.filter_drop_rate) * 100).toFixed(1)}%`
+                    : "-"}
+                </b>
               </span>
-              <Sparkline
-                values={inputRateSpark}
-                width={56}
-                height={14}
-                color="var(--ok)"
-                style="area"
-              />
-            </button>
-          </>
-        ))}
-        <Arrow />
-        <button
-          type="button"
-          class={`pn xfm ${sel === "t" ? "selected" : ""}`}
-          onClick={() => toggle("t")}
-        >
-          <span class="pn-top">
-            <HealthDot errors={0} rate={p.transform.lines_in > 0 ? 1 : null} />
-            <span class="pn-type">SQL</span>
-          </span>
-          <span class="pn-row">
-            <span>pass</span>
-            <b>
-              {p.transform.lines_in > 0
-                ? `${((1 - p.transform.filter_drop_rate) * 100).toFixed(1)}%`
-                : "-"}
-            </b>
-          </span>
-          <span class="pn-row">
-            <span>drop</span>
-            <b style={p.transform.filter_drop_rate > 0.05 ? "color:var(--warn)" : ""}>
-              {(p.transform.filter_drop_rate * 100).toFixed(1)}%
-            </b>
-          </span>
-        </button>
-        <Arrow />
-        {p.outputs.map((out, i) => (
-          <>
-            {i > 0 && <Arrow />}
-            <button
-              type="button"
-              class={`pn out ${sel === `o${i}` ? "selected" : ""}`}
-              onClick={() => toggle(`o${i}`)}
-            >
-              <span class="pn-top">
-                <HealthDot errors={out.errors} />
-                <span class="pn-type">{typeLabel(out.type)}</span>
-              </span>
-              {!isGenericName(out.name) && <span class="pn-name">{out.name}</span>}
               <span class="pn-row">
-                <span>rate</span>
-                <b>{compRate(out, "bytes_total")}</b>
+                <span>drop</span>
+                <b style={p.transform.filter_drop_rate > 0.05 ? "color:var(--warn)" : ""}>
+                  {(p.transform.filter_drop_rate * 100).toFixed(1)}%
+                </b>
               </span>
-              <Sparkline
-                values={outputRateSpark}
-                width={56}
-                height={14}
-                color="var(--purple)"
-                style="area"
-              />
             </button>
-          </>
-        ))}
-      </div>
-
-      {/* ── Inline stats strip ── */}
-      <div class="pipe-stats">
-        {latencyMs != null && (
-          <span class="pipe-stat">
-            <span class="pipe-stat-label">Latency</span>
-            <b>{latencyMs.toFixed(1)}ms</b>
-          </span>
-        )}
-        {p.batches?.inflight != null && (
-          <span class="pipe-stat">
-            <span class="pipe-stat-label">Inflight</span>
-            <b>{p.batches.inflight}</b>
-          </span>
-        )}
-        {(p.backpressure_stalls ?? 0) > 0 && (
-          <span class="pipe-stat">
-            <span class="pipe-stat-label">Stalls</span>
-            <Sparkline
-              values={stallSpark}
-              width={40}
-              height={12}
-              color="var(--warn)"
-              errThreshold={1}
-            />
-            <b class="text-warn">{p.backpressure_stalls}</b>
-          </span>
-        )}
-        {totalErrors > 0 && (
-          <span class="pipe-stat">
-            <span class="pipe-stat-label">Errors</span>
-            <Sparkline values={errorSpark} width={40} height={12} color="var(--err)" />
-            <b class="text-err">{totalErrors}</b>
-          </span>
-        )}
-        {stageBar && (
-          <span class="pipe-stat pipe-stat-stages">
-            <span class="pipe-stat-label">Stages</span>
-            <span class="stage-bar">
-              <span
-                class="stage-seg scan"
-                style={{ width: `${stageBar.scanPct}%` }}
-                title={`Scan: ${stageBar.scanPct.toFixed(0)}%`}
-              />
-              <span
-                class="stage-seg xfm"
-                style={{ width: `${stageBar.xfmPct}%` }}
-                title={`Transform: ${stageBar.xfmPct.toFixed(0)}%`}
-              />
-              <span
-                class="stage-seg out"
-                style={{ width: `${stageBar.outPct}%` }}
-                title={`Output: ${stageBar.outPct.toFixed(0)}%`}
-              />
-            </span>
-          </span>
-        )}
-      </div>
-
-      {/* ── Inspector panels (click a node) ── */}
-      {sel === "t" && (
-        <div class="inspector">
-          <div class="insp-header">
-            <span class="insp-title">Transform &mdash; SQL</span>
-            <button type="button" class="insp-close" onClick={() => setSel(null)}>
-              &times; close
-            </button>
+            <Arrow />
+            {p.outputs.map((out, i) => (
+              <>
+                {i > 0 && <Arrow />}
+                <button
+                  type="button"
+                  class={`pn out ${sel === `o${i}` ? "selected" : ""}`}
+                  onClick={() => toggle(`o${i}`)}
+                >
+                  <span class="pn-top">
+                    <HealthDot errors={out.errors} />
+                    <span class="pn-type">{typeLabel(out.type)}</span>
+                  </span>
+                  {!isGenericName(out.name) && <span class="pn-name">{out.name}</span>}
+                  <span class="pn-row">
+                    <span>rate</span>
+                    <b>{compRate(out, "bytes_total")}</b>
+                  </span>
+                  <Sparkline
+                    values={outputRateSpark}
+                    width={56}
+                    height={14}
+                    color="var(--purple)"
+                    style="area"
+                  />
+                </button>
+              </>
+            ))}
           </div>
-          <div class="sql-box">{p.transform.sql || "SELECT * FROM logs"}</div>
-          <div class="insp-grid">
-            <div class="insp-kv">
-              <div class="ik-l">Lines In</div>
-              <div class="ik-v">{fmt(p.transform.lines_in)}</div>
-            </div>
-            <div class="insp-kv">
-              <div class="ik-l">Lines Out</div>
-              <div class="ik-v">{fmt(p.transform.lines_out)}</div>
-            </div>
-            <div class="insp-kv">
-              <div class="ik-l">Drop Rate</div>
-              <div class="ik-v">{(p.transform.filter_drop_rate * 100).toFixed(1)}%</div>
-            </div>
-            {stages?.scan != null && (
-              <div class="insp-kv">
-                <div class="ik-l">Scan Time</div>
-                <div class="ik-v">{stages.scan.toFixed(3)}s</div>
-              </div>
+
+          {/* ── Inline stats strip ── */}
+          <div class="pipe-stats">
+            {latencyMs != null && (
+              <span class="pipe-stat">
+                <span class="pipe-stat-label">Latency</span>
+                <b>{latencyMs.toFixed(1)}ms</b>
+              </span>
             )}
-            {stages?.transform != null && (
-              <div class="insp-kv">
-                <div class="ik-l">Transform Time</div>
-                <div class="ik-v">{stages.transform.toFixed(3)}s</div>
-              </div>
+            {p.batches?.inflight != null && (
+              <span class="pipe-stat">
+                <span class="pipe-stat-label">Inflight</span>
+                <b>{p.batches.inflight}</b>
+              </span>
+            )}
+            {(p.backpressure_stalls ?? 0) > 0 && (
+              <span class="pipe-stat">
+                <span class="pipe-stat-label">Stalls</span>
+                <Sparkline
+                  values={stallSpark}
+                  width={40}
+                  height={12}
+                  color="var(--warn)"
+                  errThreshold={1}
+                />
+                <b class="text-warn">{p.backpressure_stalls}</b>
+              </span>
+            )}
+            {totalErrors > 0 && (
+              <span class="pipe-stat">
+                <span class="pipe-stat-label">Errors</span>
+                <Sparkline values={errorSpark} width={40} height={12} color="var(--err)" />
+                <b class="text-err">{totalErrors}</b>
+              </span>
+            )}
+            {stageBar && (
+              <span class="pipe-stat pipe-stat-stages">
+                <span class="pipe-stat-label">Stages</span>
+                <span class="stage-bar">
+                  <span
+                    class="stage-seg scan"
+                    style={{ width: `${stageBar.scanPct}%` }}
+                    title={`Scan: ${stageBar.scanPct.toFixed(0)}%`}
+                  />
+                  <span
+                    class="stage-seg xfm"
+                    style={{ width: `${stageBar.xfmPct}%` }}
+                    title={`Transform: ${stageBar.xfmPct.toFixed(0)}%`}
+                  />
+                  <span
+                    class="stage-seg out"
+                    style={{ width: `${stageBar.outPct}%` }}
+                    title={`Output: ${stageBar.outPct.toFixed(0)}%`}
+                  />
+                </span>
+              </span>
             )}
           </div>
-        </div>
-      )}
 
-      {sel?.startsWith("i") &&
-        (() => {
-          const idx = Number.parseInt(sel.slice(1), 10);
-          const inp = p.inputs[idx];
-          if (!inp) return null;
-          return (
+          {/* ── Inspector panels (click a node) ── */}
+          {sel === "t" && (
             <div class="inspector">
               <div class="insp-header">
-                <span class="insp-title">
-                  Input &mdash; {typeLabel(inp.type)}
-                  {!isGenericName(inp.name) ? ` · ${inp.name}` : ""}
-                </span>
+                <span class="insp-title">Transform &mdash; SQL</span>
                 <button type="button" class="insp-close" onClick={() => setSel(null)}>
                   &times; close
                 </button>
               </div>
+              <div class="sql-box">{p.transform.sql || "SELECT * FROM logs"}</div>
               <div class="insp-grid">
                 <div class="insp-kv">
-                  <div class="ik-l">Lines</div>
-                  <div class="ik-v">{fmt(inp.lines_total)}</div>
+                  <div class="ik-l">Lines In</div>
+                  <div class="ik-v">{fmt(p.transform.lines_in)}</div>
                 </div>
                 <div class="insp-kv">
-                  <div class="ik-l">Bytes</div>
-                  <div class="ik-v">{fmtBytes(inp.bytes_total)}</div>
+                  <div class="ik-l">Lines Out</div>
+                  <div class="ik-v">{fmt(p.transform.lines_out)}</div>
                 </div>
                 <div class="insp-kv">
-                  <div class="ik-l">Errors</div>
-                  <div class="ik-v">{inp.errors}</div>
+                  <div class="ik-l">Drop Rate</div>
+                  <div class="ik-v">{(p.transform.filter_drop_rate * 100).toFixed(1)}%</div>
                 </div>
-                {inp.parse_errors != null && inp.parse_errors > 0 && (
+                {stages?.scan != null && (
                   <div class="insp-kv">
-                    <div class="ik-l">Parse Errors</div>
-                    <div class="ik-v text-warn">{inp.parse_errors}</div>
+                    <div class="ik-l">Scan Time</div>
+                    <div class="ik-v">{stages.scan.toFixed(3)}s</div>
+                  </div>
+                )}
+                {stages?.transform != null && (
+                  <div class="insp-kv">
+                    <div class="ik-l">Transform Time</div>
+                    <div class="ik-v">{stages.transform.toFixed(3)}s</div>
                   </div>
                 )}
               </div>
             </div>
-          );
-        })()}
+          )}
 
-      {sel?.startsWith("o") &&
-        (() => {
-          const idx = Number.parseInt(sel.slice(1), 10);
-          const out = p.outputs[idx];
-          if (!out) return null;
-          return (
-            <div class="inspector">
-              <div class="insp-header">
-                <span class="insp-title">
-                  Output &mdash; {typeLabel(out.type)}
-                  {!isGenericName(out.name) ? ` · ${out.name}` : ""}
-                </span>
-                <button type="button" class="insp-close" onClick={() => setSel(null)}>
-                  &times; close
-                </button>
-              </div>
-              <div class="insp-grid">
-                <div class="insp-kv">
-                  <div class="ik-l">Lines</div>
-                  <div class="ik-v">{fmt(out.lines_total)}</div>
-                </div>
-                <div class="insp-kv">
-                  <div class="ik-l">Bytes</div>
-                  <div class="ik-v">{fmtBytes(out.bytes_total)}</div>
-                </div>
-                <div class="insp-kv">
-                  <div class="ik-l">Errors</div>
-                  <div class="ik-v" style={out.errors > 0 ? "color:var(--err)" : ""}>
-                    {out.errors}
+          {sel?.startsWith("i") &&
+            (() => {
+              const idx = Number.parseInt(sel.slice(1), 10);
+              const inp = p.inputs[idx];
+              if (!inp) return null;
+              return (
+                <div class="inspector">
+                  <div class="insp-header">
+                    <span class="insp-title">
+                      Input &mdash; {typeLabel(inp.type)}
+                      {!isGenericName(inp.name) ? ` · ${inp.name}` : ""}
+                    </span>
+                    <button type="button" class="insp-close" onClick={() => setSel(null)}>
+                      &times; close
+                    </button>
+                  </div>
+                  <div class="insp-grid">
+                    <div class="insp-kv">
+                      <div class="ik-l">Lines</div>
+                      <div class="ik-v">{fmt(inp.lines_total)}</div>
+                    </div>
+                    <div class="insp-kv">
+                      <div class="ik-l">Bytes</div>
+                      <div class="ik-v">{fmtBytes(inp.bytes_total)}</div>
+                    </div>
+                    <div class="insp-kv">
+                      <div class="ik-l">Errors</div>
+                      <div class="ik-v">{inp.errors}</div>
+                    </div>
+                    {inp.parse_errors != null && inp.parse_errors > 0 && (
+                      <div class="insp-kv">
+                        <div class="ik-l">Parse Errors</div>
+                        <div class="ik-v text-warn">{inp.parse_errors}</div>
+                      </div>
+                    )}
                   </div>
                 </div>
-              </div>
-            </div>
-          );
-        })()}
+              );
+            })()}
 
-      {/* ── Collapsible batch monitor ── */}
-      {traces.length > 0 && (
-        <Collapsible
-          title="Batch Monitor"
-          badge={<span class="trace-count">{traces.length} recent</span>}
-        >
-          <div class="pipe-traces">
-            <div class="pipe-traces-header">
-              <div class="t2-window-picker">
-                {POLL_OPTIONS.map((o) => (
-                  <button
-                    type="button"
-                    key={o.label}
-                    class={`t2-win-btn${pollMs === o.ms ? " active" : ""}`}
-                    onClick={() => setPollMs(o.ms)}
-                  >
-                    {o.label}
-                  </button>
-                ))}
+          {sel?.startsWith("o") &&
+            (() => {
+              const idx = Number.parseInt(sel.slice(1), 10);
+              const out = p.outputs[idx];
+              if (!out) return null;
+              return (
+                <div class="inspector">
+                  <div class="insp-header">
+                    <span class="insp-title">
+                      Output &mdash; {typeLabel(out.type)}
+                      {!isGenericName(out.name) ? ` · ${out.name}` : ""}
+                    </span>
+                    <button type="button" class="insp-close" onClick={() => setSel(null)}>
+                      &times; close
+                    </button>
+                  </div>
+                  <div class="insp-grid">
+                    <div class="insp-kv">
+                      <div class="ik-l">Lines</div>
+                      <div class="ik-v">{fmt(out.lines_total)}</div>
+                    </div>
+                    <div class="insp-kv">
+                      <div class="ik-l">Bytes</div>
+                      <div class="ik-v">{fmtBytes(out.bytes_total)}</div>
+                    </div>
+                    <div class="insp-kv">
+                      <div class="ik-l">Errors</div>
+                      <div class="ik-v" style={out.errors > 0 ? "color:var(--err)" : ""}>
+                        {out.errors}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+          {/* ── Batch monitor — directly visible, no nested collapse ── */}
+          {traces.length > 0 && (
+            <div class="pipe-traces">
+              <div class="pipe-traces-header">
+                <span>Batch Monitor</span>
+                <span class="trace-count">{traces.length} recent</span>
               </div>
+              <TraceExplorer traces={traces} />
             </div>
-            <TraceExplorer traces={traces} />
-          </div>
-        </Collapsible>
+          )}
+        </>
       )}
     </div>
   );
