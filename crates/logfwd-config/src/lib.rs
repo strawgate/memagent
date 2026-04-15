@@ -2439,6 +2439,32 @@ pipelines:
     }
 
     #[test]
+    fn generator_timestamp_rejects_non_logs_profiles() {
+        for profile in ["envoy", "cri_k8s", "wide", "narrow", "cloud_trail"] {
+            let yaml = format!(
+                r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: {profile}
+          timestamp:
+            start: "now"
+    outputs:
+      - type: "null"
+"#
+            );
+            let err = Config::load_str(&yaml).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("only supported for the logs profile"),
+                "profile={profile}: expected logs-only rejection: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn generator_timestamp_rejects_invalid_calendar_date() {
         let yaml = r#"
 pipelines:
@@ -2862,3 +2888,5 @@ pipelines:
         );
     }
 }
+mod tests_generator_unsupported;
+mod tests_static_labels;

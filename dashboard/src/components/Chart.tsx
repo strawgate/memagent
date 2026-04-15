@@ -20,13 +20,53 @@ export interface ChartConfig {
   readonly unit: string;
   readonly fmtAxis?: (v: number) => string;
   readonly yRange?: [number, number];
+  /** When set, `selectTimeSeries` splits by this attribute (e.g. "pipeline"). */
+  readonly splitBy?: string;
 }
 
-/** Build uPlot options for a chart. */
-function buildOpts(cfg: ChartConfig, width: number, now: number, age: number): uPlot.Options {
+/** Palette for multi-pipeline series. Cycles through these colors. */
+const SERIES_PALETTE = [
+  "#3b82f6",
+  "#22c55e",
+  "#f59e0b",
+  "#ef4444",
+  "#a78bfa",
+  "#ec4899",
+  "#14b8a6",
+  "#f97316",
+];
+
+/** Build uPlot options for a chart. `seriesCount` is the number of data series (pipelines). */
+function buildOpts(
+  cfg: ChartConfig,
+  width: number,
+  now: number,
+  age: number,
+  seriesCount: number
+): uPlot.Options {
   const { CHART_HEIGHT, CHART_PADDING, CHART_FONT, MAX_WINDOW_SEC, MIN_WINDOW_SEC } =
     CHART_CONSTANTS;
   const win = Math.max(MIN_WINDOW_SEC, Math.min(age, MAX_WINDOW_SEC));
+
+  // Build series definitions: for each data series, add a solid line + a dashed projection.
+  const series: uPlot.Series[] = [{}]; // index 0 = x-axis
+  for (let i = 0; i < seriesCount; i++) {
+    const color = seriesCount === 1 ? cfg.color : SERIES_PALETTE[i % SERIES_PALETTE.length];
+    series.push({
+      stroke: color,
+      fill: seriesCount === 1 ? `${color}33` : undefined,
+      width: 2,
+      points: { show: false },
+      paths: uPlot.paths.spline?.(),
+    });
+    series.push({
+      stroke: `${color}66`,
+      width: 1.5,
+      dash: [5, 4],
+      points: { show: false },
+    });
+  }
+
   return {
     width,
     height: CHART_HEIGHT,
@@ -74,22 +114,7 @@ function buildOpts(cfg: ChartConfig, width: number, now: number, age: number): u
         },
       },
     },
-    series: [
-      {},
-      {
-        stroke: cfg.color,
-        fill: `${cfg.color}33`,
-        width: 2,
-        points: { show: false },
-        paths: uPlot.paths.spline?.(),
-      },
-      {
-        stroke: `${cfg.color}66`,
-        width: 1.5,
-        dash: [5, 4],
-        points: { show: false },
-      },
-    ],
+    series,
   };
 }
 
@@ -98,15 +123,85 @@ interface Props {
   config: ChartConfig;
 }
 
+/**
+ * Build aligned uPlot data from a multi-series TimeSeriesFrame.
+ * Returns [xs, ys1, ye1, ys2, ye2, ...] where each series pair is (values, projection).
+ */
+function buildAlignedData(
+  frame: TimeSeriesFrame,
+  now: number
+): { data: uPlot.AlignedData; seriesCount: number; age: number } {
+  const allSeries = frame.series;
+  const seriesCount = allSeries.length;
+  if (seriesCount === 0) return { data: [[]], seriesCount: 0, age: 0 };
+
+  // Collect all unique timestamps across all series.
+  const timeSet = new Set<number>();
+  for (const s of allSeries) {
+    for (const p of s.points) {
+      if (p.timeMs != null) timeSet.add(p.timeMs);
+    }
+  }
+  const times = Array.from(timeSet).sort((a, b) => a - b);
+  const n = times.length;
+  if (n === 0) return { data: [[]], seriesCount, age: 0 };
+
+  const age = now - times[0] / 1000;
+
+  // Build lookup per series: timeMs → value.
+  const xs = new Array<number>(n + 1);
+  for (let i = 0; i < n; i++) xs[i] = times[i] / 1000;
+  xs[n] = now;
+
+  const data: (number | null)[][] = [xs];
+  for (const s of allSeries) {
+    const lookup = new Map<number, number>();
+    for (const p of s.points) {
+      if (p.timeMs != null) lookup.set(p.timeMs, p.value);
+    }
+    const lastVal = s.points.length > 0 ? s.points[s.points.length - 1].value : null;
+
+    // Find the last timestamp index where this series has actual data.
+    let lastIdx = -1;
+    for (let i = n - 1; i >= 0; i--) {
+      if (lookup.has(times[i])) {
+        lastIdx = i;
+        break;
+      }
+    }
+
+    const ys = new Array<number | null>(n + 1);
+    const ye = new Array<number | null>(n + 1);
+    for (let i = 0; i < n; i++) {
+      ys[i] = lookup.get(times[i]) ?? null;
+      // Anchor projection at this series' own last data point.
+      ye[i] = i === lastIdx ? lastVal : null;
+    }
+    ys[n] = null;
+    ye[n] = lastVal;
+
+    data.push(ys, ye);
+  }
+
+  return { data: data as uPlot.AlignedData, seriesCount, age };
+}
+
 export function Chart({ frame, config }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
   const roRef = useRef<ResizeObserver | null>(null);
   const rafRef = useRef<number>(0);
+  const seriesCountRef = useRef(0);
   // Store frame in a ref so the RAF loop reads latest data without
   // tearing down the effect (and uPlot instance) on every update.
   const frameRef = useRef(frame);
   frameRef.current = frame;
+
+  // Cache buildAlignedData result — only rebuild when frame identity changes.
+  const cachedAlignedRef = useRef<{
+    frame: TimeSeriesFrame;
+    result: ReturnType<typeof buildAlignedData>;
+  } | null>(null);
 
   // RAF loop: creates the plot when data arrives, updates each frame.
   useEffect(() => {
@@ -114,31 +209,52 @@ export function Chart({ frame, config }: Props) {
     const { CHART_HEIGHT, MIN_WINDOW_SEC, MAX_WINDOW_SEC } = CHART_CONSTANTS;
 
     const tick = () => {
-      const pts = frameRef.current.series[0]?.points ?? [];
+      const now = Date.now() / 1000;
+      const currentFrame = frameRef.current;
 
-      if (pts.length < 2) {
+      // Reuse cached aligned data if the frame hasn't changed.
+      let aligned: ReturnType<typeof buildAlignedData>;
+      if (cachedAlignedRef.current && cachedAlignedRef.current.frame === currentFrame) {
+        aligned = cachedAlignedRef.current.result;
+        // Update only the synthetic trailing point (x-scale "now" marker).
+        const xs = aligned.data[0] as number[];
+        if (xs.length > 0) xs[xs.length - 1] = now;
+      } else {
+        aligned = buildAlignedData(currentFrame, now);
+        cachedAlignedRef.current = { frame: currentFrame, result: aligned };
+      }
+      const { data, seriesCount } = aligned;
+      // Recompute age from live `now` so the x-axis window stays current
+      // even when the cached aligned data is reused across ticks.
+      const xs = data[0] as number[];
+      const age = xs.length > 0 ? now - xs[0] : 0;
+      const totalPoints = xs.length;
+
+      if (totalPoints < 2) {
         if (plotRef.current) {
+          plotRef.current.destroy();
+          plotRef.current = null;
+          seriesCountRef.current = 0;
+          roRef.current?.disconnect();
+          roRef.current = null;
+        }
+      } else {
+        // Rebuild uPlot if series count changed (pipelines added/removed).
+        if (plotRef.current && seriesCount !== seriesCountRef.current) {
           plotRef.current.destroy();
           plotRef.current = null;
           roRef.current?.disconnect();
           roRef.current = null;
         }
-      } else {
-        const now = Date.now() / 1000;
-        const firstTimeMs = pts[0].timeMs ?? Date.now();
-        const age = now - firstTimeMs / 1000;
 
         if (!plotRef.current && el?.offsetWidth) {
-          const times = pts.map((p) => (p.timeMs ?? 0) / 1000);
-          const vals = pts.map((p) => p.value);
-          const lastVal = vals[vals.length - 1];
-          const initYe = vals.map((_, i) => (i === vals.length - 1 ? lastVal : null));
           const plot = new uPlot(
-            buildOpts(config, el.offsetWidth, now, age),
-            [times, vals, initYe],
+            buildOpts(config, el.offsetWidth, now, age, seriesCount),
+            data,
             el
           );
           plotRef.current = plot;
+          seriesCountRef.current = seriesCount;
 
           const ro = new ResizeObserver(() => {
             if (el.offsetWidth > 0) plot.setSize({ width: el.offsetWidth, height: CHART_HEIGHT });
@@ -148,24 +264,9 @@ export function Chart({ frame, config }: Props) {
         }
 
         if (plotRef.current) {
-          const n = pts.length;
-          const lastVal = pts[n - 1].value;
           const win = Math.max(MIN_WINDOW_SEC, Math.min(age, MAX_WINDOW_SEC));
-
-          const xs: number[] = new Array(n + 1);
-          const ys: (number | null)[] = new Array(n + 1);
-          const ye: (number | null)[] = new Array(n + 1);
-          for (let i = 0; i < n; i++) {
-            xs[i] = (pts[i].timeMs ?? 0) / 1000;
-            ys[i] = pts[i].value;
-            ye[i] = i === n - 1 ? lastVal : null;
-          }
-          xs[n] = now;
-          ys[n] = null;
-          ye[n] = lastVal;
-
           plotRef.current.batch(() => {
-            plotRef.current?.setData([xs, ys, ye]);
+            plotRef.current?.setData(data);
             plotRef.current?.setScale("x", { min: now - win, max: now });
           });
         }
@@ -179,16 +280,23 @@ export function Chart({ frame, config }: Props) {
       cancelAnimationFrame(rafRef.current);
       plotRef.current?.destroy();
       plotRef.current = null;
+      seriesCountRef.current = 0;
       roRef.current?.disconnect();
       roRef.current = null;
     };
   }, [config]);
 
-  const hasData = (frame.series[0]?.points.length ?? 0) >= 2;
+  // Count unique timestamps — aligns with buildAlignedData's data[0].length check.
+  const timeSet = new Set<number>();
+  for (const s of frame.series) {
+    for (const p of s.points) {
+      if (p.timeMs != null) timeSet.add(p.timeMs);
+    }
+  }
 
   return (
     <div ref={containerRef} class="chart-container">
-      {!hasData && <div class="chart-placeholder">waiting for data…</div>}
+      {timeSet.size < 2 && <div class="chart-placeholder">waiting for data…</div>}
     </div>
   );
 }

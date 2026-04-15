@@ -1,0 +1,18 @@
+<<<<<<< SEARCH
+                                if !is_record_profile
+                                    && (!generator.attributes.is_empty()
+                                        || generator.sequence.is_some()
+=======
+                                if let Some((key, _)) = generator
+                                    .attributes
+                                    .iter()
+                                    .find(|(_, v)| matches!(v, GeneratorAttributeValueConfig::Unsupported(_)))
+                                {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': generator.attributes '{key}' has an unsupported type (expected scalar value)"
+                                    )));
+                                }
+                                if !is_record_profile
+                                    && (!generator.attributes.is_empty()
+                                        || generator.sequence.is_some()
+>>>>>>> REPLACE

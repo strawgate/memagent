@@ -18,15 +18,22 @@ export function ChartGrid({ store, charts, tick: _tick }: Props) {
           metricName: cfg.metricName,
           intervalMs: INTERVAL_MS,
           reduce: "last",
+          ...(cfg.splitBy ? { splitBy: cfg.splitBy } : {}),
         });
-        const latest = frame.series[0]?.points;
-        const lastPt = latest?.[latest.length - 1];
-        const displayVal =
-          lastPt != null
-            ? cfg.fmtAxis
-              ? cfg.fmtAxis(lastPt.value)
-              : String(Math.round(lastPt.value))
-            : "-";
+        // Sum latest values across all series (e.g. multiple pipelines).
+        let displayVal = "-";
+        let total = 0;
+        let hasValue = false;
+        for (const s of frame.series) {
+          const last = s.points[s.points.length - 1];
+          if (last != null) {
+            total += last.value;
+            hasValue = true;
+          }
+        }
+        if (hasValue) {
+          displayVal = cfg.fmtAxis ? cfg.fmtAxis(total) : String(Math.round(total));
+        }
         return (
           <div class="chart-card" key={cfg.metricName}>
             <div class="chart-head">

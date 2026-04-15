@@ -1,0 +1,109 @@
+---
+title: "Scanner"
+description: "SIMD-accelerated zero-copy JSON to Arrow conversion"
+---
+
+import ScannerAnimation from '../../../components/ScannerAnimation.astro';
+import PrefixXorAnimation from '../../../components/PrefixXorAnimation.astro';
+import ZeroCopyDiagram from '../../../components/ZeroCopyDiagram.astro';
+import PushdownExplorer from '../../../components/PushdownExplorer.astro';
+
+The scanner converts newline-delimited JSON into Apache Arrow RecordBatches
+using SIMD-accelerated structural classification — **2.8 million lines per second** on a single core.
+
+Step through the process below. Click any step or press play to watch the scanner work.
+
+<ScannerAnimation />
+
+## The log line
+
+A JSON log line arrives as raw bytes — one long string with no structure that a CPU can use directly. logfwd needs to find all the field names, values, and their types without parsing the JSON character by character.
+
+The challenge: a typical log line has 20+ fields. At 2.8 million lines per second, that's 56 million fields per second. Byte-by-byte parsing can't keep up.
+
+## SIMD structural detection
+
+logfwd solves this with **SIMD** — Single Instruction, Multiple Data. One CPU instruction compares 32 bytes simultaneously (on AVX2) against all 10 structural JSON characters:
+
+`"` `\` `,` `:` `{` `}` `[` `]` `\n` `space`
+
+Each match produces a bit in a 64-bit bitmask. After one pass over the buffer, logfwd has a complete map of every structural character's position — computed in bulk, not one byte at a time.
+
+:::tip[Why this matters]
+Finding the next comma in a traditional parser means scanning forward byte-by-byte — O(n). With the bitmask, it's `trailing_zeros(comma_mask >> position)` — a single CPU instruction, O(1). This is the same technique that powers simdjson.
+:::
+
+## String interior mask
+
+Not all structural characters are real. A comma inside `"hello, world"` is part of a string value, not a field separator. logfwd uses a pipeline of bit-manipulation tricks — escape detection, prefix XOR propagation, and cross-block carry — to compute which bytes are inside JSON strings.
+
+Step through the algorithm below to see how quote positions become a string interior bitmask.
+
+<PrefixXorAnimation />
+
+### How prefix_xor works
+
+The `prefix_xor` function is the key insight borrowed from simdjson. Given the filtered real-quote bitmask, it produces a running parity mask — bit *i* is set iff an odd number of real quotes have been seen at or before *i*. A final `& !quotes` step strips the quote positions themselves, yielding the pure string interior mask. All of this takes just 6 XOR-shift operations — no loops, no branches.
+
+Each shift doubles the "reach" of each set bit. After shifting by 1, 2, 4, 8, 16, and 32, every bit between an opening and closing quote has been toggled an odd number of times (setting it to 1), while bits outside strings are toggled an even number of times (remaining 0).
+
+This is a prefix-sum in GF(2) — the XOR equivalent of a running total. It's O(log n) operations for n bits, compared to O(n) for a naive character-by-character toggle.
+
+:::note[Formally verified]
+`prefix_xor` is proven correct by Kani bounded model checking over all 2^64 inputs. The proof (`verify_prefix_xor` in `structural.rs`) confirms it matches a naive bit-by-bit running XOR oracle.
+:::
+
+Structural characters inside strings get masked out. Only the real structural positions survive.
+
+## Usable positions
+
+The final bitmask contains only structural characters **outside** strings. These are the only positions the field extractor needs to visit. Every colon marks a key-value boundary. Every comma marks a field boundary.
+
+## Field extraction
+
+The field extractor uses the bitmask to jump directly from colon to colon. For each colon:
+
+1. Read the key to the left (quote bitmask gives start/end)
+2. Resolve the key name to a column index (HashMap, once per batch)
+3. Read the value to the right (detect type: int/float/string/bool/null)
+4. Append to the column builder
+
+No scanning. Each field is extracted in constant time.
+
+## Field pushdown
+
+Before scanning, logfwd analyzes your SQL query and builds a `ScanConfig` listing only the columns you reference. The scanner still reads each key to check `is_wanted()`, but skips value parsing and memory allocation for unwanted fields. On wide data (20+ fields), this gives 2-3x throughput improvement.
+
+Try it below — select fields or choose a preset to see how pushdown affects throughput on a realistic 20-field log line.
+
+<PushdownExplorer />
+
+## All fields extracted
+
+All four fields extracted in a single pass through the buffer. Each field becomes a typed Arrow column — `level` as Utf8, `status` as Int64, `duration_ms` as Float64. The result is a columnar RecordBatch ready for DataFusion SQL.
+
+## Zero-copy mode
+
+The scanner produces Arrow `StringViewArray` columns — 16-byte views that point directly into the input buffer. String data is never copied.
+
+<ZeroCopyDiagram />
+
+For persistence (Arrow IPC segments), the scanner has a second mode (`scan_detached`) that produces owned `StringArray` columns via a single bulk copy at batch finalization.
+
+## Performance
+
+| Dataset | Fields | Throughput |
+|---------|--------|-----------|
+| Narrow (3 fields) | 3 | 3.4M lines/sec |
+| Simple (6 fields) | 6 | 2.0M lines/sec |
+| Wide (20 fields) | 20 | 560K lines/sec |
+| Wide with pushdown (20 fields, 2 projected) | 20 → 2 | 1.4M lines/sec |
+
+## What's next
+
+| Topic | Where to go |
+|-------|-------------|
+| See the full pipeline | [Pipeline Explorer](/memagent/learn/) (interactive) |
+| Understand why columnar matters | [Columnar](/memagent/learn/columnar/) |
+| Performance numbers | [Performance](/memagent/learn/performance/) |
+| Configure SQL transforms | [SQL Transforms](/memagent/configuration/sql-transforms/) |
