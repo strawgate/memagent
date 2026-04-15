@@ -19,6 +19,10 @@ pub mod shared;
 pub mod wide;
 
 #[cfg(test)]
+mod generator_tests;
+#[cfg(test)]
+mod integration_tests;
+#[cfg(test)]
 mod test_support;
 
 /// Controls the complexity/size of generated lines.

@@ -365,6 +365,10 @@ impl OtapSink {
                 encoder.write_all(&self.proto_buf)?;
                 encoder.finish()
             }
+            Compression::Lz4 => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "LZ4 compression is not supported for OTAP",
+            )),
             Compression::None => Ok(self.proto_buf.clone()),
         }
     }
@@ -379,7 +383,8 @@ impl OtapSink {
         match self.config.compression {
             Compression::Zstd => req = req.header("Content-Encoding", "zstd"),
             Compression::Gzip => req = req.header("Content-Encoding", "gzip"),
-            Compression::None => {}
+            // Lz4 is rejected by maybe_compress() above; no header should be set.
+            Compression::Lz4 | Compression::None => {}
         }
 
         for (k, v) in &self.config.headers {
@@ -565,7 +570,7 @@ mod tests {
             0x1a, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01,
         ];
         let err = generated_fast::decode_batch_arrow_records_generated_fast(&data).unwrap_err();
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
         assert_eq!(err.to_string(), "overflow");
     }
     use arrow::array::{Int64Array, StringArray};

@@ -72,6 +72,6 @@ eBPF (Linux), EndpointSecurity (macOS), or ETW (Windows) sensor. Arrow-native co
 
 Emit synthetic JSON log lines for benchmarking and pipeline testing. Configurable EPS, batch size, and timestamp generation.
 
-**Key properties:** Profiles: `logs` (synthetic requests) and `record` (flat JSON from attributes). Zero external dependencies.
+**Key properties:** 7 built-in profiles: `logs` (synthetic requests), `record` (flat JSON from attributes), `envoy` (proxy access logs), `cri_k8s` (CRI Kubernetes logs), `wide` (20+ field structured logs), `narrow` (minimal 5-field logs), and `cloud_trail` (AWS audit events). Zero external dependencies.
 
 **Internal stages:** Profile Select → Row Generate → JSON Serialize → Batch Emit

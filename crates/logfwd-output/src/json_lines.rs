@@ -172,6 +172,10 @@ impl JsonLinesSink {
                     Vec::with_capacity(cap),
                 ))
             }
+            Compression::Lz4 => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "LZ4 unsupported for JSON lines",
+            )),
         }
     }
 }
