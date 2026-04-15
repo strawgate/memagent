@@ -17,8 +17,6 @@
     "knip": "knip"
   },
   "dependencies": {
-    "@otlpkit/otlpjson": "^0.2.3",
-    "@otlpkit/views": "^0.2.3",
     "@preact/signals": "^2.9.0",
     "preact": "^10.29.0",
     "uplot": "^1.6.32"

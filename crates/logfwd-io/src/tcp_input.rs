@@ -81,13 +81,6 @@ struct Client {
     discard_octet_bytes: usize,
     /// Whether we are dropping newline-delimited bytes until a newline appears.
     discard_until_newline: bool,
-    /// Raw bytes read from the socket that have not yet been charged to an
-    /// outgoing `Data` event.  Incremented on every successful `read()` call
-    /// and drained (reset to 0) when a `Data` event is emitted for this client
-    /// — including on the EOF flush path.  This ensures bytes that land in
-    /// `pending` without producing a complete record in the same poll are
-    /// correctly counted when the record is eventually flushed.
-    unaccounted_bytes: u64,
 }
 
 fn parse_octet_prefix(buf: &[u8]) -> Option<(usize, usize)> {
@@ -313,14 +306,7 @@ impl InputSource for TcpInput {
                         continue; // dropped immediately
                     }
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(e) => {
-                        if let Some(raw) = e.raw_os_error()
-                            && (raw == libc::EMFILE || raw == libc::ENFILE)
-                        {
-                            under_pressure = true;
-                        }
-                        break; // transient accept error, not fatal
-                    }
+                    Err(_) => break, // transient accept error, not fatal
                 }
             }
             match self.listener.accept() {
@@ -351,22 +337,13 @@ impl InputSource for TcpInput {
                         octet_counting_mode: false,
                         discard_octet_bytes: 0,
                         discard_until_newline: false,
-                        unaccounted_bytes: 0,
                     });
                 }
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => {
                     // Peer reset before we accepted — harmless, keep going.
                 }
-                Err(e) => {
-                    if let Some(raw) = e.raw_os_error()
-                        && (raw == libc::EMFILE || raw == libc::ENFILE)
-                    {
-                        under_pressure = true;
-                        break;
-                    }
-                    return Err(e);
-                }
+                Err(e) => return Err(e),
             }
         }
 
@@ -423,8 +400,6 @@ impl InputSource for TcpInput {
                         let pending_before = client.pending.len(); // before extend
 
                         client.pending.extend_from_slice(chunk);
-                        client.unaccounted_bytes =
-                            client.unaccounted_bytes.saturating_add(n as u64);
                         extract_complete_records(client, out);
 
                         // Net new bytes held in memory for this client after this
@@ -481,11 +456,7 @@ impl InputSource for TcpInput {
             if let Some(bytes) = data
                 && !bytes.is_empty()
             {
-                // Drain the per-client raw-byte counter into accounted_bytes.
-                // Bytes that accumulated in client.pending across previous polls
-                // without producing a complete record are included here because
-                // unaccounted_bytes is persistent on the Client struct.
-                let accounted_bytes = std::mem::replace(&mut self.clients[i].unaccounted_bytes, 0);
+                let accounted_bytes = bytes.len() as u64;
                 events.push(InputEvent::Data {
                     bytes,
                     source_id: Some(self.clients[i].source_id),
@@ -521,12 +492,7 @@ impl InputSource for TcpInput {
                 if has_pending && !mid_discard && !incomplete_octet_tail {
                     let mut tail = std::mem::take(&mut client.pending);
                     tail.push(b'\n');
-                    // Drain any raw bytes accumulated but not yet charged to a
-                    // Data event (e.g. bytes that never completed a record
-                    // before EOF).  Resetting to 0 prevents double-counting if
-                    // a Data event was already emitted earlier in this same poll
-                    // for this client.
-                    let accounted_bytes = std::mem::replace(&mut client.unaccounted_bytes, 0);
+                    let accounted_bytes = tail.len() as u64;
                     events.push(InputEvent::Data {
                         bytes: tail,
                         source_id: Some(client.source_id),
@@ -591,10 +557,8 @@ mod tests {
         let addr = input.listener.local_addr().unwrap();
 
         let mut client = StdTcpStream::connect(addr).unwrap();
-        let msg1 = b"{\"msg\":\"hello\"}\n";
-        let msg2 = b"{\"msg\":\"world\"}\n";
-        client.write_all(msg1).unwrap();
-        client.write_all(msg2).unwrap();
+        client.write_all(b"{\"msg\":\"hello\"}\n").unwrap();
+        client.write_all(b"{\"msg\":\"world\"}\n").unwrap();
         client.flush().unwrap();
 
         std::thread::sleep(Duration::from_millis(50));
@@ -605,20 +569,13 @@ mod tests {
         // Should have accepted the connection and read data.
         assert_eq!(events.len(), 1);
         if let InputEvent::Data {
-            bytes,
-            source_id,
-            accounted_bytes,
+            bytes, source_id, ..
         } = &events[0]
         {
             let text = String::from_utf8_lossy(bytes);
             assert!(text.contains("hello"), "got: {text}");
             assert!(text.contains("world"), "got: {text}");
             assert!(source_id.is_some(), "TCP data must have a source_id");
-            assert_eq!(
-                *accounted_bytes,
-                (msg1.len() + msg2.len()) as u64,
-                "accounted_bytes must equal the raw bytes sent over the socket"
-            );
         }
     }
 

@@ -18,6 +18,7 @@ bytes = "1"
 criterion = { version = "0.7", features = ["html_reports"] }
 datafusion = { workspace = true }
 dhat = { version = "0.3", optional = true }
+fastrand = "2"
 flate2 = "1"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }

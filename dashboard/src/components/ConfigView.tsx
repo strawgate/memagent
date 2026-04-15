@@ -19,36 +19,16 @@ function highlightYaml(yaml: string): string {
 
 export function ConfigView() {
   const [config, setConfig] = useState<ConfigResponse | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    let mounted = true;
-    api.config().then(
-      ({ data, errorMessage }) => {
-        if (!mounted) return;
+    if (!loaded) {
+      setLoaded(true);
+      api.config().then((data) => {
         if (data) setConfig(data);
-        else setErrorMsg(errorMessage ?? "Failed to load configuration.");
-      },
-      () => {
-        if (!mounted) return;
-        setErrorMsg("Failed to load configuration.");
-      }
-    );
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  if (errorMsg && !config) {
-    return (
-      <div class="section">
-        <div class="heading">Config</div>
-        <div class="yaml" style="color:var(--t4)">
-          {errorMsg}
-        </div>
-      </div>
-    );
-  }
+      });
+    }
+  }, [loaded]);
 
   return (
     <div class="section">

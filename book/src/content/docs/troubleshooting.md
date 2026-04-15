@@ -211,6 +211,6 @@ curl -s http://localhost:9090/admin/v1/stats | jq .
 
 | Topic | Where to go |
 |-------|-------------|
-| Check pipeline metrics | [Monitoring & Diagnostics](/deployment/monitoring/) |
-| Review your config | [YAML Reference](/configuration/reference/) |
-| Understand the pipeline | [Pipeline Explorer](/how-it-works/) (interactive) |
+| Check pipeline metrics | [Monitoring & Diagnostics](/memagent/deployment/monitoring/) |
+| Review your config | [YAML Reference](/memagent/configuration/reference/) |
+| Understand the pipeline | [Pipeline Explorer](/memagent/how-it-works/) (interactive) |

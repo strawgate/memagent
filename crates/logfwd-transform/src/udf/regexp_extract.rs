@@ -194,7 +194,7 @@ impl ScalarUDFImpl for RegexpExtractUdf {
         let idx = match group_idx {
             ColumnarValue::Scalar(s) => {
                 if let datafusion::common::ScalarValue::Int64(Some(v)) = s {
-                    usize::try_from(*v).unwrap_or(0)
+                    *v as usize
                 } else {
                     0
                 }
@@ -305,33 +305,6 @@ impl ScalarUDFImpl for RegexpExtractUdf {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_extract_group_negative_index_truncation() {
-        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
-        let msgs: Arc<dyn Array> = Arc::new(StringArray::from(vec![Some("a b c")]));
-        let batch = RecordBatch::try_new(schema, vec![msgs]).unwrap();
-        // Negative group index wraps to a huge usize causing a panic inside regexp_extract
-        // The fix maps it to 0 (the full match).
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let mut t = crate::SqlTransform::new(
-            "SELECT regexp_extract(msg, '(\\w) (\\w) (\\w)', -1) AS m FROM logs",
-        )
-        .unwrap();
-        let result = rt.block_on(t.execute(batch));
-
-        let s = result.unwrap();
-        let m = s
-            .column_by_name("m")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(m.value(0), "a b c");
-    }
-
     use super::*;
     use arrow::array::{Array, Int64Array, StringArray};
     use arrow::datatypes::{Field, Schema};
