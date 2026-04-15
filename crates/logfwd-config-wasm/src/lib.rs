@@ -442,6 +442,7 @@ pub fn get_output_snippet(id: &str) -> Option<String> {
 
 fn serde_wasm_bindgen_or_json<T: serde::Serialize + ?Sized>(value: &T) -> JsValue {
     // Serialize to JSON string then parse — avoids needing serde-wasm-bindgen.
-    let json = serde_json::to_string(value).unwrap_or_else(|_| "[]".into());
-    js_sys::JSON::parse(&json).unwrap_or(JsValue::NULL)
+    // All callers pass compile-time static data; serialization cannot fail.
+    let json = serde_json::to_string(value).expect("static template data serialization failed");
+    js_sys::JSON::parse(&json).expect("static template data produced invalid JSON")
 }

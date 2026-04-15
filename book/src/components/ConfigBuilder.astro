@@ -678,6 +678,7 @@
       tile.className = 'cb-tile' + (t.id === selectedId ? ' cb-selected' : '');
       tile.type = 'button';
       tile.title = t.description || '';
+      tile.setAttribute('aria-pressed', t.id === selectedId ? 'true' : 'false');
       tile.innerHTML = `
         <div class="cb-tile-icon">${renderIcon(t.id)}</div>
         <span>${t.label}</span>
@@ -690,13 +691,17 @@
   // ── Update tile selection highlights ─────────────────────────
   function refreshInputTiles() {
     inputGrid.querySelectorAll('.cb-tile').forEach((tile, i) => {
-      tile.classList.toggle('cb-selected', inputs[i]?.id === selectedInput);
+      const selected = inputs[i]?.id === selectedInput;
+      tile.classList.toggle('cb-selected', selected);
+      tile.setAttribute('aria-pressed', selected ? 'true' : 'false');
     });
   }
 
   function refreshOutputTiles() {
     outputGrid.querySelectorAll('.cb-tile').forEach((tile, i) => {
-      tile.classList.toggle('cb-selected', outputs[i]?.id === selectedOutput);
+      const selected = outputs[i]?.id === selectedOutput;
+      tile.classList.toggle('cb-selected', selected);
+      tile.setAttribute('aria-pressed', selected ? 'true' : 'false');
     });
   }
 
@@ -841,7 +846,8 @@
     try {
       await init();
     } catch (e) {
-      STATUS.innerHTML = `<span style="color:var(--sl-color-red)">Failed to load config builder: ${e}</span>`;
+      STATUS.textContent = `Failed to load config builder: ${String(e)}`;
+      STATUS.style.color = 'var(--sl-color-red)';
       return;
     }
 
