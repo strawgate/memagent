@@ -203,7 +203,7 @@ impl S3InputSettings {
             visibility_timeout_secs: visibility_timeout_secs
                 .unwrap_or(DEFAULT_VISIBILITY_TIMEOUT_SECS),
             compression_override,
-            poll_interval_ms: poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS),
+            poll_interval_ms: poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS).max(1),
         })
     }
 }
