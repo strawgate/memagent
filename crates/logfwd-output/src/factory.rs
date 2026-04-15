@@ -178,24 +178,27 @@ pub fn build_sink_factory(
                 ))
                 .pool_max_idle_per_host(64);
 
+            #[allow(clippy::collapsible_if)]
             if let Some(tls) = &cfg.tls {
                 if tls.insecure_skip_verify {
                     client_builder = client_builder.danger_accept_invalid_certs(true);
                 }
-                if let Some(ca) = &tls.ca_file
-                    && let Ok(ca_cert) = std::fs::read(ca)
-                    && let Ok(cert) = reqwest::Certificate::from_pem(&ca_cert)
-                {
-                    client_builder = client_builder.add_root_certificate(cert);
+                if let Some(ca) = &tls.ca_file {
+                    if let Ok(ca_cert) = std::fs::read(ca) {
+                        if let Ok(cert) = reqwest::Certificate::from_pem(&ca_cert) {
+                            client_builder = client_builder.add_root_certificate(cert);
+                        }
+                    }
                 }
-                if let (Some(cert), Some(key)) = (&tls.cert_file, &tls.key_file)
-                    && let (Ok(cert_data), Ok(key_data)) = (std::fs::read(cert), std::fs::read(key))
-                {
-                    let mut pem = cert_data;
-                    pem.push(b'\n');
-                    pem.extend(key_data);
-                    if let Ok(identity) = reqwest::Identity::from_pem(&pem) {
-                        client_builder = client_builder.identity(identity);
+                if let (Some(cert), Some(key)) = (&tls.cert_file, &tls.key_file) {
+                    if let (Ok(cert_data), Ok(key_data)) = (std::fs::read(cert), std::fs::read(key))
+                    {
+                        let mut pem = cert_data;
+                        pem.push(b'\n');
+                        pem.extend(key_data);
+                        if let Ok(identity) = reqwest::Identity::from_pem(&pem) {
+                            client_builder = client_builder.identity(identity);
+                        }
                     }
                 }
             }
@@ -212,6 +215,18 @@ pub fn build_sink_factory(
                     "output '{name}': otlp client builder error: {e}"
                 ))
             })?;
+
+            if cfg.retry_attempts.is_some()
+                || cfg.retry_initial_backoff_ms.is_some()
+                || cfg.retry_max_backoff_ms.is_some()
+                || cfg.batch_size.is_some()
+                || cfg.batch_timeout_ms.is_some()
+            {
+                tracing::warn!(
+                    "output '{}': retry and batching configuration options are currently handled by the pipeline runner and are not applied directly in the otlp sink yet.",
+                    name
+                );
+            }
 
             let factory = OtlpSinkFactory::new(
                 name.to_string(),
