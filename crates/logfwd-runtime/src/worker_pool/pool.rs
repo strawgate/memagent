@@ -434,6 +434,10 @@ impl OutputWorkerPool {
     /// 2. **Wait**: join all worker tasks (with `graceful_timeout`).
     /// 3. **Force**: cancel any tasks still running after the timeout.
     pub async fn drain(&mut self, graceful_timeout: Duration) {
+        // Set is_draining immediately so any concurrent submit() calls that
+        // race with the start of drain are rejected, closing the window between
+        // the guard check in submit() and the actual teardown below.
+        self.is_draining = true;
         self.output_health
             .set_pool_health(ComponentHealth::Stopping);
         let mut forced_abort = false;
