@@ -559,6 +559,68 @@ pub(super) fn build_input_state(
                 stats,
             });
         }
+        InputTypeConfig::S3(s) => {
+            let s3_cfg = &s.s3;
+
+            #[cfg(not(feature = "s3"))]
+            {
+                let _ = s3_cfg;
+                return Err(format!(
+                    "input '{name}': S3 input requires the 's3' feature \
+                     (rebuild with --features s3)"
+                ));
+            }
+
+            #[cfg(feature = "s3")]
+            {
+                use logfwd_io::s3_input::decompress::Compression;
+                use logfwd_io::s3_input::{S3Input, S3InputSettings};
+
+                let compression_override: Option<Compression> = match s3_cfg.compression.as_deref()
+                {
+                    None => None,
+                    Some(s) if s.eq_ignore_ascii_case("auto") => None,
+                    Some(s) => match Compression::from_config_str(s) {
+                        Some(c) => Some(c),
+                        None => {
+                            return Err(format!(
+                                "input '{name}': unknown S3 compression value '{s}'"
+                            ));
+                        }
+                    },
+                };
+
+                let settings = S3InputSettings::from_fields(
+                    s3_cfg.bucket.clone(),
+                    s3_cfg.region.clone(),
+                    s3_cfg.endpoint.clone(),
+                    s3_cfg.prefix.clone(),
+                    s3_cfg.sqs_queue_url.clone(),
+                    s3_cfg.start_after.clone(),
+                    s3_cfg.access_key_id.clone(),
+                    s3_cfg.secret_access_key.clone(),
+                    s3_cfg.session_token.clone(),
+                    s3_cfg.part_size_bytes,
+                    s3_cfg.max_concurrent_fetches,
+                    s3_cfg.max_concurrent_objects,
+                    s3_cfg.visibility_timeout_secs,
+                    compression_override,
+                    s3_cfg.poll_interval_ms,
+                )
+                .map_err(|e| format!("input '{name}': {e}"))?;
+
+                let source = S3Input::new(name, settings)
+                    .map_err(|e| format!("input '{name}': failed to create S3 input: {e}"))?;
+                let format = cfg.format.clone().unwrap_or(Format::Auto);
+                let format_proc = make_format(name, InputType::S3, &format, &stats)?;
+                let framed = FramedInput::new(Box::new(source), format_proc, Arc::clone(&stats));
+                return Ok(InputState {
+                    source: Box::new(framed),
+                    buf: BytesMut::with_capacity(4 * 1024 * 1024),
+                    stats,
+                });
+            }
+        }
         InputTypeConfig::Journald(j) => {
             use logfwd_io::journald_input::{JournaldBackendPref, JournaldConfig, JournaldInput};
 

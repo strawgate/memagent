@@ -10,7 +10,7 @@
 //! - in-process decode -> encode.
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use logfwd_bench::{generators, make_otlp_sink};
+use logfwd_bench::{make_metadata, make_otlp_sink};
 use logfwd_io::compress::ChunkCompressor;
 use logfwd_io::otlp_receiver::{
     decode_protobuf_bytes_to_batch_projected_experimental, decode_protobuf_to_batch,
@@ -224,7 +224,7 @@ fn build_fixture(profile: FixtureProfile) -> FixtureData {
 }
 
 fn assert_encode_paths_match(batch: &arrow::record_batch::RecordBatch, fixture_name: &str) {
-    let metadata = generators::make_metadata();
+    let metadata = make_metadata();
     let mut handwritten_sink = make_otlp_sink(Compression::None);
     handwritten_sink.encode_batch(batch, &metadata);
     let handwritten_request = ExportLogsServiceRequest::decode(handwritten_sink.encoded_payload())
@@ -364,7 +364,7 @@ fn bench_decode_materialize(c: &mut Criterion) {
 
 fn bench_output_encode_only(c: &mut Criterion) {
     let fixtures = fixtures();
-    let metadata = generators::make_metadata();
+    let metadata = make_metadata();
     let mut group = c.benchmark_group("otlp_output_encode_only");
     group.sample_size(10);
 
@@ -431,7 +431,7 @@ fn bench_output_encode_only(c: &mut Criterion) {
 
 fn bench_output_compression(c: &mut Criterion) {
     let fixtures = fixtures();
-    let metadata = generators::make_metadata();
+    let metadata = make_metadata();
     let mut group = c.benchmark_group("otlp_output_compression");
     group.sample_size(10);
 
@@ -464,7 +464,7 @@ fn bench_output_compression(c: &mut Criterion) {
 
 fn bench_end_to_end(c: &mut Criterion) {
     let fixtures = fixtures();
-    let metadata = generators::make_metadata();
+    let metadata = make_metadata();
     let mut group = c.benchmark_group("otlp_e2e_in_process");
     group.sample_size(10);
 

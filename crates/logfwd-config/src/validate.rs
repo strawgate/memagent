@@ -497,6 +497,53 @@ impl Config {
                                 )));
                             }
                         }
+                        InputTypeConfig::S3(s) => {
+                            let s3_cfg = &s.s3;
+                            if let Some(interval) = s3_cfg.poll_interval_ms
+                                && interval == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.poll_interval_ms must be at least 1"
+                                )));
+                            }
+                            if let Some(ref comp) = s3_cfg.compression {
+                                let valid = ["auto", "gzip", "zstd", "snappy", "none"];
+                                if !valid.iter().any(|v| v.eq_ignore_ascii_case(comp)) {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': unknown s3.compression value '{comp}' \
+                                         (valid: auto, gzip, zstd, snappy, none)"
+                                    )));
+                                }
+                            }
+                            if let Some(ps) = s3_cfg.part_size_bytes
+                                && ps == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.part_size_bytes must be at least 1"
+                                )));
+                            }
+                            if let Some(f) = s3_cfg.max_concurrent_fetches
+                                && f == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.max_concurrent_fetches must be at least 1"
+                                )));
+                            }
+                            if let Some(o) = s3_cfg.max_concurrent_objects
+                                && o == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.max_concurrent_objects must be at least 1"
+                                )));
+                            }
+                            if let Some(vt) = s3_cfg.visibility_timeout_secs
+                                && vt < 30
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.visibility_timeout_secs must be at least 30"
+                                )));
+                            }
+                        }
                     }
 
                     // Reject input formats that are not yet implemented.
