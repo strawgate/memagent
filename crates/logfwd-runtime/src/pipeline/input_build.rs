@@ -315,31 +315,39 @@ pub(super) fn build_input_state(
             let resource_prefix = o
                 .resource_prefix
                 .as_deref()
-                .unwrap_or(logfwd_types::field_names::DEFAULT_RESOURCE_PREFIX);
+                .unwrap_or(logfwd_types::field_names::DEFAULT_RESOURCE_PREFIX)
+                .to_string();
             let protobuf_decode_mode =
                 resolve_otlp_protobuf_decode_mode(name, o.protobuf_decode_mode)?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Otlp, &format)?;
-            #[cfg(feature = "otlp-research")]
-            let source = logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_protobuf_decode_mode_experimental(
+
+            let tls = o.tls.as_ref().map(|t| logfwd_io::input::TlsInputConfig {
+                cert_file: t.cert_file.clone(),
+                key_file: t.key_file.clone(),
+                client_ca_file: t.client_ca_file.clone(),
+                require_client_auth: t.require_client_auth,
+            });
+
+            let options = logfwd_io::otlp_receiver::OtlpReceiverOptions {
+                resource_prefix,
+                protobuf_decode_mode,
+                max_recv_message_size_bytes: Some(
+                    o.max_recv_message_size_bytes.unwrap_or(4 * 1024 * 1024),
+                ),
+                tls,
+                grpc_keepalive_time_ms: o.grpc_keepalive_time_ms,
+                grpc_max_concurrent_streams: o.grpc_max_concurrent_streams,
+            };
+
+            let source = logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_options(
                 name,
                 addr,
                 Some(Arc::clone(&stats)),
-                resource_prefix,
-                protobuf_decode_mode,
+                options,
             )
             .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
-            #[cfg(not(feature = "otlp-research"))]
-            let source =
-                logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats_and_resource_prefix(
-                    name,
-                    addr,
-                    Arc::clone(&stats),
-                    resource_prefix,
-                )
-                .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
-            #[cfg(not(feature = "otlp-research"))]
-            let _ = protobuf_decode_mode;
+
             (Box::new(source), format, 4 * 1024 * 1024)
         }
         InputTypeConfig::ArrowIpc(a) => {
@@ -869,6 +877,10 @@ mod tests {
                     listen: "   ".to_string(),
                     resource_prefix: None,
                     protobuf_decode_mode: None,
+                    max_recv_message_size_bytes: None,
+                    tls: None,
+                    grpc_keepalive_time_ms: None,
+                    grpc_max_concurrent_streams: None,
                 }),
             ),
             (

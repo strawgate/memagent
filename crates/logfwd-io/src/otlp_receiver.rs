@@ -74,6 +74,17 @@ pub enum OtlpProtobufDecodeMode {
 }
 
 /// OTLP receiver that listens for log exports via HTTP.
+#[derive(Clone, Debug, Default)]
+pub struct OtlpReceiverOptions {
+    pub resource_prefix: String,
+    pub protobuf_decode_mode: OtlpProtobufDecodeMode,
+    pub max_recv_message_size_bytes: Option<usize>,
+    pub tls: Option<crate::input::TlsInputConfig>,
+    pub grpc_keepalive_time_ms: Option<u64>,
+    pub grpc_max_concurrent_streams: Option<u32>,
+}
+
+/// OTLP receiver that listens for log exports via HTTP.
 pub struct OtlpReceiverInput {
     name: String,
     rx: Option<mpsc::Receiver<ReceiverPayload>>,
@@ -98,6 +109,14 @@ struct OtlpServerState {
     resource_prefix: String,
     protobuf_decode_mode: OtlpProtobufDecodeMode,
     stats: Option<Arc<ComponentStats>>,
+    #[allow(dead_code)]
+    pub max_recv_message_size_bytes: Option<usize>,
+    #[allow(dead_code)]
+    tls: Option<crate::input::TlsInputConfig>,
+    #[allow(dead_code)]
+    grpc_keepalive_time_ms: Option<u64>,
+    #[allow(dead_code)]
+    grpc_max_concurrent_streams: Option<u32>,
 }
 
 impl OtlpReceiverInput {
@@ -114,12 +133,15 @@ impl OtlpReceiverInput {
         addr: &str,
         resource_prefix: impl Into<String>,
     ) -> io::Result<Self> {
-        Self::new_with_capacity_stats_and_prefix(
+        Self::new_with_capacity_stats_and_options(
             name,
             addr,
             CHANNEL_BOUND,
             None,
-            resource_prefix.into(),
+            OtlpReceiverOptions {
+                resource_prefix: resource_prefix.into(),
+                ..Default::default()
+            },
         )
     }
 
@@ -146,24 +168,30 @@ impl OtlpReceiverInput {
         stats: Arc<ComponentStats>,
         resource_prefix: impl Into<String>,
     ) -> io::Result<Self> {
-        Self::new_with_capacity_stats_and_prefix(
+        Self::new_with_capacity_stats_and_options(
             name,
             addr,
             CHANNEL_BOUND,
             Some(stats),
-            resource_prefix.into(),
+            OtlpReceiverOptions {
+                resource_prefix: resource_prefix.into(),
+                ..Default::default()
+            },
         )
     }
 
     /// Like [`Self::new`] but with an explicit channel capacity. Useful for tests.
     #[cfg(test)]
     fn new_with_capacity(name: impl Into<String>, addr: &str, capacity: usize) -> io::Result<Self> {
-        Self::new_with_capacity_stats_and_prefix(
+        Self::new_with_capacity_stats_and_options(
             name,
             addr,
             capacity,
             None,
-            field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
+            OtlpReceiverOptions {
+                resource_prefix: field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
+                ..Default::default()
+            },
         )
     }
 
@@ -174,29 +202,15 @@ impl OtlpReceiverInput {
         capacity: usize,
         stats: Option<Arc<ComponentStats>>,
     ) -> io::Result<Self> {
-        Self::new_with_capacity_stats_and_prefix(
+        Self::new_with_capacity_stats_and_options(
             name,
             addr,
             capacity,
             stats,
-            field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
-        )
-    }
-
-    fn new_with_capacity_stats_and_prefix(
-        name: impl Into<String>,
-        addr: &str,
-        capacity: usize,
-        stats: Option<Arc<ComponentStats>>,
-        resource_prefix: String,
-    ) -> io::Result<Self> {
-        Self::new_with_capacity_stats_prefix_and_decode_mode(
-            name,
-            addr,
-            capacity,
-            stats,
-            resource_prefix,
-            OtlpProtobufDecodeMode::Prost,
+            OtlpReceiverOptions {
+                resource_prefix: field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
+                ..Default::default()
+            },
         )
     }
 
@@ -209,23 +223,34 @@ impl OtlpReceiverInput {
         resource_prefix: impl Into<String>,
         protobuf_decode_mode: OtlpProtobufDecodeMode,
     ) -> io::Result<Self> {
-        Self::new_with_capacity_stats_prefix_and_decode_mode(
+        Self::new_with_capacity_stats_and_options(
             name,
             addr,
             CHANNEL_BOUND,
             stats,
-            resource_prefix.into(),
-            protobuf_decode_mode,
+            OtlpReceiverOptions {
+                resource_prefix: resource_prefix.into(),
+                protobuf_decode_mode,
+                ..Default::default()
+            },
         )
     }
 
-    fn new_with_capacity_stats_prefix_and_decode_mode(
+    pub fn new_with_options(
+        name: impl Into<String>,
+        addr: &str,
+        stats: Option<Arc<ComponentStats>>,
+        options: OtlpReceiverOptions,
+    ) -> io::Result<Self> {
+        Self::new_with_capacity_stats_and_options(name, addr, CHANNEL_BOUND, stats, options)
+    }
+
+    fn new_with_capacity_stats_and_options(
         name: impl Into<String>,
         addr: &str,
         capacity: usize,
         stats: Option<Arc<ComponentStats>>,
-        resource_prefix: String,
-        protobuf_decode_mode: OtlpProtobufDecodeMode,
+        options: OtlpReceiverOptions,
     ) -> io::Result<Self> {
         let std_listener = std::net::TcpListener::bind(addr)
             .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?;
@@ -241,9 +266,13 @@ impl OtlpReceiverInput {
             tx,
             is_running: Arc::clone(&is_running),
             health: Arc::clone(&health),
-            resource_prefix,
-            protobuf_decode_mode,
+            resource_prefix: options.resource_prefix,
+            protobuf_decode_mode: options.protobuf_decode_mode,
             stats,
+            max_recv_message_size_bytes: options.max_recv_message_size_bytes,
+            tls: options.tls,
+            grpc_keepalive_time_ms: options.grpc_keepalive_time_ms,
+            grpc_max_concurrent_streams: options.grpc_max_concurrent_streams,
         });
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let state_for_server = Arc::clone(&state);

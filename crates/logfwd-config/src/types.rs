@@ -500,6 +500,14 @@ pub struct OtlpTypeConfig {
     pub resource_prefix: Option<String>,
     /// Experimental OTLP protobuf decode strategy. Defaults to `prost`.
     pub protobuf_decode_mode: Option<OtlpProtobufDecodeModeConfig>,
+    #[serde(default)]
+    pub max_recv_message_size_bytes: Option<usize>,
+    #[serde(default)]
+    pub tls: Option<TlsInputConfig>,
+    #[serde(default)]
+    pub grpc_keepalive_time_ms: Option<u64>,
+    #[serde(default)]
+    pub grpc_max_concurrent_streams: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
