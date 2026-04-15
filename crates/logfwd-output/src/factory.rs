@@ -100,10 +100,11 @@ pub fn build_sink_factory(
             })?;
             let compression = match cfg.compression.as_deref() {
                 Some("zstd") => Compression::Zstd,
+                Some("lz4") => Compression::Lz4,
                 Some("none") => Compression::None,
                 Some(other) => {
                     return Err(OutputError::Construction(format!(
-                        "output '{name}': arrow_ipc does not support '{other}' compression (use 'zstd', 'none', or omit)"
+                        "output '{name}': arrow_ipc does not support '{other}' compression (use 'lz4', 'zstd', 'none', or omit)"
                     )));
                 }
                 None => Compression::None,
