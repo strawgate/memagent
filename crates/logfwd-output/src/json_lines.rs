@@ -175,6 +175,10 @@ impl JsonLinesSink {
             Compression::Snappy => Err(io::Error::other(
                 "snappy compression is not supported by json_lines sink",
             )),
+            Compression::Lz4 => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "LZ4 unsupported for JSON lines",
+            )),
         }
     }
 }

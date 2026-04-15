@@ -38,14 +38,30 @@ data source is required.
 | `generator.events_per_sec` | integer | No | `0` | Target events per second. `0` means unlimited. |
 | `generator.batch_size` | integer | No | `1000` | Events emitted per poll/batch. |
 | `generator.total_events` | integer | No | `0` | Total events to emit before stopping. `0` means infinite. |
-| `generator.profile` | string | No | `logs` | `logs` for generic synthetic request logs, `record` for flat JSON rows assembled from attributes and generated fields. |
-| `generator.complexity` | string | No | `simple` | Size/shape for the `logs` profile: `simple` or `complex`. Ignored by the `record` profile. |
+| `generator.profile` | string | No | `logs` | Generator profile — see [profiles](#generator-profiles) below. |
+| `generator.complexity` | string | No | `simple` | Size/shape for the `logs` profile: `simple` or `complex`. Ignored by other profiles. |
 | `generator.attributes` | object | No | `{}` | Static scalar JSON fields written into every `record` row (`string`, `number`, `boolean`, or `null`). |
 | `generator.sequence.field` | string | No | unset | Output field name for a monotonic generated sequence in `record` rows. |
 | `generator.sequence.start` | integer | No | `1` | Initial value for the generated sequence. |
 | `generator.event_created_unix_nano_field` | string | No | unset | Adds a source-created nanosecond timestamp field to each `record` row. |
 | `generator.timestamp.start` | string | No | `2024-01-15T00:00:00Z` | Start timestamp for the `logs` profile. ISO8601 (`YYYY-MM-DDTHH:MM:SSZ`) or `"now"` for wall-clock time at startup. |
 | `generator.timestamp.step_ms` | integer | No | `1` | Milliseconds between events. Positive = forward, negative = backward. |
+
+### Generator profiles
+
+| Profile | Description | Format | ~Line Size |
+|---------|-------------|--------|------------|
+| `logs` (default) | Generic JSON logs with timestamp, level, message | JSON | ~200–800B |
+| `record` | Custom attribute-based records | JSON | varies |
+| `envoy` | Envoy proxy access logs with realistic traffic patterns | JSON | ~420B |
+| `cri_k8s` | CRI-format Kubernetes container logs | CRI | ~350B |
+| `wide` | Wide structured logs with 20+ fields | JSON | ~600B |
+| `narrow` | Narrow JSON logs with 5 fields | JSON | ~120B |
+| `cloud_trail` | CloudTrail-like AWS audit events | JSON | ~1400B |
+
+> **Note:** The `cri_k8s` profile produces CRI-format output. logfwd auto-defaults `format: cri` when this profile is selected, so you do not need to set it explicitly.
+>
+> **Note:** The `generator.timestamp` configuration only applies to the `logs` profile.
 
 ```yaml
 # Record profile (benchmarking)
@@ -66,6 +82,34 @@ input:
     sequence:
       field: seq
     event_created_unix_nano_field: event_created_unix_nano
+```
+
+```yaml
+# Envoy access log traffic
+input:
+  type: generator
+  generator:
+    profile: envoy
+    events_per_sec: 10000
+```
+
+```yaml
+# CRI Kubernetes logs (note: format auto-defaults to cri)
+input:
+  type: generator
+  format: cri
+  generator:
+    profile: cri_k8s
+    events_per_sec: 5000
+```
+
+```yaml
+# CloudTrail audit events
+input:
+  type: generator
+  generator:
+    profile: cloud_trail
+    events_per_sec: 1000
 ```
 
 ### Timestamp examples (`logs` profile)

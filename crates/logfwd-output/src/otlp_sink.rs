@@ -501,6 +501,12 @@ impl OtlpSink {
                     "snappy compression is not supported by otlp sink",
                 ));
             }
+            Compression::Lz4 => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "LZ4 unsupported for OTLP",
+                ));
+            }
             Compression::None => &self.encoder_buf,
         };
 
@@ -520,6 +526,7 @@ impl OtlpSink {
             Compression::Zstd => self.compressor.is_some(),
             Compression::Gzip => true,
             Compression::Snappy => false,
+            Compression::Lz4 => true,
             Compression::None => false,
         };
         let payload: &[u8] = if self.protocol == OtlpProtocol::Grpc {
@@ -543,6 +550,7 @@ impl OtlpSink {
                     Compression::Zstd => "zstd",
                     Compression::Gzip => "gzip",
                     Compression::Snappy => unreachable!("snappy not supported"),
+                    Compression::Lz4 => "lz4",
                     Compression::None => unreachable!("header only set when compressed"),
                 };
                 req = req.header("grpc-encoding", encoding);
@@ -551,6 +559,7 @@ impl OtlpSink {
                     Compression::Zstd => "zstd",
                     Compression::Gzip => "gzip",
                     Compression::Snappy => unreachable!("snappy not supported"),
+                    Compression::Lz4 => "lz4",
                     Compression::None => unreachable!("header only set when compressed"),
                 };
                 req = req.header("Content-Encoding", encoding);

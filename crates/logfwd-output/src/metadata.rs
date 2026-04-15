@@ -17,6 +17,9 @@ pub enum Compression {
     Zstd,
     Gzip,
     Snappy,
+    /// LZ4 frame compression. Supported for Arrow IPC output only;
+    /// not supported for OTAP or other HTTP sinks.
+    Lz4,
     None,
 }
 
