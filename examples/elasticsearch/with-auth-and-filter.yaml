@@ -5,13 +5,13 @@ input:
 
 transform: |
   SELECT
-    level_str,
-    message_str,
-    status_int,
-    duration_ms_float
+    level,
+    message,
+    status,
+    duration_ms
   FROM logs
-  WHERE level_str IN ('ERROR', 'WARN')
-    OR status_int >= 400
+  WHERE level IN ('ERROR', 'WARN')
+    OR status >= 400
 
 output:
   type: elasticsearch

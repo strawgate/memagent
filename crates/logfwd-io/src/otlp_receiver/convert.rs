@@ -33,10 +33,14 @@ pub(super) fn convert_request_to_batch(
         // Resolve resource attribute fields once per ResourceLogs.
         let mut resource_attr_fields: Vec<(usize, &AnyValue)> = Vec::new();
         if let Some(ref resource) = resource_logs.resource {
+            // Reuse a scratch buffer to avoid one String allocation per attribute.
+            let mut key_buf = String::with_capacity(64);
             for attr in &resource.attributes {
                 if let Some(ref value) = attr.value {
-                    let key = format!("{resource_prefix}{}", attr.key);
-                    let field_idx = builder.resolve_field(key.as_bytes());
+                    key_buf.clear();
+                    key_buf.push_str(resource_prefix);
+                    key_buf.push_str(&attr.key);
+                    let field_idx = builder.resolve_field(key_buf.as_bytes());
                     resource_attr_fields.push((field_idx, value));
                 }
             }
@@ -72,8 +76,7 @@ pub(super) fn convert_request_to_batch(
 
                 // severity_text
                 if !record.severity_text.is_empty() {
-                    builder
-                        .append_decoded_str_by_idx(severity_idx, record.severity_text.as_bytes());
+                    builder.append_prevalidated_str_by_idx(severity_idx, &record.severity_text);
                 }
 
                 // severity_number
@@ -108,12 +111,12 @@ pub(super) fn convert_request_to_batch(
                 if let Some(name) = scope_name
                     && !name.is_empty()
                 {
-                    builder.append_decoded_str_by_idx(scope_name_idx, name.as_bytes());
+                    builder.append_prevalidated_str_by_idx(scope_name_idx, name);
                 }
                 if let Some(version) = scope_version
                     && !version.is_empty()
                 {
-                    builder.append_decoded_str_by_idx(scope_version_idx, version.as_bytes());
+                    builder.append_prevalidated_str_by_idx(scope_version_idx, version);
                 }
 
                 // log record attributes
@@ -172,7 +175,7 @@ fn append_attribute_value_by_idx(
         Some(Value::IntValue(v)) => builder.append_i64_value_by_idx(idx, *v),
         Some(Value::DoubleValue(v)) => builder.append_f64_value_by_idx(idx, *v),
         Some(Value::BoolValue(v)) => builder.append_bool_by_idx(idx, *v),
-        Some(Value::StringValue(v)) => builder.append_decoded_str_by_idx(idx, v.as_bytes()),
+        Some(Value::StringValue(v)) => builder.append_prevalidated_str_by_idx(idx, v),
         Some(Value::BytesValue(v)) => append_hex_field(builder, idx, v, hex_buf),
         Some(Value::ArrayValue(_)) | Some(Value::KvlistValue(_)) => {
             if write_any_value_to_json_buf(value, json_buf) {
@@ -191,14 +194,14 @@ fn append_any_value_as_string(
     json_buf: &mut Vec<u8>,
 ) {
     match &value.value {
-        Some(Value::StringValue(v)) => builder.append_decoded_str_by_idx(idx, v.as_bytes()),
+        Some(Value::StringValue(v)) => builder.append_prevalidated_str_by_idx(idx, v),
         Some(Value::IntValue(v)) => {
-            let value = v.to_string();
-            builder.append_decoded_str_by_idx(idx, value.as_bytes());
+            let mut buf = itoa::Buffer::new();
+            builder.append_decoded_str_by_idx(idx, buf.format(*v).as_bytes());
         }
         Some(Value::DoubleValue(v)) => {
-            let value = v.to_string();
-            builder.append_decoded_str_by_idx(idx, value.as_bytes());
+            let mut buf = ryu::Buffer::new();
+            builder.append_decoded_str_by_idx(idx, buf.format(*v).as_bytes());
         }
         Some(Value::BoolValue(v)) => {
             builder.append_decoded_str_by_idx(idx, if *v { b"true" } else { b"false" });
@@ -225,14 +228,14 @@ fn write_any_value_json(value: &AnyValue, out: &mut Vec<u8>) -> bool {
             true
         }
         Some(Value::IntValue(v)) => {
-            let value = v.to_string();
-            out.extend_from_slice(value.as_bytes());
+            let mut buf = itoa::Buffer::new();
+            out.extend_from_slice(buf.format(*v).as_bytes());
             true
         }
         Some(Value::DoubleValue(v)) => {
             if v.is_finite() {
-                let value = v.to_string();
-                out.extend_from_slice(value.as_bytes());
+                let mut buf = ryu::Buffer::new();
+                out.extend_from_slice(buf.format(*v).as_bytes());
                 true
             } else {
                 // Preserve non-finite values as strings.

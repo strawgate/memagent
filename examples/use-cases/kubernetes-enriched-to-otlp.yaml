@@ -1,0 +1,66 @@
+# logfwd example
+# Use case: Kubernetes CRI logs with full resource enrichment to OTLP
+#
+# Enriches every log line with host, container, K8s, and OS metadata.
+# Most enrichment tables are one-row snapshot tables resolved at startup;
+# k8s_path is a multi-row lookup table resolved per log file path.
+#
+# Prerequisites:
+#   - Deploy logfwd as a DaemonSet
+#   - Expose K8S_NODE_NAME via fieldRef in the pod spec
+#   - Set K8S_CLUSTER_NAME as a plain env var or via ConfigMap
+#   - Mount /etc/os-release from the host (already available in most images)
+
+pipelines:
+  k8s-logs:
+    inputs:
+      - type: file
+        path: /var/log/containers/*.log
+        format: cri
+
+    enrichment:
+      - type: host_info
+      - type: process_info
+      - type: network_info
+      - type: container_info
+      - type: k8s_cluster_info
+      - type: k8s_path
+        table_name: k8s_path
+      - type: kv_file
+        table_name: os_release
+        path: /etc/os-release
+      - type: static
+        table_name: labels
+        labels:
+          environment: production
+
+    transform: |
+      SELECT
+        l.*,
+        h.hostname,
+        h.os_type,
+        n.primary_ipv4 AS host_ip,
+        p.agent_version,
+        c.container_runtime,
+        -- k8s_cluster_info is collector-scoped (logfwd's own pod).
+        -- For per-log pod namespace, use k8s_path.namespace instead.
+        k.node_name    AS k8s_node,
+        k.cluster_name AS k8s_cluster,
+        kp.namespace   AS k8s_namespace,
+        kp.pod_name    AS k8s_pod,
+        kp.container_name AS k8s_container,
+        os.pretty_name AS os_name,
+        lbl.environment
+      FROM logs l
+      CROSS JOIN host_info h
+      CROSS JOIN network_info n
+      CROSS JOIN process_info p
+      CROSS JOIN container_info c
+      CROSS JOIN k8s_cluster_info k
+      LEFT JOIN k8s_path kp ON starts_with(l._source_path, kp.log_path_prefix)
+      CROSS JOIN os_release os
+      CROSS JOIN labels lbl
+
+    outputs:
+      - type: otlp
+        endpoint: https://otel-collector:4318/v1/logs

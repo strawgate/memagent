@@ -17,14 +17,16 @@ mod validate;
 #[cfg(test)]
 pub(crate) use env::expand_env_vars;
 pub use types::{
-    ArrowIpcTypeConfig, AuthConfig, Config, ConfigError, CsvEnrichmentConfig, EnrichmentConfig,
-    FileTypeConfig, Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig,
-    GeneratorInputConfig, GeneratorProfileConfig, GeneratorSequenceConfig, GeneratorTypeConfig,
-    GeoDatabaseConfig, GeoDatabaseFormat, HostInfoConfig, HostMetricsInputConfig, HttpInputConfig,
-    HttpMethodConfig, HttpTypeConfig, InputConfig, InputType, InputTypeConfig,
-    JournaldBackendConfig, JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig,
-    K8sPathConfig, OtlpProtobufDecodeModeConfig, OtlpTypeConfig, OutputConfig, OutputType,
-    PipelineConfig, SensorTypeConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig,
+    ArrowIpcTypeConfig, AuthConfig, Config, ConfigError, ContainerInfoConfig, CsvEnrichmentConfig,
+    EnrichmentConfig, EnvVarsEnrichmentConfig, FileTypeConfig, Format,
+    GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorInputConfig,
+    GeneratorProfileConfig, GeneratorSequenceConfig, GeneratorTypeConfig, GeoDatabaseConfig,
+    GeoDatabaseFormat, HostInfoConfig, HostMetricsInputConfig, HttpInputConfig, HttpMethodConfig,
+    HttpTypeConfig, InputConfig, InputType, InputTypeConfig, JournaldBackendConfig,
+    JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sClusterInfoConfig,
+    K8sPathConfig, KvFileEnrichmentConfig, NetworkInfoConfig, OtlpProtobufDecodeModeConfig,
+    OtlpTypeConfig, OutputConfig, OutputType, PipelineConfig, ProcessInfoConfig, S3InputConfig,
+    S3TypeConfig, SensorTypeConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig,
     TcpTypeConfig, TlsInputConfig, UdpTypeConfig,
 };
 pub use validate::validate_host_port;
@@ -2437,6 +2439,32 @@ pipelines:
     }
 
     #[test]
+    fn generator_timestamp_rejects_non_logs_profiles() {
+        for profile in ["envoy", "cri_k8s", "wide", "narrow", "cloud_trail"] {
+            let yaml = format!(
+                r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: {profile}
+          timestamp:
+            start: "now"
+    outputs:
+      - type: "null"
+"#
+            );
+            let err = Config::load_str(&yaml).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("only supported for the logs profile"),
+                "profile={profile}: expected logs-only rejection: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn generator_timestamp_rejects_invalid_calendar_date() {
         let yaml = r#"
 pipelines:
@@ -2828,7 +2856,7 @@ pipelines:
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("arrow_ipc output only supports 'zstd' or 'none'")
+            msg.contains("arrow_ipc output only supports 'lz4', 'zstd', or 'none'")
                 && msg.contains("'gzip'"),
             "expected arrow_ipc-specific gzip rejection, got: {msg}"
         );
@@ -2851,6 +2879,45 @@ pipelines:
     }
 
     #[test]
+    fn arrow_ipc_output_accepts_lz4_compression() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: arrow_ipc
+        endpoint: http://localhost:4317
+        compression: lz4
+"#;
+        Config::load_str(yaml).expect("arrow_ipc output should accept lz4 compression");
+    }
+
+    #[test]
+    fn non_arrow_ipc_output_rejects_arrow_ipc_fields() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+    outputs:
+      - type: stdout
+        host: localhost
+        batch_size: 100
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("'host' is only supported for arrow_ipc outputs")
+                || err
+                    .to_string()
+                    .contains("'batch_size' is only supported for arrow_ipc outputs"),
+            "expected arrow_ipc specific field rejection: {err}"
+        );
+    }
+
+    #[test]
     fn csv_enrichment_whitespace_path_rejected() {
         let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: csv\n        table_name: assets\n        path: \"   \"\n";
         let err = Config::load_str(yaml).unwrap_err();
@@ -2860,25 +2927,6 @@ pipelines:
         );
     }
 }
-
-#[test]
-fn validation_storage_checkpoint_flush_interval_zero_rejected() {
-    let yaml = r#"
-input:
-  type: tcp
-  listen: 0.0.0.0:8080
-
-output:
-  type: null
-
-server: {}
-storage:
-  checkpoint_flush_interval: 0s
-"#;
-    let err = Config::load_str(yaml).expect_err("0s flush interval must fail");
-    assert!(
-        err.to_string()
-            .contains("storage.checkpoint_flush_interval must be greater than 0"),
-        "expected non-zero flush interval rejection, got: {err}"
-    );
-}
+mod tests_generator_unsupported;
+mod tests_otlp_config;
+mod tests_static_labels;

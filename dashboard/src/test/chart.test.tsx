@@ -1,7 +1,7 @@
+import type { TimeSeriesFrame, TimeSeriesPoint } from "@otlpkit/views";
 import { cleanup, render, screen } from "@testing-library/preact";
-import type { MetricSeries } from "../app";
-import { CHART_CONSTANTS, Chart } from "../components/Chart";
-import { RingBuffer } from "../lib/ring";
+import type { ChartConfig } from "../components/Chart";
+import { Chart } from "../components/Chart";
 
 // ─── uPlot mock ──────────────────────────────────────────────────────────────
 
@@ -23,7 +23,6 @@ vi.mock("uplot", () => {
     this.setSize = mockSetSize;
   });
 
-  // uPlot.paths.spline is used in buildChartOpts
   (UPlot as Record<string, unknown>).paths = { spline: () => () => null };
 
   return { default: UPlot };
@@ -31,27 +30,44 @@ vi.mock("uplot", () => {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Build a MetricSeries with a fresh RingBuffer. */
-function makeSeries(overrides?: Partial<MetricSeries>): MetricSeries {
+const DEFAULT_CONFIG: ChartConfig = {
+  metricName: "logfwd.input_lines_per_sec",
+  label: "Lines / sec",
+  color: "#3b82f6",
+  unit: "/s",
+  yRange: [0, 100],
+};
+
+function makePoint(timeMs: number, value: number): TimeSeriesPoint {
+  const ns = String(Math.floor(timeMs * 1_000_000));
   return {
-    id: "test",
-    label: "Test",
-    color: "#3b82f6",
-    ring: new RingBuffer(),
-    value: "-",
-    unit: "/s",
-    yRange: [0, 100],
-    ...overrides,
+    timeUnixNano: ns,
+    timeMs,
+    isoTime: new Date(timeMs).toISOString(),
+    value,
+    samples: 1,
   };
 }
 
-/** Push enough data into a ring so bucket() returns ≥2 points. */
-function fillRing(ring: RingBuffer, count = 4) {
+function makeFrame(points: TimeSeriesPoint[]): TimeSeriesFrame {
+  return {
+    kind: "time-series",
+    signal: "metrics",
+    title: "Test",
+    unit: "/s",
+    intervalMs: 2000,
+    series: [{ key: "test", label: "Test", points }],
+  };
+}
+
+function emptyFrame(): TimeSeriesFrame {
+  return makeFrame([]);
+}
+
+function filledFrame(count = 4): TimeSeriesFrame {
   const now = Date.now();
-  const bucketMs = CHART_CONSTANTS.BUCKET_MS;
-  for (let i = 0; i < count; i++) {
-    ring.pushRaw(now - (count - i) * bucketMs, 100 + i);
-  }
+  const pts = Array.from({ length: count }, (_, i) => makePoint(now - (count - i) * 2000, 100 + i));
+  return makeFrame(pts);
 }
 
 // ─── RAF control ──────────────────────────────────────────────────────────────
@@ -71,7 +87,6 @@ function installFakeRaf() {
   });
 }
 
-/** Run one pending RAF tick. */
 function flushRaf() {
   const cbs = rafCallbacks.splice(0);
   for (const cb of cbs) cb(performance.now());
@@ -93,88 +108,56 @@ describe("Chart", () => {
   });
 
   afterEach(() => {
-    // Cleanup component while RAF stubs are still alive, then restore globals
     cleanup();
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
-  it("shows 'waiting for data' when ring is empty", () => {
-    const s = makeSeries();
-    render(<Chart series={s} />);
+  it("shows 'waiting for data' when frame is empty", () => {
+    render(<Chart frame={emptyFrame()} config={DEFAULT_CONFIG} />);
     flushRaf();
-
     expect(screen.getByText("waiting for data…")).toBeInTheDocument();
   });
 
-  it("creates plot when ring gets ≥2 bucketed points", () => {
-    const s = makeSeries();
-    const { container } = render(<Chart series={s} />);
-
+  it("creates plot when frame has ≥2 points", () => {
+    const { container } = render(<Chart frame={filledFrame()} config={DEFAULT_CONFIG} />);
     const el = container.firstElementChild as HTMLElement;
     Object.defineProperty(el, "offsetWidth", { value: 400, configurable: true });
 
-    // First frame: no data — should not create
-    flushRaf();
-    expect(constructorCallCount).toBe(0);
-
-    // Add data
-    fillRing(s.ring);
-
-    // Next frame: data available — should create plot
     flushRaf();
     expect(constructorCallCount).toBe(1);
   });
 
-  it("destroys plot when ring data is cleared", () => {
-    const ring = new RingBuffer();
-    fillRing(ring);
-    const s = makeSeries({ ring });
-
-    const { container } = render(<Chart series={s} />);
+  it("destroys plot when frame becomes empty", () => {
+    const { container, rerender } = render(<Chart frame={filledFrame()} config={DEFAULT_CONFIG} />);
     const el = container.firstElementChild as HTMLElement;
     Object.defineProperty(el, "offsetWidth", { value: 400, configurable: true });
 
-    // First frame: has data → creates plot
     flushRaf();
     expect(constructorCallCount).toBe(1);
 
-    // Advance time beyond max age (5 min) so all data is stale
-    vi.setSystemTime(Date.now() + 10 * 60 * 1000);
-
-    // Next frame: no bucketed data → should destroy
+    rerender(<Chart frame={emptyFrame()} config={DEFAULT_CONFIG} />);
     flushRaf();
     expect(mockDestroy).toHaveBeenCalledTimes(1);
   });
 
-  it("renders immediately if ring has data on mount", () => {
-    const ring = new RingBuffer();
-    fillRing(ring);
-    const s = makeSeries({ ring });
-
-    const { container } = render(<Chart series={s} />);
+  it("renders immediately if frame has data on mount", () => {
+    const { container } = render(<Chart frame={filledFrame()} config={DEFAULT_CONFIG} />);
     const el = container.firstElementChild as HTMLElement;
     Object.defineProperty(el, "offsetWidth", { value: 400, configurable: true });
 
-    // First RAF tick creates plot since data is already present
     flushRaf();
     expect(constructorCallCount).toBe(1);
   });
 
   it("updates plot data on each animation frame", () => {
-    const ring = new RingBuffer();
-    fillRing(ring);
-    const s = makeSeries({ ring });
-
-    const { container } = render(<Chart series={s} />);
+    const { container } = render(<Chart frame={filledFrame()} config={DEFAULT_CONFIG} />);
     const el = container.firstElementChild as HTMLElement;
     Object.defineProperty(el, "offsetWidth", { value: 400, configurable: true });
 
-    // First frame: creates plot
     flushRaf();
     expect(constructorCallCount).toBe(1);
 
-    // Second frame: should update data (batch calls setData + setScale)
     mockBatch.mockClear();
     mockSetData.mockClear();
     mockSetScale.mockClear();

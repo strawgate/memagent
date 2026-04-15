@@ -4,7 +4,7 @@ description: "Run logfwd as a standalone container"
 ---
 
 Use this page when you want to run logfwd as a standalone container on a single host.
-For Kubernetes clusters, see [Kubernetes deployment](/memagent/deployment/kubernetes/).
+For Kubernetes clusters, see [Kubernetes deployment](/deployment/kubernetes/).
 
 :::tip[Safe defaults]
 Start with these settings for predictable behavior:
@@ -64,8 +64,8 @@ bind mount eliminates both problems.
 Your configuration must reference the same directory:
 
 ```yaml
-server:
-  checkpoint_dir: /var/lib/logfwd
+storage:
+  data_dir: /var/lib/logfwd
 ```
 
 ## Resource constraints
@@ -83,7 +83,7 @@ docker run -d --cpus 2.0 --memory 512m ...
 ```
 
 Monitor `logfwd_stage_seconds_total` and container memory usage via `docker stats`
-to decide whether you need to adjust. See [Monitoring & Diagnostics](/memagent/deployment/monitoring/)
+to decide whether you need to adjust. See [Monitoring & Diagnostics](/deployment/monitoring/)
 for details on available metrics.
 
 ## Environment variable passthrough
@@ -264,9 +264,9 @@ See `Dockerfile` and `.github/workflows/release.yml` for details.
 
 ## What's next
 
-- [Monitoring & Diagnostics](/memagent/deployment/monitoring/) -- health probes, metrics, and the built-in dashboard.
-- [Input Types](/memagent/configuration/inputs/) -- configure file, TCP, and UDP inputs.
-- [Output Types](/memagent/configuration/outputs/) -- OTLP and other output options.
-- [SQL Transforms](/memagent/configuration/sql-transforms/) -- filter and reshape logs before they leave the host.
-- [Kubernetes Deployment](/memagent/deployment/kubernetes/) -- scale out to a cluster with a DaemonSet.
-- [Troubleshooting](/memagent/troubleshooting/) -- common issues and diagnostic steps.
+- [Monitoring & Diagnostics](/deployment/monitoring/) -- health probes, metrics, and the built-in dashboard.
+- [Input Types](/configuration/inputs/) -- configure file, TCP, and UDP inputs.
+- [Output Types](/configuration/outputs/) -- OTLP and other output options.
+- [SQL Transforms](/configuration/sql-transforms/) -- filter and reshape logs before they leave the host.
+- [Kubernetes Deployment](/deployment/kubernetes/) -- scale out to a cluster with a DaemonSet.
+- [Troubleshooting](/troubleshooting/) -- common issues and diagnostic steps.

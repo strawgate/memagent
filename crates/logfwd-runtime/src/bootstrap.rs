@@ -77,7 +77,7 @@ pub async fn run_pipelines(
     let shutdown = CancellationToken::new();
 
     #[cfg(unix)]
-    let (mut sigterm, mut sighup) = {
+    let (mut sigterm, mut sighup, mut sigusr1, mut sigusr2) = {
         use tokio::signal::unix::{SignalKind, signal};
         let sigterm = signal(SignalKind::terminate()).map_err(|err| {
             RuntimeError::Io(io::Error::other(format!(
@@ -89,7 +89,17 @@ pub async fn run_pipelines(
                 "failed to register SIGHUP handler: {err}"
             )))
         })?;
-        (sigterm, sighup)
+        let sigusr1 = signal(SignalKind::user_defined1()).map_err(|err| {
+            RuntimeError::Io(io::Error::other(format!(
+                "failed to register SIGUSR1 handler: {err}"
+            )))
+        })?;
+        let sigusr2 = signal(SignalKind::user_defined2()).map_err(|err| {
+            RuntimeError::Io(io::Error::other(format!(
+                "failed to register SIGUSR2 handler: {err}"
+            )))
+        })?;
+        (sigterm, sighup, sigusr1, sigusr2)
     };
 
     #[cfg(feature = "dhat-heap")]
@@ -121,6 +131,8 @@ pub async fn run_pipelines(
                 tokio::select! {
                     _ = tokio::signal::ctrl_c() => break,
                     _ = sigterm.recv() => break,
+                    _ = sigusr1.recv() => break,
+                    _ = sigusr2.recv() => break,
                     _ = sighup.recv() => {
                         eprintln!(
                             "{}logfwd{}: SIGHUP received — config reload not yet implemented, ignoring",
@@ -137,10 +149,29 @@ pub async fn run_pipelines(
 
         #[cfg(feature = "cpu-profiling")]
         {
-            if let Ok(report) = _pprof_to_drop.report().build()
-                && let Ok(file) = std::fs::File::create("flamegraph.svg")
-            {
-                let _ = report.flamegraph(file);
+            if let Ok(report) = _pprof_to_drop.report().build() {
+                // Write flamegraph for local/quick inspection
+                if let Ok(file) = std::fs::File::create("flamegraph.svg") {
+                    if let Err(e) = report.flamegraph(file) {
+                        eprintln!("warn: failed to write flamegraph.svg: {e}");
+                    }
+                }
+                // Write pprof protobuf for use with `go tool pprof` / speedscope
+                if let Ok(profile) = report.pprof() {
+                    use pprof::protos::Message as _;
+                    use std::io::Write as _;
+                    let mut buf = Vec::new();
+                    if profile.encode(&mut buf).is_ok() {
+                        if let Ok(file) = std::fs::File::create("profile.pb.gz") {
+                            let mut gz =
+                                flate2::write::GzEncoder::new(file, flate2::Compression::default());
+                            if let Err(e) = gz.write_all(&buf).and_then(|_| gz.finish().map(|_| ()))
+                            {
+                                eprintln!("warn: failed to write profile.pb.gz: {e}");
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -414,6 +445,7 @@ fn input_label(i: &logfwd_config::InputConfig) -> String {
         InputTypeConfig::WindowsEbpfSensor(_) => "windows_ebpf_sensor".to_string(),
         InputTypeConfig::HostMetrics(_) => "host_metrics".to_string(),
         InputTypeConfig::Journald(_) => "journald".to_string(),
+        InputTypeConfig::S3(s) => format!("s3    {}", s.s3.bucket),
     }
 }
 

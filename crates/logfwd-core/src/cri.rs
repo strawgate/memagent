@@ -12,10 +12,13 @@
 //! Partial lines (flag "P") must be reassembled: concatenate all "P" chunks
 //! until an "F" chunk arrives, then emit the combined line.
 
-/// Parsed CRI log line. References point into the original byte slice (zero-copy).
+// Re-export reassembler types so bench/fuzz targets can reach them via
+// `logfwd_core::cri::CriReassembler` and `logfwd_core::cri::AggregateResult`.
+pub use crate::reassembler::{AggregateResult, CriReassembler};
 use alloc::vec::Vec;
+
+/// Parsed CRI log line. References point into the original byte slice (zero-copy).
 #[derive(Debug)]
-/// Parsed CRI log line fields.
 pub struct CriLine<'a> {
     /// The RFC3339Nano timestamp bytes.
     pub timestamp: &'a [u8],
@@ -90,94 +93,6 @@ pub fn parse_cri_line(line: &[u8]) -> Option<CriLine<'_>> {
     })
 }
 
-/// Result of feeding a line to [`CriReassembler`].
-pub enum ReassembleResult<'a> {
-    /// A complete (un-truncated) message is ready.
-    Complete(&'a [u8]),
-    /// A complete message is ready, but one or more chunks were truncated
-    /// because the assembled size exceeded [`CriReassembler`]'s `max_line_size`.
-    /// Callers should log a warning and/or increment a diagnostics counter.
-    Truncated(&'a [u8]),
-    /// Partial line buffered internally; no output yet.
-    Pending,
-}
-
-/// CRI partial line reassembler. Buffers "P" (partial) chunks and emits
-/// the combined line when an "F" (full) chunk arrives.
-pub struct CriReassembler {
-    /// Buffer for accumulating partial line chunks.
-    partial_buf: Vec<u8>,
-    /// Maximum assembled line size. Lines exceeding this are truncated.
-    max_line_size: usize,
-    /// Set to `true` when any chunk in the current P/F sequence was truncated
-    /// due to `max_line_size`. Reset in [`CriReassembler::reset`].
-    truncated: bool,
-}
-
-impl CriReassembler {
-    /// Create a new reassembler with the given max line size.
-    pub fn new(max_line_size: usize) -> Self {
-        CriReassembler {
-            partial_buf: Vec::new(),
-            max_line_size,
-            truncated: false,
-        }
-    }
-
-    /// Feed a parsed CRI line. Returns a [`ReassembleResult`] indicating whether
-    /// a complete message is ready, whether it was truncated, or whether more
-    /// partial chunks are still expected.
-    ///
-    /// - `ReassembleResult::Complete` — F line with no truncation.
-    /// - `ReassembleResult::Truncated` — F line, but one or more chunks exceeded
-    ///   `max_line_size` and some bytes were silently dropped. Callers should
-    ///   log a warning.
-    /// - `ReassembleResult::Pending` — P line; data has been buffered.
-    pub fn feed<'a>(&'a mut self, cri: &CriLine<'_>) -> ReassembleResult<'a> {
-        if cri.is_full {
-            if self.partial_buf.is_empty() {
-                // Common fast path: complete line, no partials pending.
-                let to_add = cri.message.len().min(self.max_line_size);
-                let was_truncated = to_add < cri.message.len();
-                self.partial_buf.extend_from_slice(&cri.message[..to_add]);
-                if was_truncated {
-                    ReassembleResult::Truncated(&self.partial_buf)
-                } else {
-                    ReassembleResult::Complete(&self.partial_buf)
-                }
-            } else {
-                // Append the final chunk to the partial buffer.
-                let remaining = self.max_line_size.saturating_sub(self.partial_buf.len());
-                let to_add = cri.message.len().min(remaining);
-                if to_add < cri.message.len() {
-                    self.truncated = true;
-                }
-                self.partial_buf.extend_from_slice(&cri.message[..to_add]);
-                if self.truncated {
-                    ReassembleResult::Truncated(&self.partial_buf)
-                } else {
-                    ReassembleResult::Complete(&self.partial_buf)
-                }
-            }
-        } else {
-            // Partial line — buffer it.
-            let remaining = self.max_line_size.saturating_sub(self.partial_buf.len());
-            let to_add = cri.message.len().min(remaining);
-            if to_add < cri.message.len() {
-                self.truncated = true;
-            }
-            self.partial_buf.extend_from_slice(&cri.message[..to_add]);
-            ReassembleResult::Pending
-        }
-    }
-
-    /// Reset the partial buffer and truncation flag (call after consuming the emitted line).
-    pub fn reset(&mut self) {
-        self.partial_buf.clear();
-        self.truncated = false;
-    }
-}
-
 /// Process a chunk of CRI-formatted log data. Parses each CRI line, reassembles
 /// partials, and calls `emit` with each complete log message.
 ///
@@ -206,19 +121,19 @@ where
         }
 
         match parse_cri_line(line) {
-            Some(cri) => match reassembler.feed(&cri) {
-                ReassembleResult::Complete(msg) => {
+            Some(cri) => match reassembler.feed(cri.message, cri.is_full) {
+                AggregateResult::Complete(msg) => {
                     emit(msg);
                     count += 1;
                     reassembler.reset();
                 }
-                ReassembleResult::Truncated(msg) => {
+                AggregateResult::Truncated(msg) => {
                     emit(msg);
                     count += 1;
                     errors += 1;
                     reassembler.reset();
                 }
-                ReassembleResult::Pending => {}
+                AggregateResult::Pending => {}
             },
             None => errors += 1,
         }
@@ -273,8 +188,8 @@ pub fn process_cri_to_buf_with_plain_text_field(
         }
 
         match parse_cri_line(line) {
-            Some(cri) => match reassembler.feed(&cri) {
-                ReassembleResult::Complete(msg) => {
+            Some(cri) => match reassembler.feed(cri.message, cri.is_full) {
+                AggregateResult::Complete(msg) => {
                     write_json_line_for_plain_text_field(
                         msg,
                         json_prefix,
@@ -284,7 +199,7 @@ pub fn process_cri_to_buf_with_plain_text_field(
                     count += 1;
                     reassembler.reset();
                 }
-                ReassembleResult::Truncated(msg) => {
+                AggregateResult::Truncated(msg) => {
                     write_json_line_for_plain_text_field(
                         msg,
                         json_prefix,
@@ -295,7 +210,7 @@ pub fn process_cri_to_buf_with_plain_text_field(
                     errors += 1;
                     reassembler.reset();
                 }
-                ReassembleResult::Pending => {}
+                AggregateResult::Pending => {}
             },
             None => errors += 1,
         }
@@ -443,18 +358,24 @@ mod tests {
         let mut reassembler = CriReassembler::new(1024 * 1024);
 
         let p1 = parse_cri_line(b"2024-01-15T10:30:00Z stdout P first part").unwrap();
-        assert!(matches!(reassembler.feed(&p1), ReassembleResult::Pending));
+        assert!(matches!(
+            reassembler.feed(p1.message, p1.is_full),
+            AggregateResult::Pending
+        ));
 
         let p2 = parse_cri_line(b"2024-01-15T10:30:00Z stdout P second part").unwrap();
-        assert!(matches!(reassembler.feed(&p2), ReassembleResult::Pending));
+        assert!(matches!(
+            reassembler.feed(p2.message, p2.is_full),
+            AggregateResult::Pending
+        ));
 
         let f = parse_cri_line(b"2024-01-15T10:30:00Z stdout F final part").unwrap();
-        match reassembler.feed(&f) {
-            ReassembleResult::Complete(complete) => {
+        match reassembler.feed(f.message, f.is_full) {
+            AggregateResult::Complete(complete) => {
                 assert_eq!(complete, b"first partsecond partfinal part");
             }
-            ReassembleResult::Truncated(_) => panic!("expected Complete, got Truncated"),
-            ReassembleResult::Pending => panic!("expected Complete, got Pending"),
+            AggregateResult::Truncated(_) => panic!("expected Complete, got Truncated"),
+            AggregateResult::Pending => panic!("expected Complete, got Pending"),
         }
         reassembler.reset();
     }
@@ -464,12 +385,12 @@ mod tests {
         let mut reassembler = CriReassembler::new(1024 * 1024);
 
         let f = parse_cri_line(b"2024-01-15T10:30:00Z stdout F complete line").unwrap();
-        match reassembler.feed(&f) {
-            ReassembleResult::Complete(complete) => {
+        match reassembler.feed(f.message, f.is_full) {
+            AggregateResult::Complete(complete) => {
                 assert_eq!(complete, b"complete line");
             }
-            ReassembleResult::Truncated(_) => panic!("expected Complete, got Truncated"),
-            ReassembleResult::Pending => panic!("expected Complete, got Pending"),
+            AggregateResult::Truncated(_) => panic!("expected Complete, got Truncated"),
+            AggregateResult::Pending => panic!("expected Complete, got Pending"),
         }
         reassembler.reset();
     }
@@ -684,24 +605,24 @@ mod tests {
         let mut reassembler = CriReassembler::new(20);
 
         let p1 = parse_cri_line(b"2024-01-15T10:30:00Z stdout P 0123456789").unwrap();
-        reassembler.feed(&p1);
+        reassembler.feed(p1.message, p1.is_full);
 
         let p2 = parse_cri_line(b"2024-01-15T10:30:00Z stdout P abcdefghij").unwrap();
-        reassembler.feed(&p2);
+        reassembler.feed(p2.message, p2.is_full);
 
         let f = parse_cri_line(b"2024-01-15T10:30:00Z stdout F KLMNOPQRST").unwrap();
         // The assembled sequence exceeds max_line_size=20, so Truncated is expected.
-        match reassembler.feed(&f) {
-            ReassembleResult::Truncated(complete) => {
+        match reassembler.feed(f.message, f.is_full) {
+            AggregateResult::Truncated(complete) => {
                 assert_eq!(complete.len(), 20);
             }
-            ReassembleResult::Complete(complete) => {
+            AggregateResult::Complete(complete) => {
                 panic!(
                     "expected Truncated, got Complete with len={}",
                     complete.len()
                 )
             }
-            ReassembleResult::Pending => panic!("expected Truncated, got Pending"),
+            AggregateResult::Pending => panic!("expected Truncated, got Pending"),
         }
         reassembler.reset();
     }
@@ -711,14 +632,14 @@ mod tests {
         // A single F line that exceeds max_line_size must return Truncated.
         let mut reassembler = CriReassembler::new(5);
         let f = parse_cri_line(b"2024-01-15T10:30:00Z stdout F hello world").unwrap();
-        match reassembler.feed(&f) {
-            ReassembleResult::Truncated(out) => {
+        match reassembler.feed(f.message, f.is_full) {
+            AggregateResult::Truncated(out) => {
                 assert_eq!(out, b"hello");
             }
-            ReassembleResult::Complete(out) => {
+            AggregateResult::Complete(out) => {
                 panic!("expected Truncated, got Complete: {:?}", out)
             }
-            ReassembleResult::Pending => panic!("expected Truncated"),
+            AggregateResult::Pending => panic!("expected Truncated"),
         }
         reassembler.reset();
     }
@@ -896,7 +817,7 @@ mod verification {
             is_full: false,
             message: &msg1,
         };
-        let _ = r.feed(&partial);
+        let _ = r.feed(partial.message, partial.is_full);
 
         let msg2: [u8; 8] = kani::any();
         let full = CriLine {
@@ -905,8 +826,8 @@ mod verification {
             is_full: true,
             message: &msg2,
         };
-        match r.feed(&full) {
-            ReassembleResult::Complete(output) | ReassembleResult::Truncated(output) => {
+        match r.feed(full.message, full.is_full) {
+            AggregateResult::Complete(output) | AggregateResult::Truncated(output) => {
                 assert!(output.len() <= max_size, "P+F output exceeds max_line_size");
 
                 // Guard vacuity: verify constraint allows meaningful cases
@@ -914,7 +835,7 @@ mod verification {
                 kani::cover!(output.len() == max_size, "output truncated at max");
                 kani::cover!(output.len() < max_size, "output under max");
             }
-            ReassembleResult::Pending => {}
+            AggregateResult::Pending => {}
         }
     }
 
@@ -935,8 +856,8 @@ mod verification {
             is_full: true,
             message: &msg,
         };
-        match r.feed(&full) {
-            ReassembleResult::Complete(output) | ReassembleResult::Truncated(output) => {
+        match r.feed(full.message, full.is_full) {
+            AggregateResult::Complete(output) | AggregateResult::Truncated(output) => {
                 assert!(
                     output.len() <= max_size,
                     "F-only output exceeds max_line_size"
@@ -947,7 +868,7 @@ mod verification {
                 kani::cover!(output.len() < 8, "message truncated");
                 kani::cover!(max_size >= 8, "max allows full message");
             }
-            ReassembleResult::Pending => {}
+            AggregateResult::Pending => {}
         }
     }
 
@@ -963,9 +884,9 @@ mod verification {
             is_full: false,
             message: &msg,
         };
-        match r.feed(&partial) {
-            ReassembleResult::Pending => {} // expected
-            ReassembleResult::Complete(_) | ReassembleResult::Truncated(_) => {
+        match r.feed(partial.message, partial.is_full) {
+            AggregateResult::Pending => {} // expected
+            AggregateResult::Complete(_) | AggregateResult::Truncated(_) => {
                 panic!("partial line should not produce output")
             }
         }

@@ -193,6 +193,12 @@ reason = "make_string_view u128 packing and buffer selection are bounded pure se
 issue = 2072
 
 [[seams]]
+path = "crates/logfwd-arrow/src/columnar/plan.rs"
+status = "required"
+reason = "FieldHandle index roundtrip and FieldSchemaMode observe dedup are bounded pure seams; HashMap-dependent BatchPlan invariants use proptest."
+issue = 2126
+
+[[seams]]
 path = "crates/logfwd-arrow/src/columnar/row_protocol.rs"
 status = "required"
 reason = "RowLifecycle state machine transitions are bounded pure seams with symbolic action sequence proofs."

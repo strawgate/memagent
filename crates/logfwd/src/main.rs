@@ -1331,6 +1331,16 @@ fn validate_pipeline_read_only(
                                     })?;
                                 Arc::new(mmdb)
                             }
+                            GeoDatabaseFormat::CsvRange => {
+                                let csv = logfwd::transform::udf::CsvRangeDatabase::open(&path)
+                                    .map_err(|e| {
+                                        format!(
+                                            "failed to open CSV range geo database '{}': {e}",
+                                            path.display()
+                                        )
+                                    })?;
+                                Arc::new(csv)
+                            }
                             _ => {
                                 return Err(format!(
                                     "unsupported geo database format: {:?}",
@@ -1392,6 +1402,52 @@ fn validate_pipeline_read_only(
                         .reload()
                         .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
                     enrichment_tables.push(table);
+                }
+                EnrichmentConfig::EnvVars(cfg) => {
+                    let table = Arc::new(
+                        logfwd::transform::enrichment::EnvTable::from_prefix(
+                            &cfg.table_name,
+                            &cfg.prefix,
+                        )
+                        .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?,
+                    );
+                    enrichment_tables.push(table);
+                }
+                EnrichmentConfig::ProcessInfo(_) => {
+                    enrichment_tables.push(Arc::new(
+                        logfwd::transform::enrichment::ProcessInfoTable::new(),
+                    ));
+                }
+                EnrichmentConfig::KvFile(cfg) => {
+                    let mut path = PathBuf::from(&cfg.path);
+                    if path.is_relative()
+                        && let Some(base) = base_path
+                    {
+                        path = base.join(path);
+                    }
+                    let table = Arc::new(logfwd::transform::enrichment::KvFileTable::new(
+                        &cfg.table_name,
+                        &path,
+                    ));
+                    table
+                        .reload()
+                        .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
+                    enrichment_tables.push(table);
+                }
+                EnrichmentConfig::NetworkInfo(_) => {
+                    enrichment_tables.push(Arc::new(
+                        logfwd::transform::enrichment::NetworkInfoTable::new(),
+                    ));
+                }
+                EnrichmentConfig::ContainerInfo(_) => {
+                    enrichment_tables.push(Arc::new(
+                        logfwd::transform::enrichment::ContainerInfoTable::new(),
+                    ));
+                }
+                EnrichmentConfig::K8sClusterInfo(_) => {
+                    enrichment_tables.push(Arc::new(
+                        logfwd::transform::enrichment::K8sClusterInfoTable::new(),
+                    ));
                 }
             }
         }

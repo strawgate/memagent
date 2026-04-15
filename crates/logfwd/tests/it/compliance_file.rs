@@ -223,8 +223,19 @@ fn compliance_file_rotate_copytruncate() {
     fs::copy(&log_path, &backup_path).unwrap();
     // Truncate the original file.
     fs::File::create(&log_path).unwrap();
-    // Brief pause to let the tailer detect the truncation before writing new data.
-    std::thread::sleep(Duration::from_millis(200));
+
+    // Poll to let the tailer detect the truncation before writing new data.
+    let rotations_before = metrics.inputs[0].2.rotations();
+    let deadline_trunc = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if metrics.inputs[0].2.rotations() > rotations_before {
+            break;
+        }
+        if std::time::Instant::now() >= deadline_trunc {
+            panic!("tailer failed to detect copytruncate within 5s");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     // Write new data (sequence continues from 5000).
     {
@@ -287,8 +298,20 @@ fn compliance_file_truncate() {
         let f = fs::OpenOptions::new().write(true).open(&log_path).unwrap();
         f.set_len(0).unwrap();
     }
-    // Brief pause to let the tailer detect the truncation before writing new data.
-    std::thread::sleep(Duration::from_millis(100));
+
+    // Poll to let the tailer detect the truncation before writing new data.
+    // Truncations increment the rotations metric in `ComponentStats`.
+    let rotations_before = metrics.inputs[0].2.rotations();
+    let deadline_trunc = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if metrics.inputs[0].2.rotations() > rotations_before {
+            break;
+        }
+        if std::time::Instant::now() >= deadline_trunc {
+            panic!("tailer failed to detect truncation within 5s");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 
     {
         let mut f = fs::OpenOptions::new().append(true).open(&log_path).unwrap();
@@ -343,8 +366,11 @@ fn compliance_file_delete_recreate() {
 
     // Delete the file.
     fs::remove_file(&log_path).unwrap();
-    // Brief pause to let the tailer detect the deletion before recreating.
-    std::thread::sleep(Duration::from_millis(100));
+
+    // Deletion removes the file from the tailer's internal map. When the file
+    // is recreated, it is typically discovered as a new file and produces
+    // normal data events rather than a `rotations` metric increment, so rely
+    // on the line-count wait below to verify discovery and ingestion.
 
     // Recreate the file with new data.
     {

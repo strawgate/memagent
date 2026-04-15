@@ -129,7 +129,8 @@ pub fn decode_batch_status_generated_fast(data: &[u8]) -> io::Result<BatchStatus
             (3, 2) => {
                 let (len, next_pos) = decode_varint(data, pos)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                let end = next_pos + len as usize;
+                let len_usize = usize::try_from(len).unwrap_or(usize::MAX);
+                let end = next_pos.checked_add(len_usize).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "overflow"))?;
                 if end > data.len() {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
@@ -167,7 +168,8 @@ fn decode_arrow_payload_generated_fast(data: &[u8]) -> io::Result<DecodedPayload
             (1, 2) => {
                 let (len, next_pos) = decode_varint(data, pos)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                let end = next_pos + len as usize;
+                let len_usize = usize::try_from(len).unwrap_or(usize::MAX);
+                let end = next_pos.checked_add(len_usize).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "overflow"))?;
                 if end > data.len() {
                     return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated schema_id"));
                 }
@@ -183,7 +185,8 @@ fn decode_arrow_payload_generated_fast(data: &[u8]) -> io::Result<DecodedPayload
             (3, 2) => {
                 let (len, next_pos) = decode_varint(data, pos)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                let end = next_pos + len as usize;
+                let len_usize = usize::try_from(len).unwrap_or(usize::MAX);
+                let end = next_pos.checked_add(len_usize).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "overflow"))?;
                 if end > data.len() {
                     return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated record"));
                 }
@@ -222,7 +225,8 @@ pub fn decode_batch_arrow_records_generated_fast(
             (2, 2) => {
                 let (len, next_pos) = decode_varint(data, pos)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                let end = next_pos + len as usize;
+                let len_usize = usize::try_from(len).unwrap_or(usize::MAX);
+                let end = next_pos.checked_add(len_usize).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "overflow"))?;
                 if end > data.len() {
                     return Err(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
@@ -235,7 +239,8 @@ pub fn decode_batch_arrow_records_generated_fast(
             (3, 2) => {
                 let (len, next_pos) = decode_varint(data, pos)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                let end = next_pos + len as usize;
+                let len_usize = usize::try_from(len).unwrap_or(usize::MAX);
+                let end = next_pos.checked_add(len_usize).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "overflow"))?;
                 if end > data.len() {
                     return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated headers"));
                 }

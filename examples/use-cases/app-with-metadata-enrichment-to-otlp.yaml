@@ -1,0 +1,51 @@
+# logfwd example
+# Use case: Application logs with ConfigMap-mounted metadata enrichment
+#
+# Uses kv_file and env_vars to inject deployment metadata into every log line.
+# This pattern is common in Kubernetes where operational metadata lives in
+# ConfigMaps mounted as files and environment variables set via fieldRef.
+#
+# Mount a ConfigMap as /etc/logfwd/metadata.env with contents like:
+#   TEAM=platform
+#   SERVICE=payment-api
+#   ONCALL=https://pagerduty.com/services/ABC123
+#
+# Set environment variables in the pod spec:
+#   LOGFWD_META_DEPLOY_SHA=abc123
+#   LOGFWD_META_DEPLOY_TIME=2026-04-01T12:00:00Z
+
+pipelines:
+  app-logs:
+    inputs:
+      - type: file
+        path: /var/log/app/*.log
+        format: json
+
+    # Uncomment the kv_file and env_vars blocks after creating the files and
+    # setting the environment variables described at the top of this file.
+    # Then update the SQL below to join and select from the metadata/deploy tables:
+    #   CROSS JOIN metadata m → m.team, m.service
+    #   CROSS JOIN deploy d   → d.deploy_sha, d.deploy_time
+    enrichment:
+      # - type: kv_file
+      #   table_name: metadata
+      #   path: /etc/logfwd/metadata.env
+      #   refresh_interval: 300
+      # - type: env_vars
+      #   table_name: deploy
+      #   prefix: LOGFWD_META_
+      - type: process_info
+      - type: host_info
+
+    transform: |
+      SELECT
+        l.*,
+        p.agent_version,
+        h.hostname
+      FROM logs l
+      CROSS JOIN process_info p
+      CROSS JOIN host_info h
+
+    outputs:
+      - type: otlp
+        endpoint: https://otel-collector:4318/v1/logs
