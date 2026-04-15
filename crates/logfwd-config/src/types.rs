@@ -168,6 +168,32 @@ pub enum Format {
     Text,
 }
 
+/// Specifies the encoding format for network output sinks (TCP, UDP).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputEncoding {
+    /// Encode logs as JSON objects.
+    Json,
+    /// Encode logs as plain text.
+    Text,
+    /// Encode logs in Syslog RFC 5424 format.
+    SyslogRfc5424,
+    /// Encode logs in Syslog RFC 3164 format.
+    SyslogRfc3164,
+}
+
+/// Specifies the framing technique for TCP outputs to delineate messages.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TcpFraming {
+    /// Delineate messages with a newline character (`\n`).
+    Newline,
+    /// Delineate messages by prepending the message length in bytes (Syslog octet counting).
+    OctetCount,
+    /// Delineate messages with a null byte (`\0`).
+    NullByte,
+}
+
 impl fmt::Display for Format {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -323,6 +349,21 @@ pub struct TlsInputConfig {
     pub client_ca_file: Option<String>,
     #[serde(default)]
     pub require_client_auth: bool,
+}
+
+/// TLS settings for outbound client connections (e.g., TCP output).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TlsClientConfig {
+    /// Path to the client certificate file.
+    pub cert_file: Option<String>,
+    /// Path to the client private key file.
+    pub key_file: Option<String>,
+    /// Path to the CA file used to verify the server certificate.
+    pub ca_file: Option<String>,
+    /// Whether to skip TLS verification (insecure).
+    #[serde(default)]
+    pub insecure_skip_verify: bool,
 }
 
 /// Journald (systemd journal) input configuration.
@@ -555,6 +596,37 @@ pub struct OutputConfig {
     pub tenant_id: Option<String>,
     pub static_labels: Option<HashMap<String, String>>,
     pub label_columns: Option<Vec<String>>,
+
+    /// Host to connect to (alternative to `endpoint` for TCP/UDP).
+    #[serde(default)]
+    pub host: Option<String>,
+    /// Port to connect to (alternative to `endpoint` for TCP/UDP).
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// TLS configuration for the output connection.
+    #[serde(default)]
+    pub tls: Option<TlsClientConfig>,
+    /// Maximum number of connection retries.
+    #[serde(default)]
+    pub max_retries: Option<usize>,
+    /// Backoff in milliseconds before retrying a connection.
+    #[serde(default)]
+    pub retry_backoff_ms: Option<u64>,
+    /// Connection timeout in milliseconds.
+    #[serde(default)]
+    pub connect_timeout_ms: Option<u64>,
+    /// Whether to enable TCP keepalive.
+    #[serde(default)]
+    pub keepalive: Option<bool>,
+    /// Framing technique to delineate messages over TCP.
+    #[serde(default)]
+    pub framing: Option<TcpFraming>,
+    /// Maximum payload size in bytes per datagram (UDP).
+    #[serde(default)]
+    pub max_datagram_size: Option<usize>,
+    /// Message encoding format (JSON, Text, Syslog, etc.).
+    #[serde(default)]
+    pub encoding: Option<OutputEncoding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

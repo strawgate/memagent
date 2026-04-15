@@ -1869,6 +1869,40 @@ pipelines:
     }
 
     #[test]
+    fn tcp_output_accepts_host_and_port() {
+        let yaml = r#"
+pipelines:
+  test_pipe:
+    inputs:
+      - type: generator
+    outputs:
+      - type: tcp
+        host: "127.0.0.1"
+        port: 9999
+        encoding: json
+        framing: newline
+"#;
+        let _ = Config::load_str(yaml).expect("tcp with host and port should be valid");
+    }
+
+    #[test]
+    fn tcp_output_rejects_missing_endpoint_and_host_port() {
+        let yaml = r#"
+pipelines:
+  test_pipe:
+    inputs:
+      - type: generator
+    outputs:
+      - type: tcp
+"#;
+        let err = Config::load_str(yaml).expect_err("tcp must require endpoint or host/port");
+        assert!(
+            err.to_string()
+                .contains("output requires 'endpoint' or both 'host' and 'port'")
+        );
+    }
+
+    #[test]
     fn tcp_input_rejects_path() {
         let yaml = r#"
 pipelines:

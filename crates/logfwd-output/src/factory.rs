@@ -143,10 +143,16 @@ pub fn build_sink_factory(
             )))
         }
         OutputType::Udp => {
-            let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
-                OutputError::Construction(format!("output '{name}': udp requires 'endpoint'"))
-            })?;
-            let factory = UdpSinkFactory::new(name.to_string(), endpoint.clone(), stats);
+            let endpoint = if let Some(ep) = &cfg.endpoint {
+                ep.clone()
+            } else if let (Some(host), Some(port)) = (&cfg.host, cfg.port) {
+                format!("{host}:{port}")
+            } else {
+                return Err(OutputError::Construction(format!(
+                    "output '{name}': udp requires 'endpoint' or both 'host' and 'port'"
+                )));
+            };
+            let factory = UdpSinkFactory::new(name.to_string(), endpoint, stats);
             Ok(Arc::new(factory))
         }
         OutputType::Otlp => {
@@ -241,12 +247,18 @@ pub fn build_sink_factory(
             Ok(Arc::new(factory))
         }
         OutputType::Tcp => {
-            let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
-                OutputError::Construction(format!("output '{name}': tcp requires 'endpoint'"))
-            })?;
+            let endpoint = if let Some(ep) = &cfg.endpoint {
+                ep.clone()
+            } else if let (Some(host), Some(port)) = (&cfg.host, cfg.port) {
+                format!("{host}:{port}")
+            } else {
+                return Err(OutputError::Construction(format!(
+                    "output '{name}': tcp requires 'endpoint' or both 'host' and 'port'"
+                )));
+            };
             Ok(Arc::new(TcpSinkFactory::new(
                 name.to_string(),
-                endpoint.clone(),
+                endpoint,
                 stats,
             )))
         }

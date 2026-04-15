@@ -623,9 +623,11 @@ impl Config {
                         }
                         OutputType::Null => {}
                         OutputType::Tcp | OutputType::Udp => {
-                            if output.endpoint.is_none() {
+                            if output.endpoint.is_none()
+                                && (output.host.is_none() || output.port.is_none())
+                            {
                                 return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': {} output requires 'endpoint'",
+                                    "pipeline '{name}' output '{label}': {} output requires 'endpoint' or both 'host' and 'port'",
                                     output.output_type,
                                 )));
                             }
@@ -647,6 +649,50 @@ impl Config {
                     if output.output_type != OutputType::Elasticsearch && output.index.is_some() {
                         return Err(ConfigError::Validation(format!(
                             "pipeline '{name}' output '{label}': 'index' is only supported for elasticsearch outputs"
+                        )));
+                    }
+                    if output.output_type != OutputType::Tcp && output.tls.is_some() {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': 'tls' is only supported for tcp outputs"
+                        )));
+                    }
+                    if output.output_type != OutputType::Tcp && output.max_retries.is_some() {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': 'max_retries' is only supported for tcp outputs"
+                        )));
+                    }
+                    if output.output_type != OutputType::Tcp && output.retry_backoff_ms.is_some() {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': 'retry_backoff_ms' is only supported for tcp outputs"
+                        )));
+                    }
+                    if output.output_type != OutputType::Tcp && output.connect_timeout_ms.is_some()
+                    {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': 'connect_timeout_ms' is only supported for tcp outputs"
+                        )));
+                    }
+                    if output.output_type != OutputType::Tcp && output.keepalive.is_some() {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': 'keepalive' is only supported for tcp outputs"
+                        )));
+                    }
+                    if output.output_type != OutputType::Tcp && output.framing.is_some() {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': 'framing' is only supported for tcp outputs"
+                        )));
+                    }
+                    if output.output_type != OutputType::Udp && output.max_datagram_size.is_some() {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': 'max_datagram_size' is only supported for udp outputs"
+                        )));
+                    }
+                    if output.output_type != OutputType::Tcp
+                        && output.output_type != OutputType::Udp
+                        && output.encoding.is_some()
+                    {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': 'encoding' is only supported for tcp and udp outputs"
                         )));
                     }
                     if output.output_type == OutputType::Loki && output.compression.is_some() {
