@@ -156,7 +156,7 @@ fn resolve_generated_columns(batch: &RecordBatch) -> GeneratedRowRefs<'_> {
             span_id_col = Some(arr);
             continue;
         }
-        attrs.push((name.to_string(), arr));
+        attrs.push((name.clone(), arr));
     }
 
     GeneratedRowRefs {
@@ -607,7 +607,8 @@ fn run<F: FnMut()>(label: &str, iterations: usize, bytes_per_iter: usize, mut f:
     }
     let start = Instant::now();
     for _ in 0..iterations {
-        black_box(f());
+        f();
+        black_box(());
     }
     let elapsed = start.elapsed();
     let ns_per_iter = elapsed.as_secs_f64() * 1e9 / iterations as f64;
