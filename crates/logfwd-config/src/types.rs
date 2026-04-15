@@ -220,6 +220,7 @@ pub enum GeneratorAttributeValueConfig {
     Integer(i64),
     Float(f64),
     Bool(bool),
+    Unsupported(serde_yaml_ng::Value),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -262,6 +263,8 @@ pub struct HttpInputConfig {
     pub strict_path: Option<bool>,
     pub method: Option<HttpMethodConfig>,
     pub max_request_body_size: Option<usize>,
+    /// Max bytes to drain per poll call. Default matches OTLP receiver (1GB).
+    pub max_drained_bytes_per_poll: Option<usize>,
     pub response_code: Option<u16>,
     /// Optional static body returned on successful ingest.
     /// Must be omitted when `response_code` is `204`.
@@ -552,14 +555,6 @@ pub struct OutputConfig {
     pub tenant_id: Option<String>,
     pub static_labels: Option<HashMap<String, String>>,
     pub label_columns: Option<Vec<String>>,
-    /// Elasticsearch: Ingest Node pipeline name.
-    pub pipeline: Option<String>,
-    /// Elasticsearch: Action to perform in bulk API (`index` or `create`). Default is `index`.
-    pub action: Option<String>,
-    /// Elasticsearch: Timeout for bulk requests in seconds. Default is 30.
-    pub timeout_sec: Option<u64>,
-    /// Elasticsearch: Maximum uncompressed bulk payload size in bytes. Default is 5242880 (5 MiB).
-    pub max_bulk_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

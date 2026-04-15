@@ -734,7 +734,6 @@ impl ElasticsearchSinkFactory {
     /// - `headers`: Authentication headers (e.g. `Authorization: ApiKey …`)
     /// - `compress`: Enable gzip compression of the request body
     /// - `request_mode`: Buffered or experimental streaming bulk body mode
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         endpoint: String,
@@ -742,10 +741,6 @@ impl ElasticsearchSinkFactory {
         headers: Vec<(String, String)>,
         compress: bool,
         request_mode: ElasticsearchRequestMode,
-        pipeline: Option<String>,
-        action: Option<String>,
-        timeout_sec: Option<u64>,
-        max_bulk_bytes: Option<usize>,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
         if compress && request_mode == ElasticsearchRequestMode::Streaming {
@@ -766,34 +761,26 @@ impl ElasticsearchSinkFactory {
             })
             .collect::<io::Result<Vec<_>>>()?;
 
-        // 30s default timeout: generous enough for large bulk responses, short enough to
+        // 30s timeout: generous enough for large bulk responses, short enough to
         // detect dead connections before the pipeline stalls.
         // 64 max idle per host: allows all workers (typically ≤16) to keep warm
         // connections without excessive socket churn.
-        let timeout_duration = std::time::Duration::from_secs(timeout_sec.unwrap_or(30));
         let client = reqwest::Client::builder()
-            .timeout(timeout_duration)
+            .timeout(std::time::Duration::from_secs(30))
             .pool_max_idle_per_host(64)
             .build()
             .map_err(io::Error::other)?;
 
         let endpoint = endpoint.trim_end_matches('/').to_string();
-
-        let mut bulk_url = format!(
+        let bulk_url = format!(
             "{}/_bulk?filter_path=errors,took,items.*.error,items.*.status",
             endpoint
         );
-        if let Some(pipe) = pipeline {
-            let encoded_pipe = form_urlencoded::byte_serialize(pipe.as_bytes()).collect::<String>();
-            bulk_url.push_str("&pipeline=");
-            bulk_url.push_str(&encoded_pipe);
-        }
 
         // Pre-compute the action line bytes once so serialize_batch doesn't have
         // to allocate a String on every call.
         let escaped_index = serde_json::to_string(&index).map_err(io::Error::other)?;
-        let action_name = action.unwrap_or_else(|| "index".to_string());
-        let action_line = format!("{{\"{action_name}\":{{\"_index\":{escaped_index}}}}}\n");
+        let action_line = format!("{{\"index\":{{\"_index\":{escaped_index}}}}}\n");
 
         Ok(ElasticsearchSinkFactory {
             name,
@@ -802,7 +789,7 @@ impl ElasticsearchSinkFactory {
                 headers: parsed_headers,
                 compress,
                 request_mode,
-                max_bulk_bytes: max_bulk_bytes.unwrap_or(5 * 1024 * 1024), // 5 MiB default
+                max_bulk_bytes: 5 * 1024 * 1024, // 5 MiB default
                 stream_chunk_bytes: 64 * 1024,
                 bulk_url,
                 action_bytes: action_line.into_bytes().into_boxed_slice(),
@@ -1025,10 +1012,6 @@ mod tests {
             vec![],
             false,
             ElasticsearchRequestMode::Buffered,
-            None,
-            None,
-            None,
-            None,
             Arc::new(ComponentStats::default()),
         )
         .expect("factory creation failed");
@@ -1249,10 +1232,6 @@ mod tests {
             vec![],
             false,
             ElasticsearchRequestMode::Streaming,
-            None,
-            None,
-            None,
-            None,
             Arc::new(ComponentStats::default()),
         )
         .expect("factory creation failed");
@@ -1586,10 +1565,6 @@ mod tests {
             vec![],
             false,
             ElasticsearchRequestMode::Buffered,
-            None,
-            None,
-            None,
-            None,
             Arc::new(ComponentStats::default()),
         )
         .expect("factory creation failed");
@@ -1777,10 +1752,6 @@ mod tests {
             vec![],
             false,
             ElasticsearchRequestMode::Buffered,
-            None,
-            None,
-            None,
-            None,
             Arc::new(ComponentStats::default()),
         )
         .unwrap();
@@ -1885,10 +1856,6 @@ mod snapshot_tests {
             vec![],
             false,
             ElasticsearchRequestMode::Buffered,
-            None,
-            None,
-            None,
-            None,
             Arc::new(ComponentStats::default()),
         )
         .expect("factory creation failed");

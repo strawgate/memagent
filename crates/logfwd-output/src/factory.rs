@@ -65,10 +65,6 @@ pub fn build_sink_factory(
                 auth_headers,
                 compress,
                 request_mode,
-                cfg.pipeline.clone(),
-                cfg.action.clone(),
-                cfg.timeout_sec,
-                cfg.max_bulk_bytes,
                 stats,
             )
             .map_err(|e| {

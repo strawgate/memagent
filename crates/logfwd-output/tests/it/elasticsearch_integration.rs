@@ -120,10 +120,6 @@ fn elasticsearch_sink_sends_bulk_data() {
         vec![],
         false,
         ElasticsearchRequestMode::Buffered,
-        None,
-        None,
-        None,
-        None,
         stats.clone(),
     )
     .unwrap();
@@ -176,10 +172,6 @@ fn elasticsearch_sink_handles_empty_batch() {
         vec![],
         false,
         ElasticsearchRequestMode::Buffered,
-        None,
-        None,
-        None,
-        None,
         stats.clone(),
     )
     .unwrap();
@@ -224,10 +216,6 @@ fn elasticsearch_sink_multiple_batches() {
         vec![],
         false,
         ElasticsearchRequestMode::Buffered,
-        None,
-        None,
-        None,
-        None,
         stats.clone(),
     )
     .unwrap();
@@ -295,10 +283,6 @@ fn elasticsearch_streaming_mode_uses_chunked_transfer() {
         vec![],
         false,
         ElasticsearchRequestMode::Streaming,
-        None,
-        None,
-        None,
-        None,
         stats.clone(),
     )
     .unwrap();

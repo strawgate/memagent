@@ -210,6 +210,33 @@ pub(crate) fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) -
             let v = arr.as_boolean().value(row);
             out.extend_from_slice(if v { b"true" } else { b"false" });
         }
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, _) => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::TimestampNanosecondType>()
+                .value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, _) => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::TimestampMicrosecondType>()
+                .value(row)
+                .saturating_mul(1_000);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, _) => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::TimestampMillisecondType>()
+                .value(row)
+                .saturating_mul(1_000_000);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Second, _) => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::TimestampSecondType>()
+                .value(row)
+                .saturating_mul(1_000_000_000);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
         // String types: use write_json_string (memchr2 SIMD fast-path) instead of
         // the fallback `array_value_to_string` which heap-allocates per call.
         // StreamingBuilder uses Utf8View; these three arms cover all common cases.

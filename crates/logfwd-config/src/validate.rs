@@ -246,6 +246,15 @@ impl Config {
                                     "pipeline '{name}' input '{label}': generator.attributes float values must be finite"
                                 )));
                             }
+                                if let Some((key, _)) =
+                                    generator.attributes.iter().find(|(_, v)| {
+                                        matches!(v, GeneratorAttributeValueConfig::Unsupported(_))
+                                    })
+                                {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': generator.attributes '{key}' has an unsupported type (expected scalar value)"
+                                    )));
+                                }
                                 if !is_record_profile
                                     && (!generator.attributes.is_empty()
                                         || generator.sequence.is_some()
@@ -635,43 +644,11 @@ impl Config {
                     }
 
                     // Reject fields that don't apply to this output type.
-                    if output.output_type == OutputType::Elasticsearch {
-                        // It is Elasticsearch
-                        if let Some(action) = output.action.as_deref()
-                            && !matches!(action, "index" | "create")
-                        {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': elasticsearch action must be 'index' or 'create', got '{action}'"
-                            )));
-                        }
-                    } else {
-                        if output.index.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'index' is only supported for elasticsearch outputs"
-                            )));
-                        }
-                        if output.pipeline.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'pipeline' is only supported for elasticsearch outputs"
-                            )));
-                        }
-                        if output.action.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'action' is only supported for elasticsearch outputs"
-                            )));
-                        }
-                        if output.timeout_sec.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'timeout_sec' is only supported for elasticsearch outputs"
-                            )));
-                        }
-                        if output.max_bulk_bytes.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'max_bulk_bytes' is only supported for elasticsearch outputs"
-                            )));
-                        }
+                    if output.output_type != OutputType::Elasticsearch && output.index.is_some() {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': 'index' is only supported for elasticsearch outputs"
+                        )));
                     }
-
                     if output.output_type == OutputType::Loki && output.compression.is_some() {
                         return Err(ConfigError::Validation(format!(
                             "pipeline '{name}' output '{label}': 'compression' is not supported for loki outputs"
@@ -738,6 +715,17 @@ impl Config {
                             )));
                         }
                     }
+
+                    if let Some(labels) = &output.static_labels {
+                        for (k, v) in labels {
+                            if k.trim().is_empty() || v.trim().is_empty() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': 'static_labels' keys and values must not be empty"
+                                )));
+                            }
+                        }
+                    }
+
                     if !matches!(output.output_type, OutputType::File | OutputType::Parquet)
                         && output.path.is_some()
                     {

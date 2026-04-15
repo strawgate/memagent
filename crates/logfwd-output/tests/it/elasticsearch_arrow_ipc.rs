@@ -163,10 +163,6 @@ fn test_query_arrow_all_documents() {
             vec![],
             false,
             ElasticsearchRequestMode::Buffered,
-            None,
-            None,
-            None,
-            None,
             stats.clone(),
         )
         .expect("factory creation failed");
@@ -235,10 +231,6 @@ fn test_query_arrow_with_filter() {
             vec![],
             false,
             ElasticsearchRequestMode::Buffered,
-            None,
-            None,
-            None,
-            None,
             stats.clone(),
         )
         .expect("factory creation failed");
@@ -295,10 +287,6 @@ fn test_query_arrow_with_projection() {
             vec![],
             false,
             ElasticsearchRequestMode::Buffered,
-            None,
-            None,
-            None,
-            None,
             stats.clone(),
         )
         .expect("factory creation failed");
