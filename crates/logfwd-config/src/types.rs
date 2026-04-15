@@ -1,5 +1,5 @@
 use crate::compat;
-use crate::serde_helpers::deserialize_one_or_many;
+use crate::serde_helpers::{deserialize_duration_ms, deserialize_one_or_many};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt;
@@ -643,11 +643,11 @@ pub struct OutputConfig {
     /// Maximum number of retries before dropping a batch or failing.
     #[serde(default)]
     pub max_retries: Option<usize>,
-    /// Initial backoff interval (in ms) when retrying a connection or request.
-    #[serde(default)]
+    /// Initial backoff interval (e.g. "100ms", "5s") when retrying a connection or request.
+    #[serde(default, deserialize_with = "deserialize_duration_ms")]
     pub retry_backoff_ms: Option<u64>,
-    /// Maximum time (in ms) to wait for a connection to be established.
-    #[serde(default)]
+    /// Maximum time (e.g. "5s", "1000ms") to wait for a connection to be established.
+    #[serde(default, deserialize_with = "deserialize_duration_ms")]
     pub connect_timeout_ms: Option<u64>,
     /// Whether to enable TCP keepalive probes.
     #[serde(default)]
