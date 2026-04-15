@@ -47,28 +47,20 @@ pub struct TraceSpan {
 // Shared buffer
 // ---------------------------------------------------------------------------
 
-/// Inner state for the span ring buffer.
-struct SpanBufferInner {
-    buf: VecDeque<TraceSpan>,
-    /// Monotonically increasing count of total spans ever written.
-    /// Used by `get_spans_since` to detect new entries even when the
-    /// deque length is constant (at capacity).
-    total_written: usize,
-}
-
 /// Cloneable handle to the in-process span ring buffer.
 #[derive(Clone)]
 pub struct SpanBuffer {
-    inner: Arc<Mutex<SpanBufferInner>>,
+    inner: Arc<Mutex<VecDeque<TraceSpan>>>,
 }
 
 impl fmt::Debug for SpanBuffer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let inner = self
+        let len = self
             .inner
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        write!(f, "SpanBuffer({} spans)", inner.buf.len())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len();
+        write!(f, "SpanBuffer({len} spans)")
     }
 }
 
@@ -76,54 +68,17 @@ impl SpanBuffer {
     /// Create a new shared ring buffer for completed spans.
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(Mutex::new(SpanBufferInner {
-                buf: VecDeque::with_capacity(MAX_SPANS),
-                total_written: 0,
-            })),
+            inner: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_SPANS))),
         }
     }
 
     /// Returns all buffered spans in insertion order (oldest first).
     pub fn get_spans(&self) -> Vec<TraceSpan> {
-        let inner = self
+        let buf = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        inner.buf.iter().cloned().collect()
-    }
-
-    /// Returns the current number of buffered spans.
-    pub fn len(&self) -> usize {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .buf
-            .len()
-    }
-
-    /// Returns true if the buffer contains no spans.
-    pub fn is_empty(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .buf
-            .is_empty()
-    }
-
-    /// Returns spans added since the cursor `since`, which tracks
-    /// the monotonic `total_written` counter (not the deque length).
-    ///
-    /// If spans were evicted past the cursor, returns all buffered spans.
-    /// Updates `since` to the current `total_written`.
-    pub fn get_spans_since(&self, since: &mut usize) -> Vec<TraceSpan> {
-        let inner = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let oldest_available = inner.total_written.saturating_sub(inner.buf.len());
-        let skip = (*since).saturating_sub(oldest_available);
-        *since = inner.total_written;
-        inner.buf.iter().skip(skip).cloned().collect()
+        buf.iter().cloned().collect()
     }
 }
 
@@ -137,15 +92,14 @@ impl Default for SpanBuffer {
 impl SpanBuffer {
     /// Push a span directly — test-only helper to populate the buffer.
     pub fn push_test_span(&self, span: TraceSpan) {
-        let mut inner = self
+        let mut buf = self
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if inner.buf.len() >= MAX_SPANS {
-            inner.buf.pop_front();
+        if buf.len() >= MAX_SPANS {
+            buf.pop_front();
         }
-        inner.buf.push_back(span);
-        inner.total_written += 1;
+        buf.push_back(span);
     }
 }
 
@@ -168,18 +122,17 @@ impl RingBufferExporter {
 
 impl SpanExporter for RingBufferExporter {
     fn export(&self, batch: Vec<SpanData>) -> impl Future<Output = OTelSdkResult> + Send {
-        let mut inner = self
+        let mut buf = self
             .buf
             .inner
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for span_data in batch {
             let span = convert(span_data);
-            if inner.buf.len() >= MAX_SPANS {
-                inner.buf.pop_front();
+            if buf.len() >= MAX_SPANS {
+                buf.pop_front();
             }
-            inner.buf.push_back(span);
-            inner.total_written += 1;
+            buf.push_back(span);
         }
         std::future::ready(Ok(()))
     }

@@ -13,10 +13,9 @@ use std::io::Write;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-use logfwd_core::cri::{CriReassembler, parse_cri_line};
+use logfwd_bench::generators;
+use logfwd_core::cri::{CriReassembler, ReassembleResult, parse_cri_line};
 use logfwd_core::framer::NewlineFramer;
-use logfwd_core::reassembler::AggregateResult;
-use logfwd_io::generator::cri::{gen_cri_k8s, gen_narrow, gen_production_mixed};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -41,11 +40,11 @@ fn bench_framing(c: &mut Criterion) {
     // Generate data at different sizes with different line length distributions.
     let scenarios: Vec<(&str, Vec<u8>)> = vec![
         // Narrow lines (~130 bytes each)
-        ("narrow_80k", gen_narrow(80_000, 42)),
+        ("narrow_80k", generators::gen_narrow(80_000, 42)),
         // Production mixed (~250 bytes avg)
-        ("mixed_40k", gen_production_mixed(40_000, 42)),
+        ("mixed_40k", generators::gen_production_mixed(40_000, 42)),
         // CRI K8s lines (~350 bytes avg)
-        ("cri_30k", gen_cri_k8s(30_000, 42)),
+        ("cri_30k", generators::gen_cri_k8s(30_000, 42)),
     ];
 
     let framer = NewlineFramer;
@@ -124,7 +123,7 @@ fn bench_cri_framing(c: &mut Criterion) {
     let sizes: Vec<(usize, &str)> = vec![(10_000, "10k_lines"), (100_000, "100k_lines")];
 
     for (count, label) in &sizes {
-        let data = gen_cri_k8s(*count, 42);
+        let data = generators::gen_cri_k8s(*count, 42);
         let file = write_tmpfile(&data);
         let file_path = file.path();
 
@@ -147,15 +146,15 @@ fn bench_cri_framing(c: &mut Criterion) {
                         let end =
                             memchr::memchr(b'\n', &buf[start..]).map_or(buf.len(), |p| start + p);
                         if let Some(cri) = parse_cri_line(&buf[start..end]) {
-                            match reassembler.feed(cri.message, cri.is_full) {
-                                AggregateResult::Complete(msg)
-                                | AggregateResult::Truncated(msg) => {
+                            match reassembler.feed(&cri) {
+                                ReassembleResult::Complete(msg)
+                                | ReassembleResult::Truncated(msg) => {
                                     json_buf.extend_from_slice(msg);
                                     json_buf.push(b'\n');
                                     count += 1;
                                     reassembler.reset();
                                 }
-                                AggregateResult::Pending => {}
+                                ReassembleResult::Pending => {}
                             }
                         }
                         start = end + 1;

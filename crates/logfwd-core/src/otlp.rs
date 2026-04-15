@@ -1360,6 +1360,33 @@ mod verification {
         assert!(result == expected, "parse_4digits value mismatch");
     }
 
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn verify_encode_fixed32() {
+        let field_number: u32 = kani::any();
+        let value: u32 = kani::any();
+        kani::assume(field_number > 0 && field_number <= 1000);
+
+        let mut buf = Vec::new();
+        encode_fixed32(&mut buf, field_number, value);
+
+        let tag_val = ((field_number as u64) << 3) | 5;
+        let tag_len = varint_len(tag_val);
+        assert!(buf.len() == tag_len + 4, "fixed32 size wrong");
+
+        let mut tag_buf = Vec::new();
+        encode_varint(&mut tag_buf, tag_val);
+        let mut i = 0;
+        while i < tag_len {
+            assert!(buf[i] == tag_buf[i], "tag byte mismatch");
+            i += 1;
+        }
+
+        let val_bytes = &buf[tag_len..];
+        let decoded = u32::from_le_bytes(val_bytes.try_into().unwrap());
+        assert!(decoded == value, "fixed32 value mismatch");
+    }
+
     /// Prove encode_fixed64 produces exactly tag + 8 LE bytes.
     #[kani::proof]
     #[kani::unwind(12)]

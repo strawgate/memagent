@@ -35,7 +35,6 @@ function makeTr(overrides: Partial<TraceRecord> = {}): TraceRecord {
     flush_reason: "size",
     errors: 0,
     status: "unset",
-    lifecycle_state: "completed",
     ...overrides,
   };
 }
@@ -201,8 +200,8 @@ describe("layoutSwimlane", () => {
       scan_ns: 100_000_000, // short initial value — will be overridden by live extension
       transform_ns: 0,
       in_progress: true,
-      lifecycle_state: "scan_in_progress",
-      lifecycle_state_start_unix_ns: stageStartNs,
+      stage: "scan",
+      stage_start_unix_ns: stageStartNs,
     });
     const scanLane = makeLane(SCAN_LANE, [tr]);
     const bars = layoutSwimlane([scanLane], windowMs, nowMs, null, tr.bytes_in, W);
@@ -231,8 +230,8 @@ describe("layoutSwimlane", () => {
       scan_ns: 50_000_000,
       transform_ns: 0,
       in_progress: true,
-      lifecycle_state: "scan_in_progress",
-      lifecycle_state_start_unix_ns: stageStartNs,
+      stage: "scan",
+      stage_start_unix_ns: stageStartNs,
     });
     const scanLane = makeLane(SCAN_LANE, [tr]);
     const bars = layoutSwimlane([scanLane], windowMs, nowMs, null, tr.bytes_in, W);
@@ -256,8 +255,8 @@ describe("layoutSwimlane", () => {
       scan_ns: staticScanNs,
       transform_ns: 0,
       in_progress: true,
-      lifecycle_state: "scan_in_progress",
-      lifecycle_state_start_unix_ns: stageStartNs,
+      stage: "scan",
+      stage_start_unix_ns: stageStartNs,
     });
     const scanLane = makeLane(SCAN_LANE, [tr]);
     const bars = layoutSwimlane([scanLane], windowMs, nowMs, null, tr.bytes_in, W);
@@ -317,8 +316,8 @@ describe("layoutSwimlane", () => {
       output_start_unix_ns: 0, // not yet assigned
       worker_id: -1, // no worker yet
       in_progress: true,
-      lifecycle_state: "queued_for_output",
-      lifecycle_state_start_unix_ns: stageStartNs,
+      stage: "output",
+      stage_start_unix_ns: stageStartNs,
     });
     const workerLane = makeLane(0, [tr]);
     const bars = layoutSwimlane(
@@ -435,78 +434,5 @@ describe("layoutSwimlane", () => {
     expect(workerBars.length).toBe(1);
     const hasGreen = workerBars[0].segments.some((s) => s.color === "#10b981");
     expect(hasGreen).toBe(true);
-  });
-
-  it("completed worker bar is not pinned to nowMs (no right-wall pin)", () => {
-    // Simulate a completed trace where the output ended 5 seconds ago.
-    // The bar's right edge should be at the actual end position, NOT at nowMs.
-    const startNs = (nowMs - 10_000) * 1e6; // started 10s ago
-    const outStartNs = startNs + 200_000_000; // output started 200ms after start
-    const outNs = 300_000_000; // output took 300ms
-    // actual end = startNs + 200_000_000 + 300_000_000 = (nowMs - 10_000)*1e6 + 500_000_000
-    // = (nowMs - 9500)*1e6 ... i.e. 9500ms ago
-    const tr = makeTr({
-      start_unix_ns: startNs,
-      scan_ns: 100_000_000,
-      transform_ns: 100_000_000,
-      output_ns: outNs,
-      output_start_unix_ns: outStartNs,
-      worker_id: 0,
-      lifecycle_state: "completed",
-    });
-    const workerLane = makeLane(0, [tr]);
-    const bars = layoutSwimlane(
-      [makeLane(SCAN_LANE, [tr]), workerLane],
-      windowMs,
-      nowMs,
-      null,
-      tr.bytes_in,
-      W
-    );
-    const workerBars = bars.filter((b) => !b.isScanRow);
-    expect(workerBars.length).toBe(1);
-    const bar = workerBars[0];
-    // The bar should end well before the right edge (chartRight).
-    // outStartMs + outMs = (nowMs - 10000) + 200 + 300 = nowMs - 9500
-    // toXRaw(nowMs - 9500) should be well left of toXRaw(nowMs)
-    const chartRight = LABEL_W + W;
-    expect(bar.x + bar.w).toBeLessThan(chartRight - 10);
-  });
-
-  it("completed bar with server clock slightly ahead does not pin to right", () => {
-    // Server clock is 500ms ahead of client. The trace started 2s ago and
-    // finished 200ms ago on the server — but that "200ms ago" is actually
-    // 300ms in the future from the client's perspective.
-    const startNs = (nowMs - 2_000) * 1e6; // started 2s ago (same on both clocks)
-    const outStartNs = startNs + 200_000_000; // output started 200ms in
-    const outNs = 2_300_000_000; // output took 2300ms on server clock
-    // Server end = startMs + 200 + 2300 = (nowMs - 2000) + 2500 = nowMs + 500 (500ms in the future!)
-    const tr = makeTr({
-      start_unix_ns: startNs,
-      scan_ns: 100_000_000,
-      transform_ns: 100_000_000,
-      output_ns: outNs,
-      output_start_unix_ns: outStartNs,
-      worker_id: 0,
-      lifecycle_state: "completed",
-    });
-    const workerLane = makeLane(0, [tr]);
-    const bars = layoutSwimlane(
-      [makeLane(SCAN_LANE, [tr]), workerLane],
-      windowMs,
-      nowMs,
-      null,
-      tr.bytes_in,
-      W
-    );
-    const workerBars = bars.filter((b) => !b.isScanRow);
-    expect(workerBars.length).toBe(1);
-    const bar = workerBars[0];
-    // With the fix, barEndMs = outStartMs + outMs (fixed, no nowMs clamp).
-    // The bar extends slightly past chartRight, but rendering clamps it:
-    // barW = Math.max(2, Math.min(chartRight, x1raw) - 0.5 - barX)
-    const chartRight = LABEL_W + W;
-    expect(bar.x + bar.w).toBeLessThanOrEqual(chartRight);
-    expect(bar.w).toBeGreaterThan(2);
   });
 });

@@ -4,7 +4,7 @@ description: "Deploy logfwd as a DaemonSet with OTLP forwarding"
 ---
 
 This page is the Kubernetes-specific production deployment guide for logfwd.
-For standalone container usage, see [Docker deployment](/deployment/docker/).
+For standalone container usage, see [Docker deployment](/memagent/deployment/docker/).
 
 :::tip[Production safe defaults]
 Use these defaults unless you have measured reasons to change them:
@@ -172,8 +172,8 @@ every log record:
 
 ```yaml
 enrichment:
-  - type: k8s_path
-    table_name: k8s
+  k8s:
+    type: k8s_path
 
 transform: |
   SELECT

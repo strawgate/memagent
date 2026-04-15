@@ -1,5 +1,5 @@
 ---
-title: "Configuration Reference"
+title: "YAML Reference"
 description: "Complete YAML reference for all logfwd settings"
 ---
 
@@ -125,8 +125,7 @@ Emit synthetic records for benchmarks, demos, and pipeline tests.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `generator` | object | No | Generator settings. If omitted, runtime defaults are used, including `batch_size: 1000` and `events_per_sec: 0`. See [Input Types](/configuration/inputs/#generator) for the detailed nested fields. |
-| `generator.profile` | string | No | Generator profile: `logs` (default), `record`, `envoy`, `cri_k8s`, `wide`, `narrow`, `cloud_trail`. See [Generator profiles](/configuration/inputs/#generator-profiles). |
+| `generator` | object | No | Generator settings. If omitted, runtime defaults are used, including `batch_size: 1000` and `events_per_sec: 0`. See [Input Types](/memagent/configuration/inputs/#generator) for the detailed nested fields. |
 
 ```yaml
 input:
@@ -518,9 +517,11 @@ Special columns added by the scanner / input format layer:
 | Column | Type | Description |
 |--------|------|-------------|
 | `body` | string | Original input line (when input line capture is enabled, e.g. `line_field: body`, or when a non-JSON CRI line is wrapped for scanner safety). |
-| `_source_path` | string | Absolute path of the source file (file-backed inputs only). Used as a join key for `k8s_path` enrichment. |
 | `_timestamp` | string | Timestamp from the CRI header as an RFC 3339 string (CRI inputs only). |
 | `_stream` | string | CRI stream name (`stdout` / `stderr`). |
+
+File-backed source-path metadata is not yet exposed as a SQL column. Track that
+gap in [issue #1346](https://github.com/strawgate/memagent/issues/1346).
 
 ### Built-in UDFs
 
@@ -528,7 +529,7 @@ Special columns added by the scanner / input format layer:
 |----------|-----------|-------------|
 | `int(expr)` | `int(any) → int64` | Cast any value to int64. Returns NULL on failure. |
 | `float(expr)` | `float(any) → float64` | Cast any value to float64. Returns NULL on failure. |
-| `grok(input, pattern)` | `grok(utf8, utf8) → Struct` | Apply a Grok pattern to `input` and return the captures as a struct. |
+| `grok(pattern, input)` | `grok(utf8, utf8) → utf8` | Apply a Grok pattern to `input` and return the first capture as JSON. |
 | `regexp_extract(input, pattern, group)` | `regexp_extract(utf8, utf8, int64) → utf8` | Return capture group `group` from a regex match. |
 
 Examples:
@@ -538,7 +539,7 @@ Examples:
 SELECT int(status) AS status FROM logs
 
 -- Extract a field with Grok
-SELECT grok(message, '%{IP:client} %{WORD:method} %{URIPATHPARAM:path}') AS parsed FROM logs
+SELECT grok('%{IP:client} %{WORD:method} %{URIPATHPARAM:path}', message) AS parsed FROM logs
 
 -- Extract a named group with regex
 SELECT regexp_extract(message, 'user=([a-z]+)', 1) AS user FROM logs
@@ -551,144 +552,31 @@ SELECT float(duration) AS duration_ms FROM logs
 
 ## Enrichment tables
 
-Enrichment tables are one-row (or multi-row) Arrow tables registered in DataFusion
-alongside the `logs` table. Use `CROSS JOIN` for one-row tables or `LEFT JOIN` for
-multi-row lookup tables.
+Enrichment tables are made available as SQL tables that can be joined in the transform
+query. They are declared under the top-level `enrichment` key.
 
 ```yaml
 enrichment:
-  - type: host_info
-  - type: process_info
-  - type: network_info
-  - type: container_info
-  - type: k8s_cluster_info
   - type: k8s_path
+  - type: host_info
   - type: static
     table_name: labels
     labels:
       environment: production
       region: us-east-1
-  - type: kv_file
-    table_name: os_release
-    path: /etc/os-release
-  - type: env_vars
-    table_name: deploy_meta
-    prefix: LOGFWD_META_
-  - type: csv
-    table_name: assets
-    path: /etc/logfwd/assets.csv
-  - type: jsonl
-    table_name: ip_owners
-    path: /etc/logfwd/ip-owners.jsonl
-  - type: geo_database
-    format: mmdb
-    path: /data/GeoLite2-City.mmdb
-```
-
-### `host_info` enrichment
-
-System host metadata, resolved once at startup. Fixed table name: `host_info`.
-
-| Column | Description |
-|--------|-------------|
-| `hostname` | System hostname. |
-| `os_type` | Operating system (`linux`, `macos`, `windows`). |
-| `os_arch` | CPU architecture (`x86_64`, `aarch64`, etc.). |
-
-```sql
-SELECT l.*, h.hostname, h.os_type
-FROM logs l CROSS JOIN host_info h
-```
-
-### `process_info` enrichment
-
-Agent self-metadata, resolved once at startup. Fixed table name: `process_info`.
-
-| Column | Description |
-|--------|-------------|
-| `agent_name` | Always `logfwd`. |
-| `agent_version` | Semantic version of the running binary. |
-| `pid` | Process ID (as string). |
-| `start_time` | ISO 8601 UTC timestamp captured when the `process_info` enrichment table is constructed during pipeline startup. |
-
-```sql
-SELECT l.*, p.agent_version, p.start_time
-FROM logs l CROSS JOIN process_info p
-```
-
-### `network_info` enrichment
-
-Network interface metadata from procfs, resolved once at startup. Fixed table name: `network_info`.
-
-| Column | Description |
-|--------|-------------|
-| `hostname` | System hostname. |
-| `primary_ipv4` | Lexicographically first non-loopback IPv4 address, or empty. On multihomed hosts this may not match the default-route interface; use `all_ipv4` for full coverage. |
-| `primary_ipv6` | Lexicographically first non-loopback, non-link-local IPv6 address, or empty. Same caveat as `primary_ipv4`. |
-| `all_ipv4` | Comma-separated list of all non-loopback IPv4 addresses. |
-| `all_ipv6` | Comma-separated list of all non-loopback, non-link-local IPv6 addresses. |
-
-```sql
-SELECT l.*, n.primary_ipv4
-FROM logs l CROSS JOIN network_info n
-```
-
-### `container_info` enrichment
-
-Container runtime detection from `/proc/self/cgroup` and `/.dockerenv`, resolved once
-at startup. Fixed table name: `container_info`.
-
-| Column | Description |
-|--------|-------------|
-| `container_id` | 64-character hex container ID, or empty if not in a container. |
-| `container_runtime` | `docker`, `containerd`, `cri-o`, `kubernetes`, `unknown`, or empty. |
-
-```sql
-SELECT l.*, c.container_id, c.container_runtime
-FROM logs l CROSS JOIN container_info c
-```
-
-### `k8s_cluster_info` enrichment
-
-Kubernetes cluster metadata from the downward API environment variables, resolved
-once at startup. Fixed table name: `k8s_cluster_info`.
-
-Populate these via `fieldRef` in your DaemonSet pod spec:
-```yaml
-env:
-  - name: K8S_NODE_NAME
-    valueFrom:
-      fieldRef:
-        fieldPath: spec.nodeName
-  - name: K8S_CLUSTER_NAME
-    value: my-cluster   # or from a ConfigMap
-  - name: K8S_SERVICE_ACCOUNT
-    valueFrom:
-      fieldRef:
-        fieldPath: spec.serviceAccountName
-```
-
-| Column | Description |
-|--------|-------------|
-| `namespace` | Pod namespace (from mounted service account path). |
-| `pod_name` | Pod name (from `HOSTNAME`). |
-| `node_name` | Node name (from `K8S_NODE_NAME` or `NODE_NAME`). |
-| `service_account` | Service account name (from `K8S_SERVICE_ACCOUNT` or `SERVICE_ACCOUNT` env var). |
-| `cluster_name` | Cluster name (from `K8S_CLUSTER_NAME` or `CLUSTER_NAME`). |
-
-```sql
-SELECT l.*, k.namespace, k.node_name, k.cluster_name
-FROM logs l CROSS JOIN k8s_cluster_info k
 ```
 
 ### `k8s_path` enrichment
 
 Parses Kubernetes pod log paths (e.g.
 `/var/log/pods/<namespace>_<pod>_<uid>/<container>/`) to extract metadata.
-The source-path metadata is automatically injected into the `logs` table as
-`_source_path` for file-backed inputs.
 
-Columns exposed by the enrichment table (named `k8s_pods` by default; set `table_name: k8s` in config to use the `k8s` alias shown in the examples below):
+This enrichment table is ready to expose path-derived metadata, but file-backed
+inputs do not yet inject a source-path column into the `logs` table. The join
+shown in older docs is therefore not wired end to end today. Track that runtime
+gap in [issue #1346](https://github.com/strawgate/memagent/issues/1346).
+
+Columns exposed by `k8s`:
 
 | Column | Description |
 |--------|-------------|
@@ -698,9 +586,17 @@ Columns exposed by the enrichment table (named `k8s_pods` by default; set `table
 | `pod_uid` | Pod UID. |
 | `container_name` | Container name. |
 
+### `host_info` enrichment
+
+Exposes the hostname of the machine running logfwd.
+
+| Column | Description |
+|--------|-------------|
+| `hostname` | System hostname. |
+
 ### `static` enrichment
 
-A one-row table with user-defined label columns from the YAML config.
+A table with one row containing user-defined label columns.
 
 ```yaml
 enrichment:
@@ -716,125 +612,6 @@ enrichment:
 SELECT l.*, lbl.environment, lbl.cluster
 FROM logs l CROSS JOIN labels lbl
 ```
-
-### `env_vars` enrichment
-
-A one-row table populated from environment variables matching a name prefix.
-The prefix is stripped and the remainder lower-cased to form column names.
-
-```yaml
-enrichment:
-  - type: env_vars
-    table_name: deploy_meta
-    prefix: LOGFWD_META_
-```
-
-With `LOGFWD_META_CLUSTER=prod` and `LOGFWD_META_REGION=us-east-1` set, the table
-exposes `cluster` and `region` columns.
-
-```sql
-SELECT l.*, m.cluster, m.region
-FROM logs l CROSS JOIN deploy_meta m
-```
-
-### `kv_file` enrichment
-
-A one-row table parsed from a `KEY=value` properties file. Supports unquoted,
-double-quoted, and single-quoted values. Lines starting with `#` are comments.
-Column names are keys lower-cased.
-
-```yaml
-enrichment:
-  - type: kv_file
-    table_name: os_release
-    path: /etc/os-release
-    refresh_interval: 3600   # optional: reload every N seconds; must be >= 1 when set
-```
-
-```sql
-SELECT l.*, os.pretty_name, os.version_id
-FROM logs l CROSS JOIN os_release os
-```
-
-Useful for `/etc/os-release`, `.env` files, or ConfigMap-mounted metadata files.
-
-### `csv` enrichment
-
-A multi-row lookup table loaded from a CSV file. All columns are UTF-8 strings.
-The first row must be column headers.
-
-```yaml
-enrichment:
-  - type: csv
-    table_name: assets
-    path: /etc/logfwd/assets.csv
-    refresh_interval: 3600   # optional: reload every N seconds; must be >= 1 when set
-```
-
-```sql
-SELECT l.*, a.owner, a.team
-FROM logs l LEFT JOIN assets a ON l.hostname = a.hostname
-```
-
-### `jsonl` enrichment
-
-A multi-row lookup table loaded from a JSON Lines file (one JSON object per line).
-Columns are the union of all keys across all rows.
-
-```yaml
-enrichment:
-  - type: jsonl
-    table_name: ip_owners
-    path: /etc/logfwd/ip-owners.jsonl
-    refresh_interval: 1800   # optional: reload every N seconds; must be >= 1 when set
-```
-
-```sql
-SELECT l.*, ipl.owner
-FROM logs l LEFT JOIN ip_owners ipl ON l.client_ip = ipl.ip
-```
-
-### `geo_database` enrichment
-
-Registers a GeoIP database for use with the `geo_lookup()` SQL function.
-Supports MaxMind MMDB and CSV IP-range formats.
-
-```yaml
-# MaxMind MMDB format
-enrichment:
-  - type: geo_database
-    format: mmdb
-    path: /data/GeoLite2-City.mmdb
-    refresh_interval: 86400   # optional: reload daily; must be >= 1 when set
-
-# CSV IP-range format (DB-IP Lite compatible)
-enrichment:
-  - type: geo_database
-    format: csv_range
-    path: /data/dbip-city-lite.csv
-```
-
-```sql
-SELECT l.*,
-  geo_lookup(l.client_ip).country_code AS country,
-  geo_lookup(l.client_ip).city AS city,
-  geo_lookup(l.client_ip).latitude AS lat,
-  geo_lookup(l.client_ip).longitude AS lon
-FROM logs l
-```
-
-The `geo_lookup()` function returns a struct with these fields:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `country_code` | string | ISO 3166-1 two-letter code (e.g. `US`). |
-| `country_name` | string | Full English country name. |
-| `city` | string | City name. |
-| `region` | string | State or subdivision name. |
-| `latitude` | float | Decimal degrees. |
-| `longitude` | float | Decimal degrees. |
-| `asn` | integer | Autonomous System Number. |
-| `org` | string | Organization name for the ASN. |
 
 ---
 
@@ -946,11 +723,6 @@ pipelines:
         format: console
 
 enrichment:
-  - type: host_info
-  - type: process_info
-  - type: network_info
-  - type: container_info
-  - type: k8s_cluster_info
   - type: static
     table_name: labels
     labels:

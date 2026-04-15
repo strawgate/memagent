@@ -184,14 +184,6 @@ jobs:
             echo "- No shard artifacts captured." >>"$summary_file"
           fi
 
-          # Only open an issue when there are genuine seed failures.
-          # If shards failed due to infra/compile errors, total_fail_count and
-          # failed_shards will both be zero — skip the noisy empty report.
-          if [ "$total_fail_count" -eq 0 ] && [ "$failed_shards" -eq 0 ]; then
-            echo "No seed failures to report (shards may have failed for infra/compile reasons — check the run URL for details)."
-            exit 0
-          fi
-
           body_file="$(mktemp)"
           cat >"$body_file" <<EOF
           Nightly turmoil seed sweep failed.
@@ -221,15 +213,15 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: dtolnay/rust-toolchain@nightly
       - name: Install cargo-fuzz
-        run: cargo +nightly install cargo-fuzz
+        run: cargo install cargo-fuzz
         env:
           RUSTC_WRAPPER: ""
       - name: Run fuzz targets
         run: |
           cd crates/logfwd-core
-          for target in $(cargo +nightly fuzz list 2>/dev/null); do
+          for target in $(cargo fuzz list 2>/dev/null); do
             echo "=== Fuzzing $target for 5 minutes ==="
-            cargo +nightly fuzz run "$target" -- -max_total_time=300
+            cargo fuzz run "$target" -- -max_total_time=300
           done
 
   fuzz-extended:
@@ -241,13 +233,13 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: dtolnay/rust-toolchain@nightly
       - name: Install cargo-fuzz
-        run: cargo +nightly install cargo-fuzz
+        run: cargo install cargo-fuzz
         env:
           RUSTC_WRAPPER: ""
       - name: Run fuzz targets
         run: |
           cd crates/logfwd-core
-          for target in $(cargo +nightly fuzz list 2>/dev/null); do
+          for target in $(cargo fuzz list 2>/dev/null); do
             echo "=== Fuzzing $target for 30 minutes ==="
-            cargo +nightly fuzz run "$target" -- -max_total_time=1800
+            cargo fuzz run "$target" -- -max_total_time=1800
           done

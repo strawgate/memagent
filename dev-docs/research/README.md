@@ -22,7 +22,6 @@ Point-in-time investigations that informed architecture decisions.
 - [checkpoint-snapshot-design.md](checkpoint-snapshot-design.md)
 - [columnar-batch-builder.md](columnar-batch-builder.md)
 - [crate-restructure-plan.md](crate-restructure-plan.md)
-- [enrichment-architecture-plan-2026-04.md](enrichment-architecture-plan-2026-04.md)
 - [file-tailing-audit.md](file-tailing-audit.md)
 - [linearizability-porcupine-plan.md](linearizability-porcupine-plan.md)
 - [per-input-sql-analysis.md](per-input-sql-analysis.md)

@@ -126,7 +126,6 @@ Use `get_field()` to extract individual fields:
 ```yaml
 enrichment:
   - type: geo_database
-    format: mmdb
     path: /data/GeoLite2-City.mmdb
 transform: |
   SELECT *, get_field(geo, 'city') AS city, get_field(geo, 'country_code') AS country
@@ -170,7 +169,7 @@ transform: |
 
 | Topic | Where to go |
 |-------|-------------|
-| See all YAML options | [YAML Reference](/configuration/reference/) |
-| Understand the scanner | [Scanner Deep Dive](/how-it-works/scanner/) (interactive) |
-| Deploy to production | [Kubernetes DaemonSet](/deployment/kubernetes/) |
-| Debug transform issues | [Troubleshooting](/troubleshooting/) |
+| See all YAML options | [YAML Reference](/memagent/configuration/reference/) |
+| Understand the scanner | [Scanner Deep Dive](/memagent/how-it-works/scanner/) (interactive) |
+| Deploy to production | [Kubernetes DaemonSet](/memagent/deployment/kubernetes/) |
+| Debug transform issues | [Troubleshooting](/memagent/troubleshooting/) |

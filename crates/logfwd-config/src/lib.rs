@@ -17,17 +17,15 @@ mod validate;
 #[cfg(test)]
 pub(crate) use env::expand_env_vars;
 pub use types::{
-    ArrowIpcTypeConfig, AuthConfig, Config, ConfigError, ContainerInfoConfig, CsvEnrichmentConfig,
-    EnrichmentConfig, EnvVarsEnrichmentConfig, FileTypeConfig, Format,
-    GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorInputConfig,
-    GeneratorProfileConfig, GeneratorSequenceConfig, GeneratorTypeConfig, GeoDatabaseConfig,
-    GeoDatabaseFormat, HostInfoConfig, HostMetricsInputConfig, HttpInputConfig, HttpMethodConfig,
-    HttpTypeConfig, InputConfig, InputType, InputTypeConfig, JournaldBackendConfig,
-    JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sClusterInfoConfig,
-    K8sPathConfig, KvFileEnrichmentConfig, NetworkInfoConfig, OtlpProtobufDecodeModeConfig,
-    OtlpTypeConfig, OutputConfig, OutputType, PipelineConfig, ProcessInfoConfig, SensorTypeConfig,
-    ServerConfig, StaticEnrichmentConfig, StorageConfig, TcpTypeConfig, TlsInputConfig,
-    UdpTypeConfig,
+    ArrowIpcTypeConfig, AuthConfig, Config, ConfigError, CsvEnrichmentConfig, EnrichmentConfig,
+    FileTypeConfig, Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig,
+    GeneratorInputConfig, GeneratorProfileConfig, GeneratorSequenceConfig, GeneratorTypeConfig,
+    GeoDatabaseConfig, GeoDatabaseFormat, HostInfoConfig, HostMetricsInputConfig, HttpInputConfig,
+    HttpMethodConfig, HttpTypeConfig, InputConfig, InputType, InputTypeConfig,
+    JournaldBackendConfig, JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig,
+    K8sPathConfig, OtlpProtobufDecodeModeConfig, OtlpTypeConfig, OutputConfig, OutputType,
+    PipelineConfig, SensorTypeConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig,
+    TcpTypeConfig, TlsInputConfig, UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 
@@ -2439,32 +2437,6 @@ pipelines:
     }
 
     #[test]
-    fn generator_timestamp_rejects_non_logs_profiles() {
-        for profile in ["envoy", "cri_k8s", "wide", "narrow", "cloud_trail"] {
-            let yaml = format!(
-                r#"
-pipelines:
-  test:
-    inputs:
-      - type: generator
-        generator:
-          profile: {profile}
-          timestamp:
-            start: "now"
-    outputs:
-      - type: "null"
-"#
-            );
-            let err = Config::load_str(&yaml).unwrap_err();
-            assert!(
-                err.to_string()
-                    .contains("only supported for the logs profile"),
-                "profile={profile}: expected logs-only rejection: {err}"
-            );
-        }
-    }
-
-    #[test]
     fn generator_timestamp_rejects_invalid_calendar_date() {
         let yaml = r#"
 pipelines:
@@ -2888,6 +2860,25 @@ pipelines:
         );
     }
 }
-mod tests_generator_unsupported;
-mod tests_otlp_config;
-mod tests_static_labels;
+
+#[test]
+fn validation_storage_checkpoint_flush_interval_zero_rejected() {
+    let yaml = r#"
+input:
+  type: tcp
+  listen: 0.0.0.0:8080
+
+output:
+  type: null
+
+server: {}
+storage:
+  checkpoint_flush_interval: 0s
+"#;
+    let err = Config::load_str(yaml).expect_err("0s flush interval must fail");
+    assert!(
+        err.to_string()
+            .contains("storage.checkpoint_flush_interval must be greater than 0"),
+        "expected non-zero flush interval rejection, got: {err}"
+    );
+}
