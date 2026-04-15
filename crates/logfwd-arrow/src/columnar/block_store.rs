@@ -1,17 +1,17 @@
-// block_store.rs — Manages string backing buffers for columnar construction.
-//
-// The builder's 2-buffer model: "original" (input/wire bytes) + "generated"
-// (write_str output / decoded strings).  StringRef offsets below original_len
-// point into the original buffer; offsets at or above point into the generated
-// buffer shifted by original_len.
-//
-// This type owns the buffers and provides:
-//   - resolve: offset → (block_idx, local_offset, slice)
-//   - registration of buffers for Arrow StringViewArray blocks
-//   - read_str_bytes: safe byte extraction from the 2-buffer system
-//
-// By centralizing buffer management, ColumnarBatchBuilder, StreamingBuilder,
-// and future producers can share the same finalization code paths.
+//! String backing buffer management for columnar construction.
+//!
+//! The builder's 2-buffer model: "original" (input/wire bytes) + "generated"
+//! (`write_str` output / decoded strings). [`StringRef`] offsets below
+//! `original_len` point into the original buffer; offsets at or above point
+//! into the generated buffer shifted by `original_len`.
+//!
+//! [`BlockStore`] owns the buffers and provides:
+//! - [`BlockStore::read_str_bytes`]: safe byte extraction from the 2-buffer system
+//! - [`BlockStore::make_string_view`]: Arrow StringView u128 construction
+//! - [`BlockStore::register_blocks`]: buffer registration for `StringViewArray`
+//!
+//! By centralizing buffer management, `ColumnarBatchBuilder`, `StreamingBuilder`,
+//! and future producers can share the same finalization code paths.
 
 use arrow::buffer::Buffer;
 
