@@ -922,6 +922,11 @@ fn str_from_array(arr: &dyn Array, row: usize) -> String {
             .downcast_ref::<arrow::array::StringViewArray>()
             .map(|a| a.value(row).to_string())
             .unwrap_or_default(),
+        DataType::LargeUtf8 => arr
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
         _ => String::new(),
     }
 }
