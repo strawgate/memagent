@@ -336,6 +336,18 @@ pub struct JournaldInputConfig {
     /// Systemd units to exclude.
     #[serde(default)]
     pub exclude_units: Vec<String>,
+    /// Syslog identifiers (`SYSLOG_IDENTIFIER=`) to include.
+    #[serde(default)]
+    pub identifiers: Vec<String>,
+    /// Priority/log levels (e.g. `0`, `3`, `info`, `err`) to include.
+    #[serde(default)]
+    pub priorities: Vec<String>,
+    /// Path to persist the cursor. Allows resuming after restarts.
+    #[serde(default)]
+    pub cursor_path: Option<String>,
+    /// Include `_BOOT_ID` field in output (default: false).
+    #[serde(default)]
+    pub include_boot_id: bool,
     /// Only include entries from the current boot (default: true).
     #[serde(default = "default_true")]
     pub current_boot_only: bool,
@@ -381,6 +393,10 @@ impl Default for JournaldInputConfig {
         Self {
             include_units: Vec::new(),
             exclude_units: Vec::new(),
+            identifiers: Vec::new(),
+            priorities: Vec::new(),
+            cursor_path: None,
+            include_boot_id: false,
             current_boot_only: true,
             since_now: false,
             journalctl_path: None,

@@ -565,6 +565,10 @@ pub(super) fn build_input_state(
             let config = JournaldConfig {
                 include_units: jd_cfg.map(|c| c.include_units.clone()).unwrap_or_default(),
                 exclude_units: jd_cfg.map(|c| c.exclude_units.clone()).unwrap_or_default(),
+                identifiers: jd_cfg.map(|c| c.identifiers.clone()).unwrap_or_default(),
+                priorities: jd_cfg.map(|c| c.priorities.clone()).unwrap_or_default(),
+                cursor_path: jd_cfg.and_then(|c| c.cursor_path.clone()),
+                include_boot_id: jd_cfg.is_some_and(|c| c.include_boot_id),
                 current_boot_only: jd_cfg.is_none_or(|c| c.current_boot_only),
                 since_now: jd_cfg.is_some_and(|c| c.since_now),
                 journalctl_path: jd_cfg
