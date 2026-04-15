@@ -1928,6 +1928,14 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+        // Guard that removes the file on drop, ensuring cleanup even on panic.
+        struct CleanupGuard(PathBuf);
+        impl Drop for CleanupGuard {
+            fn drop(&mut self) {
+                let _ = fs::remove_file(&self.0);
+            }
+        }
+
         let cwd = std::env::current_dir().unwrap();
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1937,7 +1945,8 @@ mod tests {
         // Unique filename to avoid interfering with other tests running in parallel.
         let bare_file = cwd.join(format!("bare-{}-{}.log", timestamp, idx));
 
-        // Create the file.
+        // Create the file, with a guard to ensure cleanup on panic.
+        let _guard = CleanupGuard(bare_file.clone());
         {
             let mut f = File::create(&bare_file).unwrap();
             writeln!(f, "bare file").unwrap();
@@ -1945,9 +1954,6 @@ mod tests {
 
         // Attempt to match using a bare pattern.
         let matches = expand_glob_patterns(&["*.log"]);
-
-        // Clean up immediately regardless of whether it passed or not.
-        fs::remove_file(&bare_file).unwrap();
 
         // In WalkDir, we return `entry.into_path()`. If `WalkDir` started at `.`,
         // it returns `./bare-XXX.log`. Let's normalize `matches` for absolute path comparison.
@@ -1961,6 +1967,7 @@ mod tests {
             absolute_matches.iter().any(|p| p == &bare_file),
             "bare *.log should match file in cwd, actual matches: {absolute_matches:?}"
         );
+        // _guard drops here, removing bare_file even if assertions above panic.
     }
 
     /// Verify that when open files exceed `max_open_files`, the least-recently-read

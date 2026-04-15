@@ -374,30 +374,16 @@ fn compliance_file_delete_recreate() {
     // Delete the file.
     fs::remove_file(&log_path).unwrap();
 
-    // Deletion doesn't increment a discrete pipeline metric like `rotations`
-    // since the file is removed from the internal map entirely. However, if
-    // we recreate the file immediately, the new file gets a new inode and
-    // will be discovered as a new file. We can poll `rotations` after
-    // writing the new data to ensure the newly created file was discovered
-    // correctly.
+    // Deletion removes the file from the tailer's internal map. When the file
+    // is recreated, it is typically discovered as a new file and produces
+    // normal data events rather than a `rotations` metric increment, so rely
+    // on the line-count wait below to verify discovery and ingestion.
 
     // Recreate the file with new data.
-    let rotations_before = metrics.inputs[0].2.rotations();
     {
         let mut f = fs::File::create(&log_path).unwrap();
         f.write_all(generate_lines(1000, 1000).as_bytes()).unwrap();
         f.flush().unwrap();
-    }
-
-    let deadline_recreate = std::time::Instant::now() + Duration::from_secs(5);
-    loop {
-        if metrics.inputs[0].2.rotations() > rotations_before {
-            break;
-        }
-        if std::time::Instant::now() >= deadline_recreate {
-            panic!("tailer failed to detect recreated file within 5s");
-        }
-        std::thread::sleep(Duration::from_millis(20));
     }
 
     // Poll until >= 2000 lines processed or 5s safety deadline.

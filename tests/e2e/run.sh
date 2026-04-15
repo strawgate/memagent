@@ -101,11 +101,18 @@ k delete pod -n "$NAMESPACE" log-generator --ignore-not-found 2>/dev/null
 k apply -n "$NAMESPACE" -f "$SCRIPT_DIR/manifests/log-generator.yaml"
 
 # Wait for the generator pod to be Running instead of hardcoded sleep.
-wait_for "log-generator pod running" 30 \
-    k get pod -n "$NAMESPACE" log-generator -o jsonpath='{.status.phase}' | grep -q Running || true
+# The condition must be a single command whose exit code wait_for can observe;
+# pipes and redirects are interpreted by the outer shell, so wrap in sh -c.
+pod_is_running() {
+    local phase
+    phase=$(k get pod -n "$NAMESPACE" log-generator -o jsonpath='{.status.phase}' 2>/dev/null)
+    [ "$phase" = "Running" ]
+}
+wait_for "log-generator pod running" 30 pod_is_running
+
 # Brief extra pause for CRI log path to stabilize after container start.
 wait_for "log-generator CRI path available" 30 \
-    k exec -n "$NAMESPACE" daemonset/logfwd -- sh -c 'ls /var/log/pods/*log-generator*/*/*.log' >/dev/null 2>&1 || true
+    k exec -n "$NAMESPACE" daemonset/logfwd -- sh -c 'ls /var/log/pods/*log-generator*/*/*.log >/dev/null 2>&1'
 
 echo "=== Phase 6: Port-forward ==="
 k port-forward -n "$NAMESPACE" svc/blackhole-receiver 14318:4318 &
