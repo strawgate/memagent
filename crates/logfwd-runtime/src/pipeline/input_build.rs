@@ -51,15 +51,34 @@ fn make_format(
     Ok(proc)
 }
 
+fn validate_generator_format(
+    name: &str,
+    profile: &GeneratorProfile,
+    format: &Format,
+) -> Result<(), String> {
+    match (profile, format) {
+        // CRI profile requires CRI format
+        (GeneratorProfile::CriK8s, Format::Cri | Format::Json) => {}
+        // All other profiles require JSON
+        (_, Format::Json) => {}
+        (GeneratorProfile::CriK8s, _) => {
+            return Err(format!(
+                "input '{name}': format {format:?} is not supported for cri_k8s generator (expected cri or json)"
+            ));
+        }
+        (_, _) => {
+            return Err(format!(
+                "input '{name}': format {format:?} is not supported for generator inputs (expected json)"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> Result<(), String> {
     match input_type {
         InputType::Generator => {
-            if !matches!(format, Format::Json | Format::Cri) {
-                return Err(format!(
-                    "input '{name}': format {:?} is not supported for {:?} inputs (expected json or cri)",
-                    format, input_type
-                ));
-            }
+            unreachable!("use validate_generator_format for Generator inputs");
         }
         InputType::Otlp | InputType::ArrowIpc => {
             if !matches!(format, Format::Json) {
@@ -289,7 +308,7 @@ pub(super) fn build_input_state(
                     _ => Format::Json,
                 },
             };
-            validate_input_format(name, InputType::Generator, &format)?;
+            validate_generator_format(name, &config.profile, &format)?;
             let source = GeneratorInput::new(name, config);
             (Box::new(source), format, 4 * 1024 * 1024)
         }

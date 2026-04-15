@@ -1204,7 +1204,7 @@ fn build_log_attrs(
                 _ => {
                     // String (default).
                     let val = str_value_at(arr.as_ref(), row);
-                    str_vals.push(if val.is_empty() { None } else { Some(val) });
+                    str_vals.push(Some(val));
                     int_vals.push(None);
                     double_vals.push(None);
                     bool_vals.push(None);
@@ -1311,7 +1311,7 @@ fn build_logs_fact(
                     None
                 } else {
                     let s = str_value_at(arr.as_ref(), row);
-                    if s.is_empty() { None } else { Some(s) }
+                    Some(s)
                 }
             })
             .collect()
@@ -1825,7 +1825,12 @@ fn unpivot_attrs_to_flat(
                 }
             }
             ATTR_TYPE_STR => {}
-            _ => unreachable!("type tags are validated before dispatch"),
+            _ => {
+                return Err(ArrowError::SchemaError(format!(
+                    "unsupported column type: {}",
+                    type_tag
+                )));
+            }
         }
     }
 

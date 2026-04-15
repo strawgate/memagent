@@ -42,8 +42,8 @@ function fmtMs(ms: number): string {
 }
 
 export function computeStats(traces: TraceRecord[]) {
-  // Only use completed (non-in-progress) traces for timing stats
-  const done = traces.filter((t) => !t.in_progress);
+  // Only use terminal traces for timing stats.
+  const done = traces.filter((t) => t.lifecycle_state === "completed");
   if (done.length < 2) return null;
   let totalNs = 0,
     scanNs = 0,
@@ -112,12 +112,11 @@ export function buildLanes(traces: TraceRecord[]): LanesResult {
   const byWorker = new Map<number, TraceRecord[]>();
 
   for (const t of traces) {
-    const hasAssignedWorkerId = typeof t.worker_id === "number" && t.worker_id >= 0;
-
-    if (hasAssignedWorkerId) {
-      if (!byWorker.has(t.worker_id)) byWorker.set(t.worker_id, []);
-      byWorker.get(t.worker_id)?.push(t);
-    } else if (t.in_progress && (t.stage === "output" || t.stage === "queued")) {
+    const wid = t.worker_id ?? -1;
+    if (wid >= 0) {
+      if (!byWorker.has(wid)) byWorker.set(wid, []);
+      byWorker.get(wid)?.push(t);
+    } else if (t.lifecycle_state === "queued_for_output") {
       pendingTraces.push(t);
     }
   }
@@ -140,7 +139,7 @@ export const LABEL_W = 40; // left margin (worker / SCAN labels)
 export const PEND_BOX_W = 72; // right column: pending-batch dot box
 export const STRIDE = LANE_H + LANE_GAP;
 const BAR_R = 3;
-const SECTION_GAP = 6;
+export const SECTION_GAP = 6;
 const BAR_PAD = 3; // row padding; bar height is further scaled by batch size
 
 // ─── layout types (exported for testing) ──────────────────────────────────────
@@ -212,10 +211,15 @@ export function layoutSwimlane(
   const minMs = nowMs - windowMs;
   const chartRight = LABEL_W + W;
   const toXRaw = (ms: number) => LABEL_W + ((ms - minMs) / windowMs) * W;
+  const isInProgress = (t: TraceRecord) => t.lifecycle_state !== "completed";
+  const isScanLive = (t: TraceRecord) =>
+    t.lifecycle_state === "scan_in_progress" || t.lifecycle_state === "transform_in_progress";
+  const isOutputLive = (t: TraceRecord) => t.lifecycle_state === "output_in_progress";
+  const isQueuedForOutput = (t: TraceRecord) => t.lifecycle_state === "queued_for_output";
 
   const sizeFrac = (t: TraceRecord) => {
     if (t.bytes_in > 0) return 0.5 + 0.5 * (t.bytes_in / maxBytesIn);
-    return t.in_progress ? 1.0 : 0.75;
+    return isInProgress(t) ? 1.0 : 0.75;
   };
 
   const bars: BarSpec[] = [];
@@ -232,26 +236,31 @@ export function layoutSwimlane(
       let xfmMs = Number(t.transform_ns) / 1e6;
       let outMs = Number(t.output_ns) / 1e6;
 
-      if (t.in_progress && t.stage && Number(t.stage_start_unix_ns)) {
-        const stageStartMs = Number(t.stage_start_unix_ns) / 1e6;
+      if (isInProgress(t) && Number(t.lifecycle_state_start_unix_ns)) {
+        const stageStartMs = Number(t.lifecycle_state_start_unix_ns) / 1e6;
         // Clamp: stageStart must be in the past and not older than 60s (stale guard)
         if (stageStartMs > 0 && stageStartMs <= nowMs && nowMs - stageStartMs < 60_000) {
           const live = Math.max(1, nowMs - stageStartMs);
-          if (t.stage === "scan") scanMs = live;
-          else if (t.stage === "transform") xfmMs = live;
-          else if (t.stage === "output") outMs = live;
+          if (t.lifecycle_state === "scan_in_progress") scanMs = live;
+          else if (t.lifecycle_state === "transform_in_progress") xfmMs = live;
+          else if (t.lifecycle_state === "output_in_progress") outMs = live;
         }
       }
 
       if (isScan) {
         // Skip batches with no scan time yet, or that just finished (< 300ms old)
         if (scanMs + xfmMs < 2) continue;
-        // Clamp to nowMs: server/client clock skew or stale xfmMs on a live scan batch
-        // can push barEndMs past the right edge, producing a bar glued to the right wall.
-        const barEndMs = Math.min(startMs + scanMs + xfmMs, nowMs);
-        if (!t.in_progress && nowMs - barEndMs < 300) continue;
+        // In-progress: clamp to nowMs so the bar grows with the clock.
+        // Completed: use actual end position — no clamp. (Same reasoning as worker row:
+        // clamping completed bars to nowMs pins them when the server clock is ahead.)
+        const rawEndMs = startMs + scanMs + xfmMs;
+        const barEndMs = isInProgress(t) ? Math.min(rawEndMs, nowMs) : rawEndMs;
+        // Hide completed scan bars for 300ms after they finish to prevent flicker
+        // during the active→completed transition. The barEndMs <= nowMs guard
+        // avoids hiding bars whose end is in the future due to clock skew.
+        if (!isInProgress(t) && barEndMs <= nowMs && nowMs - barEndMs < 300) continue;
 
-        const isLive = t.in_progress && (t.stage === "scan" || t.stage === "transform");
+        const isLive = isScanLive(t);
         const x0raw = toXRaw(startMs);
         const x1raw = toXRaw(barEndMs);
         if (x1raw < LABEL_W || x0raw > chartRight) continue;
@@ -284,8 +293,8 @@ export function layoutSwimlane(
             if (ex <= sx) return;
             segments.push({ x: sx, w: ex - sx, color, alpha: baseAlpha, pulse });
           };
-          addSeg(scanMs, C.scan, t.stage === "scan");
-          addSeg(xfmMs, C.transform, t.stage === "transform");
+          addSeg(scanMs, C.scan, t.lifecycle_state === "scan_in_progress");
+          addSeg(xfmMs, C.transform, t.lifecycle_state === "transform_in_progress");
         }
 
         bars.push({
@@ -304,12 +313,12 @@ export function layoutSwimlane(
         const sendMs = Number(t.send_ns ?? 0) / 1e6;
         const recvMs = Number(t.recv_ns ?? 0) / 1e6;
 
-        const workerAssigned = t.in_progress
-          ? (t.worker_id ?? -1) >= 0 && (Number(t.output_start_unix_ns) ?? 0) > 0
-          : true;
+        const workerAssigned = isQueuedForOutput(t)
+          ? false
+          : (t.worker_id ?? -1) >= 0 && Number(t.output_start_unix_ns ?? "0") > 0;
         const outStartMs =
-          (Number(t.output_start_unix_ns) ?? 0) > 0
-            ? Number(t.output_start_unix_ns)! / 1e6
+          Number(t.output_start_unix_ns ?? "0") > 0
+            ? Number(t.output_start_unix_ns) / 1e6
             : startMs + scanMs + xfmMs;
         const actualQueueMs = Math.max(0, outStartMs - (startMs + scanMs + xfmMs));
 
@@ -318,17 +327,22 @@ export function layoutSwimlane(
         // animation alpha is applied in drawSwimlane via fadeAlpha/drawInFrac.
         // TODO: thread firstSeen into layoutSwimlane if animation needs testing.
         let barEndMs: number;
-        if (t.in_progress && !workerAssigned) {
-          const stageStartMs = (Number(t.stage_start_unix_ns) ?? 0) / 1e6;
+        if (isQueuedForOutput(t) && !workerAssigned) {
+          const stageStartMs = Number(t.lifecycle_state_start_unix_ns ?? "0") / 1e6;
           barEndMs =
             stageStartMs > 0
               ? Math.max(startMs + scanMs + xfmMs + 1, nowMs)
               : startMs + scanMs + xfmMs + 1;
-        } else {
-          // Use full outMs for layout (drawSwimlane applies drawInFrac when rendering).
-          // Clamp to nowMs: clock skew or in-progress batches can produce a future
-          // timestamp, which would extend the bar past chartRight (right-wall bug).
+        } else if (isInProgress(t)) {
+          // In-progress: clamp to nowMs so the bar grows with the clock.
           barEndMs = Math.min(outStartMs + outMs, nowMs);
+        } else {
+          // Completed: use the actual end position — no nowMs clamp.
+          // Clamping completed bars to nowMs pins them to the right edge when
+          // the server clock is slightly ahead of the client clock.
+          // The rendering layer (Math.min(chartRight, x1raw)) already handles
+          // bars that extend past the visible area.
+          barEndMs = outStartMs + outMs;
         }
 
         const x0raw = toXRaw(startMs);
@@ -343,7 +357,7 @@ export function layoutSwimlane(
 
         const segments: SegSpec[] = [];
 
-        if (t.in_progress && !workerAssigned) {
+        if (isQueuedForOutput(t) && !workerAssigned) {
           // Queued: scan ghost → xfm ghost → growing gray queue wait
           let curMs = startMs;
           const addSeg = (dur: number, color: string, alpha: number, pulse: boolean) => {
@@ -418,7 +432,7 @@ export function layoutSwimlane(
             addSeg(sendMs, C.send, 1.0);
             addSeg(recvMs, C.recv, 1.0);
           } else {
-            addSeg(outMs, C.output, 1.0, t.in_progress && t.stage === "output");
+            addSeg(outMs, C.output, 1.0, isOutputLive(t));
           }
         }
 
@@ -473,7 +487,8 @@ function drawSwimlane(
     canvas.style.height = `${totalH}px`;
   }
 
-  const ctx = canvas.getContext("2d")!;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
   ctx.clearRect(0, 0, newW, newH);
   ctx.save();
   ctx.scale(dpr, dpr);
@@ -517,7 +532,7 @@ function drawSwimlane(
       ctx.fillStyle = "rgba(100,116,139,0.6)";
       ctx.fillText("SCAN", LABEL_W - 4, y + h / 2);
     } else {
-      const hasActive = lane.traces.some((t) => t.in_progress);
+      const hasActive = lane.traces.some((t) => t.lifecycle_state !== "completed");
       ctx.fillStyle = hasActive
         ? `rgba(148,163,184,${0.45 + 0.3 * Math.abs(Math.sin(nowMs / 800))})`
         : "rgba(148,163,184,0.22)";
@@ -565,7 +580,7 @@ function drawSwimlane(
       // Worker row: apply fade-in animation (firstSeen state lives here in drawSwimlane)
       const traceId = bar.traceId;
       if (!firstSeen.has(traceId)) firstSeen.set(traceId, nowMs);
-      const age = nowMs - firstSeen.get(traceId)!;
+      const age = nowMs - (firstSeen.get(traceId) ?? nowMs);
       const fadeAlpha = Math.min(1, age / 150);
 
       ctx.save();
@@ -659,7 +674,7 @@ function drawSwimlane(
   ctx.restore();
 }
 
-function hitTest(
+export function hitTest(
   lanes: Lane[],
   rect: DOMRect,
   clientX: number,
@@ -702,8 +717,8 @@ function hitTest(
       midMs = sMs + (scanMs + xfmMs) / 2;
     } else {
       const outStartMs =
-        (Number(t.output_start_unix_ns) ?? 0) > 0
-          ? Number(t.output_start_unix_ns)! / 1e6
+        Number(t.output_start_unix_ns ?? "0") > 0
+          ? Number(t.output_start_unix_ns) / 1e6
           : sMs + scanMs + xfmMs;
       midMs = (sMs + outStartMs + outMs) / 2;
     }
@@ -756,9 +771,9 @@ function DetailPanel({ t }: { t: TraceRecord }) {
               <div class="t2-stage-sub">{pct(Number(t.send_ns ?? 0))}</div>
               {(t.req_bytes ?? 0) > 0 && (
                 <div class="t2-stage-sub">
-                  {fmtBytes(t.req_bytes!)}
+                  {fmtBytes(t.req_bytes ?? 0)}
                   {(t.cmp_bytes ?? 0) > 0 &&
-                    ` → ${fmtBytes(t.cmp_bytes!)} (${((t.cmp_bytes! / t.req_bytes!) * 100).toFixed(0)}%)`}
+                    ` → ${fmtBytes(t.cmp_bytes ?? 0)} (${(((t.cmp_bytes ?? 0) / (t.req_bytes ?? 1)) * 100).toFixed(0)}%)`}
                 </div>
               )}
             </div>
@@ -768,7 +783,7 @@ function DetailPanel({ t }: { t: TraceRecord }) {
               <div class="t2-stage-sub">{pct(Number(t.recv_ns ?? 0))}</div>
               {(t.took_ms ?? 0) > 0 && <div class="t2-stage-sub">ES took {t.took_ms}ms</div>}
               {(t.resp_bytes ?? 0) > 0 && (
-                <div class="t2-stage-sub">{fmtBytes(t.resp_bytes!)} received</div>
+                <div class="t2-stage-sub">{fmtBytes(t.resp_bytes ?? 0)} received</div>
               )}
             </div>
           </>
@@ -790,9 +805,9 @@ function DetailPanel({ t }: { t: TraceRecord }) {
         <span>
           e2e <b>{fmtNs(e2e)}</b>
         </span>
-        {t.worker_id >= 0 && (
+        {(t.worker_id ?? -1) >= 0 && (
           <span>
-            worker <b>{t.worker_id}</b>
+            worker <b>{t.worker_id ?? -1}</b>
           </span>
         )}
         {(t.retries ?? 0) > 0 && (

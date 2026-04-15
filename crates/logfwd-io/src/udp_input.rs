@@ -154,11 +154,6 @@ impl InputSource for UdpInput {
                         break;
                     }
                 }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                // ECONNREFUSED can arrive on a connected UDP socket (ICMP
-                // port-unreachable cached by the kernel). Treat it like
-                // WouldBlock — there is simply no data right now.
-                Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => break,
                 // ENOBUFS/ENOMEM: kernel ran out of buffer space — a drop signal.
                 // Break to yield what we have; continuing would spin without progress.
                 Err(ref e)
@@ -169,6 +164,11 @@ impl InputSource for UdpInput {
                     under_pressure = true;
                     break;
                 }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                // ECONNREFUSED can arrive on a connected UDP socket (ICMP
+                // port-unreachable cached by the kernel). Treat it like
+                // WouldBlock — there is simply no data right now.
+                Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => break,
                 Err(e) => return Err(e),
             }
         }

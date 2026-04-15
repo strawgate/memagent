@@ -126,6 +126,7 @@ Use `get_field()` to extract individual fields:
 ```yaml
 enrichment:
   - type: geo_database
+    format: mmdb
     path: /data/GeoLite2-City.mmdb
 transform: |
   SELECT *, get_field(geo, 'city') AS city, get_field(geo, 'country_code') AS country

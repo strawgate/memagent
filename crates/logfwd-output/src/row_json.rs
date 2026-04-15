@@ -214,28 +214,31 @@ pub(crate) fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) -
         // the fallback `array_value_to_string` which heap-allocates per call.
         // StreamingBuilder uses Utf8View; these three arms cover all common cases.
         DataType::Utf8 => {
-            let v = arr
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap()
-                .value(row);
-            write_json_string(out, v)?;
+            let Some(str_arr) = arr.as_any().downcast_ref::<StringArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::Utf8 did not downcast to StringArray",
+                ));
+            };
+            write_json_string(out, str_arr.value(row))?;
         }
         DataType::LargeUtf8 => {
-            let v = arr
-                .as_any()
-                .downcast_ref::<LargeStringArray>()
-                .unwrap()
-                .value(row);
-            write_json_string(out, v)?;
+            let Some(str_arr) = arr.as_any().downcast_ref::<LargeStringArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::LargeUtf8 did not downcast to LargeStringArray",
+                ));
+            };
+            write_json_string(out, str_arr.value(row))?;
         }
         DataType::Utf8View => {
-            let v = arr
-                .as_any()
-                .downcast_ref::<StringViewArray>()
-                .unwrap()
-                .value(row);
-            write_json_string(out, v)?;
+            let Some(str_arr) = arr.as_any().downcast_ref::<StringViewArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::Utf8View did not downcast to StringViewArray",
+                ));
+            };
+            write_json_string(out, str_arr.value(row))?;
         }
         DataType::Struct(schema_fields) => {
             let Some(struct_arr) = arr.as_any().downcast_ref::<StructArray>() else {

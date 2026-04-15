@@ -519,9 +519,7 @@ Special columns added by the scanner / input format layer:
 | `body` | string | Original input line (when input line capture is enabled, e.g. `line_field: body`, or when a non-JSON CRI line is wrapped for scanner safety). |
 | `_timestamp` | string | Timestamp from the CRI header as an RFC 3339 string (CRI inputs only). |
 | `_stream` | string | CRI stream name (`stdout` / `stderr`). |
-
-File-backed source-path metadata is not yet exposed as a SQL column. Track that
-gap in [issue #1346](https://github.com/strawgate/memagent/issues/1346).
+| `_source_path` | string | Path of the file being tailed (file-backed inputs only). |
 
 ### Built-in UDFs
 
@@ -529,7 +527,7 @@ gap in [issue #1346](https://github.com/strawgate/memagent/issues/1346).
 |----------|-----------|-------------|
 | `int(expr)` | `int(any) → int64` | Cast any value to int64. Returns NULL on failure. |
 | `float(expr)` | `float(any) → float64` | Cast any value to float64. Returns NULL on failure. |
-| `grok(pattern, input)` | `grok(utf8, utf8) → utf8` | Apply a Grok pattern to `input` and return the first capture as JSON. |
+| `grok(column, pattern)` | `grok(utf8, utf8) → struct` | Apply a Grok pattern to `column` and return the captures as a struct. |
 | `regexp_extract(input, pattern, group)` | `regexp_extract(utf8, utf8, int64) → utf8` | Return capture group `group` from a regex match. |
 
 Examples:
@@ -539,7 +537,7 @@ Examples:
 SELECT int(status) AS status FROM logs
 
 -- Extract a field with Grok
-SELECT grok('%{IP:client} %{WORD:method} %{URIPATHPARAM:path}', message) AS parsed FROM logs
+SELECT grok(message, '%{IP:client} %{WORD:method} %{URIPATHPARAM:path}') AS parsed FROM logs
 
 -- Extract a named group with regex
 SELECT regexp_extract(message, 'user=([a-z]+)', 1) AS user FROM logs
@@ -570,11 +568,8 @@ enrichment:
 
 Parses Kubernetes pod log paths (e.g.
 `/var/log/pods/<namespace>_<pod>_<uid>/<container>/`) to extract metadata.
-
-This enrichment table is ready to expose path-derived metadata, but file-backed
-inputs do not yet inject a source-path column into the `logs` table. The join
-shown in older docs is therefore not wired end to end today. Track that runtime
-gap in [issue #1346](https://github.com/strawgate/memagent/issues/1346).
+The source-path metadata is automatically injected into the `logs` table as
+`_source_path` for file-backed inputs.
 
 Columns exposed by `k8s`:
 
