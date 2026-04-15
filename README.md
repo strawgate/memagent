@@ -62,7 +62,7 @@ ERROR  request handled POST /api/v1/orders/10121  status=503 duration_ms=78
 ...
 ```
 
-Only error records with slow durations made it through — everything else was filtered by the SQL transform. See the [Quick Start guide](/memagent/quick-start/) to keep going.
+Only error records with slow durations made it through — everything else was filtered by the SQL transform. See the [Quick Start guide](book/src/content/docs/quick-start.mdx) to keep going.
 
 ---
 
@@ -124,7 +124,7 @@ cargo build --release -p logfwd
 cargo build --release -p logfwd --no-default-features
 ```
 
-See [Installation](/memagent/) for all platforms and options.
+See [Installation](book/src/content/docs/index.mdx) for all platforms and options.
 
 ---
 
@@ -247,18 +247,18 @@ For ready-made starters, see [`examples/use-cases/`](examples/use-cases/README.m
 
 **Start here by goal**
 
-- Not sure where to begin: [Choose the Right Guide](/memagent/)
-- Run logfwd quickly: [Quick Start](/memagent/quick-start/)
-- Build a safer production baseline: [Your First Pipeline](/memagent/quick-start/)
+- Not sure where to begin: [Choose the Right Guide](book/src/content/docs/index.mdx)
+- Run logfwd quickly: [Quick Start](book/src/content/docs/quick-start.mdx)
+- Build a safer production baseline: [Your First Pipeline](book/src/content/docs/quick-start.mdx)
 - Debug failures: [Troubleshooting](book/src/content/docs/troubleshooting.md)
 
 **User guides** — [book/src/content/docs/](book/src/content/docs/)
 
 | Guide | Description |
 |-------|-------------|
-| [Choose the Right Guide](/memagent/) | Goal-based chooser for operators, contributors, and evaluators |
-| [Quick Start](/memagent/quick-start/) | Working pipeline in 10 minutes with copy/paste commands |
-| [Your First Pipeline](/memagent/quick-start/) | Production config with monitoring and validation |
+| [Choose the Right Guide](book/src/content/docs/index.mdx) | Goal-based chooser for operators, contributors, and evaluators |
+| [Quick Start](book/src/content/docs/quick-start.mdx) | Working pipeline in 10 minutes with copy/paste commands |
+| [Your First Pipeline](book/src/content/docs/quick-start.mdx) | Production config with monitoring and validation |
 | [Configuration Reference](book/src/content/docs/configuration/reference.mdx) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
 | [SQL Transforms](book/src/content/docs/configuration/sql-transforms.md) | DataFusion SQL examples, column naming, UDFs |
 | [Deployment](book/src/content/docs/deployment/kubernetes.md) | Kubernetes DaemonSet, Docker, resource sizing |
