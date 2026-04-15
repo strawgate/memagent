@@ -33,6 +33,29 @@ fn redact_endpoint_credentials(endpoint: &str) -> String {
 }
 
 fn redact_yaml_value(value: &mut serde_yaml_ng::Value, in_auth_block: bool) {
+    if in_auth_block {
+        match value {
+            serde_yaml_ng::Value::Mapping(map) => {
+                for (_, val) in map.iter_mut() {
+                    redact_yaml_value(val, true);
+                }
+            }
+            serde_yaml_ng::Value::Sequence(seq) => {
+                for item in seq.iter_mut() {
+                    redact_yaml_value(item, true);
+                }
+            }
+            serde_yaml_ng::Value::String(_)
+            | serde_yaml_ng::Value::Number(_)
+            | serde_yaml_ng::Value::Bool(_) => {
+                *value = serde_yaml_ng::Value::String(REDACTED_SECRET.to_string());
+            }
+            serde_yaml_ng::Value::Null => {}
+            serde_yaml_ng::Value::Tagged(_) => {} // Or we can ignore, config usually doesn't have tagged values.
+        }
+        return;
+    }
+
     match value {
         serde_yaml_ng::Value::Mapping(map) => {
             for (key, val) in map.iter_mut() {
@@ -42,23 +65,6 @@ fn redact_yaml_value(value: &mut serde_yaml_ng::Value, in_auth_block: bool) {
                 };
 
                 let next_in_auth = in_auth_block || key_str == "auth";
-
-                if in_auth_block && key_str == "bearer_token" {
-                    *val = serde_yaml_ng::Value::String(REDACTED_SECRET.to_string());
-                    continue;
-                }
-
-                if in_auth_block && key_str == "headers" {
-                    if let serde_yaml_ng::Value::Mapping(headers) = val {
-                        for (_, header_value) in headers.iter_mut() {
-                            *header_value =
-                                serde_yaml_ng::Value::String(REDACTED_SECRET.to_string());
-                        }
-                    } else {
-                        *val = serde_yaml_ng::Value::String(REDACTED_SECRET.to_string());
-                    }
-                    continue;
-                }
 
                 if key_str == "endpoint"
                     && let serde_yaml_ng::Value::String(endpoint) = val
@@ -1284,6 +1290,14 @@ output:
     headers:
       X-Api-Key: "api-secret"
       Authorization: "Basic abc123"
+    some_new_auth_block:
+      nested:
+        secret_key: "nested-secret"
+        flag: true
+        number: 42
+    aws:
+      access_key_id: "AKIAIOSFODNN7EXAMPLE"
+      secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 "#;
         let redacted = redact_config_yaml(raw);
         assert!(
@@ -1297,6 +1311,26 @@ output:
         assert!(
             !redacted.contains("abc123"),
             "authorization header value must not be exposed"
+        );
+        assert!(
+            !redacted.contains("nested-secret"),
+            "nested auth fields must not be exposed"
+        );
+        assert!(
+            !redacted.contains("AKIAIOSFODNN7EXAMPLE"),
+            "aws access key must not be exposed"
+        );
+        assert!(
+            !redacted.contains("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+            "aws secret key must not be exposed"
+        );
+        assert!(
+            !redacted.contains("true"),
+            "boolean auth fields must be redacted"
+        );
+        assert!(
+            !redacted.contains("42"),
+            "number auth fields must be redacted"
         );
         assert!(
             !redacted.contains("user:pass@"),
