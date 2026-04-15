@@ -526,13 +526,28 @@ fn status_payload(state: &DiagnosticsState) -> StatusSnapshotResponse {
         let stalls_per_sec = backpressure as f64 / uptime_s_nonzero;
 
         let (bottleneck_stage, bottleneck_reason): (&str, String) = if queue_wait_ratio > 0.5 {
-            (
-                "output",
-                format!(
-                    "workers spending {:.0}% of wall-time in output queue",
-                    queue_wait_ratio * 100.0
-                ),
-            )
+            // Distinguish true output bottleneck from pipeline throughput saturation.
+            // High queue_wait with negligible output time means workers contend for the
+            // channel (throughput saturation), not that the output destination is slow.
+            let output_ratio = output_s / uptime_s_nonzero;
+            if output_ratio > 0.1 {
+                (
+                    "output",
+                    format!(
+                        "output consuming {:.0}% of worker time, queue wait {:.0}%",
+                        output_ratio * 100.0,
+                        queue_wait_ratio * 100.0
+                    ),
+                )
+            } else {
+                (
+                    "none",
+                    format!(
+                        "pipeline saturated ({:.0}% queue contention, output itself is fast)",
+                        queue_wait_ratio * 100.0
+                    ),
+                )
+            }
         } else if stalls_per_sec > 10.0 {
             (
                 "input",

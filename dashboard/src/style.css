@@ -228,17 +228,21 @@ main {
   background: #0c0f16;
 }
 .chart-container {
+  position: relative;
   width: 100%;
   min-height: 130px;
   overflow: hidden;
 }
 .chart-placeholder {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 130px;
   color: var(--t4);
   font-size: 11px;
+  pointer-events: none;
+  z-index: 1;
 }
 
 /* === Shared badge styles === */
@@ -706,6 +710,25 @@ main {
   font-variant-numeric: tabular-nums;
   color: var(--accent);
   font-weight: 600;
+}
+.pipeline-stage-pcts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  font-size: 11px;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--t3);
+}
+.stage-pct.scan {
+  color: var(--accent);
+}
+.stage-pct.xfm {
+  color: #a78bfa;
+}
+.stage-pct.out {
+  color: #22c55e;
 }
 
 /* Show More charts button */

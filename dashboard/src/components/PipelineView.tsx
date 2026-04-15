@@ -144,10 +144,16 @@ export function PipelineView({ pipeline: p, traces, store, tick: _tick, defaultE
           <span class="pipeline-summary">
             <span class="pipeline-flow-label">{pipelineSummary(p)}</span>
             <span class="pipeline-eps">{fmt(inputEps)} EPS</span>
-            {p.bottleneck && p.bottleneck.stage !== "none" && <BottleneckBadge b={p.bottleneck} />}
           </span>
         )}
-        {expanded && p.bottleneck && <BottleneckBadge b={p.bottleneck} />}
+        {p.bottleneck && p.bottleneck.stage !== "none" && <BottleneckBadge b={p.bottleneck} />}
+        {stageBar && (
+          <span class="pipeline-stage-pcts">
+            <span class="stage-pct scan">Scan {stageBar.scanPct.toFixed(0)}%</span>
+            <span class="stage-pct xfm">Transform {stageBar.xfmPct.toFixed(0)}%</span>
+            <span class="stage-pct out">Output {stageBar.outPct.toFixed(0)}%</span>
+          </span>
+        )}
       </button>
 
       {expanded && (
@@ -260,28 +266,6 @@ export function PipelineView({ pipeline: p, traces, store, tick: _tick, defaultE
               <span class="pipe-stat">
                 <span class="pipe-stat-label">Errors</span>
                 <b class="text-err">{totalErrors}</b>
-              </span>
-            )}
-            {stageBar && (
-              <span class="pipe-stat pipe-stat-stages">
-                <span class="pipe-stat-label">Stages</span>
-                <span class="stage-bar">
-                  <span
-                    class="stage-seg scan"
-                    style={{ width: `${stageBar.scanPct}%` }}
-                    title={`Scan: ${stageBar.scanPct.toFixed(0)}%`}
-                  />
-                  <span
-                    class="stage-seg xfm"
-                    style={{ width: `${stageBar.xfmPct}%` }}
-                    title={`Transform: ${stageBar.xfmPct.toFixed(0)}%`}
-                  />
-                  <span
-                    class="stage-seg out"
-                    style={{ width: `${stageBar.outPct}%` }}
-                    title={`Output: ${stageBar.outPct.toFixed(0)}%`}
-                  />
-                </span>
               </span>
             )}
           </div>

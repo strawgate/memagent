@@ -192,6 +192,7 @@ export function Chart({ frame, config }: Props) {
   const roRef = useRef<ResizeObserver | null>(null);
   const rafRef = useRef<number>(0);
   const seriesCountRef = useRef(0);
+  const placeholderRef = useRef<HTMLDivElement>(null);
   // Store frame in a ref so the RAF loop reads latest data without
   // tearing down the effect (and uPlot instance) on every update.
   const frameRef = useRef(frame);
@@ -238,7 +239,10 @@ export function Chart({ frame, config }: Props) {
           roRef.current?.disconnect();
           roRef.current = null;
         }
+        if (placeholderRef.current) placeholderRef.current.style.display = "";
       } else {
+        // Hide placeholder as soon as we have data (avoids flash).
+        if (placeholderRef.current) placeholderRef.current.style.display = "none";
         // Rebuild uPlot if series count changed (pipelines added/removed).
         if (plotRef.current && seriesCount !== seriesCountRef.current) {
           plotRef.current.destroy();
@@ -286,17 +290,11 @@ export function Chart({ frame, config }: Props) {
     };
   }, [config]);
 
-  // Count unique timestamps — aligns with buildAlignedData's data[0].length check.
-  const timeSet = new Set<number>();
-  for (const s of frame.series) {
-    for (const p of s.points) {
-      if (p.timeMs != null) timeSet.add(p.timeMs);
-    }
-  }
-
   return (
     <div ref={containerRef} class="chart-container">
-      {timeSet.size < 2 && <div class="chart-placeholder">waiting for data…</div>}
+      <div ref={placeholderRef} class="chart-placeholder">
+        waiting for data…
+      </div>
     </div>
   );
 }
