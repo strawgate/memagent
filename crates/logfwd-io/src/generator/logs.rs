@@ -55,8 +55,24 @@ pub(super) fn write_logs_event(
     let (year, month, day, hour, min, sec, msec) = super::epoch_ms_to_parts(event_ms);
 
     let mut msg_buf = String::new();
+    let mut escaped_template = String::new();
+
     let msg_str = if let Some(template) = message_template {
-        template
+        for c in template.chars() {
+            match c {
+                '"' => escaped_template.push_str("\\\""),
+                '\\' => escaped_template.push_str("\\\\"),
+                '\n' => escaped_template.push_str("\\n"),
+                '\r' => escaped_template.push_str("\\r"),
+                '\t' => escaped_template.push_str("\\t"),
+                _ if c.is_control() => {
+                    use std::fmt::Write;
+                    let _ = write!(escaped_template, "\\u{:04x}", c as u32);
+                }
+                _ => escaped_template.push(c),
+            }
+        }
+        &escaped_template
     } else {
         use std::fmt::Write;
         let _ = write!(&mut msg_buf, "{method} {path}/{id} {status}");

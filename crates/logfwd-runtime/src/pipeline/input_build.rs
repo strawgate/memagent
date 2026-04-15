@@ -212,10 +212,7 @@ pub(super) fn build_input_state(
             };
             let generator_cfg = g.generator.as_ref();
             let config = GeneratorConfig {
-                events_per_sec: generator_cfg
-                    .and_then(|c| c.events_per_second)
-                    .or_else(|| generator_cfg.and_then(|c| c.events_per_sec))
-                    .unwrap_or(0),
+                events_per_second: generator_cfg.and_then(|c| c.events_per_second).unwrap_or(0),
                 batch_size: generator_cfg
                     .and_then(|c| c.batch_size)
                     .unwrap_or(DEFAULT_GENERATOR_BATCH_SIZE),
@@ -340,9 +337,7 @@ pub(super) fn build_input_state(
             let options = logfwd_io::otlp_receiver::OtlpReceiverOptions {
                 resource_prefix,
                 protobuf_decode_mode,
-                max_recv_message_size_bytes: Some(
-                    o.max_recv_message_size_bytes.unwrap_or(4 * 1024 * 1024),
-                ),
+                max_recv_message_size_bytes: o.max_recv_message_size_bytes,
                 tls,
                 grpc_keepalive_time_ms: o.grpc_keepalive_time_ms,
                 grpc_max_concurrent_streams: o.grpc_max_concurrent_streams,
@@ -559,68 +554,6 @@ pub(super) fn build_input_state(
                 stats,
             });
         }
-        InputTypeConfig::S3(s) => {
-            let s3_cfg = &s.s3;
-
-            #[cfg(not(feature = "s3"))]
-            {
-                let _ = s3_cfg;
-                return Err(format!(
-                    "input '{name}': S3 input requires the 's3' feature \
-                     (rebuild with --features s3)"
-                ));
-            }
-
-            #[cfg(feature = "s3")]
-            {
-                use logfwd_io::s3_input::decompress::Compression;
-                use logfwd_io::s3_input::{S3Input, S3InputSettings};
-
-                let compression_override: Option<Compression> = match s3_cfg.compression.as_deref()
-                {
-                    None => None,
-                    Some(s) if s.eq_ignore_ascii_case("auto") => None,
-                    Some(s) => match Compression::from_config_str(s) {
-                        Some(c) => Some(c),
-                        None => {
-                            return Err(format!(
-                                "input '{name}': unknown S3 compression value '{s}'"
-                            ));
-                        }
-                    },
-                };
-
-                let settings = S3InputSettings::from_fields(
-                    s3_cfg.bucket.clone(),
-                    s3_cfg.region.clone(),
-                    s3_cfg.endpoint.clone(),
-                    s3_cfg.prefix.clone(),
-                    s3_cfg.sqs_queue_url.clone(),
-                    s3_cfg.start_after.clone(),
-                    s3_cfg.access_key_id.clone(),
-                    s3_cfg.secret_access_key.clone(),
-                    s3_cfg.session_token.clone(),
-                    s3_cfg.part_size_bytes,
-                    s3_cfg.max_concurrent_fetches,
-                    s3_cfg.max_concurrent_objects,
-                    s3_cfg.visibility_timeout_secs,
-                    compression_override,
-                    s3_cfg.poll_interval_ms,
-                )
-                .map_err(|e| format!("input '{name}': {e}"))?;
-
-                let source = S3Input::new(name, settings)
-                    .map_err(|e| format!("input '{name}': failed to create S3 input: {e}"))?;
-                let format = cfg.format.clone().unwrap_or(Format::Auto);
-                let format_proc = make_format(name, InputType::S3, &format, &stats)?;
-                let framed = FramedInput::new(Box::new(source), format_proc, Arc::clone(&stats));
-                return Ok(InputState {
-                    source: Box::new(framed),
-                    buf: BytesMut::with_capacity(4 * 1024 * 1024),
-                    stats,
-                });
-            }
-        }
         InputTypeConfig::Journald(j) => {
             use logfwd_io::journald_input::{JournaldBackendPref, JournaldConfig, JournaldInput};
 
@@ -683,8 +616,6 @@ fn build_host_metrics_config(
     let control_reload_interval_ms = cfg
         .and_then(|c| c.control_reload_interval_ms)
         .unwrap_or(DEFAULT_SENSOR_CONTROL_RELOAD_INTERVAL_MS);
-    let collection_interval_ms = cfg.and_then(|c| c.collection_interval_ms).unwrap_or(10_000);
-
     logfwd_io::host_metrics::HostMetricsConfig {
         poll_interval: std::time::Duration::from_millis(poll_interval_ms.max(1)),
         control_path: cfg.and_then(|c| c.control_path.clone()).map(PathBuf::from),
@@ -697,20 +628,6 @@ fn build_host_metrics_config(
             .and_then(|c| c.max_rows_per_poll)
             .filter(|&n| n > 0)
             .unwrap_or(256),
-        scrapers: cfg.and_then(|c| {
-            c.scrapers
-                .as_ref()
-                .map(|s| s.iter().map(|v| v.trim().to_lowercase()).collect())
-        }),
-        collection_interval: std::time::Duration::from_millis(collection_interval_ms.max(1)),
-        disk_include_devices: cfg.and_then(|c| c.disk_include_devices.clone()),
-        disk_exclude_devices: cfg.and_then(|c| c.disk_exclude_devices.clone()),
-        network_include_interfaces: cfg.and_then(|c| c.network_include_interfaces.clone()),
-        network_exclude_interfaces: cfg.and_then(|c| c.network_exclude_interfaces.clone()),
-        filesystem_include_mount_points: cfg
-            .and_then(|c| c.filesystem_include_mount_points.clone()),
-        filesystem_exclude_mount_points: cfg
-            .and_then(|c| c.filesystem_exclude_mount_points.clone()),
     }
 }
 

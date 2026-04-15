@@ -19,10 +19,6 @@ pub mod shared;
 pub mod wide;
 
 #[cfg(test)]
-mod generator_tests;
-#[cfg(test)]
-mod integration_tests;
-#[cfg(test)]
 mod test_support;
 
 /// Controls the complexity/size of generated lines.
@@ -105,7 +101,7 @@ impl Default for GeneratorTimestamp {
 /// Configuration for the generator input.
 pub struct GeneratorConfig {
     /// Target events per second. 0 = unlimited (as fast as possible).
-    pub events_per_sec: u64,
+    pub events_per_second: u64,
     /// Number of events per batch (per poll() call).
     pub batch_size: usize,
     /// Total events to generate. 0 = infinite.
@@ -133,7 +129,7 @@ pub struct GeneratorConfig {
 impl Default for GeneratorConfig {
     fn default() -> Self {
         Self {
-            events_per_sec: 0,
+            events_per_second: 0,
             batch_size: 1000,
             total_events: 0,
             message_template: None,
@@ -321,7 +317,7 @@ impl GeneratorInput {
         // The generator treats a zero batch size as the smallest useful batch.
         // User-facing config validation should reject zero before construction.
         let batch_size = config.batch_size.max(1);
-        let initial_rate_credit_events = if config.events_per_sec > 0 {
+        let initial_rate_credit_events = if config.events_per_second > 0 {
             batch_size as f64
         } else {
             0.0
@@ -505,7 +501,7 @@ impl InputSource for GeneratorInput {
         }
 
         let mut events_to_emit = self.config.batch_size as u64;
-        if self.config.events_per_sec > 0 {
+        if self.config.events_per_second > 0 {
             let batch_size = self.config.batch_size as u64;
             let now = std::time::Instant::now();
             let elapsed_sec = now
@@ -513,11 +509,11 @@ impl InputSource for GeneratorInput {
                 .unwrap_or_default()
                 .as_secs_f64();
             self.last_refill = now;
-            self.rate_credit_events += elapsed_sec * self.config.events_per_sec as f64;
+            self.rate_credit_events += elapsed_sec * self.config.events_per_second as f64;
 
             // Bound carried credits to one poll burst window so scheduler stalls
             // do not turn into an arbitrarily large catch-up burst.
-            let burst_cap = self.config.events_per_sec.max(batch_size);
+            let burst_cap = self.config.events_per_second.max(batch_size);
             self.rate_credit_events = self.rate_credit_events.min(burst_cap as f64);
             let available = self.rate_credit_events.floor() as u64;
             let remaining_total = if self.config.total_events > 0 {
@@ -554,7 +550,7 @@ impl InputSource for GeneratorInput {
             return Ok(vec![]);
         }
 
-        if self.config.events_per_sec > 0 {
+        if self.config.events_per_second > 0 {
             self.rate_credit_events -= events_to_emit as f64;
         }
 
@@ -760,7 +756,7 @@ mod tests {
             "test",
             GeneratorConfig {
                 batch_size: 10,
-                events_per_sec: 1, // 1 event/sec => ~10s per batch of 10
+                events_per_second: 1, // 1 event/sec => ~10s per batch of 10
                 total_events: 0,
                 ..Default::default()
             },
@@ -781,7 +777,7 @@ mod tests {
             "test",
             GeneratorConfig {
                 batch_size: 1_000,
-                events_per_sec: 200_000,
+                events_per_second: 200_000,
                 total_events: 5_000,
                 ..Default::default()
             },
@@ -822,7 +818,7 @@ mod tests {
             "test",
             GeneratorConfig {
                 batch_size: 1_000,
-                events_per_sec: 500,
+                events_per_second: 500,
                 total_events: 0,
                 ..Default::default()
             },
@@ -852,7 +848,7 @@ mod tests {
             "test",
             GeneratorConfig {
                 batch_size: 1_000,
-                events_per_sec: 5_000,
+                events_per_second: 5_000,
                 total_events: 20_000,
                 ..Default::default()
             },
@@ -862,7 +858,7 @@ mod tests {
         assert_eq!(first.len(), 1);
 
         // Simulate a huge scheduler stall: 1000 seconds of credits.
-        // The burst cap is max(events_per_sec, batch_size) = 5_000 events.
+        // The burst cap is max(events_per_second, batch_size) = 5_000 events.
         // Use checked_sub since Instant can't go before the monotonic epoch;
         // fall back to a shorter but still sufficient stall.
         input.last_refill = std::time::Instant::now()

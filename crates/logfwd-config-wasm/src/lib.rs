@@ -186,10 +186,10 @@ const INPUT_TEMPLATES: &[InputTemplate] = &[
         id: "generator",
         label: "Generator",
         description: "Synthetic log generator for testing and benchmarking.",
-        snippet: "input:\n  type: generator\n  generator:\n    events_per_sec: 1000\n    complexity: simple\n",
+        snippet: "input:\n  type: generator\n  generator:\n    events_per_second: 1000\n    complexity: simple\n",
         fields: &[
             FieldDef {
-                key: "events_per_sec",
+                key: "events_per_second",
                 label: "Events / sec",
                 default_val: "1000",
                 placeholder: "1000",

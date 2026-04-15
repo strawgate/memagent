@@ -32,7 +32,6 @@ tokio-stream = "0.1.18"
 serde = { workspace = true, features = ["derive"] }
 async-compression = { version = "0.4.41", features = ["tokio", "zstd", "gzip"] }
 chrono.workspace = true
-lz4_flex = { workspace = true }
 
 [dev-dependencies]
 proptest = "1"

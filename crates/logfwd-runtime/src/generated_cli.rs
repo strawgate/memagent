@@ -128,7 +128,7 @@ pub fn render_blast_yaml(
     yaml.push_str("        format: json\n");
     yaml.push_str("        generator:\n");
     let _ = writeln!(yaml, "          batch_size: {batch_lines}");
-    yaml.push_str("          events_per_sec: 0\n");
+    yaml.push_str("          events_per_second: 0\n");
     yaml.push_str("    outputs:\n");
     let _ = writeln!(yaml, "      - type: {}", output_cfg.output_type);
 

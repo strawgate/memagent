@@ -1124,7 +1124,7 @@ output:
 input:
   type: generator
   generator:
-    events_per_sec: 25000
+    events_per_second: 25000
     batch_size: 1024
     profile: record
     attributes:
@@ -1498,7 +1498,7 @@ output:
 input:
   type: generator
   generator:
-    events_per_sec: 10000
+    events_per_second: 10000
     batch_size: 64
     profile: record
     attributes:

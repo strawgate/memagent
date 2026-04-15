@@ -347,9 +347,13 @@ fn native_reader_loop(
     }
 
     for p in &config.priorities {
-        let match_str = format!("PRIORITY={p}");
-        if let Err(e) = journal.add_match(match_str.as_bytes()) {
-            tracing::warn!(error = %e, "failed to apply priority match filter");
+        if let Some(int_val) = priority_str_to_int(p) {
+            let match_str = format!("PRIORITY={int_val}");
+            if let Err(e) = journal.add_match(match_str.as_bytes()) {
+                tracing::warn!(error = %e, "failed to apply priority match filter");
+            }
+        } else {
+            tracing::warn!("invalid priority filter '{}' ignored", p);
         }
     }
 
@@ -721,6 +725,20 @@ fn syslog_priority_to_level(priority: u8) -> Option<&'static str> {
     }
 }
 
+fn priority_str_to_int(p: &str) -> Option<u8> {
+    match p.to_lowercase().as_str() {
+        "emerg" | "emergency" | "0" => Some(0),
+        "alert" | "1" => Some(1),
+        "crit" | "critical" | "2" => Some(2),
+        "err" | "error" | "3" => Some(3),
+        "warning" | "warn" | "4" => Some(4),
+        "notice" | "5" => Some(5),
+        "info" | "6" => Some(6),
+        "debug" | "7" => Some(7),
+        _ => None,
+    }
+}
+
 /// Serialize a list of `(name, value)` field pairs as a JSON object into `buf`.
 ///
 /// This is the **single** JSON serializer used by both the native and subprocess
@@ -845,7 +863,11 @@ fn build_command(config: &JournaldConfig) -> Command {
     }
 
     for p in &config.priorities {
-        cmd.arg(format!("PRIORITY={p}"));
+        if let Some(int_val) = priority_str_to_int(p) {
+            cmd.arg(format!("PRIORITY={int_val}"));
+        } else {
+            tracing::warn!("invalid priority filter '{}' ignored in journalctl args", p);
+        }
     }
 
     #[allow(clippy::collapsible_if)]
@@ -1359,8 +1381,8 @@ mod tests {
             .map(|a| a.to_string_lossy().to_string())
             .collect();
         assert!(args.contains(&"SYSLOG_IDENTIFIER=my-app".to_string()));
-        assert!(args.contains(&"PRIORITY=err".to_string()));
-        assert!(args.contains(&"PRIORITY=warning".to_string()));
+        assert!(args.contains(&"PRIORITY=3".to_string()));
+        assert!(args.contains(&"PRIORITY=4".to_string()));
     }
 
     #[test]

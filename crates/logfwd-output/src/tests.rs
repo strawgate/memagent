@@ -341,10 +341,34 @@ fn test_build_sink_factory_file_resolves_relative_path_against_base_path() {
     .unwrap();
 
     assert_eq!(factory.name(), "capture");
-    assert!(base_dir.join(&filename).exists());
+
+    // Ensure the directory actually exists so the factory's open call succeeds
+    std::fs::create_dir_all(&base_dir).unwrap();
+
+    let expected_path = base_dir.join(&filename);
+    let current_path = chrono::Utc::now().format(&expected_path.to_string_lossy().to_string()).to_string();
+
+    // The file is lazily opened when create() is called.
+    let mut sink = factory.create().unwrap();
+
+    // To trigger the lazy file creation, we must send a batch
+    let schema = Arc::new(Schema::new(vec![Field::new("body", DataType::Utf8, true)]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![Arc::new(StringArray::from(vec![Some("test")]))],
+    ).unwrap();
+    let meta = BatchMetadata { resource_attrs: Arc::default(), observed_time_ns: 0 };
+
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(async {
+        sink.send_batch(&batch, &meta).await.unwrap();
+        sink.flush().await.unwrap();
+    });
+
+    assert!(std::path::Path::new(&current_path).exists());
     assert!(!cwd_dir.join(&filename).exists());
 
-    let _ = std::fs::remove_file(base_dir.join(&filename));
+    let _ = std::fs::remove_file(&current_path);
     let _ = std::fs::remove_dir(&base_dir);
     let _ = std::fs::remove_dir(&cwd_dir);
 }

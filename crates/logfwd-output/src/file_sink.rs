@@ -52,7 +52,7 @@ impl FileSink {
         rotation: Option<RotationConfig>,
         delimiter: String,
         current_path: String,
-        writer: Pin<Box<dyn AsyncWrite + Send + Sync>>,
+        writer: Option<Pin<Box<dyn AsyncWrite + Send + Sync>>>,
         stats: Arc<ComponentStats>,
     ) -> Self {
         Self::with_message_field(
@@ -85,9 +85,13 @@ impl FileSink {
         rotation: Option<RotationConfig>,
         delimiter: String,
         current_path: String,
-        writer: Pin<Box<dyn AsyncWrite + Send + Sync>>,
+        writer: Option<Pin<Box<dyn AsyncWrite + Send + Sync>>>,
         stats: Arc<ComponentStats>,
     ) -> Self {
+        let current_file_size = std::fs::metadata(&current_path)
+            .map(|m| m.len())
+            .unwrap_or(0);
+
         Self {
             serializer: StdoutSink::with_message_field(
                 name,
@@ -101,10 +105,10 @@ impl FileSink {
             rotation,
             delimiter,
             current_path,
-            writer: Arc::new(Mutex::new(Some(writer))),
+            writer: Arc::new(Mutex::new(writer)),
             output_buf: Vec::with_capacity(64 * 1024),
             replaced_buf: Vec::with_capacity(64 * 1024),
-            current_file_size: 0,
+            current_file_size,
             created_at: std::time::Instant::now(),
             stats,
         }
@@ -144,8 +148,10 @@ impl FileSink {
             expected_path = format!("{}.{}", expected_path, now.timestamp_millis());
         }
 
-        if expected_path != self.current_path {
-            let mut opts = std::fs::OpenOptions::new();
+        let mut writer_guard = self.writer.lock().await;
+
+        if expected_path != self.current_path || writer_guard.is_none() {
+            let mut opts = tokio::fs::OpenOptions::new();
             opts.create(true).write(true);
             if self.append {
                 opts.append(true);
@@ -153,13 +159,14 @@ impl FileSink {
                 opts.truncate(true);
             }
 
-            let std_file = opts.open(&expected_path)?;
-            let meta = std_file.metadata()?;
-            let new_file = tokio::fs::File::from_std(std_file);
+            let new_file = opts.open(&expected_path).await?;
+            let meta = new_file.metadata().await?;
 
-            let mut writer_guard = self.writer.lock().await;
-            if let Some(mut old_writer) = writer_guard.take() {
-                let _ = old_writer.shutdown().await;
+            if let Some(mut old_writer) = writer_guard.take()
+                && let Err(e) = old_writer.shutdown().await
+            {
+                tracing::warn!("Failed to shutdown previous file writer cleanly: {}", e);
+                // It's a best-effort shutdown as we're rotating away, but we should not fail the new open
             }
 
             *writer_guard = Some(Self::create_writer(new_file, &self.compression));
@@ -363,18 +370,7 @@ impl FileSinkFactory {
         let now = chrono::Utc::now();
         let current_path = now.format(&path_template).to_string();
 
-        let mut opts = std::fs::OpenOptions::new();
-        opts.create(true).write(true);
-        if append {
-            opts.append(true);
-        } else {
-            opts.truncate(true);
-        }
-        let std_file = opts.open(&current_path)?;
-        let file = tokio::fs::File::from_std(std_file);
-
-        let writer = FileSink::create_writer(file, &compression);
-
+        // Delay file opening to create() since SinkFactory construction may occur in sync context
         Ok(Self {
             name,
             format,
@@ -385,7 +381,7 @@ impl FileSinkFactory {
             delimiter,
             message_field,
             current_path,
-            writer: Arc::new(Mutex::new(Some(writer))),
+            writer: Arc::new(Mutex::new(None)),
             stats,
         })
     }
@@ -393,23 +389,7 @@ impl FileSinkFactory {
 
 impl SinkFactory for FileSinkFactory {
     fn create(&self) -> io::Result<Box<dyn Sink>> {
-        let writer = match self.writer.try_lock().ok().and_then(|mut lock| lock.take()) {
-            Some(w) => w,
-            None => {
-                let mut opts = std::fs::OpenOptions::new();
-                opts.create(true).write(true);
-                if self.append {
-                    opts.append(true);
-                } else {
-                    opts.truncate(true);
-                }
-                let std_file = opts
-                    .open(&self.current_path)
-                    .map_err(|e| io::Error::other(format!("Failed to open file: {}", e)))?;
-                let file = tokio::fs::File::from_std(std_file);
-                FileSink::create_writer(file, &self.compression)
-            }
-        };
+        let writer = self.writer.try_lock().ok().and_then(|mut lock| lock.take());
 
         Ok(Box::new(FileSink::with_message_field(
             self.name.clone(),

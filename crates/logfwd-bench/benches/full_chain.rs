@@ -12,11 +12,10 @@
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use logfwd_arrow::scanner::Scanner;
-use logfwd_bench::{NullSink, make_metadata, make_otlp_sink};
+use logfwd_bench::{NullSink, generators, make_otlp_sink};
 use logfwd_core::cri::{CriReassembler, parse_cri_line};
 use logfwd_core::reassembler::AggregateResult;
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_io::generator::cri::{gen_cri_k8s, gen_production_mixed};
 use logfwd_output::Compression;
 use logfwd_transform::SqlTransform;
 
@@ -53,10 +52,10 @@ fn bench_json_chain(c: &mut Criterion) {
     let mut group = c.benchmark_group("full_chain_json");
     group.sample_size(20);
 
-    let meta = make_metadata();
+    let meta = generators::make_metadata();
 
     for &n in &[1_000usize, 10_000, 100_000] {
-        let data = gen_production_mixed(n, 42);
+        let data = generators::gen_production_mixed(n, 42);
 
         group.throughput(Throughput::Bytes(data.len() as u64));
 
@@ -124,10 +123,10 @@ fn bench_cri_chain(c: &mut Criterion) {
     let mut group = c.benchmark_group("full_chain_cri");
     group.sample_size(20);
 
-    let meta = make_metadata();
+    let meta = generators::make_metadata();
 
     for &n in &[1_000usize, 10_000] {
-        let data = gen_cri_k8s(n, 42);
+        let data = generators::gen_cri_k8s(n, 42);
 
         group.throughput(Throughput::Bytes(data.len() as u64));
 
@@ -171,10 +170,10 @@ fn bench_grok_chain(c: &mut Criterion) {
     let mut group = c.benchmark_group("full_chain_grok");
     group.sample_size(20);
 
-    let meta = make_metadata();
+    let meta = generators::make_metadata();
 
     for &n in &[1_000usize, 10_000] {
-        let data = gen_production_mixed(n, 42);
+        let data = generators::gen_production_mixed(n, 42);
 
         group.throughput(Throughput::Bytes(data.len() as u64));
 
