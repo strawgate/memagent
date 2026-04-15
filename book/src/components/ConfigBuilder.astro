@@ -1,7 +1,8 @@
 ---
 // ConfigBuilder.astro — Visual two-panel pipeline config builder powered by WASM.
+const wasmBase = import.meta.env.BASE_URL.replace(/\/$/, '') + '/wasm/logfwd-config/';
 ---
-<div id="config-builder">
+<div id="config-builder" data-wasm-base={wasmBase}>
   <!-- Loading state -->
   <div class="cb-status" id="cb-status">
     <span class="cb-spinner"></span>
@@ -583,12 +584,16 @@
 </style>
 
 <script type="module">
-  import init, {
+  // Resolve WASM path from the data attribute set by Astro's frontmatter.
+  // This makes the path work both in dev (base='/') and on GitHub Pages (base='/memagent').
+  const wasmBase = document.getElementById('config-builder').dataset.wasmBase;
+  const {
+    default: init,
     get_input_templates,
     get_output_templates,
     get_use_case_templates,
     validate_config,
-  } from '/src/wasm/logfwd-config/logfwd_config_wasm.js';
+  } = await import(/* @vite-ignore */ wasmBase + 'logfwd_config_wasm.js');
 
   // ── DOM refs ──────────────────────────────────────────────────
   const STATUS            = document.getElementById('cb-status');

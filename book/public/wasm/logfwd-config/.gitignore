@@ -1,0 +1,4 @@
+*
+!.gitignore
+!logfwd_config_wasm.js
+!logfwd_config_wasm_bg.wasm
