@@ -9,7 +9,7 @@
 
 #![no_main]
 use libfuzzer_sys::fuzz_target;
-use logfwd_core::cri::{parse_cri_line, CriReassembler, ReassembleResult};
+use logfwd_core::cri::{AggregateResult, CriReassembler, parse_cri_line};
 
 fuzz_target!(|data: &[u8]| {
     // --- Single-line parsing ---
@@ -29,18 +29,18 @@ fuzz_target!(|data: &[u8]| {
             continue;
         }
         if let Some(cri) = parse_cri_line(line) {
-            match reassembler.feed(&cri) {
-                ReassembleResult::Complete(msg) => {
+            match reassembler.feed(cri.message, cri.is_full) {
+                AggregateResult::Complete(msg) => {
                     let _ = msg.len();
                     count += 1;
                     reassembler.reset();
                 }
-                ReassembleResult::Truncated(msg) => {
+                AggregateResult::Truncated(msg) => {
                     let _ = msg.len();
                     count += 1;
                     reassembler.reset();
                 }
-                ReassembleResult::Pending => {}
+                AggregateResult::Pending => {}
             }
         }
     }

@@ -568,6 +568,8 @@ enrichment:
 
 Parses Kubernetes pod log paths (e.g.
 `/var/log/pods/<namespace>_<pod>_<uid>/<container>/`) to extract metadata.
+The source-path metadata is automatically injected into the `logs` table as
+`_source_path` for file-backed inputs.
 
 Columns exposed by `k8s`:
 

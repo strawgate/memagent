@@ -262,6 +262,15 @@ impl StreamingBuilder {
                 || self.lifecycle.state() == BuilderState::InRow,
             "resolve_field called outside of an active batch"
         );
+        // COLUMN NAME NOTE: The raw JSON key bytes are used verbatim as the
+        // output Arrow column name.  ScanConfig::is_wanted matches field names
+        // case-insensitively, so if a single input batch contains both `level`
+        // and `Level` they will pass the wanted filter independently and each
+        // call to resolve_field will allocate a *separate* column (because the
+        // HashMap lookup here is case-sensitive).  This means the two variants
+        // end up in distinct columns rather than being merged.  This is a known
+        // limitation: callers that need deterministic column naming should
+        // normalise JSON key casing before scanning, or post-process the batch.
         if let Some(&idx) = self.field_index.get(key) {
             return idx;
         }
