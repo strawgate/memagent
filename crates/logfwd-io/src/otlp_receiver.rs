@@ -513,7 +513,7 @@ mod verification {
     }
 
     #[kani::proof]
-    #[kani::unwind(1)]
+    #[kani::unwind(26)] // f64 ASCII repr is at most ~25 chars (e.g. "-1.7976931348623157e308")
     fn verify_write_f64_ascii_only() {
         let mut buf = Vec::new();
         let n: f64 = kani::any();
@@ -524,7 +524,7 @@ mod verification {
     }
 
     #[kani::proof]
-    #[kani::unwind(9)]
+    #[kani::unwind(17)] // len <= 8, so buf.len() <= 16; need unwind(16 + 1)
     fn verify_hex_encode_valid() {
         let mut buf = Vec::new();
         let len: usize = kani::any();
@@ -538,7 +538,7 @@ mod verification {
     }
 
     #[kani::proof]
-    #[kani::unwind(9)]
+    #[kani::unwind(49)] // len <= 8; worst-case JSON escaping (\uXXXX) expands 1 byte → 6, so 8*6=48
     fn verify_json_escaping_ascii_only() {
         let mut buf = Vec::new();
         let len: usize = kani::any();

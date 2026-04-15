@@ -518,38 +518,94 @@ mod verification {
         kani::cover!(max_retry_ms > 0, "non-zero RetryAfter remains retryable");
     }
 
-    /// Prove the aggregation precedence policy of `AsyncFanoutSink::send_batch`.
-    /// Rejected(3) > IoError(2) > RetryAfter(1) > Ok(0).
+    /// Prove the actual merge precedence of `merge_child_send_result` +
+    /// `finalize_fanout_outcome`: any RetryAfter/IoError beats Rejected;
+    /// Rejected only wins when ALL children rejected; Ok wins otherwise.
+    ///
+    /// Note: RetryAfter and IoError dominate Rejected in the fanout policy —
+    /// Rejected only surfaces when every child sink rejects the batch.
     #[kani::proof]
+    #[kani::unwind(3)]
     fn verify_fanout_result_precedence() {
-        let d1_ms: u64 = kani::any_where(|&v| v <= 30_000);
-        let d2_ms: u64 = kani::any_where(|&v| v <= 30_000);
-        let retry1 = SendResult::RetryAfter(Duration::from_millis(d1_ms));
-        let retry2 = SendResult::RetryAfter(Duration::from_millis(d2_ms));
+        let retry_ms: u64 = kani::any_where(|&v| v <= 30_000);
 
-        // Retry-only case: larger RetryAfter hint wins.
-        let merged_retry = match (retry1, retry2) {
-            (SendResult::RetryAfter(a), SendResult::RetryAfter(b)) => {
-                SendResult::RetryAfter(if a >= b { a } else { b })
-            }
-            _ => SendResult::Ok,
-        };
-        assert!(matches!(merged_retry, SendResult::RetryAfter(_)));
-        if let SendResult::RetryAfter(d) = merged_retry {
-            assert!(d.as_millis() as u64 == d1_ms || d.as_millis() as u64 == d2_ms);
+        // RetryAfter dominates Rejected: one sink retries, other rejects → RetryAfter.
+        {
+            let mut any_pending = false;
+            let mut last_io: Option<io::Error> = None;
+            let mut max_retry: Option<Duration> = None;
+            let s1 = merge_child_send_result(
+                SendResult::RetryAfter(Duration::from_millis(retry_ms)),
+                &mut any_pending,
+                &mut last_io,
+                &mut max_retry,
+            );
+            let s2 = merge_child_send_result(
+                SendResult::Rejected("bad".to_string()),
+                &mut any_pending,
+                &mut last_io,
+                &mut max_retry,
+            );
+            let states: Vec<ChildState> = [s1, s2].into_iter().flatten().collect();
+            let result = finalize_fanout_outcome(&states, any_pending, last_io, max_retry);
+            assert!(
+                matches!(result, SendResult::RetryAfter(_)),
+                "RetryAfter must dominate Rejected"
+            );
         }
 
-        // Any Rejected result dominates RetryAfter.
-        let rejected = SendResult::Rejected("rejected".to_string());
-        let out = match rejected {
-            SendResult::Rejected(_) => true,
-            _ => false,
-        };
-        assert!(out, "Rejected must dominate RetryAfter/Ok");
+        // IoError dominates Rejected: one io-errors, other rejects → IoError.
+        {
+            let mut any_pending = false;
+            let mut last_io: Option<io::Error> = None;
+            let mut max_retry: Option<Duration> = None;
+            let s1 = merge_child_send_result(
+                SendResult::IoError(io::Error::other("io")),
+                &mut any_pending,
+                &mut last_io,
+                &mut max_retry,
+            );
+            let s2 = merge_child_send_result(
+                SendResult::Rejected("bad".to_string()),
+                &mut any_pending,
+                &mut last_io,
+                &mut max_retry,
+            );
+            let states: Vec<ChildState> = [s1, s2].into_iter().flatten().collect();
+            let result = finalize_fanout_outcome(&states, any_pending, last_io, max_retry);
+            assert!(
+                matches!(result, SendResult::IoError(_)),
+                "IoError must dominate Rejected"
+            );
+        }
 
-        // Rejected dominates IoError (not the other way around). (#1468)
-        let io = SendResult::IoError(io::Error::other("io"));
-        assert!(matches!(io, SendResult::IoError(_)));
+        // All-Rejected → Rejected.
+        {
+            let mut any_pending = false;
+            let mut last_io: Option<io::Error> = None;
+            let mut max_retry: Option<Duration> = None;
+            let s1 = merge_child_send_result(
+                SendResult::Rejected("bad1".to_string()),
+                &mut any_pending,
+                &mut last_io,
+                &mut max_retry,
+            );
+            let s2 = merge_child_send_result(
+                SendResult::Rejected("bad2".to_string()),
+                &mut any_pending,
+                &mut last_io,
+                &mut max_retry,
+            );
+            let states: Vec<ChildState> = [s1, s2].into_iter().flatten().collect();
+            let result = finalize_fanout_outcome(&states, any_pending, last_io, max_retry);
+            assert!(
+                matches!(result, SendResult::Rejected(_)),
+                "all-Rejected fanout must surface Rejected"
+            );
+        }
+
+        kani::cover!(retry_ms == 0, "zero-duration RetryAfter");
+        kani::cover!(retry_ms > 0, "non-zero RetryAfter");
     }
 }
 
