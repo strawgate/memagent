@@ -56,7 +56,11 @@ impl FileDiscovery {
         }
 
         let pattern_refs: Vec<&str> = self.glob_patterns.iter().map(String::as_str).collect();
-        let candidates = expand_glob_patterns(&pattern_refs);
+        let candidates = expand_glob_patterns(
+            &pattern_refs,
+            reader.config.follow_symlinks,
+            reader.config.ignore_older_than_secs,
+        );
 
         let existing: HashSet<PathBuf> = self.watch_paths.iter().cloned().collect();
         let new_paths: Vec<PathBuf> = candidates

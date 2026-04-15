@@ -1,3 +1,16 @@
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MultilineMatchMode {
+    Before,
+    After,
+}
+
+#[derive(Debug, Clone)]
+pub struct MultilineConfig {
+    pub pattern: String,
+    pub negate: bool,
+    pub match_mode: MultilineMatchMode,
+}
+
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -50,6 +63,10 @@ pub struct TailConfig {
     pub per_file_read_budget_bytes: usize,
     /// Maximum number of consecutive immediate repolls after a budget-saturated read.
     pub adaptive_fast_polls_max: u8,
+    pub follow_symlinks: bool,
+    pub ignore_older_than_secs: Option<u64>,
+    pub encoding: Option<String>,
+    pub multiline: Option<MultilineConfig>,
 }
 
 impl Default for TailConfig {
@@ -63,6 +80,10 @@ impl Default for TailConfig {
             max_open_files: 1024,
             per_file_read_budget_bytes: 256 * 1024,
             adaptive_fast_polls_max: 8,
+            follow_symlinks: false,
+            ignore_older_than_secs: None,
+            encoding: None,
+            multiline: None,
         }
     }
 }
@@ -187,7 +208,11 @@ impl FileTailer {
         config: TailConfig,
         stats: std::sync::Arc<ComponentStats>,
     ) -> io::Result<Self> {
-        let initial_paths: Vec<PathBuf> = expand_glob_patterns(patterns);
+        let initial_paths: Vec<PathBuf> = expand_glob_patterns(
+            patterns,
+            config.follow_symlinks,
+            config.ignore_older_than_secs,
+        );
 
         if initial_paths.is_empty() {
             for pattern in patterns {

@@ -662,6 +662,11 @@ mod tests {
                 adaptive_fast_polls_max: None,
                 max_open_files: None,
                 glob_rescan_interval_ms: None,
+                start_position: None,
+                encoding: None,
+                follow_symlinks: None,
+                ignore_older_than_secs: None,
+                multiline: None,
             }),
         }
     }

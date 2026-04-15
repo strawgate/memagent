@@ -169,13 +169,35 @@ pub(super) fn build_input_state(
             let path = require_non_empty(name, "file", "path", Some(&f.path))?;
             let format = cfg.format.clone().unwrap_or(Format::Auto);
             let mut tail_config = TailConfig {
-                start_from_end: false,
+                start_from_end: f
+                    .start_position
+                    .as_ref()
+                    .map(|pos| matches!(pos, logfwd_config::FileStartPosition::End))
+                    .unwrap_or(true),
                 poll_interval_ms: f.poll_interval_ms.unwrap_or(DEFAULT_FILE_POLL_INTERVAL_MS),
                 read_buf_size: f.read_buf_size.unwrap_or(DEFAULT_READ_BUF_SIZE),
                 per_file_read_budget_bytes: f
                     .per_file_read_budget_bytes
                     .unwrap_or(DEFAULT_PER_FILE_READ_BUDGET_BYTES),
                 max_open_files: f.max_open_files.unwrap_or(DEFAULT_MAX_OPEN_FILES),
+                follow_symlinks: f.follow_symlinks.unwrap_or(false),
+                ignore_older_than_secs: f.ignore_older_than_secs,
+                encoding: f.encoding.clone(),
+                multiline: f
+                    .multiline
+                    .as_ref()
+                    .map(|m| logfwd_io::tail::MultilineConfig {
+                        pattern: m.pattern.clone(),
+                        negate: m.negate,
+                        match_mode: match m.match_mode {
+                            logfwd_config::MultilineMatchMode::Before => {
+                                logfwd_io::tail::MultilineMatchMode::Before
+                            }
+                            logfwd_config::MultilineMatchMode::After => {
+                                logfwd_io::tail::MultilineMatchMode::After
+                            }
+                        },
+                    }),
                 ..Default::default()
             };
             if let Some(interval) = f.glob_rescan_interval_ms {
@@ -742,6 +764,11 @@ mod tests {
                 adaptive_fast_polls_max: None,
                 max_open_files: None,
                 glob_rescan_interval_ms: None,
+                start_position: None,
+                encoding: None,
+                follow_symlinks: None,
+                ignore_older_than_secs: None,
+                multiline: None,
             }),
         };
 
@@ -771,6 +798,11 @@ mod tests {
                 adaptive_fast_polls_max: Some(11),
                 max_open_files: Some(10),
                 glob_rescan_interval_ms: None,
+                start_position: None,
+                encoding: None,
+                follow_symlinks: None,
+                ignore_older_than_secs: None,
+                multiline: None,
             }),
         };
 
@@ -850,6 +882,11 @@ mod tests {
                 adaptive_fast_polls_max: None,
                 max_open_files: None,
                 glob_rescan_interval_ms: None,
+                start_position: None,
+                encoding: None,
+                follow_symlinks: None,
+                ignore_older_than_secs: None,
+                multiline: None,
             }),
         };
         let stats = pm.add_input("file-in", "file");

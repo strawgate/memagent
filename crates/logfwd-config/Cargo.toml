@@ -13,6 +13,7 @@ default = []
 otlp-research = []
 
 [dependencies]
+regex = "1.12.3"
 serde = { workspace = true }
 serde_yaml_ng = "0.10"
 thiserror = { workspace = true }

@@ -66,7 +66,11 @@ pub(super) fn glob_max_depth(pattern: &str) -> Option<usize> {
 ///
 /// Patterns that match no files are silently skipped. Errors from directory
 /// traversal (e.g., permission denied) are also skipped.
-pub(super) fn expand_glob_patterns(patterns: &[&str]) -> Vec<PathBuf> {
+pub(super) fn expand_glob_patterns(
+    patterns: &[&str],
+    follow_symlinks: bool,
+    ignore_older_than_secs: Option<u64>,
+) -> Vec<PathBuf> {
     if patterns.is_empty() {
         return Vec::new();
     }
@@ -113,10 +117,11 @@ pub(super) fn expand_glob_patterns(patterns: &[&str]) -> Vec<PathBuf> {
 
     let mut paths = Vec::new();
     for (root, max_depth) in &roots {
-        let mut walker = walkdir::WalkDir::new(root).follow_links(true);
+        let mut walker = walkdir::WalkDir::new(root).follow_links(follow_symlinks);
         if let Some(d) = max_depth {
             walker = walker.max_depth(*d);
         }
+        let now = std::time::SystemTime::now();
         for entry in walker.into_iter().filter_map(Result::ok) {
             if !entry.file_type().is_file() {
                 continue;
@@ -128,6 +133,14 @@ pub(super) fn expand_glob_patterns(patterns: &[&str]) -> Vec<PathBuf> {
                 || glob_set.is_match(stripped)
                 || glob_set.is_match(&prefixed)
             {
+                if let Some(secs) = ignore_older_than_secs
+                    && let Ok(metadata) = entry.metadata()
+                    && let Ok(modified) = metadata.modified()
+                    && let Ok(age) = now.duration_since(modified)
+                    && age.as_secs() > secs
+                {
+                    continue;
+                }
                 paths.push(entry.into_path());
             }
         }
@@ -151,7 +164,7 @@ mod tests {
 
     #[test]
     fn expand_glob_patterns_empty_patterns_returns_empty() {
-        assert!(expand_glob_patterns(&[]).is_empty());
+        assert!(expand_glob_patterns(&[], false, None).is_empty());
     }
 
     #[test]
@@ -164,7 +177,7 @@ mod tests {
 
         let p1 = format!("{}/**/*.log", dir.path().display());
         let p2 = format!("{}/logs/**/*.log", dir.path().display());
-        let matches = expand_glob_patterns(&[&p1, &p2]);
+        let matches = expand_glob_patterns(&[&p1, &p2], false, None);
 
         assert_eq!(matches, vec![log_file]);
     }
@@ -178,7 +191,7 @@ mod tests {
         fs::write(&log_file, b"line\n").expect("write log");
 
         let valid = format!("{}/**/*.log", dir.path().display());
-        let matches = expand_glob_patterns(&["[", &valid]);
+        let matches = expand_glob_patterns(&["[", &valid], false, None);
         assert_eq!(matches, vec![log_file]);
     }
 
@@ -192,7 +205,7 @@ mod tests {
 
         let bounded = format!("{}/a/*.log", dir.path().display());
         let unbounded = format!("{}/a/**/*.log", dir.path().display());
-        let matches = expand_glob_patterns(&[&bounded, &unbounded]);
+        let matches = expand_glob_patterns(&[&bounded, &unbounded], false, None);
         assert_eq!(matches, vec![deep]);
     }
 
@@ -210,14 +223,14 @@ mod tests {
 
         let p1 = format!("{}/a/*.log", dir.path().display());
         let p2 = format!("{}/a/*/*.log", dir.path().display());
-        let matches = expand_glob_patterns(&[&p1, &p2]);
+        let matches = expand_glob_patterns(&[&p1, &p2], false, None);
 
         assert_eq!(matches, vec![deep, shallow]);
     }
 
     #[test]
     fn expand_glob_patterns_all_invalid_patterns_returns_empty() {
-        let matches = expand_glob_patterns(&[""]);
+        let matches = expand_glob_patterns(&[""], false, None);
         assert!(matches.is_empty());
     }
 

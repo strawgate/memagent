@@ -472,6 +472,45 @@ pub struct FileTypeConfig {
     pub adaptive_fast_polls_max: Option<u8>,
     pub max_open_files: Option<usize>,
     pub glob_rescan_interval_ms: Option<u64>,
+    /// The position to start reading the file from. Options are "beginning" or "end".
+    #[serde(default)]
+    pub start_position: Option<FileStartPosition>,
+    /// The encoding of the file. Valid options are "utf-8", "utf8", and "ascii".
+    #[serde(default)]
+    pub encoding: Option<String>,
+    /// Whether to follow symlinks when discovering files.
+    #[serde(default)]
+    pub follow_symlinks: Option<bool>,
+    /// Ignore files that have not been modified within this many seconds.
+    #[serde(default)]
+    pub ignore_older_than_secs: Option<u64>,
+    /// Configuration for reading multiline logs.
+    #[serde(default)]
+    pub multiline: Option<MultilineConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FileStartPosition {
+    Beginning,
+    #[default]
+    End,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MultilineMatchMode {
+    Before,
+    After,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MultilineConfig {
+    pub pattern: String,
+    #[serde(default)]
+    pub negate: bool,
+    pub match_mode: MultilineMatchMode,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -690,7 +729,7 @@ pub enum EnrichmentConfig {
     K8sClusterInfo(K8sClusterInfoConfig),
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineConfig {
     #[serde(default, deserialize_with = "deserialize_one_or_many")]

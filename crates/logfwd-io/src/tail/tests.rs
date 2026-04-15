@@ -816,7 +816,7 @@ fn test_expand_glob_patterns_path_normalization() {
 
     // Absolute pattern with subdirectory.
     let pattern = format!("{}/*.log", logs.display());
-    let matches = expand_glob_patterns(&[&pattern]);
+    let matches = expand_glob_patterns(&[&pattern], false, None);
     assert!(
         matches.iter().any(|p| p == &target),
         "absolute pattern should match app.log, got: {matches:?}"
@@ -830,7 +830,7 @@ fn test_expand_glob_patterns_path_normalization() {
     let flat = dir.path().join("flat.log");
     File::create(&flat).unwrap();
     let flat_pattern = format!("{}/*.log", dir.path().display());
-    let flat_matches = expand_glob_patterns(&[&flat_pattern]);
+    let flat_matches = expand_glob_patterns(&[&flat_pattern], false, None);
     assert!(
         flat_matches.iter().any(|p| p == &flat),
         "wildcard pattern should match flat.log, got: {flat_matches:?}"
