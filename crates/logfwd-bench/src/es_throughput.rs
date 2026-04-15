@@ -113,6 +113,10 @@ fn run_worker(
         headers,
         compress,
         request_mode,
+        None,
+        None,
+        None,
+        None,
         stats,
     )
     .expect("failed to create sink factory");

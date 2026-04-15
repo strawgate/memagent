@@ -5,7 +5,7 @@ description: "Usage notes and examples for each output type"
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-Support status lives in the [YAML Reference](/memagent/configuration/reference/#output-types).
+Support status lives in the [YAML Reference](/configuration/reference/#output-types).
 This page focuses on usage notes and examples.
 
 <Tabs>
@@ -71,6 +71,10 @@ output:
   type: elasticsearch
   endpoint: https://es-cluster:9200
   index: logs             # default: "logs"
+  pipeline: parse_logs    # optional: Ingest Node pipeline name
+  action: index           # index | create (optional, default index)
+  timeout_sec: 30         # bulk request timeout (optional, default 30)
+  max_bulk_bytes: 5242880 # max bulk payload size (optional, default 5 MiB)
   compression: gzip       # gzip | none (optional)
   request_mode: buffered  # buffered | streaming (optional, default buffered)
 ```
@@ -88,6 +92,10 @@ Streaming mode is experimental and currently requires `compression: none`. Use `
 |-------|------|----------|---------|-------------|
 | `endpoint` | string | Yes | — | Elasticsearch URL |
 | `index` | string | No | `logs` | Target index name |
+| `pipeline` | string | No | — | Ingest Node pipeline name |
+| `action` | string | No | `index` | Bulk API action (`index` or `create`) |
+| `timeout_sec` | integer | No | `30` | Timeout for bulk requests in seconds |
+| `max_bulk_bytes` | integer | No | `5242880` | Maximum uncompressed bulk payload size in bytes |
 | `compression` | string | No | none | `gzip` or `none` |
 | `request_mode` | string | No | `buffered` | `buffered` or experimental `streaming` (streaming currently requires `compression: none`) |
 

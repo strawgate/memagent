@@ -412,8 +412,7 @@ impl ColumnarBatchBuilder {
         let generated = Buffer::from_vec(std::mem::take(&mut self.string_buf));
 
         let mode = FinalizationMode {
-            original_buf: original,
-            generated_buf: generated,
+            blocks: super::block_store::BlockStore::new(original, generated),
             utf8_trusted: self.utf8_trusted,
         };
 

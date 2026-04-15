@@ -2620,6 +2620,66 @@ pipelines:
         );
     }
 
+    #[test]
+    fn elasticsearch_output_accepts_new_fields() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: elasticsearch
+        endpoint: http://localhost:9200
+        pipeline: parse_logs
+        action: create
+        timeout_sec: 60
+        max_bulk_bytes: 10485760
+"#;
+        Config::load_str(yaml).expect("elasticsearch output should accept new fields");
+    }
+
+    #[test]
+    fn elasticsearch_output_rejects_invalid_action() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: elasticsearch
+        endpoint: http://localhost:9200
+        action: delete
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("elasticsearch action must be 'index' or 'create'"),
+            "expected invalid action rejection: {err}"
+        );
+    }
+
+    #[test]
+    fn non_elasticsearch_output_rejects_pipeline() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+        pipeline: parse_logs
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("'pipeline' is only supported for elasticsearch outputs"),
+            "expected pipeline rejection on non-ES output: {err}"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Format: text is accepted as a distinct raw-text mode
     // -----------------------------------------------------------------------
@@ -2889,4 +2949,5 @@ pipelines:
     }
 }
 mod tests_generator_unsupported;
+mod tests_otlp_config;
 mod tests_static_labels;

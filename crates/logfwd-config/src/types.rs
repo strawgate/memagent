@@ -274,6 +274,15 @@ pub struct HttpInputConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct GeneratorInputConfig {
+    #[serde(default)]
+    pub events_per_second: Option<u64>,
+    #[serde(default)]
+    pub num_lines: Option<u64>,
+    #[serde(default)]
+    pub message_template: Option<String>,
+    #[serde(default)]
+    pub field_count: Option<usize>,
+
     pub events_per_sec: Option<u64>,
     pub batch_size: Option<usize>,
     pub total_events: Option<u64>,
@@ -336,6 +345,18 @@ pub struct JournaldInputConfig {
     /// Systemd units to exclude.
     #[serde(default)]
     pub exclude_units: Vec<String>,
+    /// Syslog identifiers (`SYSLOG_IDENTIFIER=`) to include.
+    #[serde(default)]
+    pub identifiers: Vec<String>,
+    /// Priority/log levels (e.g. `0`, `3`, `info`, `err`) to include.
+    #[serde(default)]
+    pub priorities: Vec<String>,
+    /// Path to persist the cursor. Allows resuming after restarts.
+    #[serde(default)]
+    pub cursor_path: Option<String>,
+    /// Include `_BOOT_ID` field in output (default: false).
+    #[serde(default)]
+    pub include_boot_id: bool,
     /// Only include entries from the current boot (default: true).
     #[serde(default = "default_true")]
     pub current_boot_only: bool,
@@ -381,6 +402,10 @@ impl Default for JournaldInputConfig {
         Self {
             include_units: Vec::new(),
             exclude_units: Vec::new(),
+            identifiers: Vec::new(),
+            priorities: Vec::new(),
+            cursor_path: None,
+            include_boot_id: false,
             current_boot_only: true,
             since_now: false,
             journalctl_path: None,
@@ -500,6 +525,14 @@ pub struct OtlpTypeConfig {
     pub resource_prefix: Option<String>,
     /// Experimental OTLP protobuf decode strategy. Defaults to `prost`.
     pub protobuf_decode_mode: Option<OtlpProtobufDecodeModeConfig>,
+    #[serde(default)]
+    pub max_recv_message_size_bytes: Option<usize>,
+    #[serde(default)]
+    pub tls: Option<TlsInputConfig>,
+    #[serde(default)]
+    pub grpc_keepalive_time_ms: Option<u64>,
+    #[serde(default)]
+    pub grpc_max_concurrent_streams: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -555,6 +588,18 @@ pub struct OutputConfig {
     pub tenant_id: Option<String>,
     pub static_labels: Option<HashMap<String, String>>,
     pub label_columns: Option<Vec<String>>,
+    /// Elasticsearch: Ingest Node pipeline name.
+    #[serde(default)]
+    pub pipeline: Option<String>,
+    /// Elasticsearch: Action to perform in bulk API (`index` or `create`). Default is `index`.
+    #[serde(default)]
+    pub action: Option<String>,
+    /// Elasticsearch: Timeout for bulk requests in seconds. Default is 30.
+    #[serde(default)]
+    pub timeout_sec: Option<u64>,
+    /// Elasticsearch: Maximum uncompressed bulk payload size in bytes. Default is 5242880 (5 MiB).
+    #[serde(default)]
+    pub max_bulk_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

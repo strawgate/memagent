@@ -1424,6 +1424,10 @@ mod tests {
                     vec![],
                     false,
                     ElasticsearchRequestMode::Buffered,
+                    None,
+                    None,
+                    None,
+                    None,
                     Arc::clone(&out_stats),
                 )
                 .expect("factory creation"),
@@ -1499,6 +1503,10 @@ mod tests {
                     vec![],
                     false,
                     ElasticsearchRequestMode::Buffered,
+                    None,
+                    None,
+                    None,
+                    None,
                     Arc::clone(&out_stats),
                 )
                 .expect("factory creation"),

@@ -30,6 +30,7 @@ httpdate = "1"
 flate2 = "1"
 tokio-stream = "0.1.18"
 serde = { workspace = true, features = ["derive"] }
+form_urlencoded = "1.2.2"
 
 [dev-dependencies]
 proptest = "1"
