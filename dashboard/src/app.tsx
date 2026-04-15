@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useState } from "preact/hooks";
 import { api } from "./api";
 import type { ChartConfig } from "./components/Chart";
 import { ChartGrid } from "./components/ChartGrid";
@@ -31,6 +31,7 @@ const PIPELINE_CHARTS: ChartConfig[] = [
     unit: "/s",
     fmtAxis: fmtCompact,
     yRange: [0, 1000],
+    splitBy: "pipeline",
   },
   {
     metricName: "logfwd.input_bytes_per_sec",
@@ -39,6 +40,7 @@ const PIPELINE_CHARTS: ChartConfig[] = [
     unit: "/s",
     fmtAxis: fmtBytesCompact,
     yRange: [0, 102400],
+    splitBy: "pipeline",
   },
   {
     metricName: "logfwd.output_bytes_per_sec",
@@ -47,6 +49,7 @@ const PIPELINE_CHARTS: ChartConfig[] = [
     unit: "/s",
     fmtAxis: fmtBytesCompact,
     yRange: [0, 102400],
+    splitBy: "pipeline",
   },
   {
     metricName: "logfwd.output_errors_per_sec",
@@ -55,6 +58,7 @@ const PIPELINE_CHARTS: ChartConfig[] = [
     unit: "/s",
     fmtAxis: fmtCompact,
     yRange: [0, 10],
+    splitBy: "pipeline",
   },
   {
     metricName: "logfwd.batches_per_min",
@@ -63,6 +67,7 @@ const PIPELINE_CHARTS: ChartConfig[] = [
     unit: "/min",
     fmtAxis: fmtCompact,
     yRange: [0, 10],
+    splitBy: "pipeline",
   },
   {
     metricName: "logfwd.backpressure_stalls_per_sec",
@@ -71,6 +76,7 @@ const PIPELINE_CHARTS: ChartConfig[] = [
     unit: "/s",
     fmtAxis: (v) => v.toFixed(1),
     yRange: [0, 1],
+    splitBy: "pipeline",
   },
 ];
 
@@ -114,9 +120,15 @@ export function App() {
 
   // Build stats from latest OTLP metrics in the store.
   const updateStats = useCallback(() => {
+    /** Get latest value for a metric (single series, no pipeline split). */
     const val = (name: string): number => {
       const frame = store.selectLatestValues({ metricName: name });
       return frame.rows[0]?.value ?? 0;
+    };
+    /** Sum latest values across all pipeline series for a metric. */
+    const sum = (name: string): number => {
+      const frame = store.selectLatestValues({ metricName: name, splitBy: "pipeline" });
+      return frame.rows.reduce((acc, r) => acc + r.value, 0);
     };
 
     setStats({
@@ -124,22 +136,22 @@ export function App() {
       rss_bytes: val("process.memory.rss"),
       cpu_user_ms: null,
       cpu_sys_ms: null,
-      input_lines: val("logfwd.input_lines"),
-      input_bytes: val("logfwd.input_bytes"),
+      input_lines: sum("logfwd.input_lines"),
+      input_bytes: sum("logfwd.input_bytes"),
       output_lines: 0,
-      output_bytes: val("logfwd.output_bytes"),
-      output_errors: val("logfwd.output_errors"),
-      batches: val("logfwd.batches"),
-      scan_sec: val("logfwd.stage_nanos") / 1e9,
+      output_bytes: sum("logfwd.output_bytes"),
+      output_errors: sum("logfwd.output_errors"),
+      batches: sum("logfwd.batches"),
+      scan_sec: sum("logfwd.stage_nanos") / 1e9,
       transform_sec: 0,
       output_sec: 0,
-      backpressure_stalls: val("logfwd.backpressure_stalls"),
-      inflight_batches: val("logfwd.inflight_batches"),
+      backpressure_stalls: sum("logfwd.backpressure_stalls"),
+      inflight_batches: sum("logfwd.inflight_batches"),
       mem_resident: val("process.memory.resident") || undefined,
       mem_allocated: val("process.memory.allocated") || undefined,
       mem_active: val("process.memory.active") || undefined,
     });
-    setTotalErrors(val("logfwd.output_errors"));
+    setTotalErrors(sum("logfwd.output_errors"));
   }, [store]);
 
   // Max traces to retain in the dashboard (prevents unbounded growth).
@@ -167,14 +179,9 @@ export function App() {
 
   const { wsConnected } = useTelemetryWebSocket(handleMessage);
 
-  // Track WS connectivity — dashboard shows connected only when both
-  // the WebSocket and the status poll are healthy.
-  const wsConnectedRef = useRef(wsConnected);
-  wsConnectedRef.current = wsConnected;
-
-  useEffect(() => {
-    setConnected((prev) => (wsConnected ? prev : false));
-  }, [wsConnected]);
+  // `connected` means the status API is reachable. `wsConnected` tracks the
+  // live WebSocket independently. The StatusBar shows a separate pill when
+  // the WS drops while the API is still up.
 
   // ── Status polling (always runs — OTLP metrics don't carry pipeline topology) ──
   useEffect(() => {
@@ -189,7 +196,7 @@ export function App() {
           (statusData) => {
             if (statusData) {
               setStatus(statusData);
-              setConnected(wsConnectedRef.current);
+              setConnected(true);
               backoff = pollMs;
             } else {
               setConnected(false);
@@ -223,6 +230,7 @@ export function App() {
     <>
       <StatusBar
         connected={connected}
+        wsConnected={wsConnected}
         componentHealth={componentHealth}
         ready={ready}
         statusReason={statusReason}

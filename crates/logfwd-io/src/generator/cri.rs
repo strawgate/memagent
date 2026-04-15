@@ -1,3 +1,19 @@
+//! CRI-format and narrow JSON synthetic log generators.
+
+use std::fmt::Write as _;
+use std::sync::Arc;
+
+use arrow::array::{ArrayRef, Float64Array, Int64Array, StringArray, StringBuilder};
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::record_batch::RecordBatch;
+
+use super::cardinality::cardinality_helpers::{CardinalityProfile, CardinalityState, SamplePhase};
+use super::shared::{
+    CONTAINERS, LEVELS, METHODS, NAMESPACES, PATHS, PODS, SERVICES, STACK_TRACE, STATUS_CODES,
+    STREAMS, append_timestamp_utc, append_user_label, json_escape, level_for_phase, pick,
+    pick_by_idx, pick_u16, round_tenths, user_label,
+};
+
 // gen_cri_k8s — CRI-formatted K8s container logs
 // ---------------------------------------------------------------------------
 
@@ -498,3 +514,82 @@ pub fn gen_narrow_batch(count: usize, seed: u64) -> RecordBatch {
         .unwrap_or_else(|err| panic!("narrow batch generation failed for {count} rows: {err}"))
 }
 
+// ---------------------------------------------------------------------------
+// Streaming support for GeneratorInput
+// ---------------------------------------------------------------------------
+
+/// Write a single CRI-formatted Kubernetes container log line into `buf`.
+///
+/// `event_index` is used for the timestamp seconds component (`i % 60`).
+pub(super) fn write_cri_line(buf: &mut Vec<u8>, rng: &mut fastrand::Rng, event_index: usize) {
+    let i = event_index;
+    let sec = i % 60;
+    let nano = rng.u32(..1_000_000_000);
+    let stream = pick(rng, STREAMS);
+    let is_partial = rng.u8(..10) == 0;
+    let flag = if is_partial { "P" } else { "F" };
+
+    let _ = write!(
+        buf as &mut dyn std::io::Write,
+        "2024-01-15T10:30:{sec:02}.{nano:09}Z {stream} {flag} ",
+    );
+
+    let variant = rng.u8(..10);
+    let level = pick(rng, LEVELS);
+    let status = pick_u16(rng, STATUS_CODES);
+    let duration = rng.f64() * 500.0;
+
+    if variant < 6 {
+        let path = pick(rng, PATHS);
+        let method = pick(rng, METHODS);
+        let _ = write!(
+            buf as &mut dyn std::io::Write,
+            r#"{{"level":"{level}","message":"{method} {path} HTTP/1.1","status":{status},"duration_ms":{duration:.1},"request_id":"req-{:08x}"}}"#,
+            rng.u32(..),
+        );
+    } else if variant < 9 {
+        let ns = pick(rng, NAMESPACES);
+        let pod = pick(rng, PODS);
+        let container = pick(rng, CONTAINERS);
+        let path = pick(rng, PATHS);
+        let method = pick(rng, METHODS);
+        let trace_id = rng.u128(..);
+        let span_id = rng.u64(..);
+        let _ = write!(
+            buf as &mut dyn std::io::Write,
+            r#"{{"level":"{level}","message":"{method} {path} HTTP/1.1","status":{status},"duration_ms":{duration:.1},"namespace":"{ns}","pod":"{pod}","container":"{container}","trace_id":"{trace_id:032x}","span_id":"{span_id:016x}","service":"{}","request_id":"req-{:08x}","bytes_sent":{}}}"#,
+            pick(rng, SERVICES),
+            rng.u32(..),
+            rng.u32(..65536),
+        );
+    } else {
+        let _ = write!(
+            buf as &mut dyn std::io::Write,
+            r#"{{"level":"ERROR","message":""#
+        );
+        let mut s = String::new();
+        json_escape(STACK_TRACE, &mut s);
+        buf.extend_from_slice(s.as_bytes());
+        let _ = write!(
+            buf as &mut dyn std::io::Write,
+            r#"","exception_class":"java.lang.NullPointerException","service":"{}","request_id":"req-{:08x}","status":500,"duration_ms":{duration:.1}}}"#,
+            pick(rng, SERVICES),
+            rng.u32(..),
+        );
+    }
+}
+
+/// Write a single narrow JSON log line into `buf`.
+///
+/// `event_index` is used for the HTTP method cycle.
+pub(super) fn write_narrow_line(buf: &mut Vec<u8>, rng: &mut fastrand::Rng, event_index: usize) {
+    let level = pick(rng, LEVELS);
+    let path = pick(rng, PATHS);
+    let status = pick_u16(rng, STATUS_CODES);
+    let duration = rng.f64() * 500.0;
+    let _ = write!(
+        buf as &mut dyn std::io::Write,
+        r#"{{"level":"{level}","message":"{} {path}","path":"{path}","status":{status},"duration_ms":{duration:.1}}}"#,
+        METHODS[event_index % METHODS.len()],
+    );
+}

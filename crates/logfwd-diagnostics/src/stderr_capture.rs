@@ -20,6 +20,8 @@ struct LogBuf {
     total_bytes: usize,
     /// Monotonically increasing count of lines ever pushed (survives eviction).
     total_pushed: u64,
+    /// Monotonically increasing count of lines evicted or dropped.
+    lines_dropped: u64,
 }
 
 impl LogBuf {
@@ -28,6 +30,7 @@ impl LogBuf {
             lines: VecDeque::new(),
             total_bytes: 0,
             total_pushed: 0,
+            lines_dropped: 0,
         }
     }
 
@@ -35,12 +38,14 @@ impl LogBuf {
         let line_bytes = line.len() + 1; // +1 accounts for the stripped newline
         // Drop lines that would alone exceed the cap — they can never fit.
         if line_bytes > MAX_BYTES {
+            self.lines_dropped += 1;
             return;
         }
         // Evict oldest lines until there is room for the new one.
         while self.total_bytes + line_bytes > MAX_BYTES {
             if let Some(removed) = self.lines.pop_front() {
                 self.total_bytes = self.total_bytes.saturating_sub(removed.len() + 1);
+                self.lines_dropped += 1;
             } else {
                 break;
             }
@@ -62,6 +67,11 @@ impl LogBuf {
     /// Monotonic count of all lines ever pushed (never decreases).
     fn total_pushed(&self) -> u64 {
         self.total_pushed
+    }
+
+    /// Monotonic count of lines evicted from the buffer or dropped (oversized).
+    fn count_lines_dropped(&self) -> u64 {
+        self.lines_dropped
     }
 }
 
@@ -112,6 +122,13 @@ impl CaptureState {
             Err(_) => (vec![], cursor),
         }
     }
+
+    fn count_lines_dropped(&self) -> u64 {
+        match self.buf.lock() {
+            Ok(buf) => buf.count_lines_dropped(),
+            Err(poisoned) => poisoned.into_inner().count_lines_dropped(),
+        }
+    }
 }
 
 /// Handle to the stderr capture system. Clone-cheap (Arc inside).
@@ -152,6 +169,11 @@ impl StderrCapture {
     /// Use this for delta delivery — the cursor is monotonic and survives eviction.
     pub fn get_logs_since(&self, cursor: u64) -> (Vec<String>, u64) {
         self.state.get_lines_since(cursor)
+    }
+
+    /// Monotonic count of log lines evicted from the buffer or dropped.
+    pub fn count_lines_dropped(&self) -> u64 {
+        self.state.count_lines_dropped()
     }
 
     /// Is capture currently active?
@@ -512,5 +534,45 @@ mod tests {
         let (lines, cursor) = state.get_lines_since(999);
         assert!(lines.is_empty());
         assert_eq!(cursor, 1);
+    }
+
+    // ── count_lines_dropped counter ──────────────────────────────────
+
+    #[test]
+    fn oversized_line_increments_drop_count() {
+        let mut buf = LogBuf::new();
+        let big = "x".repeat(MAX_BYTES + 1);
+        buf.push(big);
+        assert_eq!(buf.count_lines_dropped(), 1);
+        assert_eq!(buf.total_pushed, 0);
+    }
+
+    #[test]
+    fn eviction_increments_drop_count() {
+        let mut buf = LogBuf::new();
+        let line_bytes = 10usize; // "line XXXX" = 9 + 1 newline
+        let n = MAX_BYTES / line_bytes + 500;
+        for i in 0..n {
+            buf.push(format!("line {:04}", i));
+        }
+        // Some lines were evicted — drop count should be positive.
+        assert!(
+            buf.count_lines_dropped() > 0,
+            "count_lines_dropped={}",
+            buf.count_lines_dropped()
+        );
+        // Total pushed minus retained equals dropped.
+        assert_eq!(
+            buf.count_lines_dropped(),
+            buf.total_pushed - buf.len() as u64,
+        );
+    }
+
+    #[test]
+    fn no_eviction_zero_drops() {
+        let state = CaptureState::new();
+        state.push_line("hello".into());
+        state.push_line("world".into());
+        assert_eq!(state.count_lines_dropped(), 0);
     }
 }

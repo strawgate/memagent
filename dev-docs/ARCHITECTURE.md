@@ -243,6 +243,12 @@ OutputSink / Sink traits       OtlpSink, ElasticsearchSink,
 `logfwd-diagnostics` provides the diagnostics server and telemetry-facing
 snapshot types consumed by runtime/bootstrap wiring.
 
+`logfwd-config-wasm` is a browser-side companion crate, not part of the
+runtime pipeline. It exposes `get_input_templates()`, `get_output_templates()`,
+`get_use_case_templates()`, and `validate_config()` to the docs site's
+interactive Config Builder via WASM. Built with `wasm-pack --target web`;
+artifacts land in `book/public/wasm/logfwd-config/`.
+
 ## Pipeline loop
 
 The async pipeline in `run_async()` (`logfwd-runtime/src/pipeline.rs`):

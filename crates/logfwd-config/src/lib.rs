@@ -17,15 +17,17 @@ mod validate;
 #[cfg(test)]
 pub(crate) use env::expand_env_vars;
 pub use types::{
-    ArrowIpcTypeConfig, AuthConfig, Config, ConfigError, CsvEnrichmentConfig, EnrichmentConfig,
-    FileTypeConfig, Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig,
-    GeneratorInputConfig, GeneratorProfileConfig, GeneratorSequenceConfig, GeneratorTypeConfig,
-    GeoDatabaseConfig, GeoDatabaseFormat, HostInfoConfig, HostMetricsInputConfig, HttpInputConfig,
-    HttpMethodConfig, HttpTypeConfig, InputConfig, InputType, InputTypeConfig,
-    JournaldBackendConfig, JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig,
-    K8sPathConfig, OtlpProtobufDecodeModeConfig, OtlpTypeConfig, OutputConfig, OutputType,
-    PipelineConfig, SensorTypeConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig,
-    TcpTypeConfig, TlsInputConfig, UdpTypeConfig,
+    ArrowIpcTypeConfig, AuthConfig, Config, ConfigError, ContainerInfoConfig, CsvEnrichmentConfig,
+    EnrichmentConfig, EnvVarsEnrichmentConfig, FileTypeConfig, Format,
+    GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorInputConfig,
+    GeneratorProfileConfig, GeneratorSequenceConfig, GeneratorTypeConfig, GeoDatabaseConfig,
+    GeoDatabaseFormat, HostInfoConfig, HostMetricsInputConfig, HttpInputConfig, HttpMethodConfig,
+    HttpTypeConfig, InputConfig, InputType, InputTypeConfig, JournaldBackendConfig,
+    JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sClusterInfoConfig,
+    K8sPathConfig, KvFileEnrichmentConfig, NetworkInfoConfig, OtlpProtobufDecodeModeConfig,
+    OtlpTypeConfig, OutputConfig, OutputType, PipelineConfig, ProcessInfoConfig, SensorTypeConfig,
+    ServerConfig, StaticEnrichmentConfig, StorageConfig, TcpTypeConfig, TlsInputConfig,
+    UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 
@@ -2434,6 +2436,32 @@ pipelines:
                 .contains("only supported for the logs profile"),
             "expected logs-only rejection: {err}"
         );
+    }
+
+    #[test]
+    fn generator_timestamp_rejects_non_logs_profiles() {
+        for profile in ["envoy", "cri_k8s", "wide", "narrow", "cloud_trail"] {
+            let yaml = format!(
+                r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: {profile}
+          timestamp:
+            start: "now"
+    outputs:
+      - type: "null"
+"#
+            );
+            let err = Config::load_str(&yaml).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("only supported for the logs profile"),
+                "profile={profile}: expected logs-only rejection: {err}"
+            );
+        }
     }
 
     #[test]

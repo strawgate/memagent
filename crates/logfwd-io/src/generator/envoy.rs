@@ -1,3 +1,26 @@
+//! Envoy-like access log generator.
+//!
+//! Produces realistic edge-proxy request logs with correlated route, cluster,
+//! status, source IP, and user-agent fields.
+
+use std::fmt::Write as _;
+use std::sync::Arc;
+
+use arrow::array::{ArrayRef, Float64Array, Int64Array, StringBuilder};
+use arrow::datatypes::{DataType, Field, Schema};
+use arrow::record_batch::RecordBatch;
+
+use super::shared::{
+    WeightedChoice, append_ipv4, append_ipv4_without_port, append_uuid_like, pick, round_tenths,
+    weighted_choice_pick, weighted_pick,
+};
+
+impl WeightedChoice for EnvoyAccessScenario {
+    fn weight(&self) -> usize {
+        self.weight
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EnvoyAccessKind {
     PublicRead,
@@ -790,3 +813,154 @@ fn make_user_agent(
 }
 
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Streaming support for GeneratorInput
+// ---------------------------------------------------------------------------
+
+/// Per-instance state for streaming Envoy log generation.
+///
+/// Tracks the current burst scenario and related source/client buckets so
+/// that consecutive `write_envoy_line` calls produce realistic correlated
+/// bursts rather than independent random rows.
+pub(super) struct EnvoyStreamState {
+    burst_remaining: usize,
+    current_scenario: EnvoyAccessScenario,
+    current_source_bucket: usize,
+    current_client_bucket: usize,
+}
+
+impl EnvoyStreamState {
+    /// Create a new streaming state with a default scenario.
+    pub(super) fn new() -> Self {
+        Self {
+            burst_remaining: 0,
+            current_scenario: ENVOY_SCENARIOS[0],
+            current_source_bucket: 0,
+            current_client_bucket: 0,
+        }
+    }
+}
+
+/// Write a single Envoy access log line into `buf`.
+///
+/// `event_index` is used for the timestamp seconds component (`i % 60`).
+pub(super) fn write_envoy_line(
+    buf: &mut Vec<u8>,
+    rng: &mut fastrand::Rng,
+    profile: &EnvoyAccessProfile,
+    event_index: usize,
+    state: &mut EnvoyStreamState,
+) {
+    if state.burst_remaining == 0 {
+        state.current_scenario = weighted_choice_pick(rng, ENVOY_SCENARIOS);
+        let burst_span = profile.burst_max.saturating_sub(profile.burst_min);
+        let burst_len = if burst_span == 0 {
+            profile.burst_min
+        } else {
+            profile.burst_min + rng.usize(..=burst_span)
+        };
+        state.burst_remaining = burst_len.max(1);
+        state.current_source_bucket = rng.usize(..profile.source_ip_pool_size.max(1));
+        state.current_client_bucket = rng.usize(..profile.user_agent_pool_size.max(1));
+    }
+    state.burst_remaining -= 1;
+
+    let i = event_index;
+    let current_scenario = state.current_scenario;
+    let current_source_bucket = state.current_source_bucket;
+    let current_client_bucket = state.current_client_bucket;
+
+    let sec = i % 60;
+    let nano = rng.u32(..1_000_000_000);
+    let method = match current_scenario.kind {
+        EnvoyAccessKind::PublicRead => pick(rng, &["GET", "GET", "GET", "HEAD"]),
+        EnvoyAccessKind::PublicWrite => pick(rng, &["POST", "POST", "PUT", "PATCH"]),
+        EnvoyAccessKind::Auth => pick(rng, &["POST", "POST", "POST", "DELETE"]),
+        EnvoyAccessKind::Search => pick(rng, &["GET", "GET", "GET", "POST"]),
+        EnvoyAccessKind::StaticAssets => pick(rng, &["GET", "GET", "HEAD"]),
+        EnvoyAccessKind::Metrics => pick(rng, &["GET", "GET", "GET"]),
+        EnvoyAccessKind::Graphql => pick(rng, &["POST", "POST", "GET"]),
+    };
+    let route_variant = rng.usize(..profile.cardinality_scale.max(1) * 4);
+    let route_name = format!("{}-v{}", current_scenario.route_prefix, route_variant);
+    let upstream_cluster = format!("{}-v{}", current_scenario.cluster_prefix, route_variant);
+    let host_bucket =
+        (current_source_bucket + route_variant) % (16 * profile.cardinality_scale.max(1) + 16);
+    let source_ip = make_source_ip(current_source_bucket, i);
+    let direct_ip = make_direct_ip(host_bucket, i);
+    let response_code = weighted_pick(rng, current_scenario.status_weights);
+    let response_flags = pick_response_flag(rng, current_scenario.flag_weights, response_code);
+    let response_code_details =
+        pick_response_code_detail(rng, current_scenario.response_code_details, response_code);
+    let user_agent = make_user_agent(
+        rng,
+        current_scenario.kind,
+        current_client_bucket,
+        profile.user_agent_pool_size.max(1),
+    );
+    let path = make_path(rng, current_scenario.kind, route_variant);
+    let authority = current_scenario.authority;
+    let bytes_received = match current_scenario.kind {
+        EnvoyAccessKind::PublicRead | EnvoyAccessKind::StaticAssets | EnvoyAccessKind::Metrics => {
+            rng.u32(..512)
+        }
+        EnvoyAccessKind::Search => rng.u32(..1024),
+        EnvoyAccessKind::Auth => rng.u32(..256),
+        EnvoyAccessKind::PublicWrite | EnvoyAccessKind::Graphql => rng.u32(..2048),
+    };
+    let bytes_sent = match response_code {
+        200 | 201 | 204 | 304 => 200 + rng.u32(..16_000),
+        400 | 401 | 403 | 404 => 64 + rng.u32(..1_024),
+        409 | 422 | 429 => 32 + rng.u32(..512),
+        _ => 128 + rng.u32(..8_192),
+    };
+    let duration_ms = match current_scenario.kind {
+        EnvoyAccessKind::Metrics => 3.0 + rng.f64() * 18.0,
+        EnvoyAccessKind::StaticAssets => 4.0 + rng.f64() * 24.0,
+        EnvoyAccessKind::Auth => 12.0 + rng.f64() * 75.0,
+        EnvoyAccessKind::PublicRead => 8.0 + rng.f64() * 90.0,
+        EnvoyAccessKind::Search => 15.0 + rng.f64() * 140.0,
+        EnvoyAccessKind::PublicWrite => 20.0 + rng.f64() * 180.0,
+        EnvoyAccessKind::Graphql => 25.0 + rng.f64() * 220.0,
+    };
+    let upstream_service_time_ms = if response_code >= 500 || rng.usize(..100) < 90 {
+        Some((duration_ms * (0.35 + rng.f64() * 0.45)).max(1.0))
+    } else {
+        None
+    };
+    let xff = make_x_forwarded_for(rng, current_source_bucket, profile.xff_hops_max.max(1));
+    let is_tls = current_scenario.kind != EnvoyAccessKind::Metrics && rng.usize(..100) < 96;
+    let tls_version = if is_tls {
+        pick(rng, &["TLSv1.3", "TLSv1.2"])
+    } else {
+        "-"
+    };
+    let protocol = if matches!(
+        current_scenario.kind,
+        EnvoyAccessKind::Metrics | EnvoyAccessKind::StaticAssets
+    ) && rng.usize(..100) < 25
+    {
+        "HTTP/1.1"
+    } else {
+        "HTTP/2"
+    };
+    let mut request_id = String::with_capacity(36);
+    append_uuid_like(rng, &mut request_id);
+    let mut upstream_host = String::new();
+    let o1 = 10 + (current_source_bucket % 20) as u8;
+    let o2 = (route_variant % 250) as u8;
+    let o3 = ((i + current_client_bucket) % 250) as u8;
+    let o4 = 10 + ((route_variant + current_client_bucket) % 200) as u8;
+    let port = 8080 + ((route_variant + current_client_bucket) % 5) as u16;
+    append_ipv4(&mut upstream_host, o1, o2, o3, o4, port);
+
+    let upstream_svc_str =
+        upstream_service_time_ms.map_or_else(|| "null".to_string(), |ms| format!("{ms:.1}"));
+
+    let _ = write!(
+        buf as &mut dyn std::io::Write,
+        r#"{{"timestamp":"2024-01-15T10:30:{sec:02}.{nano:09}Z","method":"{method}","path":"{path}","protocol":"{protocol}","response_code":{response_code},"response_flags":"{response_flags}","response_code_details":"{response_code_details}","bytes_received":{bytes_received},"bytes_sent":{bytes_sent},"duration_ms":{duration_ms:.1},"upstream_service_time_ms":{upstream_svc_str},"user_agent":"{user_agent}","x_request_id":"{request_id}","authority":"{authority}","route_name":"{route_name}","service":"{}","upstream_cluster":"{upstream_cluster}","upstream_host":"{upstream_host}","downstream_remote_address":"{source_ip}","downstream_direct_remote_address":"{direct_ip}","x_forwarded_for":"{xff}","tls_version":"{tls_version}"}}"#,
+        current_scenario.service,
+    );
+}

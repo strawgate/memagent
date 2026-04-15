@@ -149,10 +149,29 @@ pub async fn run_pipelines(
 
         #[cfg(feature = "cpu-profiling")]
         {
-            if let Ok(report) = _pprof_to_drop.report().build()
-                && let Ok(file) = std::fs::File::create("flamegraph.svg")
-            {
-                let _ = report.flamegraph(file);
+            if let Ok(report) = _pprof_to_drop.report().build() {
+                // Write flamegraph for local/quick inspection
+                if let Ok(file) = std::fs::File::create("flamegraph.svg") {
+                    if let Err(e) = report.flamegraph(file) {
+                        eprintln!("warn: failed to write flamegraph.svg: {e}");
+                    }
+                }
+                // Write pprof protobuf for use with `go tool pprof` / speedscope
+                if let Ok(profile) = report.pprof() {
+                    use pprof::protos::Message as _;
+                    use std::io::Write as _;
+                    let mut buf = Vec::new();
+                    if profile.encode(&mut buf).is_ok() {
+                        if let Ok(file) = std::fs::File::create("profile.pb.gz") {
+                            let mut gz =
+                                flate2::write::GzEncoder::new(file, flate2::Compression::default());
+                            if let Err(e) = gz.write_all(&buf).and_then(|_| gz.finish().map(|_| ()))
+                            {
+                                eprintln!("warn: failed to write profile.pb.gz: {e}");
+                            }
+                        }
+                    }
+                }
             }
         }
 

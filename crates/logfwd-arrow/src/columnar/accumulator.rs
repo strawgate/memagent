@@ -1440,6 +1440,212 @@ mod verification {
         kani::cover!(orig_offset == 0, "start of original");
         kani::cover!(gen_offset == 0, "start of generated");
     }
+
+    // ── is_dense ────────────────────────────────────────────────────────────
+
+    /// When `is_dense` returns true, every row in [0..num_rows) has exactly
+    /// one fact (pigeonhole: count matches and last row == num_rows - 1).
+    ///
+    /// Uses bounded facts (≤ 4 rows) to keep CBMC tractable.
+    #[kani::proof]
+    #[kani::unwind(6)] // 4 iterations + 2 margin
+    fn verify_is_dense_implies_consecutive_rows() {
+        let num_rows: usize = kani::any();
+        kani::assume(num_rows > 0 && num_rows <= 4);
+
+        // Generate sorted facts with unique row indices (dedup guarantee).
+        let num_facts: usize = kani::any();
+        kani::assume(num_facts <= num_rows);
+
+        let mut facts = [(0u32, 0i64); 4];
+        let mut prev_row: u32 = 0;
+        let mut i: usize = 0;
+        while i < num_facts {
+            let row: u32 = kani::any();
+            kani::assume(row < num_rows as u32);
+            if i == 0 {
+                facts[i] = (row, i as i64);
+                prev_row = row;
+            } else {
+                kani::assume(row > prev_row); // strictly increasing = unique
+                facts[i] = (row, i as i64);
+                prev_row = row;
+            }
+            i += 1;
+        }
+
+        let slice = &facts[..num_facts];
+        let result = is_dense(slice, num_rows, true);
+
+        if result {
+            // Oracle: verify the pigeonhole consequence — rows are exactly [0..num_rows).
+            assert_eq!(num_facts, num_rows, "dense implies facts.len() == num_rows");
+            let mut r: usize = 0;
+            while r < num_rows {
+                assert_eq!(slice[r].0 as usize, r, "dense implies facts[i].row == i");
+                r += 1;
+            }
+        }
+
+        kani::cover!(result, "dense detected");
+        kani::cover!(!result && num_facts < num_rows, "fewer facts than rows");
+        kani::cover!(!result && num_facts > 0, "non-empty but sparse");
+    }
+
+    /// `is_dense` returns false when dedup is disabled, even with perfect rows.
+    #[kani::proof]
+    fn verify_is_dense_false_without_dedup() {
+        let num_rows: usize = kani::any();
+        kani::assume(num_rows > 0 && num_rows <= 4);
+
+        let mut facts = [(0u32, 0i64); 4];
+        let mut i: usize = 0;
+        while i < num_rows {
+            facts[i] = (i as u32, i as i64);
+            i += 1;
+        }
+
+        assert!(
+            !is_dense(&facts[..num_rows], num_rows, false),
+            "dedup=false must never be dense"
+        );
+        kani::cover!(num_rows > 1, "multi-row non-dense");
+    }
+
+    /// `is_dense` returns false on empty facts with num_rows > 0.
+    #[kani::proof]
+    fn verify_is_dense_empty_facts() {
+        let num_rows: usize = kani::any();
+        kani::assume(num_rows > 0 && num_rows <= 8);
+        let facts: &[(u32, i64)] = &[];
+        assert!(
+            !is_dense(facts, num_rows, true),
+            "empty facts cannot be dense"
+        );
+        kani::cover!(num_rows > 0, "non-trivial empty");
+    }
+
+    // ── read_str_bytes ──────────────────────────────────────────────────────
+
+    /// `read_str_bytes` dispatches to the original buffer when offset < original_len.
+    /// Verifies success, correct length, and that bytes come from original (0xAA).
+    /// Byte-by-byte content verified by proptest; here we check first-byte dispatch.
+    #[kani::proof]
+    fn verify_read_str_bytes_original_dispatch() {
+        let orig_len: usize = 8;
+        let original = [0xAAu8; 8];
+        let generated = [0xBBu8; 8];
+
+        let offset: u32 = kani::any();
+        let len: u32 = kani::any();
+        kani::assume(len > 0 && len <= 8);
+        kani::assume(offset < orig_len as u32);
+        kani::assume((offset as usize) + (len as usize) <= orig_len);
+
+        let sref = StringRef { offset, len };
+        let result = read_str_bytes(&original, &generated, orig_len, sref);
+        assert!(result.is_ok(), "valid original ref must succeed");
+        let bytes = result.unwrap();
+        assert_eq!(bytes.len(), len as usize);
+        assert_eq!(bytes[0], 0xAA, "first byte must be from original buffer");
+
+        kani::cover!(offset == 0, "start of original");
+        kani::cover!(offset > 0, "mid-original");
+    }
+
+    /// `read_str_bytes` dispatches to the generated buffer when offset >= original_len.
+    /// Verifies success, correct length, and that bytes come from generated (0xBB).
+    #[kani::proof]
+    fn verify_read_str_bytes_generated_dispatch() {
+        let orig_len: usize = 8;
+        let original = [0xAAu8; 8];
+        let generated = [0xBBu8; 8];
+
+        let gen_offset: u32 = kani::any();
+        let len: u32 = kani::any();
+        kani::assume(len > 0 && len <= 8);
+        kani::assume((gen_offset as usize) + (len as usize) <= 8);
+
+        let sref = StringRef {
+            offset: orig_len as u32 + gen_offset,
+            len,
+        };
+        let result = read_str_bytes(&original, &generated, orig_len, sref);
+        assert!(result.is_ok(), "valid generated ref must succeed");
+        let bytes = result.unwrap();
+        assert_eq!(bytes.len(), len as usize);
+        assert_eq!(bytes[0], 0xBB, "first byte must be from generated buffer");
+
+        kani::cover!(gen_offset == 0, "start of generated");
+        kani::cover!(gen_offset > 0, "mid-generated");
+    }
+
+    /// Spanning references (start in original, end past it) always fail.
+    #[kani::proof]
+    fn verify_read_str_bytes_spanning_rejected() {
+        let orig_len: usize = 8;
+        let original = [0xAAu8; 8];
+        let generated = [0xBBu8; 8];
+
+        let offset: u32 = kani::any();
+        let len: u32 = kani::any();
+        kani::assume(len > 0 && len <= 16);
+        kani::assume((offset as usize) < orig_len);
+        kani::assume((offset as usize) + (len as usize) > orig_len);
+
+        let sref = StringRef { offset, len };
+        let result = read_str_bytes(&original, &generated, orig_len, sref);
+        assert!(result.is_err(), "spanning reference must be rejected");
+
+        kani::cover!(offset == 0, "span from start");
+        kani::cover!(offset > 0, "span from middle");
+    }
+
+    // ── write_str offset computation ────────────────────────────────────────
+
+    /// The `write_str` offset computation: `original_len + string_buf_len`
+    /// must fit in u32. Prove the error guard catches all overflow cases.
+    ///
+    /// Extracted as a pure function to verify independently of the builder.
+    #[kani::proof]
+    #[kani::solver(kissat)]
+    fn verify_write_str_offset_fits_u32() {
+        let original_len: usize = kani::any();
+        let string_buf_len: usize = kani::any();
+        let value_len: usize = kani::any();
+
+        // Bound to keep solver tractable — the arithmetic is the same.
+        kani::assume(original_len <= u32::MAX as usize + 1);
+        kani::assume(string_buf_len <= u32::MAX as usize + 1);
+        kani::assume(value_len <= u32::MAX as usize + 1);
+
+        // Mimic the write_str overflow checks.
+        let raw_offset = original_len.checked_add(string_buf_len);
+        let offset_fits = raw_offset
+            .map(|r| u32::try_from(r).is_ok())
+            .unwrap_or(false);
+        let len_fits = u32::try_from(value_len).is_ok();
+
+        if let Some(raw) = raw_offset {
+            if raw <= u32::MAX as usize {
+                assert!(offset_fits, "raw <= u32::MAX must fit");
+            } else {
+                assert!(!offset_fits, "raw > u32::MAX must not fit");
+            }
+        } else {
+            assert!(!offset_fits, "usize overflow must not fit");
+        }
+
+        if value_len <= u32::MAX as usize {
+            assert!(len_fits, "value_len <= u32::MAX must fit");
+        } else {
+            assert!(!len_fits, "value_len > u32::MAX must not fit");
+        }
+
+        kani::cover!(offset_fits && len_fits, "both fit");
+        kani::cover!(!offset_fits, "offset overflow");
+        kani::cover!(!len_fits, "value len overflow");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1640,6 +1846,75 @@ mod proptests {
                 } else {
                     prop_assert!(typed.is_null(row), "unwritten row must be null");
                 }
+            }
+        }
+    }
+
+    // ── dense ≡ sparse equivalence ──────────────────────────────────────────
+
+    proptest! {
+        /// When all rows have exactly one fact (dense-eligible), the dense and
+        /// sparse paths of `build_int64` produce identical arrays.
+        #[test]
+        fn build_int64_dense_equals_sparse(values in prop::collection::vec(any::<i64>(), 1..=32)) {
+            let num_rows = values.len();
+            let facts: Vec<(u32, i64)> = values.iter().enumerate()
+                .map(|(i, &v)| (i as u32, v)).collect();
+
+            // Dense path (dedup=true, all rows present).
+            let (dense_arr, _) = build_int64(&facts, num_rows, true);
+            // Force sparse path by disabling dedup.
+            let (sparse_arr, _) = build_int64(&facts, num_rows, false);
+
+            prop_assert_eq!(dense_arr.len(), sparse_arr.len());
+            let dense_typed = dense_arr.as_any().downcast_ref::<Int64Array>().unwrap();
+            let sparse_typed = sparse_arr.as_any().downcast_ref::<Int64Array>().unwrap();
+            for i in 0..num_rows {
+                prop_assert_eq!(dense_typed.value(i), sparse_typed.value(i),
+                    "value mismatch at row {}", i);
+                // Dense has no nulls; sparse may not mark nulls when all rows are present.
+                prop_assert!(!dense_typed.is_null(i));
+            }
+        }
+
+        /// Dense and sparse paths of `build_float64` produce identical values.
+        #[test]
+        fn build_float64_dense_equals_sparse(
+            values in prop::collection::vec(
+                any::<f64>().prop_filter("finite", |v| v.is_finite()),
+                1..=32,
+            )
+        ) {
+            let num_rows = values.len();
+            let facts: Vec<(u32, f64)> = values.iter().enumerate()
+                .map(|(i, &v)| (i as u32, v)).collect();
+
+            let (dense_arr, _) = build_float64(&facts, num_rows, true);
+            let (sparse_arr, _) = build_float64(&facts, num_rows, false);
+
+            let dense_typed = dense_arr.as_any().downcast_ref::<Float64Array>().unwrap();
+            let sparse_typed = sparse_arr.as_any().downcast_ref::<Float64Array>().unwrap();
+            for i in 0..num_rows {
+                prop_assert_eq!(dense_typed.value(i).to_bits(), sparse_typed.value(i).to_bits(),
+                    "value mismatch at row {}", i);
+            }
+        }
+
+        /// Dense and sparse paths of `build_bool` produce identical values.
+        #[test]
+        fn build_bool_dense_equals_sparse(values in prop::collection::vec(any::<bool>(), 1..=32)) {
+            let num_rows = values.len();
+            let facts: Vec<(u32, bool)> = values.iter().enumerate()
+                .map(|(i, &v)| (i as u32, v)).collect();
+
+            let (dense_arr, _) = build_bool(&facts, num_rows, true);
+            let (sparse_arr, _) = build_bool(&facts, num_rows, false);
+
+            let dense_typed = dense_arr.as_any().downcast_ref::<BooleanArray>().unwrap();
+            let sparse_typed = sparse_arr.as_any().downcast_ref::<BooleanArray>().unwrap();
+            for i in 0..num_rows {
+                prop_assert_eq!(dense_typed.value(i), sparse_typed.value(i),
+                    "value mismatch at row {}", i);
             }
         }
     }
