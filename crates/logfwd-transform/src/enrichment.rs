@@ -1173,8 +1173,8 @@ fn format_ipv6_hex(hex: &str) -> Option<String> {
 ///
 /// Detection sources:
 /// - `/.dockerenv` presence → runtime = "docker"
-/// - `/proc/self/cgroup` parsing for container ID
-/// - `/run/containerd/` presence → runtime = "containerd"
+/// - `/proc/self/cgroup` parsing for container ID and runtime
+/// - `/proc/self/mountinfo` parsing for cgroup v2 pure mode
 ///
 /// Possible `container_runtime` values: `docker`, `containerd`, `cri-o`,
 /// `kubernetes` (kubepods without specific runtime), `unknown`, or empty

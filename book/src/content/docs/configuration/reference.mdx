@@ -608,7 +608,7 @@ Agent self-metadata, resolved once at startup. Fixed table name: `process_info`.
 | `agent_name` | Always `logfwd`. |
 | `agent_version` | Semantic version of the running binary. |
 | `pid` | Process ID (as string). |
-| `start_time` | ISO 8601 UTC timestamp when the agent started. |
+| `start_time` | ISO 8601 UTC timestamp captured when the `process_info` enrichment table is constructed during pipeline startup. |
 
 ```sql
 SELECT l.*, p.agent_version, p.start_time
@@ -751,7 +751,7 @@ enrichment:
   - type: kv_file
     table_name: os_release
     path: /etc/os-release
-    refresh_interval: 3600   # optional: reload every N seconds
+    refresh_interval: 3600   # optional: reload every N seconds; must be >= 1 when set
 ```
 
 ```sql
@@ -771,7 +771,7 @@ enrichment:
   - type: csv
     table_name: assets
     path: /etc/logfwd/assets.csv
-    refresh_interval: 3600   # optional: reload every N seconds
+    refresh_interval: 3600   # optional: reload every N seconds; must be >= 1 when set
 ```
 
 ```sql
@@ -789,7 +789,7 @@ enrichment:
   - type: jsonl
     table_name: ip_owners
     path: /etc/logfwd/ip-owners.jsonl
-    refresh_interval: 1800   # optional: reload every N seconds
+    refresh_interval: 1800   # optional: reload every N seconds; must be >= 1 when set
 ```
 
 ```sql
@@ -808,7 +808,7 @@ enrichment:
   - type: geo_database
     format: mmdb
     path: /data/GeoLite2-City.mmdb
-    refresh_interval: 86400   # optional: reload daily
+    refresh_interval: 86400   # optional: reload daily; must be >= 1 when set
 
 # CSV IP-range format (DB-IP Lite compatible)
 enrichment:

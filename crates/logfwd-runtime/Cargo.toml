@@ -59,9 +59,9 @@ turmoil = { workspace = true, features = [
     "unstable-barriers",
 ], optional = true }
 # HTTP client for the live enrichment processor (sync, no async runtime needed).
-ureq = { version = "3", default-features = false, features = ["rustls"] }
+ureq = { workspace = true }
 # CSV parsing for the blocklist processor.
-csv = "1"
+csv = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }

@@ -624,27 +624,35 @@ pub struct EnvVarsEnrichmentConfig {
     pub prefix: String,
 }
 
+/// Agent self-metadata enrichment: `agent_name`, `agent_version`, `pid`, `start_time`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProcessInfoConfig {}
 
+/// Parse a KEY=value properties file into a one-row enrichment table.
+///
+/// Supports bare, double-quoted, and single-quoted values.  Lines starting
+/// with `#` are comments.  Column names are lower-cased key names.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KvFileEnrichmentConfig {
     pub table_name: String,
     pub path: String,
-    /// Reload the file from disk every N seconds.
+    /// Reload the file from disk every N seconds (must be >= 1).
     pub refresh_interval: Option<u64>,
 }
 
+/// Network interface metadata: `hostname`, `primary_ipv4`, `primary_ipv6`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkInfoConfig {}
 
+/// Container runtime detection: `container_id`, `container_runtime`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerInfoConfig {}
 
+/// Kubernetes cluster metadata from the downward API: `node_name`, `cluster_name`, etc.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct K8sClusterInfoConfig {}

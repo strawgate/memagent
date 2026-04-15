@@ -9,7 +9,7 @@
 The current pipeline already supports two enrichment shapes:
 
 - SQL-visible snapshot data via enrichment tables and UDFs
-- post-transform processors with synchronous contracts and room for internal background tasks
+- pre-transform processors with synchronous contracts and room for internal background tasks
 
 That makes the architecture decision clearer than it first appears:
 

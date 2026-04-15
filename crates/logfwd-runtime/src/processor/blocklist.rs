@@ -467,4 +467,27 @@ mod tests {
         let result = BlocklistProcessor::from_reader("ip", "bl", &csv[..]);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn matched_entry_with_empty_category_is_null() {
+        let mut proc = BlocklistProcessor::from_reader("ip", "bl", CSV).unwrap();
+        let batch = make_batch(&[Some("bad-bot")]);
+        let out = &proc.process(batch, &meta()).unwrap()[0];
+
+        let matches = out
+            .column_by_name("bl_match")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap();
+        assert!(matches.value(0));
+
+        let cats = out
+            .column_by_name("bl_category")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(cats.is_null(0), "empty category should be NULL");
+    }
 }

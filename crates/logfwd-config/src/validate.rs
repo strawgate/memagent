@@ -824,7 +824,7 @@ impl Config {
                             }
                         }
                         EnrichmentConfig::K8sPath(cfg) => {
-                            if cfg.table_name.is_empty() {
+                            if cfg.table_name.trim().is_empty() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' enrichment #{j}: table_name must not be empty"
                                 )));
@@ -836,7 +836,7 @@ impl Config {
                         EnrichmentConfig::ContainerInfo(_) => {}
                         EnrichmentConfig::K8sClusterInfo(_) => {}
                         EnrichmentConfig::EnvVars(cfg) => {
-                            if cfg.table_name.is_empty() {
+                            if cfg.table_name.trim().is_empty() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' enrichment #{j}: table_name must not be empty"
                                 )));
@@ -848,7 +848,7 @@ impl Config {
                             }
                         }
                         EnrichmentConfig::KvFile(cfg) => {
-                            if cfg.table_name.is_empty() {
+                            if cfg.table_name.trim().is_empty() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' enrichment #{j}: table_name must not be empty"
                                 )));
