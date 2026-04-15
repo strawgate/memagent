@@ -25,6 +25,8 @@ crossbeam-channel = "0.5"
 flate2 = "1"
 globset = { workspace = true }
 http-body-util = "0.1"
+itoa = "1"
+ryu = "1"
 libc = "0.2"
 libloading = "0.8"
 memchr = "2"
