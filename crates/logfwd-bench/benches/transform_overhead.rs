@@ -20,8 +20,8 @@ use datafusion::datasource::MemTable;
 use datafusion::prelude::*;
 
 use logfwd_arrow::scanner::Scanner;
-use logfwd_bench::generators;
 use logfwd_core::scan_config::ScanConfig;
+use logfwd_io::generator::cri::gen_production_mixed;
 use logfwd_transform::SqlTransform;
 
 // ---------------------------------------------------------------------------
@@ -393,7 +393,7 @@ fn make_typed_batch(n: usize) -> RecordBatch {
 
 /// Create a batch using the real scanner pipeline (production-realistic data).
 fn make_scanned_batch(n: usize) -> RecordBatch {
-    let data = generators::gen_production_mixed(n, 42);
+    let data = gen_production_mixed(n, 42);
     let mut scanner = Scanner::new(ScanConfig::default());
     scanner
         .scan_detached(bytes::Bytes::from(data))

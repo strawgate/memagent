@@ -1,13 +1,15 @@
 [package]
 name = "sensor-ebpf"
 version = "0.1.0"
-edition.workspace = true
-rust-version.workspace = true
+# Explicit (not workspace) because sensor-ebpf is excluded from the workspace:
+# aya uses Linux-only libc symbols that fail to compile on macOS/Windows.
+edition = "2021"
+rust-version = "1.89"
 publish = false
 
 [dependencies]
-aya = { workspace = true }
+aya = "0.13.1"
 sensor-ebpf-common = { path = "sensor-ebpf-common", version = "0.1.0", features = ["std"] }
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"

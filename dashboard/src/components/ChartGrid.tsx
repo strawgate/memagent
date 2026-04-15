@@ -2,15 +2,17 @@ import type { TelemetryStore } from "@otlpkit/views";
 import { Chart, type ChartConfig } from "./Chart";
 
 /** Interval for time-series bucketing (ms). */
-const INTERVAL_MS = 2000;
+const INTERVAL_MS = 1000;
 
 interface Props {
   store: TelemetryStore;
   charts: ChartConfig[];
   tick: number;
+  /** Optional per-metric annotation overrides (keyed by metricName). */
+  annotations?: Record<string, string>;
 }
 
-export function ChartGrid({ store, charts, tick: _tick }: Props) {
+export function ChartGrid({ store, charts, tick: _tick, annotations }: Props) {
   return (
     <div class="chart-grid">
       {charts.map((cfg) => {
@@ -41,6 +43,12 @@ export function ChartGrid({ store, charts, tick: _tick }: Props) {
               <span class="chart-val">
                 {displayVal}
                 <span class="unit">{cfg.unit}</span>
+                {(cfg.annotation || annotations?.[cfg.metricName]) && (
+                  <span class="chart-annotation">
+                    {" "}
+                    {annotations?.[cfg.metricName] ?? cfg.annotation}
+                  </span>
+                )}
               </span>
             </div>
             <Chart frame={frame} config={cfg} />

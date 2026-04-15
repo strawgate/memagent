@@ -8,10 +8,11 @@ use std::sync::Arc;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
 use logfwd_arrow::scanner::Scanner;
-use logfwd_bench::{NullSink, generators};
+use logfwd_bench::{NullSink, make_metadata};
 use logfwd_core::cri::{AggregateResult, CriReassembler, parse_cri_line};
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 use logfwd_io::compress::ChunkCompressor;
+use logfwd_io::generator::cri::{gen_cri_k8s, gen_production_mixed};
 use logfwd_output::{ElasticsearchRequestMode, ElasticsearchSinkFactory};
 use logfwd_transform::SqlTransform;
 use logfwd_types::diagnostics::ComponentStats;
@@ -24,7 +25,7 @@ fn bench_scanner(c: &mut Criterion) {
     let mut group = c.benchmark_group("scanner");
 
     for &n in &[1_000, 10_000, 100_000] {
-        let data = generators::gen_production_mixed(n, 42);
+        let data = gen_production_mixed(n, 42);
         let bytes = data.len() as u64;
 
         group.throughput(Throughput::Bytes(bytes));
@@ -84,7 +85,7 @@ fn bench_cri(c: &mut Criterion) {
     let mut group = c.benchmark_group("cri");
 
     for &n in &[1_000, 10_000] {
-        let data = generators::gen_cri_k8s(n, 42);
+        let data = gen_cri_k8s(n, 42);
         let bytes = data.len() as u64;
 
         // Benchmark just parsing (no reassembly allocation).
@@ -147,7 +148,7 @@ fn bench_transform(c: &mut Criterion) {
     group.sample_size(20);
 
     let n = 10_000;
-    let data = generators::gen_production_mixed(n, 42);
+    let data = gen_production_mixed(n, 42);
     let mut scanner = Scanner::new(ScanConfig::default());
     let batch = scanner
         .scan_detached(bytes::Bytes::from(data.clone()))
@@ -202,7 +203,7 @@ fn bench_compress(c: &mut Criterion) {
 
     // Compress JSON log data at different sizes.
     for &n in &[1_000, 10_000, 100_000] {
-        let data = generators::gen_production_mixed(n, 42);
+        let data = gen_production_mixed(n, 42);
         let bytes = data.len() as u64;
 
         group.throughput(Throughput::Bytes(bytes));
@@ -224,12 +225,12 @@ fn bench_output(c: &mut Criterion) {
     group.sample_size(20);
 
     let n = 10_000;
-    let data = generators::gen_production_mixed(n, 42);
+    let data = gen_production_mixed(n, 42);
     let mut scanner = Scanner::new(ScanConfig::default());
     let batch = scanner
         .scan_detached(bytes::Bytes::from(data.clone()))
         .expect("bench: scan should not fail");
-    let meta = generators::make_metadata();
+    let meta = make_metadata();
 
     // NullSink (measures overhead of scan + batch creation only)
     group.throughput(Throughput::Bytes(data.len() as u64));
@@ -265,8 +266,8 @@ fn bench_end_to_end(c: &mut Criterion) {
     group.sample_size(20);
 
     let n = 10_000;
-    let data = generators::gen_production_mixed(n, 42);
-    let meta = generators::make_metadata();
+    let data = gen_production_mixed(n, 42);
+    let meta = make_metadata();
 
     // Full pipeline: scan → SELECT * → capture sink
     group.throughput(Throughput::Bytes(data.len() as u64));
@@ -345,12 +346,12 @@ fn bench_elasticsearch_serialize(c: &mut Criterion) {
     .expect("factory creation failed");
 
     for &n in &[1_000usize, 10_000, 100_000] {
-        let data = generators::gen_production_mixed(n, 42);
+        let data = gen_production_mixed(n, 42);
         let mut scanner = Scanner::new(ScanConfig::default());
         let batch = scanner
             .scan_detached(bytes::Bytes::from(data.clone()))
             .expect("bench: scan should not fail");
-        let meta = generators::make_metadata();
+        let meta = make_metadata();
 
         group.throughput(Throughput::Bytes(data.len() as u64));
         group.bench_with_input(

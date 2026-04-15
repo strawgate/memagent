@@ -251,6 +251,7 @@ const RATE_DEFS: &[(&str, &str, f64)] = &[
     ("logfwd.input_lines", "logfwd.input_lines_per_sec", 1.0),
     ("logfwd.input_bytes", "logfwd.input_bytes_per_sec", 1.0),
     ("logfwd.output_bytes", "logfwd.output_bytes_per_sec", 1.0),
+    ("logfwd.output_lines", "logfwd.output_lines_per_sec", 1.0),
     ("logfwd.output_errors", "logfwd.output_errors_per_sec", 1.0),
     ("logfwd.batches", "logfwd.batches_per_min", 60.0),
     (
