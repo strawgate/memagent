@@ -333,6 +333,9 @@ pub(super) fn build_input_state(
                 if let Some(max_request_body_size) = http.max_request_body_size {
                     options.max_request_body_size = max_request_body_size;
                 }
+                if let Some(max_drained_bytes_per_poll) = http.max_drained_bytes_per_poll {
+                    options.max_drained_bytes_per_poll = max_drained_bytes_per_poll;
+                }
                 if let Some(response_code) = http.response_code {
                     options.response_code = response_code;
                 }
