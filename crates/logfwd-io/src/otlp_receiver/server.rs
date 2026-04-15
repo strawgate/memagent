@@ -39,7 +39,9 @@ pub(super) async fn handle_otlp_request(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    let max_request_body_size = state.max_recv_message_size_bytes.unwrap_or(MAX_REQUEST_BODY_SIZE);
+    let max_request_body_size = state
+        .max_recv_message_size_bytes
+        .unwrap_or(MAX_REQUEST_BODY_SIZE);
 
     let content_length = parse_content_length(&headers);
     if content_length.is_some_and(|body_len| body_len > max_request_body_size as u64) {

@@ -23,15 +23,31 @@ use super::convert::{
 #[cfg(any(feature = "otlp-research", test))]
 use super::projection::ProjectionError;
 
-pub(super) fn decompress_zstd(body: &[u8], max_request_body_size: usize) -> Result<Vec<u8>, InputError> {
+pub(super) fn decompress_zstd(
+    body: &[u8],
+    max_request_body_size: usize,
+) -> Result<Vec<u8>, InputError> {
     let decoder = zstd::Decoder::new(body)
         .map_err(|_| InputError::Receiver("zstd decompression failed".to_string()))?;
-    read_decompressed_body(decoder, body.len(), max_request_body_size, "zstd decompression failed")
+    read_decompressed_body(
+        decoder,
+        body.len(),
+        max_request_body_size,
+        "zstd decompression failed",
+    )
 }
 
-pub(super) fn decompress_gzip(body: &[u8], max_request_body_size: usize) -> Result<Vec<u8>, InputError> {
+pub(super) fn decompress_gzip(
+    body: &[u8],
+    max_request_body_size: usize,
+) -> Result<Vec<u8>, InputError> {
     let decoder = GzDecoder::new(body);
-    read_decompressed_body(decoder, body.len(), max_request_body_size, "gzip decompression failed")
+    read_decompressed_body(
+        decoder,
+        body.len(),
+        max_request_body_size,
+        "gzip decompression failed",
+    )
 }
 
 pub(super) fn read_decompressed_body(
