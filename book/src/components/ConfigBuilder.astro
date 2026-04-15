@@ -26,6 +26,7 @@
           <span class="cb-column-sub">Where do logs come from?</span>
         </div>
         <div id="cb-input-grid" class="cb-picker-grid"></div>
+        <div id="cb-input-config" class="cb-config-panel"></div>
       </div>
 
       <!-- Centre arrow -->
@@ -44,6 +45,7 @@
           <span class="cb-column-sub">Where should logs go?</span>
         </div>
         <div id="cb-output-grid" class="cb-picker-grid"></div>
+        <div id="cb-output-config" class="cb-config-panel"></div>
       </div>
     </div>
 
@@ -280,9 +282,9 @@
   /* ── Picker tile grid ─────────────────────────────────────────── */
   .cb-picker-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-    gap: 0.5rem;
-    padding: 0.75rem;
+    grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
+    gap: 0.35rem;
+    padding: 0.5rem;
   }
 
   .cb-tile {
@@ -290,15 +292,15 @@
     flex-direction: column;
     align-items: center;
     justify-content: flex-start;
-    gap: 0.45rem;
-    padding: 0.75rem 0.5rem;
+    gap: 0.3rem;
+    padding: 0.5rem 0.35rem;
     border-radius: var(--cb-radius-sm);
     border: 1px solid var(--cb-border);
     background: var(--cb-bg);
     color: var(--cb-text);
     cursor: pointer;
     font-family: inherit;
-    font-size: 0.72rem;
+    font-size: 0.68rem;
     font-weight: 500;
     line-height: 1.25;
     text-align: center;
@@ -307,21 +309,21 @@
   .cb-tile:hover {
     border-color: var(--cb-accent);
     background: var(--cb-accent-lo);
-    color: var(--cb-accent-hi);
+    color: var(--cb-accent);
     transform: translateY(-2px);
   }
   .cb-tile.cb-selected {
     border-color: var(--cb-accent);
-    background: var(--cb-accent-lo);
-    color: var(--cb-accent-hi);
+    background: var(--cb-accent-md);
+    color: var(--cb-accent);
     font-weight: 700;
     box-shadow: 0 0 0 2px var(--cb-accent);
     transform: translateY(-1px);
   }
 
   .cb-tile-icon {
-    width: 32px;
-    height: 32px;
+    width: 26px;
+    height: 26px;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -329,9 +331,57 @@
     flex-shrink: 0;
   }
   .cb-tile-icon svg {
-    width: 32px;
-    height: 32px;
+    width: 26px;
+    height: 26px;
   }
+
+  /* ── Config panel ─────────────────────────────────────────────── */
+  .cb-config-panel {
+    border-top: 1px solid var(--cb-border);
+    padding: 0.6rem 0.6rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .cb-config-panel:empty { display: none; }
+  .cb-config-title {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--cb-muted);
+    margin-bottom: 0.1rem;
+  }
+  .cb-config-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 0.4rem 0.5rem;
+  }
+  .cb-config-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--cb-text);
+    white-space: nowrap;
+  }
+  .cb-config-input {
+    font-size: 0.68rem;
+    font-family: var(--cb-mono);
+    padding: 0.2rem 0.4rem;
+    border: 1px solid var(--cb-border);
+    border-radius: 4px;
+    background: var(--cb-bg);
+    color: var(--cb-text);
+    width: 100%;
+    box-sizing: border-box;
+    min-width: 0;
+  }
+  .cb-config-input:focus {
+    outline: none;
+    border-color: var(--cb-accent);
+    box-shadow: 0 0 0 1px var(--cb-accent);
+  }
+  select.cb-config-input { cursor: pointer; }
 
   /* ── SQL transform (collapsible details) ──────────────────────── */
   .cb-transform-details {
@@ -537,22 +587,23 @@
     get_input_templates,
     get_output_templates,
     get_use_case_templates,
-    render_config,
     validate_config,
   } from '/src/wasm/logfwd-config/logfwd_config_wasm.js';
 
   // ── DOM refs ──────────────────────────────────────────────────
-  const STATUS          = document.getElementById('cb-status');
-  const MAIN            = document.getElementById('cb-main');
-  const inputGrid       = document.getElementById('cb-input-grid');
-  const outputGrid      = document.getElementById('cb-output-grid');
-  const sqlEditor       = document.getElementById('cb-sql');
-  const yamlCode        = document.getElementById('cb-yaml-code');
-  const validationBadge = document.getElementById('cb-validation-badge');
-  const validationMsg   = document.getElementById('cb-validation-msg');
-  const copyBtn         = document.getElementById('cb-copy-btn');
-  const downloadBtn     = document.getElementById('cb-download-btn');
-  const useCaseList     = document.getElementById('cb-use-cases');
+  const STATUS            = document.getElementById('cb-status');
+  const MAIN              = document.getElementById('cb-main');
+  const inputGrid         = document.getElementById('cb-input-grid');
+  const outputGrid        = document.getElementById('cb-output-grid');
+  const inputConfigPanel  = document.getElementById('cb-input-config');
+  const outputConfigPanel = document.getElementById('cb-output-config');
+  const sqlEditor         = document.getElementById('cb-sql');
+  const yamlCode          = document.getElementById('cb-yaml-code');
+  const validationBadge   = document.getElementById('cb-validation-badge');
+  const validationMsg     = document.getElementById('cb-validation-msg');
+  const copyBtn           = document.getElementById('cb-copy-btn');
+  const downloadBtn       = document.getElementById('cb-download-btn');
+  const useCaseList       = document.getElementById('cb-use-cases');
 
   // ── State ─────────────────────────────────────────────────────
   let selectedInput  = null;   // template id string
@@ -560,6 +611,11 @@
   let activePresetBtn = null;
   let inputs = [];
   let outputs = [];
+  let inputValues  = {};   // { fieldKey: value } for selected input template
+  let outputValues = {};   // { fieldKey: value } for selected output template
+
+  // Field definitions come from the WASM template objects (template.fields).
+  // No JS-side duplicates needed.
 
   // ── SVG icon library ──────────────────────────────────────────
   // Vendor logos use fill="currentColor" (SimpleIcons paths, viewBox 0 0 24 24).
@@ -589,6 +645,8 @@
     floppy: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><polyline points="17,21 17,13 7,13 7,21" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><polyline points="7,3 7,8 15,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
     // Circle with slash (null sink)
     null: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+    // Lightning bolt (synthetic generator)
+    generator: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M13 2L4.5 13.5H11L10 22L19.5 10H13L13 2Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
   };
 
   // Map template id → icon key
@@ -604,6 +662,7 @@
     if (id === 'stdout') return 'terminal';
     if (id === 'file') return 'floppy';
     if (id === 'null') return 'null';
+    if (id === 'generator') return 'generator';
     return 'http'; // fallback
   }
 
@@ -641,20 +700,100 @@
     });
   }
 
+  // ── Config panel ──────────────────────────────────────────────
+  // Renders editable fields for the selected template into the given panel div.
+  // `template` is the full template object returned by get_input/output_templates().
+  function buildConfigPanel(panel, template, values, onChange) {
+    panel.innerHTML = '';
+    const fields = template?.fields || [];
+    if (fields.length === 0) return;
+
+    const title = document.createElement('div');
+    title.className = 'cb-config-title';
+    title.textContent = 'Options';
+    panel.appendChild(title);
+
+    for (const field of fields) {
+      const row = document.createElement('div');
+      row.className = 'cb-config-row';
+
+      const label = document.createElement('label');
+      label.className = 'cb-config-label';
+      label.textContent = field.label;
+      row.appendChild(label);
+
+      if (field.options?.length) {
+        const select = document.createElement('select');
+        select.className = 'cb-config-input';
+        const current = values[field.key] ?? field.default;
+        for (const opt of field.options) {
+          const o = document.createElement('option');
+          o.value = opt;
+          o.textContent = opt;
+          if (opt === current) o.selected = true;
+          select.appendChild(o);
+        }
+        select.addEventListener('change', () => {
+          values[field.key] = select.value;
+          onChange();
+        });
+        row.appendChild(select);
+      } else {
+        const input = document.createElement('input');
+        input.className = 'cb-config-input';
+        input.type = 'text';
+        input.placeholder = field.placeholder || field.default;
+        input.value = (values[field.key] !== undefined) ? values[field.key] : field.default;
+        input.addEventListener('input', () => {
+          values[field.key] = input.value;
+          onChange();
+        });
+        row.appendChild(input);
+      }
+
+      panel.appendChild(row);
+    }
+  }
+
+  // ── Apply field values to a YAML snippet ──────────────────────
+  // Matches "key: defaultValue" in the snippet to avoid collisions when the
+  // default value appears elsewhere (e.g. "json" in both path and format).
+  function applyValues(snippet, template, values) {
+    const fields = template?.fields || [];
+    let result = snippet;
+    for (const field of fields) {
+      const val = (values[field.key] !== undefined && values[field.key] !== '')
+        ? values[field.key]
+        : field.default;
+      const search  = field.key + ': ' + field.default;
+      const replace = field.key + ': ' + val;
+      result = result.split(search).join(replace);
+    }
+    return result;
+  }
+
   // ── YAML generation & validation ──────────────────────────────
   function regenerate() {
-    const inputId  = selectedInput;
-    const outputId = selectedOutput;
-    const sql      = sqlEditor.value.trim();
+    if (!selectedInput || !selectedOutput) return;
 
-    if (!inputId || !outputId) return;
+    const inp = inputs.find(t => t.id === selectedInput);
+    const out = outputs.find(t => t.id === selectedOutput);
+    if (!inp || !out) return;
 
-    let yaml;
-    try {
-      yaml = render_config(inputId, outputId, sql);
-    } catch (e) {
-      yaml = `# Error generating config: ${e}`;
+    const sql = sqlEditor.value.trim();
+    const inputSnippet  = applyValues(inp.snippet, inp, inputValues);
+    const outputSnippet = applyValues(out.snippet, out, outputValues);
+
+    let yaml = '# Generated by logfwd config builder\n';
+    yaml += '# Fill in paths, endpoints, and credentials for your environment.\n\n';
+    yaml += inputSnippet + '\n';
+    if (sql) {
+      yaml += 'transform: |\n';
+      for (const line of sql.split('\n')) yaml += '  ' + line + '\n';
+      yaml += '\n';
     }
+    yaml += outputSnippet;
+    yaml += '\n# Optional: diagnostics server\n# server:\n#   diagnostics: 127.0.0.1:9191\n';
 
     yamlCode.textContent = yaml;
 
@@ -682,10 +821,14 @@
   function applyPreset(uc, btn) {
     selectedInput  = uc.input_id;
     selectedOutput = uc.output_id;
+    inputValues  = {};
+    outputValues = {};
     sqlEditor.value = (uc.transform === 'SELECT * FROM logs') ? '' : uc.transform;
 
     refreshInputTiles();
     refreshOutputTiles();
+    buildConfigPanel(inputConfigPanel,  inputs.find(t => t.id === selectedInput),  inputValues,  () => regenerate());
+    buildConfigPanel(outputConfigPanel, outputs.find(t => t.id === selectedOutput), outputValues, () => regenerate());
 
     clearPreset();
     btn.classList.add('cb-active');
@@ -710,10 +853,16 @@
     selectedInput  = inputs[0]?.id;
     selectedOutput = outputs[0]?.id;
 
+    // Build initial config panels for defaults
+    buildConfigPanel(inputConfigPanel,  inputs.find(t => t.id === selectedInput),  inputValues,  () => regenerate());
+    buildConfigPanel(outputConfigPanel, outputs.find(t => t.id === selectedOutput), outputValues, () => regenerate());
+
     // Build input picker tiles (always visible)
     buildTiles(inputGrid, inputs, selectedInput, (t) => {
       selectedInput = t.id;
+      inputValues = {};
       refreshInputTiles();
+      buildConfigPanel(inputConfigPanel, t, inputValues, () => regenerate());
       clearPreset();
       regenerate();
     });
@@ -721,7 +870,9 @@
     // Build output picker tiles (always visible)
     buildTiles(outputGrid, outputs, selectedOutput, (t) => {
       selectedOutput = t.id;
+      outputValues = {};
       refreshOutputTiles();
+      buildConfigPanel(outputConfigPanel, t, outputValues, () => regenerate());
       clearPreset();
       regenerate();
     });

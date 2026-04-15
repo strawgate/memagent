@@ -1,3 +1,5 @@
+/* @ts-self-types="./logfwd_config_wasm.d.ts" */
+
 /**
  * Returns the snippet for a single input template by ID.
  * @param {string} id

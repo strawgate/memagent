@@ -11,6 +11,10 @@
     "Helvetica Neue", Arial, sans-serif;
   --sl-font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo,
     Consolas, "DejaVu Sans Mono", monospace;
+
+  /* Narrower sidebar */
+  --sl-sidebar-width: 14rem;
+  --sl-content-width: 52rem;
 }
 
 /* Slightly tighter sidebar for denser nav */
