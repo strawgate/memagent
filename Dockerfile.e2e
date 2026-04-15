@@ -27,8 +27,11 @@ RUN --mount=type=cache,target=/src/target \
     cp target/release/logfwd /logfwd
 
 FROM debian:12-slim
-RUN useradd --system --no-create-home --uid 65532 nonroot
+RUN useradd --system --no-create-home --uid 65532 nonroot \
+    && mkdir -p /home/nonroot \
+    && chown nonroot:nonroot /home/nonroot
 COPY --from=builder /logfwd /usr/local/bin/logfwd
 USER nonroot
+ENV HOME=/home/nonroot
 EXPOSE 9090
 ENTRYPOINT ["logfwd"]
