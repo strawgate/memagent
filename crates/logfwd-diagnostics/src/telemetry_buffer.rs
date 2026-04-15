@@ -849,19 +849,15 @@ pub fn collect_all_spans(
 pub fn sample_stderr_logs(
     stderr: &crate::stderr_capture::StderrCapture,
     buf: &RingBuffer<LogPoint>,
-    last_cursor: &mut u64,
+    last_count: &mut usize,
 ) {
-    let prev_cursor = *last_cursor;
-    let (new_lines, new_cursor) = stderr.get_logs_since(prev_cursor);
-    *last_cursor = new_cursor;
+    let lines = stderr.get_logs();
     let now = now_nanos();
 
-    // If more lines were pushed than we received, some were evicted from the
-    // capture buffer before we could read them.  Emit a warning so the
-    // dashboard makes the gap visible.
-    let total_new = new_cursor.saturating_sub(prev_cursor);
-    if total_new > new_lines.len() as u64 {
-        let dropped = total_new - new_lines.len() as u64;
+    // If the ring buffer evicted lines, our last_count may exceed the current
+    // length.  Reset so we re-push everything visible.
+    if lines.len() < *last_count {
+        let dropped = *last_count - lines.len();
         buf.push(LogPoint {
             severity: Severity::Warn,
             body: format!(
@@ -871,15 +867,19 @@ pub fn sample_stderr_logs(
             attributes: vec![("source", "stderr".to_string())],
             time_unix_nano: now,
         });
+        *last_count = 0;
     }
 
-    for line in new_lines {
-        buf.push(LogPoint {
-            severity: Severity::Info,
-            body: line,
-            attributes: vec![("source", "stderr".to_string())],
-            time_unix_nano: now,
-        });
+    if lines.len() > *last_count {
+        for line in &lines[*last_count..] {
+            buf.push(LogPoint {
+                severity: Severity::Info,
+                body: line.clone(),
+                attributes: vec![("source", "stderr".to_string())],
+                time_unix_nano: now,
+            });
+        }
+        *last_count = lines.len();
     }
 }
 

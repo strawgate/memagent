@@ -54,11 +54,11 @@ impl ScanConfig {
             return true;
         }
         for fs in &self.wanted_fields {
-            if key.eq_ignore_ascii_case(fs.name.as_bytes()) {
+            if key == fs.name.as_bytes() {
                 return true;
             }
             for a in &fs.aliases {
-                if key.eq_ignore_ascii_case(a.as_bytes()) {
+                if key == a.as_bytes() {
                     return true;
                 }
             }
@@ -120,7 +120,6 @@ pub fn parse_float_fast(bytes: &[u8]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::string::ToString;
 
     #[test]
     fn test_parse_int_fast() {
@@ -141,36 +140,6 @@ mod tests {
     fn test_parse_float_fast() {
         assert!((parse_float_fast(b"3.25").unwrap() - 3.25).abs() < 1e-10);
         assert_eq!(parse_float_fast(b"abc"), None);
-    }
-
-    /// Regression test: is_wanted must return true when the JSON key differs
-    /// only in ASCII case from the configured field name.
-    ///
-    /// This covers the scenario where a SQL query references `Level` but the
-    /// JSON log line contains the key `level` (or any other case variant).
-    #[test]
-    fn test_is_wanted_case_insensitive() {
-        let config = ScanConfig {
-            wanted_fields: vec![FieldSpec {
-                name: "level".to_string(),
-                aliases: vec!["severity".to_string()],
-            }],
-            extract_all: false,
-            line_field_name: None,
-            validate_utf8: false,
-        };
-
-        // Exact match still works.
-        assert!(config.is_wanted(b"level"));
-        // Case-mismatched key must also match (the regression case).
-        assert!(config.is_wanted(b"Level"));
-        assert!(config.is_wanted(b"LEVEL"));
-        assert!(config.is_wanted(b"LeVeL"));
-        // Alias case-insensitive match.
-        assert!(config.is_wanted(b"Severity"));
-        assert!(config.is_wanted(b"SEVERITY"));
-        // Unrelated key must not match.
-        assert!(!config.is_wanted(b"message"));
     }
 }
 

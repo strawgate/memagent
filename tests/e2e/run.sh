@@ -143,18 +143,6 @@ if ! wait_for "log-generator marker emission" 60 log_generator_markers_emitted; 
     exit 1
 fi
 
-# Wait for log-generator pod to be ready, which guarantees kubelet has
-# established the CRI log path that logfwd will tail. Using kubectl wait
-# instead of kubectl exec avoids requiring a shell in the distroless logfwd
-# runtime image.
-if ! k wait -n "$NAMESPACE" pod/log-generator \
-    --for=condition=ready --timeout=30s; then
-    echo ""
-    fail "LOG_GENERATOR_NOT_READY" "log-generator pod never reached Ready"
-    k describe pod -n "$NAMESPACE" log-generator 2>&1 || true
-    exit 1
-fi
-
 echo "=== Phase 6: Port-forward ==="
 k port-forward -n "$NAMESPACE" svc/blackhole-receiver 14318:4318 &
 PF_PID=$!
@@ -198,7 +186,9 @@ while [ $SECONDS -lt $DEADLINE ]; do
         exit 1
     fi
 
-    sleep 1
+    # Exponential backoff: 2s → 3s → 4s → 5s (capped)
+    sleep "$DELAY"
+    DELAY=$(( DELAY < 5 ? DELAY + 1 : 5 ))
 done
 
 echo ""

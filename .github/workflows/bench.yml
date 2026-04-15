@@ -397,7 +397,7 @@ jobs:
       # Commit bench data to the bench-data branch so the dashboard can fetch
       # it live via raw.githubusercontent.com — no Pages redeploy needed.
       - name: Commit results to bench-data branch
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/master'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_ID: ${{ github.run_id }}
@@ -518,7 +518,7 @@ jobs:
           BODY="$(cat <<HEREDOC
           ## Benchmark Results --- ${DATE}
 
-          **Commit:** \`${COMMIT}\` on \`main\`
+          **Commit:** \`${COMMIT}\` on \`master\`
           **Runner:** \`ubuntu-latest\` (matrix: agent x scenario)
           **Iterations:** ${{ env.ITERATIONS }} per cell
           **Dashboard:** https://strawgate.github.io/memagent/bench/
