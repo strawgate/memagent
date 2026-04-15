@@ -39,8 +39,12 @@ pub(super) async fn handle_otlp_request(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
+    let max_request_body_size = state
+        .max_recv_message_size_bytes
+        .unwrap_or(MAX_REQUEST_BODY_SIZE);
+
     let content_length = parse_content_length(&headers);
-    if content_length.is_some_and(|body_len| body_len > MAX_REQUEST_BODY_SIZE as u64) {
+    if content_length.is_some_and(|body_len| body_len > max_request_body_size as u64) {
         record_error(state.stats.as_ref());
         return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
     }
@@ -53,7 +57,7 @@ pub(super) async fn handle_otlp_request(
         }
     };
 
-    let mut body = match read_limited_body(body, MAX_REQUEST_BODY_SIZE, content_length).await {
+    let mut body = match read_limited_body(body, max_request_body_size, content_length).await {
         Ok(body) => body,
         Err(status) => {
             record_error(state.stats.as_ref());
@@ -68,7 +72,7 @@ pub(super) async fn handle_otlp_request(
 
     let accounted_bytes = body.len() as u64;
     body = match content_encoding.as_deref() {
-        Some("zstd") => match decompress_zstd(&body) {
+        Some("zstd") => match decompress_zstd(&body, max_request_body_size) {
             Ok(body) => body,
             Err(InputError::Receiver(msg)) => {
                 record_error(state.stats.as_ref());
@@ -83,7 +87,7 @@ pub(super) async fn handle_otlp_request(
                 return (StatusCode::BAD_REQUEST, "zstd decompression failed").into_response();
             }
         },
-        Some("gzip") => match decompress_gzip(&body) {
+        Some("gzip") => match decompress_gzip(&body, max_request_body_size) {
             Ok(body) => body,
             Err(InputError::Receiver(msg)) => {
                 record_error(state.stats.as_ref());
