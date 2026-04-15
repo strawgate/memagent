@@ -153,52 +153,78 @@ fn envoy_access_deterministic() {
 }
 
 #[test]
-fn envoy_access_valid_json_and_realistic_skew() {
+fn envoy_access_valid_json() {
     let profile = EnvoyAccessProfile::benchmark();
     let data = gen_envoy_access_with_profile(300, 7, profile);
     let text = std::str::from_utf8(&data).expect("valid UTF-8");
+    for line in text.lines() {
+        let _: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("invalid JSON: {e}: {line}"));
+    }
+}
 
+#[test]
+fn envoy_access_locality_burstiness() {
+    let profile = EnvoyAccessProfile::benchmark();
+    let data = gen_envoy_access_with_profile(300, 7, profile);
+    let text = std::str::from_utf8(&data).expect("valid UTF-8");
     let mut prev_service: Option<String> = None;
     let mut same_service_runs = 0usize;
-    let mut success_2xx = 0usize;
-    let mut errors_5xx = 0usize;
-    let mut routes = HashSet::new();
-    let mut services = HashSet::new();
-
     for line in text.lines() {
-        let v: serde_json::Value =
-            serde_json::from_str(line).unwrap_or_else(|e| panic!("invalid JSON: {e}: {line}"));
-
-        let service = v["service"].as_str().expect("service string");
-        let route_name = v["route_name"].as_str().expect("route_name string");
-        let response_code = v["response_code"].as_u64().expect("response_code integer");
-
-        if let Some(prev) = &prev_service {
-            if prev == service {
-                same_service_runs += 1;
-            }
+        let v: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
+        let service = v["service"].as_str().expect("service string").to_string();
+        if prev_service.as_deref() == Some(&service) {
+            same_service_runs += 1;
         }
-        prev_service = Some(service.to_string());
-        services.insert(service.to_string());
-        routes.insert(route_name.to_string());
-
-        if (200..300).contains(&response_code) {
-            success_2xx += 1;
-        }
-        if response_code >= 500 {
-            errors_5xx += 1;
-        }
+        prev_service = Some(service);
     }
-
     assert!(
         same_service_runs > 120,
         "expected bursty locality, got only {same_service_runs} same-service adjacencies"
     );
+}
+
+#[test]
+fn envoy_access_status_code_skew() {
+    let profile = EnvoyAccessProfile::benchmark();
+    let data = gen_envoy_access_with_profile(300, 7, profile);
+    let text = std::str::from_utf8(&data).expect("valid UTF-8");
+    let mut success_2xx = 0usize;
+    let mut errors_5xx = 0usize;
+    for line in text.lines() {
+        let v: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
+        let code = v["response_code"].as_u64().expect("response_code integer");
+        if (200..300).contains(&code) {
+            success_2xx += 1;
+        }
+        if code >= 500 {
+            errors_5xx += 1;
+        }
+    }
     assert!(
         success_2xx > 180,
         "expected strong 2xx skew, got {success_2xx} successes"
     );
     assert!(errors_5xx > 0, "expected some 5xx traffic");
+}
+
+#[test]
+fn envoy_access_route_and_service_cardinality() {
+    let profile = EnvoyAccessProfile::benchmark();
+    let data = gen_envoy_access_with_profile(300, 7, profile);
+    let text = std::str::from_utf8(&data).expect("valid UTF-8");
+    let mut routes = HashSet::new();
+    let mut services = HashSet::new();
+    for line in text.lines() {
+        let v: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
+        routes.insert(
+            v["route_name"]
+                .as_str()
+                .expect("route_name string")
+                .to_string(),
+        );
+        services.insert(v["service"].as_str().expect("service string").to_string());
+    }
     assert!(
         routes.len() > 8,
         "expected route cardinality beyond a trivial set, got {}",
