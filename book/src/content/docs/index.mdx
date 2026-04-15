@@ -15,37 +15,39 @@ hero:
       variant: minimal
 ---
 
+export const base = import.meta.env.BASE_URL.replace(/\/$/, '');
+
 <div class="home-grid">
 
   <div class="home-col">
 
     <h2 class="home-col-title">Use It</h2>
 
-    <a class="home-link-card" href="/quick-start/">
+    <a class="home-link-card" href={`${base}/quick-start/`}>
       <span class="home-link-label">Quick Start</span>
       <span class="home-link-desc">Install, run your first pipeline, and ship logs in 15 minutes</span>
     </a>
-    <a class="home-link-card" href="/configuration/sql-transforms/">
+    <a class="home-link-card" href={`${base}/configuration/sql-transforms/`}>
       <span class="home-link-label">SQL Transforms</span>
       <span class="home-link-desc">SELECT, WHERE, GROUP BY, JOINs, UDFs — full SQL on every batch</span>
     </a>
-    <a class="home-link-card" href="/configuration/inputs/">
+    <a class="home-link-card" href={`${base}/configuration/inputs/`}>
       <span class="home-link-label">Input Types</span>
       <span class="home-link-desc">File, TCP, UDP, OTLP, HTTP, Arrow IPC, sensor, generator</span>
     </a>
-    <a class="home-link-card" href="/configuration/outputs/">
+    <a class="home-link-card" href={`${base}/configuration/outputs/`}>
       <span class="home-link-label">Output Types</span>
       <span class="home-link-desc">OTLP, Elasticsearch, Loki, stdout, file, TCP, UDP, Arrow IPC</span>
     </a>
-    <a class="home-link-card" href="/configuration/reference/">
+    <a class="home-link-card" href={`${base}/configuration/reference/`}>
       <span class="home-link-label">YAML Reference</span>
       <span class="home-link-desc">Every config field, input/output option, and server setting</span>
     </a>
-    <a class="home-link-card" href="/deployment/kubernetes/">
+    <a class="home-link-card" href={`${base}/deployment/kubernetes/`}>
       <span class="home-link-label">Deploy to Kubernetes</span>
       <span class="home-link-desc">DaemonSet config, resource sizing, and collector integration</span>
     </a>
-    <a class="home-link-card" href="/troubleshooting/">
+    <a class="home-link-card" href={`${base}/troubleshooting/`}>
       <span class="home-link-label">Troubleshooting</span>
       <span class="home-link-desc">Diagnose pipeline stalls, checkpoint issues, and output errors</span>
     </a>
@@ -56,9 +58,9 @@ hero:
 
     <h2 class="home-col-title">Understand It</h2>
 
-    <a class="home-preview-card" href="/learn/tailing/">
+    <a class="home-preview-card" href={`${base}/learn/tailing/`}>
       <div class="home-preview-img-wrap">
-        <img src="/img/learn/tailing-preview.png" alt="Tailing simulator" loading="lazy" />
+        <img src={`${base}/img/learn/tailing-preview.png`} alt="Tailing simulator" loading="lazy" />
       </div>
       <div class="home-preview-text">
         <span class="home-link-label">Tailing</span>
@@ -66,9 +68,9 @@ hero:
       </div>
     </a>
 
-    <a class="home-preview-card" href="/learn/scanner/">
+    <a class="home-preview-card" href={`${base}/learn/scanner/`}>
       <div class="home-preview-img-wrap">
-        <img src="/img/learn/scanner-preview.png" alt="Field pushdown explorer" loading="lazy" />
+        <img src={`${base}/img/learn/scanner-preview.png`} alt="Field pushdown explorer" loading="lazy" />
       </div>
       <div class="home-preview-text">
         <span class="home-link-label">Scanner & Field Pushdown</span>
@@ -76,9 +78,9 @@ hero:
       </div>
     </a>
 
-    <a class="home-preview-card" href="/learn/backpressure/">
+    <a class="home-preview-card" href={`${base}/learn/backpressure/`}>
       <div class="home-preview-img-wrap">
-        <img src="/img/learn/backpressure-preview.png" alt="Backpressure simulator" loading="lazy" />
+        <img src={`${base}/img/learn/backpressure-preview.png`} alt="Backpressure simulator" loading="lazy" />
       </div>
       <div class="home-preview-text">
         <span class="home-link-label">Backpressure in Action</span>
@@ -86,9 +88,9 @@ hero:
       </div>
     </a>
 
-    <a class="home-preview-card" href="/learn/columnar/">
+    <a class="home-preview-card" href={`${base}/learn/columnar/`}>
       <div class="home-preview-img-wrap">
-        <img src="/img/learn/columnar-preview.png" alt="Columnar storage diagram" loading="lazy" />
+        <img src={`${base}/img/learn/columnar-preview.png`} alt="Columnar storage diagram" loading="lazy" />
       </div>
       <div class="home-preview-text">
         <span class="home-link-label">Columnar Storage</span>
@@ -96,9 +98,9 @@ hero:
       </div>
     </a>
 
-    <a class="home-preview-card" href="/learn/checkpoints/">
+    <a class="home-preview-card" href={`${base}/learn/checkpoints/`}>
       <div class="home-preview-img-wrap">
-        <img src="/img/learn/checkpoints-preview.png" alt="Checkpoint ordering simulator" loading="lazy" />
+        <img src={`${base}/img/learn/checkpoints-preview.png`} alt="Checkpoint ordering simulator" loading="lazy" />
       </div>
       <div class="home-preview-text">
         <span class="home-link-label">Checkpoint Ordering</span>

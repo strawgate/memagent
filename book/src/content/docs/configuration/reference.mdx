@@ -126,6 +126,7 @@ Emit synthetic records for benchmarks, demos, and pipeline tests.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `generator` | object | No | Generator settings. If omitted, runtime defaults are used, including `batch_size: 1000` and `events_per_sec: 0`. See [Input Types](/configuration/inputs/#generator) for the detailed nested fields. |
+| `generator.profile` | string | No | Generator profile: `logs` (default), `record`, `envoy`, `cri_k8s`, `wide`, `narrow`, `cloud_trail`. See [Generator profiles](/configuration/inputs/#generator-profiles). |
 
 ```yaml
 input:
@@ -286,12 +287,22 @@ the build target.
 | `sensor.enabled_families` | array[string] | No | Optional enabled signal families. Omit to use defaults; set `[]` to disable all families. |
 | `sensor.emit_signal_rows` | boolean | No | Emit periodic per-family sample rows. Defaults to `true`. |
 | `sensor.max_rows_per_poll` | integer | No | Upper bound on data rows returned per collection cycle. Defaults to `256`. Set to `0` or omit for the default. |
+| `sensor.scrapers` | array[string] | No | List of scrapers to run. Supported values are: `cpu`, `memory`, `disk`, `network`, `filesystem`. |
+| `sensor.collection_interval_ms` | integer | No | Metrics collection cadence in milliseconds. Defaults to `10000`. |
+| `sensor.disk_include_devices` | array[string] | No | Optional list of disk devices to include in scraping. |
+| `sensor.disk_exclude_devices` | array[string] | No | Optional list of disk devices to exclude from scraping. |
+| `sensor.network_include_interfaces` | array[string] | No | Optional list of network interfaces to include in scraping. |
+| `sensor.network_exclude_interfaces` | array[string] | No | Optional list of network interfaces to exclude from scraping. |
+| `sensor.filesystem_include_mount_points` | array[string] | No | Optional list of filesystem mount points to include in scraping. |
+| `sensor.filesystem_exclude_mount_points` | array[string] | No | Optional list of filesystem mount points to exclude from scraping. |
 
 ```yaml
 input:
   type: host_metrics
   sensor:
     poll_interval_ms: 5000
+    collection_interval_ms: 5000
+    scrapers: ["cpu", "memory"]
 ```
 
 ### `arrow_ipc` input

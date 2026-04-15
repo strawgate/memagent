@@ -43,12 +43,26 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: "npm"
           cache-dependency-path: book/package-lock.json
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build config WASM
+        env:
+          RUSTC_WRAPPER: ""
+        run: |
+          wasm-pack build crates/logfwd-config-wasm \
+            --target web \
+            --out-dir ../../book/public/wasm/logfwd-config \
+            --release
 
       - name: Link check (book + docs + README)
         uses: lycheeverse/lychee-action@v2
