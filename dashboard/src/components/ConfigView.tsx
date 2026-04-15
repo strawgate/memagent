@@ -19,16 +19,16 @@ function highlightYaml(yaml: string): string {
 
 export function ConfigView() {
   const [config, setConfig] = useState<ConfigResponse | null>(null);
-  const [loaded, setLoaded] = useState(false);
+  const [fetchDone, setFetchDone] = useState(false);
 
   useEffect(() => {
-    if (!loaded) {
-      setLoaded(true);
+    if (!fetchDone) {
       api.config().then((data) => {
-        if (data) setConfig(data);
+        setConfig(data);
+        setFetchDone(true);
       });
     }
-  }, [loaded]);
+  }, [fetchDone]);
 
   return (
     <div class="section">
@@ -38,14 +38,18 @@ export function ConfigView() {
           Source: <b>{config.path}</b>
         </div>
       )}
-      {config ? (
+      {!fetchDone ? (
+        <div class="yaml" style="color:var(--t4)">
+          loading&hellip;
+        </div>
+      ) : config ? (
         <div
           class="yaml"
           dangerouslySetInnerHTML={{ __html: highlightYaml(config.raw_yaml || "(no config)") }}
         />
       ) : (
         <div class="yaml" style="color:var(--t4)">
-          loading&hellip;
+          Config unavailable
         </div>
       )}
     </div>
