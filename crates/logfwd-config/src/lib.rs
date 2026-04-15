@@ -679,7 +679,7 @@ pipelines:
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("loki output only supports 'gzip', 'snappy', or 'none' compression"),
+            msg.contains("loki output only supports 'gzip' or 'none' compression"),
             "unexpected: {msg}"
         );
     }

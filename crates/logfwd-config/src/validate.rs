@@ -651,10 +651,10 @@ impl Config {
                     }
                     if output.output_type == OutputType::Loki
                         && let Some(c) = output.compression.as_deref()
-                        && !matches!(c, "gzip" | "snappy" | "none")
+                        && !matches!(c, "gzip" | "none")
                     {
                         return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': loki output only supports 'gzip', 'snappy', or 'none' compression, not '{c}'"
+                            "pipeline '{name}' output '{label}': loki output only supports 'gzip' or 'none' compression, not '{c}'"
                         )));
                     }
                     if output.output_type == OutputType::Loki
@@ -1921,7 +1921,7 @@ mod validate_otlp_protocol_compression_tests {
 
     #[test]
     fn loki_valid_compression_accepted() {
-        for comp in ["none", "gzip", "snappy"] {
+        for comp in ["none", "gzip"] {
             let yaml = format!(
                 "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: loki\n        endpoint: http://localhost:3100\n        compression: {comp}\n"
             );
@@ -1936,7 +1936,7 @@ mod validate_otlp_protocol_compression_tests {
         let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: loki\n        endpoint: http://localhost:3100\n        compression: zstd\n";
         let err = Config::load_str(yaml).unwrap_err().to_string();
         assert!(
-            err.contains("loki output only supports 'gzip', 'snappy', or 'none' compression"),
+            err.contains("loki output only supports 'gzip' or 'none' compression"),
             "Expected Loki compression rejection message, got: {err}"
         );
     }
