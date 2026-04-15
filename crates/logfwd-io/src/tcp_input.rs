@@ -343,7 +343,15 @@ impl InputSource for TcpInput {
                 Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => {
                     // Peer reset before we accepted — harmless, keep going.
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    if let Some(raw) = e.raw_os_error()
+                        && (raw == libc::EMFILE || raw == libc::ENFILE)
+                    {
+                        under_pressure = true;
+                        break;
+                    }
+                    return Err(e);
+                }
             }
         }
 
@@ -353,6 +361,7 @@ impl InputSource for TcpInput {
         let mut alive = vec![true; self.clients.len()];
         // Per-client data buffers — only allocated when data arrives.
         let mut client_data: Vec<Option<Vec<u8>>> = vec![None; self.clients.len()];
+        let mut client_bytes_read: Vec<u64> = vec![0; self.clients.len()];
 
         // Running total of bytes stored in client_data during this poll.
         // When this reaches MAX_TOTAL_BUFFERED_BYTES we stop reading from
@@ -400,6 +409,7 @@ impl InputSource for TcpInput {
                         let pending_before = client.pending.len(); // before extend
 
                         client.pending.extend_from_slice(chunk);
+                        client_bytes_read[i] += n as u64;
                         extract_complete_records(client, out);
 
                         // Net new bytes held in memory for this client after this
@@ -456,7 +466,7 @@ impl InputSource for TcpInput {
             if let Some(bytes) = data
                 && !bytes.is_empty()
             {
-                let accounted_bytes = bytes.len() as u64;
+                let accounted_bytes = client_bytes_read[i];
                 events.push(InputEvent::Data {
                     bytes,
                     source_id: Some(self.clients[i].source_id),
@@ -492,7 +502,7 @@ impl InputSource for TcpInput {
                 if has_pending && !mid_discard && !incomplete_octet_tail {
                     let mut tail = std::mem::take(&mut client.pending);
                     tail.push(b'\n');
-                    let accounted_bytes = tail.len() as u64;
+                    let accounted_bytes = 0;
                     events.push(InputEvent::Data {
                         bytes: tail,
                         source_id: Some(client.source_id),
@@ -557,8 +567,10 @@ mod tests {
         let addr = input.listener.local_addr().unwrap();
 
         let mut client = StdTcpStream::connect(addr).unwrap();
-        client.write_all(b"{\"msg\":\"hello\"}\n").unwrap();
-        client.write_all(b"{\"msg\":\"world\"}\n").unwrap();
+        let msg1 = b"{\"msg\":\"hello\"}\n";
+        let msg2 = b"{\"msg\":\"world\"}\n";
+        client.write_all(msg1).unwrap();
+        client.write_all(msg2).unwrap();
         client.flush().unwrap();
 
         std::thread::sleep(Duration::from_millis(50));
@@ -569,13 +581,20 @@ mod tests {
         // Should have accepted the connection and read data.
         assert_eq!(events.len(), 1);
         if let InputEvent::Data {
-            bytes, source_id, ..
+            bytes,
+            source_id,
+            accounted_bytes,
         } = &events[0]
         {
             let text = String::from_utf8_lossy(bytes);
             assert!(text.contains("hello"), "got: {text}");
             assert!(text.contains("world"), "got: {text}");
             assert!(source_id.is_some(), "TCP data must have a source_id");
+            assert_eq!(
+                *accounted_bytes,
+                (msg1.len() + msg2.len()) as u64,
+                "accounted_bytes must equal the raw bytes sent over the socket"
+            );
         }
     }
 
