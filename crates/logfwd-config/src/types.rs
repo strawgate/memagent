@@ -622,7 +622,6 @@ pub struct S3TypeConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct OutputConfig {
     pub name: Option<String>,
     #[serde(rename = "type")]
@@ -639,6 +638,24 @@ pub struct OutputConfig {
     pub tenant_id: Option<String>,
     pub static_labels: Option<HashMap<String, String>>,
     pub label_columns: Option<Vec<String>>,
+    /// Host for socket-based IPC.
+    #[serde(default)]
+    pub host: Option<String>,
+    /// Port for socket-based IPC.
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// Write the legacy IPC format (default: false).
+    #[serde(default)]
+    pub write_legacy_ipc_format: Option<bool>,
+    /// Buffer size for the IPC writer in bytes.
+    #[serde(default)]
+    pub buffer_size_bytes: Option<usize>,
+    /// Number of records per IPC batch.
+    #[serde(default)]
+    pub batch_size: Option<usize>,
+    /// Whether to write the schema immediately upon connection.
+    #[serde(default)]
+    pub write_schema_on_connect: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
