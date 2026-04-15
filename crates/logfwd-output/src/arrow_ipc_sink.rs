@@ -18,10 +18,6 @@ use logfwd_types::diagnostics::ComponentStats;
 
 use super::sink::{SendResult, Sink, SinkFactory};
 use super::{BatchMetadata, Compression};
-use crate::http_classify::{DEFAULT_RETRY_AFTER_SECS, parse_retry_after};
-use flate2::Compression as GzLevel;
-use flate2::write::GzEncoder;
-use std::io::Write;
 
 /// Content-Type for uncompressed Arrow IPC stream.
 const CONTENT_TYPE_ARROW: &str = "application/vnd.apache.arrow.stream";
@@ -104,12 +100,7 @@ impl ArrowIpcSink {
     fn maybe_compress(&self) -> io::Result<Vec<u8>> {
         match self.config.compression {
             Compression::Zstd => zstd::bulk::compress(&self.ipc_buf, 1).map_err(io::Error::other),
-            Compression::Gzip => {
-                let mut encoder = GzEncoder::new(Vec::new(), GzLevel::fast());
-                encoder.write_all(&self.ipc_buf)?;
-                encoder.finish()
-            }
-            Compression::None => Ok(self.ipc_buf.clone()),
+            Compression::None | Compression::Gzip => Ok(self.ipc_buf.clone()),
         }
     }
 
@@ -130,8 +121,6 @@ impl ArrowIpcSink {
 
         if self.config.compression == Compression::Zstd {
             req = req.header("Content-Encoding", "zstd");
-        } else if self.config.compression == Compression::Gzip {
-            req = req.header("Content-Encoding", "gzip");
         }
 
         for (k, v) in &self.config.headers {
@@ -145,24 +134,19 @@ impl ArrowIpcSink {
             return Ok(SendResult::Ok);
         }
 
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let retry_after = parse_retry_after(response.headers().get("Retry-After"))
-                .unwrap_or(Duration::from_secs(DEFAULT_RETRY_AFTER_SECS));
-            let _ = response.text().await.unwrap_or_default();
-            return Ok(SendResult::RetryAfter(retry_after));
-        }
-
-        if status.is_server_error() {
-            let retry_after = parse_retry_after(response.headers().get("Retry-After"))
-                .unwrap_or(Duration::from_secs(DEFAULT_RETRY_AFTER_SECS));
-            // Consume the response body to free the connection.
-            let _body = response.text().await.unwrap_or_default();
-            return Ok(SendResult::RetryAfter(retry_after));
-        }
-
-        // 4xx client error — not retryable.
+        let retry_after = response.headers().get("Retry-After").cloned();
         let body = response.text().await.unwrap_or_default();
-        Ok(SendResult::Rejected(format!("HTTP {status}: {body}")))
+
+        if let Some(send_result) = crate::http_classify::classify_http_status(
+            status.as_u16(),
+            retry_after.as_ref(),
+            &body,
+        ) {
+            return Ok(send_result);
+        }
+
+        // classify_http_status handles all non-2xx; unreachable in practice.
+        Err(io::Error::other(format!("unhandled HTTP {status}: {body}")))
     }
 }
 
@@ -174,7 +158,7 @@ impl Sink for ArrowIpcSink {
     ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
             if let Err(e) = self.serialize_batch(batch) {
-                return SendResult::from_io_error(e);
+                return SendResult::IoError(e);
             }
             if self.ipc_buf.is_empty() {
                 return SendResult::Ok;
@@ -340,50 +324,6 @@ pub fn deserialize_ipc(bytes: &[u8]) -> io::Result<Vec<RecordBatch>> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn arrow_ipc_gzip_compression() {
-        use arrow::array::StringArray;
-        use arrow::record_batch::RecordBatch;
-        use std::sync::Arc;
-
-        let batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)])),
-            vec![
-                Arc::new(StringArray::from(vec![Some("hello"), Some("world")]))
-                    as arrow::array::ArrayRef,
-            ],
-        )
-        .unwrap();
-
-        let config_none = Arc::new(ArrowIpcSinkConfig {
-            endpoint: "http://localhost:9999".to_string(),
-            compression: Compression::None,
-            headers: Vec::new(),
-        });
-        let config_gzip = Arc::new(ArrowIpcSinkConfig {
-            endpoint: "http://localhost:9999".to_string(),
-            compression: Compression::Gzip,
-            headers: Vec::new(),
-        });
-
-        let client = reqwest::Client::new();
-        let stats = Arc::new(ComponentStats::new());
-
-        let mut sink_none =
-            ArrowIpcSink::new("t1".to_string(), config_none, client.clone(), stats.clone());
-        let mut sink_gzip = ArrowIpcSink::new("t2".to_string(), config_gzip, client, stats);
-
-        sink_none.serialize_batch(&batch).unwrap();
-        sink_gzip.serialize_batch(&batch).unwrap();
-
-        let uncompressed = sink_none.maybe_compress().unwrap();
-        let compressed = sink_gzip.maybe_compress().unwrap();
-
-        assert!(!compressed.is_empty());
-        assert_ne!(uncompressed.len(), compressed.len());
-        assert_ne!(uncompressed, compressed);
-    }
-
     use super::*;
     use arrow::array::{Float64Array, Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
@@ -450,36 +390,6 @@ mod tests {
                 decoded.column(col_idx).as_ref(),
                 batch.column(col_idx).as_ref(),
                 "column {col_idx} mismatch after zstd roundtrip"
-            );
-        }
-    }
-
-    #[test]
-    fn roundtrip_arrow_ipc_with_gzip() {
-        let batch = make_test_batch();
-        let ipc_bytes = serialize_ipc(&batch).expect("serialize should succeed");
-
-        // Compress with gzip
-        let mut encoder = GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        Write::write_all(&mut encoder, &ipc_bytes).unwrap();
-        let compressed = encoder.finish().unwrap();
-
-        // Decompress with gzip
-        use std::io::Read;
-        let mut decoder = flate2::read::GzDecoder::new(compressed.as_slice());
-        let mut decompressed = Vec::new();
-        decoder.read_to_end(&mut decompressed).unwrap();
-
-        let batches = deserialize_ipc(&decompressed).expect("deserialize should succeed");
-        assert_eq!(batches.len(), 1);
-
-        let decoded = &batches[0];
-        assert_eq!(decoded.num_rows(), batch.num_rows());
-        for col_idx in 0..batch.num_columns() {
-            assert_eq!(
-                decoded.column(col_idx).as_ref(),
-                batch.column(col_idx).as_ref(),
-                "column {col_idx} mismatch after gzip roundtrip"
             );
         }
     }

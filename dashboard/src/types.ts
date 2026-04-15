@@ -29,11 +29,6 @@ export interface BatchesData {
   rows_total?: number;
 }
 
-export interface BottleneckData {
-  stage: "output" | "input" | "transform" | "scan" | "none";
-  reason: string;
-}
-
 export interface PipelineData {
   name: string;
   inputs: ComponentData[];
@@ -48,10 +43,15 @@ export interface PipelineData {
     send?: number;
   };
   backpressure_stalls?: number;
-  bottleneck?: BottleneckData;
 }
 
-export type HealthState = "starting" | "healthy" | "degraded" | "stopping" | "stopped" | "failed";
+export type HealthState =
+  | "starting"
+  | "healthy"
+  | "degraded"
+  | "stopping"
+  | "stopped"
+  | "failed";
 
 export interface StatusSnapshot {
   status: string;
@@ -156,15 +156,6 @@ export interface TraceRecord {
   stage?: string;
   /** Unix ns when the current in-progress stage started. */
   stage_start_unix_ns?: string;
-  /** Lifecycle state derived from in_progress + stage. */
-  lifecycle_state:
-    | "scan_in_progress"
-    | "transform_in_progress"
-    | "queued_for_output"
-    | "output_in_progress"
-    | "completed";
-  /** Unix ns when the current lifecycle state started. */
-  lifecycle_state_start_unix_ns?: string;
 }
 
 export interface TracesResponse {

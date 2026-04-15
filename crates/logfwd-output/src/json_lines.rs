@@ -4,14 +4,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow::array::{Array, AsArray};
-use arrow::datatypes::DataType;
+use arrow::array::Array;
 use arrow::record_batch::RecordBatch;
 
 use logfwd_types::diagnostics::ComponentStats;
 
 use super::sink::{SendResult, Sink, SinkFactory};
-use super::{BatchMetadata, Compression, build_col_infos, write_row_json};
+use super::{BatchMetadata, Compression, build_col_infos, str_value, write_row_json};
 
 // ---------------------------------------------------------------------------
 // JsonLinesSink
@@ -102,13 +101,8 @@ impl JsonLinesSink {
             let col = batch.column(raw_idx);
             for row in 0..num_rows {
                 if !col.is_null(row) {
-                    let s = match col.data_type() {
-                        DataType::Utf8 => col.as_string::<i32>().value(row),
-                        DataType::LargeUtf8 => col.as_string::<i64>().value(row),
-                        DataType::Utf8View => col.as_string_view().value(row),
-                        _ => "",
-                    };
-                    self.batch_buf.extend_from_slice(s.as_bytes());
+                    self.batch_buf
+                        .extend_from_slice(str_value(col, row).as_bytes());
                     self.batch_buf.push(b'\n');
                 }
             }
@@ -134,10 +128,7 @@ impl JsonLinesSink {
             Compression::Gzip => {
                 use std::io::Write;
                 self.compress_buf.clear();
-                let mut encoder = flate2::write::GzEncoder::new(
-                    &mut self.compress_buf,
-                    flate2::Compression::default(),
-                );
+                let mut encoder = flate2::write::GzEncoder::new(&mut self.compress_buf, flate2::Compression::default());
                 encoder.write_all(&self.batch_buf)?;
                 encoder.finish()?;
                 Ok(&self.compress_buf)
@@ -176,9 +167,11 @@ impl JsonLinesSink {
         let retry_after = response.headers().get("Retry-After").cloned();
         let body = response.text().await.unwrap_or_default();
 
-        if let Some(send_result) =
-            crate::http_classify::classify_http_status(status.as_u16(), retry_after.as_ref(), &body)
-        {
+        if let Some(send_result) = crate::http_classify::classify_http_status(
+            status.as_u16(),
+            retry_after.as_ref(),
+            &body,
+        ) {
             return Ok(send_result);
         }
 

@@ -15,8 +15,8 @@
  *     machine is Stopped (no silent drops during normal operation).
  *   CheckpointNeverAheadOfFlushed: the committed checkpoint for a
  *     source never exceeds what has actually been flushed to output.
- *   RejectAdvancesCheckpoint: explicit permanent rejects advance the
- *     checkpoint to prevent infinite retry loops on restart.
+ *   RejectAdvancesCheckpoint: transform errors advance the checkpoint
+ *     to prevent infinite retry loops on restart.
  *   MonotonicCheckpoints: checkpoints never decrease.
  *
  * What this spec does NOT model:
@@ -67,14 +67,11 @@ VARIABLES
 
     (* Control *)
     phase,              \* "Running" | "Stopped"
-    done_producing,     \* BOOLEAN: all sources have produced their max
-
-    (* Coverage ghost: records whether RejectBatch was exercised. *)
-    reject_seen         \* BOOLEAN: at least one explicit reject occurred
+    done_producing      \* BOOLEAN: all sources have produced their max
 
 vars == <<produced, source_offset, buf_count, buf_offsets, in_flight_id,
           in_flight_offsets, committed, next_batch_id, flushed,
-          flushed_total, acked_total, phase, done_producing, reject_seen>>
+          flushed_total, acked_total, phase, done_producing>>
 
 (* -----------------------------------------------------------------------
  * Type invariant
@@ -95,7 +92,6 @@ TypeOK ==
     /\ acked_total \in Nat
     /\ phase \in {"Running", "Stopped"}
     /\ done_producing \in BOOLEAN
-    /\ reject_seen \in BOOLEAN
 
 (* -----------------------------------------------------------------------
  * Initial state
@@ -115,7 +111,6 @@ Init ==
     /\ acked_total = 0
     /\ phase = "Running"
     /\ done_producing = FALSE
-    /\ reject_seen = FALSE
 
 (* -----------------------------------------------------------------------
  * Actions
@@ -133,7 +128,7 @@ Produce(s) ==
     /\ buf_offsets' = [buf_offsets EXCEPT ![s] = source_offset[s] + 100]
     /\ UNCHANGED <<in_flight_id, in_flight_offsets, committed,
                    next_batch_id, flushed, flushed_total, acked_total,
-                   phase, done_producing, reject_seen>>
+                   phase, done_producing>>
 
 \* Flush the accumulator: create batch, begin_send, submit to output.
 \* Models: flush_batch in pipeline.rs.
@@ -153,7 +148,7 @@ FlushBatch ==
     /\ buf_count' = 0
     /\ buf_offsets' = [s \in Sources |-> 0]
     /\ UNCHANGED <<produced, source_offset, committed, acked_total,
-                   phase, done_producing, reject_seen>>
+                   phase, done_producing>>
 
 \* Timeout flush: flush even if below threshold (batch_timeout expired).
 TimeoutFlush ==
@@ -173,7 +168,7 @@ TimeoutFlush ==
     /\ buf_count' = 0
     /\ buf_offsets' = [s \in Sources |-> 0]
     /\ UNCHANGED <<produced, source_offset, committed, acked_total,
-                   phase, done_producing, reject_seen>>
+                   phase, done_producing>>
 
 \* Output acks the in-flight batch (success).
 \* Checkpoint advances for each source that contributed to the batch.
@@ -188,11 +183,11 @@ AckBatch ==
     /\ in_flight_offsets' = [s \in Sources |-> 0]
     /\ UNCHANGED <<produced, source_offset, buf_count, buf_offsets,
                    next_batch_id, flushed, flushed_total, phase,
-                   done_producing, reject_seen>>
+                   done_producing>>
 
-\* Transform or output rejects the batch (explicit permanent error).
+\* Transform or output rejects the batch (permanent error).
 \* Checkpoint STILL advances — design decision from DESIGN.md:
-\* "Explicit permanent rejects advance the checkpoint."
+\* "Rejected batches advance the checkpoint."
 RejectBatch ==
     /\ in_flight_id > 0
     /\ acked_total' = acked_total + 1
@@ -200,7 +195,6 @@ RejectBatch ==
         IF in_flight_offsets[s] > committed[s]
         THEN in_flight_offsets[s]
         ELSE committed[s]]
-    /\ reject_seen' = TRUE
     /\ in_flight_id' = 0
     /\ in_flight_offsets' = [s \in Sources |-> 0]
     /\ UNCHANGED <<produced, source_offset, buf_count, buf_offsets,
@@ -215,7 +209,7 @@ MarkDoneProducing ==
     /\ UNCHANGED <<produced, source_offset, buf_count, buf_offsets,
                    in_flight_id, in_flight_offsets, committed,
                    next_batch_id, flushed, flushed_total, acked_total,
-                   phase, reject_seen>>
+                   phase>>
 
 \* Stop the pipeline (all data processed).
 Stop ==
@@ -227,7 +221,7 @@ Stop ==
     /\ UNCHANGED <<produced, source_offset, buf_count, buf_offsets,
                    in_flight_id, in_flight_offsets, committed,
                    next_batch_id, flushed, flushed_total, acked_total,
-                   done_producing, reject_seen>>
+                   done_producing>>
 
 (* -----------------------------------------------------------------------
  * Next-state relation
@@ -269,28 +263,6 @@ CheckpointNeverAheadOfFlushed ==
     \A s \in Sources :
         committed[s] <= flushed[s]
 
-(* Every offset we track stays bounded by the source's own progress.
- * This catches any future bug that advances buffer/flush/checkpoint state
- * ahead of the source that produced it. *)
-SourceProgressBounds ==
-    \A s \in Sources :
-        /\ buf_offsets[s] <= source_offset[s]
-        /\ in_flight_offsets[s] <= source_offset[s]
-        /\ flushed[s] <= source_offset[s]
-        /\ committed[s] <= source_offset[s]
-
-RECURSIVE SumSources(_, _)
-SumSources(f, S) ==
-    IF S = {} THEN 0
-    ELSE LET s == CHOOSE s \in S : TRUE
-         IN f[s] + SumSources(f, S \ {s})
-
-SumAllSources(f) == SumSources(f, Sources)
-
-(* Total produced items are conserved across the buffer and flushed output. *)
-TotalProducedAccountedFor ==
-    SumAllSources(produced) = buf_count + flushed_total
-
 \* Checkpoints are monotonic.
 MonotonicCheckpoints ==
     [][\A s \in Sources : committed[s]' >= committed[s]]_vars
@@ -303,7 +275,7 @@ MonotonicCheckpoints ==
 SingleInFlight ==
     in_flight_id \in 0..next_batch_id
 
-\* Explicit permanent reject advances checkpoint (same as ack — design decision).
+\* Reject advances checkpoint (same as ack — design decision).
 \* This is modeled by RejectBatch having the same committed update as AckBatch.
 \* Verified structurally: RejectBatch and AckBatch have identical committed' assignments.
 
@@ -340,8 +312,5 @@ MultiSourceBatch == ~(\E s1, s2 \in Sources :
 \* done_producing is reachable — without this, EventualStop and
 \* StoppedIsStable are vacuously true (their antecedent never holds).
 DoneProducingReachable == ~done_producing
-
-\* Explicit reject branch is reachable.
-RejectOccurred == ~reject_seen
 
 ======================================================================

@@ -28,13 +28,10 @@ logfwd-transform    RecordBatch → RecordBatch via DataFusion SQL.
                     UDFs, enrichment tables, JOINs.
 
 logfwd-output       Consumes RecordBatch, sends externally.
-                    OTLP, Arrow IPC, JSON lines. Parquet/ClickHouse are planned.
+                    OTLP, Arrow IPC, Parquet, ClickHouse, JSON lines.
 
-logfwd-runtime      Async runtime shell. Pipeline orchestration,
-                    worker pool, processor chain, diagnostics wiring.
-
-logfwd              Binary shell. CLI, config loading, signal handling,
-                    startup/shutdown bootstrap, compatibility re-exports.
+logfwd              Async shell. CLI, config, pipeline orchestration,
+                    diagnostics, signal handling.
 ```
 
 ## Ecosystem interop
@@ -54,7 +51,7 @@ star-to-flat / flat-to-star conversion at the boundary.
 
 ## Performance target
 
-1M+ events/sec end-to-end. Key bottleneck is output transport throughput — the async pipeline overlaps IO
+1M+ events/sec end-to-end. Key bottleneck is HTTP output — the async pipeline overlaps IO
 with CPU. SIMD structural scanning runs at 3.0 GiB/s (9 structural characters, NEON,
 ~760KB NDJSON, 2026-03-30 benchmark).
 
@@ -78,7 +75,7 @@ unanimously recommended this over std + clippy.
 `default-features = false`.  
 **Benefit:** Impossible to accidentally add IO to the proven core.
 
-### ScanBuilder trait boundary (zero-allocation parsing)
+### FieldSink trait boundary (zero-allocation parsing)
 
 Generic trait (serde Visitor pattern), not `Vec<ParsedField>`. Data flows directly from
 parser into builder via monomorphization — no intermediate allocation. This is how serde
@@ -162,12 +159,6 @@ BTreeMap entry in `in_flight[source]` is not removed until `apply_ack` is called
 
 This models the Rust code exactly: `fail()` returns `BatchTicket<Queued, C>` but does not
 touch the BTreeMap.
-
-Current implication at the worker/checkpoint seam: a non-advancing failure
-cannot be resolved by calling `fail()` alone unless the runtime still holds the
-batch payload and can resubmit it. Until that richer retry path exists, held
-worker outcomes remain unresolved and are replayed after restart if shutdown
-force-stops with tickets still in flight.
 
 ### Suffix only on type conflict
 
@@ -271,7 +262,7 @@ from the checkpoint's buffer instead of re-reading from the source.
   `CheckpointStore::flush()` call
 - On crash: replay from the input source checkpoint, which is guaranteed to be ≤ the
   checkpoint buffer's starting point
-- File inputs: the file is the source-of-truth persistence; checkpoint step stores filtered output
+- File inputs: the file IS the raw persistence; checkpoint step stores the filtered output
 - Network inputs: checkpoint step IS the only persistence
 
 **Segment format:**

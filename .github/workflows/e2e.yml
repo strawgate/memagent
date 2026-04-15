@@ -44,18 +44,9 @@ jobs:
       - name: Create issue on failure
         if: failure() && github.event_name == 'schedule'
         run: |
-          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          body_file="$(mktemp)"
-          cat >"$body_file" <<EOF
-          The KIND e2e test failed on the nightly run.
-
-          Run: ${run_url}
-
-          Please investigate.
-          EOF
           gh issue create \
             --title "Nightly e2e test failed ($(date +%Y-%m-%d))" \
-            --body-file "$body_file" \
+            --body "The KIND e2e test failed on the nightly run.\n\nRun: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n\nPlease investigate." \
             --label "bug"
         env:
           GH_TOKEN: ${{ github.token }}

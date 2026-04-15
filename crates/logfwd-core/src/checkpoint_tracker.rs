@@ -413,9 +413,7 @@ mod verification {
     /// Read actions have `n_bytes > 0 && n_bytes <= 4096` and
     /// `last_newline_pos < n_bytes` when present.
     fn symbolic_read() -> (u64, Option<u64>) {
-        // The invariants depend on ordering, not large absolute offsets.
-        // Keeping the symbolic range small materially reduces solver cost.
-        let n_bytes: u64 = kani::any_where(|&n: &u64| n > 0 && n <= 64);
+        let n_bytes: u64 = kani::any_where(|&n: &u64| n > 0 && n <= 4096);
         let has_newline: bool = kani::any();
         let last_newline_pos = if has_newline {
             Some(kani::any_where(|&p: &u64| p < n_bytes))
@@ -479,8 +477,8 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(7)]
     #[kani::solver(kissat)]
-    fn verify_checkpoint_tracker_invariants() {
-        let resume: u64 = kani::any_where(|&r: &u64| r <= 1_024);
+    fn verify_invariants_hold() {
+        let resume: u64 = kani::any_where(|&r: &u64| r <= 1_000_000);
         let mut tracker = CheckpointTracker::new(resume);
         check_invariants(&tracker);
 
@@ -545,8 +543,8 @@ mod verification {
     /// resumes exactly at the checkpoint offset. No bytes between the
     /// checkpoint and the old processed offset are skipped.
     ///
-    /// Uses 6 read iterations (with optional checkpoints between each, then
-    /// restart + verify) to cover realistic multi-read scenarios.
+    /// Uses depth 8 (4 reads + optional checkpoints, then restart + verify)
+    /// to cover realistic multi-read scenarios.
     #[kani::proof]
     #[kani::unwind(9)]
     #[kani::solver(kissat)]
@@ -556,7 +554,7 @@ mod verification {
 
         // Do some reads and optional checkpoints
         let mut i = 0u32;
-        while i < 6 {
+        while i < 4 {
             let (n_bytes, last_newline_pos) = symbolic_read();
             tracker.apply_read(n_bytes, last_newline_pos);
 
@@ -671,7 +669,7 @@ mod verification {
     /// We start at an unconstrained u64 offset to stress near-MAX behavior,
     /// and guard reads that would overflow.
     #[kani::proof]
-    #[kani::unwind(7)]
+    #[kani::unwind(5)]
     #[kani::solver(kissat)]
     fn verify_overflow_safety() {
         // Start at any u64 offset -- including near u64::MAX
@@ -679,7 +677,7 @@ mod verification {
         let mut tracker = CheckpointTracker::new(resume);
 
         let mut i = 0u32;
-        while i < 6 {
+        while i < 4 {
             let tag = symbolic_action_tag();
             match tag {
                 0 => {

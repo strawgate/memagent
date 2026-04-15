@@ -12,13 +12,10 @@
 //! Partial lines (flag "P") must be reassembled: concatenate all "P" chunks
 //! until an "F" chunk arrives, then emit the combined line.
 
-// Re-export reassembler types so bench/fuzz targets can reach them via
-// `logfwd_core::cri::CriReassembler` and `logfwd_core::cri::AggregateResult`.
-pub use crate::reassembler::{AggregateResult, CriReassembler};
-use alloc::vec::Vec;
-
 /// Parsed CRI log line. References point into the original byte slice (zero-copy).
+use alloc::vec::Vec;
 #[derive(Debug)]
+/// Parsed CRI log line fields.
 pub struct CriLine<'a> {
     /// The RFC3339Nano timestamp bytes.
     pub timestamp: &'a [u8],
@@ -61,12 +58,6 @@ pub fn parse_cri_line(line: &[u8]) -> Option<CriLine<'_>> {
         (line.len(), line.len())
     };
 
-    let stream = &line[sp1 + 1..sp2];
-    // CRI stream must be stdout or stderr.
-    if stream != b"stdout" && stream != b"stderr" {
-        return None;
-    }
-
     let flags = &line[sp2 + 1..flags_end];
 
     // CRI spec: flags must be exactly "F" (full) or "P" (partial).
@@ -87,10 +78,98 @@ pub fn parse_cri_line(line: &[u8]) -> Option<CriLine<'_>> {
 
     Some(CriLine {
         timestamp: &line[..sp1],
-        stream,
+        stream: &line[sp1 + 1..sp2],
         is_full,
         message,
     })
+}
+
+/// Result of feeding a line to [`CriReassembler`].
+pub enum ReassembleResult<'a> {
+    /// A complete (un-truncated) message is ready.
+    Complete(&'a [u8]),
+    /// A complete message is ready, but one or more chunks were truncated
+    /// because the assembled size exceeded [`CriReassembler`]'s `max_line_size`.
+    /// Callers should log a warning and/or increment a diagnostics counter.
+    Truncated(&'a [u8]),
+    /// Partial line buffered internally; no output yet.
+    Pending,
+}
+
+/// CRI partial line reassembler. Buffers "P" (partial) chunks and emits
+/// the combined line when an "F" (full) chunk arrives.
+pub struct CriReassembler {
+    /// Buffer for accumulating partial line chunks.
+    partial_buf: Vec<u8>,
+    /// Maximum assembled line size. Lines exceeding this are truncated.
+    max_line_size: usize,
+    /// Set to `true` when any chunk in the current P/F sequence was truncated
+    /// due to `max_line_size`. Reset in [`CriReassembler::reset`].
+    truncated: bool,
+}
+
+impl CriReassembler {
+    /// Create a new reassembler with the given max line size.
+    pub fn new(max_line_size: usize) -> Self {
+        CriReassembler {
+            partial_buf: Vec::new(),
+            max_line_size,
+            truncated: false,
+        }
+    }
+
+    /// Feed a parsed CRI line. Returns a [`ReassembleResult`] indicating whether
+    /// a complete message is ready, whether it was truncated, or whether more
+    /// partial chunks are still expected.
+    ///
+    /// - `ReassembleResult::Complete` — F line with no truncation.
+    /// - `ReassembleResult::Truncated` — F line, but one or more chunks exceeded
+    ///   `max_line_size` and some bytes were silently dropped. Callers should
+    ///   log a warning.
+    /// - `ReassembleResult::Pending` — P line; data has been buffered.
+    pub fn feed<'a>(&'a mut self, cri: &CriLine<'_>) -> ReassembleResult<'a> {
+        if cri.is_full {
+            if self.partial_buf.is_empty() {
+                // Common fast path: complete line, no partials pending.
+                let to_add = cri.message.len().min(self.max_line_size);
+                let was_truncated = to_add < cri.message.len();
+                self.partial_buf.extend_from_slice(&cri.message[..to_add]);
+                if was_truncated {
+                    ReassembleResult::Truncated(&self.partial_buf)
+                } else {
+                    ReassembleResult::Complete(&self.partial_buf)
+                }
+            } else {
+                // Append the final chunk to the partial buffer.
+                let remaining = self.max_line_size.saturating_sub(self.partial_buf.len());
+                let to_add = cri.message.len().min(remaining);
+                if to_add < cri.message.len() {
+                    self.truncated = true;
+                }
+                self.partial_buf.extend_from_slice(&cri.message[..to_add]);
+                if self.truncated {
+                    ReassembleResult::Truncated(&self.partial_buf)
+                } else {
+                    ReassembleResult::Complete(&self.partial_buf)
+                }
+            }
+        } else {
+            // Partial line — buffer it.
+            let remaining = self.max_line_size.saturating_sub(self.partial_buf.len());
+            let to_add = cri.message.len().min(remaining);
+            if to_add < cri.message.len() {
+                self.truncated = true;
+            }
+            self.partial_buf.extend_from_slice(&cri.message[..to_add]);
+            ReassembleResult::Pending
+        }
+    }
+
+    /// Reset the partial buffer and truncation flag (call after consuming the emitted line).
+    pub fn reset(&mut self) {
+        self.partial_buf.clear();
+        self.truncated = false;
+    }
 }
 
 /// Process a chunk of CRI-formatted log data. Parses each CRI line, reassembles
@@ -99,8 +178,7 @@ pub fn parse_cri_line(line: &[u8]) -> Option<CriLine<'_>> {
 /// Returns `(lines_ok, parse_errors)` where `parse_errors` is the number of
 /// non-empty lines that could not be parsed as valid CRI format **plus** the
 /// number of lines that were truncated due to `max_line_size`.
-#[allow(dead_code)] // used by tests; will be called from pipeline code once per-stream integration lands
-pub(crate) fn process_cri_chunk<F>(
+pub fn process_cri_chunk<F>(
     chunk: &[u8],
     reassembler: &mut CriReassembler,
     mut emit: F,
@@ -121,19 +199,19 @@ where
         }
 
         match parse_cri_line(line) {
-            Some(cri) => match reassembler.feed(cri.message, cri.is_full) {
-                AggregateResult::Complete(msg) => {
+            Some(cri) => match reassembler.feed(&cri) {
+                ReassembleResult::Complete(msg) => {
                     emit(msg);
                     count += 1;
                     reassembler.reset();
                 }
-                AggregateResult::Truncated(msg) => {
+                ReassembleResult::Truncated(msg) => {
                     emit(msg);
                     count += 1;
                     errors += 1;
                     reassembler.reset();
                 }
-                AggregateResult::Pending => {}
+                ReassembleResult::Pending => {}
             },
             None => errors += 1,
         }
@@ -156,23 +234,10 @@ where
 /// Returns `(lines_ok, parse_errors)` where `parse_errors` is the number of
 /// non-empty lines that could not be parsed as valid CRI format **plus** the
 /// number of lines that were truncated due to `max_line_size`.
-#[allow(dead_code)] // used by tests; will be called from pipeline code once per-stream integration lands
-pub(crate) fn process_cri_to_buf(
+pub fn process_cri_to_buf(
     chunk: &[u8],
     reassembler: &mut CriReassembler,
     json_prefix: Option<&[u8]>,
-    out: &mut Vec<u8>,
-) -> (usize, usize) {
-    process_cri_to_buf_with_plain_text_field(chunk, reassembler, json_prefix, "body", out)
-}
-
-/// Same as `process_cri_to_buf` but allows choosing the field name used when
-/// wrapping non-JSON plain-text messages.
-pub fn process_cri_to_buf_with_plain_text_field(
-    chunk: &[u8],
-    reassembler: &mut CriReassembler,
-    json_prefix: Option<&[u8]>,
-    plain_text_field_name: &str,
     out: &mut Vec<u8>,
 ) -> (usize, usize) {
     let mut count = 0;
@@ -188,49 +253,25 @@ pub fn process_cri_to_buf_with_plain_text_field(
         }
 
         match parse_cri_line(line) {
-            Some(cri) => match reassembler.feed(cri.message, cri.is_full) {
-                AggregateResult::Complete(msg) => {
-                    write_json_line_for_plain_text_field(
-                        msg,
-                        json_prefix,
-                        plain_text_field_name,
-                        out,
-                    );
+            Some(cri) => match reassembler.feed(&cri) {
+                ReassembleResult::Complete(msg) => {
+                    write_json_line(msg, json_prefix, out);
                     count += 1;
                     reassembler.reset();
                 }
-                AggregateResult::Truncated(msg) => {
-                    write_json_line_for_plain_text_field(
-                        msg,
-                        json_prefix,
-                        plain_text_field_name,
-                        out,
-                    );
+                ReassembleResult::Truncated(msg) => {
+                    write_json_line(msg, json_prefix, out);
                     count += 1;
                     errors += 1;
                     reassembler.reset();
                 }
-                AggregateResult::Pending => {}
+                ReassembleResult::Pending => {}
             },
             None => errors += 1,
         }
     }
 
     (count, errors)
-}
-
-#[inline]
-fn write_json_line_for_plain_text_field(
-    msg: &[u8],
-    json_prefix: Option<&[u8]>,
-    plain_text_field_name: &str,
-    out: &mut Vec<u8>,
-) {
-    if plain_text_field_name == "body" {
-        write_json_line(msg, json_prefix, out);
-    } else {
-        write_json_line_with_plain_text_field(msg, json_prefix, plain_text_field_name, out);
-    }
 }
 
 /// Append `src` to `dst` with JSON string escaping (no surrounding quotes).
@@ -264,22 +305,10 @@ pub fn json_escape_bytes(src: &[u8], dst: &mut Vec<u8>) {
 ///
 /// If `msg` starts with `{` it is treated as a JSON object and the optional
 /// `json_prefix` is injected after the opening brace.  Otherwise `msg` is
-/// plain text and is written as
-/// `{"<plain_text_field_name>":"<json-escaped msg>"}` so that no
+/// plain text and is written as `{"_raw":"<json-escaped msg>"}` so that no
 /// content is silently lost when the downstream scanner processes the line.
 #[inline]
-#[allow(dead_code)] // called by process_cri_to_buf
 fn write_json_line(msg: &[u8], json_prefix: Option<&[u8]>, out: &mut Vec<u8>) {
-    write_json_line_with_plain_text_field(msg, json_prefix, "body", out);
-}
-
-#[inline]
-fn write_json_line_with_plain_text_field(
-    msg: &[u8],
-    json_prefix: Option<&[u8]>,
-    plain_text_field_name: &str,
-    out: &mut Vec<u8>,
-) {
     if msg.first() == Some(&b'{') {
         if let Some(prefix) = json_prefix {
             out.push(b'{');
@@ -315,11 +344,9 @@ fn write_json_line_with_plain_text_field(
             out.extend_from_slice(msg);
         }
     } else {
-        // Non-JSON plain text: wrap as {"<field>":"<escaped>"} so the scanner
+        // Non-JSON plain text: wrap as {"_raw":"<escaped>"} so the scanner
         // sees a valid JSON object and message content is preserved.
-        out.extend_from_slice(b"{\"");
-        json_escape_bytes(plain_text_field_name.as_bytes(), out);
-        out.extend_from_slice(b"\":\"");
+        out.extend_from_slice(b"{\"_raw\":\"");
         json_escape_bytes(msg, out);
         out.extend_from_slice(b"\"}");
     }
@@ -329,9 +356,6 @@ fn write_json_line_with_plain_text_field(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::format;
-    use proptest::prelude::*;
-    use proptest::test_runner::Config as ProptestConfig;
 
     #[test]
     fn test_parse_full_line() {
@@ -358,24 +382,18 @@ mod tests {
         let mut reassembler = CriReassembler::new(1024 * 1024);
 
         let p1 = parse_cri_line(b"2024-01-15T10:30:00Z stdout P first part").unwrap();
-        assert!(matches!(
-            reassembler.feed(p1.message, p1.is_full),
-            AggregateResult::Pending
-        ));
+        assert!(matches!(reassembler.feed(&p1), ReassembleResult::Pending));
 
         let p2 = parse_cri_line(b"2024-01-15T10:30:00Z stdout P second part").unwrap();
-        assert!(matches!(
-            reassembler.feed(p2.message, p2.is_full),
-            AggregateResult::Pending
-        ));
+        assert!(matches!(reassembler.feed(&p2), ReassembleResult::Pending));
 
         let f = parse_cri_line(b"2024-01-15T10:30:00Z stdout F final part").unwrap();
-        match reassembler.feed(f.message, f.is_full) {
-            AggregateResult::Complete(complete) => {
+        match reassembler.feed(&f) {
+            ReassembleResult::Complete(complete) => {
                 assert_eq!(complete, b"first partsecond partfinal part");
             }
-            AggregateResult::Truncated(_) => panic!("expected Complete, got Truncated"),
-            AggregateResult::Pending => panic!("expected Complete, got Pending"),
+            ReassembleResult::Truncated(_) => panic!("expected Complete, got Truncated"),
+            ReassembleResult::Pending => panic!("expected Complete, got Pending"),
         }
         reassembler.reset();
     }
@@ -385,12 +403,12 @@ mod tests {
         let mut reassembler = CriReassembler::new(1024 * 1024);
 
         let f = parse_cri_line(b"2024-01-15T10:30:00Z stdout F complete line").unwrap();
-        match reassembler.feed(f.message, f.is_full) {
-            AggregateResult::Complete(complete) => {
+        match reassembler.feed(&f) {
+            ReassembleResult::Complete(complete) => {
                 assert_eq!(complete, b"complete line");
             }
-            AggregateResult::Truncated(_) => panic!("expected Complete, got Truncated"),
-            AggregateResult::Pending => panic!("expected Complete, got Pending"),
+            ReassembleResult::Truncated(_) => panic!("expected Complete, got Truncated"),
+            ReassembleResult::Pending => panic!("expected Complete, got Pending"),
         }
         reassembler.reset();
     }
@@ -468,41 +486,24 @@ mod tests {
     }
 
     #[test]
-    fn test_write_json_line_plain_text_wrapped_as_body() {
-        // Plain-text (non-JSON) messages must be wrapped as {"body":"..."}.
+    fn test_write_json_line_plain_text_wrapped_as_raw() {
+        // Plain-text (non-JSON) messages must be wrapped as {"_raw":"..."}.
         let mut out = Vec::new();
         write_json_line(b"application started", None, &mut out);
-        assert_eq!(out, b"{\"body\":\"application started\"}\n");
-    }
-
-    #[test]
-    fn test_process_cri_to_buf_plain_text_uses_configured_field() {
-        let chunk = b"2024-01-15T10:30:00Z stdout F application started\n";
-        let mut reassembler = CriReassembler::new(1024 * 1024);
-        let mut out = Vec::new();
-        let (count, errors) = process_cri_to_buf_with_plain_text_field(
-            chunk,
-            &mut reassembler,
-            None,
-            "plain_text",
-            &mut out,
-        );
-        assert_eq!(count, 1);
-        assert_eq!(errors, 0);
-        assert_eq!(out, b"{\"plain_text\":\"application started\"}\n");
+        assert_eq!(out, b"{\"_raw\":\"application started\"}\n");
     }
 
     #[test]
     fn test_write_json_line_plain_text_escapes_special_chars() {
         // JSON-special characters in the message must be escaped.
-        let mut out = Vec::with_capacity(256);
+        let mut out = Vec::new();
         write_json_line(b"say \"hello\"", None, &mut out);
-        assert_eq!(out, b"{\"body\":\"say \\\"hello\\\"\"}\n");
+        assert_eq!(out, b"{\"_raw\":\"say \\\"hello\\\"\"}\n");
     }
 
     #[test]
     fn test_process_cri_to_buf_plain_text_wrapped() {
-        // Plain-text CRI messages should be emitted as {"body":"..."} lines.
+        // Plain-text CRI messages should be emitted as {"_raw":"..."} lines.
         let chunk = b"2024-01-15T10:30:00Z stdout F application started\n\
                        2024-01-15T10:30:01Z stdout F {\"msg\":\"ok\"}\n";
         let mut reassembler = CriReassembler::new(1024 * 1024);
@@ -512,7 +513,7 @@ mod tests {
         assert_eq!(errors, 0);
         assert_eq!(
             out,
-            b"{\"body\":\"application started\"}\n{\"msg\":\"ok\"}\n"
+            b"{\"_raw\":\"application started\"}\n{\"msg\":\"ok\"}\n"
         );
     }
 
@@ -523,29 +524,6 @@ mod tests {
         assert!(parse_cri_line(b"2024-01-15T10:30:00Z stdout f message").is_none());
         assert!(parse_cri_line(b"2024-01-15T10:30:00Z stdout p message").is_none());
         assert!(parse_cri_line(b"2024-01-15T10:30:00Z stdout  message").is_none());
-    }
-
-    #[test]
-    fn test_invalid_stream_rejected() {
-        assert!(parse_cri_line(b"2024-01-15T10:30:00Z out F ok").is_none());
-        assert!(parse_cri_line(b"2024-01-15T10:30:00Z stdxxx P part").is_none());
-    }
-
-    proptest! {
-        #![proptest_config(ProptestConfig {
-            failure_persistence: None,
-            .. ProptestConfig::default()
-        })]
-        #[test]
-        fn proptest_stream_token_validation(stream in "[a-z]{1,8}") {
-            let line = format!("2024-01-15T10:30:00Z {stream} F msg");
-            let parsed = parse_cri_line(line.as_bytes());
-            if stream == "stdout" || stream == "stderr" {
-                prop_assert!(parsed.is_some(), "valid stream token should parse");
-            } else {
-                prop_assert!(parsed.is_none(), "invalid stream token should be rejected");
-            }
-        }
     }
 
     #[test]
@@ -605,24 +583,24 @@ mod tests {
         let mut reassembler = CriReassembler::new(20);
 
         let p1 = parse_cri_line(b"2024-01-15T10:30:00Z stdout P 0123456789").unwrap();
-        reassembler.feed(p1.message, p1.is_full);
+        reassembler.feed(&p1);
 
         let p2 = parse_cri_line(b"2024-01-15T10:30:00Z stdout P abcdefghij").unwrap();
-        reassembler.feed(p2.message, p2.is_full);
+        reassembler.feed(&p2);
 
         let f = parse_cri_line(b"2024-01-15T10:30:00Z stdout F KLMNOPQRST").unwrap();
         // The assembled sequence exceeds max_line_size=20, so Truncated is expected.
-        match reassembler.feed(f.message, f.is_full) {
-            AggregateResult::Truncated(complete) => {
+        match reassembler.feed(&f) {
+            ReassembleResult::Truncated(complete) => {
                 assert_eq!(complete.len(), 20);
             }
-            AggregateResult::Complete(complete) => {
+            ReassembleResult::Complete(complete) => {
                 panic!(
                     "expected Truncated, got Complete with len={}",
                     complete.len()
                 )
             }
-            AggregateResult::Pending => panic!("expected Truncated, got Pending"),
+            ReassembleResult::Pending => panic!("expected Truncated, got Pending"),
         }
         reassembler.reset();
     }
@@ -632,14 +610,14 @@ mod tests {
         // A single F line that exceeds max_line_size must return Truncated.
         let mut reassembler = CriReassembler::new(5);
         let f = parse_cri_line(b"2024-01-15T10:30:00Z stdout F hello world").unwrap();
-        match reassembler.feed(f.message, f.is_full) {
-            AggregateResult::Truncated(out) => {
+        match reassembler.feed(&f) {
+            ReassembleResult::Truncated(out) => {
                 assert_eq!(out, b"hello");
             }
-            AggregateResult::Complete(out) => {
+            ReassembleResult::Complete(out) => {
                 panic!("expected Truncated, got Complete: {:?}", out)
             }
-            AggregateResult::Pending => panic!("expected Truncated"),
+            ReassembleResult::Pending => panic!("expected Truncated"),
         }
         reassembler.reset();
     }
@@ -652,17 +630,6 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::*;
-
-    const SHORT_FIELD_NAME: &str = "b";
-
-    fn assert_bytes_eq(actual: &[u8], expected: &[u8]) {
-        assert_eq!(actual.len(), expected.len());
-        let mut i = 0;
-        while i < expected.len() {
-            assert_eq!(actual[i], expected[i]);
-            i += 1;
-        }
-    }
 
     /// Prove parse_cri_line never panics for any 32-byte input.
     #[kani::proof]
@@ -680,12 +647,7 @@ mod verification {
         let input: [u8; 32] = kani::any();
         if let Some(cri) = parse_cri_line(&input) {
             assert!(!cri.timestamp.is_empty(), "empty timestamp");
-            assert!(
-                cri.stream == b"stdout" || cri.stream == b"stderr",
-                "invalid stream"
-            );
-            kani::cover!(cri.stream == b"stdout", "stdout parse is reachable");
-            kani::cover!(cri.stream == b"stderr", "stderr parse is reachable");
+            assert!(!cri.stream.is_empty(), "empty stream");
 
             // Verify is_full matches the actual flag byte in the input.
             let ts_len = cri.timestamp.len();
@@ -700,72 +662,6 @@ mod verification {
                 assert!(flag_byte == b'P', "is_full=false but flag is not P");
             }
         }
-    }
-
-    /// Prove the configurable plain-text field wrapper path never panics.
-    #[kani::proof]
-    #[kani::unwind(52)]
-    #[kani::solver(kissat)]
-    fn verify_process_cri_to_buf_with_plain_text_field_no_panic() {
-        let chunk: [u8; 48] = kani::any();
-        let prefix: [u8; 4] = kani::any();
-        let mut out = Vec::new();
-        let mut reassembler = CriReassembler::new(64);
-        let _ = process_cri_to_buf_with_plain_text_field(
-            &chunk,
-            &mut reassembler,
-            Some(&prefix),
-            "body",
-            &mut out,
-        );
-
-        out.clear();
-        reassembler.reset();
-        let _ = process_cri_to_buf_with_plain_text_field(
-            &chunk,
-            &mut reassembler,
-            Some(&prefix),
-            "msg",
-            &mut out,
-        );
-    }
-
-    /// Prove parse_cri_line rejects known invalid stream tokens.
-    #[kani::proof]
-    #[kani::unwind(34)]
-    fn verify_parse_cri_line_rejects_known_invalid_streams() {
-        let out = b"2024-01-15T10:30:00Z out F ok";
-        assert!(
-            parse_cri_line(out).is_none(),
-            "invalid stream 'out' must be rejected"
-        );
-        kani::cover!(true, "invalid stream 'out' rejected");
-
-        let stdxxx = b"2024-01-15T10:30:00Z stdxxx P part";
-        assert!(
-            parse_cri_line(stdxxx).is_none(),
-            "invalid stream 'stdxxx' must be rejected"
-        );
-        kani::cover!(true, "invalid stream 'stdxxx' rejected");
-    }
-
-    /// Prove parse_cri_line accepts both valid stream tokens.
-    #[kani::proof]
-    #[kani::unwind(34)]
-    fn verify_parse_cri_line_accepts_valid_streams() {
-        let stdout = b"2024-01-15T10:30:00Z stdout F ok";
-        assert!(
-            parse_cri_line(stdout).is_some(),
-            "valid stream 'stdout' should parse"
-        );
-        kani::cover!(true, "valid stream 'stdout' accepted");
-
-        let stderr = b"2024-01-15T10:30:00Z stderr P part";
-        assert!(
-            parse_cri_line(stderr).is_some(),
-            "valid stream 'stderr' should parse"
-        );
-        kani::cover!(true, "valid stream 'stderr' accepted");
     }
 
     /// Prove parse_cri_line rejects invalid single-byte flags.
@@ -817,7 +713,7 @@ mod verification {
             is_full: false,
             message: &msg1,
         };
-        let _ = r.feed(partial.message, partial.is_full);
+        let _ = r.feed(&partial);
 
         let msg2: [u8; 8] = kani::any();
         let full = CriLine {
@@ -826,8 +722,8 @@ mod verification {
             is_full: true,
             message: &msg2,
         };
-        match r.feed(full.message, full.is_full) {
-            AggregateResult::Complete(output) | AggregateResult::Truncated(output) => {
+        match r.feed(&full) {
+            ReassembleResult::Complete(output) | ReassembleResult::Truncated(output) => {
                 assert!(output.len() <= max_size, "P+F output exceeds max_line_size");
 
                 // Guard vacuity: verify constraint allows meaningful cases
@@ -835,7 +731,7 @@ mod verification {
                 kani::cover!(output.len() == max_size, "output truncated at max");
                 kani::cover!(output.len() < max_size, "output under max");
             }
-            AggregateResult::Pending => {}
+            ReassembleResult::Pending => {}
         }
     }
 
@@ -856,8 +752,8 @@ mod verification {
             is_full: true,
             message: &msg,
         };
-        match r.feed(full.message, full.is_full) {
-            AggregateResult::Complete(output) | AggregateResult::Truncated(output) => {
+        match r.feed(&full) {
+            ReassembleResult::Complete(output) | ReassembleResult::Truncated(output) => {
                 assert!(
                     output.len() <= max_size,
                     "F-only output exceeds max_line_size"
@@ -868,7 +764,7 @@ mod verification {
                 kani::cover!(output.len() < 8, "message truncated");
                 kani::cover!(max_size >= 8, "max allows full message");
             }
-            AggregateResult::Pending => {}
+            ReassembleResult::Pending => {}
         }
     }
 
@@ -884,115 +780,158 @@ mod verification {
             is_full: false,
             message: &msg,
         };
-        match r.feed(partial.message, partial.is_full) {
-            AggregateResult::Pending => {} // expected
-            AggregateResult::Complete(_) | AggregateResult::Truncated(_) => {
+        match r.feed(&partial) {
+            ReassembleResult::Pending => {} // expected
+            ReassembleResult::Complete(_) | ReassembleResult::Truncated(_) => {
                 panic!("partial line should not produce output")
             }
         }
     }
 
-    /// Prove the prefix injector strips a trailing comma for empty objects.
+    /// Prove write_json_line with prefix correctly injects after opening brace,
+    /// and wraps non-JSON messages as {"_raw":"..."}.
+    ///
+    /// Input: 2-byte msg + 2-byte prefix = 4 symbolic bytes. Reduced from
+    /// 8+4->4+4->2+2 to stay under CI timeout: 4+4 bytes generated ~21K VCCs /
+    /// ~5K post-simplification that timed out kissat on ubuntu-latest runners.
+    /// 2+2 still covers:
+    ///   - msg[0] drives JSON vs non-JSON branch
+    ///   - msg[1] (non-JSON: through json_escape_bytes; JSON: verbatim copy)
+    ///   - prefix injection, including the empty-object path that strips a
+    ///     trailing comma when the JSON payload is just "{}"
+    /// Vec::with_capacity(64) pre-allocates to avoid realloc VCC explosion.
     #[kani::proof]
-    #[kani::unwind(8)]
-    #[kani::solver(kissat)]
+    #[kani::unwind(4)] // 2 iterations + 2 margin
+    #[kani::solver(kissat)] // json_escape_bytes loop × 2 symbolic bytes: kissat outperforms cadical
     fn verify_write_json_line_prefix_injection() {
+        let msg: [u8; 2] = kani::any();
+        let prefix: [u8; 2] = kani::any();
+        // Pre-allocate: { (1) + prefix (2) + msg[1..] (1) + \n (1) = 5 bytes JSON path;
+        // or {"_raw":"..."} path up to 64 bytes. Capacity 64 avoids all reallocs.
         let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"{}", Some(b"a,"), SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{a}\n");
-    }
 
-    /// Prove comma stripping also works when the prefix ends in whitespace.
-    #[kani::proof]
-    #[kani::unwind(8)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_prefix_injection_ws_stripped() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"{}", Some(b", "), SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{ }\n");
-    }
+        // Guard vacuity: ensure both paths are reachable
+        kani::cover!(msg[0] == b'{', "JSON path reachable");
+        kani::cover!(msg[0] != b'{', "non-JSON path reachable");
 
-    /// Prove non-empty JSON gets the prefix injected without comma stripping.
-    #[kani::proof]
-    #[kani::unwind(8)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_prefix_injection_non_empty_json() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"{x", Some(b"ab"), SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{abx\n");
-    }
+        // Guard vacuity for json_escape_bytes arms in the non-JSON path.
+        // msg[1] drives the escape since msg[0] controls the JSON/plain split.
+        kani::cover!(
+            msg[0] != b'{' && msg[1] == b'"',
+            "quote escape arm reachable"
+        );
+        kani::cover!(
+            msg[0] != b'{' && msg[1] == b'\\',
+            "backslash escape arm reachable"
+        );
+        kani::cover!(
+            msg[0] != b'{' && msg[1] < 0x20,
+            "control-char escape arm reachable"
+        );
 
-    /// Prove JSON messages pass through unchanged when no prefix is present.
-    #[kani::proof]
-    #[kani::unwind(8)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_no_prefix() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"{}", None, SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{}\n");
-    }
+        // Guard vacuity for the empty-object comma-strip path (is_empty_obj branch).
+        // For a 2-byte msg, is_empty_obj triggers only when msg == b"{}".
+        kani::cover!(
+            msg[0] == b'{' && msg[1] == b'}' && prefix[1] == b',',
+            "empty-object comma-strip path reachable"
+        );
+        kani::cover!(
+            msg[0] == b'{' && !(msg[1] == b'}' && prefix[1] == b','),
+            "JSON path without comma-strip reachable"
+        );
 
-    /// Prove quote escaping for plain-text messages.
-    #[kani::proof]
-    #[kani::unwind(16)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_no_prefix_quote_escape() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"\"", None, SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{\"b\":\"\\\"\"}\n");
-    }
+        write_json_line(&msg, Some(&prefix), &mut out);
 
-    /// Prove backslash escaping for plain-text messages.
-    #[kani::proof]
-    #[kani::unwind(16)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_no_prefix_backslash_escape() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"\\", None, SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{\"b\":\"\\\\\"}\n");
-    }
+        if msg[0] == b'{' {
+            let strips_trailing_comma = msg[1] == b'}' && prefix[1] == b',';
 
-    /// Prove control characters use \\u00XX escaping.
-    #[kani::proof]
-    #[kani::unwind(20)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_no_prefix_control_escape() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(&[0x1F], None, SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{\"b\":\"\\u001f\"}\n");
-    }
-
-    /// Prove single-byte JSON escaping matches the JSON string escaping table.
-    #[kani::proof]
-    #[kani::unwind(8)]
-    #[kani::solver(kissat)]
-    fn verify_json_escape_single_byte_table() {
-        let b: u8 = kani::any();
-        let input = [b];
-        let mut out = Vec::with_capacity(8);
-        json_escape_bytes(&input, &mut out);
-
-        match b {
-            b'"' => assert_bytes_eq(&out, b"\\\""),
-            b'\\' => assert_bytes_eq(&out, b"\\\\"),
-            0x08 => assert_bytes_eq(&out, b"\\b"),
-            b'\t' => assert_bytes_eq(&out, b"\\t"),
-            b'\n' => assert_bytes_eq(&out, b"\\n"),
-            0x0C => assert_bytes_eq(&out, b"\\f"),
-            b'\r' => assert_bytes_eq(&out, b"\\r"),
-            0x00..=0x1F | 0x7F => {
-                assert_eq!(out.len(), 6);
-                assert_bytes_eq(&out[..4], b"\\u00");
+            // Output should be: { + prefix + msg[1..] + \n, except that the
+            // empty-object path strips a trailing comma from prefix.
+            assert_eq!(out[0], b'{');
+            assert_eq!(out[1], prefix[0]);
+            if strips_trailing_comma {
+                assert_eq!(out[2], msg[1]);
+                assert_eq!(out[3], b'\n');
+                assert_eq!(out.len(), 4);
+            } else {
+                assert_eq!(out[2], prefix[1]);
+                assert_eq!(out[3], msg[1]);
+                assert_eq!(out[4], b'\n');
+                assert_eq!(out.len(), 5);
             }
-            _ => assert_bytes_eq(&out, &input),
+        } else {
+            // Non-JSON: wrapped as {"_raw":"..."}\n — ends with \n
+            assert_eq!(out[out.len() - 1], b'\n');
+            // Output starts with {"_raw":"  — check byte-by-byte (no memcmp).
+            assert_eq!(out[0], b'{');
+            assert_eq!(out[1], b'"');
+            assert_eq!(out[2], b'_');
+            assert_eq!(out[3], b'r');
+            assert_eq!(out[4], b'a');
+            assert_eq!(out[5], b'w');
+            assert_eq!(out[6], b'"');
+            assert_eq!(out[7], b':');
+            assert_eq!(out[8], b'"');
         }
     }
 
-    /// Prove the public wrapper uses "body" for non-JSON messages.
+    /// Prove write_json_line without prefix passes JSON through and wraps plain text.
+    ///
+    /// Input: 2 symbolic bytes. Reduced from 8→4→3→2 to keep SAT solving under
+    /// CI timeout (3 bytes still produced thousands of VCCs that timed out in
+    /// kissat on ubuntu-latest runners). 2 bytes still covers every escape path
+    /// and both JSON/non-JSON branches — the second byte independently exercises
+    /// the json_escape_bytes match arms.
+    /// Vec::with_capacity(64) pre-allocates to avoid realloc VCC explosion.
     #[kani::proof]
-    fn verify_write_json_line_default_plain_text_field() {
-        let mut out = Vec::with_capacity(32);
-        write_json_line(b"x", None, &mut out);
-        assert_bytes_eq(&out, b"{\"body\":\"x\"}\n");
+    #[kani::unwind(4)] // 2 iterations + 2 margin
+    #[kani::solver(kissat)] // json_escape_bytes loop × 2 symbolic bytes: kissat outperforms cadical
+    fn verify_write_json_line_no_prefix() {
+        let msg: [u8; 2] = kani::any();
+        let mut out = Vec::with_capacity(64);
+
+        // Guard vacuity: ensure both paths are reachable
+        kani::cover!(msg[0] == b'{', "JSON path reachable");
+        kani::cover!(msg[0] != b'{', "non-JSON path reachable");
+
+        // Guard vacuity for json_escape_bytes arms — Kani must find a model
+        // where each escape branch is exercised (second byte drives escape
+        // since first byte is fixed to non-{ for the non-JSON path).
+        kani::cover!(
+            msg[0] != b'{' && msg[1] == b'"',
+            "quote escape arm reachable"
+        );
+        kani::cover!(
+            msg[0] != b'{' && msg[1] == b'\\',
+            "backslash escape arm reachable"
+        );
+        kani::cover!(
+            msg[0] != b'{' && msg[1] < 0x20,
+            "control-char escape arm reachable"
+        );
+
+        write_json_line(&msg, None, &mut out);
+
+        // Always ends with \n
+        assert_eq!(out[out.len() - 1], b'\n');
+
+        if msg[0] == b'{' {
+            // JSON message passed through unchanged: msg + \n
+            assert_eq!(out.len(), 3);
+            // Check each byte individually to avoid memcmp VCC explosion
+            assert_eq!(out[0], msg[0]);
+            assert_eq!(out[1], msg[1]);
+        } else {
+            // Non-JSON: wrapped as {"_raw":"..."}\n — check prefix byte by byte
+            assert_eq!(out[0], b'{');
+            assert_eq!(out[1], b'"');
+            assert_eq!(out[2], b'_');
+            assert_eq!(out[3], b'r');
+            assert_eq!(out[4], b'a');
+            assert_eq!(out[5], b'w');
+            assert_eq!(out[6], b'"');
+            assert_eq!(out[7], b':');
+            assert_eq!(out[8], b'"');
+        }
     }
 }

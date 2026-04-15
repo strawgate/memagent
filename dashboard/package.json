@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build && cp ../crates/logfwd-diagnostics/src/dashboard-dist/index.html ../crates/logfwd-diagnostics/src/dashboard.html",
+    "build": "tsc -b && vite build && cp ../crates/logfwd-io/src/dashboard-dist/index.html ../crates/logfwd-io/src/dashboard.html",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -17,8 +17,6 @@
     "knip": "knip"
   },
   "dependencies": {
-    "@otlpkit/otlpjson": "^0.2.3",
-    "@otlpkit/views": "^0.2.3",
     "@preact/signals": "^2.9.0",
     "preact": "^10.29.0",
     "uplot": "^1.6.32"

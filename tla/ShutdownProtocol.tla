@@ -1,52 +1,37 @@
 ----------------------- MODULE ShutdownProtocol -----------------------
 (*
- * Formal model of the split input shutdown protocol used by
- * feat/io-compute-separation (PR #1512).
+ * Formal model of the pipeline shutdown coordination protocol from
+ * crates/logfwd/src/pipeline.rs run_async().
  *
- * Per input, runtime has two workers:
- *   I/O worker -> io_cpu bounded channel -> CPU worker -> shared pipeline channel
+ * Models N input threads feeding a bounded channel consumed by a single
+ * async consumer. Shutdown must:
+ *   (1) Drain the channel before joining input threads (prevents deadlock)
+ *   (2) Join input threads before final flush (no more data after join)
+ *   (3) Drain the output pool before machine transition
+ *   (4) All of the above must eventually complete (liveness)
  *
- * Production capacities:
- *   io_cpu channel      = 4
- *   shared pipeline rx  = 16
- *
- * Model-checking capacities are intentionally small (IoChannelCapacity=2,
- * PipelineChannelCapacity=3) to keep the state space TLC-feasible.
- * The protocol is capacity-independent so small values are sufficient.
- *
- * Shutdown cascade:
- *   shutdown signal
- *     -> I/O workers stop + drop io senders
- *     -> per-input: io_cpu channel drains, CPU worker stops independently
- *     -> (all CPU workers stopped) -> pipeline channel drains
- *     -> join workers
- *     -> drain pool
- *     -> stop / force_stop
+ * The protocol follows the ordering in pipeline.rs:412-518:
+ *   shutdown signal → drain channel → join inputs → flush remaining →
+ *   drain pool → drain acks → begin_drain → stop/force_stop
  *
  * This spec does NOT model:
  *   - Byte-level data or framing (modeled as abstract "items")
  *   - Scanner, transform, or output sink details
  *   - Checkpoint arithmetic (proven by Kani on CheckpointTracker)
  *   - The PipelineMachine lifecycle (modeled in PipelineMachine.tla)
- *   - The exact distinction between explicit permanent reject and held
- *     retry/control-plane failures at the worker/checkpoint seam. The
- *     current runtime may force-stop with unresolved held batches so they
- *     replay on restart.
  *
  * For TLC configuration, see MCShutdownProtocol.tla.
  *)
 
-EXTENDS Naturals, Sequences, TLC
+EXTENDS Naturals, FiniteSets, Sequences, TLC
 
 CONSTANTS
-    NumInputs,                \* Number of input pairs (>= 1)
-    IoChannelCapacity,        \* io_worker -> cpu_worker channel capacity
-    PipelineChannelCapacity,  \* shared cpu_worker -> pipeline channel capacity
-    MaxItems                  \* Max items any single input can produce
+    NumInputs,          \* Number of input threads (>= 1)
+    ChannelCapacity,    \* Bounded channel size (>= 1)
+    MaxItems            \* Max items any single input can produce
 
 ASSUME NumInputs >= 1 /\ NumInputs <= 4
-ASSUME IoChannelCapacity >= 1 /\ IoChannelCapacity <= 4
-ASSUME PipelineChannelCapacity >= 1 /\ PipelineChannelCapacity <= 16
+ASSUME ChannelCapacity >= 1 /\ ChannelCapacity <= 8
 ASSUME MaxItems >= 1 /\ MaxItems <= 4
 
 (* -----------------------------------------------------------------------
@@ -54,55 +39,37 @@ ASSUME MaxItems >= 1 /\ MaxItems <= 4
  * ----------------------------------------------------------------------- *)
 
 VARIABLES
-    (* Per-input I/O worker state *)
-    input_produced,          \* [1..NumInputs -> Nat]
-    io_alive,                \* [1..NumInputs -> BOOLEAN]
+    (* Input thread state *)
+    input_produced,     \* [1..NumInputs -> Nat] items produced per input
+    input_alive,        \* [1..NumInputs -> BOOLEAN] thread still running
 
-    (* Per-input io -> cpu channels *)
-    io_channels,             \* [1..NumInputs -> Seq(Inputs)] (bounded)
+    (* Bounded channel *)
+    channel,            \* Seq of items (FIFO, bounded by ChannelCapacity)
 
-    (* Per-input CPU worker state *)
-    cpu_forwarded,           \* [1..NumInputs -> Nat]
-    cpu_alive,               \* [1..NumInputs -> BOOLEAN]
+    (* Consumer state *)
+    consumed,           \* Nat: total items consumed from channel
+    consumer_buf,       \* Nat: items in scan_buf not yet flushed
+    flushed,            \* Nat: total items flushed to output
 
-    (* Shared pipeline channel consumed by run_async *)
-    pipeline_channel,        \* Seq(Inputs), bounded
+    (* Output pool *)
+    pool_pending,       \* Nat: items submitted to pool, not yet acked
+    pool_acked,         \* Nat: items acked by pool
 
-    (* Pipeline + output accounting *)
-    consumed,                \* Nat: items received from pipeline_channel
-    pool_pending,            \* Nat: items submitted to output pool
-    pool_acked,              \* Nat: items acked by pool
+    (* Shutdown coordination *)
+    shutdown_signaled,  \* BOOLEAN: cancellation token fired
+    channel_drained,    \* BOOLEAN: channel fully drained post-shutdown
+    inputs_joined,      \* BOOLEAN: all input threads joined
+    pool_drained,       \* BOOLEAN: output pool drained
+    final_flushed,      \* BOOLEAN: remaining scan_buf flushed
+    machine_stopped,    \* BOOLEAN: PipelineMachine transitioned to Stopped
+    forced              \* BOOLEAN: force_stop was used (timeout expired)
 
-    (* Shutdown coordination stages *)
-    shutdown_signaled,       \* cancellation token fired
-    io_channels_drained,     \* derived: all io workers exited and io channels empty
-    cpu_workers_stopped,     \* all cpu workers exited
-    pipeline_channel_drained,\* shared pipeline channel empty after cpu stop
-    workers_joined,          \* manager.join() completed
-    pool_drained,            \* pool drain completed
-    machine_stopped,         \* PipelineMachine transitioned to Stopped
-    forced,                  \* force_stop path was used
-    output_health            \* "Healthy" | "Stopping" | "Stopped" | "Failed"
-
-vars == <<input_produced, io_alive, io_channels, cpu_forwarded, cpu_alive,
-          pipeline_channel, consumed, pool_pending, pool_acked,
-          shutdown_signaled, io_channels_drained, cpu_workers_stopped,
-          pipeline_channel_drained, workers_joined, pool_drained,
-          machine_stopped, forced, output_health>>
+vars == <<input_produced, input_alive, channel, consumed, consumer_buf,
+          flushed, pool_pending, pool_acked, shutdown_signaled,
+          channel_drained, inputs_joined, pool_drained, final_flushed,
+          machine_stopped, forced>>
 
 Inputs == 1..NumInputs
-
-(* -----------------------------------------------------------------------
- * Helper: sum a function over Inputs
- * ----------------------------------------------------------------------- *)
-
-RECURSIVE SumInputs(_, _)
-SumInputs(f, S) ==
-    IF S = {} THEN 0
-    ELSE LET x == CHOOSE x \in S : TRUE
-         IN  f[x] + SumInputs(f, S \ {x})
-
-SumAll(f) == SumInputs(f, Inputs)
 
 (* -----------------------------------------------------------------------
  * Type invariant
@@ -111,25 +78,20 @@ SumAll(f) == SumInputs(f, Inputs)
 TypeOK ==
     /\ \A i \in Inputs :
         /\ input_produced[i] \in 0..MaxItems
-        /\ io_alive[i] \in BOOLEAN
-        /\ cpu_forwarded[i] \in Nat
-        /\ cpu_alive[i] \in BOOLEAN
-        /\ io_channels[i] \in Seq(Inputs)
-        /\ Len(io_channels[i]) \in 0..IoChannelCapacity
-    /\ pipeline_channel \in Seq(Inputs)
-    /\ Len(pipeline_channel) \in 0..PipelineChannelCapacity
+        /\ input_alive[i] \in BOOLEAN
+    /\ Len(channel) \in 0..ChannelCapacity
     /\ consumed \in Nat
+    /\ consumer_buf \in Nat
+    /\ flushed \in Nat
     /\ pool_pending \in Nat
     /\ pool_acked \in Nat
     /\ shutdown_signaled \in BOOLEAN
-    /\ io_channels_drained \in BOOLEAN
-    /\ cpu_workers_stopped \in BOOLEAN
-    /\ pipeline_channel_drained \in BOOLEAN
-    /\ workers_joined \in BOOLEAN
+    /\ channel_drained \in BOOLEAN
+    /\ inputs_joined \in BOOLEAN
     /\ pool_drained \in BOOLEAN
+    /\ final_flushed \in BOOLEAN
     /\ machine_stopped \in BOOLEAN
     /\ forced \in BOOLEAN
-    /\ output_health \in {"Healthy", "Stopping", "Stopped", "Failed"}
 
 (* -----------------------------------------------------------------------
  * Initial state
@@ -137,250 +99,227 @@ TypeOK ==
 
 Init ==
     /\ input_produced = [i \in Inputs |-> 0]
-    /\ io_alive = [i \in Inputs |-> TRUE]
-    /\ io_channels = [i \in Inputs |-> <<>>]
-    /\ cpu_forwarded = [i \in Inputs |-> 0]
-    /\ cpu_alive = [i \in Inputs |-> TRUE]
-    /\ pipeline_channel = <<>>
+    /\ input_alive = [i \in Inputs |-> TRUE]
+    /\ channel = <<>>
     /\ consumed = 0
+    /\ consumer_buf = 0
+    /\ flushed = 0
     /\ pool_pending = 0
     /\ pool_acked = 0
     /\ shutdown_signaled = FALSE
-    /\ io_channels_drained = FALSE
-    /\ cpu_workers_stopped = FALSE
-    /\ pipeline_channel_drained = FALSE
-    /\ workers_joined = FALSE
+    /\ channel_drained = FALSE
+    /\ inputs_joined = FALSE
     /\ pool_drained = FALSE
+    /\ final_flushed = FALSE
     /\ machine_stopped = FALSE
     /\ forced = FALSE
-    /\ output_health = "Healthy"
 
 (* -----------------------------------------------------------------------
- * Actions: Normal operation
+ * Actions: Normal operation (before shutdown)
  * ----------------------------------------------------------------------- *)
 
-\* I/O worker polls input and sends one chunk to its io_cpu channel.
-IoProduce(i) ==
-    /\ io_alive[i]
+\* Input thread produces an item and sends to channel (if not full).
+\* Models input_poll_loop: poll() -> buf.extend -> blocking_send.
+InputProduce(i) ==
+    /\ input_alive[i]
     /\ input_produced[i] < MaxItems
-    /\ Len(io_channels[i]) < IoChannelCapacity
+    /\ Len(channel) < ChannelCapacity     \* not full (would block)
     /\ input_produced' = [input_produced EXCEPT ![i] = @ + 1]
-    /\ io_channels' = [io_channels EXCEPT ![i] = Append(@, i)]
-    /\ UNCHANGED <<io_alive, cpu_forwarded, cpu_alive, pipeline_channel,
-                   consumed, pool_pending, pool_acked, shutdown_signaled,
-                   io_channels_drained, cpu_workers_stopped,
-                   pipeline_channel_drained, workers_joined, pool_drained,
-                   machine_stopped, forced, output_health>>
-
-\* CPU worker drains one chunk from its io_cpu channel and forwards to pipeline channel.
-CpuForward(i) ==
-    /\ cpu_alive[i]
-    /\ Len(io_channels[i]) > 0
-    /\ Len(pipeline_channel) < PipelineChannelCapacity
-    /\ io_channels' = [io_channels EXCEPT ![i] = Tail(@)]
-    /\ cpu_forwarded' = [cpu_forwarded EXCEPT ![i] = @ + 1]
-    /\ pipeline_channel' = Append(pipeline_channel, i)
-    /\ UNCHANGED <<input_produced, io_alive, cpu_alive, consumed,
+    /\ channel' = Append(channel, i)      \* item identity = producing input
+    /\ UNCHANGED <<input_alive, consumed, consumer_buf, flushed,
                    pool_pending, pool_acked, shutdown_signaled,
-                   io_channels_drained, cpu_workers_stopped,
-                   pipeline_channel_drained, workers_joined, pool_drained,
-                   machine_stopped, forced, output_health>>
+                   channel_drained, inputs_joined, pool_drained,
+                   final_flushed, machine_stopped, forced>>
 
-\* Pipeline main loop receives one batch from the shared channel and submits to pool.
-ConsumePipeline ==
-    /\ Len(pipeline_channel) > 0
-    /\ pipeline_channel' = Tail(pipeline_channel)
+\* Consumer receives from channel and buffers.
+\* Models: msg = rx.recv() -> scan_buf.extend.
+ConsumerReceive ==
+    /\ ~shutdown_signaled
+    /\ Len(channel) > 0
     /\ consumed' = consumed + 1
-    /\ pool_pending' = pool_pending + 1
-    /\ UNCHANGED <<input_produced, io_alive, io_channels, cpu_forwarded,
-                   cpu_alive, pool_acked, shutdown_signaled,
-                   io_channels_drained, cpu_workers_stopped,
-                   pipeline_channel_drained, workers_joined, pool_drained,
-                   machine_stopped, forced, output_health>>
+    /\ consumer_buf' = consumer_buf + 1
+    /\ channel' = Tail(channel)
+    /\ UNCHANGED <<input_produced, input_alive, flushed, pool_pending,
+                   pool_acked, shutdown_signaled, channel_drained,
+                   inputs_joined, pool_drained, final_flushed,
+                   machine_stopped, forced>>
 
-\* Output pool acks one submitted batch.
+\* Consumer flushes buffer to output pool.
+\* Models: flush_batch (size threshold or timeout).
+\* Allowed both in normal operation AND during the drain phase
+\* (after shutdown but before inputs are joined), matching the real
+\* code's channel-drain loop (pipeline.rs:449-471).
+ConsumerFlush ==
+    /\ (~shutdown_signaled \/ (~channel_drained /\ ~inputs_joined))
+    /\ consumer_buf > 0
+    /\ flushed' = flushed + consumer_buf
+    /\ pool_pending' = pool_pending + 1
+    /\ consumer_buf' = 0
+    /\ UNCHANGED <<input_produced, input_alive, channel, consumed,
+                   pool_acked, shutdown_signaled, channel_drained,
+                   inputs_joined, pool_drained, final_flushed,
+                   machine_stopped, forced>>
+
+\* Output pool worker acks a completed batch.
+\* Models: pool.ack_rx.recv() -> apply_pool_ack.
 PoolAck ==
     /\ pool_pending > pool_acked
     /\ pool_acked' = pool_acked + 1
-    /\ UNCHANGED <<input_produced, io_alive, io_channels, cpu_forwarded,
-                   cpu_alive, pipeline_channel, consumed, pool_pending,
-                   shutdown_signaled, io_channels_drained,
-                   cpu_workers_stopped, pipeline_channel_drained,
-                   workers_joined, pool_drained, machine_stopped, forced, output_health>>
-
-\* Worker panic during output processing marks terminal output failure.
-WorkerPanic ==
-    /\ ~machine_stopped
-    /\ pool_pending > pool_acked
-    /\ output_health # "Failed"
-    /\ output_health' = "Failed"
-    /\ UNCHANGED <<input_produced, io_alive, io_channels, cpu_forwarded,
-                   cpu_alive, pipeline_channel, consumed, pool_pending,
-                   pool_acked, shutdown_signaled, io_channels_drained,
-                   cpu_workers_stopped, pipeline_channel_drained,
-                   workers_joined, pool_drained, machine_stopped, forced>>
+    /\ UNCHANGED <<input_produced, input_alive, channel, consumed,
+                   consumer_buf, flushed, pool_pending, shutdown_signaled,
+                   channel_drained, inputs_joined, pool_drained,
+                   final_flushed, machine_stopped, forced>>
 
 (* -----------------------------------------------------------------------
- * Actions: Shutdown sequence
+ * Actions: Shutdown sequence (ordered phases)
  * ----------------------------------------------------------------------- *)
 
-\* 1) Cancellation token fires.
+\* 1. Shutdown signal fires (cancellation token).
 SignalShutdown ==
     /\ ~shutdown_signaled
     /\ shutdown_signaled' = TRUE
-    /\ output_health' =
-        IF output_health = "Healthy" THEN "Stopping" ELSE output_health
-    /\ UNCHANGED <<input_produced, io_alive, io_channels, cpu_forwarded,
-                   cpu_alive, pipeline_channel, consumed, pool_pending,
-                   pool_acked, io_channels_drained, cpu_workers_stopped,
-                   pipeline_channel_drained, workers_joined, pool_drained,
+    /\ UNCHANGED <<input_produced, input_alive, channel, consumed,
+                   consumer_buf, flushed, pool_pending, pool_acked,
+                   channel_drained, inputs_joined, pool_drained,
+                   final_flushed, machine_stopped, forced>>
+
+\* 2. Input threads notice shutdown and stop producing.
+\* In the real code, inputs drain their local buffer before exiting.
+\* Modeled as: input can still produce via InputProduce (now enabled
+\* during shutdown), then exits via InputShutdown.
+InputShutdown(i) ==
+    /\ shutdown_signaled
+    /\ input_alive[i]
+    /\ input_alive' = [input_alive EXCEPT ![i] = FALSE]
+    /\ UNCHANGED <<input_produced, channel, consumed, consumer_buf, flushed,
+                   pool_pending, pool_acked, shutdown_signaled,
+                   channel_drained, inputs_joined, pool_drained,
+                   final_flushed, machine_stopped, forced>>
+
+\* 3. Drain channel: consumer reads remaining messages after shutdown.
+\* CRITICAL: must happen BEFORE joining input threads to prevent deadlock.
+\* If channel is full and an input is blocked in blocking_send, joining
+\* the input thread would deadlock because the send can't complete.
+DrainChannel ==
+    /\ shutdown_signaled
+    /\ ~channel_drained
+    /\ Len(channel) > 0
+    /\ consumed' = consumed + 1
+    /\ consumer_buf' = consumer_buf + 1
+    /\ channel' = Tail(channel)
+    /\ UNCHANGED <<input_produced, input_alive, flushed, pool_pending,
+                   pool_acked, shutdown_signaled, channel_drained,
+                   inputs_joined, pool_drained, final_flushed,
                    machine_stopped, forced>>
 
-\* 2) I/O worker exits (after any final local drain, abstracted here).
-IoWorkerStop(i) ==
+\* Channel is fully drained when empty AND all inputs have exited.
+\* (Inputs exiting drops their Sender clones; when all are gone,
+\* rx.recv() returns None.)
+MarkChannelDrained ==
     /\ shutdown_signaled
-    /\ io_alive[i]
-    /\ io_alive' = [io_alive EXCEPT ![i] = FALSE]
-    /\ UNCHANGED <<input_produced, io_channels, cpu_forwarded, cpu_alive,
-                   pipeline_channel, consumed, pool_pending, pool_acked,
-                   shutdown_signaled, io_channels_drained,
-                   cpu_workers_stopped, pipeline_channel_drained,
-                   workers_joined, pool_drained, machine_stopped, forced, output_health>>
+    /\ ~channel_drained
+    /\ Len(channel) = 0
+    /\ \A i \in Inputs : ~input_alive[i]
+    /\ channel_drained' = TRUE
+    /\ UNCHANGED <<input_produced, input_alive, channel, consumed,
+                   consumer_buf, flushed, pool_pending, pool_acked,
+                   shutdown_signaled, inputs_joined, pool_drained,
+                   final_flushed, machine_stopped, forced>>
 
-\* 3) Observe that all io workers are down and all io_cpu channels are empty.
-\*    This is a derived observation -- not a precondition for CpuWorkerStop.
-\*    Each CPU worker independently decides based on per-input state (step 4).
-\*    Can fire before or after individual CpuWorkerStop(i) actions.
-MarkIoChannelsDrained ==
-    /\ shutdown_signaled
-    /\ ~io_channels_drained
-    /\ \A i \in Inputs : ~io_alive[i]
-    /\ \A i \in Inputs : Len(io_channels[i]) = 0
-    /\ io_channels_drained' = TRUE
-    /\ UNCHANGED <<input_produced, io_alive, io_channels, cpu_forwarded,
-                   cpu_alive, pipeline_channel, consumed, pool_pending,
-                   pool_acked, shutdown_signaled, cpu_workers_stopped,
-                   pipeline_channel_drained, workers_joined, pool_drained,
-                   machine_stopped, forced, output_health>>
+\* 4. Join input threads.
+\* Guard: channel must be drained first (deadlock prevention).
+JoinInputs ==
+    /\ channel_drained
+    /\ ~inputs_joined
+    /\ \A i \in Inputs : ~input_alive[i]
+    /\ inputs_joined' = TRUE
+    /\ UNCHANGED <<input_produced, input_alive, channel, consumed,
+                   consumer_buf, flushed, pool_pending, pool_acked,
+                   shutdown_signaled, channel_drained, pool_drained,
+                   final_flushed, machine_stopped, forced>>
 
-\* 4) CPU worker exits once its own I/O worker is dead and its io channel is empty.
-\*    This is per-input: each CPU worker independently observes that its own
-\*    io_rx returns None (io_alive[i]=FALSE and io_channels[i] empty).
-\*    No global barrier required -- matches the implementation.
-CpuWorkerStop(i) ==
-    /\ cpu_alive[i]
-    /\ ~io_alive[i]
-    /\ Len(io_channels[i]) = 0
-    /\ cpu_alive' = [cpu_alive EXCEPT ![i] = FALSE]
-    /\ UNCHANGED <<input_produced, io_alive, io_channels, cpu_forwarded,
-                   pipeline_channel, consumed, pool_pending, pool_acked,
-                   shutdown_signaled, io_channels_drained,
-                   cpu_workers_stopped, pipeline_channel_drained,
-                   workers_joined, pool_drained, machine_stopped, forced, output_health>>
+\* 5. Final flush of remaining scan_buf.
+\* Guard: inputs must be joined first (no more data can arrive).
+FinalFlush ==
+    /\ inputs_joined
+    /\ ~final_flushed
+    /\ consumer_buf > 0
+    /\ flushed' = flushed + consumer_buf
+    /\ pool_pending' = pool_pending + 1
+    /\ consumer_buf' = 0
+    /\ final_flushed' = TRUE
+    /\ UNCHANGED <<input_produced, input_alive, channel, consumed,
+                   pool_acked, shutdown_signaled, channel_drained,
+                   inputs_joined, pool_drained, machine_stopped, forced>>
 
-\* 5) Record that all CPU workers have stopped.
-\*    Gates MarkPipelineChannelDrained -- no more pipeline sends are possible.
-\*    Also derives io_channels_drained as a consistency observation: if all
-\*    CPU workers stopped via per-input CpuWorkerStop, then each io channel
-\*    was empty when its CPU worker exited and no io worker is alive to
-\*    refill it, so all io channels are drained.
-MarkCpuWorkersStopped ==
-    /\ ~cpu_workers_stopped
-    /\ \A i \in Inputs : ~cpu_alive[i]
-    /\ cpu_workers_stopped' = TRUE
-    /\ io_channels_drained' = TRUE
-    /\ UNCHANGED <<input_produced, io_alive, io_channels, cpu_forwarded,
-                   cpu_alive, pipeline_channel, consumed, pool_pending,
-                   pool_acked, shutdown_signaled,
-                   pipeline_channel_drained, workers_joined, pool_drained,
-                   machine_stopped, forced, output_health>>
+\* Final flush with empty buffer (nothing to flush).
+FinalFlushEmpty ==
+    /\ inputs_joined
+    /\ ~final_flushed
+    /\ consumer_buf = 0
+    /\ final_flushed' = TRUE
+    /\ UNCHANGED <<input_produced, input_alive, channel, consumed,
+                   consumer_buf, flushed, pool_pending, pool_acked,
+                   shutdown_signaled, channel_drained, inputs_joined,
+                   pool_drained, machine_stopped, forced>>
 
-\* 6) Shared pipeline channel is drained after CPU workers have exited.
-MarkPipelineChannelDrained ==
-    /\ cpu_workers_stopped
-    /\ ~pipeline_channel_drained
-    /\ Len(pipeline_channel) = 0
-    /\ pipeline_channel_drained' = TRUE
-    /\ UNCHANGED <<input_produced, io_alive, io_channels, cpu_forwarded,
-                   cpu_alive, pipeline_channel, consumed, pool_pending,
-                   pool_acked, shutdown_signaled, io_channels_drained,
-                   cpu_workers_stopped, workers_joined, pool_drained,
-                   machine_stopped, forced, output_health>>
-
-\* 7) Join all input workers (CPU first, then I/O in implementation).
-JoinWorkers ==
-    /\ pipeline_channel_drained
-    /\ ~workers_joined
-    /\ \A i \in Inputs : ~io_alive[i]
-    /\ \A i \in Inputs : ~cpu_alive[i]
-    /\ workers_joined' = TRUE
-    /\ UNCHANGED <<input_produced, io_alive, io_channels, cpu_forwarded,
-                   cpu_alive, pipeline_channel, consumed, pool_pending,
-                   pool_acked, shutdown_signaled, io_channels_drained,
-                   cpu_workers_stopped, pipeline_channel_drained,
-                   pool_drained, machine_stopped, forced, output_health>>
-
-\* 8) Drain pool after no more channel traffic is possible.
+\* 6. Drain output pool.
+\* Guard: final flush must be done (no more work to submit).
 DrainPool ==
-    /\ workers_joined
+    /\ final_flushed
     /\ ~pool_drained
-    /\ pool_acked = pool_pending
+    /\ pool_acked = pool_pending   \* all submitted work is acked
     /\ pool_drained' = TRUE
-    /\ UNCHANGED <<input_produced, io_alive, io_channels, cpu_forwarded,
-                   cpu_alive, pipeline_channel, consumed, pool_pending,
-                   pool_acked, shutdown_signaled, io_channels_drained,
-                   cpu_workers_stopped, pipeline_channel_drained,
-                   workers_joined, machine_stopped, forced, output_health>>
+    /\ UNCHANGED <<input_produced, input_alive, channel, consumed,
+                   consumer_buf, flushed, pool_pending, pool_acked,
+                   shutdown_signaled, channel_drained, inputs_joined,
+                   final_flushed, machine_stopped, forced>>
 
-\* 9a) Normal stop path.
+\* 7. Machine transition: begin_drain → stop (normal).
 NormalStop ==
     /\ pool_drained
     /\ ~machine_stopped
+    /\ pool_acked = pool_pending   \* all batches resolved
     /\ machine_stopped' = TRUE
-    /\ output_health' = IF output_health = "Failed" THEN "Failed" ELSE "Stopped"
-    /\ UNCHANGED <<input_produced, io_alive, io_channels, cpu_forwarded,
-                   cpu_alive, pipeline_channel, consumed, pool_pending,
-                   pool_acked, shutdown_signaled, io_channels_drained,
-                   cpu_workers_stopped, pipeline_channel_drained,
-                   workers_joined, pool_drained, forced>>
+    /\ UNCHANGED <<input_produced, input_alive, channel, consumed,
+                   consumer_buf, flushed, pool_pending, pool_acked,
+                   shutdown_signaled, channel_drained, inputs_joined,
+                   pool_drained, final_flushed, forced>>
 
-\* 9b) Timeout escape hatch.
-\*    Guards on actual outstanding backlog (pool_acked < pool_pending) rather
-\*    than the latched ~pool_drained flag, so ForceStop only fires when there
-\*    is genuinely unacked work pending.
+\* 7b. Machine transition: force_stop (timeout expired).
 ForceStop ==
-    /\ workers_joined
-    /\ pool_acked < pool_pending
+    /\ final_flushed
     /\ ~machine_stopped
+    /\ ~pool_drained             \* pool didn't drain in time
     /\ machine_stopped' = TRUE
     /\ forced' = TRUE
-    /\ output_health' = "Failed"
-    /\ UNCHANGED <<input_produced, io_alive, io_channels, cpu_forwarded,
-                   cpu_alive, pipeline_channel, consumed, pool_pending,
-                   pool_acked, shutdown_signaled, io_channels_drained,
-                   cpu_workers_stopped, pipeline_channel_drained,
-                   workers_joined, pool_drained>>
+    /\ UNCHANGED <<input_produced, input_alive, channel, consumed,
+                   consumer_buf, flushed, pool_pending, pool_acked,
+                   shutdown_signaled, channel_drained, inputs_joined,
+                   pool_drained, final_flushed>>
 
 (* -----------------------------------------------------------------------
  * Next-state relation
  * ----------------------------------------------------------------------- *)
 
 Next ==
-    \/ \E i \in Inputs : IoProduce(i)
-    \/ \E i \in Inputs : CpuForward(i)
-    \/ ConsumePipeline
+    \* Normal operation
+    \/ \E i \in Inputs : InputProduce(i)
+    \/ ConsumerReceive
+    \/ ConsumerFlush
     \/ PoolAck
-    \/ WorkerPanic
+    \* Shutdown sequence
     \/ SignalShutdown
-    \/ \E i \in Inputs : IoWorkerStop(i)
-    \/ MarkIoChannelsDrained
-    \/ \E i \in Inputs : CpuWorkerStop(i)
-    \/ MarkCpuWorkersStopped
-    \/ MarkPipelineChannelDrained
-    \/ JoinWorkers
+    \/ \E i \in Inputs : InputShutdown(i)
+    \/ DrainChannel
+    \/ MarkChannelDrained
+    \/ JoinInputs
+    \/ FinalFlush
+    \/ FinalFlushEmpty
     \/ DrainPool
     \/ NormalStop
     \/ ForceStop
+    \* Terminal: machine_stopped is final.
     \/ (machine_stopped /\ UNCHANGED vars)
 
 (* -----------------------------------------------------------------------
@@ -389,19 +328,19 @@ Next ==
 
 Fairness ==
     /\ WF_vars(SignalShutdown)
-    /\ \A i \in Inputs : WF_vars(IoWorkerStop(i))
-    /\ \A i \in Inputs : WF_vars(CpuForward(i))
-    /\ WF_vars(ConsumePipeline)
-    /\ WF_vars(MarkIoChannelsDrained)
-    /\ \A i \in Inputs : WF_vars(CpuWorkerStop(i))
-    /\ WF_vars(MarkCpuWorkersStopped)
-    /\ WF_vars(MarkPipelineChannelDrained)
-    /\ WF_vars(JoinWorkers)
-    /\ WF_vars(PoolAck)
+    /\ \A i \in Inputs : WF_vars(InputShutdown(i))
+    /\ WF_vars(DrainChannel)
+    /\ WF_vars(MarkChannelDrained)
+    /\ WF_vars(JoinInputs)
+    /\ WF_vars(FinalFlush)
+    /\ WF_vars(FinalFlushEmpty)
     /\ WF_vars(DrainPool)
     /\ WF_vars(NormalStop)
-    \* No WF on ForceStop -- timeout escape, not required progress.
-    \* No WF on IoProduce -- environment is not obligated to keep producing.
+    /\ WF_vars(PoolAck)
+    \* No WF on ForceStop — it fires only as a timeout escape hatch,
+    \* not as a guaranteed step.
+    \* No WF on InputProduce, ConsumerReceive, ConsumerFlush —
+    \* the environment is not obligated to produce or consume.
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 
@@ -409,89 +348,60 @@ Spec == Init /\ [][Next]_vars /\ Fairness
  * Safety properties
  * ----------------------------------------------------------------------- *)
 
-NoCpuStopBeforeIoDrain ==
-    cpu_workers_stopped => io_channels_drained
+\* The shutdown ordering is maintained.
+\* Inputs are joined only after channel is drained.
+NoDeadlock ==
+    inputs_joined => channel_drained
 
-NoJoinBeforePipelineDrain ==
-    workers_joined => pipeline_channel_drained
+\* Final flush happens only after inputs are joined.
+FlushAfterJoin ==
+    final_flushed => inputs_joined
 
-NoStopBeforeJoin ==
-    machine_stopped => workers_joined
+\* Machine stops only after final flush.
+StopAfterFlush ==
+    machine_stopped => final_flushed
 
-MachineStoppedImpliesOutputTerminal ==
-    machine_stopped => output_health \in {"Stopped", "Failed"}
-
+\* Normal stop implies pool fully drained.
+\* DrainCompleteness for the shutdown protocol.
 NormalStopImpliesPoolDrained ==
     (machine_stopped /\ ~forced) => pool_drained
 
-ForcedStopImpliesOutputFailed ==
-    (machine_stopped /\ forced) => output_health = "Failed"
-
-\* Shutdown stage flags must reflect underlying worker/channel state.
-DrainFlagsConsistent ==
-    /\ workers_joined =>
-        (cpu_workers_stopped /\ io_channels_drained /\ pipeline_channel_drained)
-    /\ pool_drained =>
-        (workers_joined /\ pool_acked = pool_pending)
-
-\* Conservation: items produced by each I/O worker = items in its io channel
-\* + items its CPU worker has forwarded.  Non-tautological: catches duplication
-\* or loss in the io -> cpu path.
-IoConservation ==
-    \A i \in Inputs :
-        input_produced[i] = Len(io_channels[i]) + cpu_forwarded[i]
-
-\* Conservation: total items forwarded by all CPU workers = items currently
-\* in the pipeline channel + items consumed from it.  Non-tautological: catches
-\* duplication or loss in the cpu -> pipeline path.
-PipelineConservation ==
-    SumAll(cpu_forwarded) = Len(pipeline_channel) + consumed
+\* Helper: sum of a function over its domain
+RECURSIVE SumProdHelper(_, _, _)
+SumProdHelper(f, remaining, acc) ==
+    IF remaining = {} THEN acc
+    ELSE LET x == CHOOSE x \in remaining : TRUE
+         IN SumProdHelper(f, remaining \ {x}, acc + f[x])
+SumProd(f) == SumProdHelper(f, DOMAIN f, 0)
 
 (* -----------------------------------------------------------------------
  * Liveness properties
  * ----------------------------------------------------------------------- *)
 
+\* Shutdown eventually completes.
 ShutdownCompletes ==
     shutdown_signaled ~> machine_stopped
 
-\* Required by issue #1529:
-\* CPU workers must not deadlock waiting on pipeline backpressure forever.
-NoCpuWorkerDeadlock ==
-    io_channels_drained ~> cpu_workers_stopped
+\* Once shutdown is signaled, all inputs eventually exit.
+InputsEventuallyStop ==
+    \A i \in Inputs :
+        shutdown_signaled ~> ~input_alive[i]
 
-\* Required by issue #1529:
-\* After I/O workers stop, io_cpu channels eventually drain.
-IoCpuChannelEventuallyDrained ==
-    (\A i \in Inputs : ~io_alive[i]) ~> io_channels_drained
+\* Channel is eventually drained after shutdown.
+ChannelEventuallyDrained ==
+    shutdown_signaled ~> channel_drained
 
-\* Required by issue #1529:
-\* Once I/O workers stop, CPU workers eventually stop.
-CpuWorkersEventuallyStop ==
-    (\A i \in Inputs : ~io_alive[i]) ~> (\A i \in Inputs : ~cpu_alive[i])
-
+\* Machine eventually stops (by normal or force path).
 EventualStop ==
     <>[](machine_stopped)
-
-OutputFailureSticky ==
-    [](output_health = "Failed" => [](output_health = "Failed"))
 
 (* -----------------------------------------------------------------------
  * Reachability / vacuity guards
  * ----------------------------------------------------------------------- *)
 
-ShutdownReachable == ~shutdown_signaled
-IoChannelsDrainedReachable == ~io_channels_drained
-CpuWorkersStoppedReachable == ~cpu_workers_stopped
-PipelineChannelDrainedReachable == ~pipeline_channel_drained
-WorkersJoinedReachable == ~workers_joined
-PoolDrainedReachable == ~pool_drained
+ShutdownReachable == ~shutdown_signaled  \* violation = shutdown fires
 NormalStopReachable == ~(machine_stopped /\ ~forced)
 ForceStopReachable == ~(machine_stopped /\ forced)
-OutputFailedReachable == ~(output_health = "Failed")
-
-\* Backpressure reachability: witness that bounded channels can become full.
-\* Important for shutdown deadlock analysis -- TLC must explore these states.
-IoChannelFullReachable == ~(\E i \in Inputs : Len(io_channels[i]) = IoChannelCapacity)
-PipelineChannelFullReachable == ~(Len(pipeline_channel) = PipelineChannelCapacity)
+ChannelFullReachable == ~(Len(channel) = ChannelCapacity)
 
 ======================================================================

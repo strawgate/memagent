@@ -13,7 +13,7 @@ logfwd-core = { path = ".." }
 logfwd-arrow = { path = "../../logfwd-arrow" }
 logfwd-transform = { path = "../../logfwd-transform" }
 logfwd-output = { path = "../../logfwd-output" }
-logfwd-types = { path = "../../logfwd-types" }
+logfwd-io = { path = "../../logfwd-io" }
 arrow = { version = "54", default-features = false }
 bytes = "1"
 reqwest = { version = "0.12", default-features = false }

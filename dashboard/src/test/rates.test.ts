@@ -112,7 +112,7 @@ describe("RateTracker — EMA smoothing", () => {
     }
     expect(lastRate).not.toBeNull();
     // EMA should be very close to 100 after 30 constant samples
-    expect(lastRate).toBeCloseTo(100, 1);
+    expect(lastRate!).toBeCloseTo(100, 1);
   });
 
   it("EMA blends previous smoothed value with new raw rate (alpha=0.5)", () => {
@@ -171,8 +171,8 @@ describe("RateTracker — same-timestamp edge case (dt=0)", () => {
     // Now call again without advancing time (dt=0)
     const r = tracker.rate("k", 200);
     expect(r).not.toBeNull();
-    expect(Number.isFinite(r)).toBe(true);
-    expect(Number.isNaN(r)).toBe(false);
+    expect(Number.isFinite(r!)).toBe(true);
+    expect(Number.isNaN(r!)).toBe(false);
   });
 
   it("returns the last EMA when dt=0 (no new rate calculated)", () => {
@@ -183,7 +183,7 @@ describe("RateTracker — same-timestamp edge case (dt=0)", () => {
     const ema = tracker.rate("k", 100);
     // Same timestamp — should return the cached EMA
     const same = tracker.rate("k", 999);
-    expect(same).toBeCloseTo(ema ?? 0, 5);
+    expect(same).toBeCloseTo(ema!, 5);
   });
 
   it("returns null when dt=0 on first real sample (no EMA yet)", () => {
@@ -193,6 +193,28 @@ describe("RateTracker — same-timestamp edge case (dt=0)", () => {
     const r = tracker.rate("k", 100);
     // dt=0 path: return ema.get(key) ?? null — EMA not set yet → null
     expect(r).toBeNull();
+  });
+});
+
+// ─── tick() deprecation ───────────────────────────────────────────────────────
+
+describe("RateTracker — tick() is a no-op", () => {
+  it("tick() does not throw", () => {
+    const tracker = new RateTracker();
+    expect(() => tracker.tick()).not.toThrow();
+  });
+
+  it("calling tick() does not affect rate calculation", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const tracker = new RateTracker(1.0);
+    tracker.rate("k", 0);
+    advance(1000);
+    tracker.tick(); // should do nothing
+    tracker.tick();
+    const r = tracker.rate("k", 100);
+    expect(r).toBeCloseTo(100, 5);
+    vi.useRealTimers();
   });
 });
 

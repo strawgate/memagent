@@ -7,41 +7,30 @@ How data flows through logfwd, from bytes on disk to serialized output.
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  logfwd (binary)                                        │
-│  CLI entrypoints, config loading, signal handling       │
-└─────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────┐
-│  logfwd-runtime                                          │
-│  Async orchestration, worker pool, processor chain       │
+│  Async orchestration, config, CLI, signal handling      │
 │                                                         │
 │  ┌──────────┐   ┌───────────┐   ┌───────────────────┐  │
 │  │  Input   │──▶│ Transform │──▶│     Output        │  │
 │  │ threads  │   │  (SQL)    │   │  (HTTP/stdout)    │  │
 │  └──────────┘   └───────────┘   └───────────────────┘  │
+│       │              │                    │              │
+│       ▼              ▼                    ▼              │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │  logfwd-arrow                                    │   │
+│  │  ScanBuilder impls, SIMD backends, RecordBatch     │   │
+│  └──────────────────────────────────────────────────┘   │
+│       │                                                  │
+│       ▼                                                  │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │  logfwd-core                                     │   │
+│  │  Pure logic, proven, no_std, forbid(unsafe)      │   │
+│  └──────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
-       │              │                    │
-       ▼              ▼                    ▼
-┌──────────────────────────────────────────────────┐
-│  logfwd-arrow                                    │
-│  ScanBuilder impls, SIMD backends, RecordBatch   │
-└──────────────────────────────────────────────────┘
-       │
-       ▼
-┌──────────────────────────────────────────────────┐
-│  logfwd-core                                     │
-│  Pure logic, proven, no_std, forbid(unsafe)      │
-└──────────────────────────────────────────────────┘
 ```
 
 Dependencies flow downward. logfwd-core knows nothing about Arrow,
 IO, or async. logfwd-arrow bridges core's parsing to Arrow types.
-`logfwd-runtime` owns the long-lived async runtime, and the binary crate
-now stays focused on startup/CLI/bootstrap concerns.
-
-`logfwd-diagnostics` owns the diagnostics control-plane surface (diagnostics
-HTTP endpoints, readiness/status shaping, stderr/span buffering, and the
-generated `dashboard.html` asset served by diagnostics).
+The binary crate wires everything together.
 
 ## Data flow
 
@@ -56,8 +45,6 @@ Disk → FileReader (Vec<u8>) → InputEvent::Data { bytes: Vec<u8> }
   rotation detection, deleted-file cleanup, LRU eviction.
 - **FileReader**: open file descriptors, `Vec<u8>` read buffer, byte reading.
 
-File-discovery reliability notes: `dev-docs/references/file-discovery.md`.
-
 > **Note:** logfwd-io (tailer, InputEvent, FramedInput) still uses `Vec<u8>`.
 > Only `pipeline.rs` uses `BytesMut`/`Bytes`. The Bytes boundary is at the
 > `input_poll_loop` → `ChannelMsg` transition.
@@ -67,7 +54,7 @@ Each input source runs on its own OS thread. Reads feed a bounded
 carries `Bytes` (immutable, refcounted) — ownership transfers cleanly
 across the thread boundary.
 
-### 2. Framing: input bytes → complete lines
+### 2. Framing: raw bytes → complete lines
 
 ```
 Vec<u8> → FramedInput::poll() → newline-delimited JSON as Vec<u8>
@@ -81,8 +68,7 @@ with per-source remainder tracking. It handles three formats:
 - **Cri**: Kubernetes container log format. Parses timestamp,
   stream, flags, message. Reassembles P (partial) lines into complete
   messages. Injects `_timestamp` and `_stream` as JSON fields.
-- **Text/Raw**: Passes lines through verbatim. Line capture into `body` is
-  controlled by scanner `line_field_name`.
+- **Raw**: Wraps each line as `{"_raw":"<escaped>"}`.
 
 **NewlineFramer** (`logfwd-core/src/framer.rs`): fixed-size
 output (4096 lines, 64KB stack), no heap, Kani-proven. It returns byte
@@ -150,7 +136,7 @@ pub trait ScanBuilder {
     fn append_int_by_idx(&mut self, idx: usize, value: &[u8]);
     fn append_float_by_idx(&mut self, idx: usize, value: &[u8]);
     fn append_null_by_idx(&mut self, idx: usize);
-    fn append_line(&mut self, line: &[u8]);
+    fn append_raw(&mut self, line: &[u8]);
 }
 ```
 
@@ -238,20 +224,11 @@ OutputSink / Sink traits       OtlpSink, ElasticsearchSink,
                                LokiSink, JsonLinesSink, StdoutSink
 ```
 
-`logfwd-runtime` wires these together in `pipeline.rs`.
-
-`logfwd-diagnostics` provides the diagnostics server and telemetry-facing
-snapshot types consumed by runtime/bootstrap wiring.
-
-`logfwd-config-wasm` is a browser-side companion crate, not part of the
-runtime pipeline. It exposes `get_input_templates()`, `get_output_templates()`,
-`get_use_case_templates()`, and `validate_config()` to the docs site's
-interactive Config Builder via WASM. Built with `wasm-pack --target web`;
-artifacts land in `book/public/wasm/logfwd-config/`.
+The binary crate (`logfwd`) wires these together in `pipeline.rs`.
 
 ## Pipeline loop
 
-The async pipeline in `run_async()` (`logfwd-runtime/src/pipeline.rs`):
+The async pipeline in `run_async()` (`logfwd/src/pipeline.rs`):
 
 ```
 loop {

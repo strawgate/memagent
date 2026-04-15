@@ -8,31 +8,20 @@ publish = false
 [lib]
 doctest = false
 
-[features]
-default = []
-otlp-research = []
-
 [dependencies]
-axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 base64 = { workspace = true }
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
 logfwd-otap-proto = { version = "0.1.0", path = "../logfwd-otap-proto" }
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 arrow = { workspace = true }
-bytes = "1"
 crossbeam-channel = "0.5"
-fastrand = { workspace = true }
-flate2 = "1"
 globset = { workspace = true }
-http-body-util = "0.1"
-itoa = "1"
-ryu = "1"
 libc = "0.2"
-libloading = "0.8"
 memchr = "2"
 notify = "8"
-tokio = { workspace = true }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 opentelemetry-proto = { version = "0.31", features = ["logs", "gen-tonic-messages"] }
@@ -41,18 +30,12 @@ serde = { workspace = true }
 serde_json = "1"
 sonic-rs = { workspace = true }
 socket2 = { version = "0.6", features = ["all"] }
-tiny_http = { workspace = true }
+tiny_http = "0.12"
 zstd = "0.13"
 xxhash-rust = { version = "0.8.15", features = ["xxh32", "xxh64"] }
-sysinfo = { workspace = true }
 walkdir = { workspace = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-aya = { workspace = true }
-sensor-ebpf-common = { path = "../logfwd-ebpf-proto/sensor-ebpf/sensor-ebpf-common", version = "0.1.0", features = ["std"] }
-
 [dev-dependencies]
-chrono = { workspace = true }
 dhat = "0.3"
 logfwd-test-utils = { version = "0.1.0", path = "../logfwd-test-utils" }
 proptest = "1"

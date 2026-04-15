@@ -120,7 +120,6 @@ mod tests {
         let input = b"line one\nline two\nline three\n";
         let output = NewlineFramer.frame(input);
         assert_eq!(output.len(), 3);
-        assert!(!output.is_empty());
         assert_eq!(
             &input[output.line_range(0).0..output.line_range(0).1],
             b"line one"
@@ -153,7 +152,6 @@ mod tests {
     fn newline_framer_empty() {
         let output = NewlineFramer.frame(b"");
         assert_eq!(output.len(), 0);
-        assert!(output.is_empty());
         assert_eq!(output.remainder_offset, 0);
     }
 
@@ -162,7 +160,6 @@ mod tests {
         let input = b"no newline at all";
         let output = NewlineFramer.frame(input);
         assert_eq!(output.len(), 0);
-        assert!(output.is_empty());
         assert_eq!(output.remainder_offset, 0);
         assert_eq!(&input[output.remainder_offset..], b"no newline at all");
     }

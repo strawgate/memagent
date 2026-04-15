@@ -29,10 +29,9 @@ spec:
         fsGroup: 65532
       containers:
         - name: logfwd
-          image: ghcr.io/strawgate/memagent:latest
+          image: ghcr.io/strawgate/logfwd:latest
           imagePullPolicy: IfNotPresent
           args:
-            - "run"
             - "--config"
             - "/etc/logfwd/pipeline.yaml"
           securityContext:

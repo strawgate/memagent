@@ -1,15 +1,12 @@
-//! Ingest benchmark: measures RSS memory and CPU usage for logfwd at
-//! controlled event rates and at maximum throughput.
+//! Low-and-slow ingest benchmark: measures RSS memory and CPU usage for
+//! logfwd at controlled event rates (1, 10, 100, 1_000, 10_000, 100_000 eps).
 //!
 //! This is a non-competitive benchmark — it only runs logfwd.
-//!
-//! EPS tiers: 1, 10, 100, 1K, 10K, 100K, 1M, then an **unlimited** tier
-//! that writes as fast as possible to measure the resource ceiling.
 //!
 //! For each target rate the benchmark:
 //!   1. Writes a logfwd config that tails a temp file and forwards to the
 //!      provided blackhole address.
-//!   2. Spawns logfwd, then a writer thread (rate-limited or unlimited).
+//!   2. Spawns logfwd, then a rate-limited writer thread.
 //!   3. After a short warmup it samples RSS (from `/proc/{pid}/status`) and
 //!      CPU (from `/proc/{pid}/stat`) every 500 ms for 20 s.
 //!   4. Reports the averages.
@@ -22,8 +19,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 /// EPS levels tested by the benchmark.
-/// The final `0` entry means "unlimited" — write as fast as possible.
-pub const DEFAULT_EPS_LEVELS: &[u64] = &[1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, 0];
+pub const DEFAULT_EPS_LEVELS: &[u64] = &[1, 10, 100, 1_000, 10_000, 100_000];
 
 /// Warmup duration before sampling begins.
 const WARMUP_SECS: u64 = 5;
@@ -71,12 +67,7 @@ pub fn run_rate_bench(
 ) -> Vec<RateBenchResult> {
     let mut results = Vec::new();
     for &eps in DEFAULT_EPS_LEVELS {
-        let label = if eps == 0 {
-            "unlimited".to_string()
-        } else {
-            format!("{eps}")
-        };
-        eprintln!("=== Rate bench: {label} eps ===");
+        eprintln!("=== Rate bench: {eps} eps ===");
         match run_single_rate(logfwd_binary, bench_dir, blackhole_addr, eps) {
             Ok(r) => {
                 eprintln!(
@@ -111,7 +102,6 @@ fn run_single_rate(
 
     // Spawn logfwd.
     let mut child = Command::new(logfwd_binary)
-        .arg("run")
         .arg("--config")
         .arg(&cfg_path)
         .stdout(std::process::Stdio::null())
@@ -221,8 +211,7 @@ pipelines:
 // ---------------------------------------------------------------------------
 
 /// Append one JSON log line per slot to `path` at `eps` events per second
-/// until `stop` is set.  When `eps == 0` the writer runs as fast as possible
-/// (unlimited throughput mode).
+/// until `stop` is set.
 fn write_at_rate(path: &Path, eps: u64, stop: &AtomicBool, written: &AtomicU64) {
     let file = match std::fs::OpenOptions::new().append(true).open(path) {
         Ok(f) => f,
@@ -233,53 +222,37 @@ fn write_at_rate(path: &Path, eps: u64, stop: &AtomicBool, written: &AtomicU64) 
     };
     let mut w = BufWriter::with_capacity(64 * 1024, file);
     let levels = ["INFO", "DEBUG", "WARN", "ERROR"];
+    let interval = Duration::from_nanos(1_000_000_000 / eps.max(1));
+    let mut next = Instant::now();
     let mut last_flush = Instant::now();
     let mut count = 0u64;
 
-    if eps == 0 {
-        // Unlimited mode: write as fast as possible.
-        while !stop.load(Ordering::Relaxed) {
+    while !stop.load(Ordering::Relaxed) {
+        let now = Instant::now();
+        if now >= next {
             let level = levels[(count % 4) as usize];
+            // Ignore write errors — logfwd may have exited already.
             let _ = writeln!(
                 w,
                 r#"{{"ts":"2024-01-01T00:00:{:02}Z","level":"{level}","msg":"bench","n":{count}}}"#,
                 count % 60,
             );
-            count += 1;
-            written.fetch_add(1, Ordering::Relaxed);
-            let now = Instant::now();
-            if now.duration_since(last_flush) >= Duration::from_millis(100) {
+            // Flush at most once per second so logfwd sees data promptly at low
+            // EPS without hammering syscalls at high EPS.
+            if now.duration_since(last_flush) >= Duration::from_secs(1) {
                 let _ = w.flush();
                 last_flush = now;
             }
-        }
-    } else {
-        // Rate-limited mode.
-        let interval = Duration::from_nanos(1_000_000_000 / eps);
-        let mut next = Instant::now();
-        while !stop.load(Ordering::Relaxed) {
-            let now = Instant::now();
-            if now >= next {
-                let level = levels[(count % 4) as usize];
-                let _ = writeln!(
-                    w,
-                    r#"{{"ts":"2024-01-01T00:00:{:02}Z","level":"{level}","msg":"bench","n":{count}}}"#,
-                    count % 60,
-                );
-                if now.duration_since(last_flush) >= Duration::from_secs(1) {
-                    let _ = w.flush();
-                    last_flush = now;
-                }
-                count += 1;
-                written.fetch_add(1, Ordering::Relaxed);
-                next += interval;
+            count += 1;
+            written.fetch_add(1, Ordering::Relaxed);
+            next += interval;
+        } else {
+            // Avoid busy-spinning: sleep half the remaining gap.
+            let remaining = next - now;
+            if remaining > Duration::from_micros(200) {
+                std::thread::sleep(remaining / 2);
             } else {
-                let remaining = next - now;
-                if remaining > Duration::from_micros(200) {
-                    std::thread::sleep(remaining / 2);
-                } else {
-                    std::hint::spin_loop();
-                }
+                std::hint::spin_loop();
             }
         }
     }
@@ -334,14 +307,9 @@ pub fn print_rate_results_markdown(results: &[RateBenchResult]) {
     println!("| Target (eps) | Actual (eps) | RSS Memory | CPU % |");
     println!("|:------------:|:------------:|:----------:|:-----:|");
     for r in results {
-        let target = if r.eps == 0 {
-            "unlimited".to_string()
-        } else {
-            r.eps.to_string()
-        };
         println!(
             "| {:>12} | {:>12.1} | {:>7} KiB | {:>5.1}% |",
-            target, r.actual_eps, r.rss_kb, r.cpu_percent
+            r.eps, r.actual_eps, r.rss_kb, r.cpu_percent
         );
     }
     println!();
@@ -361,14 +329,9 @@ pub fn print_rate_results_table(results: &[RateBenchResult]) {
         "------------", "------------", "---------", "-----"
     );
     for r in results {
-        let target = if r.eps == 0 {
-            "unlimited".to_string()
-        } else {
-            r.eps.to_string()
-        };
         println!(
             "  {:<14} {:<14.1} {:<14} {:<10.1}",
-            target, r.actual_eps, r.rss_kb, r.cpu_percent
+            r.eps, r.actual_eps, r.rss_kb, r.cpu_percent
         );
     }
     println!("===========================================");
@@ -387,19 +350,14 @@ pub fn write_rate_gh_bench_json(results: &[RateBenchResult], path: &Path) {
     let entries: Vec<Entry> = results
         .iter()
         .flat_map(|r| {
-            let tag = if r.eps == 0 {
-                "unlimited".to_string()
-            } else {
-                format!("{}", r.eps)
-            };
             [
                 Entry {
-                    name: format!("rate-bench/{tag}-eps/rss-kb"),
+                    name: format!("rate-bench/{}-eps/rss-kb", r.eps),
                     unit: "KiB".to_string(),
                     value: r.rss_kb as f64,
                 },
                 Entry {
-                    name: format!("rate-bench/{tag}-eps/cpu-pct"),
+                    name: format!("rate-bench/{}-eps/cpu-pct", r.eps),
                     unit: "%".to_string(),
                     value: r.cpu_percent,
                 },

@@ -2,8 +2,6 @@
 //!
 //! Spark-compatible regex extraction. Returns the capture group at the given
 //! index (1-based), or the full match if index is 0. Returns NULL on no match.
-//! `string` and `pattern` accept Utf8, Utf8View, or LargeUtf8 expressions;
-//! `pattern` must still be a scalar literal at runtime.
 //!
 //! ```sql
 //! SELECT regexp_extract(message_str, 'status=(\d+)', 1) AS status FROM logs
@@ -11,8 +9,7 @@
 //! ```
 
 use std::any::Any;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, OnceLock};
 
 use arrow::array::{Array, AsArray, StringBuilder};
 use arrow::datatypes::DataType;
@@ -26,38 +23,16 @@ use regex::Regex;
 
 /// UDF: regexp_extract(string, pattern, group_index) -> Utf8
 ///
-/// SQL shape: `regexp_extract(<text>, <regex-literal>, <group-index>)`.
-/// `<text>` and `<regex-literal>` may be Utf8, Utf8View, or LargeUtf8
-/// expressions; `<group-index>` is Int64 (`0` = full match, `1+` = capture).
-/// Returns NULL when the pattern does not match or the group index is out of range.
+/// - `string`: the input column (Utf8)
+/// - `pattern`: regex pattern with capture groups (Utf8 literal)
+/// - `group_index`: 0 for full match, 1+ for capture groups (Int64)
+///
+/// Returns NULL when the pattern doesn't match or the group index is out of range.
+#[derive(Debug)]
 pub struct RegexpExtractUdf {
     signature: Signature,
-    /// Per-pattern regex cache.  DataFusion shares the same `ScalarUDFImpl`
-    /// instance across all `regexp_extract(...)` expressions in a query, so a
-    /// single-slot `OnceLock` would permanently cache the first pattern seen and
-    /// silently apply it to all subsequent calls with different patterns.
-    /// Keying the cache by pattern string correctly handles multiple patterns.
-    regex_cache: Mutex<HashMap<String, Arc<Regex>>>,
-}
-
-impl std::fmt::Debug for RegexpExtractUdf {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RegexpExtractUdf").finish_non_exhaustive()
-    }
-}
-
-impl PartialEq for RegexpExtractUdf {
-    fn eq(&self, other: &Self) -> bool {
-        self.signature == other.signature
-    }
-}
-
-impl Eq for RegexpExtractUdf {}
-
-impl std::hash::Hash for RegexpExtractUdf {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        self.signature.hash(state);
-    }
+    /// Compiled regex cached after the first invocation (pattern is constant per SQL query).
+    compiled_regex: OnceLock<Regex>,
 }
 
 impl Default for RegexpExtractUdf {
@@ -70,44 +45,10 @@ impl RegexpExtractUdf {
     pub fn new() -> Self {
         Self {
             signature: Signature::new(
-                TypeSignature::OneOf(vec![
-                    TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8, DataType::Int64]),
-                    TypeSignature::Exact(vec![DataType::Utf8View, DataType::Utf8, DataType::Int64]),
-                    TypeSignature::Exact(vec![
-                        DataType::LargeUtf8,
-                        DataType::Utf8,
-                        DataType::Int64,
-                    ]),
-                    TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8View, DataType::Int64]),
-                    TypeSignature::Exact(vec![
-                        DataType::Utf8View,
-                        DataType::Utf8View,
-                        DataType::Int64,
-                    ]),
-                    TypeSignature::Exact(vec![
-                        DataType::LargeUtf8,
-                        DataType::Utf8View,
-                        DataType::Int64,
-                    ]),
-                    TypeSignature::Exact(vec![
-                        DataType::Utf8,
-                        DataType::LargeUtf8,
-                        DataType::Int64,
-                    ]),
-                    TypeSignature::Exact(vec![
-                        DataType::Utf8View,
-                        DataType::LargeUtf8,
-                        DataType::Int64,
-                    ]),
-                    TypeSignature::Exact(vec![
-                        DataType::LargeUtf8,
-                        DataType::LargeUtf8,
-                        DataType::Int64,
-                    ]),
-                ]),
+                TypeSignature::Exact(vec![DataType::Utf8, DataType::Utf8, DataType::Int64]),
                 Volatility::Immutable,
             ),
-            regex_cache: Mutex::new(HashMap::new()),
+            compiled_regex: OnceLock::new(),
         }
     }
 }
@@ -142,150 +83,83 @@ impl ScalarUDFImpl for RegexpExtractUdf {
 
         // Extract the pattern string (must be a constant/scalar).
         let pattern_str = match pattern {
-            ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some(s)))
-            | ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8View(Some(s)))
-            | ColumnarValue::Scalar(datafusion::common::ScalarValue::LargeUtf8(Some(s))) => {
-                s.clone()
+            ColumnarValue::Scalar(datafusion::common::ScalarValue::Utf8(Some(s))) => s.clone(),
+            ColumnarValue::Scalar(s) => {
+                let s = s.to_string();
+                s.trim_matches('"').trim_matches('\'').to_string()
             }
-            // NULL pattern -> NULL propagation: return all-null result.
-            ColumnarValue::Scalar(s) if s.is_null() => {
-                return Ok(ColumnarValue::Scalar(
-                    datafusion::common::ScalarValue::Utf8(None),
-                ));
-            }
-            ColumnarValue::Scalar(_) => {
-                return Err(datafusion::error::DataFusionError::Execution(
-                    "regexp_extract() pattern argument must be a scalar string literal".to_string(),
-                ));
-            }
-            ColumnarValue::Array(_) => {
-                return Err(datafusion::error::DataFusionError::Execution(
-                    "regexp_extract() pattern argument must be a scalar string literal".to_string(),
-                ));
+            ColumnarValue::Array(arr) => {
+                let str_arr = arr.as_string::<i32>();
+                if str_arr.len() == 0 || str_arr.is_null(0) {
+                    return Ok(ColumnarValue::Scalar(
+                        datafusion::common::ScalarValue::Utf8(None),
+                    ));
+                }
+                str_arr.value(0).to_string()
             }
         };
 
-        // Get or compile the regex, keyed by pattern string.  Each distinct
-        // pattern gets its own cache entry so that multiple regexp_extract(...)
-        // calls with different patterns in the same SQL query each use the
-        // correct compiled regex.
-        let re: Arc<Regex> = {
-            let mut cache = self.regex_cache.lock().map_err(|_| {
-                datafusion::error::DataFusionError::Execution(
-                    "regexp_extract() internal cache lock poisoned".to_string(),
-                )
+        // Get or compile the regex (compiled once per UDF instance; pattern is constant per query).
+        let re = if let Some(re) = self.compiled_regex.get() {
+            re
+        } else {
+            let new_re = Regex::new(&pattern_str).map_err(|e| {
+                datafusion::error::DataFusionError::Execution(format!(
+                    "regexp_extract: invalid pattern '{}': {}",
+                    pattern_str, e
+                ))
             })?;
-            if let Some(cached) = cache.get(&pattern_str) {
-                Arc::clone(cached)
-            } else {
-                let compiled = Regex::new(&pattern_str).map_err(|e| {
-                    datafusion::error::DataFusionError::Execution(format!(
-                        "regexp_extract: invalid pattern '{}': {}",
-                        pattern_str, e
-                    ))
-                })?;
-                let arc = Arc::new(compiled);
-                cache.insert(pattern_str, Arc::clone(&arc));
-                arc
-            }
+            // Racing threads may both compile; only the first set wins. Use whichever is stored.
+            let _ = self.compiled_regex.set(new_re);
+            self.compiled_regex.get().unwrap()
         };
 
         // Extract group index.
         let idx = match group_idx {
             ColumnarValue::Scalar(s) => {
                 if let datafusion::common::ScalarValue::Int64(Some(v)) = s {
-                    usize::try_from(*v).unwrap_or(0)
+                    *v as usize
                 } else {
                     0
                 }
             }
-            ColumnarValue::Array(_) => {
-                return Err(datafusion::error::DataFusionError::Execution(
-                    "regexp_extract() group_index argument must be a scalar integer literal, not an array column".to_string(),
-                ));
+            ColumnarValue::Array(arr) => {
+                let int_arr = arr.as_primitive::<arrow::datatypes::Int64Type>();
+                if int_arr.is_empty() || int_arr.is_null(0) {
+                    0
+                } else {
+                    int_arr.value(0) as usize
+                }
             }
         };
 
         match input {
             ColumnarValue::Array(array) => {
-                let num_rows = array.len();
-                let mut builder = StringBuilder::with_capacity(num_rows, num_rows * 32);
+                let str_array = array.as_string::<i32>();
+                let mut builder =
+                    StringBuilder::with_capacity(str_array.len(), str_array.len() * 32);
 
-                match array.data_type() {
-                    DataType::Utf8 => {
-                        let strings = array.as_string::<i32>();
-                        for i in 0..num_rows {
-                            if strings.is_null(i) {
-                                builder.append_null();
-                                continue;
-                            }
-                            match re.captures(strings.value(i)) {
-                                Some(caps) => match caps.get(idx) {
-                                    Some(m) => builder.append_value(m.as_str()),
-                                    None => builder.append_null(),
-                                },
-                                None => builder.append_null(),
-                            }
-                        }
+                for i in 0..str_array.len() {
+                    if str_array.is_null(i) {
+                        builder.append_null();
+                        continue;
                     }
-                    DataType::Utf8View => {
-                        let strings = array.as_string_view();
-                        for i in 0..num_rows {
-                            if strings.is_null(i) {
-                                builder.append_null();
-                                continue;
-                            }
-                            match re.captures(strings.value(i)) {
-                                Some(caps) => match caps.get(idx) {
-                                    Some(m) => builder.append_value(m.as_str()),
-                                    None => builder.append_null(),
-                                },
-                                None => builder.append_null(),
-                            }
-                        }
-                    }
-                    DataType::LargeUtf8 => {
-                        let strings = array.as_string::<i64>();
-                        for i in 0..num_rows {
-                            if strings.is_null(i) {
-                                builder.append_null();
-                                continue;
-                            }
-                            match re.captures(strings.value(i)) {
-                                Some(caps) => match caps.get(idx) {
-                                    Some(m) => builder.append_value(m.as_str()),
-                                    None => builder.append_null(),
-                                },
-                                None => builder.append_null(),
-                            }
-                        }
-                    }
-                    other => {
-                        return Err(datafusion::error::DataFusionError::Execution(format!(
-                            "regexp_extract() input must be Utf8/Utf8View/LargeUtf8, got {other:?}"
-                        )));
+                    let val = str_array.value(i);
+                    match re.captures(val) {
+                        Some(caps) => match caps.get(idx) {
+                            Some(m) => builder.append_value(m.as_str()),
+                            None => builder.append_null(),
+                        },
+                        None => builder.append_null(),
                     }
                 }
 
                 Ok(ColumnarValue::Array(Arc::new(builder.finish())))
             }
             ColumnarValue::Scalar(scalar) => {
-                // Propagate SQL NULL rather than matching against the literal
-                // string "NULL" that ScalarValue::Utf8(None).to_string() produces.
-                if scalar.is_null() {
-                    return Ok(ColumnarValue::Scalar(
-                        datafusion::common::ScalarValue::Utf8(None),
-                    ));
-                }
-                // Extract the inner string directly from ScalarValue to avoid
-                // trim_matches corruption on values with boundary quotes.
-                let val = match scalar {
-                    datafusion::common::ScalarValue::Utf8(Some(s))
-                    | datafusion::common::ScalarValue::Utf8View(Some(s))
-                    | datafusion::common::ScalarValue::LargeUtf8(Some(s)) => s.clone(),
-                    other => other.to_string(),
-                };
-                match re.captures(&val) {
+                let val = scalar.to_string();
+                let val = val.trim_matches('"').trim_matches('\'');
+                match re.captures(val) {
                     Some(caps) => match caps.get(idx) {
                         Some(m) => Ok(ColumnarValue::Scalar(
                             datafusion::common::ScalarValue::Utf8(Some(m.as_str().to_string())),
@@ -305,33 +179,6 @@ impl ScalarUDFImpl for RegexpExtractUdf {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_extract_group_negative_index_truncation() {
-        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
-        let msgs: Arc<dyn Array> = Arc::new(StringArray::from(vec![Some("a b c")]));
-        let batch = RecordBatch::try_new(schema, vec![msgs]).unwrap();
-        // Negative group index wraps to a huge usize causing a panic inside regexp_extract
-        // The fix maps it to 0 (the full match).
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let mut t = crate::SqlTransform::new(
-            "SELECT regexp_extract(msg, '(\\w) (\\w) (\\w)', -1) AS m FROM logs",
-        )
-        .unwrap();
-        let result = rt.block_on(t.execute(batch));
-
-        let s = result.unwrap();
-        let m = s
-            .column_by_name("m")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(m.value(0), "a b c");
-    }
-
     use super::*;
     use arrow::array::{Array, Int64Array, StringArray};
     use arrow::datatypes::{Field, Schema};
@@ -341,22 +188,15 @@ mod tests {
 
     /// Helper to run a SQL query with regexp_extract registered.
     async fn run_sql(batch: RecordBatch, sql: &str) -> RecordBatch {
-        let batches = run_sql_result(batch, sql).await.unwrap();
-        batches.into_iter().next().unwrap()
-    }
-
-    async fn run_sql_result(
-        batch: RecordBatch,
-        sql: &str,
-    ) -> datafusion::error::Result<Vec<RecordBatch>> {
         let ctx = SessionContext::new();
         ctx.register_udf(ScalarUDF::from(RegexpExtractUdf::new()));
-        ctx.register_udf(ScalarUDF::from(crate::cast_udf::IntCastUdf::new()));
+        ctx.register_udf(ScalarUDF::from(crate::IntCastUdf::new()));
         let table =
             datafusion::datasource::MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         ctx.register_table("logs", Arc::new(table)).unwrap();
-        let df = ctx.sql(sql).await?;
-        df.collect().await
+        let df = ctx.sql(sql).await.unwrap();
+        let batches = df.collect().await.unwrap();
+        batches.into_iter().next().unwrap()
     }
 
     fn make_batch() -> RecordBatch {
@@ -460,275 +300,5 @@ mod tests {
             .unwrap();
         assert_eq!(dur.value(0), 15);
         assert_eq!(dur.value(1), 230);
-    }
-
-    /// Regression: regexp_extract(NULL literal, ...) must return NULL, not
-    /// match against the string "NULL" that ScalarValue::to_string() produces.
-    ///
-    /// Before the fix, `regexp_extract(NULL, '(.+)', 1)` returned "NULL" because
-    /// the scalar branch called `scalar.to_string()` without checking `is_null()`.
-    #[test]
-    fn test_null_literal_input_returns_null() {
-        let batch = make_batch();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        // CAST(NULL AS VARCHAR) forces a scalar Utf8(None) through the UDF.
-        let result = rt.block_on(run_sql(
-            batch,
-            "SELECT regexp_extract(CAST(NULL AS VARCHAR), '(.+)', 1) AS extracted FROM logs",
-        ));
-        let col = result.column_by_name("extracted").unwrap();
-        // Every row must be NULL — the pattern '(.+)' would match "NULL" if the
-        // bug were present.
-        for row in 0..result.num_rows() {
-            assert!(
-                col.is_null(row),
-                "row {row}: expected NULL but got a non-null value (bug: matched against \"NULL\")"
-            );
-        }
-    }
-
-    /// Two regexp_extract calls with DIFFERENT patterns in the same query must
-    /// each use their own compiled regex.
-    ///
-    /// Regression test for OnceLock caching bug: because DataFusion shares the
-    /// same ScalarUDFImpl instance for all regexp_extract expressions in a query,
-    /// a shared OnceLock would cache the first pattern and apply it to all
-    /// subsequent calls — silently producing wrong results.
-    #[test]
-    fn test_two_different_patterns_in_same_query() {
-        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
-        let msgs: Arc<dyn Array> = Arc::new(StringArray::from(vec![
-            Some("error=TIMEOUT user=alice"),
-            Some("error=AUTH user=bob"),
-        ]));
-        let batch = RecordBatch::try_new(schema, vec![msgs]).unwrap();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let result = rt.block_on(run_sql(
-            batch,
-            "SELECT \
-                regexp_extract(msg, 'error=(\\w+)', 1) AS err_code, \
-                regexp_extract(msg, 'user=(\\w+)', 1)  AS user_name \
-             FROM logs",
-        ));
-
-        let err = result
-            .column_by_name("err_code")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(
-            err.value(0),
-            "TIMEOUT",
-            "err_code row 0 must match error= pattern"
-        );
-        assert_eq!(
-            err.value(1),
-            "AUTH",
-            "err_code row 1 must match error= pattern"
-        );
-
-        let user = result
-            .column_by_name("user_name")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(
-            user.value(0),
-            "alice",
-            "user_name row 0 must match user= pattern"
-        );
-        assert_eq!(
-            user.value(1),
-            "bob",
-            "user_name row 1 must match user= pattern"
-        );
-    }
-
-    /// Regression: regexp_extract() must accept Utf8View input columns.
-    /// Before the fix, Utf8View was not in the signature and would cause a
-    /// type-mismatch error at planning time.
-    #[test]
-    fn test_regexp_extract_utf8view_input() {
-        use arrow::array::StringViewArray;
-
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "msg",
-            DataType::Utf8View,
-            true,
-        )]));
-        let msgs: Arc<dyn Array> = Arc::new(StringViewArray::from(vec![
-            Some("status=200 user=alice"),
-            Some("status=500 user=bob"),
-            None,
-        ]));
-        let batch = RecordBatch::try_new(schema, vec![msgs]).unwrap();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let result = rt.block_on(run_sql(
-            batch,
-            "SELECT regexp_extract(msg, 'status=(\\d+)', 1) AS status FROM logs",
-        ));
-
-        let status = result
-            .column_by_name("status")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(status.value(0), "200");
-        assert_eq!(status.value(1), "500");
-        assert!(status.is_null(2));
-    }
-
-    #[test]
-    fn test_regexp_extract_largeutf8_input() {
-        use arrow::array::LargeStringArray;
-
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "msg",
-            DataType::LargeUtf8,
-            true,
-        )]));
-        let msgs: Arc<dyn Array> = Arc::new(LargeStringArray::from(vec![
-            Some("status=201 user=carol"),
-            Some("status=404 user=dave"),
-            None,
-        ]));
-        let batch = RecordBatch::try_new(schema, vec![msgs]).unwrap();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let result = rt.block_on(run_sql(
-            batch,
-            "SELECT regexp_extract(msg, 'status=(\\d+)', 1) AS status FROM logs",
-        ));
-
-        let status = result
-            .column_by_name("status")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(status.value(0), "201");
-        assert_eq!(status.value(1), "404");
-        assert!(status.is_null(2));
-    }
-
-    #[test]
-    fn test_regexp_extract_rejects_array_pattern_argument() {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("msg", DataType::Utf8, true),
-            Field::new("pattern", DataType::Utf8, true),
-        ]));
-        let msg: Arc<dyn Array> = Arc::new(StringArray::from(vec![Some("status=200")]));
-        let pattern: Arc<dyn Array> = Arc::new(StringArray::from(vec![Some("status=(\\d+)")]));
-        let batch = RecordBatch::try_new(schema, vec![msg, pattern]).unwrap();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let err = rt
-            .block_on(run_sql_result(
-                batch,
-                "SELECT regexp_extract(msg, pattern, 1) AS status FROM logs",
-            ))
-            .expect_err("array pattern argument must be rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("pattern argument must be a scalar string literal"),
-            "unexpected error: {msg}"
-        );
-    }
-
-    /// Regression (#1891): NULL pattern must return NULL, not compile "NULL" as regex.
-    #[test]
-    fn test_null_pattern_returns_null() {
-        let batch = make_batch();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let result = rt.block_on(run_sql(
-            batch,
-            "SELECT regexp_extract(msg, CAST(NULL AS VARCHAR), 1) AS extracted FROM logs",
-        ));
-        let col = result.column_by_name("extracted").unwrap();
-        for row in 0..result.num_rows() {
-            assert!(
-                col.is_null(row),
-                "row {row}: NULL pattern must propagate NULL"
-            );
-        }
-    }
-
-    /// Regression (#1901): scalar input with boundary quotes must not be corrupted.
-    #[test]
-    fn test_scalar_input_preserves_boundary_quotes() {
-        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
-        let msgs: Arc<dyn Array> = Arc::new(StringArray::from(vec![Some("dummy")]));
-        let batch = RecordBatch::try_new(schema, vec![msgs]).unwrap();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let result = rt.block_on(run_sql(
-            batch,
-            r#"SELECT regexp_extract('"hello"', '(".*")', 1) AS extracted FROM logs"#,
-        ));
-        let col = result
-            .column_by_name("extracted")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(
-            col.value(0),
-            "\"hello\"",
-            "boundary quotes must be preserved"
-        );
-    }
-
-    /// Regression (#1889): array group_index must be rejected.
-    #[test]
-    fn test_rejects_array_group_index() {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("msg", DataType::Utf8, true),
-            Field::new("idx", DataType::Int64, true),
-        ]));
-        let msg: Arc<dyn Array> = Arc::new(StringArray::from(vec![Some("status=200")]));
-        let idx: Arc<dyn Array> = Arc::new(Int64Array::from(vec![Some(1)]));
-        let batch = RecordBatch::try_new(schema, vec![msg, idx]).unwrap();
-
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let err = rt
-            .block_on(run_sql_result(
-                batch,
-                "SELECT regexp_extract(msg, 'status=(\\d+)', idx) AS status FROM logs",
-            ))
-            .expect_err("array group_index must be rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("group_index argument must be a scalar integer literal"),
-            "unexpected error: {msg}"
-        );
     }
 }

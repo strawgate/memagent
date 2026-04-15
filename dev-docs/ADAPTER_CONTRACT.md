@@ -9,6 +9,9 @@ defines what `Scanner` expects and produces. This document defines what the
 OTLP, file, diagnostics, and pipeline adapters must preserve before data
 reaches the scanner and after data leaves the `RecordBatch` pipeline.
 
+If you were looking for the older `IO_CONTRACTS.md` name, that file now points
+here.
+
 ## Scope
 
 In-scope:
@@ -38,7 +41,7 @@ one regression test per incident.
 
 ## How To Read This Doc
 
-Each guarantee should name:
+Each guarantee names:
 
 - the boundary it applies to
 - the current behavior or intended invariant
@@ -67,25 +70,11 @@ scanner-ready JSON lines.
 - Unsupported paths return `404`.
 - Wrong methods return `405`.
 - Bodies over the configured hard cap are rejected with `413`.
-- Supported encodings are `identity`, `zstd`, and `gzip`.
+- Supported encodings are `identity` and `zstd`.
 - Malformed JSON, malformed protobuf, or malformed OTLP JSON field encodings
   are rejected with `400`.
 - Backpressure returns `429`.
 - A disconnected pipeline returns `503`.
-
-### Diagnostics accounting rules
-
-- Input diagnostics must charge OTLP request bytes from the accepted request
-  body size at the receiver boundary as received on the wire, not from
-  downstream Arrow memory estimates or post-decompression payload size.
-- Legacy OTLP JSON-lines ingress and structured OTLP batch ingress must report
-  the same `lines_total` and same `bytes_total` for the same accepted
-  request body.
-- Rejected OTLP payloads must not increment `lines_total` or `bytes_total`.
-- Malformed OTLP payloads must increment input `parse_errors_total`.
-- Transport and request-handling failures (read errors, unsupported encodings,
-  disconnected downstream channel, oversized compressed bodies) must increment
-  input `errors_total`.
 
 ### Semantic field rules
 
@@ -114,23 +103,6 @@ same emitted JSON-line semantics for the supported field set.
 
 This is stronger than “both requests return 200”. It means the receiver must
 not silently diverge by format path.
-
-## Arrow IPC Receiver Contract
-
-The Arrow IPC receiver accepts `POST /v1/arrow` and forwards decoded
-`RecordBatch`es directly into the pipeline channel.
-
-### Delivery rules
-
-- If every non-empty batch in the request is accepted, return `200`.
-- If the channel becomes full after some prefix of batches has already been
-  accepted, return `429` for the whole request (never `200`).
-- A `429` on this path means **partial acceptance is possible**: a prefix may
-  already be delivered, so client retries are required to avoid loss of the
-  unsent suffix and may duplicate already-accepted prefix batches.
-- Downstream processing for Arrow IPC ingress is therefore at-least-once under
-  backpressure unless request-level deduplication is introduced externally.
-- A disconnected pipeline channel returns `503`.
 
 ## OTLP Sink Contract
 
@@ -185,39 +157,13 @@ The file path is:
 - When EOF flushes a remainder, or a remainder is explicitly discarded after a
   documented lifecycle event, the checkpoint may then advance.
 
-### Source metadata rules
-
-- Source metadata (`_source_path`, `_source_id`, future fields) must be
-  attached as Arrow columns **post-scan**, not injected into raw bytes pre-scan.
-- The existing `inject_source_path_metadata` in `framed.rs` is **deprecated**
-  (#1615). It must not be extended or used as a pattern for new metadata.
-- Legacy exception: `_source_path` raw-byte insertion still exists in
-  `inject_source_path_metadata` for compatibility with current file JSON/CRI
-  paths. Treat this as transitional technical debt until #1615 lands; do not
-  add new `_source_*` raw injection helpers.
-- Canonical pattern for new metadata: scanner-attached `_resource_*` columns
-  (the same resource-column model used by OTLP/OTAP paths), attached at
-  scan/build time in the RecordBatch schema and accessible via SQL without raw
-  payload mutation.
-- Rationale: raw injection mutates user data, causes format-specific edge
-  cases (invalid JSON for empty objects), and is 30x slower than post-scan
-  column attachment (PR #1370 prototype measurements).
-
 ### Lifecycle rules
 
-- Rotate, truncate, delete/recreate, and EOF/stall notifications are explicit events.
+- Rotate, truncate, delete/recreate, and terminal EOF are explicit events.
 - `Truncated` must be emitted before post-truncate data so framing state can be
   cleared safely.
-- Every `InputSource` implementation must define its control-plane `health()`
-  semantics explicitly; input lifecycle truth must not rely on a trait-level
-  default.
-- The current file tailer emits `EndOfFile` only after both:
-  two consecutive no-data polls for a source, and
-  an idle-duration gate (derived from `poll_interval_ms`) has elapsed.
-  This avoids flushing mid-line fragments too aggressively on transient stalls
-  while still providing a bounded flush path for trailing partial lines.
-- Fresh data resets both the poll streak and idle timer, allowing a later
-  `EndOfFile` signal after a new sustained no-data period.
+- Only terminal EOF may flush a trailing partial line; transient “no new bytes
+  right now” states must not flush buffered partial lines.
 - Tailer watcher/file I/O error bursts that trigger poll backoff should surface
   as `degraded` control-plane health, and a later clean poll should recover the
   file input to `healthy`.
@@ -226,10 +172,6 @@ The file path is:
   budget, and recover to `healthy` after a clean poll.
 - UDP inputs should surface `degraded` when the kernel reports receive-buffer
   pressure (`ENOBUFS`/`ENOMEM`) and recover to `healthy` after a clean poll.
-- `FramedInput` should forward the wrapped input's health rather than inventing
-  its own parallel lifecycle policy.
-- Generator-style inputs with no independent bind/startup/shutdown lifecycle may
-  report steady `healthy`, but that choice must still be explicit in code.
 
 ### Delivery semantics
 
@@ -238,14 +180,6 @@ The file path is:
 - Duplicate delivery is acceptable when required for at-least-once recovery.
 - Copytruncate is explicitly documented as a race window, not treated as an
   exactly-once path.
-- Successful delivery advances checkpoints.
-- Explicit permanent sink rejection may also advance checkpoints; this is the
-  deliberate escape hatch for malformed or otherwise non-retriable data.
-- Retry exhaustion, dispatch failure, timeout, and other control-plane failures
-  must not advance checkpoints past undelivered data.
-- The current worker/pipeline seam does not yet retain enough batch payload
-  state to requeue held batches in-process, so non-advancing failures are
-  replayed on restart if shutdown force-stops with unresolved tickets.
 
 ## Diagnostics And Control-Plane Contract
 
@@ -303,9 +237,6 @@ not hide startup behind an otherwise healthy component.
   gating readiness.
 - status roll-ups should be deterministic and local to the semantic seam that owns them.
 - HTTP shell code should not own the policy for deciding what health means.
-- input `bytes_total` is a source-accounting metric, not an Arrow-memory
-  metric. Structured receivers must propagate source payload size explicitly
-  rather than deriving bytes from `RecordBatch::get_array_memory_size()`.
 
 ## Verification Mapping
 
@@ -323,7 +254,7 @@ This section maps the I/O contracts to the expected enforcement style.
 | Performance goals | disciplined benchmark validation |
 
 This table is normative for planning,
-not a claim that every item is already complete on `main`.
+not a claim that every item is already complete on `master`.
 
 ## Update Rules
 

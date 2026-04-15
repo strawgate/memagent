@@ -24,9 +24,9 @@ use arrow::array::{Float64Array, Int64Array, StringArray};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
+use logfwd_io::diagnostics::ComponentStats;
 use logfwd_output::sink::{Sink, SinkFactory};
 use logfwd_output::{BatchMetadata, ElasticsearchRequestMode, ElasticsearchSinkFactory};
-use logfwd_types::diagnostics::ComponentStats;
 use tokio::runtime::Runtime;
 
 const ES_ENDPOINT: &str = "http://localhost:9200";
@@ -109,23 +109,8 @@ fn index_batch(
         resource_attrs: Arc::new(vec![]),
         observed_time_ns: 0,
     };
-    let result = rt.block_on(sink.send_batch(batch, &metadata));
-    match result {
-        logfwd_output::SendResult::Ok => Ok(()),
-        logfwd_output::SendResult::Rejected(reason) => {
-            Err(std::io::Error::other(format!("batch rejected: {reason}")))
-        }
-        logfwd_output::SendResult::RetryAfter(delay) => Err(std::io::Error::other(format!(
-            "batch not accepted: retry after {}s",
-            delay.as_secs()
-        ))),
-        logfwd_output::SendResult::IoError(error) => Err(std::io::Error::other(format!(
-            "batch not accepted: io error: {error}"
-        ))),
-        other => Err(std::io::Error::other(format!(
-            "batch not accepted: unexpected send result: {other:?}"
-        ))),
-    }
+    rt.block_on(sink.send_batch(batch, &metadata))?;
+    Ok(())
 }
 
 /// Delete and recreate the benchmark index.
@@ -243,11 +228,11 @@ fn main() {
     let rt = Runtime::new().expect("failed to create tokio runtime");
 
     if !check_elasticsearch_available(&rt) {
-        eprintln!(
-            "WARNING: Elasticsearch not available at {}. Skipping bench.",
-            ES_ENDPOINT
-        );
-        return;
+        eprintln!("ERROR: Elasticsearch not available at {}", ES_ENDPOINT);
+        eprintln!("Please start Elasticsearch:");
+        eprintln!("  cd examples/elasticsearch");
+        eprintln!("  docker-compose up -d");
+        std::process::exit(1);
     }
 
     println!("✓ Elasticsearch connected at {}\n", ES_ENDPOINT);
@@ -264,7 +249,7 @@ fn main() {
         vec![],
         false,
         ElasticsearchRequestMode::Buffered,
-        stats,
+        stats.clone(),
     )
     .expect("failed to create sink factory");
     let mut sink = factory.create().expect("failed to create sink");
