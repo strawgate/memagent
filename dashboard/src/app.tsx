@@ -6,7 +6,6 @@ import { ConfigView } from "./components/ConfigView";
 import { LogViewer } from "./components/LogViewer";
 import { PipelineView } from "./components/PipelineView";
 import { StatusBar } from "./components/StatusBar";
-import { SystemStrip } from "./components/SystemStrip";
 import { fmtBytesCompact, fmtCompact } from "./lib/format";
 import { mergeTraces } from "./lib/mergeTraces";
 import { extractTraceRecords } from "./lib/otlpProcess";
@@ -88,16 +87,8 @@ const SYSTEM_CHARTS: ChartConfig[] = [
     yRange: [0, 10],
   },
   {
-    metricName: "logfwd.memory.allocated",
-    label: "Memory (Allocated)",
-    color: "#10b981",
-    unit: "",
-    fmtAxis: fmtBytesCompact,
-    yRange: [0, 67108864],
-  },
-  {
     metricName: "logfwd.memory.resident",
-    label: "Memory (RSS)",
+    label: "Memory",
     color: "#06b6d4",
     unit: "",
     fmtAxis: fmtBytesCompact,
@@ -113,6 +104,16 @@ const SYSTEM_CHARTS: ChartConfig[] = [
   },
 ];
 
+/** Optional overlay chart — shown via toggle button alongside Memory chart. */
+const MEMORY_ALLOCATED_CHART: ChartConfig = {
+  metricName: "logfwd.memory.allocated",
+  label: "Memory (Allocated)",
+  color: "#10b981",
+  unit: "",
+  fmtAxis: fmtBytesCompact,
+  yRange: [0, 67108864],
+};
+
 const POLL_MS = 2000;
 
 export function App() {
@@ -122,6 +123,7 @@ export function App() {
   const [traces, setTraces] = useState<TraceRecord[]>([]);
   const [totalErrors, setTotalErrors] = useState(0);
   const [showMoreCharts, setShowMoreCharts] = useState(false);
+  const [showAllocChart, setShowAllocChart] = useState(false);
 
   // ── WebSocket telemetry → TelemetryStore ─────────────────────────────────
   const { store, tick, ingest } = useTelemetryStore();
@@ -277,12 +279,22 @@ export function App() {
 
         {/* ── System charts ── */}
         <div class="section">
-          <div class="heading">System Metrics</div>
-          <ChartGrid store={store} charts={SYSTEM_CHARTS} tick={tick} />
+          <div class="heading">
+            System Metrics
+            <button
+              type="button"
+              class="show-more-btn inline"
+              onClick={() => setShowAllocChart(!showAllocChart)}
+            >
+              {showAllocChart ? "Hide Allocated" : "Show Allocated"}
+            </button>
+          </div>
+          <ChartGrid
+            store={store}
+            charts={showAllocChart ? [...SYSTEM_CHARTS, MEMORY_ALLOCATED_CHART] : SYSTEM_CHARTS}
+            tick={tick}
+          />
         </div>
-
-        {/* ── System strip — compact CPU / Memory / Inflight / Uptime ── */}
-        <SystemStrip store={store} tick={tick} uptimeSec={uptime} />
 
         {/* ── Pipelines — collapsible, expanded by default unless >3 ── */}
         {status?.pipelines.map((p, i) => (

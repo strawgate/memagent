@@ -256,12 +256,21 @@ export function PipelineView({ pipeline: p, traces, store, tick: _tick, defaultE
                 <b>{p.batches.inflight}</b>
               </span>
             )}
-            {(p.backpressure_stalls ?? 0) > 0 && (
-              <span class="pipe-stat">
-                <span class="pipe-stat-label">Stalls</span>
-                <b class="text-warn">{p.backpressure_stalls}</b>
-              </span>
-            )}
+            {(() => {
+              const stallRate = ratesRef.current.rate(
+                `${p.name}_stalls`,
+                p.backpressure_stalls ?? 0
+              );
+              if (stallRate != null && stallRate > 0) {
+                return (
+                  <span class="pipe-stat">
+                    <span class="pipe-stat-label">Stalls</span>
+                    <b class="text-warn">{stallRate.toFixed(1)}/s</b>
+                  </span>
+                );
+              }
+              return null;
+            })()}
             {totalErrors > 0 && (
               <span class="pipe-stat">
                 <span class="pipe-stat-label">Errors</span>
