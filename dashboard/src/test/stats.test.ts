@@ -247,8 +247,8 @@ describe("buildLanes", () => {
     const t1 = makeTr({ worker_id: 1 });
     const { lanes } = buildLanes([t0a, t0b, t1]);
 
-    const lane0 = lanes.find((l) => l.workerId === 0)!;
-    const lane1 = lanes.find((l) => l.workerId === 1)!;
+    const lane0 = lanes.find((l) => l.workerId === 0) as (typeof lanes)[0];
+    const lane1 = lanes.find((l) => l.workerId === 1) as (typeof lanes)[0];
     expect(lane0.traces).toHaveLength(2);
     expect(lane1.traces).toHaveLength(1);
   });

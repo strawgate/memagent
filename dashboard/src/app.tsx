@@ -411,7 +411,9 @@ export function App() {
           .slice(0, 50);
         if (done.length > 0) {
           const avgMs =
-            done.length > 0 ? done.reduce((s, t) => s + (Number(t.total_ns ?? "0") || 0), 0) / done.length / 1e6 : 0;
+            done.length > 0
+              ? done.reduce((s, t) => s + (Number(t.total_ns ?? "0") || 0), 0) / done.length / 1e6
+              : 0;
           series[6].ring.push(avgMs);
           series[6].value =
             avgMs >= 1000 ? `${(avgMs / 1000).toFixed(1)}s` : `${avgMs.toFixed(0)}ms`;
