@@ -58,15 +58,15 @@ fn validate_generator_format(
     format: &Format,
 ) -> Result<(), String> {
     match (profile, format) {
-        // CRI profile requires CRI format
-        (GeneratorProfile::CriK8s, Format::Cri | Format::Json) => {}
-        // All other profiles require JSON
-        (_, Format::Json) => {}
+        // CRI profile emits CRI-framed lines; only Format::Cri is valid.
+        (GeneratorProfile::CriK8s, Format::Cri) => {}
         (GeneratorProfile::CriK8s, _) => {
             return Err(format!(
-                "input '{name}': format {format:?} is not supported for cri_k8s generator (expected cri or json)"
+                "input '{name}': format {format:?} is not supported for cri_k8s generator (expected cri)"
             ));
         }
+        // All other profiles emit JSON lines.
+        (_, Format::Json) => {}
         (_, _) => {
             return Err(format!(
                 "input '{name}': format {format:?} is not supported for generator inputs (expected json)"
@@ -79,7 +79,8 @@ fn validate_generator_format(
 fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> Result<(), String> {
     match input_type {
         InputType::Generator => {
-            unreachable!("use validate_generator_format for Generator inputs");
+            // Generator inputs use validate_generator_format which has
+            // access to the profile. No-op here for safety.
         }
         InputType::Otlp | InputType::ArrowIpc => {
             if !matches!(format, Format::Json) {
