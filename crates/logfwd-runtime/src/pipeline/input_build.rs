@@ -631,11 +631,7 @@ fn build_host_metrics_config(
             .and_then(|c| c.max_rows_per_poll)
             .filter(|&n| n > 0)
             .unwrap_or(256),
-        include_process_names: cfg.and_then(|c| c.include_process_names.clone()),
-        exclude_process_names: cfg.and_then(|c| c.exclude_process_names.clone()),
-        include_event_types: cfg.and_then(|c| c.include_event_types.clone()),
-        exclude_event_types: cfg.and_then(|c| c.exclude_event_types.clone()),
-        ring_buffer_size_kb: cfg.and_then(|c| c.ring_buffer_size_kb),
+
     }
 }
 
