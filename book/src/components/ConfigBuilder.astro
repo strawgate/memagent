@@ -828,6 +828,7 @@ const wasmBase = import.meta.env.BASE_URL.replace(/\/$/, '') + '/wasm/logfwd-con
   function clearPreset() {
     if (activePresetBtn) {
       activePresetBtn.classList.remove('cb-active');
+      activePresetBtn.setAttribute('aria-pressed', 'false');
       activePresetBtn = null;
     }
   }
@@ -846,6 +847,7 @@ const wasmBase = import.meta.env.BASE_URL.replace(/\/$/, '') + '/wasm/logfwd-con
 
     clearPreset();
     btn.classList.add('cb-active');
+    btn.setAttribute('aria-pressed', 'true');
     activePresetBtn = btn;
     regenerate();
   }
@@ -898,6 +900,7 @@ const wasmBase = import.meta.env.BASE_URL.replace(/\/$/, '') + '/wasm/logfwd-con
       btn.type = 'button';
       btn.className = 'cb-preset-btn';
       btn.title = uc.description || '';
+      btn.setAttribute('aria-pressed', 'false');
       btn.innerHTML = `<span class="cb-preset-dot"></span>${uc.title}`;
       btn.addEventListener('click', () => applyPreset(uc, btn));
       useCaseList.appendChild(btn);
