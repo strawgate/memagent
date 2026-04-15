@@ -1,0 +1,482 @@
+---
+// ConfigBuilder.astro — Interactive logfwd pipeline config generator powered by WASM.
+---
+<div id="config-builder">
+  <div class="cb-status cb-loading">
+    <span class="cb-spinner"></span> Loading config builder…
+  </div>
+
+  <div class="cb-main" hidden>
+    <!-- ── Use-case presets ────────────────────────────────────────── -->
+    <section class="cb-presets">
+      <div class="cb-presets-label">Quick start</div>
+      <div id="cb-use-cases" class="cb-use-case-list"></div>
+    </section>
+
+    <!-- ── Selectors ──────────────────────────────────────────────── -->
+    <div class="cb-selectors">
+      <div class="cb-selector-col">
+        <label class="cb-col-label" for="cb-input-select">Input</label>
+        <select id="cb-input-select" class="cb-select"></select>
+        <div id="cb-input-desc" class="cb-desc"></div>
+      </div>
+      <div class="cb-arrow">→</div>
+      <div class="cb-selector-col">
+        <label class="cb-col-label" for="cb-output-select">Output</label>
+        <select id="cb-output-select" class="cb-select"></select>
+        <div id="cb-output-desc" class="cb-desc"></div>
+      </div>
+    </div>
+
+    <!-- ── SQL transform (collapsible) ────────────────────────────── -->
+    <details class="cb-transform" id="cb-transform-details">
+      <summary class="cb-transform-summary">SQL transform <span class="cb-optional">(optional)</span></summary>
+      <textarea
+        id="cb-sql"
+        class="cb-sql-editor"
+        spellcheck="false"
+        placeholder="SELECT * FROM logs WHERE level = 'error'"
+      ></textarea>
+      <div class="cb-sql-hint">Filter and reshape events before they reach the output. Leave blank to pass everything through.</div>
+    </details>
+
+    <!-- ── Generated config ───────────────────────────────────────── -->
+    <div class="cb-output-section">
+      <div class="cb-output-header">
+        <span class="cb-output-title">Generated config</span>
+        <div class="cb-output-actions">
+          <span id="cb-validation-badge" class="cb-badge"></span>
+          <button id="cb-copy-btn" class="cb-btn cb-btn-secondary" title="Copy to clipboard">Copy</button>
+          <button id="cb-download-btn" class="cb-btn cb-btn-primary" title="Download as logfwd.yaml">Download</button>
+        </div>
+      </div>
+      <pre id="cb-yaml-output" class="cb-yaml-pre"><code id="cb-yaml-code"></code></pre>
+      <div id="cb-validation-msg" class="cb-validation-msg" hidden></div>
+    </div>
+  </div>
+</div>
+
+<style>
+  #config-builder {
+    font-family: var(--sl-font-system);
+    font-size: var(--sl-text-sm);
+  }
+
+  /* Loading state */
+  .cb-loading {
+    padding: 2rem;
+    text-align: center;
+    color: var(--sl-color-gray-3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+  }
+  .cb-spinner {
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    border: 2px solid var(--sl-color-gray-5);
+    border-top-color: var(--sl-color-accent);
+    border-radius: 50%;
+    animation: cb-spin 0.7s linear infinite;
+  }
+  @keyframes cb-spin { to { transform: rotate(360deg); } }
+
+  /* Main layout */
+  .cb-main {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+  }
+
+  /* Use-case presets */
+  .cb-presets {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+  .cb-presets-label {
+    font-size: var(--sl-text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--sl-color-gray-3);
+    white-space: nowrap;
+  }
+  .cb-use-case-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .cb-preset-btn {
+    padding: 0.25rem 0.625rem;
+    border-radius: 999px;
+    border: 1px solid var(--sl-color-gray-5);
+    background: var(--sl-color-bg-sidebar);
+    color: var(--sl-color-text);
+    cursor: pointer;
+    font-size: var(--sl-text-xs);
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .cb-preset-btn:hover,
+  .cb-preset-btn.cb-active {
+    border-color: var(--sl-color-accent);
+    background: color-mix(in srgb, var(--sl-color-accent) 10%, transparent);
+    color: var(--sl-color-accent-high);
+  }
+
+  /* Selectors row */
+  .cb-selectors {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: start;
+    gap: 1rem;
+  }
+  .cb-col-label {
+    display: block;
+    font-weight: 600;
+    font-size: var(--sl-text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--sl-color-gray-3);
+    margin-bottom: 0.4rem;
+  }
+  .cb-select {
+    width: 100%;
+    padding: 0.45rem 0.6rem;
+    border-radius: 6px;
+    border: 1px solid var(--sl-color-gray-5);
+    background: var(--sl-color-bg-sidebar);
+    color: var(--sl-color-text);
+    font-size: var(--sl-text-sm);
+    cursor: pointer;
+  }
+  .cb-select:focus {
+    outline: 2px solid var(--sl-color-accent);
+    outline-offset: 1px;
+  }
+  .cb-desc {
+    margin-top: 0.35rem;
+    font-size: var(--sl-text-xs);
+    color: var(--sl-color-gray-3);
+    min-height: 1.5em;
+  }
+  .cb-arrow {
+    align-self: center;
+    margin-top: 1.5rem;
+    font-size: 1.25rem;
+    color: var(--sl-color-accent);
+  }
+
+  /* SQL transform */
+  .cb-transform {
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .cb-transform-summary {
+    padding: 0.6rem 0.875rem;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: var(--sl-text-sm);
+    user-select: none;
+    background: var(--sl-color-bg-sidebar);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .cb-transform-summary::-webkit-details-marker { display: none; }
+  .cb-transform-summary::before {
+    content: '▶';
+    font-size: 0.6em;
+    transition: transform 0.15s;
+  }
+  details[open] .cb-transform-summary::before { transform: rotate(90deg); }
+  .cb-optional {
+    font-weight: 400;
+    color: var(--sl-color-gray-3);
+    font-size: var(--sl-text-xs);
+  }
+  .cb-sql-editor {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.75rem;
+    font-family: var(--sl-font-mono);
+    font-size: var(--sl-text-sm);
+    background: var(--sl-color-bg);
+    color: var(--sl-color-text);
+    border: none;
+    border-top: 1px solid var(--sl-color-gray-5);
+    resize: vertical;
+    min-height: 80px;
+  }
+  .cb-sql-editor:focus { outline: none; box-shadow: inset 0 0 0 2px var(--sl-color-accent); }
+  .cb-sql-hint {
+    padding: 0.35rem 0.875rem 0.6rem;
+    font-size: var(--sl-text-xs);
+    color: var(--sl-color-gray-3);
+    background: var(--sl-color-bg-sidebar);
+    border-top: 1px solid var(--sl-color-gray-5);
+  }
+
+  /* Generated YAML */
+  .cb-output-section {
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .cb-output-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 0.875rem;
+    background: var(--sl-color-bg-sidebar);
+    border-bottom: 1px solid var(--sl-color-gray-5);
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .cb-output-title {
+    font-weight: 600;
+    font-size: var(--sl-text-sm);
+  }
+  .cb-output-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .cb-yaml-pre {
+    margin: 0;
+    padding: 0.875rem;
+    background: var(--sl-color-bg);
+    overflow-x: auto;
+    font-size: var(--sl-text-xs);
+    line-height: 1.6;
+  }
+  .cb-yaml-pre code {
+    font-family: var(--sl-font-mono);
+    color: var(--sl-color-text);
+    white-space: pre;
+  }
+  .cb-validation-msg {
+    padding: 0.5rem 0.875rem;
+    font-size: var(--sl-text-xs);
+    font-family: var(--sl-font-mono);
+    background: color-mix(in srgb, var(--sl-color-red) 8%, transparent);
+    color: var(--sl-color-red);
+    border-top: 1px solid color-mix(in srgb, var(--sl-color-red) 30%, transparent);
+  }
+
+  /* Buttons */
+  .cb-btn {
+    padding: 0.3rem 0.7rem;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    cursor: pointer;
+    font-size: var(--sl-text-xs);
+    font-weight: 500;
+    transition: opacity 0.15s;
+  }
+  .cb-btn:hover { opacity: 0.85; }
+  .cb-btn-primary {
+    background: var(--sl-color-accent);
+    color: var(--sl-color-white);
+  }
+  .cb-btn-secondary {
+    background: var(--sl-color-bg-sidebar);
+    color: var(--sl-color-text);
+    border-color: var(--sl-color-gray-5);
+  }
+
+  /* Validation badge */
+  .cb-badge {
+    font-size: var(--sl-text-xs);
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    font-weight: 600;
+    display: none;
+  }
+  .cb-badge.cb-valid {
+    display: inline;
+    background: color-mix(in srgb, var(--sl-color-green) 12%, transparent);
+    color: var(--sl-color-green);
+  }
+  .cb-badge.cb-invalid {
+    display: inline;
+    background: color-mix(in srgb, var(--sl-color-red) 12%, transparent);
+    color: var(--sl-color-red);
+  }
+
+  @media (max-width: 600px) {
+    .cb-selectors { grid-template-columns: 1fr; }
+    .cb-arrow { display: none; }
+  }
+</style>
+
+<script type="module">
+  import init, {
+    get_input_templates,
+    get_output_templates,
+    get_use_case_templates,
+    render_config,
+    validate_config,
+  } from '/src/wasm/logfwd-config/logfwd_config_wasm.js';
+
+  const ROOT = document.getElementById('config-builder');
+  const STATUS = ROOT.querySelector('.cb-status');
+  const MAIN = ROOT.querySelector('.cb-main');
+
+  const inputSelect  = ROOT.querySelector('#cb-input-select');
+  const outputSelect = ROOT.querySelector('#cb-output-select');
+  const inputDesc    = ROOT.querySelector('#cb-input-desc');
+  const outputDesc   = ROOT.querySelector('#cb-output-desc');
+  const sqlEditor    = ROOT.querySelector('#cb-sql');
+  const yamlCode     = ROOT.querySelector('#cb-yaml-code');
+  const validationBadge = ROOT.querySelector('#cb-validation-badge');
+  const validationMsg   = ROOT.querySelector('#cb-validation-msg');
+  const copyBtn      = ROOT.querySelector('#cb-copy-btn');
+  const downloadBtn  = ROOT.querySelector('#cb-download-btn');
+  const useCaseList  = ROOT.querySelector('#cb-use-cases');
+
+  let activePreset = null;
+
+  async function setup() {
+    await init();
+
+    const inputs    = get_input_templates();
+    const outputs   = get_output_templates();
+    const useCases  = get_use_case_templates();
+
+    // Populate input select
+    for (const t of inputs) {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = t.label;
+      inputSelect.appendChild(opt);
+    }
+
+    // Populate output select
+    for (const t of outputs) {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = t.label;
+      outputSelect.appendChild(opt);
+    }
+
+    // Populate use-case presets
+    for (const uc of useCases) {
+      const btn = document.createElement('button');
+      btn.className = 'cb-preset-btn';
+      btn.textContent = uc.title;
+      btn.title = uc.description;
+      btn.addEventListener('click', () => applyPreset(uc, btn));
+      useCaseList.appendChild(btn);
+    }
+
+    // Sync description labels on change
+    inputSelect.addEventListener('change', () => {
+      const t = inputs.find(x => x.id === inputSelect.value);
+      inputDesc.textContent = t?.description ?? '';
+      clearPreset();
+      regenerate();
+    });
+    outputSelect.addEventListener('change', () => {
+      const t = outputs.find(x => x.id === outputSelect.value);
+      outputDesc.textContent = t?.description ?? '';
+      clearPreset();
+      regenerate();
+    });
+    sqlEditor.addEventListener('input', () => {
+      clearPreset();
+      regenerate();
+    });
+
+    // Set initial descriptions
+    const firstInput  = inputs[0];
+    const firstOutput = outputs[0];
+    if (firstInput)  inputDesc.textContent  = firstInput.description;
+    if (firstOutput) outputDesc.textContent = firstOutput.description;
+
+    // Copy button
+    copyBtn.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(yamlCode.textContent);
+      const orig = copyBtn.textContent;
+      copyBtn.textContent = 'Copied!';
+      setTimeout(() => { copyBtn.textContent = orig; }, 1500);
+    });
+
+    // Download button
+    downloadBtn.addEventListener('click', () => {
+      const blob = new Blob([yamlCode.textContent], { type: 'text/yaml' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'logfwd.yaml';
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+
+    STATUS.hidden = true;
+    MAIN.hidden = false;
+    regenerate();
+  }
+
+  function applyPreset(uc, btn) {
+    inputSelect.value = uc.input_id;
+    outputSelect.value = uc.output_id;
+    sqlEditor.value = uc.transform === 'SELECT * FROM logs' ? '' : uc.transform;
+
+    const allInputs  = get_input_templates();
+    const allOutputs = get_output_templates();
+    inputDesc.textContent  = allInputs.find(x => x.id === uc.input_id)?.description ?? '';
+    outputDesc.textContent = allOutputs.find(x => x.id === uc.output_id)?.description ?? '';
+
+    if (activePreset) activePreset.classList.remove('cb-active');
+    btn.classList.add('cb-active');
+    activePreset = btn;
+
+    regenerate();
+  }
+
+  function clearPreset() {
+    if (activePreset) {
+      activePreset.classList.remove('cb-active');
+      activePreset = null;
+    }
+  }
+
+  function regenerate() {
+    const inputId  = inputSelect.value;
+    const outputId = outputSelect.value;
+    const sql      = sqlEditor.value.trim();
+
+    let yaml;
+    try {
+      yaml = render_config(inputId, outputId, sql);
+    } catch (e) {
+      yaml = `# Error generating config: ${e}`;
+    }
+
+    yamlCode.textContent = yaml;
+
+    // Validate via WASM
+    try {
+      validate_config(yaml);
+      validationBadge.textContent = '✓ valid';
+      validationBadge.className = 'cb-badge cb-valid';
+      validationMsg.hidden = true;
+    } catch (err) {
+      const msg = String(err);
+      validationBadge.textContent = '✗ invalid';
+      validationBadge.className = 'cb-badge cb-invalid';
+      validationMsg.textContent = msg;
+      validationMsg.hidden = false;
+    }
+  }
+
+  setup().catch(err => {
+    STATUS.textContent = `Failed to load config builder: ${err}`;
+    STATUS.classList.remove('cb-loading');
+  });
+</script>

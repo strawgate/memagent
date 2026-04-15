@@ -40,6 +40,7 @@ export default defineConfig({
         {
           label: "Configuration",
           items: [
+            { label: "Config Builder", slug: "configuration/config-builder" },
             { label: "SQL Transforms", slug: "configuration/sql-transforms" },
             { label: "Input Types", slug: "configuration/inputs" },
             { label: "Output Types", slug: "configuration/outputs" },

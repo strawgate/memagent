@@ -1,0 +1,20 @@
+[package]
+name = "logfwd-config-wasm"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+logfwd-config = { path = "../logfwd-config" }
+wasm-bindgen = "0.2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+js-sys = "0.3"
+
+[lints]
+workspace = true
