@@ -14,7 +14,6 @@
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tokio::runtime::Runtime;
 
 #[cfg(feature = "s3")]
 use logfwd_io::s3_input::client::S3Client;
@@ -144,10 +143,12 @@ fn bench_s3_download(c: &mut Criterion) {
     };
 
     let mut group = c.benchmark_group("s3_download");
+    group.sample_size(50);
 
     for (label, key, size) in &[
         ("1mb", "bench/1mb.log", 1_000_000u64),
         ("10mb", "bench/10mb.log", 10_000_000u64),
+        ("100mb", "bench/100mb.log", 100_000_000u64),
     ] {
         group.throughput(Throughput::Bytes(*size));
         group.bench_with_input(BenchmarkId::new("single_get", label), label, |b, _| {

@@ -16,7 +16,7 @@ libc = "0.2"
 [dependencies]
 arrow = { workspace = true }
 bytes = "1"
-criterion = { version = "0.7", features = ["html_reports"] }
+criterion = { version = "0.7", features = ["html_reports", "async_tokio"] }
 datafusion = { workspace = true }
 dhat = { version = "0.3", optional = true }
 flate2 = "1"
