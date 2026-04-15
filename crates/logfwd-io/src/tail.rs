@@ -305,6 +305,9 @@ fn expand_glob_patterns(patterns: &[&str]) -> Vec<PathBuf> {
         }
     }
 
+    // Hoist current_dir out of the hot loop so we don't syscall on every file.
+    let cwd = std::env::current_dir().ok();
+
     let mut paths = Vec::new();
     for (root, max_depth) in &roots {
         let mut walker = walkdir::WalkDir::new(root).follow_links(true);
@@ -322,9 +325,18 @@ fn expand_glob_patterns(patterns: &[&str]) -> Vec<PathBuf> {
             let entry_path = entry.path();
             let stripped = entry_path.strip_prefix(".").unwrap_or(entry_path);
             let prefixed = Path::new(".").join(stripped);
+
+            // To support bare pattern matching when cwd evaluates to absolute paths,
+            // we try to strip the actual current directory if `.` stripping didn't apply.
+            // This enables `*.log` to match `/path/to/cwd/foo.log` effectively testing `foo.log`.
+            let stripped_cwd = cwd.as_ref()
+                .and_then(|cwd| entry_path.strip_prefix(cwd).ok())
+                .unwrap_or(entry_path);
+
             if glob_set.is_match(entry_path)
                 || glob_set.is_match(stripped)
                 || glob_set.is_match(&prefixed)
+                || glob_set.is_match(stripped_cwd)
             {
                 paths.push(entry.into_path());
             }
@@ -1907,6 +1919,47 @@ mod tests {
         assert!(
             flat_matches.iter().any(|p| p == &flat),
             "wildcard pattern should match flat.log, got: {flat_matches:?}"
+        );
+    }
+
+    /// #1463: bare "*.log" glob must match without mutating global process cwd.
+    #[test]
+    fn test_expand_glob_patterns_bare_star() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+        let cwd = std::env::current_dir().unwrap();
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let idx = COUNTER.fetch_add(1, Ordering::Relaxed);
+        // Unique filename to avoid interfering with other tests running in parallel.
+        let bare_file = cwd.join(format!("bare-{}-{}.log", timestamp, idx));
+
+        // Create the file.
+        {
+            let mut f = File::create(&bare_file).unwrap();
+            writeln!(f, "bare file").unwrap();
+        }
+
+        // Attempt to match using a bare pattern.
+        let matches = expand_glob_patterns(&["*.log"]);
+
+        // Clean up immediately regardless of whether it passed or not.
+        fs::remove_file(&bare_file).unwrap();
+
+        // In WalkDir, we return `entry.into_path()`. If `WalkDir` started at `.`,
+        // it returns `./bare-XXX.log`. Let's normalize `matches` for absolute path comparison.
+        let absolute_matches: Vec<PathBuf> = matches
+            .into_iter()
+            .map(|p| cwd.join(p.strip_prefix(".").unwrap_or(&p)))
+            .collect();
+
+        // It should have found our file.
+        assert!(
+            absolute_matches.iter().any(|p| p == &bare_file),
+            "bare *.log should match file in cwd, actual matches: {absolute_matches:?}"
         );
     }
 

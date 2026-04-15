@@ -104,7 +104,8 @@ k apply -n "$NAMESPACE" -f "$SCRIPT_DIR/manifests/log-generator.yaml"
 wait_for "log-generator pod running" 30 \
     k get pod -n "$NAMESPACE" log-generator -o jsonpath='{.status.phase}' | grep -q Running || true
 # Brief extra pause for CRI log path to stabilize after container start.
-sleep 3
+wait_for "log-generator CRI path available" 30 \
+    k exec -n "$NAMESPACE" daemonset/logfwd -- sh -c 'ls /var/log/pods/*log-generator*/*/*.log' >/dev/null 2>&1 || true
 
 echo "=== Phase 6: Port-forward ==="
 k port-forward -n "$NAMESPACE" svc/blackhole-receiver 14318:4318 &
@@ -143,9 +144,7 @@ while [ $SECONDS -lt $DEADLINE ]; do
         exit 1
     fi
 
-    # Exponential backoff: 2s → 3s → 4s → 5s (capped)
-    sleep "$DELAY"
-    DELAY=$(( DELAY < 5 ? DELAY + 1 : 5 ))
+    sleep 1
 done
 
 echo ""
