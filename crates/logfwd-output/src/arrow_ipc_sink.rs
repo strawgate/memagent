@@ -19,6 +19,9 @@ use logfwd_types::diagnostics::ComponentStats;
 use super::sink::{SendResult, Sink, SinkFactory};
 use super::{BatchMetadata, Compression};
 use crate::http_classify::{DEFAULT_RETRY_AFTER_SECS, parse_retry_after};
+use flate2::Compression as GzLevel;
+use flate2::write::GzEncoder;
+use std::io::Write;
 
 /// Content-Type for uncompressed Arrow IPC stream.
 const CONTENT_TYPE_ARROW: &str = "application/vnd.apache.arrow.stream";
@@ -101,7 +104,12 @@ impl ArrowIpcSink {
     fn maybe_compress(&self) -> io::Result<Vec<u8>> {
         match self.config.compression {
             Compression::Zstd => zstd::bulk::compress(&self.ipc_buf, 1).map_err(io::Error::other),
-            Compression::None | Compression::Gzip => Ok(self.ipc_buf.clone()),
+            Compression::Gzip => {
+                let mut encoder = GzEncoder::new(Vec::new(), GzLevel::default());
+                encoder.write_all(&self.ipc_buf)?;
+                encoder.finish()
+            }
+            Compression::None => Ok(self.ipc_buf.clone()),
         }
     }
 
@@ -122,6 +130,8 @@ impl ArrowIpcSink {
 
         if self.config.compression == Compression::Zstd {
             req = req.header("Content-Encoding", "zstd");
+        } else if self.config.compression == Compression::Gzip {
+            req = req.header("Content-Encoding", "gzip");
         }
 
         for (k, v) in &self.config.headers {

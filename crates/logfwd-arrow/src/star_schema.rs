@@ -546,7 +546,10 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
     // severity_text → level
     if let Ok(sev_idx) = logs_schema.index_of("severity_text") {
         let sev_arr = star.logs.column(sev_idx);
-        if !matches!(sev_arr.data_type(), DataType::Utf8 | DataType::Utf8View) {
+        if !matches!(
+            sev_arr.data_type(),
+            DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8
+        ) {
             return Err(ArrowError::SchemaError(format!(
                 "severity_text must be Utf8 or Utf8View, got {}",
                 sev_arr.data_type()
@@ -569,7 +572,10 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
     // body_str → message
     if let Ok(body_idx) = logs_schema.index_of("body_str") {
         let body_arr = star.logs.column(body_idx);
-        if !matches!(body_arr.data_type(), DataType::Utf8 | DataType::Utf8View) {
+        if !matches!(
+            body_arr.data_type(),
+            DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8
+        ) {
             return Err(ArrowError::SchemaError(format!(
                 "body_str must be Utf8 or Utf8View, got {}",
                 body_arr.data_type()
@@ -920,6 +926,11 @@ fn str_from_array(arr: &dyn Array, row: usize) -> String {
         DataType::Utf8View => arr
             .as_any()
             .downcast_ref::<arrow::array::StringViewArray>()
+            .map(|a| a.value(row).to_string())
+            .unwrap_or_default(),
+        DataType::LargeUtf8 => arr
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
             .map(|a| a.value(row).to_string())
             .unwrap_or_default(),
         _ => String::new(),
