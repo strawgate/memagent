@@ -536,6 +536,13 @@ impl Config {
                                     "pipeline '{name}' input '{label}': s3.max_concurrent_objects must be at least 1"
                                 )));
                             }
+                            if let Some(vt) = s3_cfg.visibility_timeout_secs
+                                && vt < 30
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.visibility_timeout_secs must be at least 30"
+                                )));
+                            }
                         }
                     }
 

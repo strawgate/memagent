@@ -62,7 +62,8 @@ const DEFAULT_REGION: &str = "us-east-1";
 /// Output chunk size: ~256 KiB.
 const OUTPUT_CHUNK_SIZE: usize = 256 * 1024;
 /// SQS heartbeat interval in seconds.
-const SQS_HEARTBEAT_SECS: u64 = 60;
+/// Minimum SQS visibility timeout (seconds) enforced at config validation.
+const MIN_SQS_VISIBILITY_TIMEOUT_SECS: u32 = 30;
 
 /// Derive a stable `SourceId` from an S3 object key.
 ///
@@ -201,7 +202,8 @@ impl S3InputSettings {
                 .unwrap_or(DEFAULT_MAX_CONCURRENT_OBJECTS)
                 .max(1),
             visibility_timeout_secs: visibility_timeout_secs
-                .unwrap_or(DEFAULT_VISIBILITY_TIMEOUT_SECS),
+                .unwrap_or(DEFAULT_VISIBILITY_TIMEOUT_SECS)
+                .max(MIN_SQS_VISIBILITY_TIMEOUT_SECS),
             compression_override,
             poll_interval_ms: poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS).max(1),
         })
@@ -226,6 +228,9 @@ struct ChunkPayload {
     accounted_bytes: u64,
     /// S3 key hashed to SourceId so FramedInput maintains per-object parser state.
     source_id: SourceId,
+    /// When true, this signals end-of-file for the source_id so that
+    /// FramedInput flushes any trailing partial line.
+    is_eof: bool,
 }
 
 /// A unit of work: one S3 object to fetch.
@@ -443,6 +448,11 @@ impl InputSource for S3Input {
                 source_id: Some(payload.source_id),
                 accounted_bytes: payload.accounted_bytes,
             });
+            if payload.is_eof {
+                events.push(InputEvent::EndOfFile {
+                    source_id: Some(payload.source_id),
+                });
+            }
         }
         Ok(events)
     }
@@ -484,12 +494,15 @@ async fn run_sqs_discovery(
     visibility_timeout: u32,
 ) {
     // Spawn heartbeat task.
+    // Extend visibility at 40% of the timeout so we have a comfortable margin
+    // before messages become visible again.
+    let heartbeat_secs = (u64::from(visibility_timeout) * 2 / 5).max(5);
     let sqs_hb = Arc::clone(&sqs);
     let in_progress_hb = Arc::clone(&in_progress);
     let is_running_hb = Arc::clone(&is_running);
     let name_hb = name.clone();
     tokio::spawn(async move {
-        let interval = std::time::Duration::from_secs(SQS_HEARTBEAT_SECS);
+        let interval = std::time::Duration::from_secs(heartbeat_secs);
         loop {
             tokio::time::sleep(interval).await;
             if !is_running_hb.load(Ordering::Relaxed) {
@@ -841,8 +854,28 @@ async fn fetch_object(
         .map_err(|e| io::Error::other(format!("spawn_blocking decompress: {e}")))??;
 
     // Chunk the decompressed data and send to output channel.
+    // For empty objects, send an EOF-only payload so FramedInput still
+    // sees the end-of-file boundary for this source.
+    if decompressed.is_empty() {
+        let payload = ChunkPayload {
+            bytes: Vec::new(),
+            accounted_bytes,
+            source_id: source_id_from_key(key),
+            is_eof: true,
+        };
+        let send_result = tokio::task::spawn_blocking(move || out_tx.send(payload))
+            .await
+            .map_err(|e| io::Error::other(format!("spawn_blocking send: {e}")))?;
+        if send_result.is_err() {
+            return Err(io::Error::other("output channel closed"));
+        }
+        return Ok(());
+    }
+
     let mut first = true;
-    for chunk in decompressed.chunks(OUTPUT_CHUNK_SIZE) {
+    let chunks: Vec<&[u8]> = decompressed.chunks(OUTPUT_CHUNK_SIZE).collect();
+    let total_chunks = chunks.len();
+    for (i, chunk) in chunks.into_iter().enumerate() {
         // Only charge accounted_bytes on the first chunk to avoid inflation.
         let ab = if first {
             first = false;
@@ -850,10 +883,12 @@ async fn fetch_object(
         } else {
             0
         };
+        let is_last = i + 1 == total_chunks;
         let payload = ChunkPayload {
             bytes: chunk.to_vec(),
             accounted_bytes: ab,
             source_id: source_id_from_key(key),
+            is_eof: is_last,
         };
         let out_tx = out_tx.clone();
         let send_result = tokio::task::spawn_blocking(move || out_tx.send(payload))
