@@ -236,14 +236,18 @@ fn finalize_fanout_outcome(
     }
 
     let mut first_rejection = None;
+    let mut all_rejected = true;
     for state in states {
         if let ChildState::Rejected(reason) = state {
-            first_rejection = Some(reason.clone());
-            break;
+            if first_rejection.is_none() {
+                first_rejection = Some(reason.clone());
+            }
+        } else {
+            all_rejected = false;
         }
     }
 
-    if let Some(reason) = first_rejection {
+    if all_rejected && let Some(reason) = first_rejection {
         SendResult::Rejected(reason)
     } else {
         SendResult::Ok
@@ -669,9 +673,10 @@ mod tests {
         let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2), Box::new(s3)]);
 
         let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        // With #2102 fix, partial success returns Ok instead of Rejected
         assert!(
-            matches!(result, SendResult::Rejected(_)),
-            "expected Rejected, got {result:?}"
+            matches!(result, SendResult::Ok),
+            "expected Ok (partial success), got {result:?}"
         );
         assert_eq!(*calls1.lock().unwrap(), 1, "s1 must be called");
         assert_eq!(*calls2.lock().unwrap(), 1, "s2 must be called");

@@ -77,7 +77,7 @@ pub async fn run_pipelines(
     let shutdown = CancellationToken::new();
 
     #[cfg(unix)]
-    let (mut sigterm, mut sighup) = {
+    let (mut sigterm, mut sighup, mut sigusr1, mut sigusr2) = {
         use tokio::signal::unix::{SignalKind, signal};
         let sigterm = signal(SignalKind::terminate()).map_err(|err| {
             RuntimeError::Io(io::Error::other(format!(
@@ -89,7 +89,17 @@ pub async fn run_pipelines(
                 "failed to register SIGHUP handler: {err}"
             )))
         })?;
-        (sigterm, sighup)
+        let sigusr1 = signal(SignalKind::user_defined1()).map_err(|err| {
+            RuntimeError::Io(io::Error::other(format!(
+                "failed to register SIGUSR1 handler: {err}"
+            )))
+        })?;
+        let sigusr2 = signal(SignalKind::user_defined2()).map_err(|err| {
+            RuntimeError::Io(io::Error::other(format!(
+                "failed to register SIGUSR2 handler: {err}"
+            )))
+        })?;
+        (sigterm, sighup, sigusr1, sigusr2)
     };
 
     #[cfg(feature = "dhat-heap")]
@@ -121,6 +131,8 @@ pub async fn run_pipelines(
                 tokio::select! {
                     _ = tokio::signal::ctrl_c() => break,
                     _ = sigterm.recv() => break,
+                    _ = sigusr1.recv() => break,
+                    _ = sigusr2.recv() => break,
                     _ = sighup.recv() => {
                         eprintln!(
                             "{}logfwd{}: SIGHUP received — config reload not yet implemented, ignoring",
