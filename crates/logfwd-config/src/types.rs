@@ -571,7 +571,6 @@ pub struct JournaldTypeConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
 pub struct OutputConfig {
     pub name: Option<String>,
     #[serde(rename = "type")]
