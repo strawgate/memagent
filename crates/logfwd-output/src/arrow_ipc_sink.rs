@@ -101,7 +101,16 @@ impl ArrowIpcSink {
     fn maybe_compress(&self) -> io::Result<Vec<u8>> {
         match self.config.compression {
             Compression::Zstd => zstd::bulk::compress(&self.ipc_buf, 1).map_err(io::Error::other),
-            Compression::None | Compression::Gzip => Ok(self.ipc_buf.clone()),
+            Compression::Gzip => {
+                use std::io::Write;
+                let mut encoder = flate2::write::GzEncoder::new(
+                    Vec::new(),
+                    flate2::Compression::default(),
+                );
+                encoder.write_all(&self.ipc_buf)?;
+                encoder.finish().map_err(io::Error::other)
+            }
+            Compression::None => Ok(self.ipc_buf.clone()),
         }
     }
 
