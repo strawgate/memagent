@@ -497,7 +497,9 @@ impl OtlpSink {
                 &self.compress_buf
             }
             Compression::Snappy => {
-                return Err(io::Error::other("snappy compression is not supported by otlp sink"));
+                return Err(io::Error::other(
+                    "snappy compression is not supported by otlp sink",
+                ));
             }
             Compression::None => &self.encoder_buf,
         };
