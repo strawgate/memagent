@@ -33,7 +33,7 @@ use crate::InputError;
 use crate::background_http_task::BackgroundHttpTask;
 use crate::input::{InputEvent, InputSource};
 use crate::receiver_health::{
-    compute_receiver_health, shutdown_receiver, store_health_event, ReceiverHealthEvent,
+    ReceiverHealthEvent, compute_receiver_health, shutdown_receiver, store_health_event,
 };
 use crate::receiver_http::{MAX_REQUEST_BODY_SIZE, parse_content_length, read_limited_body};
 

@@ -97,10 +97,7 @@ where
 }
 
 /// Helper to store a receiver health event with atomic compare-exchange loop.
-pub(crate) fn store_health_event(
-    health: &std::sync::atomic::AtomicU8,
-    event: ReceiverHealthEvent,
-) {
+pub(crate) fn store_health_event(health: &std::sync::atomic::AtomicU8, event: ReceiverHealthEvent) {
     let mut current = health.load(std::sync::atomic::Ordering::Relaxed);
     loop {
         let current_health = ComponentHealth::from_repr(current);

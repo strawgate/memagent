@@ -35,11 +35,11 @@ use tokio::sync::oneshot;
 use crate::InputError;
 use crate::background_http_task::BackgroundHttpTask;
 use crate::receiver_health::{
-    compute_receiver_health, shutdown_receiver, store_health_event, ReceiverHealthEvent,
+    ReceiverHealthEvent, compute_receiver_health, shutdown_receiver, store_health_event,
 };
 use crate::receiver_http::{
-    decompress_gzip, parse_content_length, parse_content_type, read_limited_body,
-    MAX_REQUEST_BODY_SIZE,
+    MAX_REQUEST_BODY_SIZE, decompress_gzip, parse_content_length, parse_content_type,
+    read_limited_body,
 };
 
 /// Bounded channel capacity.

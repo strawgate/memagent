@@ -19,7 +19,9 @@ use tokio::sync::oneshot;
 
 use crate::InputError;
 use crate::input::{InputEvent, InputSource};
-use crate::receiver_http::{decompress_gzip, decompress_zstd, parse_content_length, read_limited_body};
+use crate::receiver_http::{
+    decompress_gzip, decompress_zstd, parse_content_length, read_limited_body,
+};
 
 /// Default max request body size (10 MiB).
 const DEFAULT_MAX_REQUEST_BODY_SIZE: usize = 10 * 1024 * 1024;

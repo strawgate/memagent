@@ -13,13 +13,11 @@ use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 
 use crate::InputError;
 use crate::receiver_http::{
-    decompress_gzip, decompress_zstd, parse_content_length, parse_content_type,
-    read_limited_body, MAX_REQUEST_BODY_SIZE,
+    MAX_REQUEST_BODY_SIZE, decompress_gzip, decompress_zstd, parse_content_length,
+    parse_content_type, read_limited_body,
 };
 
-use super::decode::{
-    decode_otlp_json, decode_otlp_protobuf, decode_otlp_protobuf_bytes_with_mode,
-};
+use super::decode::{decode_otlp_json, decode_otlp_protobuf, decode_otlp_protobuf_bytes_with_mode};
 use super::{OtlpProtobufDecodeMode, OtlpServerState, ReceiverPayload};
 
 pub(super) fn record_error(stats: Option<&Arc<ComponentStats>>) {
