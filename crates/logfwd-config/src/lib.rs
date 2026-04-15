@@ -2856,7 +2856,7 @@ pipelines:
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("arrow_ipc output only supports 'zstd' or 'none'")
+            msg.contains("arrow_ipc output only supports 'lz4', 'zstd', or 'none'")
                 && msg.contains("'gzip'"),
             "expected arrow_ipc-specific gzip rejection, got: {msg}"
         );
@@ -2876,6 +2876,45 @@ pipelines:
         compression: none
 "#;
         Config::load_str(yaml).expect("arrow_ipc output should accept none compression");
+    }
+
+    #[test]
+    fn arrow_ipc_output_accepts_lz4_compression() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: arrow_ipc
+        endpoint: http://localhost:4317
+        compression: lz4
+"#;
+        Config::load_str(yaml).expect("arrow_ipc output should accept lz4 compression");
+    }
+
+    #[test]
+    fn non_arrow_ipc_output_rejects_arrow_ipc_fields() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+    outputs:
+      - type: stdout
+        host: localhost
+        batch_size: 100
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("'host' is only supported for arrow_ipc outputs")
+                || err
+                    .to_string()
+                    .contains("'batch_size' is only supported for arrow_ipc outputs"),
+            "expected arrow_ipc specific field rejection: {err}"
+        );
     }
 
     #[test]

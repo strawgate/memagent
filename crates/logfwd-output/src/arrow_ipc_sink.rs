@@ -109,6 +109,11 @@ impl ArrowIpcSink {
                 encoder.write_all(&self.ipc_buf)?;
                 encoder.finish()
             }
+            Compression::Lz4 => {
+                let mut encoder = lz4_flex::frame::FrameEncoder::new(Vec::new());
+                encoder.write_all(&self.ipc_buf)?;
+                encoder.finish().map_err(io::Error::other)
+            }
             Compression::None => Ok(self.ipc_buf.clone()),
         }
     }
@@ -120,6 +125,7 @@ impl ArrowIpcSink {
     async fn do_send(&self, payload: Vec<u8>) -> io::Result<SendResult> {
         let content_type = match self.config.compression {
             Compression::Zstd => CONTENT_TYPE_ARROW_ZSTD,
+            Compression::Lz4 => "application/vnd.apache.arrow.stream+lz4",
             _ => CONTENT_TYPE_ARROW,
         };
 
@@ -132,6 +138,8 @@ impl ArrowIpcSink {
             req = req.header("Content-Encoding", "zstd");
         } else if self.config.compression == Compression::Gzip {
             req = req.header("Content-Encoding", "gzip");
+        } else if self.config.compression == Compression::Lz4 {
+            req = req.header("Content-Encoding", "lz4");
         }
 
         for (k, v) in &self.config.headers {
@@ -460,8 +468,8 @@ mod tests {
         let ipc_bytes = serialize_ipc(&batch).expect("serialize should succeed");
 
         // Compress with gzip
-        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        std::io::Write::write_all(&mut encoder, &ipc_bytes).unwrap();
+        let mut encoder = GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        Write::write_all(&mut encoder, &ipc_bytes).unwrap();
         let compressed = encoder.finish().unwrap();
 
         // Decompress with gzip
