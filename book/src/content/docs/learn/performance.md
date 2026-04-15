@@ -62,7 +62,7 @@ Field pushdown recovers most of the throughput loss from wide data. If your SQL 
 
 | Topic | Where to go |
 |-------|-------------|
-| See how the scanner works | [Scanner Deep Dive](/memagent/how-it-works/scanner/) (interactive) |
+| See how the scanner works | [Scanner Deep Dive](/memagent/learn/scanner/) (interactive) |
 | Configure SQL transforms | [SQL Transforms](/memagent/configuration/sql-transforms/) |
 | Deploy to production | [Kubernetes DaemonSet](/memagent/deployment/kubernetes/) |
 | Contribute optimizations | [Contributing](/memagent/development/contributing/) |

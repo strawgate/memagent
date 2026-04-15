@@ -121,112 +121,47 @@
 </style>
 
 <script>
-(function() {
-  var root = document.getElementById('pushdown-explorer');
+import {
+  FIELDS, PRESETS, TOTAL_FIELDS, TOTAL_BYTES,
+  computeRenderData, isPresetMatch, toggleField, applyPreset, countSelected,
+} from '../scripts/pushdown-model';
+import { el } from '../scripts/dom-utils';
+
+function init() {
+  const root = document.getElementById('pushdown-explorer');
   if (!root) return;
 
-  // --- Field definitions (realistic wide log line) ---
-  var FIELDS = [
-    { name: 'timestamp',    type: 'string', val: '"2026-04-14T10:23:45.123Z"', bytes: 30, isNum: false },
-    { name: 'level',        type: 'string', val: '"INFO"',                     bytes: 6,  isNum: false },
-    { name: 'message',      type: 'string', val: '"GET /api/users completed"', bytes: 32, isNum: false },
-    { name: 'logger',       type: 'string', val: '"http.server"',              bytes: 14, isNum: false },
-    { name: 'thread',       type: 'string', val: '"worker-7"',                 bytes: 10, isNum: false },
-    { name: 'trace_id',     type: 'string', val: '"a1b2c3d4e5f6..."',          bytes: 36, isNum: false },
-    { name: 'span_id',      type: 'string', val: '"f6e5d4c3..."',              bytes: 18, isNum: false },
-    { name: 'service',      type: 'string', val: '"api-gateway"',              bytes: 14, isNum: false },
-    { name: 'host',         type: 'string', val: '"prod-us-east-2a"',          bytes: 18, isNum: false },
-    { name: 'pid',          type: 'int',    val: '48291',                      bytes: 6,  isNum: true  },
-    { name: 'method',       type: 'string', val: '"GET"',                      bytes: 5,  isNum: false },
-    { name: 'path',         type: 'string', val: '"/api/users?page=2"',        bytes: 22, isNum: false },
-    { name: 'status',       type: 'int',    val: '200',                        bytes: 4,  isNum: true  },
-    { name: 'duration_ms',  type: 'float',  val: '12.4',                       bytes: 5,  isNum: true  },
-    { name: 'bytes_sent',   type: 'int',    val: '8452',                       bytes: 5,  isNum: true  },
-    { name: 'user_agent',   type: 'string', val: '"Mozilla/5.0 (Mac...)"',     bytes: 28, isNum: false },
-    { name: 'referer',      type: 'string', val: '"https://app.example..."',   bytes: 30, isNum: false },
-    { name: 'x_request_id', type: 'string', val: '"req-9f8e7d6c..."',          bytes: 20, isNum: false },
-    { name: 'datacenter',   type: 'string', val: '"us-east-2"',                bytes: 12, isNum: false },
-    { name: 'version',      type: 'string', val: '"v2.4.1"',                   bytes: 9,  isNum: false },
-  ];
-
-  var TOTAL_FIELDS = FIELDS.length;
-  var totalBytes = 0;
-  for (var i = 0; i < FIELDS.length; i++) totalBytes += FIELDS[i].bytes;
-
-  // Throughput model (calibrated to published benchmarks)
-  // Known data points: (1, 3.8), (2, 3.4), (3, 3.4), (6, 2.0), (20, 0.56)
-  var MAX_THROUGHPUT = 3.8;
-  var THROUGHPUT_POINTS = [
-    [1, 3.8], [2, 3.4], [3, 3.4], [6, 2.0], [20, 0.56]
-  ];
-  function estimateThroughput(n) {
-    if (n === 0) return MAX_THROUGHPUT;
-    if (n <= THROUGHPUT_POINTS[0][0]) return THROUGHPUT_POINTS[0][1];
-    if (n >= THROUGHPUT_POINTS[THROUGHPUT_POINTS.length - 1][0]) return THROUGHPUT_POINTS[THROUGHPUT_POINTS.length - 1][1];
-    for (var i = 0; i < THROUGHPUT_POINTS.length - 1; i++) {
-      var lo = THROUGHPUT_POINTS[i], hi = THROUGHPUT_POINTS[i + 1];
-      if (n >= lo[0] && n <= hi[0]) {
-        var frac = (n - lo[0]) / (hi[0] - lo[0]);
-        return lo[1] + frac * (hi[1] - lo[1]);
-      }
-    }
-    return THROUGHPUT_POINTS[THROUGHPUT_POINTS.length - 1][1];
-  }
-  var BASE_THROUGHPUT = estimateThroughput(TOTAL_FIELDS);
-
   // --- State ---
-  var selected = {};
-
-  // --- Presets ---
-  var PRESETS = [
-    { name: 'SELECT *', desc: 'All fields', fields: null },
-    { name: 'Error triage', desc: 'level, message, status', fields: ['level', 'message', 'status'] },
-    { name: 'Latency analysis', desc: 'path, status, duration_ms', fields: ['path', 'status', 'duration_ms'] },
-    { name: 'Trace correlation', desc: 'trace_id, span_id, service', fields: ['trace_id', 'span_id', 'service'] },
-    { name: 'Minimal', desc: 'timestamp, level', fields: ['timestamp', 'level'] },
-  ];
-
-  // --- Helpers ---
-  function el(tag, cls) {
-    var e = document.createElement(tag);
-    if (cls) e.className = cls;
-    return e;
-  }
-
-  function getSelectedCount() {
-    var c = 0;
-    for (var k in selected) if (selected[k]) c++;
-    return c;
-  }
+  let selected: Record<string, boolean> = {};
 
   // --- Build DOM ---
 
   // Presets
-  var presetsRow = el('div', 'pd-presets');
-  var presetBtns = PRESETS.map(function(p) {
-    var btn = el('button', 'pd-preset');
+  let presetsRow = el('div', 'pd-presets');
+  let presetBtns = PRESETS.map(function(p) {
+    let btn = el('button', 'pd-preset');
     btn.type = 'button';
     btn.textContent = p.name;
     btn.title = p.desc;
     btn.setAttribute('aria-label', p.name + ': ' + p.desc);
-    btn.onclick = function() { applyPreset(p); };
+    btn.onclick = function() { handleApplyPreset(p); };
     presetsRow.appendChild(btn);
     return btn;
   });
   root.appendChild(presetsRow);
 
   // SQL display
-  var sqlEl = el('div', 'pd-sql');
+  let sqlEl = el('div', 'pd-sql');
   root.appendChild(sqlEl);
 
   // Throughput meter
-  var meterEl = el('div', 'pd-meter');
-  var meterLabel = el('div', 'pd-meter-label'); meterLabel.textContent = 'Throughput';
-  var meterTrack = el('div', 'pd-meter-track');
-  var meterFill = el('div', 'pd-meter-fill');
+  let meterEl = el('div', 'pd-meter');
+  let meterLabel = el('div', 'pd-meter-label'); meterLabel.textContent = 'Throughput';
+  let meterTrack = el('div', 'pd-meter-track');
+  let meterFill = el('div', 'pd-meter-fill');
   meterTrack.appendChild(meterFill);
-  var meterVal = el('div', 'pd-meter-val');
-  var meterPct = el('div', 'pd-meter-pct');
+  let meterVal = el('div', 'pd-meter-val');
+  let meterPct = el('div', 'pd-meter-pct');
   meterEl.appendChild(meterLabel);
   meterEl.appendChild(meterTrack);
   meterEl.appendChild(meterVal);
@@ -234,46 +169,46 @@
   root.appendChild(meterEl);
 
   // Stats row
-  var statsEl = el('div', 'pd-stats');
+  let statsEl = el('div', 'pd-stats');
   root.appendChild(statsEl);
 
   // JSON blob
-  var jsonEl = el('div', 'pd-json');
-  var fieldSpans = [];
+  let jsonEl = el('div', 'pd-json');
+  let fieldSpans = [];
 
   // Build the JSON display
-  var openBrace = document.createTextNode('{ ');
+  let openBrace = document.createTextNode('{ ');
   jsonEl.appendChild(openBrace);
 
   FIELDS.forEach(function(f, i) {
-    var fieldSpan = el('span', 'pd-json-field extracted');
+    let fieldSpan = el('span', 'pd-json-field extracted');
     fieldSpan.setAttribute('role', 'checkbox');
     fieldSpan.setAttribute('aria-checked', 'true');
     fieldSpan.setAttribute('aria-label', f.name + ' (' + f.type + ')');
     fieldSpan.tabIndex = 0;
     fieldSpan.style.position = 'relative';
 
-    var keySpan = el('span', 'pd-json-key');
+    let keySpan = el('span', 'pd-json-key');
     keySpan.textContent = '"' + f.name + '"';
-    var colonSpan = el('span', 'pd-json-punct');
+    let colonSpan = el('span', 'pd-json-punct');
     colonSpan.textContent = ': ';
-    var valSpan = el('span', f.isNum ? 'pd-json-val-num' : 'pd-json-val');
+    let valSpan = el('span', f.isNum ? 'pd-json-val-num' : 'pd-json-val');
     valSpan.textContent = f.val;
 
     fieldSpan.appendChild(keySpan);
     fieldSpan.appendChild(colonSpan);
     fieldSpan.appendChild(valSpan);
 
-    fieldSpan.onclick = function() { toggleField(f.name); };
+    fieldSpan.onclick = function() { handleToggleField(f.name); };
     fieldSpan.onkeydown = function(e) {
-      if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggleField(f.name); }
+      if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); handleToggleField(f.name); }
     };
 
     jsonEl.appendChild(fieldSpan);
     fieldSpans.push({ el: fieldSpan, field: f });
 
     if (i < FIELDS.length - 1) {
-      var comma = el('span', 'pd-json-punct');
+      let comma = el('span', 'pd-json-punct');
       comma.textContent = ', ';
       jsonEl.appendChild(comma);
     }
@@ -283,116 +218,80 @@
     }
   });
 
-  var closeBrace = document.createTextNode(' }');
+  let closeBrace = document.createTextNode(' }');
   jsonEl.appendChild(closeBrace);
   root.appendChild(jsonEl);
 
   // Callout
-  var calloutEl = el('div', 'pd-callout');
+  let calloutEl = el('div', 'pd-callout');
   root.appendChild(calloutEl);
 
   // --- Logic ---
-  function toggleField(name) {
-    // If in SELECT * mode, populate all fields first, then deselect the clicked one
-    if (getSelectedCount() === 0) {
-      for (var i = 0; i < FIELDS.length; i++) {
-        selected[FIELDS[i].name] = true;
-      }
-    }
-    selected[name] = !selected[name];
+  function handleToggleField(name: string) {
+    selected = toggleField(name, selected);
     render();
   }
 
-  function applyPreset(preset) {
-    selected = {};
-    if (preset.fields) {
-      for (var i = 0; i < preset.fields.length; i++) {
-        selected[preset.fields[i]] = true;
-      }
-    }
+  function handleApplyPreset(preset: typeof PRESETS[number]) {
+    selected = applyPreset(preset);
     render();
   }
 
   function render() {
-    var selCount = getSelectedCount();
-    var selectAll = selCount === 0;
-    var effectiveCount = selectAll ? TOTAL_FIELDS : selCount;
-    var throughput = selectAll ? BASE_THROUGHPUT : estimateThroughput(selCount);
-    var speedup = throughput / BASE_THROUGHPUT;
-    var pctOfMax = (throughput / MAX_THROUGHPUT) * 100;
+    const selCount = countSelected(selected);
+    const selectAll = selCount === 0;
+    const data = computeRenderData(selected);
 
     // Update JSON blob — highlight extracted, dim skipped
-    for (var i = 0; i < fieldSpans.length; i++) {
-      var fs = fieldSpans[i];
-      var isOn = selectAll || selected[fs.field.name];
+    for (let i = 0; i < fieldSpans.length; i++) {
+      const fs = fieldSpans[i];
+      const isOn = selectAll || !!selected[fs.field.name];
       fs.el.className = 'pd-json-field ' + (isOn ? 'extracted' : 'skipped');
       fs.el.setAttribute('aria-checked', isOn ? 'true' : 'false');
       fs.el.style.position = 'relative';
     }
 
     // Update SQL
-    var cols;
+    let cols: string;
     if (selectAll) {
       cols = '<span class="kw">SELECT</span> <span class="col">*</span>';
     } else {
-      var names = [];
-      for (var k in selected) if (selected[k]) names.push(k);
-      cols = '<span class="kw">SELECT</span> ' + names.map(function(n) { return '<span class="col">' + n + '</span>'; }).join(', ');
+      const names = Object.keys(selected).filter(k => selected[k]);
+      cols = '<span class="kw">SELECT</span> ' + names.map(n => `<span class="col">${n}</span>`).join(', ');
     }
     sqlEl.innerHTML = cols + ' <span class="kw">FROM</span> <span class="tbl">logs</span>';
 
     // Update meter (smooth via CSS transition)
-    meterFill.style.width = pctOfMax + '%';
-    meterVal.textContent = throughput.toFixed(1) + 'M lines/sec';
-    if (selectAll) {
-      meterPct.textContent = 'baseline';
-    } else {
-      meterPct.textContent = speedup.toFixed(1) + 'x';
-    }
+    meterFill.style.width = data.pctOfMax + '%';
+    meterVal.textContent = data.throughput.toFixed(1) + 'M lines/sec';
+    meterPct.textContent = selectAll ? 'baseline' : data.speedup.toFixed(1) + 'x';
 
     // Update stats
-    var skipped = selectAll ? 0 : TOTAL_FIELDS - selCount;
-    var selectedBytes = 0;
-    if (selectAll) {
-      selectedBytes = totalBytes;
-    } else {
-      for (var j = 0; j < FIELDS.length; j++) {
-        if (selected[FIELDS[j].name]) selectedBytes += FIELDS[j].bytes;
-      }
-    }
     statsEl.innerHTML =
-      '<span>Fields: <b>' + effectiveCount + '/' + TOTAL_FIELDS + '</b></span>' +
-      '<span>Skipped: <b>' + skipped + '</b></span>' +
-      '<span>Bytes parsed: <b>~' + selectedBytes + '</b> of ' + totalBytes + ' per line</span>';
+      `<span>Fields: <b>${data.effectiveCount}/${TOTAL_FIELDS}</b></span>` +
+      `<span>Skipped: <b>${data.skipped}</b></span>` +
+      `<span>Bytes parsed: <b>~${data.selectedBytes}</b> of ${TOTAL_BYTES} per line</span>`;
 
     // Update presets
-    for (var p = 0; p < PRESETS.length; p++) {
-      var preset = PRESETS[p];
-      var match = false;
-      if (preset.fields === null) {
-        match = selectAll;
-      } else if (!selectAll && selCount === preset.fields.length) {
-        match = true;
-        for (var q = 0; q < preset.fields.length; q++) {
-          if (!selected[preset.fields[q]]) { match = false; break; }
-        }
-      }
+    for (let p = 0; p < PRESETS.length; p++) {
+      const match = isPresetMatch(PRESETS[p], selected);
       presetBtns[p].classList.toggle('active', match);
       presetBtns[p].setAttribute('aria-pressed', match ? 'true' : 'false');
     }
 
     // Update callout
-    var isFast = !selectAll && selCount > 0;
+    const isFast = !selectAll && selCount > 0;
     calloutEl.className = 'pd-callout' + (isFast ? ' fast' : '');
     if (selectAll) {
-      calloutEl.innerHTML = '<b>SELECT *</b> \u2014 The scanner extracts all ' + TOTAL_FIELDS + ' fields. Every key-value pair is parsed, typed, and appended to an Arrow column.';
+      calloutEl.innerHTML = `<b>SELECT *</b> \u2014 The scanner extracts all ${TOTAL_FIELDS} fields. Every key-value pair is parsed, typed, and appended to an Arrow column.`;
     } else {
-      var savedPct = Math.round((1 - selectedBytes / totalBytes) * 100);
-      calloutEl.innerHTML = '<b>' + skipped + ' fields skipped entirely</b> \u2014 The scanner sees each grayed-out key, checks <code>ScanConfig.is_wanted()</code>, and jumps past the value without parsing it. <b>' + savedPct + '%</b> fewer bytes parsed \u2192 <b>' + speedup.toFixed(1) + 'x</b> faster.';
+      const savedPct = Math.round((1 - data.selectedBytes / TOTAL_BYTES) * 100);
+      calloutEl.innerHTML = `<b>${data.skipped} fields skipped entirely</b> \u2014 The scanner sees each grayed-out key, checks <code>ScanConfig.is_wanted()</code>, and jumps past the value without parsing it. <b>${savedPct}%</b> fewer bytes parsed \u2192 <b>${data.speedup.toFixed(1)}x</b> faster.`;
     }
   }
 
   // Init with SELECT *
-  applyPreset(PRESETS[0]);
-})();
+  handleApplyPreset(PRESETS[0]);
+}
+init();
 </script>

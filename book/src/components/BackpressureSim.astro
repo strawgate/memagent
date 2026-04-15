@@ -1,6 +1,7 @@
 ---
-// Interactive backpressure cascade simulator.
-// Shows how slowing the output causes pressure to build backward through the pipeline.
+// Backpressure cascade simulator — pipeline view with source type selector.
+// Source panel (File/UDP/OTLP) replaces the generic I/O Worker box so users can see
+// exactly what their input *feels* when output pressure cascades backwards.
 ---
 
 <div class="bp" id="backpressure-sim"></div>
@@ -15,8 +16,6 @@
     --bp-green: #22c55e;
     --bp-amber: #f59e0b;
     --bp-red: #ef4444;
-    --bp-blue: #60a5fa;
-    --bp-purple: #a78bfa;
     margin: 1.5rem 0;
   }
   .bp * { margin-top: 0 !important; }
@@ -33,21 +32,26 @@
     white-space: nowrap;
   }
   .bp-slider-wrap {
-    display: flex; align-items: center; gap: 0.4rem; flex: 1; min-width: 160px;
+    display: flex; align-items: center; gap: 0.5rem; flex: 1; min-width: 160px;
+    background: color-mix(in srgb, var(--bp-text) 4%, transparent);
+    border: 1px solid var(--bp-border); border-radius: 5px; padding: 0.2rem 0.5rem;
   }
   .bp-slider {
-    flex: 1; height: 4px; -webkit-appearance: none; appearance: none;
-    background: var(--bp-border); border-radius: 2px; outline: none;
-    cursor: pointer;
+    flex: 1; height: 5px; -webkit-appearance: none; appearance: none;
+    background: var(--bp-border); border-radius: 3px; outline: none; cursor: pointer;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.2);
   }
   .bp-slider::-webkit-slider-thumb {
-    -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
-    background: var(--bp-accent); border: none; cursor: pointer;
+    -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%;
+    background: var(--bp-accent); border: 2px solid white; cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.25);
   }
   .bp-slider::-moz-range-thumb {
-    width: 14px; height: 14px; border-radius: 50%;
-    background: var(--bp-accent); border: none; cursor: pointer;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--bp-accent); border: 2px solid white; cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.25);
   }
+  .bp-slider:focus-visible { outline: 2px solid var(--bp-accent); outline-offset: 3px; }
   .bp-speed-val {
     font-family: var(--sl-font-mono, monospace); font-size: 0.7rem;
     font-weight: 700; min-width: 40px; text-align: right;
@@ -64,8 +68,7 @@
   /* Pipeline stages */
   .bp-pipeline {
     display: flex; gap: 0; align-items: stretch;
-    margin-bottom: 0.6rem; overflow-x: auto;
-    flex-wrap: wrap;
+    margin-bottom: 0.6rem; overflow-x: auto; flex-wrap: wrap;
   }
   .bp-stage {
     flex: 1; min-width: 90px; padding: 0.5rem;
@@ -85,80 +88,58 @@
     display: flex; justify-content: space-between; align-items: center;
     margin-bottom: 0.3rem;
   }
-  .bp-stage-name {
-    font-size: 0.72rem; font-weight: 700; color: var(--bp-text);
-  }
+  .bp-stage-name { font-size: 0.72rem; font-weight: 700; color: var(--bp-text); }
   .bp-stage-tag {
     font-size: 0.5rem; font-weight: 700; padding: 0.1rem 0.3rem;
     border-radius: 3px; text-transform: uppercase; letter-spacing: 0.04em;
   }
   .bp-tag-ok { background: color-mix(in srgb, var(--bp-green) 15%, transparent); color: var(--bp-green); }
-  .bp-tag-slow { background: color-mix(in srgb, var(--bp-amber) 15%, transparent); color: var(--bp-amber); }
+  .bp-tag-pressure { background: color-mix(in srgb, var(--bp-amber) 15%, transparent); color: var(--bp-amber); }
   .bp-tag-blocked { background: color-mix(in srgb, var(--bp-red) 15%, transparent); color: var(--bp-red); }
-
-  .bp-stage-desc {
-    font-size: 0.58rem; color: var(--bp-muted); margin-bottom: 0.4rem;
-  }
+  .bp-stage-desc { font-size: 0.58rem; color: var(--bp-muted); margin-bottom: 0.4rem; }
 
   /* Queue visualization */
-  .bp-queue {
-    display: flex; gap: 2px; height: 18px; margin-bottom: 0.3rem;
-  }
+  .bp-queue { display: flex; gap: 2px; height: 18px; margin-bottom: 0.3rem; }
   .bp-slot {
     flex: 1; border-radius: 2px; border: 1px solid var(--bp-border);
-    transition: background 0.3s, border-color 0.3s;
-    position: relative; overflow: hidden;
+    transition: background 0.3s, border-color 0.3s; position: relative; overflow: hidden;
   }
-  .bp-slot.filled {
-    background: var(--bp-green); border-color: var(--bp-green);
-  }
-  .bp-slot.filling {
-    background: var(--bp-amber); border-color: var(--bp-amber);
-  }
-  .bp-slot.full {
-    background: var(--bp-red); border-color: var(--bp-red);
-  }
-  .bp-queue-label {
-    font-size: 0.5rem; color: var(--bp-muted); text-align: center;
-    font-family: var(--sl-font-mono, monospace);
-  }
+  .bp-slot.filled { background: var(--bp-green); border-color: var(--bp-green); }
+  .bp-slot.filling { background: var(--bp-amber); border-color: var(--bp-amber); }
+  .bp-slot.full { background: var(--bp-red); border-color: var(--bp-red); }
+  .bp-queue-label { font-size: 0.5rem; color: var(--bp-muted); text-align: center; font-family: var(--sl-font-mono, monospace); }
 
-  /* Activity bar — gentle shimmer showing the stage is alive */
+  /* Activity bar — pinned to absolute bottom of stage */
   .bp-activity {
-    height: 3px; border-radius: 1.5px; margin-top: 0.35rem;
-    background: var(--bp-border); overflow: hidden;
-    position: relative;
+    position: absolute; bottom: 0; left: 0; right: 0;
+    height: 3px; border-radius: 0 0 6px 6px;
+    background: color-mix(in srgb, var(--bp-text) 6%, transparent);
+    overflow: hidden;
   }
   .bp-activity-fill {
-    position: absolute; inset: 0; border-radius: 1.5px;
-    background: var(--bp-green);
+    position: absolute; inset: 0; border-radius: 0 0 6px 6px;
+    background: color-mix(in srgb, var(--bp-green) 55%, transparent);
     transform-origin: left;
     transition: transform 0.3s ease, background-color 0.4s;
   }
-  .bp-activity-fill.flowing {
-    animation: bp-flow 1.5s ease-in-out infinite;
-  }
-  .bp-activity-fill.pressured { background: var(--bp-amber); }
+  .bp-activity-fill.flowing { animation: bp-flow 1.5s ease-in-out infinite; }
+  .bp-activity-fill.pressured { background: color-mix(in srgb, var(--bp-amber) 55%, transparent); }
   .bp-activity-fill.blocked {
-    background: var(--bp-red);
+    background: color-mix(in srgb, var(--bp-red) 55%, transparent);
     animation: bp-blocked-pulse 2s ease-in-out infinite;
   }
   @keyframes bp-flow {
     0%   { transform: scaleX(0.15); translate: 0% 0; }
-    50%  { transform: scaleX(0.5); translate: 50% 0; }
+    50%  { transform: scaleX(0.5);  translate: 50% 0; }
     100% { transform: scaleX(0.15); translate: 85% 0; }
   }
-  @keyframes bp-blocked-pulse {
-    0%, 100% { opacity: 0.4; }
-    50% { opacity: 1; }
-  }
+  @keyframes bp-blocked-pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
 
-  /* Arrow connectors with flow animation */
+  /* Arrow connectors */
   .bp-arrow {
     display: flex; align-items: center; justify-content: center;
     width: 28px; min-width: 28px; color: var(--bp-muted);
-    font-size: 1rem; transition: color 0.3s;
-    position: relative;
+    font-size: 1rem; transition: color 0.3s; position: relative;
   }
   .bp-arrow.pressured { color: var(--bp-amber); }
   .bp-arrow.blocked { color: var(--bp-red); }
@@ -166,9 +147,7 @@
     position: absolute; width: 4px; height: 4px; border-radius: 50%;
     background: var(--bp-green); opacity: 0;
   }
-  .bp-arrow.flowing .bp-arrow-dot {
-    animation: bp-dot-fly 1.2s ease-in-out infinite;
-  }
+  .bp-arrow.flowing .bp-arrow-dot { animation: bp-dot-fly 1.2s ease-in-out infinite; }
   .bp-arrow.pressured .bp-arrow-dot { background: var(--bp-amber); }
   .bp-arrow.blocked .bp-arrow-dot { background: var(--bp-red); animation: none; opacity: 0; }
   @keyframes bp-dot-fly {
@@ -178,46 +157,29 @@
     100% { opacity: 0; translate: 10px 0; }
   }
 
-  /* Alert callouts — speech bubbles anchored to stages */
+  /* Alert callouts */
   .bp-alert {
     position: absolute; bottom: calc(100% + 8px); left: 50%;
     transform: translateX(-50%); z-index: 10;
     padding: 0.35rem 0.55rem; border-radius: 6px;
     font-size: 0.62rem; font-weight: 600; line-height: 1.35;
-    max-width: 220px; white-space: normal;
-    pointer-events: none;
+    max-width: 220px; white-space: normal; pointer-events: none;
     animation: bp-alert-in 0.3s ease-out forwards;
     box-shadow: 0 2px 8px rgba(0,0,0,0.15);
   }
   .bp-alert::after {
     content: ''; position: absolute; top: 100%; left: 50%;
-    transform: translateX(-50%);
-    border: 5px solid transparent;
+    transform: translateX(-50%); border: 5px solid transparent;
   }
-  .bp-alert.ok {
-    background: var(--bp-green); color: white;
-  }
+  .bp-alert.ok { background: var(--bp-green); color: white; }
   .bp-alert.ok::after { border-top-color: var(--bp-green); }
-  .bp-alert.warn {
-    background: var(--bp-amber); color: #1a1a2e;
-  }
+  .bp-alert.warn { background: var(--bp-amber); color: #1a1a2e; }
   .bp-alert.warn::after { border-top-color: var(--bp-amber); }
-  .bp-alert.err {
-    background: var(--bp-red); color: white;
-  }
+  .bp-alert.err { background: var(--bp-red); color: white; }
   .bp-alert.err::after { border-top-color: var(--bp-red); }
-
-  @keyframes bp-alert-in {
-    from { opacity: 0; translate: 0 4px; }
-    to { opacity: 1; translate: 0 0; }
-  }
-  .bp-alert.exiting {
-    animation: bp-alert-out 0.4s ease-in forwards;
-  }
-  @keyframes bp-alert-out {
-    from { opacity: 1; translate: 0 0; }
-    to { opacity: 0; translate: 0 -4px; }
-  }
+  @keyframes bp-alert-in { from { opacity: 0; translate: 0 4px; } to { opacity: 1; translate: 0 0; } }
+  .bp-alert.exiting { animation: bp-alert-out 0.4s ease-in forwards; }
+  @keyframes bp-alert-out { from { opacity: 1; translate: 0 0; } to { opacity: 0; translate: 0 -4px; } }
 
   /* Stats row */
   .bp-stats {
@@ -225,13 +187,8 @@
     font-size: 0.68rem; padding: 0.4rem 0;
   }
   .bp-stat { display: flex; flex-direction: column; }
-  .bp-stat-label {
-    font-size: 0.5rem; color: var(--bp-muted);
-    text-transform: uppercase; letter-spacing: 0.03em;
-  }
-  .bp-stat-val {
-    font-weight: 700; font-family: var(--sl-font-mono, monospace);
-  }
+  .bp-stat-label { font-size: 0.5rem; color: var(--bp-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  .bp-stat-val { font-weight: 700; font-family: var(--sl-font-mono, monospace); }
   .bp-stat-val.green { color: var(--bp-green); }
   .bp-stat-val.amber { color: var(--bp-amber); }
   .bp-stat-val.red { color: var(--bp-red); }
@@ -252,116 +209,229 @@
   .bp-log-entry .warn { color: var(--bp-amber); font-weight: 600; }
   .bp-log-entry .err { color: var(--bp-red); font-weight: 600; }
   .bp-log-entry .ok { color: var(--bp-green); }
+
+  /* ----- Source panel additions ----- */
+  .bp-source-tabs { display: flex; gap: 0.2rem; margin-bottom: 0.3rem; }
+  .bp-source-tab {
+    padding: 0.12rem 0.35rem; border-radius: 3px;
+    border: 1px solid var(--bp-border); background: transparent;
+    color: var(--bp-muted); font-size: 0.55rem; cursor: pointer;
+    font-weight: 600; transition: all 0.15s;
+  }
+  .bp-source-tab:hover { border-color: var(--bp-accent); color: var(--bp-text); }
+  .bp-source-tab.active {
+    border-color: var(--bp-accent);
+    background: color-mix(in srgb, var(--bp-accent) 12%, transparent);
+    color: var(--bp-text);
+  }
+
+  .bp-mini-viz { margin-bottom: 0.3rem; font-size: 0.58rem; min-height: 52px; }
+
+  /* File log viz */
+  .bp-file-viz {
+    font-family: var(--sl-font-mono, monospace); font-size: 0.5rem;
+    background: color-mix(in srgb, var(--bp-text) 6%, transparent);
+    border-radius: 3px; padding: 0.25rem 0.4rem;
+    line-height: 1.6; overflow: hidden;
+  }
+  .bp-file-old {
+    color: var(--bp-muted); white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis; min-height: 1.6em;
+  }
+  .bp-file-cursor-row {
+    color: var(--bp-green); font-weight: 600;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .bp-file-cursor-row.stalled {
+    color: var(--bp-red); animation: bp-blocked-pulse 2s ease-in-out infinite;
+  }
+  .bp-file-more {
+    color: var(--bp-amber); font-size: 0.46rem; font-style: italic;
+    min-height: 1.4em; padding-top: 0.05rem;
+  }
+
+  /* UDP mini */
+  .bp-mini-udp { display: flex; gap: 0.5rem; align-items: flex-end; }
+  .bp-mini-gauge-wrap { flex: 1; }
+  .bp-mini-gauge {
+    height: 40px; background: rgba(0,0,0,0.3); border-radius: 3px;
+    position: relative; overflow: hidden;
+  }
+  .bp-mini-gauge-fill {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    background: var(--bp-green); transition: height 0.25s;
+  }
+  .bp-mini-gauge-fill.warn { background: var(--bp-amber); }
+  .bp-mini-gauge-fill.full { background: var(--bp-red); }
+  .bp-mini-drops { text-align: center; min-width: 44px; }
+  .bp-mini-drops-count {
+    font-size: 1.2rem; font-weight: 800;
+    font-family: var(--sl-font-mono, monospace); line-height: 1;
+  }
+  .bp-mini-drops-count.zero { color: var(--bp-green); }
+  .bp-mini-drops-count.dropping { color: var(--bp-red); }
+  .bp-mini-drops-label {
+    font-size: 0.48rem; color: var(--bp-muted);
+    text-transform: uppercase; letter-spacing: 0.03em;
+  }
+
+  /* OTLP mini */
+  .bp-mini-otlp { display: flex; flex-direction: column; gap: 2px; }
+  .bp-mini-req {
+    display: flex; align-items: center; gap: 0.25rem;
+    font-family: var(--sl-font-mono, monospace); font-size: 0.54rem;
+    animation: bp-fadein 0.2s ease-out;
+  }
+  .bp-mini-req .s200 { color: var(--bp-green); font-weight: 700; }
+  .bp-mini-req .s429 { color: var(--bp-red); font-weight: 700; }
+  .bp-mini-req .rnote { color: var(--bp-amber); font-size: 0.48rem; }
+
+  /* Disable keyframe animations for users who prefer reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    .bp-activity-fill.flowing,
+    .bp-activity-fill.blocked { animation: none; }
+    .bp-arrow.flowing .bp-arrow-dot { animation: none; opacity: 0; }
+    .bp-log-entry { animation: none; }
+    .bp-alert, .bp-alert.exiting { animation: none; }
+    .bp-mini-req { animation: none; }
+    .bp-file-cursor-row.stalled { animation: none; }
+  }
 </style>
 
 <script>
-(function() {
-  var root = document.getElementById('backpressure-sim');
+import {
+  makeSim, classifyState,
+  IO_CPU_CAP, PIPELINE_CAP, WORKER_CAP, NUM_WORKERS, UDP_CAP, OUT_MAX_RATE,
+} from '../scripts/backpressure-sim';
+import { el } from '../scripts/dom-utils';
+
+function init() {
+  const root = document.getElementById('backpressure-sim');
   if (!root) return;
 
-  function el(tag, cls) { var e = document.createElement(tag); if (cls) e.className = cls; return e; }
+  const sim = makeSim();
+  let running = true;
 
-  // --- State ---
-  var outputSpeed = 100;
-  var running = true;
-  var tick = 0;
+  let SRC_MODES = [
+    { id: 'file',  label: 'File',  name: 'File Input'  },
+    { id: 'udp',   label: 'UDP',   name: 'UDP Input'   },
+    { id: 'otlp',  label: 'OTLP',  name: 'OTLP Input'  },
+  ];
 
-  var IO_CPU_CAP = 4;
-  var PIPELINE_CAP = 16;
-  var WORKER_CAP = 1;
-  var NUM_WORKERS = 3;
+  // DOM refs for source viz (rebuilt on mode switch)
+  let srcNameEl, srcVizEl, srcTabBtns;
+  let fileLogRow1, fileLogRow2, fileCursorRow, fileMiniMore;
+  let filePrevRead = 0, fileLogBuf = ['', ''];
+  let FILE_LOG_MSGS = [
+    'INFO  checkpoint flushed', 'WARN  slow consumer backoff',
+    'INFO  batch queued ok',    'DEBUG scan: 512 rows',
+    'INFO  SQL transform ok',   'DEBUG inotify IN_MODIFY',
+    'INFO  output dispatch ok', 'WARN  pipeline 8/16 full',
+    'INFO  flush complete',     'DEBUG poll() returned 1',
+  ];
+  let udpMiniFill, udpMiniDropCount;
+  let otlpMiniLogEl;
 
-  var ioCpuFill = 0;
-  var pipelineFill = 0;
-  var workerFills = [0, 0, 0];
+  function fakeLogLine(n) {
+    let t = 8 * 3600 + 23 * 60 + 40 + Math.floor(n / 4);
+    let h = Math.floor(t / 3600) % 24;
+    let m = Math.floor((t % 3600) / 60);
+    let s = t % 60;
+    let ts = (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
+    return ts + ' ' + FILE_LOG_MSGS[n % FILE_LOG_MSGS.length];
+  }
 
-  // Rates tuned so output must be above ~50% to keep up with input.
-  // At 100% output drains 2x faster than input — recovery is visible.
-  // Below ~50% output, pressure builds; at 0% it's a full outage.
-  var IO_RATE = 1.2;      // chunks/tick from I/O
-  var CPU_RATE = 1.2;     // batches/tick CPU can process
-  var OUT_MAX_RATE = 2.4; // output at 100% drains 2x input rate — fast recovery
-
-  var totalProduced = 0;
-  var totalDelivered = 0;
-  var ioBlocked = false;
-  var cpuBlocked = false;
-
-  // Track previous states for transition detection
-  var prevIoState = 'ok';   // ok | pressured | blocked
-  var prevCpuState = 'ok';
-  var prevOutState = 'ok';
-
-  // --- Build DOM ---
-  var controls = el('div', 'bp-controls');
-  var lbl = el('label', 'bp-label'); lbl.htmlFor = 'bp-output-speed'; lbl.textContent = 'Output Speed';
-  var sliderWrap = el('div', 'bp-slider-wrap');
-  var slider = el('input', 'bp-slider');
+  // --- Build control bar ---
+  let controls = el('div', 'bp-controls');
+  let lbl = el('label', 'bp-label'); lbl.htmlFor = 'bp-output-speed'; lbl.textContent = 'Output Speed';
+  let sliderWrap = el('div', 'bp-slider-wrap');
+  let slider = el('input', 'bp-slider');
   slider.id = 'bp-output-speed';
   slider.type = 'range'; slider.min = '0'; slider.max = '100'; slider.value = '100';
-  var speedVal = el('span', 'bp-speed-val'); speedVal.textContent = '100%';
-  sliderWrap.appendChild(slider);
-  sliderWrap.appendChild(speedVal);
+  let speedVal = el('span', 'bp-speed-val'); speedVal.textContent = '100%';
+  sliderWrap.appendChild(slider); sliderWrap.appendChild(speedVal);
 
-  var btns = el('div', 'bp-btns');
-  var btnFast = el('button', 'bp-btn active'); btnFast.type = 'button'; btnFast.textContent = 'Fast'; btnFast.setAttribute('aria-pressed', 'true');
-  var btnSlow = el('button', 'bp-btn'); btnSlow.type = 'button'; btnSlow.textContent = 'Slow'; btnSlow.setAttribute('aria-pressed', 'false');
-  var btnDown = el('button', 'bp-btn'); btnDown.type = 'button'; btnDown.textContent = 'Outage'; btnDown.setAttribute('aria-pressed', 'false');
+  let btns = el('div', 'bp-btns');
+  let btnFast = el('button', 'bp-btn active'); btnFast.type = 'button'; btnFast.textContent = 'Fast'; btnFast.setAttribute('aria-pressed', 'true');
+  let btnSlow = el('button', 'bp-btn'); btnSlow.type = 'button'; btnSlow.textContent = 'Slow'; btnSlow.setAttribute('aria-pressed', 'false');
+  let btnDown = el('button', 'bp-btn'); btnDown.type = 'button'; btnDown.textContent = 'Outage'; btnDown.setAttribute('aria-pressed', 'false');
   btns.appendChild(btnFast); btns.appendChild(btnSlow); btns.appendChild(btnDown);
 
-  controls.appendChild(lbl);
-  controls.appendChild(sliderWrap);
-  controls.appendChild(btns);
+  controls.appendChild(lbl); controls.appendChild(sliderWrap); controls.appendChild(btns);
   root.appendChild(controls);
 
-  // Pipeline stages
-  var pipeline = el('div', 'bp-pipeline');
+  // --- Build pipeline ---
+  let pipeline = el('div', 'bp-pipeline');
+
+  // Source panel (replaces generic I/O Worker)
+  let srcEl = el('div', 'bp-stage');
+  let srcHead = el('div', 'bp-stage-head');
+  srcNameEl = el('span', 'bp-stage-name'); srcNameEl.textContent = 'File Input';
+  let srcTagEl = el('span', 'bp-stage-tag bp-tag-ok'); srcTagEl.textContent = 'OK';
+  srcHead.appendChild(srcNameEl); srcHead.appendChild(srcTagEl);
+  srcEl.appendChild(srcHead);
+
+  // Source mode tabs
+  let srcTabsEl = el('div', 'bp-source-tabs');
+  srcTabBtns = SRC_MODES.map(function(m) {
+    let btn = el('button', 'bp-source-tab' + (m.id === sim.sourceMode ? ' active' : ''));
+    btn.type = 'button'; btn.textContent = m.label;
+    btn.setAttribute('aria-pressed', m.id === sim.sourceMode ? 'true' : 'false');
+    btn.onclick = function() { switchSourceMode(m.id); };
+    srcTabsEl.appendChild(btn);
+    return btn;
+  });
+  srcEl.appendChild(srcTabsEl);
+
+  // Mini viz area
+  srcVizEl = el('div', 'bp-mini-viz');
+  srcEl.appendChild(srcVizEl);
+
+  // Activity bar (slot queue removed — source viz in srcVizEl handles the visual)
+  let srcActBar = el('div', 'bp-activity');
+  let srcActFill = el('div', 'bp-activity-fill flowing');
+  srcActBar.appendChild(srcActFill);
+  srcEl.appendChild(srcActBar);
+
+  // ioStage — slots=[] so updateStage skips slot loop; coloring done inline in simTick
+  let ioStage = { el: srcEl, tag: srcTagEl, slots: [], actFill: srcActFill };
 
   function makeStage(name, desc, cap, queueLabel) {
-    var s = el('div', 'bp-stage');
-    var head = el('div', 'bp-stage-head');
-    var nm = el('span', 'bp-stage-name'); nm.textContent = name;
-    var tag = el('span', 'bp-stage-tag bp-tag-ok'); tag.textContent = 'OK';
+    let s = el('div', 'bp-stage');
+    let head = el('div', 'bp-stage-head');
+    let nm = el('span', 'bp-stage-name'); nm.textContent = name;
+    let tag = el('span', 'bp-stage-tag bp-tag-ok'); tag.textContent = 'OK';
     head.appendChild(nm); head.appendChild(tag);
     s.appendChild(head);
-
-    var d = el('div', 'bp-stage-desc'); d.textContent = desc;
+    let d = el('div', 'bp-stage-desc'); d.textContent = desc;
     s.appendChild(d);
-
-    var q = el('div', 'bp-queue');
-    var slots = [];
+    let q = el('div', 'bp-queue');
+    let slots = [];
     for (var i = 0; i < cap; i++) {
-      var slot = el('div', 'bp-slot');
-      q.appendChild(slot);
-      slots.push(slot);
+      let slot = el('div', 'bp-slot');
+      q.appendChild(slot); slots.push(slot);
     }
     s.appendChild(q);
-
-    var ql = el('div', 'bp-queue-label'); ql.textContent = queueLabel;
+    let ql = el('div', 'bp-queue-label'); ql.textContent = queueLabel;
     s.appendChild(ql);
-
-    // Activity bar
-    var act = el('div', 'bp-activity');
-    var actFill = el('div', 'bp-activity-fill flowing');
-    act.appendChild(actFill);
-    s.appendChild(act);
-
+    let act = el('div', 'bp-activity');
+    let actFill = el('div', 'bp-activity-fill flowing');
+    act.appendChild(actFill); s.appendChild(act);
     return { el: s, tag: tag, slots: slots, qlabel: ql, actFill: actFill };
   }
 
   function makeArrow() {
-    var a = el('div', 'bp-arrow flowing');
+    let a = el('div', 'bp-arrow flowing');
     a.innerHTML = '\u25B6';
-    var dot = el('div', 'bp-arrow-dot');
+    let dot = el('div', 'bp-arrow-dot');
     a.appendChild(dot);
     return a;
   }
 
-  var ioStage = makeStage('I/O Worker', 'poll() \u2192 read bytes', IO_CPU_CAP, '0/' + IO_CPU_CAP + ' slots');
-  var arrow1 = makeArrow();
-  var cpuStage = makeStage('CPU Worker', 'scan \u2192 SQL transform', PIPELINE_CAP, '0/' + PIPELINE_CAP + ' slots');
-  var arrow2 = makeArrow();
-  var outStage = makeStage('Output Pool', NUM_WORKERS + ' workers \u00D7 MRU dispatch', NUM_WORKERS, '0/' + NUM_WORKERS + ' busy');
+  let arrow1 = makeArrow();
+  let cpuStage = makeStage('CPU Worker', 'scan \u2192 SQL transform', PIPELINE_CAP, '0/' + PIPELINE_CAP + ' slots');
+  let arrow2 = makeArrow();
+  let outStage = makeStage('Output Pool', NUM_WORKERS + ' workers \u00D7 MRU dispatch', NUM_WORKERS, '0/' + NUM_WORKERS + ' busy');
 
   pipeline.appendChild(ioStage.el);
   pipeline.appendChild(arrow1);
@@ -370,61 +440,142 @@
   pipeline.appendChild(outStage.el);
   root.appendChild(pipeline);
 
-  // Stats
-  var statsEl = el('div', 'bp-stats');
+  let statsEl = el('div', 'bp-stats');
   root.appendChild(statsEl);
 
-  // Event log
-  var logEl = el('div', 'bp-log');
+  let logEl = el('div', 'bp-log');
   root.appendChild(logEl);
 
   // --- Preset buttons ---
-  var presets = [btnFast, btnSlow, btnDown];
+  let presets = [btnFast, btnSlow, btnDown];
   function setPreset(idx) {
-    presets.forEach(function(b, i) {
-      var active = i === idx;
+    presets.forEach(function (b, i) {
+      let active = i === idx;
       b.className = 'bp-btn' + (active ? ' active' : '');
       b.setAttribute('aria-pressed', active ? 'true' : 'false');
     });
-    if (idx === 0) { slider.value = '100'; outputSpeed = 100; }
-    else if (idx === 1) { slider.value = '30'; outputSpeed = 30; }
-    else { slider.value = '0'; outputSpeed = 0; }
-    speedVal.textContent = outputSpeed + '%';
+    if (idx === 0) { slider.value = '100'; sim.outputSpeed = 100; }
+    else if (idx === 1) { slider.value = '30';  sim.outputSpeed = 30;  }
+    else               { slider.value = '0';   sim.outputSpeed = 0;   }
+    speedVal.textContent = sim.outputSpeed + '%';
   }
-  btnFast.onclick = function() { setPreset(0); };
-  btnSlow.onclick = function() { setPreset(1); };
-  btnDown.onclick = function() { setPreset(2); };
+  btnFast.onclick = function () { setPreset(0); };
+  btnSlow.onclick = function () { setPreset(1); };
+  btnDown.onclick = function () { setPreset(2); };
 
-  slider.oninput = function() {
-    outputSpeed = parseInt(slider.value, 10);
-    speedVal.textContent = outputSpeed + '%';
-    presets.forEach(function(b) {
-      b.className = 'bp-btn';
-      b.setAttribute('aria-pressed', 'false');
-    });
-    if (outputSpeed === 100) {
-      btnFast.className = 'bp-btn active';
-      btnFast.setAttribute('aria-pressed', 'true');
-    } else if (outputSpeed === 30) {
-      btnSlow.className = 'bp-btn active';
-      btnSlow.setAttribute('aria-pressed', 'true');
-    } else if (outputSpeed === 0) {
-      btnDown.className = 'bp-btn active';
-      btnDown.setAttribute('aria-pressed', 'true');
-    }
+  slider.oninput = function () {
+    sim.outputSpeed = parseInt(slider.value, 10);
+    speedVal.textContent = sim.outputSpeed + '%';
+    presets.forEach(function (b) { b.className = 'bp-btn'; b.setAttribute('aria-pressed', 'false'); });
+    if (sim.outputSpeed === 100) { btnFast.className = 'bp-btn active'; btnFast.setAttribute('aria-pressed', 'true'); }
+    else if (sim.outputSpeed === 30)  { btnSlow.className = 'bp-btn active'; btnSlow.setAttribute('aria-pressed', 'true'); }
+    else if (sim.outputSpeed === 0)   { btnDown.className = 'bp-btn active'; btnDown.setAttribute('aria-pressed', 'true'); }
   };
+
+  // --- Source mode ---
+  function switchSourceMode(newMode) {
+    sim.sourceMode = newMode;
+    sim.reset();
+    SRC_MODES.forEach(function (m, i) {
+      let active = m.id === newMode;
+      srcTabBtns[i].className = 'bp-source-tab' + (active ? ' active' : '');
+      srcTabBtns[i].setAttribute('aria-pressed', active ? 'true' : 'false');
+      if (active) srcNameEl.textContent = m.name;
+    });
+    buildSourceViz();
+    addLog('Source \u2192 ' + newMode + ' \u2014 pipeline reset', 'ok');
+  }
+
+  function buildSourceViz() {
+    srcVizEl.innerHTML = '';
+    fileLogRow1 = null; fileLogRow2 = null; fileCursorRow = null; fileMiniMore = null;
+    filePrevRead = 0; fileLogBuf = ['', ''];
+    udpMiniFill = null; udpMiniDropCount = null;
+    otlpMiniLogEl = null;
+
+    if (sim.sourceMode === 'file') {
+      let viz = el('div', 'bp-file-viz');
+      fileLogRow1 = el('div', 'bp-file-old');
+      fileLogRow2 = el('div', 'bp-file-old');
+      fileCursorRow = el('div', 'bp-file-cursor-row');
+      fileMiniMore = el('div', 'bp-file-more');
+      viz.appendChild(fileLogRow1); viz.appendChild(fileLogRow2);
+      viz.appendChild(fileCursorRow); viz.appendChild(fileMiniMore);
+      srcVizEl.appendChild(viz);
+    } else if (sim.sourceMode === 'udp') {
+      let row = el('div', 'bp-mini-udp');
+      let gwrap = el('div', 'bp-mini-gauge-wrap');
+      let gauge = el('div', 'bp-mini-gauge');
+      udpMiniFill = el('div', 'bp-mini-gauge-fill');
+      gauge.appendChild(udpMiniFill); gwrap.appendChild(gauge);
+      let glbl = el('div', 'bp-queue-label'); glbl.textContent = 'kernel buffer';
+      gwrap.appendChild(glbl); row.appendChild(gwrap);
+      let dbox = el('div', 'bp-mini-drops');
+      udpMiniDropCount = el('div', 'bp-mini-drops-count zero'); udpMiniDropCount.textContent = '0';
+      let dlbl = el('div', 'bp-mini-drops-label'); dlbl.textContent = 'dropped';
+      dbox.appendChild(udpMiniDropCount); dbox.appendChild(dlbl);
+      row.appendChild(dbox); srcVizEl.appendChild(row);
+    } else {
+      otlpMiniLogEl = el('div', 'bp-mini-otlp');
+      srcVizEl.appendChild(otlpMiniLogEl);
+    }
+  }
+
+  function addOtlpEntry(batch, status, note) {
+    if (!otlpMiniLogEl) return;
+    let row = el('div', 'bp-mini-req');
+    let sCls = status === 200 ? 's200' : 's429';
+    row.innerHTML = 'req\u00A0#' + batch + '\u00A0\u00A0<span class="' + sCls + '">' + status + '</span>' +
+      (note ? '\u00A0<span class="rnote">' + note + '</span>' : '');
+    otlpMiniLogEl.appendChild(row);
+    while (otlpMiniLogEl.children.length > 4) otlpMiniLogEl.removeChild(otlpMiniLogEl.firstChild);
+  }
+
+  function updateSourceViz() {
+    if (sim.sourceMode === 'file') {
+      if (!fileCursorRow) return;
+      let readInt = Math.floor(sim.fileRead);
+      if (!sim.ioBlocked) {
+        while (readInt > filePrevRead) {
+          fileLogBuf[0] = fileLogBuf[1];
+          fileLogBuf[1] = fakeLogLine(filePrevRead + 1);
+          filePrevRead++;
+        }
+      }
+      fileLogRow1.textContent = fileLogBuf[0];
+      fileLogRow2.textContent = fileLogBuf[1];
+      let gap = Math.round(sim.fileWritten - sim.fileRead);
+      if (sim.ioBlocked && gap > 0) {
+        fileCursorRow.className = 'bp-file-cursor-row stalled';
+        fileCursorRow.textContent = '\u25B6 ' + fakeLogLine(readInt) + ' \u2190 stalled';
+        fileMiniMore.textContent = '\u2026 +' + gap + ' unread';
+      } else if (gap > 0) {
+        fileCursorRow.className = 'bp-file-cursor-row';
+        fileCursorRow.textContent = '\u25B6 ' + fakeLogLine(readInt);
+        fileMiniMore.textContent = '\u2026 +' + gap + ' catching up';
+      } else {
+        fileCursorRow.className = 'bp-file-cursor-row';
+        fileCursorRow.textContent = '\u25B6 ' + fakeLogLine(readInt);
+        fileMiniMore.textContent = '';
+      }
+    } else if (sim.sourceMode === 'udp') {
+      if (!udpMiniFill) return;
+      let fillPct = (sim.udpBuf / UDP_CAP) * 100;
+      udpMiniFill.style.height = fillPct + '%';
+      udpMiniFill.className = 'bp-mini-gauge-fill' + (fillPct > 90 ? ' full' : fillPct > 60 ? ' warn' : '');
+      udpMiniDropCount.textContent = '' + Math.round(sim.udpDrops);
+      udpMiniDropCount.className = 'bp-mini-drops-count ' + (sim.udpDrops >= 1 ? 'dropping' : 'zero');
+    }
+    // OTLP entries are pushed via handleEvent → addOtlpEntry
+  }
 
   // --- Alert system ---
   function showAlert(stageObj, text, level) {
-    // Remove any existing alert on this stage
-    var old = stageObj.el.querySelector('.bp-alert');
+    let old = stageObj.el.querySelector('.bp-alert');
     if (old) old.remove();
-
-    var a = el('div', 'bp-alert ' + level);
+    let a = el('div', 'bp-alert ' + level);
     a.textContent = text;
     stageObj.el.appendChild(a);
-
-    // Auto-dismiss after 3.5s
     setTimeout(function() {
       a.classList.add('exiting');
       setTimeout(function() { if (a.parentNode) a.remove(); }, 400);
@@ -433,24 +584,51 @@
 
   // --- Log helper ---
   function addLog(msg, cls) {
-    var entry = el('div', 'bp-log-entry');
-    var ts = tick.toString().padStart(4, '0');
+    let entry = el('div', 'bp-log-entry');
+    let ts = sim.tickCount.toString().padStart(4, '0');
     entry.innerHTML = '<span class="ts">t=' + ts + '</span> ' + (cls ? '<span class="' + cls + '">' + msg + '</span>' : msg);
     logEl.appendChild(entry);
     if (logEl.children.length > 40) logEl.removeChild(logEl.firstChild);
-    logEl.scrollTop = logEl.scrollHeight;
+    if (logEl.scrollHeight - logEl.scrollTop - logEl.clientHeight < 12) {
+      logEl.scrollTop = logEl.scrollHeight;
+    }
   }
 
-  // --- Update visuals ---
-  function classifyState(fill, cap) {
-    var pct = fill / cap;
-    if (pct >= 1.0) return 'blocked';
-    if (pct > 0.5) return 'pressured';
-    return 'ok';
+  // --- Event handler: translates sim transition events into alerts + log entries ---
+  function handleEvent(e) {
+    if (e.type === 'otlp') { addOtlpEntry(e.batch, e.status, e.note); return; }
+    if (e.type !== 'transition') return;
+    if (e.stage === 'out') {
+      if (e.to === 'blocked')        { showAlert(outStage, 'All workers full \u2014 retrying with backoff', 'err');       addLog('Output workers full \u2014 backpressure starts here', 'err'); }
+      else if (e.to === 'pressured') { showAlert(outStage, 'Workers busy \u2014 MRU dispatch consolidating', 'warn');    addLog('Output workers busy \u2014 MRU consolidation active', 'warn'); }
+      else                           { showAlert(outStage, 'Workers draining \u2014 pressure cleared', 'ok');            addLog('Output recovered \u2014 workers draining normally', 'ok'); }
+    } else if (e.stage === 'cpu') {
+      if (e.to === 'blocked')        { showAlert(cpuStage, 'Pipeline full! CPU worker blocked on blocking_send', 'err'); addLog('CPU worker blocked \u2014 pipeline channel full (' + e.pipelineFill + '/16)', 'err'); }
+      else if (e.to === 'pressured') { showAlert(cpuStage, 'Pipeline filling \u2014 pressure building', 'warn');         addLog('Pipeline channel filling (' + e.pipelineFill + '/16)', 'warn'); }
+      else                           { showAlert(cpuStage, 'Pipeline draining \u2014 CPU worker unblocked', 'ok');       addLog('CPU worker unblocked \u2014 pipeline draining', 'ok'); }
+    } else if (e.stage === 'io') {
+      if (e.to === 'blocked') {
+        let srcMsg = e.sourceMode === 'file' ? 'File read stalling \u2014 falling behind'
+                   : e.sourceMode === 'udp'  ? 'UDP buffer filling \u2014 drops imminent'
+                   :                           'Returning 429 to upstream';
+        showAlert(ioStage, srcMsg, 'err');
+        addLog('I/O blocked \u2014 bounded(4) full. ' + srcMsg, 'err');
+      } else if (e.to === 'pressured') {
+        showAlert(ioStage, 'I/O\u2192CPU channel filling', 'warn');
+        addLog('I/O\u2192CPU channel filling', 'warn');
+      } else {
+        let recoverMsg = e.sourceMode === 'file' ? 'File reader catching up'
+                       : e.sourceMode === 'udp'  ? 'UDP buffer draining'
+                       :                           'OTLP accepting again';
+        showAlert(ioStage, recoverMsg, 'ok');
+        addLog('I/O resumed \u2014 ' + recoverMsg, 'ok');
+      }
+    }
   }
 
+  // --- Render helpers ---
   function updateStage(stage, fill, cap, label) {
-    var pct = fill / cap;
+    let pct = fill / cap;
     for (var i = 0; i < stage.slots.length; i++) {
       if (i < Math.ceil(fill)) {
         stage.slots[i].className = pct >= 1.0 ? 'bp-slot full' : (pct > 0.6 ? 'bp-slot filling' : 'bp-slot filled');
@@ -459,242 +637,126 @@
       }
     }
     stage.qlabel.textContent = Math.ceil(fill) + '/' + cap + ' ' + label;
-
-    if (pct >= 1.0) {
-      stage.el.className = 'bp-stage blocked';
-      stage.tag.className = 'bp-stage-tag bp-tag-blocked'; stage.tag.textContent = 'BLOCKED';
-      stage.actFill.className = 'bp-activity-fill blocked';
-    } else if (pct > 0.5) {
-      stage.el.className = 'bp-stage pressured';
-      stage.tag.className = 'bp-stage-tag bp-tag-slow'; stage.tag.textContent = 'PRESSURE';
-      stage.actFill.className = 'bp-activity-fill flowing pressured';
-    } else {
-      stage.el.className = 'bp-stage';
-      stage.tag.className = 'bp-stage-tag bp-tag-ok'; stage.tag.textContent = 'OK';
-      stage.actFill.className = 'bp-activity-fill flowing';
-    }
+    setStageState(stage, classifyState(fill, cap));
   }
 
   function updateArrow(arrowEl, pressure) {
-    if (pressure >= 1.0) {
-      arrowEl.className = 'bp-arrow blocked';
-    } else if (pressure > 0.5) {
-      arrowEl.className = 'bp-arrow flowing pressured';
-    } else {
-      arrowEl.className = 'bp-arrow flowing';
-    }
+    if (pressure >= 1.0) arrowEl.className = 'bp-arrow blocked';
+    else if (pressure > 0.5) arrowEl.className = 'bp-arrow flowing pressured';
+    else arrowEl.className = 'bp-arrow flowing';
   }
 
+  // Sets stage border, tag badge, and activity bar colours in one call.
+  // tagText overrides the default label (e.g. 'FULL' / 'BUSY' for the output pool).
+  let _stateClasses = {
+    blocked:   ['bp-stage blocked',   'bp-stage-tag bp-tag-blocked',  'bp-activity-fill blocked',         'BLOCKED'],
+    pressured: ['bp-stage pressured', 'bp-stage-tag bp-tag-pressure', 'bp-activity-fill flowing pressured','PRESSURE'],
+    ok:        ['bp-stage',           'bp-stage-tag bp-tag-ok',       'bp-activity-fill flowing',          'OK'],
+  };
+  function setStageState(stage, state, tagText) {
+    let c = _stateClasses[state];
+    stage.el.className      = c[0];
+    stage.tag.className     = c[1];
+    stage.tag.textContent   = tagText || c[3];
+    stage.actFill.className = c[2];
+  }
+
+  // --- Render: stats bar ---
   function updateStats() {
-    var throughput = (outputSpeed / 100) * OUT_MAX_RATE * 4; // 4 ticks/s (250ms interval)
-    var latClass = '';
-    var latVal = '';
-    if (outputSpeed === 0) { latVal = '\u221E'; latClass = 'red'; }
-    else if (outputSpeed < 30) { latVal = '>500ms'; latClass = 'red'; }
-    else if (outputSpeed < 70) { latVal = '~200ms'; latClass = 'amber'; }
-    else { latVal = '<50ms'; latClass = 'green'; }
+    let throughput = (sim.outputSpeed / 100) * OUT_MAX_RATE * 4;
+    let latClass = '', latVal = '';
+    if (sim.outputSpeed === 0)       { latVal = '\u221E';    latClass = 'red'; }
+    else if (sim.outputSpeed < 30)   { latVal = '>500ms';   latClass = 'red'; }
+    else if (sim.outputSpeed < 70)   { latVal = '~200ms';   latClass = 'amber'; }
+    else                             { latVal = '<50ms';    latClass = 'green'; }
+
+    let srcStat = '', srcCls = '';
+    if (sim.sourceMode === 'file') {
+      let fgap = Math.round(sim.fileWritten - sim.fileRead);
+      srcStat = sim.ioBlocked ? (fgap > 0 ? fgap + ' behind' : 'stalled') : 'caught up';
+      srcCls  = sim.ioBlocked ? (fgap > 30 ? 'red' : 'amber') : 'green';
+    } else if (sim.sourceMode === 'udp') {
+      let drops = Math.round(sim.udpDrops);
+      srcStat = drops > 0 ? drops + ' dropped' : (sim.ioBlocked ? 'filling' : 'ok');
+      srcCls  = drops > 0 ? 'red' : (sim.ioBlocked ? 'amber' : 'green');
+    } else {
+      srcStat = sim.ioBlocked ? (sim.otlpRejected + ' 429s') : (sim.otlpAccepted + ' ok');
+      srcCls  = sim.ioBlocked ? 'red' : 'green';
+    }
 
     statsEl.innerHTML = '';
-    var items = [
+    let items = [
       ['Throughput', throughput.toFixed(1) + ' batch/s', throughput < 0.5 ? 'red' : (throughput < 1.0 ? 'amber' : 'green')],
-      ['Latency', latVal, latClass],
-      ['Produced', '' + totalProduced, ''],
-      ['Delivered', '' + totalDelivered, 'green'],
-      ['I/O', ioBlocked ? 'BLOCKED' : 'polling', ioBlocked ? 'red' : 'green'],
-      ['CPU', cpuBlocked ? 'BLOCKED' : 'scanning', cpuBlocked ? 'red' : 'green'],
+      ['Latency',   latVal,                              latClass],
+      ['Produced',  '' + Math.round(sim.totalProduced),  ''],
+      ['Delivered', '' + Math.round(sim.totalDelivered), 'green'],
+      ['Source',    srcStat,                             srcCls],
+      ['CPU',       sim.cpuBlocked ? 'BLOCKED' : 'scanning', sim.cpuBlocked ? 'red' : 'green'],
     ];
-    items.forEach(function(item) {
-      var s = el('div', 'bp-stat');
-      var l = el('div', 'bp-stat-label'); l.textContent = item[0];
-      var v = el('div', 'bp-stat-val' + (item[2] ? ' ' + item[2] : '')); v.textContent = item[1];
+    items.forEach(function (item) {
+      let s = el('div', 'bp-stat');
+      let l = el('div', 'bp-stat-label'); l.textContent = item[0];
+      let v = el('div', 'bp-stat-val' + (item[2] ? ' ' + item[2] : '')); v.textContent = item[1];
       s.appendChild(l); s.appendChild(v); statsEl.appendChild(s);
     });
   }
 
-  // --- Check for state transitions and fire alerts ---
-  function checkTransitions() {
-    var ioState = classifyState(ioCpuFill, IO_CPU_CAP);
-    var cpuState = classifyState(pipelineFill, PIPELINE_CAP);
-    var workerBusy = workerFills.filter(function(f) { return f > 0.1; }).length;
-    var allFull = workerFills.every(function(f) { return f >= WORKER_CAP * 0.9; });
-    var outState = allFull ? 'blocked' : (workerBusy >= 2 ? 'pressured' : 'ok');
+  // --- Full render pass (called after every sim.tick()) ---
+  function render() {
+    updateSourceViz();
 
-    // Output stage transitions
-    if (outState !== prevOutState) {
-      if (outState === 'blocked') {
-        showAlert(outStage, 'All workers full \u2014 retrying with backoff', 'err');
-        addLog('Output workers full \u2014 backpressure starts here', 'err');
-      } else if (outState === 'pressured' && prevOutState === 'ok') {
-        showAlert(outStage, 'Workers busy \u2014 MRU dispatch consolidating', 'warn');
-        addLog('Output workers busy \u2014 MRU consolidation active', 'warn');
-      } else if (outState === 'ok' && prevOutState !== 'ok') {
-        showAlert(outStage, 'Workers draining \u2014 pressure cleared', 'ok');
-        addLog('Output recovered \u2014 workers draining normally', 'ok');
-      }
-      prevOutState = outState;
-    }
+    let ioState = sim.ioBlocked ? 'blocked' : (sim.ioCpuFillSnap / IO_CPU_CAP > 0.5 ? 'pressured' : 'ok');
+    setStageState(ioStage, ioState);
 
-    // Pipeline/CPU transitions
-    if (cpuState !== prevCpuState) {
-      if (cpuState === 'blocked') {
-        showAlert(cpuStage, 'Pipeline full! CPU worker blocked on blocking_send', 'err');
-        addLog('CPU worker blocked \u2014 pipeline channel full (' + Math.ceil(pipelineFill) + '/16)', 'err');
-      } else if (cpuState === 'pressured' && prevCpuState === 'ok') {
-        showAlert(cpuStage, 'Pipeline filling \u2014 pressure building', 'warn');
-        addLog('Pipeline channel filling (' + Math.ceil(pipelineFill) + '/16)', 'warn');
-      } else if (cpuState === 'ok' && prevCpuState !== 'ok') {
-        showAlert(cpuStage, 'Pipeline draining \u2014 CPU worker unblocked', 'ok');
-        addLog('CPU worker unblocked \u2014 pipeline draining', 'ok');
-      }
-      prevCpuState = cpuState;
-    }
+    updateStage(cpuStage, sim.pipelineFill, PIPELINE_CAP, 'slots');
 
-    // I/O transitions
-    if (ioState !== prevIoState) {
-      if (ioState === 'blocked') {
-        showAlert(ioStage, 'Channel full! I/O worker can\'t call poll()', 'err');
-        addLog('I/O worker blocked \u2014 bounded(4) channel full', 'err');
-      } else if (ioState === 'pressured' && prevIoState === 'ok') {
-        showAlert(ioStage, 'I/O\u2192CPU channel filling', 'warn');
-        addLog('I/O\u2192CPU channel filling (' + Math.ceil(ioCpuFill) + '/4)', 'warn');
-      } else if (ioState === 'ok' && prevIoState !== 'ok') {
-        showAlert(ioStage, 'Channel cleared \u2014 poll() resumed', 'ok');
-        addLog('I/O worker resumed \u2014 reading new data', 'ok');
-      }
-      prevIoState = ioState;
-    }
-  }
-
-  // --- Simulation loop ---
-  function simTick() {
-    if (!running) return;
-    tick++;
-
-    var outDrain = (outputSpeed / 100) * OUT_MAX_RATE;
-
-    // Output workers drain
-    var totalWorkerFill = workerFills.reduce(function(a, b) { return a + b; }, 0);
-    var drained = Math.min(totalWorkerFill, outDrain);
-    var remaining = drained;
-    for (var w = 0; w < NUM_WORKERS && remaining > 0; w++) {
-      var take = Math.min(workerFills[w], remaining);
-      workerFills[w] -= take;
-      remaining -= take;
-      if (take > 0) totalDelivered += Math.round(take);
-    }
-
-    // Pipeline drains into workers (MRU dispatch)
-    if (pipelineFill > 0) {
-      for (var w2 = 0; w2 < NUM_WORKERS; w2++) {
-        if (pipelineFill <= 0) break;
-        var space = WORKER_CAP - workerFills[w2];
-        if (space > 0) {
-          var send = Math.min(space, pipelineFill, 0.8);
-          workerFills[w2] += send;
-          pipelineFill -= send;
-        }
-      }
-    }
-
-    // CPU worker drains I/O queue, fills pipeline
-    cpuBlocked = pipelineFill >= PIPELINE_CAP;
-    if (!cpuBlocked && ioCpuFill > 0) {
-      var cpuDrain = Math.min(ioCpuFill, CPU_RATE, PIPELINE_CAP - pipelineFill);
-      ioCpuFill -= cpuDrain;
-      pipelineFill += cpuDrain;
-      totalProduced += Math.round(cpuDrain);
-    }
-
-    // I/O worker produces into I/O-CPU channel
-    ioBlocked = ioCpuFill >= IO_CPU_CAP;
-    if (!ioBlocked) {
-      var ioProduce = Math.min(IO_RATE, IO_CPU_CAP - ioCpuFill);
-      ioCpuFill += ioProduce;
-    }
-
-    // Clamp values
-    ioCpuFill = Math.max(0, Math.min(IO_CPU_CAP, ioCpuFill));
-    pipelineFill = Math.max(0, Math.min(PIPELINE_CAP, pipelineFill));
-    for (var w3 = 0; w3 < NUM_WORKERS; w3++) {
-      workerFills[w3] = Math.max(0, Math.min(WORKER_CAP, workerFills[w3]));
-    }
-
-    // Check for state transitions and fire alerts
-    checkTransitions();
-
-    // Update visuals
-    updateStage(ioStage, ioCpuFill, IO_CPU_CAP, 'slots');
-    updateStage(cpuStage, pipelineFill, PIPELINE_CAP, 'slots');
-
-    // Output stage
-    var workerBusy = workerFills.filter(function(f) { return f > 0.1; }).length;
+    let workerBusy = sim.workerFills.filter(function (f) { return f > 0.1; }).length;
     outStage.qlabel.textContent = workerBusy + '/' + NUM_WORKERS + ' busy';
     for (var i = 0; i < outStage.slots.length; i++) {
-      if (workerFills[i] > 0.5) {
-        outStage.slots[i].className = workerFills[i] >= WORKER_CAP ? 'bp-slot full' : 'bp-slot filling';
-      } else {
-        outStage.slots[i].className = workerFills[i] > 0.1 ? 'bp-slot filled' : 'bp-slot';
-      }
+      let wf = sim.workerFills[i];
+      outStage.slots[i].className = wf > 0.5
+        ? (wf >= WORKER_CAP ? 'bp-slot full' : 'bp-slot filling')
+        : (wf > 0.1 ? 'bp-slot filled' : 'bp-slot');
     }
-    var allWorkersFull = workerFills.every(function(f) { return f >= WORKER_CAP * 0.9; });
-    if (allWorkersFull) {
-      outStage.el.className = 'bp-stage blocked';
-      outStage.tag.className = 'bp-stage-tag bp-tag-blocked'; outStage.tag.textContent = 'FULL';
-      outStage.actFill.className = 'bp-activity-fill blocked';
-    } else if (workerBusy >= 2) {
-      outStage.el.className = 'bp-stage pressured';
-      outStage.tag.className = 'bp-stage-tag bp-tag-slow'; outStage.tag.textContent = 'BUSY';
-      outStage.actFill.className = 'bp-activity-fill flowing pressured';
-    } else {
-      outStage.el.className = 'bp-stage';
-      outStage.tag.className = 'bp-stage-tag bp-tag-ok'; outStage.tag.textContent = 'OK';
-      outStage.actFill.className = 'bp-activity-fill flowing';
-    }
+    let allWorkersFull = sim.workerFills.every(function (f) { return f >= WORKER_CAP * 0.9; });
+    let outState = allWorkersFull ? 'blocked' : (workerBusy >= 2 ? 'pressured' : 'ok');
+    setStageState(outStage, outState, allWorkersFull ? 'FULL' : (workerBusy >= 2 ? 'BUSY' : null));
 
-    updateArrow(arrow1, ioCpuFill / IO_CPU_CAP);
-    updateArrow(arrow2, pipelineFill / PIPELINE_CAP);
+    updateArrow(arrow1, sim.ioCpuFill / IO_CPU_CAP);
+    updateArrow(arrow2, sim.pipelineFill / PIPELINE_CAP);
     updateStats();
   }
 
-  // Initial render
-  updateStats();
+  // --- Main loop ---
+  function step() {
+    if (!running) return;
+    let events = sim.tick();
+    events.forEach(handleEvent);
+    render();
+  }
+
+  // --- Init ---
+  buildSourceViz();
+  render();
   addLog('Pipeline started \u2014 drag the slider or click a preset', 'ok');
 
-  // Start animation (pause when tab is hidden to save CPU/battery)
-  var interval = null;
+  let interval = null;
+  function startSimulation() { if (interval !== null || document.hidden) return; interval = setInterval(step, 250); }
+  function stopSimulation()  { if (interval === null) return; clearInterval(interval); interval = null; }
 
-  function startSimulation() {
-    if (interval !== null || document.hidden) return;
-    interval = setInterval(simTick, 250);
-  }
-
-  function stopSimulation() {
-    if (interval === null) return;
-    clearInterval(interval);
-    interval = null;
-  }
-
-  var reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
+  let reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   function handleVisibilityChange() {
     if (reducedMotion) return;
-    if (document.hidden) {
-      stopSimulation();
-    } else {
-      startSimulation();
-    }
+    if (document.hidden) stopSimulation(); else startSimulation();
   }
 
-  if (!reducedMotion) {
-    startSimulation();
-  }
+  if (!reducedMotion) startSimulation();
   document.addEventListener('visibilitychange', handleVisibilityChange);
-
-  // Cleanup on page nav (Starlight SPA)
-  document.addEventListener('astro:before-swap', function() {
+  document.addEventListener('astro:before-swap', function () {
     document.removeEventListener('visibilitychange', handleVisibilityChange);
     stopSimulation();
     running = false;
   }, { once: true });
-})();
+}
+init();
 </script>
