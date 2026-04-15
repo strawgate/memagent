@@ -36,7 +36,6 @@ pub struct TcpSink {
     max_retries: Option<usize>,
     retry_backoff_ms: Option<u64>,
     connect_timeout_ms: Option<u64>,
-    #[allow(dead_code)]
     keepalive: Option<bool>,
     framing: Option<TcpFraming>,
     #[allow(dead_code)]
@@ -94,7 +93,14 @@ impl TcpSink {
 
         stream.set_nodelay(true)?;
 
-        self.stream = Some(stream);
+        if self.keepalive.unwrap_or(false) {
+            let socket = socket2::Socket::from(stream.into_std()?);
+            socket.set_keepalive(true)?;
+            let stream = TcpStream::from_std(socket.into())?;
+            self.stream = Some(stream);
+        } else {
+            self.stream = Some(stream);
+        }
 
         Ok(())
     }
@@ -124,11 +130,13 @@ impl TcpSink {
             }
         }
 
-        // Retry logic based on max_retries
+        // Retry logic based on max_retries (0 means 'no retries', i.e., 1 attempt)
         let max_retries = self.max_retries.unwrap_or(1);
+        let max_attempts = if max_retries == 0 { 1 } else { max_retries + 1 };
+
         let mut backoff_ms = self.retry_backoff_ms.unwrap_or(100);
 
-        for attempt in 0..max_retries {
+        for attempt in 0..max_attempts {
             self.connect().await?;
             if let Some(ref mut stream) = self.stream {
                 let result = tokio::time::timeout(WRITE_TIMEOUT, stream.write_all(&self.buf)).await;
@@ -136,13 +144,13 @@ impl TcpSink {
                     Ok(Ok(())) => return Ok(()),
                     Ok(Err(e)) => {
                         self.stream = None;
-                        if attempt == max_retries - 1 {
+                        if attempt == max_attempts - 1 {
                             return Err(e);
                         }
                     }
                     Err(_) => {
                         self.stream = None;
-                        if attempt == max_retries - 1 {
+                        if attempt == max_attempts - 1 {
                             return Err(io::Error::new(
                                 io::ErrorKind::TimedOut,
                                 "TCP write timed out",
@@ -151,7 +159,7 @@ impl TcpSink {
                     }
                 }
             }
-            if attempt < max_retries - 1 {
+            if attempt < max_attempts - 1 {
                 tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                 backoff_ms = std::cmp::min(backoff_ms * 2, 5000); // Max backoff 5s
             }
