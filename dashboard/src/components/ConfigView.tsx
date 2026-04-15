@@ -19,16 +19,36 @@ function highlightYaml(yaml: string): string {
 
 export function ConfigView() {
   const [config, setConfig] = useState<ConfigResponse | null>(null);
-  const [fetchDone, setFetchDone] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!fetchDone) {
-      api.config().then((data) => {
-        setConfig(data);
-        setFetchDone(true);
-      });
-    }
-  }, [fetchDone]);
+    let mounted = true;
+    api.config().then(
+      ({ data, errorMessage }) => {
+        if (!mounted) return;
+        if (data) setConfig(data);
+        else setErrorMsg(errorMessage ?? "Failed to load configuration.");
+      },
+      () => {
+        if (!mounted) return;
+        setErrorMsg("Failed to load configuration.");
+      }
+    );
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  if (errorMsg && !config) {
+    return (
+      <div class="section">
+        <div class="heading">Config</div>
+        <div class="yaml" style="color:var(--t4)">
+          {errorMsg}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div class="section">
@@ -38,18 +58,14 @@ export function ConfigView() {
           Source: <b>{config.path}</b>
         </div>
       )}
-      {!fetchDone ? (
-        <div class="yaml" style="color:var(--t4)">
-          loading&hellip;
-        </div>
-      ) : config ? (
+      {config ? (
         <div
           class="yaml"
           dangerouslySetInnerHTML={{ __html: highlightYaml(config.raw_yaml || "(no config)") }}
         />
       ) : (
         <div class="yaml" style="color:var(--t4)">
-          Config unavailable
+          loading&hellip;
         </div>
       )}
     </div>
