@@ -106,15 +106,18 @@ pub async fn run_pipelines(
     let profiler = dhat::Profiler::new_heap();
 
     #[cfg(feature = "cpu-profiling")]
-    let pprof_guard = pprof::ProfilerGuardBuilder::default()
-        .frequency(999)
-        .blocklist(&["libc", "libgcc", "pthread", "vdso"])
-        .build()
-        .map_err(|e| {
-            RuntimeError::Io(io::Error::other(format!(
-                "failed to initialize pprof profiler: {e}"
-            )))
-        })?;
+    let pprof_guard: Option<pprof::ProfilerGuard<'static>> =
+        match pprof::ProfilerGuardBuilder::default()
+            .frequency(999)
+            .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+            .build()
+        {
+            Ok(guard) => Some(guard),
+            Err(e) => {
+                eprintln!("warn: cpu profiling unavailable, continuing without it: {e}");
+                None
+            }
+        };
 
     let shutdown_for_signal = shutdown.clone();
     let use_color = options.use_color;
@@ -148,8 +151,8 @@ pub async fn run_pipelines(
         }
 
         #[cfg(feature = "cpu-profiling")]
-        {
-            if let Ok(report) = _pprof_to_drop.report().build() {
+        if let Some(guard) = _pprof_to_drop {
+            if let Ok(report) = guard.report().build() {
                 // Write flamegraph for local/quick inspection
                 if let Ok(file) = std::fs::File::create("flamegraph.svg") {
                     if let Err(e) = report.flamegraph(file) {
