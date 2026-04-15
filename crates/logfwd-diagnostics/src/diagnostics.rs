@@ -4,6 +4,7 @@ mod policy;
 mod process;
 mod render;
 mod server;
+mod telemetry;
 
 pub use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 

@@ -849,27 +849,19 @@ pub fn collect_all_spans(
 pub fn sample_stderr_logs(
     stderr: &crate::stderr_capture::StderrCapture,
     buf: &RingBuffer<LogPoint>,
-    last_count: &mut usize,
+    last_cursor: &mut u64,
 ) {
-    let lines = stderr.get_logs();
+    let (new_lines, new_cursor) = stderr.get_logs_since(*last_cursor);
+    *last_cursor = new_cursor;
     let now = now_nanos();
 
-    // If the ring buffer evicted lines, our last_count may exceed the current
-    // length.  Reset so we re-push everything visible.
-    if lines.len() < *last_count {
-        *last_count = 0;
-    }
-
-    if lines.len() > *last_count {
-        for line in &lines[*last_count..] {
-            buf.push(LogPoint {
-                severity: Severity::Info,
-                body: line.clone(),
-                attributes: vec![("source", "stderr".to_string())],
-                time_unix_nano: now,
-            });
-        }
-        *last_count = lines.len();
+    for line in new_lines {
+        buf.push(LogPoint {
+            severity: Severity::Info,
+            body: line,
+            attributes: vec![("source", "stderr".to_string())],
+            time_unix_nano: now,
+        });
     }
 }
 

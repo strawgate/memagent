@@ -1,5 +1,5 @@
 use crate::compat;
-use crate::serde_helpers::{deserialize_duration, deserialize_one_or_many};
+use crate::serde_helpers::deserialize_one_or_many;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt;
@@ -55,6 +55,8 @@ pub enum InputType {
     /// Host metrics input (process snapshots, CPU, memory, network stats via sysinfo).
     #[serde(rename = "host_metrics")]
     HostMetrics,
+    /// AWS S3 (and S3-compatible) object storage input.
+    S3,
 }
 
 impl fmt::Display for InputType {
@@ -72,6 +74,7 @@ impl fmt::Display for InputType {
             InputType::ArrowIpc => f.write_str("arrow_ipc"),
             InputType::Journald => f.write_str("journald"),
             InputType::HostMetrics => f.write_str("host_metrics"),
+            InputType::S3 => f.write_str("s3"),
         }
     }
 }
@@ -190,6 +193,16 @@ pub enum GeneratorProfileConfig {
     #[default]
     Logs,
     Record,
+    /// Realistic Envoy edge-proxy access logs.
+    Envoy,
+    /// CRI-formatted Kubernetes container logs.
+    CriK8s,
+    /// Wide structured logs with 20+ fields.
+    Wide,
+    /// Narrow JSON logs with 5 fields.
+    Narrow,
+    /// CloudTrail-like AWS audit log events.
+    CloudTrail,
 }
 
 #[non_exhaustive]
@@ -210,6 +223,7 @@ pub enum GeneratorAttributeValueConfig {
     Integer(i64),
     Float(f64),
     Bool(bool),
+    Unsupported(serde_yaml_ng::Value),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -252,6 +266,8 @@ pub struct HttpInputConfig {
     pub strict_path: Option<bool>,
     pub method: Option<HttpMethodConfig>,
     pub max_request_body_size: Option<usize>,
+    /// Max bytes to drain per poll call. Default matches OTLP receiver (1GB).
+    pub max_drained_bytes_per_poll: Option<usize>,
     pub response_code: Option<u16>,
     /// Optional static body returned on successful ingest.
     /// Must be omitted when `response_code` is `204`.
@@ -261,6 +277,15 @@ pub struct HttpInputConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct GeneratorInputConfig {
+    #[serde(default)]
+    pub events_per_second: Option<u64>,
+    #[serde(default)]
+    pub num_lines: Option<u64>,
+    #[serde(default)]
+    pub message_template: Option<String>,
+    #[serde(default)]
+    pub field_count: Option<usize>,
+
     pub events_per_sec: Option<u64>,
     pub batch_size: Option<usize>,
     pub total_events: Option<u64>,
@@ -270,7 +295,7 @@ pub struct GeneratorInputConfig {
     pub attributes: HashMap<String, GeneratorAttributeValueConfig>,
     pub sequence: Option<GeneratorSequenceConfig>,
     pub event_created_unix_nano_field: Option<String>,
-    /// Timestamp configuration for the `logs` profile.
+    /// Timestamp configuration (only applies to the `logs` profile; ignored by other profiles).
     pub timestamp: Option<GeneratorTimestampConfig>,
 }
 
@@ -336,6 +361,44 @@ pub struct TlsInputConfig {
     pub require_client_auth: bool,
 }
 
+/// Configuration for the S3 (and S3-compatible) object storage input.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct S3InputConfig {
+    /// S3 bucket name.
+    pub bucket: String,
+    /// AWS region (e.g. `"us-east-1"`). Defaults to `"us-east-1"`.
+    pub region: Option<String>,
+    /// Override S3 endpoint URL (e.g. `"http://localhost:9000"` for MinIO).
+    /// When set, path-style addressing is used automatically.
+    pub endpoint: Option<String>,
+    /// Only process keys with this prefix.
+    pub prefix: Option<String>,
+    /// SQS queue URL for event-driven object discovery.
+    pub sqs_queue_url: Option<String>,
+    /// `ListObjectsV2` `StartAfter` key for resumable prefix scanning.
+    pub start_after: Option<String>,
+    /// AWS access key ID. Falls back to `AWS_ACCESS_KEY_ID` env var.
+    pub access_key_id: Option<String>,
+    /// AWS secret access key. Falls back to `AWS_SECRET_ACCESS_KEY` env var.
+    pub secret_access_key: Option<String>,
+    /// AWS session token for temporary credentials. Falls back to `AWS_SESSION_TOKEN` env var.
+    pub session_token: Option<String>,
+    /// Range-GET part size in bytes. Default: 8 MiB.
+    pub part_size_bytes: Option<u64>,
+    /// Max concurrent range GET tasks per object. Default: 8.
+    pub max_concurrent_fetches: Option<usize>,
+    /// Max objects being fetched simultaneously. Default: 4.
+    pub max_concurrent_objects: Option<usize>,
+    /// SQS visibility timeout in seconds. Default: 300.
+    pub visibility_timeout_secs: Option<u32>,
+    /// Compression override: `"auto"`, `"gzip"`, `"zstd"`, `"snappy"`, or `"none"`.
+    /// Default: `"auto"` (detect from key extension or Content-Type).
+    pub compression: Option<String>,
+    /// Polling interval for `ListObjectsV2` mode in milliseconds. Default: 5000.
+    pub poll_interval_ms: Option<u64>,
+}
+
 /// Journald (systemd journal) input configuration.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -347,6 +410,18 @@ pub struct JournaldInputConfig {
     /// Systemd units to exclude.
     #[serde(default)]
     pub exclude_units: Vec<String>,
+    /// Syslog identifiers (`SYSLOG_IDENTIFIER=`) to include.
+    #[serde(default)]
+    pub identifiers: Vec<String>,
+    /// Priority/log levels (e.g. `0`, `3`, `info`, `err`) to include.
+    #[serde(default)]
+    pub priorities: Vec<String>,
+    /// Path to persist the cursor. Allows resuming after restarts.
+    #[serde(default)]
+    pub cursor_path: Option<String>,
+    /// Include `_BOOT_ID` field in output (default: false).
+    #[serde(default)]
+    pub include_boot_id: bool,
     /// Only include entries from the current boot (default: true).
     #[serde(default = "default_true")]
     pub current_boot_only: bool,
@@ -392,6 +467,10 @@ impl Default for JournaldInputConfig {
         Self {
             include_units: Vec::new(),
             exclude_units: Vec::new(),
+            identifiers: Vec::new(),
+            priorities: Vec::new(),
+            cursor_path: None,
+            include_boot_id: false,
             current_boot_only: true,
             since_now: false,
             journalctl_path: None,
@@ -447,6 +526,8 @@ pub enum InputTypeConfig {
     /// Host metrics input (process snapshots, CPU, memory, network stats via sysinfo).
     #[serde(rename = "host_metrics")]
     HostMetrics(SensorTypeConfig),
+    /// AWS S3 (and S3-compatible) object storage input.
+    S3(S3TypeConfig),
 }
 
 impl InputTypeConfig {
@@ -465,6 +546,7 @@ impl InputTypeConfig {
             Self::ArrowIpc(_) => InputType::ArrowIpc,
             Self::Journald(_) => InputType::Journald,
             Self::HostMetrics(_) => InputType::HostMetrics,
+            Self::S3(_) => InputType::S3,
         }
     }
 }
@@ -511,6 +593,14 @@ pub struct OtlpTypeConfig {
     pub resource_prefix: Option<String>,
     /// Experimental OTLP protobuf decode strategy. Defaults to `prost`.
     pub protobuf_decode_mode: Option<OtlpProtobufDecodeModeConfig>,
+    #[serde(default)]
+    pub max_recv_message_size_bytes: Option<usize>,
+    #[serde(default)]
+    pub tls: Option<TlsInputConfig>,
+    #[serde(default)]
+    pub grpc_keepalive_time_ms: Option<u64>,
+    #[serde(default)]
+    pub grpc_max_concurrent_streams: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -548,8 +638,14 @@ pub struct JournaldTypeConfig {
     pub journald: Option<JournaldInputConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+/// Tagged‐union wrapper for S3 input configuration.
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct S3TypeConfig {
+    pub s3: S3InputConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct OutputConfig {
     pub name: Option<String>,
     #[serde(rename = "type")]
@@ -566,13 +662,36 @@ pub struct OutputConfig {
     pub tenant_id: Option<String>,
     pub static_labels: Option<HashMap<String, String>>,
     pub label_columns: Option<Vec<String>>,
+    /// Host for socket-based IPC.
+    #[serde(default)]
+    pub host: Option<String>,
+    /// Port for socket-based IPC.
+    #[serde(default)]
+    pub port: Option<u16>,
+    /// Write the legacy IPC format (default: false).
+    #[serde(default)]
+    pub write_legacy_ipc_format: Option<bool>,
+    /// Buffer size for the IPC writer in bytes.
+    #[serde(default)]
+    pub buffer_size_bytes: Option<usize>,
+    /// Number of records per IPC batch.
+    #[serde(default)]
+    pub batch_size: Option<usize>,
+    /// Whether to write the schema immediately upon connection.
+    #[serde(default)]
+    pub write_schema_on_connect: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum GeoDatabaseFormat {
+    /// MaxMind GeoIP2 / GeoLite2 `.mmdb` binary format.
     Mmdb,
+    /// CSV file with `ip_range_start`, `ip_range_end` columns plus optional
+    /// `country_code`, `country_name`, `stateprov`, `city`, `latitude`,
+    /// `longitude`, `asn`, `org` columns.  Compatible with DB-IP Lite exports.
+    CsvRange,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -610,6 +729,9 @@ fn default_k8s_table_name() -> String {
 pub struct CsvEnrichmentConfig {
     pub table_name: String,
     pub path: String,
+    /// Reload the file from disk every N seconds. If absent the file is read
+    /// once at startup and never reloaded.
+    pub refresh_interval: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -617,7 +739,61 @@ pub struct CsvEnrichmentConfig {
 pub struct JsonlEnrichmentConfig {
     pub table_name: String,
     pub path: String,
+    /// Reload the file from disk every N seconds. If absent the file is read
+    /// once at startup and never reloaded.
+    pub refresh_interval: Option<u64>,
 }
+
+/// Enriches logs with a single-row table populated from environment variables
+/// whose names begin with `prefix`.  The prefix is stripped and the remainder
+/// lower-cased to form column names.
+///
+/// ```yaml
+/// enrichment:
+///   - type: env_vars
+///     table_name: deploy_meta
+///     prefix: LOGFWD_META_
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EnvVarsEnrichmentConfig {
+    pub table_name: String,
+    /// Environment variable name prefix to filter on (e.g. `"LOGFWD_META_"`).
+    pub prefix: String,
+}
+
+/// Agent self-metadata enrichment: `agent_name`, `agent_version`, `pid`, `start_time`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcessInfoConfig {}
+
+/// Parse a KEY=value properties file into a one-row enrichment table.
+///
+/// Supports bare, double-quoted, and single-quoted values.  Lines starting
+/// with `#` are comments.  Column names are lower-cased key names.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KvFileEnrichmentConfig {
+    pub table_name: String,
+    pub path: String,
+    /// Reload the file from disk every N seconds (must be >= 1).
+    pub refresh_interval: Option<u64>,
+}
+
+/// Network interface metadata: `hostname`, `primary_ipv4`, `primary_ipv6`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkInfoConfig {}
+
+/// Container runtime detection: `container_id`, `container_runtime`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContainerInfoConfig {}
+
+/// Kubernetes cluster metadata from the downward API: `node_name`, `cluster_name`, etc.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct K8sClusterInfoConfig {}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -628,6 +804,18 @@ pub enum EnrichmentConfig {
     K8sPath(K8sPathConfig),
     Csv(CsvEnrichmentConfig),
     Jsonl(JsonlEnrichmentConfig),
+    /// Populate a one-row enrichment table from environment variables.
+    EnvVars(EnvVarsEnrichmentConfig),
+    /// Agent self-metadata: `agent_name`, `agent_version`, `pid`, `start_time`.
+    ProcessInfo(ProcessInfoConfig),
+    /// Parse a KEY=value properties file into a one-row enrichment table.
+    KvFile(KvFileEnrichmentConfig),
+    /// Network interface metadata: hostname, IPs.
+    NetworkInfo(NetworkInfoConfig),
+    /// Container runtime detection: container ID, runtime name.
+    ContainerInfo(ContainerInfoConfig),
+    /// Kubernetes cluster metadata from downward API.
+    K8sClusterInfo(K8sClusterInfoConfig),
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -662,8 +850,6 @@ pub struct ServerConfig {
 #[serde(deny_unknown_fields)]
 pub struct StorageConfig {
     pub data_dir: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_duration")]
-    pub checkpoint_flush_interval: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone)]

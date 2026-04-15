@@ -217,6 +217,21 @@ fn record_ack_and_advance<C: Clone>(
         };
     }
 
+    // A rejected batch represents a hole in the sequence that will never be
+    // filled. To prevent the checkpoint from permanently stalling at the
+    // rejected batch, we must remove it from pending_acks so subsequent
+    // successful batches can advance the checkpoint. However, we do NOT want
+    // to advance the checkpoint *using* the rejected batch's offset.
+    //
+    // To handle this, we remove rejected batches from the pending set entirely.
+    // Their absence means the `lowest_id` check below won't see them, and they
+    // won't contribute their offset to the committed checkpoint.
+    if !receipt.delivered
+        && let Some(pending) = pending_acks.get_mut(&source)
+    {
+        pending.remove(&batch_id);
+    }
+
     // Try to advance committed checkpoint by consuming contiguous pending acks.
     let mut advanced = false;
     if let Some(pending) = pending_acks.get_mut(&source) {
@@ -521,7 +536,7 @@ mod tests {
     }
 
     #[test]
-    fn reject_advances_checkpoint() {
+    fn reject_does_not_advance_checkpoint() {
         let mut running = new_running();
         let src = SourceId(0);
 
@@ -529,7 +544,7 @@ mod tests {
         let s1 = running.begin_send(t1);
 
         let advance = running.apply_ack(s1.reject());
-        assert_eq!(advance.checkpoint, Some(1000));
+        assert_eq!(advance.checkpoint, None);
     }
 
     #[test]
@@ -1311,7 +1326,6 @@ mod verification {
 mod proptests {
     use super::*;
     use proptest::prelude::*;
-    use proptest::test_runner::Config as ProptestConfig;
 
     #[derive(Debug, Clone)]
     enum Action {
@@ -1471,7 +1485,7 @@ mod proptests {
             let mut running: PipelineMachine<Running, u64> =
                 PipelineMachine::<Starting, u64>::new().start();
 
-            let mut expected_checkpoints: BTreeMap<u32, u64> = BTreeMap::new();
+            let mut expected_checkpoints: BTreeMap<u32, Option<u64>> = BTreeMap::new();
             let mut sending_queues: BTreeMap<u32, Vec<BatchTicket<Sending, u64>>> = BTreeMap::new();
 
             let n = batches_per_source.min(checkpoints.len() / num_sources.max(1));
@@ -1486,8 +1500,8 @@ mod proptests {
                     let ticket = running.create_batch(src, cp);
                     let s = running.begin_send(ticket);
                     sending_queues.entry(src_id).or_default().push(s);
-                    expected_checkpoints.insert(src_id, cp);
                 }
+                expected_checkpoints.insert(src_id, None);
             }
 
             let mut outcome_idx = 0;
@@ -1495,17 +1509,24 @@ mod proptests {
                 let queue = sending_queues.get_mut(&src_id).unwrap();
                 while !queue.is_empty() {
                     let s = queue.remove(0);
+                    let cp = *s.checkpoint();
                     let outcome = outcomes[outcome_idx % outcomes.len()];
                     outcome_idx += 1;
 
                     match outcome % 10 {
-                        0..=6 => { running.apply_ack(s.ack()); }
+                        0..=6 => {
+                            running.apply_ack(s.ack());
+                            expected_checkpoints.insert(src_id, Some(cp));
+                        }
                         7..=8 => {
                             let requeued = s.fail();
                             let retried = running.begin_send(requeued);
                             running.apply_ack(retried.ack());
+                            expected_checkpoints.insert(src_id, Some(cp));
                         }
-                        _ => { running.apply_ack(s.reject()); }
+                        _ => {
+                            running.apply_ack(s.reject());
+                        }
                     }
                 }
             }
@@ -1513,7 +1534,7 @@ mod proptests {
             for src_id in 0..num_sources as u32 {
                 let expected = expected_checkpoints[&src_id];
                 let actual = running.committed_checkpoint(SourceId(u64::from(src_id)));
-                prop_assert_eq!(actual, Some(&expected));
+                prop_assert_eq!(actual.copied(), expected);
             }
 
             prop_assert_eq!(running.in_flight_count(), 0);

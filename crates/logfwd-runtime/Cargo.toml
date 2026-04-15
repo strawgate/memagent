@@ -18,8 +18,9 @@ loom-tests = []
 internal-failpoints = ["dep:fail", "fail/failpoints"]
 datafusion = ["dep:logfwd-transform"]
 dhat-heap = ["dep:dhat"]
-cpu-profiling = ["dep:pprof"]
+cpu-profiling = ["dep:pprof", "dep:flate2"]
 otlp-research = ["logfwd-config/otlp-research", "logfwd-io/otlp-research"]
+s3 = ["logfwd-io/s3"]
 
 [dependencies]
 arrow = { workspace = true }
@@ -41,7 +42,8 @@ memchr = "2"
 opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
-pprof = { version = "0.15", features = ["flamegraph"], optional = true }
+flate2 = { version = "1", optional = true }
+pprof = { version = "0.15", features = ["flamegraph", "prost-codec"], optional = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 tokio = { version = "1", features = [
@@ -58,6 +60,10 @@ tracing-subscriber = { workspace = true }
 turmoil = { workspace = true, features = [
     "unstable-barriers",
 ], optional = true }
+# HTTP client for the live enrichment processor (sync, no async runtime needed).
+ureq = { workspace = true }
+# CSV parsing for the blocklist processor.
+csv = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }

@@ -3,6 +3,7 @@ import type { HealthState } from "../types";
 
 interface Props {
   connected: boolean;
+  wsConnected: boolean;
   componentHealth: HealthState;
   ready: "ready" | "not_ready";
   statusReason: string;
@@ -13,6 +14,7 @@ interface Props {
 
 export function StatusBar({
   connected,
+  wsConnected,
   componentHealth,
   ready,
   statusReason,
@@ -48,6 +50,11 @@ export function StatusBar({
         <span class="dot" />
         <span>{pillText}</span>
       </div>
+      {connected && !wsConnected && (
+        <div class="pill pill-warn" title="WebSocket disconnected — live metrics paused">
+          <span>⚡ live data paused</span>
+        </div>
+      )}
       <div class="spacer" />
       <span class="bar-meta">
         v{version} &middot; {fmtDuration(uptime)}

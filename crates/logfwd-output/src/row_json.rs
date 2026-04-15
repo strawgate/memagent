@@ -1,7 +1,8 @@
 use std::io::{self, Write};
 
 use arrow::array::{
-    Array, AsArray, BinaryArray, FixedSizeBinaryArray, LargeBinaryArray, StructArray,
+    Array, AsArray, BinaryArray, FixedSizeBinaryArray, LargeBinaryArray, LargeStringArray,
+    StringArray, StringViewArray, StructArray,
 };
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
@@ -208,6 +209,63 @@ pub(crate) fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) -
         DataType::Boolean => {
             let v = arr.as_boolean().value(row);
             out.extend_from_slice(if v { b"true" } else { b"false" });
+        }
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, _) => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::TimestampNanosecondType>()
+                .value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, _) => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::TimestampMicrosecondType>()
+                .value(row)
+                .saturating_mul(1_000);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, _) => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::TimestampMillisecondType>()
+                .value(row)
+                .saturating_mul(1_000_000);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Second, _) => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::TimestampSecondType>()
+                .value(row)
+                .saturating_mul(1_000_000_000);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        // String types: use write_json_string (memchr2 SIMD fast-path) instead of
+        // the fallback `array_value_to_string` which heap-allocates per call.
+        // StreamingBuilder uses Utf8View; these three arms cover all common cases.
+        DataType::Utf8 => {
+            let Some(string_arr) = arr.as_any().downcast_ref::<StringArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::Utf8 did not downcast to StringArray",
+                ));
+            };
+            write_json_string(out, string_arr.value(row))?;
+        }
+        DataType::LargeUtf8 => {
+            let Some(string_arr) = arr.as_any().downcast_ref::<LargeStringArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::LargeUtf8 did not downcast to LargeStringArray",
+                ));
+            };
+            write_json_string(out, string_arr.value(row))?;
+        }
+        DataType::Utf8View => {
+            let Some(string_arr) = arr.as_any().downcast_ref::<StringViewArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::Utf8View did not downcast to StringViewArray",
+                ));
+            };
+            write_json_string(out, string_arr.value(row))?;
         }
         DataType::Struct(schema_fields) => {
             let Some(struct_arr) = arr.as_any().downcast_ref::<StructArray>() else {

@@ -113,10 +113,16 @@ pub(super) async fn worker_task(
                         output_span.record("retries", retries);
                         output_span.record("send_ns", send_latency_ns);
                         let output_ns = submitted_at.elapsed().as_nanos() as u64 - queue_wait_ns;
+                        // Export child span first so the SpanBuffer has complete data
+                        // before we remove the active batch entry. Without this ordering
+                        // the diagnostics HTTP server can observe a window where neither
+                        // the active batch nor the completed output child exists, causing
+                        // the trace to vanish from the dashboard's worker lane.
+                        drop(output_span);
+                        drop(span);
                         // Remove from active_batches immediately — don't wait for the pipeline's
                         // ack select loop, which can be starved by flush_batch.await blocking.
                         metrics.finish_active_batch(batch_id);
-                        drop(span);
                         let ack = AckItem {
                             tickets,
                             outcome,

@@ -61,14 +61,6 @@ impl Config {
             }
         }
 
-        if let Some(interval) = self.storage.checkpoint_flush_interval
-            && interval.is_zero()
-        {
-            return Err(ConfigError::Validation(
-                "storage.checkpoint_flush_interval must be greater than 0".into(),
-            ));
-        }
-
         if self.pipelines.is_empty() {
             return Err(ConfigError::Validation(
                 "at least one pipeline must be defined".into(),
@@ -254,6 +246,15 @@ impl Config {
                                     "pipeline '{name}' input '{label}': generator.attributes float values must be finite"
                                 )));
                             }
+                                if let Some((key, _)) =
+                                    generator.attributes.iter().find(|(_, v)| {
+                                        matches!(v, GeneratorAttributeValueConfig::Unsupported(_))
+                                    })
+                                {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': generator.attributes '{key}' has an unsupported type (expected scalar value)"
+                                    )));
+                                }
                                 if !is_record_profile
                                     && (!generator.attributes.is_empty()
                                         || generator.sequence.is_some()
@@ -303,7 +304,11 @@ impl Config {
                                     }
                                 }
                                 if let Some(ts) = &generator.timestamp {
-                                    if is_record_profile {
+                                    let is_logs_profile = matches!(
+                                        generator.profile,
+                                        Some(GeneratorProfileConfig::Logs) | None
+                                    );
+                                    if !is_logs_profile {
                                         return Err(ConfigError::Validation(format!(
                                             "pipeline '{name}' input '{label}': generator.timestamp is only supported for the logs profile"
                                         )));
@@ -515,6 +520,53 @@ impl Config {
                                 )));
                             }
                         }
+                        InputTypeConfig::S3(s) => {
+                            let s3_cfg = &s.s3;
+                            if let Some(interval) = s3_cfg.poll_interval_ms
+                                && interval == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.poll_interval_ms must be at least 1"
+                                )));
+                            }
+                            if let Some(ref comp) = s3_cfg.compression {
+                                let valid = ["auto", "gzip", "zstd", "snappy", "none"];
+                                if !valid.iter().any(|v| v.eq_ignore_ascii_case(comp)) {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': unknown s3.compression value '{comp}' \
+                                         (valid: auto, gzip, zstd, snappy, none)"
+                                    )));
+                                }
+                            }
+                            if let Some(ps) = s3_cfg.part_size_bytes
+                                && ps == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.part_size_bytes must be at least 1"
+                                )));
+                            }
+                            if let Some(f) = s3_cfg.max_concurrent_fetches
+                                && f == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.max_concurrent_fetches must be at least 1"
+                                )));
+                            }
+                            if let Some(o) = s3_cfg.max_concurrent_objects
+                                && o == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.max_concurrent_objects must be at least 1"
+                                )));
+                            }
+                            if let Some(vt) = s3_cfg.visibility_timeout_secs
+                                && vt < 30
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.visibility_timeout_secs must be at least 30"
+                                )));
+                            }
+                        }
                     }
 
                     // Reject input formats that are not yet implemented.
@@ -674,10 +726,10 @@ impl Config {
                     }
                     if output.output_type == OutputType::ArrowIpc
                         && let Some(c) = output.compression.as_deref()
-                        && !matches!(c, "zstd" | "none")
+                        && !matches!(c, "lz4" | "zstd" | "none")
                     {
                         return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': arrow_ipc output only supports 'zstd' or 'none' compression, not '{c}'"
+                            "pipeline '{name}' output '{label}': arrow_ipc output only supports 'lz4', 'zstd', or 'none' compression, not '{c}'"
                         )));
                     }
                     if output.output_type != OutputType::Otlp && output.protocol.is_some() {
@@ -733,6 +785,17 @@ impl Config {
                             )));
                         }
                     }
+
+                    if let Some(labels) = &output.static_labels {
+                        for (k, v) in labels {
+                            if k.trim().is_empty() || v.trim().is_empty() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': 'static_labels' keys and values must not be empty"
+                                )));
+                            }
+                        }
+                    }
+
                     if !matches!(output.output_type, OutputType::File | OutputType::Parquet)
                         && output.path.is_some()
                     {
@@ -768,6 +831,39 @@ impl Config {
                             "pipeline '{name}' output '{label}': 'compression' is not supported for this output type"
                         )));
                     }
+
+                    if output.output_type != OutputType::ArrowIpc {
+                        if output.host.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'host' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                        if output.port.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'port' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                        if output.write_legacy_ipc_format.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'write_legacy_ipc_format' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                        if output.buffer_size_bytes.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'buffer_size_bytes' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                        if output.batch_size.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'batch_size' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                        if output.write_schema_on_connect.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'write_schema_on_connect' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                    }
                 }
 
                 // Validate enrichment entries (#550).
@@ -777,6 +873,11 @@ impl Config {
                             if geo_cfg.path.trim().is_empty() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' enrichment #{j}: geo_database 'path' must not be empty"
+                                )));
+                            }
+                            if geo_cfg.refresh_interval == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
                                 )));
                             }
                             // Only check existence for absolute paths; relative paths
@@ -812,6 +913,11 @@ impl Config {
                                     "pipeline '{name}' enrichment #{j}: csv 'path' must not be empty"
                                 )));
                             }
+                            if cfg.refresh_interval == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
+                                )));
+                            }
                             let p = Path::new(&cfg.path);
                             if p.is_absolute() && !p.exists() {
                                 return Err(ConfigError::Validation(format!(
@@ -831,6 +937,11 @@ impl Config {
                                     "pipeline '{name}' enrichment #{j}: jsonl 'path' must not be empty"
                                 )));
                             }
+                            if cfg.refresh_interval == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
+                                )));
+                            }
                             let p = Path::new(&cfg.path);
                             if p.is_absolute() && !p.exists() {
                                 return Err(ConfigError::Validation(format!(
@@ -840,13 +951,53 @@ impl Config {
                             }
                         }
                         EnrichmentConfig::K8sPath(cfg) => {
-                            if cfg.table_name.is_empty() {
+                            if cfg.table_name.trim().is_empty() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' enrichment #{j}: table_name must not be empty"
                                 )));
                             }
                         }
                         EnrichmentConfig::HostInfo(_) => {}
+                        EnrichmentConfig::ProcessInfo(_) => {}
+                        EnrichmentConfig::NetworkInfo(_) => {}
+                        EnrichmentConfig::ContainerInfo(_) => {}
+                        EnrichmentConfig::K8sClusterInfo(_) => {}
+                        EnrichmentConfig::EnvVars(cfg) => {
+                            if cfg.table_name.trim().is_empty() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' enrichment #{j}: table_name must not be empty"
+                                )));
+                            }
+                            if cfg.prefix.trim().is_empty() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' enrichment #{j}: env_vars 'prefix' must not be empty"
+                                )));
+                            }
+                        }
+                        EnrichmentConfig::KvFile(cfg) => {
+                            if cfg.table_name.trim().is_empty() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' enrichment #{j}: table_name must not be empty"
+                                )));
+                            }
+                            if cfg.path.trim().is_empty() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' enrichment #{j}: kv_file 'path' must not be empty"
+                                )));
+                            }
+                            if cfg.refresh_interval == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
+                                )));
+                            }
+                            let p = Path::new(&cfg.path);
+                            if p.is_absolute() && !p.exists() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' enrichment #{j}: kv_file not found: {}",
+                                    cfg.path,
+                                )));
+                            }
+                        }
                     }
                 }
 

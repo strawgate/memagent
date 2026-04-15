@@ -1,11 +1,23 @@
 use std::io;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{self, JoinHandle};
+use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+use axum::extract::State;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse, Json};
+use axum::routing::get;
+use tokio::sync::{broadcast, oneshot};
+
 use super::metrics::PipelineMetrics;
-use super::models::MemoryStats;
+use super::models::{
+    BatchStatus, BottleneckStatus, ComponentHealthSnapshot, ComponentStatus, FileTransportStatus,
+    LiveResponse, MemoryStats, MemoryStatsResponse, PipelineStatus, ReadyResponse,
+    STABLE_DIAGNOSTICS_CONTRACT_VERSION, StageSeconds, StatusSnapshot, StatusSnapshotResponse,
+    SystemStatus, TcpTransportStatus, TraceLifecycleState, TransformStatus, TransportStatus,
+    UdpTransportStatus,
+};
 use super::policy;
 use super::process::process_metrics;
 use super::render::{esc, now_nanos};
@@ -16,6 +28,16 @@ const DASHBOARD_HTML: &str = include_str!("../dashboard.html");
 const REDACTED_SECRET: &str = "***redacted***";
 const REDACTED_CONFIG_UNAVAILABLE: &str = "<redacted config unavailable>";
 const REDACTED_ENDPOINT: &str = "<redacted_endpoint>";
+
+fn lifecycle_state_for_active_batch(stage: &str, worker_id: Option<u64>) -> TraceLifecycleState {
+    match stage {
+        "scan" => TraceLifecycleState::ScanInProgress,
+        "transform" => TraceLifecycleState::TransformInProgress,
+        "output" if worker_id.is_some() => TraceLifecycleState::OutputInProgress,
+        "queued" | "output" => TraceLifecycleState::QueuedForOutput,
+        _ => TraceLifecycleState::QueuedForOutput,
+    }
+}
 
 fn redact_endpoint_credentials(endpoint: &str) -> String {
     let Ok(mut parsed) = url::Url::parse(endpoint) else {
@@ -33,6 +55,31 @@ fn redact_endpoint_credentials(endpoint: &str) -> String {
 }
 
 fn redact_yaml_value(value: &mut serde_yaml_ng::Value, in_auth_block: bool) {
+    if in_auth_block {
+        match value {
+            serde_yaml_ng::Value::Mapping(map) => {
+                for (_, val) in map.iter_mut() {
+                    redact_yaml_value(val, true);
+                }
+            }
+            serde_yaml_ng::Value::Sequence(seq) => {
+                for item in seq.iter_mut() {
+                    redact_yaml_value(item, true);
+                }
+            }
+            serde_yaml_ng::Value::String(_)
+            | serde_yaml_ng::Value::Number(_)
+            | serde_yaml_ng::Value::Bool(_) => {
+                *value = serde_yaml_ng::Value::String(REDACTED_SECRET.to_string());
+            }
+            serde_yaml_ng::Value::Null => {}
+            serde_yaml_ng::Value::Tagged(tagged) => {
+                redact_yaml_value(&mut tagged.value, true);
+            }
+        }
+        return;
+    }
+
     match value {
         serde_yaml_ng::Value::Mapping(map) => {
             for (key, val) in map.iter_mut() {
@@ -42,23 +89,6 @@ fn redact_yaml_value(value: &mut serde_yaml_ng::Value, in_auth_block: bool) {
                 };
 
                 let next_in_auth = in_auth_block || key_str == "auth";
-
-                if in_auth_block && key_str == "bearer_token" {
-                    *val = serde_yaml_ng::Value::String(REDACTED_SECRET.to_string());
-                    continue;
-                }
-
-                if in_auth_block && key_str == "headers" {
-                    if let serde_yaml_ng::Value::Mapping(headers) = val {
-                        for (_, header_value) in headers.iter_mut() {
-                            *header_value =
-                                serde_yaml_ng::Value::String(REDACTED_SECRET.to_string());
-                        }
-                    } else {
-                        *val = serde_yaml_ng::Value::String(REDACTED_SECRET.to_string());
-                    }
-                    continue;
-                }
 
                 if key_str == "endpoint"
                     && let serde_yaml_ng::Value::String(endpoint) = val
@@ -90,31 +120,39 @@ pub fn redact_config_yaml(raw_yaml: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// ServerHandle — owns the background threads spawned by DiagnosticsServer::start
+// DiagnosticsState — shared state for axum handlers
 // ---------------------------------------------------------------------------
 
-/// Owns the background threads spawned by [`DiagnosticsServer::start`].
+struct DiagnosticsState {
+    pipelines: Vec<Arc<PipelineMetrics>>,
+    start_time: Instant,
+    memory_stats_fn: Option<fn() -> Option<MemoryStats>>,
+    config_yaml: String,
+    config_path: String,
+    config_endpoint_enabled: bool,
+    stderr: crate::stderr_capture::StderrCapture,
+    history: Arc<crate::metric_history::MetricHistory>,
+    trace_buf: Option<crate::span_exporter::SpanBuffer>,
+    telemetry: crate::telemetry_buffer::TelemetryBuffers,
+    telemetry_tx: broadcast::Sender<String>,
+}
+
+// ---------------------------------------------------------------------------
+// ServerHandle — owns the background thread spawned by DiagnosticsServer::start
+// ---------------------------------------------------------------------------
+
+/// Owns the background thread spawned by [`DiagnosticsServer::start`].
 ///
-/// Dropping this value signals the metric-sampler thread to exit (via the
-/// shared `running` flag), unblocks the tiny_http server so its thread can
-/// return, and then joins both threads.  Keep this value alive for as long
-/// as the server should run.
+/// Dropping this value signals the HTTP/sampler thread to exit via the oneshot
+/// shutdown channel. Keep this value alive for as long as the server should run.
 pub struct ServerHandle {
-    running: Arc<AtomicBool>,
-    sampler_handle: Option<JoinHandle<()>>,
     http_task: BackgroundHttpTask,
 }
 
-impl Drop for ServerHandle {
-    fn drop(&mut self) {
-        // Signal the sampler loop to exit.
-        self.running.store(false, Ordering::Relaxed);
+impl ServerHandle {
+    /// Signal shutdown and block until the HTTP worker exits.
+    pub fn shutdown_and_join(&mut self) {
         self.http_task.shutdown_and_join();
-        if let Some(h) = self.sampler_handle.take()
-            && h.join().is_err()
-        {
-            tracing::error!("diagnostics metric sampler panicked during shutdown");
-        }
     }
 }
 
@@ -200,17 +238,16 @@ impl DiagnosticsServer {
     /// actual address after OS port assignment (useful when `bind_addr` uses
     /// port 0).  Returns an `io::Error` on bind failure.
     ///
-    /// The returned [`ServerHandle`] owns both background threads.  Drop it
+    /// The returned [`ServerHandle`] owns the background thread.  Drop it
     /// (or let it go out of scope) to shut the server down cleanly.
     pub fn start(self) -> io::Result<(ServerHandle, std::net::SocketAddr)> {
-        let server = Arc::new(
-            tiny_http::Server::http(&self.bind_addr)
-                .map_err(|e| io::Error::other(e.to_string()))?,
-        );
-        let bound_addr = server
-            .server_addr()
-            .to_ip()
-            .ok_or_else(|| io::Error::other("diagnostics server bound to non-IP address"))?;
+        // Bind synchronously so errors are reported at startup.
+        let std_listener = std::net::TcpListener::bind(&self.bind_addr)
+            .map_err(|e| io::Error::other(format!("diagnostics bind {}: {e}", self.bind_addr)))?;
+        let bound_addr = std_listener.local_addr()?;
+        std_listener.set_nonblocking(true).map_err(|e| {
+            io::Error::other(format!("diagnostics set_nonblocking {bound_addr}: {e}"))
+        })?;
 
         // Start capturing stderr into the 1 MiB ring buffer immediately so
         // log lines emitted before the first /admin/v1/logs request are not lost.
@@ -219,856 +256,946 @@ impl DiagnosticsServer {
             tracing::warn!(error = %e, "stderr capture failed");
         }
 
-        // Shared shutdown flag — set to false by ServerHandle::drop.
-        let running = Arc::new(AtomicBool::new(true));
+        let (telemetry_tx, _) = broadcast::channel::<String>(16);
 
-        // Background metric sampler — records pipeline + process metrics
-        // every 2s into the history buffer, regardless of dashboard activity.
-        let sampler_pipelines = self.pipelines.clone();
-        let sampler_history = Arc::clone(&self.history);
-        let sampler_mem_fn = self.memory_stats_fn;
-        let sampler_running = Arc::clone(&running);
-        let sampler_telemetry = self.telemetry.clone();
-        let sampler_stderr = self.stderr.clone();
-        let sampler_start = self.start_time;
-        let sampler_handle = thread::Builder::new()
-            .name("metric-sampler".into())
-            .spawn(move || {
-                let mut last_stderr_count: usize = 0;
-                let mut prev_health = std::collections::HashMap::new();
-                while sampler_running.load(Ordering::Relaxed) {
-                    thread::sleep(std::time::Duration::from_secs(2));
-                    // Re-check the flag after sleeping so we exit promptly on
-                    // shutdown rather than performing one last sample.
-                    if sampler_running.load(Ordering::Relaxed) {
-                        sample_metrics(&sampler_pipelines, &sampler_history, sampler_mem_fn);
+        let state = Arc::new(DiagnosticsState {
+            pipelines: self.pipelines,
+            start_time: self.start_time,
+            memory_stats_fn: self.memory_stats_fn,
+            config_yaml: self.config_yaml,
+            config_path: self.config_path,
+            config_endpoint_enabled: self.config_endpoint_enabled,
+            stderr: self.stderr,
+            history: self.history,
+            trace_buf: self.trace_buf,
+            telemetry: self.telemetry,
+            telemetry_tx,
+        });
 
-                        // OTLP telemetry buffers (metrics + logs).
-                        let uptime = sampler_start.elapsed().as_secs_f64();
-                        crate::telemetry_buffer::sample_all_metrics(
-                            &sampler_pipelines,
-                            sampler_mem_fn,
-                            uptime,
-                            &sampler_telemetry,
-                        );
-                        crate::telemetry_buffer::sample_stderr_logs(
-                            &sampler_stderr,
-                            &sampler_telemetry.logs,
-                            &mut last_stderr_count,
-                        );
-                        crate::telemetry_buffer::sample_health_transitions(
-                            &sampler_pipelines,
-                            &sampler_telemetry.logs,
-                            &mut prev_health,
-                        );
-                    }
-                }
-            })
-            .map_err(|e| io::Error::other(format!("failed to spawn metric-sampler: {e}")))?;
+        let app = axum::Router::new()
+            .route("/", get(serve_dashboard))
+            .route("/live", get(serve_live))
+            .route("/ready", get(serve_ready))
+            .route("/admin/v1/status", get(serve_status))
+            .route("/admin/v1/stats", get(serve_stats))
+            .route("/admin/v1/config", get(serve_config))
+            .route("/admin/v1/logs", get(serve_logs))
+            .route("/admin/v1/history", get(serve_history))
+            .route("/admin/v1/traces", get(serve_traces))
+            .route("/admin/v1/telemetry", get(ws_telemetry))
+            .route("/admin/v1/telemetry/metrics", get(serve_telemetry_metrics))
+            .route("/admin/v1/telemetry/traces", get(serve_telemetry_traces))
+            .route("/admin/v1/telemetry/logs", get(serve_telemetry_logs))
+            .fallback(|| async { (StatusCode::NOT_FOUND, "not found") })
+            .with_state(Arc::clone(&state));
 
-        let http_server = Arc::clone(&server);
-        let http_handle = match thread::Builder::new()
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let (startup_tx, startup_rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
+
+        let handle = std::thread::Builder::new()
             .name("diagnostics-http".into())
             .spawn(move || {
-                for request in server.incoming_requests() {
-                    let _ = self.handle_request(request);
-                }
-            }) {
-            Ok(handle) => handle,
-            Err(e) => {
-                // Stop the sampler thread before propagating the error so it
-                // does not leak.
-                running.store(false, Ordering::Relaxed);
-                let _ = sampler_handle.join();
-                return Err(io::Error::other(format!(
-                    "failed to spawn diagnostics-http: {e}"
-                )));
-            }
-        };
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(rt) => rt,
+                    Err(e) => {
+                        tracing::error!(error = %e, "diagnostics runtime creation failed");
+                        startup_tx
+                            .send(Err(format!("diagnostics runtime: {e}")))
+                            .ok();
+                        return;
+                    }
+                };
+
+                runtime.block_on(async move {
+                    let listener = match tokio::net::TcpListener::from_std(std_listener) {
+                        Ok(l) => l,
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                "diagnostics TcpListener conversion failed"
+                            );
+                            startup_tx
+                                .send(Err(format!("diagnostics listener: {e}")))
+                                .ok();
+                            return;
+                        }
+                    };
+
+                    // Spawn the metric sampler task.
+                    tokio::spawn(sampler_loop(Arc::clone(&state)));
+
+                    startup_tx.send(Ok(())).ok();
+
+                    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+                        let _ = shutdown_rx.await;
+                    });
+                    if let Err(e) = server.await {
+                        tracing::error!(error = %e, "diagnostics server error");
+                    }
+                });
+            })
+            .map_err(|e| io::Error::other(format!("failed to spawn diagnostics-http: {e}")))?;
+
+        // Wait for the server to confirm it's ready.
+        match startup_rx.recv() {
+            Ok(Ok(())) => {}
+            Ok(Err(msg)) => return Err(io::Error::other(msg)),
+            Err(_) => return Err(io::Error::other("diagnostics startup channel dropped")),
+        }
 
         Ok((
             ServerHandle {
-                running,
-                sampler_handle: Some(sampler_handle),
-                http_task: BackgroundHttpTask::new(Arc::clone(&http_server), http_handle),
+                http_task: BackgroundHttpTask::new(shutdown_tx, handle),
             },
             bound_addr,
         ))
     }
+}
+// ---------------------------------------------------------------------------
+// Payload builders — extracted from DiagnosticsServer methods for reuse
+// ---------------------------------------------------------------------------
 
-    fn handle_request(
-        &self,
-        request: tiny_http::Request,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        // All diagnostics endpoints are read-only — reject non-GET methods.
-        if request.method() != &tiny_http::Method::Get {
-            let allow_header = tiny_http::Header::from_bytes(&b"Allow"[..], &b"GET"[..])
-                .map_err(|()| io::Error::other("invalid HTTP header"))?;
-            let resp = tiny_http::Response::from_string("method not allowed")
-                .with_status_code(405)
-                .with_header(allow_header);
-            request.respond(resp)?;
-            return Ok(());
-        }
-
-        let path = request.url().to_string();
-        // Strip query string for routing.
-        let route = path.split('?').next().unwrap_or(&path);
-
-        match route {
-            "/" => Self::serve_dashboard(request),
-            "/live" => self.serve_live(request),
-            "/ready" => self.serve_ready(request),
-            "/admin/v1/status" => self.serve_status(request),
-            "/admin/v1/stats" => self.serve_stats(request),
-            "/admin/v1/config" => self.serve_config(request),
-            "/admin/v1/logs" => self.serve_logs(request),
-            "/admin/v1/history" => self.serve_history(request),
-            "/admin/v1/traces" => self.serve_traces(request),
-            "/admin/v1/telemetry/metrics" => self.serve_telemetry_metrics(request),
-            "/admin/v1/telemetry/traces" => self.serve_telemetry_traces(request),
-            "/admin/v1/telemetry/logs" => self.serve_telemetry_logs(request),
-            _ => {
-                let header =
-                    tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/plain"[..])
-                        .map_err(|()| io::Error::other("invalid HTTP header"))?;
-                let resp = tiny_http::Response::from_string("not found")
-                    .with_status_code(404)
-                    .with_header(header);
-                request.respond(resp)?;
-                Ok(())
-            }
-        }
+fn live_payload(state: &DiagnosticsState) -> LiveResponse {
+    LiveResponse {
+        contract_version: STABLE_DIAGNOSTICS_CONTRACT_VERSION,
+        status: "live",
+        uptime_seconds: state.start_time.elapsed().as_secs(),
+        version: VERSION,
     }
+}
 
-    // -- endpoint handlers --------------------------------------------------
+fn ready_payload(state: &DiagnosticsState) -> (ReadyResponse, bool) {
+    let snapshot = policy::readiness_snapshot(&state.pipelines);
+    let observed_at_unix_ns = now_nanos().to_string();
+    let ready = snapshot.ready;
+    let payload = ReadyResponse {
+        contract_version: STABLE_DIAGNOSTICS_CONTRACT_VERSION,
+        status: if ready { "ready" } else { "not_ready" },
+        reason: snapshot.reason,
+        observed_at_unix_ns,
+    };
+    (payload, ready)
+}
 
-    fn serve_dashboard(request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        let header =
-            tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"text/html; charset=utf-8"[..])
-                .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        let resp = tiny_http::Response::from_string(DASHBOARD_HTML).with_header(header);
-        request.respond(resp)?;
-        Ok(())
-    }
+fn status_payload(state: &DiagnosticsState) -> StatusSnapshotResponse {
+    let uptime = state.start_time.elapsed().as_secs();
+    let uptime_s = state.start_time.elapsed().as_secs_f64();
+    let observed_at_unix_ns = now_nanos();
+    let mut pipelines = Vec::new();
 
-    fn serve_live(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        let uptime = self.start_time.elapsed().as_secs();
-        let body = format!(
-            r#"{{"status":"live","uptime_seconds":{},"version":"{}"}}"#,
-            uptime, VERSION,
-        );
-        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-            .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        let resp = tiny_http::Response::from_string(body).with_header(header);
-        request.respond(resp)?;
-        Ok(())
-    }
+    for pm in &state.pipelines {
+        let inputs: Vec<ComponentStatus> = pm
+            .inputs
+            .iter()
+            .map(|(name, typ, stats)| {
+                let transport = match typ.as_str() {
+                    "file" => Some(TransportStatus {
+                        file: Some(FileTransportStatus {
+                            consecutive_error_polls: stats
+                                .file_error_polls
+                                .load(Ordering::Relaxed)
+                                .into(),
+                        }),
+                        tcp: None,
+                        udp: None,
+                    }),
+                    "tcp" => Some(TransportStatus {
+                        file: None,
+                        tcp: Some(TcpTransportStatus {
+                            accepted_connections: stats.tcp_accepted.load(Ordering::Relaxed),
+                            active_connections: stats.tcp_active.load(Ordering::Relaxed) as u64,
+                        }),
+                        udp: None,
+                    }),
+                    "udp" => Some(TransportStatus {
+                        file: None,
+                        tcp: None,
+                        udp: Some(UdpTransportStatus {
+                            drops_detected: stats.udp_drops.load(Ordering::Relaxed),
+                            recv_buffer_size: stats.udp_recv_buf.load(Ordering::Relaxed) as u64,
+                        }),
+                    }),
+                    _ => None,
+                };
 
-    /// Returns a small reasoned readiness snapshot when at least one pipeline
-    /// is registered and the current explicit component health snapshots are
-    /// ready. Returns 503 before any pipelines are configured or while a
-    /// component is still starting, stopping, stopped, or failed.
-    ///
-    /// Per-pipeline data-flow freshness (`last_batch_time_ns`) is exposed
-    /// via `/admin/v1/status` for monitoring dashboards, but is NOT a
-    /// readiness gate — a quiet log source should not cause Kubernetes
-    /// to mark the pod as unready.
-    ///
-    /// Some component kinds still inherit optimistic default health until
-    /// explicit lifecycle wiring lands, so this endpoint is only as honest as
-    /// the currently wired health sources.
-    fn serve_ready(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        let snapshot = policy::readiness_snapshot(&self.pipelines);
-        let observed_at_unix_ns = now_nanos();
+                ComponentStatus {
+                    name: name.clone(),
+                    component_type: typ.clone(),
+                    health: stats.health().as_str().to_string(),
+                    lines_total: stats.lines(),
+                    bytes_total: stats.bytes(),
+                    errors: stats.errors(),
+                    rotations: Some(stats.rotations()),
+                    parse_errors: Some(stats.parse_errors()),
+                    transport,
+                }
+            })
+            .collect();
 
-        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-            .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        if snapshot.ready {
-            let body = format!(
-                r#"{{"status":"ready","reason":"{}","observed_at_unix_ns":"{}"}}"#,
-                snapshot.reason, observed_at_unix_ns
-            );
-            let resp = tiny_http::Response::from_string(body).with_header(header);
-            request.respond(resp)?;
+        let lines_in = pm.transform_in.lines();
+        // lines_out: derived from output-sink stats (single increment path —
+        // each sink calls inc_lines once on successful delivery). For fan-out
+        // pipelines, the maximum across all outputs is used as a proxy for
+        // "lines delivered to the most successful output". This may undercount
+        // in partial-failure fan-out scenarios where outputs succeed at
+        // different rates.
+        let lines_out: u64 = pm
+            .outputs
+            .iter()
+            .map(|(_, _, s)| s.lines())
+            .max()
+            .unwrap_or(0);
+        let drop_rate = if lines_in > 0 {
+            (1.0 - (lines_out as f64 / lines_in as f64)).clamp(0.0, 1.0)
         } else {
-            let body = format!(
-                r#"{{"status":"not_ready","reason":"{}","observed_at_unix_ns":"{}"}}"#,
-                snapshot.reason, observed_at_unix_ns
-            );
-            let resp = tiny_http::Response::from_string(body)
-                .with_status_code(503)
-                .with_header(header);
-            request.respond(resp)?;
-        }
-        Ok(())
-    }
-
-    /// Flat JSON endpoint for benchmark polling: process metrics + pipeline summary.
-    fn serve_stats(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        let uptime_s = self.start_time.elapsed().as_secs_f64();
-        let process_json = match process_metrics() {
-            Some((rss_bytes, cpu_user_ms, cpu_sys_ms)) => format!(
-                r#","rss_bytes":{},"cpu_user_ms":{},"cpu_sys_ms":{}"#,
-                rss_bytes, cpu_user_ms, cpu_sys_ms
-            ),
-            None => String::from(r#","rss_bytes":null,"cpu_user_ms":null,"cpu_sys_ms":null"#),
+            0.0
         };
 
-        // Aggregate pipeline counters.
-        let mut total_input_lines: u64 = 0;
-        let mut total_input_bytes: u64 = 0;
-        let mut total_output_lines: u64 = 0;
-        let mut total_output_bytes: u64 = 0;
-        let mut total_output_errors: u64 = 0;
-        let mut total_batches: u64 = 0;
-        let mut total_scan_ns: u64 = 0;
-        let mut total_transform_ns: u64 = 0;
-        let mut total_output_ns: u64 = 0;
-        let mut total_backpressure: u64 = 0;
-        let mut total_inflight: u64 = 0;
+        let outputs: Vec<ComponentStatus> = pm
+            .outputs
+            .iter()
+            .map(|(name, typ, stats)| ComponentStatus {
+                name: name.clone(),
+                component_type: typ.clone(),
+                health: stats.health().as_str().to_string(),
+                lines_total: stats.lines(),
+                bytes_total: stats.bytes(),
+                errors: stats.errors(),
+                rotations: None,
+                parse_errors: None,
+                transport: None,
+            })
+            .collect();
 
-        for pm in &self.pipelines {
-            for (_, _, stats) in &pm.inputs {
-                total_input_lines += stats.lines();
-                total_input_bytes += stats.bytes();
+        let batches = pm.batches_total.load(Ordering::Relaxed);
+        let batch_rows = pm.batch_rows_total.load(Ordering::Relaxed);
+        let avg_rows = if batches > 0 {
+            batch_rows as f64 / batches as f64
+        } else {
+            0.0
+        };
+        let scan_s = pm.scan_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
+        let transform_s = pm.transform_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
+        let output_s = pm.output_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
+        let queue_wait_s = pm.queue_wait_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
+        let send_s = pm.send_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
+
+        let last_batch_ns = pm.last_batch_time_ns.load(Ordering::Relaxed);
+
+        // Compute batch latency using a consistent snapshot since they are
+        // updated at different times. We retry until batches remains the same,
+        // capping at 64 attempts to avoid spinning indefinitely under contention.
+        // Observability counters only — stale reads are acceptable.
+        // Use Relaxed uniformly to match all other load sites in this file.
+        let mut latency_batches = pm.batches_total.load(Ordering::Relaxed);
+        let mut batch_latency_total;
+        let mut attempts = 0;
+        loop {
+            batch_latency_total = pm.batch_latency_nanos_total.load(Ordering::Relaxed);
+            let current_batches = pm.batches_total.load(Ordering::Relaxed);
+            if current_batches == latency_batches || attempts >= 64 {
+                latency_batches = current_batches;
+                break;
             }
-            for (_, _, stats) in &pm.outputs {
-                total_output_lines += stats.lines();
-                total_output_bytes += stats.bytes();
-                total_output_errors += stats.errors();
-            }
-            total_batches += pm.batches_total.load(Ordering::Relaxed);
-            total_scan_ns += pm.scan_nanos_total.load(Ordering::Relaxed);
-            total_transform_ns += pm.transform_nanos_total.load(Ordering::Relaxed);
-            total_output_ns += pm.output_nanos_total.load(Ordering::Relaxed);
-            total_backpressure += pm.backpressure_stalls.load(Ordering::Relaxed);
-            total_inflight += pm.inflight_batches.load(Ordering::Relaxed);
+            latency_batches = current_batches;
+            attempts += 1;
         }
 
-        // Include jemalloc stats if available.
-        let mem_json = match self.memory_stats_fn.and_then(|f| f()) {
-            Some(m) => format!(
-                r#","mem_resident":{},"mem_allocated":{},"mem_active":{}"#,
-                m.resident, m.allocated, m.active,
-            ),
-            None => String::new(),
+        let batch_latency_avg_ns = if latency_batches > 0 {
+            Some(batch_latency_total / latency_batches)
+        } else {
+            None
+        };
+        let inflight = pm.inflight_batches.load(Ordering::Relaxed);
+        let backpressure = pm.backpressure_stalls.load(Ordering::Relaxed);
+        let transform_health = policy::transform_health(pm);
+
+        // Compute bottleneck classification.
+        // Ratios are cumulative worker-seconds divided by wall-clock uptime, so
+        // they can exceed 1.0 when multiple workers run in parallel (e.g. 4
+        // workers each spending 100% of wall-time → ratio = 4.0). We express
+        // the result in "worker-seconds per wall-second" to avoid the misleading
+        // "% of uptime" framing.
+        let uptime_s_nonzero = uptime_s.max(1e-9);
+        let queue_wait_ratio = queue_wait_s / uptime_s_nonzero;
+        let transform_ratio = transform_s / uptime_s_nonzero;
+        let scan_ratio = scan_s / uptime_s_nonzero;
+        let stalls_per_sec = backpressure as f64 / uptime_s_nonzero;
+
+        let (bottleneck_stage, bottleneck_reason): (&str, String) = if queue_wait_ratio > 0.5 {
+            (
+                "output",
+                format!(
+                    "workers spending {:.0}% of wall-time in output queue",
+                    queue_wait_ratio * 100.0
+                ),
+            )
+        } else if stalls_per_sec > 10.0 {
+            (
+                "input",
+                format!(
+                    "backpressure stalls at {:.1}/sec — input faster than pipeline can drain",
+                    stalls_per_sec
+                ),
+            )
+        } else if transform_ratio > 0.3 {
+            (
+                "transform",
+                format!(
+                    "transform consuming {:.0}% of wall-time across workers",
+                    transform_ratio * 100.0
+                ),
+            )
+        } else if scan_ratio > 0.3 {
+            (
+                "scan",
+                format!(
+                    "scan consuming {:.0}% of wall-time across workers",
+                    scan_ratio * 100.0
+                ),
+            )
+        } else {
+            ("none", "running well within capacity".to_string())
         };
 
-        let body = format!(
-            r#"{{"uptime_sec":{:.3}{},"input_lines":{},"input_bytes":{},"output_lines":{},"output_bytes":{},"output_errors":{},"batches":{},"scan_sec":{:.6},"transform_sec":{:.6},"output_sec":{:.6},"backpressure_stalls":{},"inflight_batches":{}{}}}"#,
-            uptime_s,
-            process_json,
-            total_input_lines,
-            total_input_bytes,
-            total_output_lines,
-            total_output_bytes,
-            total_output_errors,
-            total_batches,
-            total_scan_ns as f64 / 1e9,
-            total_transform_ns as f64 / 1e9,
-            total_output_ns as f64 / 1e9,
-            total_backpressure,
-            total_inflight,
-            mem_json,
-        );
-
-        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-            .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        let resp = tiny_http::Response::from_string(body).with_header(header);
-        request.respond(resp)?;
-        Ok(())
-    }
-
-    fn serve_config(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        if !self.config_endpoint_enabled {
-            let header =
-                tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-                    .map_err(|()| io::Error::other("invalid HTTP header"))?;
-            let body = r#"{"error":"config_endpoint_disabled","message":"set LOGFWD_UNSAFE_EXPOSE_CONFIG=1 to enable /admin/v1/config"}"#;
-            let resp = tiny_http::Response::from_string(body)
-                .with_status_code(403)
-                .with_header(header);
-            request.respond(resp)?;
-            return Ok(());
-        }
-
-        let redacted_yaml = redact_config_yaml(&self.config_yaml);
-        let body = format!(
-            r#"{{"path":"{}","raw_yaml":"{}"}}"#,
-            esc(&self.config_path),
-            esc(&redacted_yaml),
-        );
-        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-            .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        let resp = tiny_http::Response::from_string(body).with_header(header);
-        request.respond(resp)?;
-        Ok(())
-    }
-
-    fn serve_history(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        let body = self.history.to_json();
-        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-            .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        let resp = tiny_http::Response::from_string(body).with_header(header);
-        request.respond(resp)?;
-        Ok(())
-    }
-
-    fn serve_logs(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        let lines = self.stderr.get_logs();
-        // Build JSON array of strings.
-        let mut body = String::with_capacity(lines.len() * 80 + 32);
-        body.push_str(r#"{"lines":["#);
-        for (i, line) in lines.iter().enumerate() {
-            if i > 0 {
-                body.push(',');
-            }
-            body.push('"');
-            body.push_str(&esc(line));
-            body.push('"');
-        }
-        body.push_str(r#"],"capturing":"#);
-        body.push_str(if self.stderr.is_active() {
-            "true"
-        } else {
-            "false"
+        pipelines.push(PipelineStatus {
+            name: pm.name.clone(),
+            inputs,
+            transform: TransformStatus {
+                sql: pm.transform_sql.clone(),
+                health: transform_health.as_str().to_string(),
+                lines_in,
+                lines_out,
+                errors: pm.transform_errors.load(Ordering::Relaxed),
+                filter_drop_rate: drop_rate,
+            },
+            outputs,
+            batches: BatchStatus {
+                total: batches,
+                avg_rows,
+                flush_by_size: pm.flush_by_size.load(Ordering::Relaxed),
+                flush_by_timeout: pm.flush_by_timeout.load(Ordering::Relaxed),
+                cadence_fast_repolls: pm.cadence_fast_repolls.load(Ordering::Relaxed),
+                cadence_idle_sleeps: pm.cadence_idle_sleeps.load(Ordering::Relaxed),
+                dropped_batches_total: pm.dropped_batches_total.load(Ordering::Relaxed),
+                scan_errors_total: pm.scan_errors_total.load(Ordering::Relaxed),
+                parse_errors_total: pm.parse_errors_total.load(Ordering::Relaxed),
+                last_batch_time_ns: last_batch_ns.to_string(),
+                batch_latency_avg_ns,
+                inflight,
+                rows_total: batch_rows,
+            },
+            stage_seconds: StageSeconds {
+                scan: scan_s,
+                transform: transform_s,
+                output: output_s,
+                queue_wait: queue_wait_s,
+                send: send_s,
+            },
+            backpressure_stalls: backpressure,
+            bottleneck: BottleneckStatus {
+                stage: bottleneck_stage.to_string(),
+                reason: bottleneck_reason,
+            },
         });
-        body.push('}');
-
-        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-            .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        let resp = tiny_http::Response::from_string(body).with_header(header);
-        request.respond(resp)?;
-        Ok(())
     }
 
-    fn serve_traces(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        use crate::span_exporter::TraceSpan;
-        use std::collections::HashMap;
-        use std::fmt::Write;
+    let ready_snapshot = policy::readiness_snapshot(&state.pipelines);
+    let ready = if ready_snapshot.ready {
+        "ready"
+    } else {
+        "not_ready"
+    };
+    let component_health = ready_snapshot.component_health;
+    let ready_reason = ready_snapshot.reason;
+    let component_reason = policy::health_reason(component_health);
+    let readiness_impact = policy::readiness_impact(component_health);
 
-        let body = if let Some(ref buf) = self.trace_buf {
-            let all_spans = buf.get_spans();
+    StatusSnapshotResponse {
+        contract_version: STABLE_DIAGNOSTICS_CONTRACT_VERSION,
+        live: StatusSnapshot {
+            status: "live".to_string(),
+            reason: "process_running".to_string(),
+            observed_at_unix_ns: observed_at_unix_ns.to_string(),
+        },
+        ready: StatusSnapshot {
+            status: ready.to_string(),
+            reason: ready_reason.to_string(),
+            observed_at_unix_ns: observed_at_unix_ns.to_string(),
+        },
+        component_health: ComponentHealthSnapshot {
+            status: component_health.as_str().to_string(),
+            reason: component_reason.to_string(),
+            readiness_impact: readiness_impact.to_string(),
+            observed_at_unix_ns: observed_at_unix_ns.to_string(),
+        },
+        pipelines,
+        system: SystemStatus {
+            uptime_seconds: uptime,
+            version: VERSION,
+            memory: state
+                .memory_stats_fn
+                .and_then(|f| f())
+                .map(|m| MemoryStatsResponse {
+                    resident: m.resident,
+                    allocated: m.allocated,
+                    active: m.active,
+                }),
+        },
+    }
+}
 
-            // Group child spans by trace_id, and collect root spans separately.
-            let mut roots: Vec<&TraceSpan> = Vec::new();
-            let mut children: HashMap<&str, Vec<&TraceSpan>> = HashMap::new();
-            let root_marker = "0000000000000000";
+fn build_stats_body(state: &DiagnosticsState) -> String {
+    let uptime_s = state.start_time.elapsed().as_secs_f64();
+    let process_json = match process_metrics() {
+        Some((rss_bytes, cpu_user_ms, cpu_sys_ms)) => format!(
+            r#","rss_bytes":{},"cpu_user_ms":{},"cpu_sys_ms":{}"#,
+            rss_bytes, cpu_user_ms, cpu_sys_ms
+        ),
+        None => String::from(r#","rss_bytes":null,"cpu_user_ms":null,"cpu_sys_ms":null"#),
+    };
 
-            for span in &all_spans {
-                if span.parent_id == root_marker {
-                    roots.push(span);
-                } else {
-                    children.entry(&span.trace_id).or_default().push(span);
+    let mut total_input_lines: u64 = 0;
+    let mut total_input_bytes: u64 = 0;
+    let mut total_output_lines: u64 = 0;
+    let mut total_output_bytes: u64 = 0;
+    let mut total_output_errors: u64 = 0;
+    let mut total_batches: u64 = 0;
+    let mut total_scan_ns: u64 = 0;
+    let mut total_transform_ns: u64 = 0;
+    let mut total_output_ns: u64 = 0;
+    let mut total_backpressure: u64 = 0;
+    let mut total_inflight: u64 = 0;
+
+    for pm in &state.pipelines {
+        for (_, _, stats) in &pm.inputs {
+            total_input_lines += stats.lines();
+            total_input_bytes += stats.bytes();
+        }
+        for (_, _, stats) in &pm.outputs {
+            total_output_lines += stats.lines();
+            total_output_bytes += stats.bytes();
+            total_output_errors += stats.errors();
+        }
+        total_batches += pm.batches_total.load(Ordering::Relaxed);
+        total_scan_ns += pm.scan_nanos_total.load(Ordering::Relaxed);
+        total_transform_ns += pm.transform_nanos_total.load(Ordering::Relaxed);
+        total_output_ns += pm.output_nanos_total.load(Ordering::Relaxed);
+        total_backpressure += pm.backpressure_stalls.load(Ordering::Relaxed);
+        total_inflight += pm.inflight_batches.load(Ordering::Relaxed);
+    }
+
+    let mem_json = match state.memory_stats_fn.and_then(|f| f()) {
+        Some(m) => format!(
+            r#","mem_resident":{},"mem_allocated":{},"mem_active":{}"#,
+            m.resident, m.allocated, m.active,
+        ),
+        None => String::new(),
+    };
+
+    format!(
+        r#"{{"uptime_sec":{:.3}{},"input_lines":{},"input_bytes":{},"output_lines":{},"output_bytes":{},"output_errors":{},"batches":{},"scan_sec":{:.6},"transform_sec":{:.6},"output_sec":{:.6},"backpressure_stalls":{},"inflight_batches":{}{}}}"#,
+        uptime_s,
+        process_json,
+        total_input_lines,
+        total_input_bytes,
+        total_output_lines,
+        total_output_bytes,
+        total_output_errors,
+        total_batches,
+        total_scan_ns as f64 / 1e9,
+        total_transform_ns as f64 / 1e9,
+        total_output_ns as f64 / 1e9,
+        total_backpressure,
+        total_inflight,
+        mem_json,
+    )
+}
+
+fn build_traces_body(state: &DiagnosticsState) -> String {
+    use crate::span_exporter::TraceSpan;
+    use std::collections::HashMap;
+    use std::fmt::Write;
+
+    if let Some(ref buf) = state.trace_buf {
+        let all_spans = buf.get_spans();
+
+        let mut roots: Vec<&TraceSpan> = Vec::new();
+        let mut children: HashMap<&str, Vec<&TraceSpan>> = HashMap::new();
+        let root_marker = "0000000000000000";
+
+        for span in &all_spans {
+            if span.parent_id == root_marker {
+                roots.push(span);
+            } else {
+                children.entry(&span.trace_id).or_default().push(span);
+            }
+        }
+
+        let mut out = String::with_capacity(64 * 1024);
+        out.push_str(r#"{"traces":["#);
+        let mut first = true;
+        for root in roots.iter().rev().take(500) {
+            if !first {
+                out.push(',');
+            }
+            first = false;
+
+            let mut scan_ns = 0u64;
+            let mut scan_rows = 0u64;
+            let mut transform_ns = 0u64;
+            let mut output_ns = 0u64;
+            let mut output_start_unix_ns = 0u64;
+            let mut worker_id: i64 = -1;
+            let mut send_ns = 0u64;
+            let mut recv_ns = 0u64;
+            let mut took_ms = 0u64;
+            let mut retries = 0u64;
+            let mut req_bytes = 0u64;
+            let mut cmp_bytes = 0u64;
+            let mut resp_bytes = 0u64;
+            if let Some(kids) = children.get(root.trace_id.as_str()) {
+                for kid in kids {
+                    let kid_attr = |key: &str| -> u64 {
+                        kid.attrs
+                            .iter()
+                            .find(|kv| kv[0] == key)
+                            .and_then(|kv| kv[1].parse().ok())
+                            .unwrap_or(0)
+                    };
+                    match kid.name.as_str() {
+                        "scan" => {
+                            scan_ns = kid.duration_ns;
+                            scan_rows = kid_attr("rows");
+                        }
+                        "transform" => transform_ns = kid.duration_ns,
+                        "output" => {
+                            output_ns = kid.duration_ns;
+                            output_start_unix_ns = kid.start_unix_ns;
+                            worker_id = kid
+                                .attrs
+                                .iter()
+                                .find(|kv| kv[0] == "worker_id")
+                                .and_then(|kv| kv[1].parse().ok())
+                                .unwrap_or(-1);
+                            send_ns = kid_attr("send_ns");
+                            recv_ns = kid_attr("recv_ns");
+                            took_ms = kid_attr("took_ms");
+                            retries = kid_attr("retries");
+                            req_bytes = kid_attr("req_bytes");
+                            cmp_bytes = kid_attr("cmp_bytes");
+                            resp_bytes = kid_attr("resp_bytes");
+                        }
+                        _ => {}
+                    }
                 }
             }
 
-            // Build JSON — newest first, cap at 500 traces.
-            let mut out = String::with_capacity(64 * 1024);
-            out.push_str(r#"{"traces":["#);
-            let mut first = true;
-            for root in roots.iter().rev().take(500) {
+            let root_attr_u64 = |key: &str| -> u64 {
+                root.attrs
+                    .iter()
+                    .find(|kv| kv[0] == key)
+                    .and_then(|kv| kv[1].parse().ok())
+                    .unwrap_or(0)
+            };
+            if scan_ns == 0 {
+                scan_ns = root_attr_u64("scan_ns");
+            }
+            if transform_ns == 0 {
+                transform_ns = root_attr_u64("transform_ns");
+            }
+
+            let attr = |key: &str| -> &str {
+                root.attrs
+                    .iter()
+                    .find(|kv| kv[0] == key)
+                    .map_or("", |kv| kv[1].as_str())
+            };
+            let pipeline = attr("pipeline");
+            let bytes_in: u64 = attr("bytes_in").parse().unwrap_or(0);
+            let flush_reason = attr("flush_reason");
+            let queue_wait_ns: u64 = attr("queue_wait_ns").parse().unwrap_or(0);
+            let input_rows: u64 = attr("input_rows").parse().unwrap_or(0);
+            let output_rows: u64 = attr("output_rows").parse().unwrap_or(0);
+            let errors: u64 = attr("errors").parse().unwrap_or(0);
+
+            let _ = write!(
+                out,
+                "{{\
+                    \"trace_id\":\"{tid}\",\
+                    \"pipeline\":\"{pl}\",\
+                    \"start_unix_ns\":\"{st}\",\
+                    \"total_ns\":\"{tot}\",\
+                    \"scan_ns\":\"{scan}\",\
+                    \"transform_ns\":\"{xfm}\",\
+                    \"output_ns\":\"{out_ns}\",\
+                    \"output_start_unix_ns\":\"{out_st}\",\
+                    \"scan_rows\":{sr},\
+                    \"input_rows\":{ir},\
+                    \"output_rows\":{or},\
+                    \"bytes_in\":{bi},\
+                    \"queue_wait_ns\":\"{qw}\",\
+                    \"worker_id\":{wid},\
+                    \"send_ns\":\"{snd}\",\
+                    \"recv_ns\":\"{rcv}\",\
+                    \"took_ms\":{tk},\
+                    \"retries\":{ret},\
+                    \"req_bytes\":{rb},\
+                    \"cmp_bytes\":{cb},\
+                    \"resp_bytes\":{rspb},\
+                    \"flush_reason\":\"{fr}\",\
+                    \"errors\":{err},\
+                    \"status\":\"{status}\",\
+                    \"lifecycle_state\":\"{lifecycle_state}\"\
+                }}",
+                tid = root.trace_id,
+                pl = esc(pipeline),
+                st = root.start_unix_ns,
+                tot = root.duration_ns,
+                scan = scan_ns,
+                xfm = transform_ns,
+                out_ns = output_ns,
+                out_st = output_start_unix_ns,
+                sr = scan_rows,
+                ir = input_rows,
+                or = output_rows,
+                bi = bytes_in,
+                qw = queue_wait_ns,
+                wid = worker_id,
+                snd = send_ns,
+                rcv = recv_ns,
+                tk = took_ms,
+                ret = retries,
+                rb = req_bytes,
+                cb = cmp_bytes,
+                rspb = resp_bytes,
+                fr = esc(flush_reason),
+                err = errors,
+                status = root.status,
+                lifecycle_state = TraceLifecycleState::Completed.as_str(),
+            );
+        }
+        // In-progress batches — live entries shown before completion.
+        for pm in &state.pipelines {
+            let active = pm
+                .active_batches
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (id, b) in active.iter() {
                 if !first {
                     out.push(',');
                 }
                 first = false;
-
-                // Pull stage durations and per-stage row counts from child spans.
-                let mut scan_ns = 0u64;
-                let mut scan_rows = 0u64;
-                let mut transform_ns = 0u64;
-                let mut output_ns = 0u64;
-                let mut output_start_unix_ns = 0u64;
-                let mut worker_id: i64 = -1;
-                let mut send_ns = 0u64;
-                let mut recv_ns = 0u64;
-                let mut took_ms = 0u64;
-                let mut retries = 0u64;
-                let mut req_bytes = 0u64;
-                let mut cmp_bytes = 0u64;
-                let mut resp_bytes = 0u64;
-                if let Some(kids) = children.get(root.trace_id.as_str()) {
-                    for kid in kids {
-                        let kid_attr = |key: &str| -> u64 {
-                            kid.attrs
-                                .iter()
-                                .find(|kv| kv[0] == key)
-                                .and_then(|kv| kv[1].parse().ok())
-                                .unwrap_or(0)
-                        };
-                        match kid.name.as_str() {
-                            "scan" => {
-                                scan_ns = kid.duration_ns;
-                                scan_rows = kid_attr("rows");
-                            }
-                            "transform" => transform_ns = kid.duration_ns,
-                            "output" => {
-                                output_ns = kid.duration_ns;
-                                output_start_unix_ns = kid.start_unix_ns;
-                                worker_id = kid
-                                    .attrs
-                                    .iter()
-                                    .find(|kv| kv[0] == "worker_id")
-                                    .and_then(|kv| kv[1].parse().ok())
-                                    .unwrap_or(-1);
-                                send_ns = kid_attr("send_ns");
-                                recv_ns = kid_attr("recv_ns");
-                                took_ms = kid_attr("took_ms");
-                                retries = kid_attr("retries");
-                                req_bytes = kid_attr("req_bytes");
-                                cmp_bytes = kid_attr("cmp_bytes");
-                                resp_bytes = kid_attr("resp_bytes");
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-
-                // Fallback: read scan/transform timing from root span attributes
-                // (batch span carries these directly when child spans are absent)
-                let root_attr_u64 = |key: &str| -> u64 {
-                    root.attrs
-                        .iter()
-                        .find(|kv| kv[0] == key)
-                        .and_then(|kv| kv[1].parse().ok())
-                        .unwrap_or(0)
-                };
-                if scan_ns == 0 {
-                    scan_ns = root_attr_u64("scan_ns");
-                }
-                if transform_ns == 0 {
-                    transform_ns = root_attr_u64("transform_ns");
-                }
-
-                // Extract well-known attributes from root span.
-                let attr = |key: &str| -> &str {
-                    root.attrs
-                        .iter()
-                        .find(|kv| kv[0] == key)
-                        .map_or("", |kv| kv[1].as_str())
-                };
-                let pipeline = attr("pipeline");
-                let bytes_in: u64 = attr("bytes_in").parse().unwrap_or(0);
-                let flush_reason = attr("flush_reason");
-                let queue_wait_ns: u64 = attr("queue_wait_ns").parse().unwrap_or(0);
-                let input_rows: u64 = attr("input_rows").parse().unwrap_or(0);
-                let output_rows: u64 = attr("output_rows").parse().unwrap_or(0);
-                let errors: u64 = attr("errors").parse().unwrap_or(0);
-
+                let worker_id_json = b
+                    .worker_id
+                    .map_or_else(|| "null".to_string(), |wid| wid.to_string());
                 let _ = write!(
                     out,
                     "{{\
-                        \"trace_id\":\"{tid}\",\
-                        \"pipeline\":\"{pl}\",\
-                        \"start_unix_ns\":\"{st}\",\
-                        \"total_ns\":\"{tot}\",\
-                        \"scan_ns\":\"{scan}\",\
-                        \"transform_ns\":\"{xfm}\",\
-                        \"output_ns\":\"{out_ns}\",\
-                        \"output_start_unix_ns\":\"{out_st}\",\
-                        \"scan_rows\":{sr},\
-                        \"input_rows\":{ir},\
-                        \"output_rows\":{or},\
-                        \"bytes_in\":{bi},\
-                        \"queue_wait_ns\":\"{qw}\",\
-                        \"worker_id\":{wid},\
-                        \"send_ns\":\"{snd}\",\
-                        \"recv_ns\":\"{rcv}\",\
-                        \"took_ms\":{tk},\
-                        \"retries\":{ret},\
-                        \"req_bytes\":{rb},\
-                        \"cmp_bytes\":{cb},\
-                        \"resp_bytes\":{rspb},\
-                        \"flush_reason\":\"{fr}\",\
-                        \"errors\":{err},\
-                        \"status\":\"{status}\"\
-                    }}",
-                    tid = root.trace_id,
-                    pl = esc(pipeline),
-                    st = root.start_unix_ns,
-                    tot = root.duration_ns,
-                    scan = scan_ns,
-                    xfm = transform_ns,
-                    out_ns = output_ns,
-                    out_st = output_start_unix_ns,
-                    sr = scan_rows,
-                    ir = input_rows,
-                    or = output_rows,
-                    bi = bytes_in,
-                    qw = queue_wait_ns,
-                    wid = worker_id,
-                    snd = send_ns,
-                    rcv = recv_ns,
-                    tk = took_ms,
-                    ret = retries,
-                    rb = req_bytes,
-                    cb = cmp_bytes,
-                    rspb = resp_bytes,
-                    fr = esc(flush_reason),
-                    err = errors,
-                    status = root.status,
+                            \"trace_id\":\"live-{id}\",\
+                            \"pipeline\":\"{pl}\",\
+                            \"start_unix_ns\":\"{st}\",\
+                            \"total_ns\":\"0\",\
+                            \"scan_ns\":\"{scan}\",\
+                            \"transform_ns\":\"{xfm}\",\
+                            \"output_ns\":\"0\",\
+                            \"output_start_unix_ns\":\"{out_st}\",\
+                            \"scan_rows\":0,\
+                            \"input_rows\":0,\
+                            \"output_rows\":0,\
+                            \"bytes_in\":0,\
+                            \"queue_wait_ns\":\"0\",\
+                            \"worker_id\":{wid},\
+                            \"send_ns\":\"0\",\
+                            \"recv_ns\":\"0\",\
+                            \"took_ms\":0,\
+                            \"retries\":0,\
+                            \"req_bytes\":0,\
+                            \"cmp_bytes\":0,\
+                            \"resp_bytes\":0,\
+                            \"flush_reason\":\"\",\
+                            \"errors\":0,\
+                            \"status\":\"unset\",\
+                            \"lifecycle_state\":\"{lifecycle_state}\",\
+                            \"lifecycle_state_start_unix_ns\":\"{state_start}\"\
+                        }}",
+                    id = id,
+                    pl = esc(&pm.name),
+                    st = b.start_unix_ns,
+                    scan = b.scan_ns,
+                    xfm = b.transform_ns,
+                    out_st = b.output_start_unix_ns,
+                    wid = worker_id_json,
+                    lifecycle_state =
+                        lifecycle_state_for_active_batch(b.stage, b.worker_id).as_str(),
+                    state_start = b.stage_start_unix_ns,
                 );
             }
-            // In-progress batches — live entries shown before completion.
-            for pm in &self.pipelines {
-                if let Ok(active) = pm.active_batches.lock() {
-                    for (id, b) in active.iter() {
-                        if !first {
-                            out.push(',');
+        }
+        out.push_str("]}");
+        out
+    } else {
+        r#"{"traces":[]}"#.to_string()
+    }
+}
+
+fn build_logs_body(state: &DiagnosticsState) -> String {
+    let lines = state.stderr.get_logs();
+    let dropped = state.stderr.count_lines_dropped();
+    let mut body = String::with_capacity(lines.len() * 80 + 64);
+    body.push_str(r#"{"lines":["#);
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            body.push(',');
+        }
+        body.push('"');
+        body.push_str(&esc(line));
+        body.push('"');
+    }
+    body.push_str(r#"],"capturing":"#);
+    body.push_str(if state.stderr.is_active() {
+        "true"
+    } else {
+        "false"
+    });
+    body.push_str(r#","lines_dropped":"#);
+    body.push_str(&dropped.to_string());
+    body.push('}');
+    body
+}
+
+// ---------------------------------------------------------------------------
+// Axum endpoint handlers
+// ---------------------------------------------------------------------------
+
+async fn serve_dashboard() -> impl IntoResponse {
+    Html(DASHBOARD_HTML)
+}
+
+async fn serve_live(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
+    Json(live_payload(&state))
+}
+
+async fn serve_ready(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
+    let (payload, ready) = ready_payload(&state);
+    if ready {
+        (StatusCode::OK, Json(payload))
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(payload))
+    }
+}
+
+async fn serve_status(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
+    Json(status_payload(&state))
+}
+
+async fn serve_stats(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
+    let body = build_stats_body(&state);
+    ([("content-type", "application/json")], body)
+}
+
+async fn serve_config(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
+    if !state.config_endpoint_enabled {
+        let body = r#"{"error":"config_endpoint_disabled","message":"set LOGFWD_UNSAFE_EXPOSE_CONFIG=1 to enable /admin/v1/config"}"#;
+        return (
+            StatusCode::FORBIDDEN,
+            [("content-type", "application/json")],
+            body.to_string(),
+        );
+    }
+
+    let redacted_yaml = redact_config_yaml(&state.config_yaml);
+    let body = format!(
+        r#"{{"path":"{}","raw_yaml":"{}"}}"#,
+        esc(&state.config_path),
+        esc(&redacted_yaml),
+    );
+    (StatusCode::OK, [("content-type", "application/json")], body)
+}
+
+async fn serve_history(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
+    let body = state.history.to_json();
+    ([("content-type", "application/json")], body)
+}
+
+async fn serve_logs(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
+    let body = build_logs_body(&state);
+    ([("content-type", "application/json")], body)
+}
+
+async fn serve_traces(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
+    let body = build_traces_body(&state);
+    ([("content-type", "application/json")], body)
+}
+
+async fn serve_telemetry_metrics(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
+    let points = state.telemetry.metrics.snapshot();
+    let body = crate::telemetry_buffer::metrics_to_otlp_json(&points);
+    ([("content-type", "application/json")], body)
+}
+
+async fn serve_telemetry_traces(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
+    let spans =
+        crate::telemetry_buffer::collect_all_spans(state.trace_buf.as_ref(), &state.pipelines);
+    let body = crate::telemetry_buffer::traces_to_otlp_json(&spans);
+    ([("content-type", "application/json")], body)
+}
+
+async fn serve_telemetry_logs(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
+    let logs = state.telemetry.logs.snapshot();
+    let body = crate::telemetry_buffer::logs_to_otlp_json(&logs);
+    ([("content-type", "application/json")], body)
+}
+
+// ---------------------------------------------------------------------------
+// WebSocket telemetry push
+// ---------------------------------------------------------------------------
+
+async fn ws_telemetry(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<DiagnosticsState>>,
+) -> impl IntoResponse {
+    ws.on_upgrade(|socket| handle_ws(socket, state))
+}
+
+async fn handle_ws(mut socket: WebSocket, state: Arc<DiagnosticsState>) {
+    let mut rx = state.telemetry_tx.subscribe();
+    // Per-client cursors — start at 0 so the first frame delivers all
+    // buffered history (resync on connect).
+    let mut span_cursor: usize = 0;
+    let mut log_cursor: u64 = 0;
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+
+    // Send initial span/log snapshot immediately on connect (cursor=0 → full
+    // buffer). Then the interval fires every 2s for deltas.
+    {
+        let spans = super::telemetry::collect_new_spans(
+            state.trace_buf.as_ref(),
+            &state.pipelines,
+            &mut span_cursor,
+        );
+        let span_json = super::telemetry::spans_to_otlp_json(&spans);
+        if socket.send(Message::Text(span_json.into())).await.is_err() {
+            return;
+        }
+        let logs = super::telemetry::collect_new_logs(&state.stderr, &mut log_cursor);
+        if !logs.is_empty() {
+            let log_json = super::telemetry::logs_to_otlp_json(&logs);
+            if socket.send(Message::Text(log_json.into())).await.is_err() {
+                return;
+            }
+        }
+    }
+
+    loop {
+        tokio::select! {
+            // Forward pre-computed metrics (incl. rate gauges) from broadcast.
+            msg = rx.recv() => {
+                match msg {
+                    Ok(text) => {
+                        if socket.send(Message::Text(text.into())).await.is_err() {
+                            break;
                         }
-                        first = false;
-                        let worker_id_json = b
-                            .worker_id
-                            .map_or_else(|| "null".to_string(), |wid| wid.to_string());
-                        let _ = write!(
-                            out,
-                            "{{\
-                                \"trace_id\":\"live-{id}\",\
-                                \"pipeline\":\"{pl}\",\
-                                \"start_unix_ns\":\"{st}\",\
-                                \"total_ns\":\"0\",\
-                                \"scan_ns\":\"{scan}\",\
-                                \"transform_ns\":\"{xfm}\",\
-                                \"output_ns\":\"0\",\
-                                \"output_start_unix_ns\":\"{out_st}\",\
-                                \"scan_rows\":0,\
-                                \"input_rows\":0,\
-                                \"output_rows\":0,\
-                                \"bytes_in\":0,\
-                                \"queue_wait_ns\":\"0\",\
-                                \"worker_id\":{wid},\
-                                \"send_ns\":\"0\",\
-                                \"recv_ns\":\"0\",\
-                                \"took_ms\":0,\
-                                \"retries\":0,\
-                                \"req_bytes\":0,\
-                                \"cmp_bytes\":0,\
-                                \"resp_bytes\":0,\
-                                \"flush_reason\":\"\",\
-                                \"errors\":0,\
-                                \"status\":\"unset\",\
-                                \"in_progress\":true,\
-                                \"stage\":\"{stage}\",\
-                                \"stage_start_unix_ns\":\"{ss}\"\
-                            }}",
-                            id = id,
-                            pl = esc(&pm.name),
-                            st = b.start_unix_ns,
-                            scan = b.scan_ns,
-                            xfm = b.transform_ns,
-                            out_st = b.output_start_unix_ns,
-                            wid = worker_id_json,
-                            stage = b.stage,
-                            ss = b.stage_start_unix_ns,
-                        );
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {} // skip missed metrics
+                    Err(_) => break,
+                }
+            }
+            // Per-client span + log sampling on a 2-second cadence.
+            _ = interval.tick() => {
+                let spans = super::telemetry::collect_new_spans(
+                    state.trace_buf.as_ref(),
+                    &state.pipelines,
+                    &mut span_cursor,
+                );
+                // Always send traces — even empty — so clients clear stale
+                // in-progress state when all batches complete.
+                let span_json = super::telemetry::spans_to_otlp_json(&spans);
+                if socket.send(Message::Text(span_json.into())).await.is_err() {
+                    break;
+                }
+
+                let logs = super::telemetry::collect_new_logs(
+                    &state.stderr,
+                    &mut log_cursor,
+                );
+                if !logs.is_empty() {
+                    let log_json = super::telemetry::logs_to_otlp_json(&logs);
+                    if socket.send(Message::Text(log_json.into())).await.is_err() {
+                        break;
                     }
                 }
             }
-            out.push_str("]}");
-            out
-        } else {
-            r#"{"traces":[]}"#.to_string()
-        };
-
-        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-            .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        let resp = tiny_http::Response::from_string(body).with_header(header);
-        request.respond(resp)?;
-        Ok(())
+        }
     }
+}
 
-    fn serve_status(&self, request: tiny_http::Request) -> Result<(), Box<dyn std::error::Error>> {
-        let body = self.status_body();
-        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-            .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        let resp = tiny_http::Response::from_string(body).with_header(header);
-        request.respond(resp)?;
-        Ok(())
-    }
+// ---------------------------------------------------------------------------
+// Background sampler loop (runs as a tokio task inside the HTTP thread)
+// ---------------------------------------------------------------------------
 
-    fn status_body(&self) -> String {
-        let uptime = self.start_time.elapsed().as_secs();
-        let uptime_s = self.start_time.elapsed().as_secs_f64();
-        let observed_at_unix_ns = now_nanos();
-        let mut pipelines_json = Vec::new();
+async fn sampler_loop(state: Arc<DiagnosticsState>) {
+    let mut last_stderr_cursor: u64 = 0;
+    let mut prev_health = std::collections::HashMap::new();
+    let mut prev_snapshot: Option<super::telemetry::MetricSnapshot> = None;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
-        for pm in &self.pipelines {
-            let inputs_json: Vec<String> = pm
-                .inputs
-                .iter()
-                .map(|(name, typ, stats)| {
-                    let transport_json = match typ.as_str() {
-                        "file" => format!(
-                            r#","transport":{{"file":{{"consecutive_error_polls":{}}}}}"#,
-                            stats.file_error_polls.load(Ordering::Relaxed)
-                        ),
-                        "tcp" => format!(
-                            r#","transport":{{"tcp":{{"accepted_connections":{},"active_connections":{}}}}}"#,
-                            stats.tcp_accepted.load(Ordering::Relaxed),
-                            stats.tcp_active.load(Ordering::Relaxed)
-                        ),
-                        "udp" => format!(
-                            r#","transport":{{"udp":{{"drops_detected":{},"recv_buffer_size":{}}}}}"#,
-                            stats.udp_drops.load(Ordering::Relaxed),
-                            stats.udp_recv_buf.load(Ordering::Relaxed)
-                        ),
-                        _ => String::new(),
-                    };
+        // Always sample metrics + logs into the history/telemetry buffers.
+        sample_metrics(&state.pipelines, &state.history, state.memory_stats_fn);
 
-                    format!(
-                        r#"{{"name":"{}","type":"{}","health":"{}","lines_total":{},"bytes_total":{},"errors":{},"rotations":{},"parse_errors":{}{}}}"#,
-                        esc(name),
-                        esc(typ),
-                        stats.health().as_str(),
-                        stats.lines(),
-                        stats.bytes(),
-                        stats.errors(),
-                        stats.rotations(),
-                        stats.parse_errors(),
-                        transport_json
-                    )
-                })
-                .collect();
+        let uptime = state.start_time.elapsed().as_secs_f64();
+        crate::telemetry_buffer::sample_all_metrics(
+            &state.pipelines,
+            state.memory_stats_fn,
+            uptime,
+            &state.telemetry,
+        );
+        crate::telemetry_buffer::sample_stderr_logs(
+            &state.stderr,
+            &state.telemetry.logs,
+            &mut last_stderr_cursor,
+        );
+        crate::telemetry_buffer::sample_health_transitions(
+            &state.pipelines,
+            &state.telemetry.logs,
+            &mut prev_health,
+        );
 
-            let lines_in = pm.transform_in.lines();
-            // lines_out: derived from output-sink stats (single increment path —
-            // each sink calls inc_lines once on successful delivery). For fan-out
-            // pipelines, the maximum across all outputs is used as a proxy for
-            // "lines delivered to the most successful output". This may undercount
-            // in partial-failure fan-out scenarios where outputs succeed at
-            // different rates.
-            let lines_out: u64 = pm
-                .outputs
-                .iter()
-                .map(|(_, _, s)| s.lines())
-                .max()
-                .unwrap_or(0);
-            let drop_rate = if lines_in > 0 {
-                1.0 - (lines_out as f64 / lines_in as f64)
-            } else {
-                0.0
-            };
+        // Broadcast metrics OTLP JSON to WebSocket clients.
+        // Spans and logs are sampled per-client in handle_ws with independent
+        // cursors, so only metrics need the shared broadcast.
+        if state.telemetry_tx.receiver_count() > 0 {
+            let mut metrics = super::telemetry::sample_metrics(
+                &state.pipelines,
+                state.memory_stats_fn,
+                state.start_time.elapsed(),
+            );
 
-            let outputs_json: Vec<String> = pm
-                .outputs
-                .iter()
-                .map(|(name, typ, stats)| {
-                    format!(
-                        r#"{{"name":"{}","type":"{}","health":"{}","lines_total":{},"bytes_total":{},"errors":{}}}"#,
-                        esc(name),
-                        esc(typ),
-                        stats.health().as_str(),
-                        stats.lines(),
-                        stats.bytes(),
-                        stats.errors(),
-                    )
-                })
-                .collect();
-
-            let batches = pm.batches_total.load(Ordering::Relaxed);
-            let batch_rows = pm.batch_rows_total.load(Ordering::Relaxed);
-            let avg_rows = if batches > 0 {
-                batch_rows as f64 / batches as f64
-            } else {
-                0.0
-            };
-            let scan_s = pm.scan_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
-            let transform_s = pm.transform_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
-            let output_s = pm.output_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
-            let queue_wait_s = pm.queue_wait_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
-            let send_s = pm.send_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
-
-            let last_batch_ns = pm.last_batch_time_ns.load(Ordering::Relaxed);
-
-            // Compute batch latency using a consistent snapshot since they are
-            // updated at different times. We retry until batches remains the same,
-            // capping at 64 attempts to avoid spinning indefinitely under contention.
-            // Observability counters only — stale reads are acceptable.
-            // Use Relaxed uniformly to match all other load sites in this file.
-            let mut latency_batches = pm.batches_total.load(Ordering::Relaxed);
-            let mut batch_latency_total;
-            let mut attempts = 0;
-            loop {
-                batch_latency_total = pm.batch_latency_nanos_total.load(Ordering::Relaxed);
-                let current_batches = pm.batches_total.load(Ordering::Relaxed);
-                if current_batches == latency_batches || attempts >= 64 {
-                    latency_batches = current_batches;
-                    break;
-                }
-                latency_batches = current_batches;
-                attempts += 1;
+            // Append pre-computed rate gauges (counter diffs → dashboard-ready rates).
+            if let Some(prev) = &prev_snapshot {
+                let rate_gauges = super::telemetry::compute_rate_gauges(&metrics, prev);
+                metrics.extend(rate_gauges);
             }
 
-            let batch_latency_avg_ns = if latency_batches > 0 {
-                batch_latency_total / latency_batches
-            } else {
-                0
-            };
-            let inflight = pm.inflight_batches.load(Ordering::Relaxed);
-            let backpressure = pm.backpressure_stalls.load(Ordering::Relaxed);
-            let transform_health = policy::transform_health(pm);
+            let _ = state
+                .telemetry_tx
+                .send(super::telemetry::metrics_to_otlp_json(&metrics));
 
-            // Compute bottleneck classification.
-            // Ratios are cumulative worker-seconds divided by wall-clock uptime, so
-            // they can exceed 1.0 when multiple workers run in parallel (e.g. 4
-            // workers each spending 100% of wall-time → ratio = 4.0). We express
-            // the result in "worker-seconds per wall-second" to avoid the misleading
-            // "% of uptime" framing.
-            let uptime_s_nonzero = uptime_s.max(1e-9);
-            let queue_wait_ratio = queue_wait_s / uptime_s_nonzero;
-            let transform_ratio = transform_s / uptime_s_nonzero;
-            let scan_ratio = scan_s / uptime_s_nonzero;
-            let stalls_per_sec = backpressure as f64 / uptime_s_nonzero;
-
-            let (bottleneck_stage, bottleneck_reason): (&str, String) = if queue_wait_ratio > 0.5 {
-                (
-                    "output",
-                    format!(
-                        "workers spending {:.0}% of wall-time in output queue",
-                        queue_wait_ratio * 100.0
-                    ),
-                )
-            } else if stalls_per_sec > 10.0 {
-                (
-                    "input",
-                    format!(
-                        "backpressure stalls at {:.1}/sec — input faster than pipeline can drain",
-                        stalls_per_sec
-                    ),
-                )
-            } else if transform_ratio > 0.3 {
-                (
-                    "transform",
-                    format!(
-                        "transform consuming {:.0}% of wall-time across workers",
-                        transform_ratio * 100.0
-                    ),
-                )
-            } else if scan_ratio > 0.3 {
-                (
-                    "scan",
-                    format!(
-                        "scan consuming {:.0}% of wall-time across workers",
-                        scan_ratio * 100.0
-                    ),
-                )
-            } else {
-                ("none", "running well within capacity".to_string())
-            };
-
-            pipelines_json.push(format!(
-                r#"{{"name":"{}","inputs":[{}],"transform":{{"sql":"{}","health":"{}","lines_in":{},"lines_out":{},"errors":{},"filter_drop_rate":{:.3}}},"outputs":[{}],"batches":{{"total":{},"avg_rows":{:.1},"flush_by_size":{},"flush_by_timeout":{},"cadence_fast_repolls":{},"cadence_idle_sleeps":{},"dropped_batches_total":{},"scan_errors_total":{},"parse_errors_total":{},"last_batch_time_ns":"{}","batch_latency_avg_ns":{},"inflight":{},"rows_total":{}}},"stage_seconds":{{"scan":{:.6},"transform":{:.6},"output":{:.6},"queue_wait":{:.6},"send":{:.6}}},"backpressure_stalls":{},"bottleneck":{{"stage":"{}","reason":"{}"}}}}"#,
-                esc(&pm.name),
-                inputs_json.join(","),
-                esc(&pm.transform_sql),
-                transform_health.as_str(),
-                lines_in,
-                lines_out,
-                pm.transform_errors.load(Ordering::Relaxed),
-                drop_rate,
-                outputs_json.join(","),
-                batches,
-                avg_rows,
-                pm.flush_by_size.load(Ordering::Relaxed),
-                pm.flush_by_timeout.load(Ordering::Relaxed),
-                pm.cadence_fast_repolls.load(Ordering::Relaxed),
-                pm.cadence_idle_sleeps.load(Ordering::Relaxed),
-                pm.dropped_batches_total.load(Ordering::Relaxed),
-                pm.scan_errors_total.load(Ordering::Relaxed),
-                pm.parse_errors_total.load(Ordering::Relaxed),
-                last_batch_ns,
-                batch_latency_avg_ns,
-                inflight,
-                batch_rows,
-                scan_s,
-                transform_s,
-                output_s,
-                queue_wait_s,
-                send_s,
-                backpressure,
-                bottleneck_stage,
-                esc(bottleneck_reason.as_str()),
-            ));
+            // Store current snapshot for next tick's rate computation.
+            // Re-sample (cheap) to get a clean snapshot without the rate gauges mixed in.
+            prev_snapshot = Some(super::telemetry::MetricSnapshot {
+                points: super::telemetry::sample_metrics(
+                    &state.pipelines,
+                    state.memory_stats_fn,
+                    state.start_time.elapsed(),
+                ),
+                time: Instant::now(),
+            });
         }
-
-        let ready_snapshot = policy::readiness_snapshot(&self.pipelines);
-        let ready = if ready_snapshot.ready {
-            "ready"
-        } else {
-            "not_ready"
-        };
-        let component_health = ready_snapshot.component_health;
-        let ready_reason = ready_snapshot.reason;
-        let component_reason = policy::health_reason(component_health);
-        let readiness_impact = policy::readiness_impact(component_health);
-
-        format!(
-            r#"{{"live":{{"status":"live","reason":"process_running","observed_at_unix_ns":"{}"}},"ready":{{"status":"{}","reason":"{}","observed_at_unix_ns":"{}"}},"component_health":{{"status":"{}","reason":"{}","readiness_impact":"{}","observed_at_unix_ns":"{}"}},"pipelines":[{}],"system":{{"uptime_seconds":{},"version":"{}"{}}}}}"#,
-            observed_at_unix_ns,
-            ready,
-            ready_reason,
-            observed_at_unix_ns,
-            component_health.as_str(),
-            component_reason,
-            readiness_impact,
-            observed_at_unix_ns,
-            pipelines_json.join(","),
-            uptime,
-            VERSION,
-            self.memory_json(),
-        )
-    }
-
-    /// Returns a JSON fragment (starting with a comma) for allocator memory
-    /// stats, or an empty string if no stats function is registered.
-    fn memory_json(&self) -> String {
-        match self.memory_stats_fn.and_then(|f| f()) {
-            Some(m) => format!(
-                r#","memory":{{"resident":{},"allocated":{},"active":{}}}"#,
-                m.resident, m.allocated, m.active,
-            ),
-            None => String::new(),
-        }
-    }
-
-    // -- OTLP JSON telemetry endpoints ----------------------------------------
-
-    fn serve_telemetry_metrics(
-        &self,
-        request: tiny_http::Request,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let points = self.telemetry.metrics.snapshot();
-        let body = crate::telemetry_buffer::metrics_to_otlp_json(&points);
-        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-            .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        request.respond(tiny_http::Response::from_string(body).with_header(header))?;
-        Ok(())
-    }
-
-    fn serve_telemetry_traces(
-        &self,
-        request: tiny_http::Request,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let spans =
-            crate::telemetry_buffer::collect_all_spans(self.trace_buf.as_ref(), &self.pipelines);
-        let body = crate::telemetry_buffer::traces_to_otlp_json(&spans);
-        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-            .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        request.respond(tiny_http::Response::from_string(body).with_header(header))?;
-        Ok(())
-    }
-
-    fn serve_telemetry_logs(
-        &self,
-        request: tiny_http::Request,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let logs = self.telemetry.logs.snapshot();
-        let body = crate::telemetry_buffer::logs_to_otlp_json(&logs);
-        let header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
-            .map_err(|()| io::Error::other("invalid HTTP header"))?;
-        request.respond(tiny_http::Response::from_string(body).with_header(header))?;
-        Ok(())
     }
 }
 
@@ -1144,6 +1271,7 @@ mod tests {
     use crate::diagnostics::{ComponentHealth, ComponentStats};
     use std::io::Read;
     use std::sync::atomic::Ordering;
+    use std::thread;
     use std::time::Instant;
 
     /// Build a server with one pipeline pre-populated with known counter values.
@@ -1284,6 +1412,15 @@ output:
     headers:
       X-Api-Key: "api-secret"
       Authorization: "Basic abc123"
+    some_new_auth_block:
+      nested:
+        secret_key: "nested-secret"
+        flag: true
+        number: 42
+        tagged_secret: !!str "tagged-secret-value"
+    aws:
+      access_key_id: "AKIAIOSFODNN7EXAMPLE"
+      secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 "#;
         let redacted = redact_config_yaml(raw);
         assert!(
@@ -1297,6 +1434,39 @@ output:
         assert!(
             !redacted.contains("abc123"),
             "authorization header value must not be exposed"
+        );
+        assert!(
+            !redacted.contains("nested-secret"),
+            "nested auth fields must not be exposed"
+        );
+        assert!(
+            !redacted.contains("AKIAIOSFODNN7EXAMPLE"),
+            "aws access key must not be exposed"
+        );
+        assert!(
+            !redacted.contains("wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"),
+            "aws secret key must not be exposed"
+        );
+        // Verify specific auth field values are redacted (not broad token absence,
+        // which would be brittle if unrelated YAML happened to contain those tokens).
+        let redacted_yaml: serde_yaml_ng::Value =
+            serde_yaml_ng::from_str(&redacted).expect("redacted output must be valid YAML");
+        let auth = &redacted_yaml["output"]["auth"];
+        let nested = &auth["some_new_auth_block"]["nested"];
+        assert_eq!(
+            nested["flag"].as_str(),
+            Some(REDACTED_SECRET),
+            "boolean auth field 'flag' must be redacted to the sentinel"
+        );
+        assert_eq!(
+            nested["number"].as_str(),
+            Some(REDACTED_SECRET),
+            "numeric auth field 'number' must be redacted to the sentinel"
+        );
+        assert_eq!(
+            nested["tagged_secret"].as_str(),
+            Some(REDACTED_SECRET),
+            "tagged auth field 'tagged_secret' must be redacted to the sentinel"
         );
         assert!(
             !redacted.contains("user:pass@"),
@@ -1350,8 +1520,8 @@ output:
             "malformed endpoint with userinfo should be replaced with fail-closed marker"
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn diagnostics_server_handle_drop_releases_port() {
         let server = DiagnosticsServer::new("127.0.0.1:0");
         let (handle, addr) = server.start().expect("server bind failed");
@@ -1362,7 +1532,7 @@ output:
         let rebound_addr = format!("127.0.0.1:{port}");
         wait_until(
             std::time::Duration::from_secs(1),
-            || tiny_http::Server::http(&rebound_addr).is_ok(),
+            || std::net::TcpListener::bind(&rebound_addr).is_ok(),
             &format!("failed to rebind diagnostics port {port} after drop"),
         );
     }
@@ -1391,8 +1561,8 @@ output:
         stats.set_health(ComponentHealth::Degraded);
         assert_eq!(stats.health(), ComponentHealth::Degraded);
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_live_endpoint() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -1403,25 +1573,18 @@ output:
 
         let (status, body) = http_get(port, "/live");
         assert_eq!(status, 200);
-        assert!(body.contains(r#""status":"live""#), "body: {}", body);
-        assert!(
-            body.contains(&format!(r#""version":"{}""#, env!("CARGO_PKG_VERSION"))),
-            "body: {}",
-            body
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("invalid JSON output from /live");
+        assert_eq!(
+            parsed["contract_version"],
+            STABLE_DIAGNOSTICS_CONTRACT_VERSION
         );
-        // uptime_seconds is a JSON number, not a string — verify a digit follows the colon
-        assert!(
-            body.contains(r#""uptime_seconds":"#)
-                && body
-                    .split(r#""uptime_seconds":"#)
-                    .nth(1)
-                    .map_or(false, |rest| rest.starts_with(|c: char| c.is_ascii_digit())),
-            "uptime_seconds should be a JSON number, body: {}",
-            body
-        );
+        assert_eq!(parsed["status"], "live");
+        assert_eq!(parsed["version"], env!("CARGO_PKG_VERSION"));
+        assert!(parsed["uptime_seconds"].is_u64(), "body: {body}");
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -1431,27 +1594,25 @@ output:
 
         let (status, body) = http_get(port, "/admin/v1/status");
         assert_eq!(status, 200);
-        assert!(
-            body.contains(
-                r#""component_health":{"status":"healthy","reason":"all_components_healthy","readiness_impact":"ready","observed_at_unix_ns":""#
-            ),
-            "body: {}",
-            body
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("invalid JSON output from /admin/v1/status");
+        assert_eq!(
+            parsed["contract_version"],
+            STABLE_DIAGNOSTICS_CONTRACT_VERSION
         );
-        assert!(
-            body.contains(
-                r#""ready":{"status":"ready","reason":"all_components_healthy","observed_at_unix_ns":""#
-            ),
-            "body: {}",
-            body
+        assert_eq!(parsed["component_health"]["status"], "healthy");
+        assert_eq!(
+            parsed["component_health"]["reason"],
+            "all_components_healthy"
         );
-        assert!(
-            body.contains(
-                r#""live":{"status":"live","reason":"process_running","observed_at_unix_ns":""#
-            ),
-            "body: {}",
-            body
-        );
+        assert_eq!(parsed["component_health"]["readiness_impact"], "ready");
+        assert!(parsed["component_health"]["observed_at_unix_ns"].is_string());
+        assert_eq!(parsed["ready"]["status"], "ready");
+        assert_eq!(parsed["ready"]["reason"], "all_components_healthy");
+        assert!(parsed["ready"]["observed_at_unix_ns"].is_string());
+        assert_eq!(parsed["live"]["status"], "live");
+        assert_eq!(parsed["live"]["reason"], "process_running");
+        assert!(parsed["live"]["observed_at_unix_ns"].is_string());
         assert!(body.contains(r#""name":"default""#), "body: {}", body);
         assert!(body.contains(r#""health":"healthy""#), "body: {}", body);
         assert!(body.contains(r#""lines_total":1000"#), "body: {}", body);
@@ -1504,13 +1665,13 @@ output:
             "body: {}",
             body
         );
-        assert!(body.contains(r#""queue_wait":0.050000"#), "body: {}", body);
-        assert!(body.contains(r#""send":0.150000"#), "body: {}", body);
+        assert_eq!(parsed["pipelines"][0]["stage_seconds"]["queue_wait"], 0.05);
+        assert_eq!(parsed["pipelines"][0]["stage_seconds"]["send"], 0.15);
         // Bottleneck field must be present and well-formed.
         assert!(body.contains(r#""bottleneck":{"stage":"#), "body: {}", body);
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_stats_endpoint_contract() {
         let mut server = server_with_test_pipeline();
         server.set_memory_stats_fn(|| {
@@ -1674,8 +1835,8 @@ output:
         assert_eq!(pm.outputs[0].2.errors(), 1);
         assert_eq!(pm.outputs[1].2.errors(), 1);
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_not_found() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -1686,8 +1847,8 @@ output:
         let (status, _body) = http_get(port, "/nonexistent");
         assert_eq!(status, 404);
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint_no_memory_stats() {
         // Without a memory_stats_fn set, the system section must NOT contain
         // a "memory" key — no partial or null fields.
@@ -1706,8 +1867,8 @@ output:
             body
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint_with_memory_stats() {
         // With a memory_stats_fn set, the system section must include
         // "memory" with resident/allocated/active fields.
@@ -1731,8 +1892,8 @@ output:
         assert!(body.contains(r#""allocated":800000"#), "body: {}", body);
         assert!(body.contains(r#""active":900000"#), "body: {}", body);
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_ready_endpoint_no_pipelines_returns_503() {
         // No pipelines registered yet → not ready.
         let server = DiagnosticsServer::new("127.0.0.1:0");
@@ -1744,15 +1905,17 @@ output:
 
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 503, "body: {}", body);
-        assert!(body.contains(r#""status":"not_ready""#), "body: {}", body);
-        assert!(
-            body.contains(r#""reason":"no_pipelines_registered""#),
-            "body: {}",
-            body
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("invalid JSON output from /ready");
+        assert_eq!(
+            parsed["contract_version"],
+            STABLE_DIAGNOSTICS_CONTRACT_VERSION
         );
+        assert_eq!(parsed["status"], "not_ready");
+        assert_eq!(parsed["reason"], "no_pipelines_registered");
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_ready_endpoint_with_pipeline_returns_200() {
         // A registered pipeline makes the server ready, regardless of
         // whether any batches have been processed.
@@ -1769,15 +1932,17 @@ output:
 
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 200, "body: {}", body);
-        assert!(body.contains(r#""status":"ready""#), "body: {}", body);
-        assert!(
-            body.contains(r#""reason":"all_components_healthy""#),
-            "body: {}",
-            body
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("invalid JSON output from /ready");
+        assert_eq!(
+            parsed["contract_version"],
+            STABLE_DIAGNOSTICS_CONTRACT_VERSION
         );
+        assert_eq!(parsed["status"], "ready");
+        assert_eq!(parsed["reason"], "all_components_healthy");
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_ready_endpoint_with_starting_component_returns_503() {
         let meter = opentelemetry::global::meter("test");
         let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
@@ -1793,15 +1958,13 @@ output:
 
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 503, "body: {}", body);
-        assert!(body.contains(r#""status":"not_ready""#), "body: {}", body);
-        assert!(
-            body.contains(r#""reason":"components_starting""#),
-            "body: {}",
-            body
-        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("invalid JSON output from /ready");
+        assert_eq!(parsed["status"], "not_ready");
+        assert_eq!(parsed["reason"], "components_starting");
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_ready_endpoint_with_degraded_input_stays_200() {
         let meter = opentelemetry::global::meter("test");
         let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
@@ -1817,12 +1980,10 @@ output:
 
         let (status, body) = http_get(port, "/ready");
         assert_eq!(status, 200, "body: {}", body);
-        assert!(body.contains(r#""status":"ready""#), "body: {}", body);
-        assert!(
-            body.contains(r#""reason":"components_degraded_but_operational""#),
-            "body: {}",
-            body
-        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("invalid JSON output from /ready");
+        assert_eq!(parsed["status"], "ready");
+        assert_eq!(parsed["reason"], "components_degraded_but_operational");
     }
 
     #[test]
@@ -1904,8 +2065,8 @@ output:
             false,
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint_includes_transport_parity_fields() {
         let meter = opentelemetry::global::meter("test");
         let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
@@ -1954,8 +2115,8 @@ output:
         assert_eq!(udp["transport"]["udp"]["drops_detected"], 100);
         assert_eq!(udp["transport"]["udp"]["recv_buffer_size"], 8_388_608);
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint_shows_degraded_input_as_non_blocking() {
         let meter = opentelemetry::global::meter("test");
         let mut pm = PipelineMetrics::new("default", "SELECT * FROM logs", &meter);
@@ -1988,6 +2149,70 @@ output:
         );
     }
 
+    #[derive(serde::Deserialize)]
+    struct MinimalStatusCompatibilityView {
+        contract_version: String,
+        ready: MinimalReadyCompatibilityView,
+    }
+
+    #[derive(serde::Deserialize)]
+    struct MinimalReadyCompatibilityView {
+        status: String,
+        reason: String,
+    }
+
+    #[test]
+    fn test_stable_diagnostics_endpoints_expose_contract_version() {
+        let server = server_with_test_pipeline();
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let (_, live_body) = http_get(port, "/live");
+        let live: serde_json::Value =
+            serde_json::from_str(&live_body).expect("invalid JSON output from /live");
+        assert_eq!(
+            live["contract_version"],
+            STABLE_DIAGNOSTICS_CONTRACT_VERSION
+        );
+
+        let (_, ready_body) = http_get(port, "/ready");
+        let ready: serde_json::Value =
+            serde_json::from_str(&ready_body).expect("invalid JSON output from /ready");
+        assert_eq!(
+            ready["contract_version"],
+            STABLE_DIAGNOSTICS_CONTRACT_VERSION
+        );
+
+        let (_, status_body) = http_get(port, "/admin/v1/status");
+        let status: serde_json::Value =
+            serde_json::from_str(&status_body).expect("invalid JSON output from /admin/v1/status");
+        assert_eq!(
+            status["contract_version"],
+            STABLE_DIAGNOSTICS_CONTRACT_VERSION
+        );
+    }
+
+    #[test]
+    fn test_status_endpoint_additive_compatibility_fixture() {
+        let server = server_with_test_pipeline();
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let (_status, body) = http_get(port, "/admin/v1/status");
+        let fixture: MinimalStatusCompatibilityView =
+            serde_json::from_str(&body).expect("status contract should stay additive-compatible");
+        assert_eq!(
+            fixture.contract_version,
+            STABLE_DIAGNOSTICS_CONTRACT_VERSION.to_string()
+        );
+        assert_eq!(fixture.ready.status, "ready");
+        assert_eq!(fixture.ready.reason, "all_components_healthy");
+    }
+
     #[test]
     fn test_esc_control_chars() {
         assert_eq!(esc("hello\0world"), "hello\\u0000world");
@@ -1995,8 +2220,8 @@ output:
         assert_eq!(esc("bell\x07"), "bell\\u0007");
         assert_eq!(esc("escape\x1b"), "escape\\u001b");
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_status_endpoint_escaping() {
         let meter = opentelemetry::global::meter("test");
         // Control character in pipeline name.
@@ -2022,8 +2247,8 @@ output:
         let _v: serde_json::Value =
             serde_json::from_str(&body).expect("invalid JSON output from /admin/v1/status");
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_traces_endpoint_empty() {
         // Server with no trace buffer attached — should return empty array.
         let server = server_with_test_pipeline();
@@ -2036,8 +2261,8 @@ output:
         assert_eq!(status, 200);
         assert_eq!(body, r#"{"traces":[]}"#, "unexpected body: {body}");
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn test_traces_endpoint_with_data() {
         use crate::span_exporter::{SpanBuffer, TraceSpan};
 
@@ -2106,6 +2331,77 @@ output:
         assert_eq!(t["output_ns"], "0");
         assert_eq!(t["queue_wait_ns"], "5000000");
         assert_eq!(t["status"], "ok");
+        assert_eq!(t["lifecycle_state"], "completed");
+    }
+
+    #[test]
+    fn test_traces_endpoint_explicit_lifecycle_states_for_active_batches() {
+        use crate::span_exporter::SpanBuffer;
+
+        let meter = opentelemetry::global::meter("test");
+        let pm = Arc::new(PipelineMetrics::new(
+            "default",
+            "SELECT * FROM logs",
+            &meter,
+        ));
+
+        // One batch per active state.
+        pm.begin_active_batch(1, 1_000_000_000, 0, 0);
+        pm.advance_active_batch(1, "scan", 0, 1_000_100_000);
+
+        pm.begin_active_batch(2, 1_100_000_000, 12_000_000, 0);
+        pm.advance_active_batch(2, "scan", 12_000_000, 1_112_000_000);
+        pm.advance_active_batch(2, "transform", 0, 1_112_500_000);
+
+        pm.begin_active_batch(3, 1_200_000_000, 8_000_000, 5_000_000);
+
+        pm.begin_active_batch(4, 1_300_000_000, 9_000_000, 4_000_000);
+        pm.assign_worker_to_active_batch(4, 7, 1_313_500_000);
+
+        let mut server = DiagnosticsServer::new("127.0.0.1:0");
+        server.add_pipeline(Arc::clone(&pm));
+        server.set_trace_buffer(SpanBuffer::new());
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/admin/v1/traces");
+        assert_eq!(status, 200);
+
+        let v: serde_json::Value =
+            serde_json::from_str(&body).expect("invalid JSON from /admin/v1/traces");
+        let traces = v["traces"].as_array().expect("traces must be array");
+        assert_eq!(traces.len(), 4);
+
+        let mut by_state = std::collections::HashMap::new();
+        for trace in traces {
+            by_state.insert(
+                trace["lifecycle_state"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                trace.clone(),
+            );
+        }
+
+        assert!(by_state.contains_key("scan_in_progress"));
+        assert!(by_state.contains_key("transform_in_progress"));
+        assert!(by_state.contains_key("queued_for_output"));
+        assert!(by_state.contains_key("output_in_progress"));
+
+        let queued = by_state
+            .get("queued_for_output")
+            .expect("queued trace missing");
+        assert_eq!(queued["worker_id"], serde_json::Value::Null);
+        assert_eq!(queued["lifecycle_state_start_unix_ns"], "1200000000");
+
+        let output = by_state
+            .get("output_in_progress")
+            .expect("output trace missing");
+        assert_eq!(output["worker_id"], 7);
+        assert_eq!(output["output_start_unix_ns"], "1313500000");
+        assert_eq!(output["lifecycle_state_start_unix_ns"], "1313500000");
     }
 
     /// Raw TCP POST helper for method-rejection tests.
@@ -2170,6 +2466,7 @@ output:
 
     // Bug #728: diagnostics server should return 405 for non-GET methods.
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn non_get_returns_405() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -2184,8 +2481,8 @@ output:
     }
 
     // -- OTLP telemetry endpoint tests --
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn telemetry_metrics_endpoint_returns_valid_otlp() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -2226,8 +2523,8 @@ output:
             "expected at least one metric"
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn telemetry_traces_endpoint_with_spans() {
         use crate::span_exporter::{SpanBuffer, TraceSpan};
 
@@ -2274,8 +2571,8 @@ output:
             "startTimeUnixNano must be a string"
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn telemetry_logs_endpoint_returns_valid_otlp() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -2295,8 +2592,8 @@ output:
             "expected resourceLogs array"
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn telemetry_endpoints_empty_on_fresh_start() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -2326,8 +2623,8 @@ output:
             "traces must have resourceSpans array"
         );
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn existing_endpoints_unchanged_after_telemetry() {
         // Backward compatibility: existing endpoints must still work.
         let server = server_with_test_pipeline();
@@ -2355,8 +2652,8 @@ output:
         assert_eq!(status, 200, "live: {body}");
         assert!(body.contains("\"status\":\"live\""), "live: {body}");
     }
-
     #[test]
+    #[ignore = "network integration test; run with `just test-network`"]
     fn removed_legacy_endpoints_return_404() {
         let server = server_with_test_pipeline();
         let (_handle, addr) = server.start().expect("server bind failed");

@@ -332,11 +332,13 @@ impl LokiSink {
             // --- Labels ---
             // Use coalesce_as_str so that struct conflict columns (and plain Utf8
             // columns alike) always produce a string value for the label.
+            // static_labels is pre-sanitized once before this loop.
             let mut labels = static_labels.clone();
             for (label_name, col_info) in &label_col_infos {
                 if let Some(val) = coalesce_as_str(batch, row, col_info) {
                     // Skip empty label values — Loki API rejects them with HTTP 400.
                     if !val.is_empty() {
+                        // label_name is already sanitized (pre-computed in label_col_infos).
                         labels.push((label_name.clone(), val));
                     }
                 }
@@ -574,20 +576,33 @@ fn escape_json(s: &str) -> String {
     out
 }
 
-/// Wrap an already-valid JSON value (log line) as a JSON string.
-/// If it's a JSON object/array, wrap it in quotes with escaping.
-/// If it already starts with `"`, return as-is (already a JSON string).
+/// Ensure the input becomes a valid JSON *string* value (with enclosing quotes).
+///
+/// Loki's push API requires the second element of each `values` entry to be a
+/// JSON string — not an object, array, number, or other JSON value type.
+///
+/// - If the input is already a valid JSON string (starts with `"` and parses
+///   as `Value::String`), return it as-is.
+/// - If the input is any other valid JSON value (object, array, number, bool,
+///   null), re-encode it as a JSON string (serialize the raw text as a string).
+/// - Otherwise, escape it as a plain string value.
 fn escape_json_raw(s: &str) -> String {
     let trimmed = s.trim();
     // Bug #1048: leading quote is not enough to guarantee valid JSON string.
     // Verify it actually parses as complete valid JSON before passthrough.
-    if trimmed.starts_with('"') && serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
-        // Already a valid JSON string.
-        trimmed.to_string()
-    } else {
-        // A JSON object/array or plain string — escape it as a string value.
-        format!("\"{}\"", escape_json(trimmed))
+    if trimmed.starts_with('"') {
+        if let Ok(serde_json::Value::String(_)) = serde_json::from_str::<serde_json::Value>(trimmed)
+        {
+            // Already a valid JSON string — pass through as-is.
+            return trimmed.to_string();
+        }
+    } else if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+        // Valid JSON but not a string (object, array, number, bool, null).
+        // Loki requires the log line to be a JSON string, so re-encode it.
+        return format!("\"{}\"", escape_json(trimmed));
     }
+    // Not valid JSON. Escape it as a string value.
+    format!("\"{}\"", escape_json(trimmed))
 }
 
 // ---------------------------------------------------------------------------
@@ -778,6 +793,11 @@ mod tests {
         );
         assert_eq!(escaped, "\"\\\"not valid json\"", "should be fully escaped");
 
+        // Object with trailing characters
+        let malformed_obj = "{\"key\": \"value\"} trailing";
+        let escaped_obj = escape_json_raw(malformed_obj);
+        assert_eq!(escaped_obj, "\"{\\\"key\\\": \\\"value\\\"} trailing\"");
+
         let unterminated = "\"unterminated";
         let escaped_unterminated = escape_json_raw(unterminated);
         assert_eq!(
@@ -803,10 +823,24 @@ mod tests {
 
     #[test]
     fn test_escape_json_raw_object() {
-        // JSON object should be escaped and wrapped
+        // Valid JSON object must be re-encoded as a JSON string.
+        // Loki requires the log-line element to be a JSON string, not an object.
         let obj = "{\"key\": \"value\"}";
         let escaped = escape_json_raw(obj);
+        // The object text is wrapped in a JSON string.
         assert_eq!(escaped, "\"{\\\"key\\\": \\\"value\\\"}\"");
+        assert_ne!(escaped, obj, "JSON object must not be passed through raw");
+    }
+
+    #[test]
+    fn test_label_sanitization() {
+        assert_eq!(sanitize_loki_label_name("valid_label_1"), "valid_label_1");
+        assert_eq!(sanitize_loki_label_name("my.label.name"), "my_label_name");
+        assert_eq!(sanitize_loki_label_name("1invalid_start"), "_invalid_start");
+        assert_eq!(sanitize_loki_label_name("a-b*c/d"), "a_b_c_d");
+        // Empty input must produce a valid label name, not an empty string which
+        // Loki would reject (labels must match ^[a-zA-Z_][a-zA-Z0-9_]*$).
+        assert_eq!(sanitize_loki_label_name(""), "_");
     }
 
     /// Regression test for #1670: canonical "timestamp" column must be used as

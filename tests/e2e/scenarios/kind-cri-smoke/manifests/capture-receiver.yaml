@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capture-receiver
+  labels:
+    app: capture-receiver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: capture-receiver
+  template:
+    metadata:
+      labels:
+        app: capture-receiver
+    spec:
+      containers:
+        - name: capture
+          image: python:3.12-alpine
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - /opt/capture/capture_tcp.py
+            - --port
+            - "9000"
+            - --output-dir
+            - /artifacts
+          ports:
+            - containerPort: 9000
+          volumeMounts:
+            - name: capture-script
+              mountPath: /opt/capture
+              readOnly: true
+            - name: capture-data
+              mountPath: /artifacts
+      volumes:
+        - name: capture-script
+          configMap:
+            name: capture-tcp-script
+        - name: capture-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: capture-receiver
+spec:
+  selector:
+    app: capture-receiver
+  ports:
+    - port: 9000
+      targetPort: 9000

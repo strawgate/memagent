@@ -100,7 +100,8 @@ The workspace `default-members` excludes `logfwd-transform` (datafusion) and `lo
 │   ├── logfwd-test-utils/       ← Shared test utilities
 │   ├── logfwd-ebpf-proto/       ← eBPF log capture protocol definitions (experimental)
 │   ├── logfwd-otap-proto/       ← OTAP protocol definitions
-│   └── logfwd-proto-build/      ← Protobuf build scripts
+│   ├── logfwd-proto-build/      ← Protobuf build scripts
+│   └── logfwd-config-wasm/      ← WASM bindings: exposes config templates + validate_config to the docs site
 │
 ├── dev-docs/                    ← Developer documentation
 │   ├── README.md                ← Developer-doc start page and task routing
@@ -161,6 +162,7 @@ logfwd-core               Pure logic, proven, no_std, forbid(unsafe)
 | `logfwd-output` | Uses core for OTLP encoding. Transport separated from serialization. |
 | `logfwd-runtime` | Async orchestration only. Extract pure reducers instead of growing async shells. |
 | `logfwd` (binary) | CLI/bootstrap only. No long-lived runtime orchestration logic. |
+| `logfwd-config-wasm` | WASM-only. Compile with `wasm-pack build --target web`. Output goes to `book/public/wasm/`. No std runtime logic. |
 
 Full details: `dev-docs/CRATE_RULES.md`.
 

@@ -1,6 +1,7 @@
 ---
-// Auto-playing tailing simulation: shows normal tailing, then rotation, then recovery.
-// Fixed-height viewport with tooltips pointing at interesting events.
+// Rotation-only tailing demo. Streams log lines into app.log, shows auto-rotate
+// progress counter, and provides a full-width manual rotate button.
+// Truncation is handled by TruncationDemo.astro.
 ---
 
 <div class="tl" id="tailing-diagram"></div>
@@ -15,47 +16,106 @@
     --tl-green: #22c55e;
     --tl-red: #ef4444;
     --tl-amber: #f59e0b;
-    --tl-blue: #60a5fa;
     margin: 1.5rem 0;
   }
   .tl * { margin-top: 0 !important; }
 
-  /* Main layout: fixed-height container */
-  .tl-container {
-    display: flex; gap: 0.75rem; flex-wrap: wrap;
-    align-items: flex-start;
+  /* Control bar */
+  .tl-controls {
+    display: flex; gap: 0.35rem; align-items: center;
+    margin-bottom: 0.6rem; flex-wrap: wrap;
   }
+  .tl-btn {
+    padding: 0.25rem 0.6rem; border-radius: 5px;
+    border: 1px solid var(--tl-border); background: transparent;
+    color: var(--tl-text); font-size: 0.7rem; cursor: pointer;
+    font-weight: 600; transition: border-color 0.15s, background 0.15s;
+  }
+  .tl-btn:hover { border-color: var(--tl-accent); }
+  .tl-btn.active {
+    border-color: var(--tl-accent);
+    background: color-mix(in srgb, var(--tl-accent) 15%, transparent);
+  }
+
+  /* Panels wrapper — position:relative so overlay can cover it */
+  .tl-panels { position: relative; margin-bottom: 0.5rem; }
+  .tl-panels-inner {
+    display: flex; gap: 0.75rem;
+    align-items: flex-start; overflow: hidden;
+    height: 220px; /* fixed height prevents page grow on two-panel state */
+  }
+
+  /* Overlay */
+  .tl-overlay {
+    position: absolute; inset: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,0.45); border-radius: 8px;
+    opacity: 0; pointer-events: none;
+    transition: opacity 0.25s;
+  }
+  .tl-overlay.visible { opacity: 1; pointer-events: auto; }
+  .tl-overlay-inner {
+    position: relative;
+    background: var(--tl-bg); border: 2px solid var(--tl-amber);
+    border-radius: 8px; padding: 0.75rem 1.1rem; text-align: center;
+    max-width: 310px; box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  }
+  .tl-overlay-inner.ok { border-color: var(--tl-green); }
+  .tl-overlay-title {
+    font-size: 0.82rem; font-weight: 700; margin-bottom: 0.3rem;
+    color: var(--tl-text); padding-right: 1.2rem;
+  }
+  .tl-overlay-body {
+    font-size: 0.67rem; color: var(--tl-muted); line-height: 1.55;
+  }
+  .tl-overlay-body code {
+    font-family: var(--sl-font-mono, monospace); font-size: 0.65rem;
+    color: var(--tl-text);
+  }
+  .tl-overlay-close:focus-visible {
+    outline: 2px solid var(--tl-text); outline-offset: -2px;
+  }
+  .tl-overlay-close {
+    position: absolute; top: 0.35rem; right: 0.35rem;
+    width: 1.3rem; height: 1.3rem;
+    border: 1px solid var(--tl-border); background: transparent;
+    color: var(--tl-muted); cursor: pointer; font-size: 0.75rem;
+    border-radius: 3px; padding: 0;
+    display: none; align-items: center; justify-content: center;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .tl-overlay-close.shown { display: flex; }
+  .tl-overlay-close:hover { color: var(--tl-text); border-color: var(--tl-text); }
 
   /* File panel */
   .tl-file {
     border: 1.5px solid var(--tl-border); border-radius: 8px;
     padding: 0.5rem; flex: 1; min-width: 220px; max-width: 380px;
     background: var(--tl-bg); transition: border-color 0.3s, opacity 0.5s;
+    height: 100%; box-sizing: border-box; overflow: hidden;
+    display: flex; flex-direction: column;
   }
   .tl-file.active { border-color: var(--tl-green); }
-  .tl-file.old { border-color: var(--tl-amber); opacity: 0.6; }
+  .tl-file.old { border-color: var(--tl-amber); opacity: 0.55; }
 
   .tl-file-head {
     display: flex; justify-content: space-between; align-items: center;
     padding-bottom: 0.3rem; margin-bottom: 0.3rem;
     border-bottom: 1px solid var(--tl-border);
-    font-size: 0.72rem; font-weight: 600;
+    font-size: 0.72rem; font-weight: 600; flex-shrink: 0;
   }
   .tl-fname { font-family: var(--sl-font-mono, monospace); }
   .tl-fmeta { font-size: 0.58rem; color: var(--tl-muted); font-weight: 400; }
 
-  /* Fixed-height log viewport — never grows */
+  /* Fixed-height log viewport */
   .tl-lines {
     font-family: var(--sl-font-mono, monospace); font-size: 0.58rem;
-    line-height: 1.5; height: 180px; overflow-y: hidden;
-    position: relative;
+    line-height: 1.5; flex: 1; overflow: hidden; position: relative;
   }
-  .tl-lines-inner {
-    position: absolute; bottom: 0; left: 0; right: 0;
-  }
+  .tl-lines-inner { position: absolute; bottom: 0; left: 0; right: 0; }
   .tl-line { display: flex; gap: 0.25rem; }
   .tl-line-num { color: var(--tl-muted); min-width: 18px; text-align: right; user-select: none; }
-  .tl-line-text { white-space: nowrap; }
+  .tl-line-text { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 300px; }
   .tl-line.new .tl-line-text { color: var(--tl-green); font-weight: 600; }
 
   .tl-cursor {
@@ -63,7 +123,37 @@
     margin-top: 0.25rem; padding-top: 0.25rem;
     border-top: 1px dashed var(--tl-border);
     font-size: 0.58rem; color: var(--tl-accent); font-weight: 600;
+    flex-shrink: 0;
   }
+
+  /* Auto-rotate progress row */
+  .tl-autorow {
+    display: flex; align-items: center; gap: 0.6rem;
+    margin-bottom: 0.5rem;
+  }
+  .tl-autobar-track {
+    flex: 1; height: 5px; background: var(--tl-border); border-radius: 3px; overflow: hidden;
+  }
+  .tl-autobar-fill {
+    height: 100%; width: 0; background: var(--tl-amber); border-radius: 3px;
+    transition: width 0.5s linear;
+  }
+  .tl-autorow-label {
+    font-size: 0.62rem; color: var(--tl-muted); white-space: nowrap; min-width: 155px; text-align: right;
+  }
+
+  /* Full-width action button */
+  .tl-action-btn {
+    display: block; width: 100%; padding: 0.65rem 1rem;
+    border-radius: 7px; border: 1.5px solid var(--tl-amber);
+    background: color-mix(in srgb, var(--tl-amber) 8%, transparent);
+    color: var(--tl-amber); font-size: 0.78rem; font-weight: 700;
+    cursor: pointer; transition: background 0.2s; margin-bottom: 0.6rem;
+    box-sizing: border-box; text-align: center;
+  }
+  .tl-action-btn:hover { background: color-mix(in srgb, var(--tl-amber) 18%, transparent); }
+  .tl-action-btn.ok-btn { border-color: var(--tl-green); color: var(--tl-green); background: color-mix(in srgb, var(--tl-green) 8%, transparent); }
+  .tl-action-btn.ok-btn:hover { background: color-mix(in srgb, var(--tl-green) 18%, transparent); }
 
   /* Stats row */
   .tl-stats {
@@ -74,222 +164,226 @@
   .tl-stat-label { font-size: 0.55rem; color: var(--tl-muted); text-transform: uppercase; letter-spacing: 0.03em; }
   .tl-stat-val { font-weight: 700; font-family: var(--sl-font-mono, monospace); }
   .tl-stat-val.green { color: var(--tl-green); }
-
-  /* Tooltip — positioned relative to the container */
-  .tl-tooltip {
-    position: relative;
-    padding: 0.5rem 0.7rem; margin-top: 0.5rem;
-    background: var(--tl-bg); border: 1.5px solid var(--tl-border);
-    border-radius: 7px; font-size: 0.75rem; line-height: 1.45;
-    opacity: 0; transform: translateY(4px);
-    transition: opacity 0.3s, transform 0.3s, border-color 0.3s;
-    min-height: 2.2rem;
-  }
-  .tl-tooltip.visible { opacity: 1; transform: translateY(0); }
-  .tl-tooltip.warn { border-color: var(--tl-amber); }
-  .tl-tooltip.ok { border-color: var(--tl-green); }
-  .tl-tooltip b { font-size: 0.78rem; }
-
-  /* Progress bar */
-  .tl-progress {
-    height: 3px; background: var(--tl-border); border-radius: 2px;
-    overflow: hidden; margin-top: 0.5rem;
-  }
-  .tl-progress-fill {
-    height: 100%; width: 0; background: var(--tl-accent);
-    transition: width 0.3s linear;
-  }
 </style>
 
 <script>
-(function() {
-  var root = document.getElementById('tailing-diagram');
+import { makeTailingSim, AUTO_THRESHOLD } from '../scripts/tailing-sim';
+import { el } from '../scripts/dom-utils';
+
+function init() {
+  const root = document.getElementById('tailing-diagram');
   if (!root) return;
 
-  function el(tag, cls) { var e = document.createElement(tag); if (cls) e.className = cls; return e; }
+  const sim = makeTailingSim();
 
-  var LEVELS = ['INFO', 'INFO', 'DEBUG', 'INFO', 'WARN', 'INFO', 'INFO', 'ERROR', 'INFO', 'INFO'];
-  var MSGS = ['request handled', 'conn opened', 'query exec', 'cache hit', 'slow resp', 'health ok', 'batch done', 'conn refused', 'session new', 'auth ok'];
+  // UI-only state
+  let playing = true;
+  let mainFile: ReturnType<typeof createFileEl> | null = null;
+  let oldFile: ReturnType<typeof createFileEl> | null = null;
+  let pendingRemoval: ReturnType<typeof createFileEl> | null = null;
+  let ticker: ReturnType<typeof setInterval> | null = null;
 
-  function genLine(n) {
-    return '{"level":"' + LEVELS[n % LEVELS.length] + '","msg":"' + MSGS[n % MSGS.length] + '","n":' + n + '}';
-  }
+  // ----- DOM -----
+  const ctrlEl = el('div', 'tl-controls');
+  const btnPlay = el('button', 'tl-btn active');
+  btnPlay.type = 'button'; btnPlay.textContent = '\u23F8 Pause';
+  btnPlay.setAttribute('aria-pressed', 'true');
+  ctrlEl.appendChild(btnPlay);
+  root.appendChild(ctrlEl);
 
-  // Build DOM
-  var containerEl = el('div', 'tl-container');
-  var statsEl = el('div', 'tl-stats');
-  var tooltipEl = el('div', 'tl-tooltip');
-  tooltipEl.setAttribute('role', 'status');
-  tooltipEl.setAttribute('aria-live', 'polite');
-  var progressEl = el('div', 'tl-progress');
-  var progressFill = el('div', 'tl-progress-fill');
-  progressEl.appendChild(progressFill);
-  root.appendChild(containerEl);
+  // Panels
+  const panelsEl = el('div', 'tl-panels');
+  const panelsInner = el('div', 'tl-panels-inner');
+  panelsEl.appendChild(panelsInner);
+  const overlayEl = el('div', 'tl-overlay');
+  overlayEl.setAttribute('role', 'status');
+  overlayEl.setAttribute('aria-live', 'polite');
+  const overlayInner = el('div', 'tl-overlay-inner');
+  const overlayTitle = el('div', 'tl-overlay-title');
+  const overlayBody = el('div', 'tl-overlay-body');
+  const overlayClose = el('button', 'tl-overlay-close');
+  overlayClose.type = 'button'; overlayClose.textContent = '\u00D7';
+  overlayClose.setAttribute('aria-label', 'Dismiss');
+  overlayInner.appendChild(overlayTitle); overlayInner.appendChild(overlayBody); overlayInner.appendChild(overlayClose);
+  overlayEl.appendChild(overlayInner);
+  panelsEl.appendChild(overlayEl);
+  root.appendChild(panelsEl);
+
+  // Auto-rotate row
+  const autoRowEl = el('div', 'tl-autorow');
+  const autoBarTrack = el('div', 'tl-autobar-track');
+  const autoBarFill = el('div', 'tl-autobar-fill');
+  autoBarTrack.appendChild(autoBarFill);
+  const autoBarLabel = el('span', 'tl-autorow-label');
+  autoRowEl.appendChild(autoBarTrack); autoRowEl.appendChild(autoBarLabel);
+  root.appendChild(autoRowEl);
+
+  // Full-width rotate button
+  const rotateBtnEl = el('button', 'tl-action-btn');
+  rotateBtnEl.type = 'button'; rotateBtnEl.textContent = '\u21BB Rotate the Log';
+  root.appendChild(rotateBtnEl);
+
+  const statsEl = el('div', 'tl-stats');
   root.appendChild(statsEl);
-  root.appendChild(tooltipEl);
-  root.appendChild(progressEl);
 
-  var lineNum = 1, offset = 0, linesRead = 0, fileInode = 12345;
-  var ROTATE_AT = 10;
-  var TOTAL_STEPS = ROTATE_AT + 2 + 6; // tailing + rotate + new tailing
-  var step = 0;
-  var phase = 'tailing';
-  var mainFile = null, oldFile = null, timer = null;
-
-  function showTooltip(html, cls) {
-    tooltipEl.className = 'tl-tooltip' + (cls ? ' ' + cls : '');
-    tooltipEl.innerHTML = html;
-    // Force reflow then show
-    void tooltipEl.offsetHeight;
-    tooltipEl.classList.add('visible');
-  }
-
-  function hideTooltip() {
-    tooltipEl.classList.remove('visible');
-  }
-
+  // ----- File panel -----
   function createFileEl(name, inode, cls) {
-    var f = el('div', 'tl-file ' + cls);
-    var head = el('div', 'tl-file-head');
-    var fname = el('span', 'tl-fname'); fname.textContent = name;
-    var fmeta = el('span', 'tl-fmeta'); fmeta.textContent = 'inode: ' + inode;
+    const f = el('div', 'tl-file ' + cls);
+    const head = el('div', 'tl-file-head');
+    const fname = el('span', 'tl-fname'); fname.textContent = name;
+    const fmeta = el('span', 'tl-fmeta'); fmeta.textContent = 'inode:\u00A0' + inode;
     head.appendChild(fname); head.appendChild(fmeta);
     f.appendChild(head);
-    var linesWrap = el('div', 'tl-lines');
-    var linesInner = el('div', 'tl-lines-inner');
+    const linesWrap = el('div', 'tl-lines');
+    const linesInner = el('div', 'tl-lines-inner');
     linesWrap.appendChild(linesInner);
     f.appendChild(linesWrap);
-    var cursor = el('div', 'tl-cursor');
+    const cursor = el('div', 'tl-cursor');
+    cursor.textContent = '\u25B6 reading\u2026';
     f.appendChild(cursor);
     return { el: f, linesInner: linesInner, cursor: cursor, fname: fname, fmeta: fmeta };
   }
 
+  function addLine(fileObj, num, text) {
+    const prev = fileObj.linesInner.lastChild;
+    if (prev) prev.className = 'tl-line';
+    const line = el('div', 'tl-line new');
+    const numEl = el('span', 'tl-line-num'); numEl.textContent = '' + num;
+    const textEl = el('span', 'tl-line-text'); textEl.textContent = text;
+    line.appendChild(numEl); line.appendChild(textEl);
+    fileObj.linesInner.appendChild(line);
+    while (fileObj.linesInner.children.length > 22) {
+      fileObj.linesInner.removeChild(fileObj.linesInner.firstChild);
+    }
+  }
+
   function updateStats() {
     statsEl.innerHTML = '';
-    [['Lines read', linesRead, 'green'], ['Offset', offset + ' B', ''], ['Inode', fileInode, ''], ['Phase', phase.replace('-', ' '), phase.indexOf('tailing') >= 0 ? 'green' : '']].forEach(function(item) {
-      var s = el('div', 'tl-stat');
-      var l = el('div', 'tl-stat-label'); l.textContent = item[0];
-      var v = el('div', 'tl-stat-val' + (item[2] ? ' ' + item[2] : '')); v.textContent = '' + item[1];
+    [
+      ['Lines read', sim.linesRead, 'green'],
+      ['Offset', sim.offset + '\u00A0B', ''],
+      ['Inode', sim.fileInode, ''],
+    ].forEach(function (item) {
+      const s = el('div', 'tl-stat');
+      const l = el('div', 'tl-stat-label'); l.textContent = String(item[0]);
+      const v = el('div', 'tl-stat-val' + (item[2] ? ' ' + item[2] : '')); v.textContent = '' + item[1];
       s.appendChild(l); s.appendChild(v); statsEl.appendChild(s);
     });
   }
 
-  function addLine(fileObj, num, text) {
-    var line = el('div', 'tl-line new');
-    var numEl = el('span', 'tl-line-num'); numEl.textContent = '' + num;
-    var textEl = el('span', 'tl-line-text'); textEl.textContent = text;
-    line.appendChild(numEl); line.appendChild(textEl);
-    fileObj.linesInner.appendChild(line);
+  function setButtonState(btn, active) {
+    btn.className = 'tl-btn' + (active ? ' active' : '');
+    btn.setAttribute('aria-pressed', active ? 'true' : 'false');
   }
 
-  function updateProgress() {
-    step++;
-    var pct = Math.min(100, (step / TOTAL_STEPS) * 100);
-    progressFill.style.width = pct + '%';
+  function updateAutoRow() {
+    const pct = Math.min(100, (sim.autoLineCount / AUTO_THRESHOLD) * 100);
+    autoBarFill.style.width = pct + '%';
+    autoBarLabel.textContent = 'auto-rotates at\u00A0' + AUTO_THRESHOLD + '\u00A0lines\u00A0\u00B7\u00A0' + sim.autoLineCount + '/' + AUTO_THRESHOLD;
   }
 
-  // Init
-  showTooltip('<b>Tailing app.log</b> \u2014 logfwd reads new lines as they appear.');
-  mainFile = createFileEl('app.log', fileInode, 'active');
-  containerEl.appendChild(mainFile.el);
-  mainFile.cursor.textContent = '\u25B6 reading...';
-  updateStats();
-
-  function tick() {
-    if (phase === 'tailing') {
-      addLine(mainFile, lineNum, genLine(lineNum));
-      offset += genLine(lineNum).length + 1;
-      lineNum++; linesRead++;
-      mainFile.cursor.textContent = '\u25B6 offset: ' + offset;
-      updateStats();
-      updateProgress();
-
-      if (lineNum > ROTATE_AT) {
-        phase = 'rotating';
-        showTooltip('<b>\u26A0 Log rotation!</b> \u2014 logrotate renames <code>app.log</code> \u2192 <code>app.log.1</code> and creates a new empty file. The inode changes. A naive <code>tail -f</code> would keep reading the old file and miss new data.', 'warn');
-
-        mainFile.el.className = 'tl-file old';
-        mainFile.fname.textContent = 'app.log.1';
-        mainFile.fmeta.textContent = 'inode: ' + fileInode + ' (old)';
-        mainFile.cursor.textContent = '\u25B6 EOF \u2014 drained';
-
-        fileInode = 67890;
-        oldFile = mainFile;
-        mainFile = createFileEl('app.log', fileInode, 'active');
-        containerEl.insertBefore(mainFile.el, oldFile.el);
-        mainFile.cursor.textContent = '\u25B6 new inode ' + fileInode;
-        offset = 0; lineNum = 1;
-        updateStats();
-        updateProgress();
-        timer = setTimeout(tick, 2500);
-        return;
-      }
-      timer = setTimeout(tick, 400);
-
-    } else if (phase === 'rotating') {
-      showTooltip('<b>\u2705 Rotation detected</b> \u2014 logfwd saw inode change from 12345 \u2192 ' + fileInode + '. Drained old file, opened new file at offset 0. <b>No data lost.</b>', 'ok');
-      phase = 'new-tailing';
-      updateStats();
-      updateProgress();
-      timer = setTimeout(tick, 1500);
-
-    } else if (phase === 'new-tailing') {
-      addLine(mainFile, lineNum, genLine(lineNum));
-      offset += genLine(lineNum).length + 1;
-      lineNum++; linesRead++;
-      mainFile.cursor.textContent = '\u25B6 offset: ' + offset;
-      updateStats();
-      updateProgress();
-
-      if (lineNum <= 4) {
-        showTooltip('<b>Tailing new app.log</b> \u2014 Reading from offset 0 on the new inode. Old file is fully drained.', 'ok');
-      } else {
-        hideTooltip();
-      }
-
-      if (lineNum > 6) {
-        phase = 'done';
-        showTooltip('<b>Done!</b> \u2014 logfwd handled rotation seamlessly: drained old file, detected new inode, resumed tailing. <b>' + linesRead + ' lines read, zero lost.</b>', 'ok');
-        timer = setTimeout(function() {
-          // Reset for next loop
-          containerEl.innerHTML = '';
-          hideTooltip();
-          progressFill.style.width = '0%';
-          step = 0;
-          lineNum = 1; offset = 0; linesRead = 0; fileInode = 12345;
-          phase = 'tailing';
-          showTooltip('<b>Tailing app.log</b> \u2014 logfwd reads new lines as they appear.');
-          mainFile = createFileEl('app.log', fileInode, 'active');
-          containerEl.appendChild(mainFile.el);
-          mainFile.cursor.textContent = '\u25B6 reading...';
-          updateStats();
-          timer = setTimeout(tick, 800);
-        }, 5000);
-        return;
-      }
-      timer = setTimeout(tick, 400);
+  // ----- Overlay -----
+  let overlayTimer = null;
+  function dismissOverlay() {
+    if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
+    overlayEl.classList.remove('visible');
+    overlayClose.className = 'tl-overlay-close';
+    if (pendingRemoval) {
+      const toRemove = pendingRemoval; pendingRemoval = null;
+      setTimeout(function () {
+        if (toRemove.el.parentNode) toRemove.el.parentNode.removeChild(toRemove.el);
+        if (oldFile === toRemove) oldFile = null;
+      }, 280);
     }
   }
+  function showOverlay(title, body, level, autoDismissMs) {
+    if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
+    overlayInner.className = 'tl-overlay-inner ' + (level || 'warn');
+    overlayTitle.textContent = title;
+    overlayBody.innerHTML = body;
+    overlayClose.className = 'tl-overlay-close' + (autoDismissMs ? '' : ' shown');
+    void overlayEl.offsetHeight;
+    overlayEl.classList.add('visible');
+    if (autoDismissMs) overlayTimer = setTimeout(dismissOverlay, autoDismissMs);
+  }
+  overlayClose.onclick = dismissOverlay;
 
-  // Respect reduced motion — show final state statically
-  var prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  if (!prefersReducedMotion) {
-    timer = setTimeout(tick, 800);
+  // ----- Rotation -----
+  function triggerRotate(isAuto: boolean) {
+    if (!mainFile) return;
+    const { oldInode, newInode } = sim.rotate();
+    showOverlay(
+      '\u26A0\uFE0F logrotate: rotation detected',
+      '<code>app.log</code> \u2192 <code>app.log.1</code><br>' +
+      'inode\u00A0' + oldInode + '\u00A0\u2192\u00A0' + newInode + '<br>' +
+      'logfwd drains old file, opens new at offset\u00A00. No data lost.',
+      'warn', isAuto ? 3500 : null
+    );
+    mainFile.el.className = 'tl-file old';
+    mainFile.fname.textContent = 'app.log.1';
+    mainFile.fmeta.textContent = 'inode:\u00A0' + oldInode + '\u00A0(old)';
+    mainFile.cursor.textContent = '\u25B6 EOF \u2014 drained';
+    oldFile = mainFile;
+    pendingRemoval = oldFile;
+    mainFile = createFileEl('app.log', newInode, 'active');
+    panelsInner.insertBefore(mainFile.el, oldFile.el);
+    mainFile.cursor.textContent = '\u25B6 new inode\u00A0' + newInode;
+    updateStats(); updateAutoRow();
+  }
+
+  // ----- Ticker -----
+  function tickFn() {
+    if (!playing || !mainFile) return;
+    const { lineNum, lineText, newOffset, autoRotated } = sim.tick();
+    addLine(mainFile, lineNum, lineText);
+    mainFile.cursor.textContent = '\u25B6 offset:\u00A0' + newOffset;
+    updateStats(); updateAutoRow();
+    if (autoRotated) triggerRotate(true);
+  }
+
+  function startTicker() { if (!ticker) ticker = setInterval(tickFn, 700); }
+  function stopTicker()  { if (ticker) { clearInterval(ticker); ticker = null; } }
+
+  // ----- Handlers -----
+  btnPlay.onclick = function () {
+    playing = !playing;
+    if (playing) {
+      btnPlay.textContent = '\u23F8 Pause'; setButtonState(btnPlay, true); startTicker();
+    } else {
+      btnPlay.textContent = '\u25B6 Play'; setButtonState(btnPlay, false); stopTicker();
+    }
+  };
+  rotateBtnEl.onclick = function () { triggerRotate(false); };
+
+  function handleVisibility() {
+    if (document.hidden) stopTicker();
+    else if (playing) startTicker();
+  }
+
+  // ----- Init -----
+  mainFile = createFileEl('app.log', sim.fileInode, 'active');
+  panelsInner.appendChild(mainFile.el);
+  updateStats(); updateAutoRow();
+
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!reducedMotion) {
+    document.addEventListener('visibilitychange', handleVisibility);
+    startTicker();
   } else {
-    // Show a populated static view so users still see the concept
-    for (var rm = 1; rm <= 6; rm++) {
-      addLine(mainFile, rm, genLine(rm));
-      offset += genLine(rm).length + 1;
-      lineNum++; linesRead++;
+    playing = false;
+    btnPlay.textContent = '\u25B6 Play'; setButtonState(btnPlay, false);
+    for (let i = 0; i < 8; i++) {
+      const { lineNum, lineText, newOffset } = sim.tick();
+      addLine(mainFile, lineNum, lineText);
     }
-    mainFile.cursor.textContent = '\u25B6 offset: ' + offset;
-    updateStats();
-    showTooltip('<b>Tailing app.log</b> \u2014 logfwd reads new lines as they appear. Animation paused (reduced motion).', '');
+    mainFile.cursor.textContent = '\u25B6 offset:\u00A0' + sim.offset + '\u00A0(reduced motion)';
+    updateStats(); updateAutoRow();
   }
 
-  // Cleanup
-  document.addEventListener('astro:before-swap', function() {
-    if (timer) { clearTimeout(timer); timer = null; }
+  document.addEventListener('astro:before-swap', function () {
+    document.removeEventListener('visibilitychange', handleVisibility);
+    stopTicker(); dismissOverlay();
   }, { once: true });
-})();
+}
+init();
 </script>
