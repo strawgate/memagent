@@ -12,11 +12,13 @@
 //! Partial lines (flag "P") must be reassembled: concatenate all "P" chunks
 //! until an "F" chunk arrives, then emit the combined line.
 
-/// Parsed CRI log line. References point into the original byte slice (zero-copy).
-use crate::reassembler::{AggregateResult, CriReassembler};
+// Re-export reassembler types so bench/fuzz targets can reach them via
+// `logfwd_core::cri::CriReassembler` and `logfwd_core::cri::AggregateResult`.
+pub use crate::reassembler::{AggregateResult, CriReassembler};
 use alloc::vec::Vec;
+
+/// Parsed CRI log line. References point into the original byte slice (zero-copy).
 #[derive(Debug)]
-/// Parsed CRI log line fields.
 pub struct CriLine<'a> {
     /// The RFC3339Nano timestamp bytes.
     pub timestamp: &'a [u8],

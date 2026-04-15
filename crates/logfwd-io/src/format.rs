@@ -332,13 +332,14 @@ fn write_plain_text_fallback(line: &[u8], plain_text_field_name: &str, out: &mut
 /// Otherwise wraps the plain-text message so no content is lost:
 ///   `{"_timestamp":"<ts>","_stream":"<stream>","<plain_text_field_name>":"<json-escaped msg>"}\n`
 ///
-/// # Safety invariants
+/// # Notes
 ///
-/// `timestamp` and `stream` are inserted without JSON-escaping.  Both are
-/// taken directly from a successfully parsed CRI line: `timestamp` is an
-/// RFC 3339 timestamp (digits, `-`, `T`, `Z`, `:`, `.`) and `stream` is
-/// exactly `"stdout"` or `"stderr"` — neither can contain characters that
-/// require escaping in a JSON string.
+/// `timestamp` is JSON-escaped via [`json_escape_bytes`] so it is safe for
+/// arbitrary byte slices; in practice CRI timestamps are RFC 3339 and contain
+/// no escapable characters, but the escaping is applied defensively.
+///
+/// `stream` is inserted without JSON-escaping because it is always exactly
+/// `b"stdout"` or `b"stderr"` as validated by `parse_cri_line`.
 ///
 /// The `{` guard is a best-effort check identical to the one used by
 /// `write_json_line` in `cri.rs`.  It is not a full JSON validator;
@@ -627,6 +628,24 @@ mod tests {
             &mut out,
         );
         assert_eq!(&out, b"{\"_timestamp\":\"2024-01-15T10:30:00Z\\n\\\"\",\"_stream\":\"stdout\",\"body\":\"hello\"}\n");
+    }
+
+    #[test]
+    fn cri_injects_timestamp_escaped_json_message() {
+        // Regression: when msg is a JSON object, timestamp must still be
+        // JSON-escaped and the object body must be merged correctly.
+        let mut out = Vec::new();
+        inject_cri_metadata(
+            b"{\"level\":\"INFO\",\"msg\":\"ok\"}",
+            b"2024-01-15T10:30:00Z\n\"",
+            b"stdout",
+            "body",
+            &mut out,
+        );
+        assert_eq!(
+            &out,
+            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\\n\\\"\",\"_stream\":\"stdout\",\"level\":\"INFO\",\"msg\":\"ok\"}\n"
+        );
     }
 
     #[test]
