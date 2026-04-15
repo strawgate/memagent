@@ -1,13 +1,14 @@
 //! CSV IP-range geo-IP backend.
 //!
-//! A drop-in replacement for [`super::geo_lookup::MmdbDatabase`] that reads a plain CSV file
+//! A drop-in replacement for [`MmdbDatabase`](crate::udf::geo_lookup::MmdbDatabase)
+//! that reads a plain CSV file
 //! instead of a MaxMind `.mmdb` binary.  Compatible with the free
 //! [DB-IP Lite](https://db-ip.com/db/lite/ip-to-location) exports and any
 //! similar CSV with `ip_range_start` / `ip_range_end` header columns.
 //!
 //! ## CSV column mapping
 //!
-//! | CSV header (case-insensitive) | [`GeoResult`] field |
+//! | CSV header (case-insensitive) | [`GeoResult`](crate::enrichment::GeoResult) field |
 //! |-------------------------------|---------------------|
 //! | `ip_range_start` or `start_ip`| *(range key)*       |
 //! | `ip_range_end`   or `end_ip`  | *(range key)*       |

@@ -25,6 +25,7 @@ pipelines:
       - type: container_info
       - type: k8s_cluster_info
       - type: k8s_path
+        table_name: k8s_path
       - type: kv_file
         table_name: os_release
         path: /etc/os-release

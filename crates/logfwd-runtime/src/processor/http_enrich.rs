@@ -62,9 +62,9 @@ use crate::processor::{Processor, ProcessorError};
 enum LookupResult {
     /// Successful lookup; contains the raw JSON body.
     Hit(String),
-    /// The endpoint returned 404 or an empty/unrecognised response.
+    /// The endpoint returned 204, 404, or an empty/unrecognised response.
     Miss,
-    /// The fetch failed (timeout, network error, non-200/404 status).
+    /// The fetch failed (timeout, network error, non-200/204/404 status).
     Error(String),
 }
 
@@ -258,7 +258,7 @@ impl HttpEnrichProcessor {
                         }
                         Err(e) => LookupResult::Error(format!("body read failed: {e}")),
                     }
-                } else if status == 404 {
+                } else if status == 204 || status == 404 {
                     LookupResult::Miss
                 } else {
                     LookupResult::Error(format!("HTTP {status}"))
@@ -266,8 +266,8 @@ impl HttpEnrichProcessor {
             }
             Err(e) => {
                 // ureq turns 4xx/5xx into StatusCode errors by default.
-                // Classify 404 as a miss.
-                if let ureq::Error::StatusCode(404) = &e {
+                // Classify 204 and 404 as a miss.
+                if let ureq::Error::StatusCode(204 | 404) = &e {
                     LookupResult::Miss
                 } else if let ureq::Error::StatusCode(code) = &e {
                     LookupResult::Error(format!("HTTP {code}"))
