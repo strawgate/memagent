@@ -80,7 +80,7 @@ impl Default for TailConfig {
             max_open_files: 1024,
             per_file_read_budget_bytes: 256 * 1024,
             adaptive_fast_polls_max: 8,
-            follow_symlinks: false,
+            follow_symlinks: true,
             ignore_older_than_secs: None,
             encoding: None,
             multiline: None,

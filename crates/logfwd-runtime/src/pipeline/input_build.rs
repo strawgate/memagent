@@ -179,7 +179,7 @@ pub(super) fn build_input_state(
                     .per_file_read_budget_bytes
                     .unwrap_or(DEFAULT_PER_FILE_READ_BUDGET_BYTES),
                 max_open_files: f.max_open_files.unwrap_or(DEFAULT_MAX_OPEN_FILES),
-                follow_symlinks: f.follow_symlinks.unwrap_or(false),
+                follow_symlinks: f.follow_symlinks.unwrap_or(true),
                 ignore_older_than_secs: f.ignore_older_than_secs,
                 encoding: f.encoding.clone(),
                 multiline: f

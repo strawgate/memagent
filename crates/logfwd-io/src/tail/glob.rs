@@ -160,7 +160,7 @@ mod tests {
 
     #[test]
     fn expand_glob_patterns_empty_patterns_returns_empty() {
-        assert!(expand_glob_patterns(&[], false, None).is_empty());
+        assert!(expand_glob_patterns(&[], true, None).is_empty());
     }
 
     #[test]
@@ -173,7 +173,7 @@ mod tests {
 
         let p1 = format!("{}/**/*.log", dir.path().display());
         let p2 = format!("{}/logs/**/*.log", dir.path().display());
-        let matches = expand_glob_patterns(&[&p1, &p2], false, None);
+        let matches = expand_glob_patterns(&[&p1, &p2], true, None);
 
         assert_eq!(matches, vec![log_file]);
     }
@@ -187,7 +187,7 @@ mod tests {
         fs::write(&log_file, b"line\n").expect("write log");
 
         let valid = format!("{}/**/*.log", dir.path().display());
-        let matches = expand_glob_patterns(&["[", &valid], false, None);
+        let matches = expand_glob_patterns(&["[", &valid], true, None);
         assert_eq!(matches, vec![log_file]);
     }
 
@@ -201,7 +201,7 @@ mod tests {
 
         let bounded = format!("{}/a/*.log", dir.path().display());
         let unbounded = format!("{}/a/**/*.log", dir.path().display());
-        let matches = expand_glob_patterns(&[&bounded, &unbounded], false, None);
+        let matches = expand_glob_patterns(&[&bounded, &unbounded], true, None);
         assert_eq!(matches, vec![deep]);
     }
 
@@ -219,14 +219,14 @@ mod tests {
 
         let p1 = format!("{}/a/*.log", dir.path().display());
         let p2 = format!("{}/a/*/*.log", dir.path().display());
-        let matches = expand_glob_patterns(&[&p1, &p2], false, None);
+        let matches = expand_glob_patterns(&[&p1, &p2], true, None);
 
         assert_eq!(matches, vec![deep, shallow]);
     }
 
     #[test]
     fn expand_glob_patterns_all_invalid_patterns_returns_empty() {
-        let matches = expand_glob_patterns(&[""], false, None);
+        let matches = expand_glob_patterns(&[""], true, None);
         assert!(matches.is_empty());
     }
 
