@@ -2773,7 +2773,6 @@ dependencies = [
  "criterion",
  "datafusion",
  "dhat",
- "fastrand",
  "flate2",
  "glob",
  "globset",
