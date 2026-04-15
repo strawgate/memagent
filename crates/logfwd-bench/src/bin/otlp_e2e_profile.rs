@@ -3,7 +3,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use logfwd_bench::{make_metadata, make_otlp_sink};
+use logfwd_bench::{generators, make_otlp_sink};
 use logfwd_io::input::{InputEvent, InputSource};
 use logfwd_io::otlp_receiver::{OtlpReceiverInput, decode_protobuf_to_batch};
 use logfwd_output::Compression;
@@ -144,7 +144,7 @@ fn run_case(case: &Case, iterations: usize, timeout: Duration, concurrency: usiz
     let mut input = OtlpReceiverInput::new("bench-otlp", "127.0.0.1:0").expect("receiver binds");
     let url = format!("http://{}/v1/logs", input.local_addr());
     let poster = HttpPoster::new(concurrency);
-    let metadata = make_metadata();
+    let metadata = generators::make_metadata();
     let mut totals = Totals::default();
     let mut total_rows = 0usize;
 

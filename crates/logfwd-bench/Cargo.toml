@@ -8,7 +8,6 @@ publish = false
 [features]
 dhat-heap = ["dep:dhat"]
 otlp-profile-alloc = []
-s3 = ["logfwd-io/s3"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
@@ -104,10 +103,6 @@ harness = false
 
 [[bench]]
 name = "transform_overhead"
-harness = false
-
-[[bench]]
-name = "s3_input"
 harness = false
 
 [[bin]]
