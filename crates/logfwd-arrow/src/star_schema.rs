@@ -3486,13 +3486,6 @@ mod str_value_at_tests {
     }
 
     #[test]
-    #[test]
-    fn large_utf8_in_str_from_array() {
-        let arr = LargeStringArray::from(vec![Some("hello large")]);
-        assert_eq!(str_from_array(&arr, 0), "hello large");
-    }
-
-    #[test]
     fn large_utf8() {
         let arr = LargeStringArray::from(vec![Some("hello large")]);
         assert_eq!(str_value_at(&arr, 0), "hello large");
