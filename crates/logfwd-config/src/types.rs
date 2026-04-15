@@ -190,6 +190,16 @@ pub enum GeneratorProfileConfig {
     #[default]
     Logs,
     Record,
+    /// Realistic Envoy edge-proxy access logs.
+    Envoy,
+    /// CRI-formatted Kubernetes container logs.
+    CriK8s,
+    /// Wide structured logs with 20+ fields.
+    Wide,
+    /// Narrow JSON logs with 5 fields.
+    Narrow,
+    /// CloudTrail-like AWS audit log events.
+    CloudTrail,
 }
 
 #[non_exhaustive]
@@ -270,7 +280,7 @@ pub struct GeneratorInputConfig {
     pub attributes: HashMap<String, GeneratorAttributeValueConfig>,
     pub sequence: Option<GeneratorSequenceConfig>,
     pub event_created_unix_nano_field: Option<String>,
-    /// Timestamp configuration for the `logs` profile.
+    /// Timestamp configuration (only applies to the `logs` profile; ignored by other profiles).
     pub timestamp: Option<GeneratorTimestampConfig>,
 }
 

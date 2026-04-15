@@ -11,6 +11,7 @@ pub(crate) fn scan_json(data: Vec<u8>) -> RecordBatch {
         .expect("scan must succeed")
 }
 
+#[allow(dead_code)] // reserved for future generator_tests migration
 pub(crate) fn assert_batch_matches_scanned_json(expected: &RecordBatch, actual: &RecordBatch) {
     assert_eq!(expected.num_rows(), actual.num_rows(), "row count mismatch");
     assert_eq!(

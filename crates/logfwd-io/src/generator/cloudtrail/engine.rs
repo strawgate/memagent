@@ -573,7 +573,7 @@ impl CloudTrailBatchBuilders {
 }
 
 #[derive(Debug, Clone)]
-struct CloudTrailState {
+pub(crate) struct CloudTrailState {
     accounts: Vec<String>,
     principals: Vec<String>,
     roles: Vec<String>,
@@ -590,7 +590,7 @@ struct CloudTrailState {
 }
 
 impl CloudTrailState {
-    fn new(profile: CloudTrailProfile) -> Self {
+    pub(crate) fn new(profile: CloudTrailProfile) -> Self {
         let account_count = profile.account_count.max(1);
         let principal_count = profile.principal_count.max(1);
 
