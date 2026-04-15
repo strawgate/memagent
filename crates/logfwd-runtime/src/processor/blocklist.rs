@@ -15,10 +15,9 @@
 //! This processor is stateless — it adds columns based on a pre-loaded table
 //! without buffering any batches.
 //!
-//! ## Config (not yet wired — call `BlocklistProcessor::new` directly)
+//! ## Config
 //!
 //! ```yaml
-//! # Planned config schema (not yet in PipelineConfig):
 //! processors:
 //!   - type: blocklist
 //!     source_column: client_ip
@@ -139,9 +138,10 @@ impl Processor for BlocklistProcessor {
         let col = match batch.column_by_name(&self.source_column) {
             Some(c) => c,
             None => {
-                // Source column absent — all rows are non-matches.
-                let enriched = append_columns(batch, num_rows, &self.prefix, None)?;
-                return Ok(smallvec![enriched]);
+                return Err(ProcessorError::Permanent(format!(
+                    "blocklist: source column '{}' not found in batch",
+                    self.source_column
+                )));
             }
         };
 
@@ -286,7 +286,10 @@ fn append_pre_built_columns(
     fields.push(Arc::new(Field::new(&match_name, DataType::Boolean, false)));
     fields.push(Arc::new(Field::new(&cat_name, DataType::Utf8, true)));
 
-    let schema = Arc::new(Schema::new(fields));
+    let schema = Arc::new(Schema::new_with_metadata(
+        fields,
+        batch.schema().metadata().clone(),
+    ));
 
     let mut columns: Vec<Arc<dyn Array>> = batch.columns().to_vec();
     columns.push(match_col);
@@ -435,19 +438,15 @@ mod tests {
     }
 
     #[test]
-    fn source_column_absent_all_miss() {
+    fn source_column_absent_returns_error() {
         let mut proc = BlocklistProcessor::from_reader("missing_col", "bl", CSV).unwrap();
         let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Utf8, true)]));
         let arr: StringArray = vec![Some("1.2.3.4")].into_iter().collect();
         let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).unwrap();
-        let out = &proc.process(batch, &meta()).unwrap()[0];
-        let matches = out
-            .column_by_name("bl_match")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<BooleanArray>()
-            .unwrap();
-        assert!(!matches.value(0));
+        let result = proc.process(batch, &meta());
+        assert!(result.is_err());
+        let msg = format!("{}", result.unwrap_err());
+        assert!(msg.contains("source column"), "got: {msg}");
     }
 
     #[test]

@@ -221,7 +221,10 @@ impl HttpEnrichProcessor {
 
     /// Fetch a single key from the HTTP endpoint (blocking I/O).
     fn fetch_key(&self, key: &str) -> LookupResult {
-        let url = self.config.url_template.replace("{key}", &urlencoded(key));
+        let url = self
+            .config
+            .url_template
+            .replace("{key}", &encode_url_key(key));
 
         let result = self.agent.get(&url).call();
 
@@ -242,8 +245,17 @@ impl HttpEnrichProcessor {
                             "response body exceeds {} byte limit",
                             limit
                         )),
-                        Ok(_) if !buf.trim().is_empty() => LookupResult::Hit(buf),
-                        Ok(_) => LookupResult::Miss,
+                        Ok(_) if buf.trim().is_empty() => LookupResult::Miss,
+                        Ok(_) => {
+                            let trimmed = buf.trim_start();
+                            if trimmed.starts_with('{') || trimmed.starts_with('[') {
+                                LookupResult::Hit(buf)
+                            } else {
+                                LookupResult::Error(
+                                    "response is not JSON (expected '{' or '[')".to_owned(),
+                                )
+                            }
+                        }
                         Err(e) => LookupResult::Error(format!("body read failed: {e}")),
                     }
                 } else if status == 404 {
@@ -371,7 +383,10 @@ impl Processor for HttpEnrichProcessor {
                 DataType::Utf8,
                 false,
             )));
-            let schema = Arc::new(Schema::new(fields));
+            let schema = Arc::new(Schema::new_with_metadata(
+                fields,
+                batch.schema().metadata().clone(),
+            ));
             let empty = RecordBatch::new_empty(schema);
             return Ok(smallvec![empty]);
         }
@@ -446,7 +461,10 @@ impl Processor for HttpEnrichProcessor {
             DataType::Utf8,
             false,
         )));
-        let schema = Arc::new(Schema::new(fields));
+        let schema = Arc::new(Schema::new_with_metadata(
+            fields,
+            batch.schema().metadata().clone(),
+        ));
 
         let mut columns: Vec<Arc<dyn arrow::array::Array>> = batch.columns().to_vec();
         columns.push(Arc::new(json_builder.finish()));
@@ -518,7 +536,7 @@ fn extract_strings(
 /// Percent-encode a key for safe URL interpolation.
 ///
 /// Only encodes characters outside `[A-Za-z0-9._~-]` (unreserved per RFC 3986).
-fn urlencoded(s: &str) -> String {
+fn encode_url_key(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '~' | '-') {
@@ -553,16 +571,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn urlencoded_safe_chars_unchanged() {
-        assert_eq!(urlencoded("hello123"), "hello123");
-        assert_eq!(urlencoded("user.name_v2"), "user.name_v2");
+    fn encode_url_key_safe_chars_unchanged() {
+        assert_eq!(encode_url_key("hello123"), "hello123");
+        assert_eq!(encode_url_key("user.name_v2"), "user.name_v2");
     }
 
     #[test]
-    fn urlencoded_encodes_spaces_and_specials() {
-        let encoded = urlencoded("hello world");
+    fn encode_url_key_encodes_spaces_and_specials() {
+        let encoded = encode_url_key("hello world");
         assert!(encoded.contains("%20"));
-        let encoded2 = urlencoded("a/b");
+        let encoded2 = encode_url_key("a/b");
         assert!(encoded2.contains("%2F"));
     }
 
