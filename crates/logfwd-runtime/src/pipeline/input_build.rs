@@ -169,10 +169,9 @@ pub(super) fn build_input_state(
             let path = require_non_empty(name, "file", "path", Some(&f.path))?;
             let format = cfg.format.clone().unwrap_or(Format::Auto);
             let mut tail_config = TailConfig {
-                start_from_end: f
-                    .start_position
-                    .as_ref()
-                    .map_or(false, |pos| matches!(pos, logfwd_config::FileStartPosition::End)),
+                start_from_end: f.start_position.as_ref().map_or(false, |pos| {
+                    matches!(pos, logfwd_config::FileStartPosition::End)
+                }),
                 poll_interval_ms: f.poll_interval_ms.unwrap_or(DEFAULT_FILE_POLL_INTERVAL_MS),
                 read_buf_size: f.read_buf_size.unwrap_or(DEFAULT_READ_BUF_SIZE),
                 per_file_read_budget_bytes: f

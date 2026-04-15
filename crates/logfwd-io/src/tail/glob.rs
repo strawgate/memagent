@@ -66,7 +66,11 @@ pub(super) fn glob_max_depth(pattern: &str) -> Option<usize> {
 ///
 /// Patterns that match no files are silently skipped. Errors from directory
 /// traversal (e.g., permission denied) are also skipped.
-pub(super) fn expand_glob_patterns(patterns: &[&str], follow_symlinks: bool, ignore_older_than_secs: Option<u64>) -> Vec<PathBuf> {
+pub(super) fn expand_glob_patterns(
+    patterns: &[&str],
+    follow_symlinks: bool,
+    ignore_older_than_secs: Option<u64>,
+) -> Vec<PathBuf> {
     if patterns.is_empty() {
         return Vec::new();
     }

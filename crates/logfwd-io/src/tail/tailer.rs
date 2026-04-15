@@ -208,7 +208,11 @@ impl FileTailer {
         config: TailConfig,
         stats: std::sync::Arc<ComponentStats>,
     ) -> io::Result<Self> {
-        let initial_paths: Vec<PathBuf> = expand_glob_patterns(patterns, config.follow_symlinks, config.ignore_older_than_secs);
+        let initial_paths: Vec<PathBuf> = expand_glob_patterns(
+            patterns,
+            config.follow_symlinks,
+            config.ignore_older_than_secs,
+        );
 
         if initial_paths.is_empty() {
             for pattern in patterns {

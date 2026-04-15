@@ -492,7 +492,6 @@ pub struct FileTypeConfig {
     pub multiline: Option<MultilineConfig>,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum FileStartPosition {

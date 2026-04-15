@@ -18,16 +18,16 @@ mod validate;
 pub(crate) use env::expand_env_vars;
 pub use types::{
     ArrowIpcTypeConfig, AuthConfig, Config, ConfigError, ContainerInfoConfig, CsvEnrichmentConfig,
-    EnrichmentConfig, EnvVarsEnrichmentConfig, FileTypeConfig, FileStartPosition, MultilineConfig, MultilineMatchMode, Format,
+    EnrichmentConfig, EnvVarsEnrichmentConfig, FileStartPosition, FileTypeConfig, Format,
     GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorInputConfig,
     GeneratorProfileConfig, GeneratorSequenceConfig, GeneratorTypeConfig, GeoDatabaseConfig,
     GeoDatabaseFormat, HostInfoConfig, HostMetricsInputConfig, HttpInputConfig, HttpMethodConfig,
     HttpTypeConfig, InputConfig, InputType, InputTypeConfig, JournaldBackendConfig,
     JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sClusterInfoConfig,
-    K8sPathConfig, KvFileEnrichmentConfig, NetworkInfoConfig, OtlpProtobufDecodeModeConfig,
-    OtlpTypeConfig, OutputConfig, OutputType, PipelineConfig, ProcessInfoConfig, SensorTypeConfig,
-    ServerConfig, StaticEnrichmentConfig, StorageConfig, TcpTypeConfig, TlsInputConfig,
-    UdpTypeConfig,
+    K8sPathConfig, KvFileEnrichmentConfig, MultilineConfig, MultilineMatchMode, NetworkInfoConfig,
+    OtlpProtobufDecodeModeConfig, OtlpTypeConfig, OutputConfig, OutputType, PipelineConfig,
+    ProcessInfoConfig, SensorTypeConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig,
+    TcpTypeConfig, TlsInputConfig, UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 
