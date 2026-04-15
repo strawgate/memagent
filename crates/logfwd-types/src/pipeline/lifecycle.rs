@@ -1311,6 +1311,7 @@ mod verification {
 mod proptests {
     use super::*;
     use proptest::prelude::*;
+    use proptest::test_runner::Config as ProptestConfig;
 
     #[derive(Debug, Clone)]
     enum Action {
@@ -1330,6 +1331,10 @@ mod proptests {
     }
 
     proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            .. ProptestConfig::default()
+        })]
         /// Random event sequences: in-flight count is always consistent.
         #[test]
         fn in_flight_consistent(actions in proptest::collection::vec(action_strategy(), 1..50)) {

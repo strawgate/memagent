@@ -8,10 +8,15 @@ publish = false
 [lib]
 doctest = false
 
+[features]
+default = []
+otlp-research = []
+
 [dependencies]
 serde = { workspace = true }
 serde_yaml_ng = "0.10"
 thiserror = { workspace = true }
+url = { workspace = true }
 
 [lints]
 workspace = true

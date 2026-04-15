@@ -3,6 +3,7 @@
 # KIND e2e test for logfwd.
 # Validates the full pipeline: file tail → CRI parse → SQL transform → HTTP output.
 #
+# shellcheck disable=SC2329
 set -euo pipefail
 
 CLUSTER_NAME="${E2E_CLUSTER_NAME:-logfwd-e2e}"
@@ -19,9 +20,18 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NO_DESTROY="${NO_DESTROY:-}"
 PF_PID=""
 CLUSTER_CREATED=0
+LOG_GENERATOR_MARKER='log-generator: all 10 markers emitted'
+DEPLOY_TIMEOUT="${E2E_DEPLOY_TIMEOUT:-120s}"
 
 k() {
     kubectl --context "$KUBE_CONTEXT" "$@"
+}
+
+fail() {
+    local token="$1"
+    shift
+    echo "E2E_FAIL_CATEGORY=$token"
+    echo "FAIL[$token]: $*"
 }
 
 # Poll a condition with backoff. Usage: wait_for <description> <timeout_s> <command...>
@@ -36,8 +46,21 @@ wait_for() {
         sleep "$delay"
         delay=$(( delay < 5 ? delay + 1 : 5 ))
     done
+    if "$@" 2>/dev/null; then
+        return 0
+    fi
     echo "FAIL: timed out waiting for: $desc (${timeout}s)"
     return 1
+}
+
+log_generator_is_running() {
+    local phase
+    phase="$(k get pod -n "$NAMESPACE" log-generator -o jsonpath='{.status.phase}' 2>/dev/null || true)"
+    [ "$phase" = "Running" ]
+}
+
+log_generator_markers_emitted() {
+    k logs -n "$NAMESPACE" log-generator --tail=40 2>/dev/null | grep -q "$LOG_GENERATOR_MARKER"
 }
 
 cleanup() {
@@ -79,16 +102,16 @@ k apply -n "$NAMESPACE" -f "$SCRIPT_DIR/manifests/logfwd-daemonset.yaml"
 
 echo "=== Phase 4: Wait for readiness ==="
 if ! k wait -n "$NAMESPACE" deployment/blackhole-receiver \
-    --for=condition=available --timeout=90s; then
+    --for=condition=available --timeout="$DEPLOY_TIMEOUT"; then
     echo ""
-    echo "FAIL: blackhole-receiver deployment not available"
+    fail "RECEIVER_NOT_READY" "blackhole-receiver deployment not available"
     k describe pods -n "$NAMESPACE" -l app=blackhole-receiver 2>&1 || true
     k logs -n "$NAMESPACE" -l app=blackhole-receiver --tail=50 2>&1 || true
     exit 1
 fi
-if ! k rollout status -n "$NAMESPACE" daemonset/logfwd --timeout=90s; then
+if ! k rollout status -n "$NAMESPACE" daemonset/logfwd --timeout="$DEPLOY_TIMEOUT"; then
     echo ""
-    echo "FAIL: logfwd daemonset rollout timed out"
+    fail "LOGFWD_ROLLOUT_TIMEOUT" "logfwd daemonset rollout timed out"
     k get pods -n "$NAMESPACE" -l app=logfwd -o wide 2>&1 || true
     k describe pods -n "$NAMESPACE" -l app=logfwd 2>&1 || true
     k logs -n "$NAMESPACE" -l app=logfwd --tail=80 2>&1 || true
@@ -100,15 +123,25 @@ echo "=== Phase 5: Generate logs ==="
 k delete pod -n "$NAMESPACE" log-generator --ignore-not-found 2>/dev/null
 k apply -n "$NAMESPACE" -f "$SCRIPT_DIR/manifests/log-generator.yaml"
 
-# Wait for the generator pod to be Running instead of hardcoded sleep.
-# The condition must be a single command whose exit code wait_for can observe;
-# pipes and redirects are interpreted by the outer shell, so wrap in sh -c.
-pod_is_running() {
-    local phase
-    phase=$(k get pod -n "$NAMESPACE" log-generator -o jsonpath='{.status.phase}' 2>/dev/null)
-    [ "$phase" = "Running" ]
-}
-wait_for "log-generator pod running" 30 pod_is_running
+# Strictly gate marker emission before verification. This prevents races where
+# the verify loop starts before the generator has actually emitted the marker set.
+if ! wait_for "log-generator pod running" 45 log_generator_is_running; then
+    echo ""
+    fail "GENERATOR_NOT_RUNNING" "log-generator pod never reached Running"
+    k get pod -n "$NAMESPACE" log-generator -o wide 2>&1 || true
+    k describe pod -n "$NAMESPACE" log-generator 2>&1 || true
+    k logs -n "$NAMESPACE" log-generator --tail=40 2>&1 || true
+    exit 1
+fi
+
+if ! wait_for "log-generator marker emission" 60 log_generator_markers_emitted; then
+    echo ""
+    fail "GENERATOR_MARKERS_MISSING" "log-generator never emitted the final marker batch"
+    k get pod -n "$NAMESPACE" log-generator -o wide 2>&1 || true
+    k describe pod -n "$NAMESPACE" log-generator 2>&1 || true
+    k logs -n "$NAMESPACE" log-generator --tail=80 2>&1 || true
+    exit 1
+fi
 
 # Brief extra pause for CRI log path to stabilize after container start.
 wait_for "log-generator CRI path available" 30 \
@@ -119,8 +152,14 @@ k port-forward -n "$NAMESPACE" svc/blackhole-receiver 14318:4318 &
 PF_PID=$!
 
 # Wait for port-forward to accept connections instead of hardcoded sleep.
-wait_for "port-forward accepting connections" 15 \
-    curl --connect-timeout 1 --max-time 1 -sf http://localhost:14318/stats
+if ! wait_for "port-forward accepting connections" 15 \
+    curl --connect-timeout 1 --max-time 1 -sf http://localhost:14318/stats; then
+    echo ""
+    fail "PORT_FORWARD_NOT_READY" "port-forward did not start serving /stats in time"
+    k get pods -n "$NAMESPACE" -l app=blackhole-receiver -o wide 2>&1 || true
+    k logs -n "$NAMESPACE" -l app=blackhole-receiver --tail=50 2>&1 || true
+    exit 1
+fi
 
 echo "=== Phase 7: Verify ==="
 DEADLINE=$((SECONDS + TIMEOUT))
@@ -128,7 +167,7 @@ DELAY=2
 while [ $SECONDS -lt $DEADLINE ]; do
     if ! kill -0 "$PF_PID" 2>/dev/null; then
         echo ""
-        echo "FAIL: port-forward exited during verification (pid=$PF_PID)"
+        fail "PORT_FORWARD_DROPPED" "port-forward exited during verification (pid=$PF_PID)"
         k get pods -n "$NAMESPACE" -l app=blackhole-receiver -o wide 2>&1 || true
         exit 1
     fi
@@ -145,7 +184,7 @@ while [ $SECONDS -lt $DEADLINE ]; do
         exit 0
     elif [ "$LINES" -gt "$MAX_EXPECTED_LINES" ]; then
         echo ""
-        echo "FAIL: blackhole received $LINES lines (> max expected $MAX_EXPECTED_LINES)"
+        fail "TOO_MANY_LINES" "blackhole received $LINES lines (> max expected $MAX_EXPECTED_LINES)"
         echo "--- logfwd logs ---"
         k logs -n "$NAMESPACE" -l app=logfwd --tail=40 2>&1 || true
         exit 1
@@ -155,7 +194,7 @@ while [ $SECONDS -lt $DEADLINE ]; do
 done
 
 echo ""
-echo "FAIL: timed out after ${TIMEOUT}s — blackhole received $LINES lines, expected ${MIN_EXPECTED_LINES}..${MAX_EXPECTED_LINES}"
+fail "VERIFY_TIMEOUT" "timed out after ${TIMEOUT}s — blackhole received $LINES lines, expected ${MIN_EXPECTED_LINES}..${MAX_EXPECTED_LINES}"
 echo ""
 echo "--- logfwd DaemonSet logs ---"
 k logs -n "$NAMESPACE" -l app=logfwd --tail=80 2>&1 || true

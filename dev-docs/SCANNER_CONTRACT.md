@@ -63,13 +63,16 @@ Each JSON field `<name>` produces columns based on observed types:
 | Integer (only)  | `<name>`    | `Int64`     |
 | Float (only)    | `<name>`    | `Float64`   |
 | String (only)   | `<name>`    | `Utf8` / `Utf8View` |
+| Boolean (only)  | `<name>`    | `Boolean` |
 
 **Multiple types (conflict):** a single `StructArray` column with typed children.
 
 | Observed types  | Column name | Arrow type  |
 |-----------------|-------------|-------------|
 | Integer + String | `<name>`   | `Struct { int: Int64, str: Utf8View }` |
+| Boolean + String | `<name>`   | `Struct { bool: Boolean, str: Utf8View }` |
 | All three       | `<name>`   | `Struct { int: Int64, float: Float64, str: Utf8View }` |
+| All four        | `<name>`   | `Struct { int: Int64, float: Float64, bool: Boolean, str: Utf8View }` |
 
 Conflict structs are detected by `is_conflict_struct()` (child fields named
 from `{"int", "float", "str", "bool"}`). They only appear when a field has
@@ -77,9 +80,9 @@ multiple types across rows within the same batch.
 
 | Special column  | Description       | Arrow type  |
 |-----------------|-------------------|-------------|
-| `_raw`          | Original raw line | `Utf8`      |
+| `body` (default) | Original raw line | `Utf8` / `Utf8View` |
 
-The `_raw` column is only present when `ScanConfig::keep_raw = true`.
+The line-capture column is only present when `ScanConfig::line_field_name` is set.
 
 ### Nullability
 
@@ -121,9 +124,20 @@ fields.
   stored as `Float64`.
 - A value without either is first tried as `Int64` via `parse_int_fast`.  On
   overflow (value does not fit in `i64`) it falls back to `Float64`.
-- `true` and `false` are stored as the strings `"true"` / `"false"` in a
-  `_str` column.
+- `true` and `false` are stored in a native `Boolean` column for boolean-only
+  fields, or in the `bool: Boolean` child of conflict structs for mixed-type
+  fields.
 - `null` JSON values produce a null entry in the appropriate column.
+
+### String escape decoding
+
+JSON escape sequences in string values (`\"`, `\\`, `\/`, `\b`, `\f`, `\n`,
+`\r`, `\t`, `\uXXXX`) are decoded to their UTF-8 representation during
+extraction.  This prevents double-escaping when values are re-serialized
+downstream (see issue #410).
+
+The `body` line-capture column is **not** decoded — it stores the original raw
+line verbatim.
 
 ### Batch reuse
 
@@ -144,8 +158,5 @@ carried over.
   beyond will not be detected and may silently produce incorrect data.
 - **`StreamingBuilder` offsets are `u32`** — buffers larger than 4 GB are
   unsupported.
-- **No escape decoding of string values** — string values are stored as
-  raw bytes (including any JSON escape sequences such as `\n`, `\uXXXX`).
-  Callers that need decoded strings must unescape them.
-- **`_raw` column** — `keep_raw = true` is supported by both `scan()` and
+- **`body` column** — setting `line_field_name` is supported by both `scan()` and
   `scan_detached()` modes.

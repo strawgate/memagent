@@ -3,17 +3,25 @@
 //! Each test spins up a real receiver, sends data over the network, and
 //! verifies the data arrives through the `InputSource::poll()` interface.
 
+use arrow::array::Array;
 use std::io::Write;
 use std::net::{TcpStream, UdpSocket};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::thread;
 use std::time::Duration;
 
+use crate::support::http::loopback_client;
 use logfwd_io::{
+    format::FormatDecoder,
+    framed::FramedInput,
+    http_input::HttpInput,
     input::{InputEvent, InputSource},
     otlp_receiver::OtlpReceiverInput,
     tcp_input::TcpInput,
     udp_input::UdpInput,
 };
+use logfwd_types::diagnostics::ComponentStats;
 
 /// Poll `input` with exponential backoff until at least one byte of data
 /// arrives or `timeout` elapses.  Returns all collected bytes.
@@ -75,13 +83,99 @@ where
     all
 }
 
+/// Poll `input` for Arrow batch events until at least one batch arrives or
+/// `timeout` elapses.  Returns all collected batches.
+fn poll_until_batches(
+    input: &mut dyn InputSource,
+    timeout: Duration,
+) -> Vec<arrow::record_batch::RecordBatch> {
+    let deadline = std::time::Instant::now() + timeout;
+    let mut backoff = Duration::from_millis(5);
+    let max_backoff = Duration::from_millis(200);
+    let mut batches = Vec::new();
+
+    while std::time::Instant::now() < deadline {
+        for event in input.poll().unwrap() {
+            if let InputEvent::Batch { batch, .. } = event {
+                batches.push(batch);
+            }
+        }
+        if !batches.is_empty() {
+            thread::sleep(backoff);
+            for event in input.poll().unwrap() {
+                if let InputEvent::Batch { batch, .. } = event {
+                    batches.push(batch);
+                }
+            }
+            return batches;
+        }
+        thread::sleep(backoff);
+        backoff = (backoff * 2).min(max_backoff);
+    }
+    batches
+}
+
+/// Like `poll_until_batches` but keeps polling until `predicate` is satisfied
+/// or `timeout` elapses.
+fn poll_batches_until<F>(
+    input: &mut dyn InputSource,
+    timeout: Duration,
+    predicate: F,
+) -> Vec<arrow::record_batch::RecordBatch>
+where
+    F: Fn(&[arrow::record_batch::RecordBatch]) -> bool,
+{
+    let deadline = std::time::Instant::now() + timeout;
+    let mut backoff = Duration::from_millis(5);
+    let max_backoff = Duration::from_millis(200);
+    let mut batches = Vec::new();
+
+    while std::time::Instant::now() < deadline {
+        for event in input.poll().unwrap() {
+            if let InputEvent::Batch { batch, .. } = event {
+                batches.push(batch);
+            }
+        }
+        if predicate(&batches) {
+            return batches;
+        }
+        thread::sleep(backoff);
+        backoff = (backoff * 2).min(max_backoff);
+    }
+    batches
+}
+
+/// Helper: extract all string values from a column across batches.
+fn collect_string_column(
+    batches: &[arrow::record_batch::RecordBatch],
+    column_name: &str,
+) -> Vec<String> {
+    use arrow::array::StringArray;
+    let mut values = Vec::new();
+    for batch in batches {
+        if let Some(col) = batch.column_by_name(column_name) {
+            let arr = col
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .expect("expected StringArray");
+            for i in 0..arr.len() {
+                if !arr.is_null(i) {
+                    values.push(arr.value(i).to_string());
+                }
+            }
+        }
+    }
+    values
+}
+
 // ---------------------------------------------------------------------------
 // TCP tests
 // ---------------------------------------------------------------------------
 
 #[test]
 fn tcp_single_line() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+    let stats = Arc::new(ComponentStats::new());
+    let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::clone(&stats)).unwrap();
     let addr = input.local_addr().unwrap();
 
     let mut client = TcpStream::connect(addr).unwrap();
@@ -94,11 +188,13 @@ fn tcp_single_line() {
         text.contains("{\"msg\":\"hello\"}"),
         "expected JSON line, got: {text}"
     );
+    assert_eq!(stats.tcp_accepted.load(Ordering::Relaxed), 1);
+    assert_eq!(stats.tcp_active.load(Ordering::Relaxed), 1);
 }
 
 #[test]
 fn tcp_multiple_lines() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+    let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
 
     let mut client = TcpStream::connect(addr).unwrap();
@@ -124,7 +220,7 @@ fn tcp_multiple_lines() {
 
 #[test]
 fn tcp_partial_line_across_reads() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+    let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
 
     let mut client = TcpStream::connect(addr).unwrap();
@@ -148,7 +244,7 @@ fn tcp_partial_line_across_reads() {
 
 #[test]
 fn tcp_multiple_clients() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+    let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
 
     let handles: Vec<_> = (0..3)
@@ -186,7 +282,7 @@ fn tcp_multiple_clients() {
 
 #[test]
 fn tcp_client_disconnect_mid_stream() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+    let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
 
     {
@@ -219,7 +315,7 @@ fn tcp_client_disconnect_mid_stream() {
 
 #[test]
 fn tcp_partial_line_disconnect_emits_eof() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+    let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
 
     {
@@ -257,7 +353,7 @@ fn tcp_partial_line_disconnect_emits_eof() {
 
 #[test]
 fn tcp_large_message() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+    let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
 
     // Build a 64 KB JSON line.
@@ -280,8 +376,31 @@ fn tcp_large_message() {
 }
 
 #[test]
+fn tcp_rfc6587_octet_counting_prevents_newline_injection_split() {
+    let tcp = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
+    let addr = tcp.local_addr().unwrap();
+    let stats = Arc::new(ComponentStats::new());
+    let mut input = FramedInput::new(
+        Box::new(tcp),
+        FormatDecoder::passthrough(Arc::clone(&stats)),
+        stats,
+    );
+
+    let payload = b"{\"msg\":\"hello\nFORGED\"}";
+    let mut wire = format!("{} ", payload.len()).into_bytes();
+    wire.extend_from_slice(payload);
+
+    let mut client = TcpStream::connect(addr).unwrap();
+    client.write_all(&wire).unwrap();
+    client.flush().unwrap();
+
+    let data = poll_until_data(&mut input, Duration::from_secs(5));
+    assert_eq!(data, [payload.as_slice(), b"\n"].concat());
+}
+
+#[test]
 fn tcp_rapid_connect_disconnect() {
-    let mut input = TcpInput::new("test", "127.0.0.1:0").unwrap();
+    let mut input = TcpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
 
     // Rapidly connect and disconnect 50 times.
@@ -315,7 +434,8 @@ fn tcp_rapid_connect_disconnect() {
 
 #[test]
 fn udp_single_datagram() {
-    let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+    let stats = Arc::new(ComponentStats::new());
+    let mut input = UdpInput::new("test", "127.0.0.1:0", Arc::clone(&stats)).unwrap();
     let addr = input.local_addr().unwrap();
 
     let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -327,11 +447,13 @@ fn udp_single_datagram() {
         text.contains("{\"msg\":\"hello\"}"),
         "expected datagram content, got: {text}"
     );
+    assert!(stats.udp_recv_buf.load(Ordering::Relaxed) > 0);
+    assert_eq!(stats.udp_drops.load(Ordering::Relaxed), 0);
 }
 
 #[test]
 fn udp_multiple_datagrams() {
-    let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+    let mut input = UdpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
 
     let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -364,7 +486,7 @@ fn udp_multiple_datagrams() {
 
 #[test]
 fn udp_max_size_datagram() {
-    let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+    let mut input = UdpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
 
     // 65507 is the max UDP payload: 65535 - 20 (IP) - 8 (UDP).
@@ -402,7 +524,7 @@ fn udp_max_size_datagram() {
 
 #[test]
 fn udp_no_trailing_newline() {
-    let mut input = UdpInput::new("test", "127.0.0.1:0").unwrap();
+    let mut input = UdpInput::new("test", "127.0.0.1:0", Arc::new(ComponentStats::new())).unwrap();
     let addr = input.local_addr().unwrap();
 
     let sender = UdpSocket::bind("127.0.0.1:0").unwrap();
@@ -419,6 +541,46 @@ fn udp_no_trailing_newline() {
         text.contains("no newline here"),
         "expected payload content, got: {text}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// HTTP tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn http_ndjson_roundtrip() {
+    let mut input = HttpInput::new("test", "127.0.0.1:0", Some("/ingest")).unwrap();
+    let addr = input.local_addr();
+    let url = format!("http://{addr}/ingest");
+
+    let resp = loopback_client()
+        .post(&url)
+        .header("Content-Type", "application/x-ndjson")
+        .send(b"{\"seq\":1}\n{\"seq\":2}\n")
+        .expect("HTTP POST should succeed");
+    assert_eq!(resp.status(), 200);
+
+    let data = poll_until(&mut input, Duration::from_secs(5), |d| {
+        let t = String::from_utf8_lossy(d);
+        t.contains("\"seq\":1") && t.contains("\"seq\":2")
+    });
+    let text = String::from_utf8_lossy(&data);
+    assert!(text.contains("\"seq\":1"), "missing seq 1 in: {text}");
+    assert!(text.contains("\"seq\":2"), "missing seq 2 in: {text}");
+}
+
+#[test]
+fn http_wrong_path_rejected() {
+    let input = HttpInput::new("test", "127.0.0.1:0", Some("/ingest")).unwrap();
+    let addr = input.local_addr();
+    let url = format!("http://{addr}/wrong");
+
+    let status = match loopback_client().post(&url).send(b"{\"x\":1}\n") {
+        Ok(resp) => resp.status().as_u16(),
+        Err(ureq::Error::StatusCode(code)) => code,
+        Err(err) => panic!("unexpected request failure: {err}"),
+    };
+    assert_eq!(status, 404, "wrong path should return 404");
 }
 
 // ---------------------------------------------------------------------------
@@ -465,27 +627,106 @@ fn otlp_protobuf_roundtrip() {
     let body = request.encode_to_vec();
 
     // POST the protobuf to the OTLP endpoint.
-    let resp = ureq::post(&url)
+    let resp = loopback_client()
+        .post(&url)
         .header("Content-Type", "application/x-protobuf")
         .send(&body)
         .expect("OTLP POST should succeed");
     assert_eq!(resp.status(), 200);
 
-    // Poll for the decoded JSON lines.
-    let data = poll_until_data(&mut input, Duration::from_secs(5));
-    let text = String::from_utf8_lossy(&data);
+    // Poll for the decoded batches.
+    let batches = poll_until_batches(&mut input, Duration::from_secs(5));
+    assert!(!batches.is_empty(), "expected at least one batch");
+    let total_rows: usize = batches
+        .iter()
+        .map(arrow::record_batch::RecordBatch::num_rows)
+        .sum();
+    assert_eq!(total_rows, 1, "expected exactly one row");
 
+    let severities = collect_string_column(&batches, logfwd_types::field_names::SEVERITY);
     assert!(
-        text.contains("\"level\":\"INFO\""),
-        "expected level field, got: {text}"
+        severities.contains(&"INFO".to_string()),
+        "expected severity INFO, got: {severities:?}"
     );
+    let bodies = collect_string_column(&batches, logfwd_types::field_names::BODY);
     assert!(
-        text.contains("\"message\":\"test message\""),
-        "expected message field, got: {text}"
+        bodies.contains(&"test message".to_string()),
+        "expected body 'test message', got: {bodies:?}"
     );
+    let envs = collect_string_column(&batches, "env");
     assert!(
-        text.contains("\"env\":\"prod\""),
-        "expected env attribute, got: {text}"
+        envs.contains(&"prod".to_string()),
+        "expected env 'prod', got: {envs:?}"
+    );
+}
+
+#[test]
+fn otlp_gzip_protobuf_roundtrip() {
+    use opentelemetry_proto::tonic::{
+        collector::logs::v1::ExportLogsServiceRequest,
+        common::v1::{AnyValue, KeyValue, any_value::Value},
+        logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
+    };
+    use prost::Message;
+    use std::io::Write as _;
+
+    let mut input = OtlpReceiverInput::new("test", "127.0.0.1:0").unwrap();
+    let addr = input.local_addr();
+    let url = format!("http://{addr}/v1/logs");
+
+    let request = ExportLogsServiceRequest {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![LogRecord {
+                    time_unix_nano: 1_700_000_000_000_000_000,
+                    severity_text: "INFO".into(),
+                    body: Some(AnyValue {
+                        value: Some(Value::StringValue("test gzip".into())),
+                    }),
+                    attributes: vec![KeyValue {
+                        key: "env".into(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("prod".into())),
+                        }),
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+
+    let body = request.encode_to_vec();
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    encoder.write_all(&body).expect("gzip write");
+    let gzipped = encoder.finish().expect("gzip finish");
+
+    let resp = loopback_client()
+        .post(&url)
+        .header("Content-Type", "application/x-protobuf")
+        .header("Content-Encoding", "gzip")
+        .send(&gzipped)
+        .expect("OTLP POST should succeed");
+    assert_eq!(resp.status(), 200);
+
+    let batches = poll_until_batches(&mut input, Duration::from_secs(5));
+    assert!(!batches.is_empty(), "expected at least one batch");
+
+    let severities = collect_string_column(&batches, logfwd_types::field_names::SEVERITY);
+    assert!(
+        severities.contains(&"INFO".to_string()),
+        "expected severity INFO, got: {severities:?}"
+    );
+    let bodies = collect_string_column(&batches, logfwd_types::field_names::BODY);
+    assert!(
+        bodies.contains(&"test gzip".to_string()),
+        "expected body 'test gzip', got: {bodies:?}"
+    );
+    let envs = collect_string_column(&batches, "env");
+    assert!(
+        envs.contains(&"prod".to_string()),
+        "expected env 'prod', got: {envs:?}"
     );
 }
 
@@ -498,7 +739,8 @@ fn otlp_oversized_body() {
     // Build a body larger than 10 MB.
     let oversized = vec![0u8; 11 * 1024 * 1024];
 
-    let result = ureq::post(&url)
+    let result = loopback_client()
+        .post(&url)
         .header("Content-Type", "application/x-protobuf")
         .send(&oversized);
 
@@ -539,7 +781,8 @@ fn otlp_wrong_content_type() {
     let body = request.encode_to_vec();
 
     // text/plain is not JSON, so the receiver should try protobuf decode (the default).
-    let resp = ureq::post(&url)
+    let resp = loopback_client()
+        .post(&url)
         .header("Content-Type", "text/plain")
         .send(&body)
         .expect("POST should succeed");
@@ -551,11 +794,12 @@ fn otlp_wrong_content_type() {
     );
 
     // Data should have been decoded successfully via protobuf path.
-    let data = poll_until_data(&mut input, Duration::from_secs(5));
-    let text = String::from_utf8_lossy(&data);
+    let batches = poll_until_batches(&mut input, Duration::from_secs(5));
+    assert!(!batches.is_empty(), "expected at least one batch");
+    let severities = collect_string_column(&batches, logfwd_types::field_names::SEVERITY);
     assert!(
-        text.contains("\"level\":\"WARN\""),
-        "expected decoded log record, got: {text}"
+        severities.contains(&"WARN".to_string()),
+        "expected severity WARN, got: {severities:?}"
     );
 }
 
@@ -592,7 +836,8 @@ fn otlp_concurrent_requests() {
                     }],
                 };
                 let body = request.encode_to_vec();
-                let resp = ureq::post(&url)
+                let resp = loopback_client()
+                    .post(&url)
                     .header("Content-Type", "application/x-protobuf")
                     .send(&body)
                     .expect("concurrent POST should succeed");
@@ -605,18 +850,24 @@ fn otlp_concurrent_requests() {
         h.join().unwrap();
     }
 
-    // Poll for all the decoded JSON lines.
-    let data = poll_until(&mut input, Duration::from_secs(5), |d| {
-        let t = String::from_utf8_lossy(d);
-        (0..10).all(|i| t.contains(&format!("concurrent-{i}")))
+    // Poll for all the decoded batches.
+    let batches = poll_batches_until(&mut input, Duration::from_secs(5), |bs| {
+        let bodies = collect_string_column(bs, logfwd_types::field_names::BODY);
+        (0..10).all(|i| {
+            bodies
+                .iter()
+                .any(|b| b.contains(&format!("concurrent-{i}")))
+        })
     });
-    let text = String::from_utf8_lossy(&data);
+    let bodies = collect_string_column(&batches, logfwd_types::field_names::BODY);
 
     // Verify all 10 concurrent messages arrived.
     for i in 0..10 {
         assert!(
-            text.contains(&format!("concurrent-{i}")),
-            "missing concurrent-{i} in: {text}"
+            bodies
+                .iter()
+                .any(|b| b.contains(&format!("concurrent-{i}"))),
+            "missing concurrent-{i} in: {bodies:?}"
         );
     }
 }

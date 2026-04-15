@@ -18,15 +18,15 @@ use logfwd_types::diagnostics::ComponentStats;
 
 use super::sink::{SendResult, Sink, SinkFactory};
 use super::{BatchMetadata, Compression};
+use crate::http_classify::{DEFAULT_RETRY_AFTER_SECS, parse_retry_after};
+use flate2::Compression as GzLevel;
+use flate2::write::GzEncoder;
+use std::io::Write;
 
 /// Content-Type for uncompressed Arrow IPC stream.
 const CONTENT_TYPE_ARROW: &str = "application/vnd.apache.arrow.stream";
 /// Content-Type for zstd-compressed Arrow IPC stream.
 const CONTENT_TYPE_ARROW_ZSTD: &str = "application/vnd.apache.arrow.stream+zstd";
-
-/// Default retry-after duration when the server returns 429 without a
-/// Retry-After header.
-const DEFAULT_RETRY_AFTER_SECS: u64 = 5;
 
 // ---------------------------------------------------------------------------
 // ArrowIpcSink
@@ -104,7 +104,12 @@ impl ArrowIpcSink {
     fn maybe_compress(&self) -> io::Result<Vec<u8>> {
         match self.config.compression {
             Compression::Zstd => zstd::bulk::compress(&self.ipc_buf, 1).map_err(io::Error::other),
-            Compression::None | Compression::Gzip => Ok(self.ipc_buf.clone()),
+            Compression::Gzip => {
+                let mut encoder = GzEncoder::new(Vec::new(), GzLevel::default());
+                encoder.write_all(&self.ipc_buf)?;
+                encoder.finish()
+            }
+            Compression::None => Ok(self.ipc_buf.clone()),
         }
     }
 
@@ -125,6 +130,8 @@ impl ArrowIpcSink {
 
         if self.config.compression == Compression::Zstd {
             req = req.header("Content-Encoding", "zstd");
+        } else if self.config.compression == Compression::Gzip {
+            req = req.header("Content-Encoding", "gzip");
         }
 
         for (k, v) in &self.config.headers {
@@ -139,21 +146,18 @@ impl ArrowIpcSink {
         }
 
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let retry_after = response
-                .headers()
-                .get("Retry-After")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(DEFAULT_RETRY_AFTER_SECS);
-            return Ok(SendResult::RetryAfter(Duration::from_secs(retry_after)));
+            let retry_after = parse_retry_after(response.headers().get("Retry-After"))
+                .unwrap_or(Duration::from_secs(DEFAULT_RETRY_AFTER_SECS));
+            let _ = response.text().await.unwrap_or_default();
+            return Ok(SendResult::RetryAfter(retry_after));
         }
 
         if status.is_server_error() {
+            let retry_after = parse_retry_after(response.headers().get("Retry-After"))
+                .unwrap_or(Duration::from_secs(DEFAULT_RETRY_AFTER_SECS));
             // Consume the response body to free the connection.
             let _body = response.text().await.unwrap_or_default();
-            return Ok(SendResult::RetryAfter(Duration::from_secs(
-                DEFAULT_RETRY_AFTER_SECS,
-            )));
+            return Ok(SendResult::RetryAfter(retry_after));
         }
 
         // 4xx client error — not retryable.
@@ -170,7 +174,7 @@ impl Sink for ArrowIpcSink {
     ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
             if let Err(e) = self.serialize_batch(batch) {
-                return SendResult::IoError(e);
+                return SendResult::from_io_error(e);
             }
             if self.ipc_buf.is_empty() {
                 return SendResult::Ok;

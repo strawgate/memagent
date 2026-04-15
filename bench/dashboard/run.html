@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10243a">
   <title>Run Detail - Benchmark Dashboard</title>
   <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7"></script>
@@ -13,12 +14,22 @@
     <a href="index.html">Dashboard</a><span class="sep">/</span><span id="breadcrumb-title">Run</span>
   </div>
 
+  <header class="hero">
+    <p class="eyebrow">run inspector</p>
+    <h1>Run Detail</h1>
+    <p class="lede">Deep-dive one benchmark run to compare per-scenario throughput and resource peaks across all configured collectors.</p>
+    <div class="hero-tags">
+      <span>single run forensics</span><span>scenario deltas</span><span>resource peaks</span>
+    </div>
+  </header>
+
   <div id="loading" class="loading">Loading run data...</div>
   <div id="content" style="display:none">
     <div class="run-header">
       <h1 id="run-title"></h1>
     </div>
     <div class="run-meta" id="run-meta"></div>
+    <div class="tracking-cards" id="run-kpis"></div>
 
     <div class="section">
       <h2>Scenario Results</h2>
@@ -32,16 +43,17 @@
           <h3>Peak Memory (RSS)</h3>
           <canvas id="chart-peak-rss"></canvas>
         </div>
-        <div class="card">
+        <div class="card" id="cpu-card">
           <h3>Peak CPU Usage</h3>
           <canvas id="chart-peak-cpu"></canvas>
+          <p class="info-note" id="cpu-note" style="display:none">CPU peak metrics are not present in this run artifact.</p>
         </div>
       </div>
     </div>
 
     <div class="section">
       <h2>Full Results</h2>
-      <div class="card">
+      <div class="card table-card">
         <table id="results-table">
           <thead id="results-thead"></thead>
           <tbody id="results-tbody"></tbody>
@@ -51,7 +63,9 @@
   </div>
 </div>
 
-<script>
+<script type="module">
+import { fetchBenchRun } from "./o11y-client.js";
+
 const SCENARIO_NAMES = {
   'passthrough': { title: 'Passthrough (No Transforms)', config: 'transform: "SELECT * FROM logs"' },
   'json_parse': { title: 'JSON Parsing & Extraction', config: 'transform: "SELECT timestamp_str, level_str, message_str, duration_ms_int AS latency_ms, request_id_str, service_str FROM logs"' },
@@ -84,6 +98,16 @@ function formatBytes(b) {
   return b + 'B';
 }
 
+function averageLps(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  if (Number.isFinite(entry.avg_lps)) return Math.max(0, entry.avg_lps);
+  if (Array.isArray(entry.lps)) {
+    const values = entry.lps.filter((v) => Number.isFinite(v));
+    if (values.length > 0) return values.reduce((sum, v) => sum + v, 0) / values.length;
+  }
+  return null;
+}
+
 function isDark() { return window.matchMedia('(prefers-color-scheme: dark)').matches; }
 
 function chartColors() {
@@ -93,13 +117,6 @@ function chartColors() {
 }
 
 function gridColor() { return isDark() ? '#30363d' : '#e5e7eb'; }
-
-const DATA_BASE = 'https://raw.githubusercontent.com/strawgate/memagent/bench-data';
-
-async function loadJSON(url) {
-  try { const r = await fetch(url); if (!r.ok) return null; return await r.json(); }
-  catch { return null; }
-}
 
 async function main() {
   chartColors();
@@ -117,9 +134,9 @@ async function main() {
 
   document.getElementById('breadcrumb-title').textContent = 'Run #' + runId;
 
-  const run = await loadJSON(DATA_BASE + '/runs/' + runId + '.json');
+  const run = await fetchBenchRun(runId);
   if (!run) {
-    document.getElementById('loading').textContent = 'Could not load run ' + runId + '. File runs/' + runId + '.json not found in bench-data branch.';
+    document.getElementById('loading').textContent = 'Could not load run ' + runId + '. File data/runs/' + runId + '.json not found in bench-data branch.';
     return;
   }
 
@@ -139,6 +156,38 @@ async function main() {
 
   const scenarios = run.scenario_names || Object.keys(run.scenarios || {});
   const agents = run.agents || [];
+  const kpisEl = document.getElementById('run-kpis');
+
+  let fastest = null;
+  let totalIterations = 0;
+  for (const sn of scenarios) {
+    const sc = run.scenarios?.[sn];
+    if (!sc) continue;
+    for (const agent of agents) {
+      const d = sc[agent];
+      if (!d) continue;
+      const lps = averageLps(d) || 0;
+      if (!fastest || lps > fastest.lps) fastest = { lps, agent, scenario: sn };
+      if (typeof d.iterations === 'number') totalIterations += d.iterations;
+    }
+  }
+  kpisEl.innerHTML = `
+    <div class="tracking-card">
+      <span class="label">Scenario Count</span>
+      <span class="value">${scenarios.length}</span>
+      <span class="subtitle">${agents.length} collectors in this run</span>
+    </div>
+    <div class="tracking-card">
+      <span class="label">Fastest Result</span>
+      <span class="value">${fastest ? formatLPS(fastest.lps) : '--'}</span>
+      <span class="subtitle">${fastest ? fastest.agent + ' · ' + getScenarioTitle(fastest.scenario) : 'no throughput data'}</span>
+    </div>
+    <div class="tracking-card">
+      <span class="label">Total Iterations</span>
+      <span class="value">${totalIterations > 0 ? totalIterations.toLocaleString() : '--'}</span>
+      <span class="subtitle">sum of reported benchmark iterations</span>
+    </div>
+  `;
 
   // Per-scenario bar charts
   const chartsEl = document.getElementById('scenario-charts');
@@ -159,7 +208,7 @@ async function main() {
     for (const agent of agents) {
       if (!sc[agent]) continue;
       labels.push(agent);
-      data.push(sc[agent].avg_lps);
+      data.push(averageLps(sc[agent]) || 0);
       colors.push(AGENT_COLORS[agent] || '#64748b');
     }
 
@@ -188,6 +237,7 @@ async function main() {
   const resourceSection = document.getElementById('resource-section');
   const rssCanvas = document.getElementById('chart-peak-rss');
   const cpuCanvas = document.getElementById('chart-peak-cpu');
+  const cpuNote = document.getElementById('cpu-note');
 
   if (resourceSection && rssCanvas && cpuCanvas) {
     const rssData = [];
@@ -205,14 +255,14 @@ async function main() {
         if (d) {
           found = true;
           if (d.avg_max_rss > maxRss) maxRss = d.avg_max_rss;
-          // Note: if we added avg_max_cpu to dashboard JSON we'd use it here.
-          // For now, if missing, we skip CPU or use a placeholder.
+          if (typeof d.avg_max_cpu === 'number' && d.avg_max_cpu > maxCpu) maxCpu = d.avg_max_cpu;
         }
       }
 
       if (found) {
         labels.push(agent);
         rssData.push(maxRss);
+        cpuData.push(maxCpu > 0 ? maxCpu : null);
         colors.push(AGENT_COLORS[agent] || '#64748b');
       }
     }
@@ -228,7 +278,21 @@ async function main() {
           scales: { x: { ticks: { callback: v => formatBytes(v) }, grid: { color: gridColor() } }, y: { grid: { display: false } } }
         }
       });
-      // Placeholder or actual CPU chart if data added to JSON
+
+      if (cpuData.some(v => v != null)) {
+        new Chart(cpuCanvas, {
+          type: 'bar',
+          data: { labels, datasets: [{ data: cpuData, backgroundColor: colors, borderRadius: 3 }] },
+          options: {
+            indexAxis: 'y',
+            plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => (ctx.raw ?? 0).toFixed(1) + '%' } } },
+            scales: { x: { ticks: { callback: v => v + '%' }, grid: { color: gridColor() } }, y: { grid: { display: false } } }
+          }
+        });
+      } else {
+        cpuCanvas.style.display = 'none';
+        if (cpuNote) cpuNote.style.display = '';
+      }
     }
   }
 
@@ -250,7 +314,8 @@ async function main() {
     // Find winner
     let bestAgent = null, bestLps = 0;
     for (const a of agents) {
-      if (sc[a]?.avg_lps > bestLps) { bestLps = sc[a].avg_lps; bestAgent = a; }
+      const lps = averageLps(sc[a]) || 0;
+      if (lps > bestLps) { bestLps = lps; bestAgent = a; }
     }
 
     let row = `<td>${getScenarioTitle(sn)}</td>`;

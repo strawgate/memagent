@@ -11,9 +11,9 @@ import subprocess
 
 STALE_DAYS = 90
 TARGETS = [
-    Path("book/src/troubleshooting.md"),
-    Path("book/src/deployment/kubernetes.md"),
-    Path("book/src/deployment/docker.md"),
+    Path("book/src/content/docs/troubleshooting.md"),
+    Path("book/src/content/docs/deployment/kubernetes.md"),
+    Path("book/src/content/docs/deployment/docker.md"),
 ]
 
 

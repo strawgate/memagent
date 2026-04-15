@@ -4,6 +4,9 @@ on:
     - cron: '0 4 * * *'  # 4am UTC daily
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 jobs:
   proptest-extended:
     name: Proptest (100K cases)
@@ -23,19 +26,72 @@ jobs:
         env:
           PROPTEST_CASES: "100000"
 
+  tla-pipeline-nightly-thorough:
+    name: TLA+ PipelineMachine (nightly thorough)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Download tla2tools.jar
+        run: |
+          mkdir -p /tmp/tla
+          curl -sL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o /tmp/tla/tla2tools.jar
+      - name: TLC PipelineMachine nightly thorough model
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.nightly.thorough.cfg -workers auto
+
+  turmoil-replay-equivalence:
+    name: Turmoil replay-equivalence
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: scripts/linearizability/go.mod
+      - uses: Swatinem/rust-cache@v2
+      - name: Replay-equivalence test lane
+        run: |
+          cargo test -p logfwd --features turmoil --test turmoil_sim fault_scenario_sim::replay_equivalence_seed_supports_three_identical_replays -- --exact
+          cargo test -p logfwd --features turmoil --test turmoil_sim fault_scenario_sim::replay_equivalence_seed_matrix_keeps_history_equivalent -- --exact
+          cargo test -p logfwd --features turmoil --test turmoil_sim linearizability::porcupine_checker_accepts_runtime_history -- --exact
+
   turmoil-seed-sweep:
-    name: Turmoil seed sweep (500 seeds)
+    name: Turmoil seed sweep (1000 seeds, shard ${{ matrix.shard_index }}/4)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard_index: [0, 1, 2, 3]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: dtolnay/rust-toolchain@stable
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: scripts/linearizability/go.mod
       - uses: Swatinem/rust-cache@v2
       - name: Build turmoil tests once
         run: cargo test -p logfwd --features turmoil --test turmoil_sim --no-run
-      - name: Run turmoil tests with 500 different seeds
+      - name: Run turmoil tests with shard-assigned seeds
         run: |
+          TOTAL_SEEDS=1000
+          SHARD_COUNT=4
+          SHARD_INDEX=${{ matrix.shard_index }}
+          FAIL_DIR=/tmp/turmoil-failures
+          FAIL_SEEDS_FILE=/tmp/turmoil_failed_seeds.txt
+          mkdir -p "$FAIL_DIR"
+          rm -f "$FAIL_SEEDS_FILE"
+
           # Find the compiled test binary to avoid recompilation per seed
           BIN=$(cargo test -p logfwd --features turmoil --test turmoil_sim --no-run --message-format=json 2>/dev/null | jq -r 'select(.executable != null) | .executable' | head -1)
           if [ -z "$BIN" ]; then
@@ -43,25 +99,110 @@ jobs:
             exit 1
           fi
           echo "Test binary: $BIN"
+          echo "Shard ${SHARD_INDEX}/${SHARD_COUNT}: seeds where ((seed-1) % ${SHARD_COUNT}) == ${SHARD_INDEX}"
 
           FAILED=0
-          for SEED in $(seq 1 500); do
+          RUN=0
+          for SEED in $(seq 1 "$TOTAL_SEEDS"); do
+            if [ $(( (SEED - 1) % SHARD_COUNT )) -ne "$SHARD_INDEX" ]; then
+              continue
+            fi
+            RUN=$((RUN + 1))
             TURMOIL_SEED=$SEED "$BIN" --test-threads=1 > /tmp/test_out.txt 2>&1
             result=$?
             tail -1 /tmp/test_out.txt | grep -q "ok" || result=1
             if [ $result -ne 0 ]; then
-              echo "FAILED on seed $SEED"
+              echo "FAILED on shard $SHARD_INDEX seed $SEED"
               # Show last 10 lines for debugging
               tail -10 /tmp/test_out.txt
+              cp /tmp/test_out.txt "$FAIL_DIR/seed-${SEED}.log"
+              echo "$SEED" >> "$FAIL_SEEDS_FILE"
               FAILED=$((FAILED + 1))
             fi
-            # Progress report every 50 seeds
-            if [ $((SEED % 50)) -eq 0 ]; then
-              echo "=== Progress: $SEED/500 seeds, $FAILED failures ==="
+            # Progress report every 25 seeds in this shard
+            if [ $((RUN % 25)) -eq 0 ]; then
+              echo "=== Shard $SHARD_INDEX progress: $RUN runs, $FAILED failures ==="
             fi
           done
-          echo "=== Results: $FAILED failures out of 500 seeds ==="
+          echo "=== Shard $SHARD_INDEX results: $FAILED failures out of $RUN runs ==="
           if [ $FAILED -gt 0 ]; then exit 1; fi
+      - name: Upload turmoil failure logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: turmoil-failures-shard-${{ matrix.shard_index }}-${{ github.run_id }}
+          path: |
+            /tmp/turmoil-failures/
+            /tmp/turmoil_failed_seeds.txt
+          retention-days: 7
+  turmoil-seed-sweep-report:
+    permissions:
+      contents: read
+      issues: write
+    name: Turmoil seed sweep failure report
+    needs: turmoil-seed-sweep
+    if: always() && github.event_name == 'schedule' && needs.turmoil-seed-sweep.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download turmoil shard failure artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: turmoil-failures-shard-*-${{ github.run_id }}
+          path: /tmp/turmoil-artifacts
+          merge-multiple: false
+      - name: Create aggregated issue on turmoil seed sweep failure
+        run: |
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          summary_file="$(mktemp)"
+          failed_shards=0
+          total_fail_count=0
+
+          while IFS= read -r artifact_dir; do
+            failed_shards=$((failed_shards + 1))
+            artifact_name="$(basename "$artifact_dir")"
+            shard="$(printf '%s\n' "$artifact_name" | sed -E 's/^turmoil-failures-shard-([0-9]+)-.*/\1/')"
+            fail_seeds_file="$(find "$artifact_dir" -type f -name 'turmoil_failed_seeds.txt' | head -n 1)"
+
+            if [ -n "$fail_seeds_file" ] && [ -f "$fail_seeds_file" ]; then
+              fail_count=$(wc -l < "$fail_seeds_file" | tr -d ' ')
+              fail_seeds=$(paste -sd, "$fail_seeds_file")
+            else
+              fail_count=0
+              fail_seeds="(none captured)"
+            fi
+
+            total_fail_count=$((total_fail_count + fail_count))
+            {
+              echo "- Shard: ${shard}/4"
+              echo "  - Failed seeds (${fail_count}): ${fail_seeds}"
+              echo "  - Artifact: ${artifact_name}"
+            } >>"$summary_file"
+          done < <(find /tmp/turmoil-artifacts -mindepth 1 -maxdepth 1 -type d | sort)
+
+          if [ "$failed_shards" -eq 0 ]; then
+            echo "- No shard artifacts captured." >>"$summary_file"
+          fi
+
+          body_file="$(mktemp)"
+          cat >"$body_file" <<EOF
+          Nightly turmoil seed sweep failed.
+
+          - Failed shards: ${failed_shards}
+          - Total failed seeds: ${total_fail_count}
+          - Run: ${run_url}
+
+          $(cat "$summary_file")
+
+          Please investigate and convert any reproductions into deterministic tests.
+          EOF
+          gh issue create \
+            --title "Nightly turmoil seed sweep failed ($(date +%Y-%m-%d))" \
+            --body-file "$body_file" \
+            --label "bug"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
 
   fuzz-short:
     name: Fuzz (5 minutes per target)

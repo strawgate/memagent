@@ -9,17 +9,55 @@ static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 use std::env;
 use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
+use std::time::Duration;
 
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use opentelemetry::metrics::MeterProvider;
-use opentelemetry_otlp::WithExportConfig;
-use tokio_util::sync::CancellationToken;
+
+mod config_templates;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const GIT_HASH: &str = env!("LOGFWD_GIT_HASH");
-const GIT_DIRTY: &str = env!("LOGFWD_GIT_DIRTY");
-const BUILD_DATE: &str = env!("LOGFWD_BUILD_DATE");
-const BUILD_TARGET: &str = env!("LOGFWD_TARGET");
-const BUILD_PROFILE: &str = env!("LOGFWD_PROFILE");
+const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("LOGFWD_GIT_HASH"),
+    env!("LOGFWD_GIT_DIRTY"),
+    " ",
+    env!("LOGFWD_BUILD_DATE"),
+    ", ",
+    env!("LOGFWD_TARGET"),
+    ", ",
+    env!("LOGFWD_PROFILE"),
+    ")"
+);
+const CLI_AFTER_HELP: &str = r"Examples:
+  logfwd run --config config.yaml
+  logfwd validate --config config.yaml
+  logfwd dry-run --config config.yaml
+  logfwd effective-config --config config.yaml
+  logfwd blackhole
+  logfwd blast --destination otlp --endpoint http://127.0.0.1:4318/v1/logs
+  logfwd devour --mode otlp --listen 127.0.0.1:4318
+  logfwd generate-json 10000 test.json
+  logfwd wizard
+  logfwd completions bash
+
+Environment:
+  LOGFWD_CONFIG    Config file path (auto-discovered if not set)
+  LOGFWD_LOG       Set log filter (for example LOGFWD_LOG=debug)
+  RUST_LOG         Fallback if LOGFWD_LOG is not set
+
+Config Search Order:
+  1. --config <path>
+  2. $LOGFWD_CONFIG
+  3. ./logfwd.yaml
+  4. ~/.config/logfwd/config.yaml
+  5. /etc/logfwd/config.yaml
+
+Exit Codes:
+  0 success
+  1 configuration error
+  2 runtime error";
 
 // Exit codes.
 const EXIT_OK: i32 = 0;
@@ -56,17 +94,29 @@ impl From<io::Error> for CliError {
     }
 }
 
+impl From<logfwd_runtime::bootstrap::RuntimeError> for CliError {
+    fn from(value: logfwd_runtime::bootstrap::RuntimeError) -> Self {
+        match value {
+            logfwd_runtime::bootstrap::RuntimeError::Config(msg) => Self::Config(msg),
+            logfwd_runtime::bootstrap::RuntimeError::Io(err) => Self::Runtime(err),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Color support (respects NO_COLOR, checks stderr TTY)
 // ---------------------------------------------------------------------------
 
 fn use_color() -> bool {
-    // SAFETY: isatty is a simple query on a well-known fd; no invariants to uphold.
-    env::var_os("NO_COLOR").is_none() && unsafe { libc::isatty(libc::STDERR_FILENO) != 0 }
+    env::var_os("NO_COLOR").is_none() && io::stderr().is_terminal()
 }
 
 fn use_json_logs_for_stderr(is_terminal: bool) -> bool {
     !is_terminal
+}
+
+fn wizard_uses_interactive_terminals(stdin_is_terminal: bool, stdout_is_terminal: bool) -> bool {
+    stdin_is_terminal && stdout_is_terminal
 }
 
 macro_rules! style {
@@ -98,22 +148,260 @@ fn reset() -> &'static str {
     if use_color() { "\x1b[0m" } else { "" }
 }
 
-/// Print a usage example with a dim comment aligned to column 42.
-fn print_example(cmd: &str, comment: &str) {
-    let pad = 42usize.saturating_sub(cmd.len());
-    println!("  {cmd}{:pad$}{}# {comment}{}", "", dim(), reset());
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum CompletionShell {
+    Bash,
+    Elvish,
+    Fish,
+    #[value(name = "powershell", alias = "pwsh", alias = "power-shell")]
+    PowerShell,
+    Zsh,
+    Nushell,
 }
 
-/// Print a "did you mean ...?" hint on stderr.
-fn print_hint(suggestion: &str) {
-    eprintln!(
-        "{}hint{}: did you mean {}{}{}?",
-        dim(),
-        reset(),
-        bold(),
-        suggestion,
-        reset()
-    );
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum BlastDestination {
+    #[value(alias = "elasticsearch_otlp")]
+    Otlp,
+    #[value(alias = "elasticsearch_bulk")]
+    Elasticsearch,
+    Loki,
+    #[value(alias = "arrow_ipc", alias = "arrow")]
+    ArrowIpc,
+    Udp,
+    Tcp,
+    Null,
+}
+
+impl BlastDestination {
+    fn as_output_type(self) -> logfwd_config::OutputType {
+        match self {
+            Self::Otlp => logfwd_config::OutputType::Otlp,
+            Self::Elasticsearch => logfwd_config::OutputType::Elasticsearch,
+            Self::Loki => logfwd_config::OutputType::Loki,
+            Self::ArrowIpc => logfwd_config::OutputType::ArrowIpc,
+            Self::Udp => logfwd_config::OutputType::Udp,
+            Self::Tcp => logfwd_config::OutputType::Tcp,
+            Self::Null => logfwd_config::OutputType::Null,
+        }
+    }
+
+    fn parse(input: &str) -> Option<Self> {
+        match input.trim().to_ascii_lowercase().as_str() {
+            "otlp" | "elasticsearch_otlp" => Some(Self::Otlp),
+            "elasticsearch" | "elasticsearch_bulk" => Some(Self::Elasticsearch),
+            "loki" => Some(Self::Loki),
+            "arrow_ipc" | "arrow-ipc" | "arrow" => Some(Self::ArrowIpc),
+            "udp" => Some(Self::Udp),
+            "tcp" => Some(Self::Tcp),
+            "null" => Some(Self::Null),
+            _ => None,
+        }
+    }
+
+    fn should_require_endpoint(self) -> bool {
+        !matches!(self, Self::Null)
+    }
+
+    fn default_endpoint(self) -> &'static str {
+        match self {
+            Self::Otlp => "http://127.0.0.1:4318/v1/logs",
+            Self::Elasticsearch => "http://127.0.0.1:9200",
+            Self::Loki => "http://127.0.0.1:3100/loki/api/v1/push",
+            Self::ArrowIpc => "http://127.0.0.1:18081/v1/arrow",
+            Self::Udp => "127.0.0.1:15514",
+            Self::Tcp => "127.0.0.1:15140",
+            Self::Null => "",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum DevourMode {
+    #[value(alias = "elasticsearch_otlp")]
+    Otlp,
+    Http,
+    #[value(name = "elasticsearch_bulk", alias = "elasticsearch")]
+    ElasticsearchBulk,
+    Tcp,
+    Udp,
+}
+
+impl DevourMode {
+    fn default_listen(self) -> &'static str {
+        match self {
+            Self::Otlp => "127.0.0.1:4318",
+            Self::Http => "127.0.0.1:8080",
+            Self::ElasticsearchBulk => "127.0.0.1:9200",
+            Self::Tcp => "127.0.0.1:15140",
+            Self::Udp => "127.0.0.1:15514",
+        }
+    }
+
+    fn target_hint(self, listen: &str) -> String {
+        match self {
+            Self::Otlp => format!("http://{listen}/v1/logs"),
+            Self::Http => format!("http://{listen}/"),
+            Self::ElasticsearchBulk => format!("http://{listen}/_bulk"),
+            Self::Tcp | Self::Udp => listen.to_string(),
+        }
+    }
+
+    fn spec(self) -> logfwd_runtime::generated_cli::DevourModeSpec {
+        match self {
+            Self::Otlp => logfwd_runtime::generated_cli::DevourModeSpec::Otlp,
+            Self::Http => logfwd_runtime::generated_cli::DevourModeSpec::Http,
+            Self::ElasticsearchBulk => {
+                logfwd_runtime::generated_cli::DevourModeSpec::ElasticsearchBulk
+            }
+            Self::Tcp => logfwd_runtime::generated_cli::DevourModeSpec::Tcp,
+            Self::Udp => logfwd_runtime::generated_cli::DevourModeSpec::Udp,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Args)]
+struct BlastArgs {
+    /// Destination type to blast.
+    #[arg(long, value_enum)]
+    destination: Option<BlastDestination>,
+
+    /// Destination endpoint URL/address (required for all destinations except `null`).
+    #[arg(long)]
+    endpoint: Option<String>,
+
+    /// Bearer token auth.
+    #[arg(long)]
+    auth_bearer_token: Option<String>,
+
+    /// Extra header, repeatable: --auth-header 'Authorization=ApiKey xyz'.
+    #[arg(long, value_name = "KEY=VALUE")]
+    auth_header: Vec<String>,
+
+    /// Worker count.
+    #[arg(long, default_value_t = 2)]
+    workers: usize,
+
+    /// Lines per generated batch.
+    #[arg(long, default_value_t = 5_000)]
+    batch_lines: usize,
+
+    /// Optional run duration in seconds (default: run until stopped).
+    #[arg(long)]
+    duration_secs: Option<u64>,
+
+    /// Diagnostics server bind address for generated config.
+    #[arg(long, default_value = "127.0.0.1:0")]
+    diagnostics_addr: String,
+}
+
+#[derive(Debug, Clone, Args)]
+struct DevourArgs {
+    /// Receiver mode to emulate.
+    #[arg(long, value_enum, default_value_t = DevourMode::Otlp)]
+    mode: DevourMode,
+
+    /// Bind address (defaults depend on mode).
+    #[arg(long)]
+    listen: Option<String>,
+
+    /// Optional run duration in seconds (default: run until stopped).
+    #[arg(long)]
+    duration_secs: Option<u64>,
+
+    /// Diagnostics server bind address for generated config.
+    #[arg(long, default_value = "127.0.0.1:0")]
+    diagnostics_addr: String,
+}
+
+#[derive(Debug, Parser)]
+#[command(
+    name = "logfwd",
+    about = "Fast log forwarder with SQL transforms",
+    long_about = "Fast log forwarder with SQL transforms",
+    version = VERSION,
+    long_version = LONG_VERSION,
+    next_line_help = true,
+    after_help = CLI_AFTER_HELP
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Commands {
+    /// Run pipeline from YAML config.
+    Run {
+        #[arg(
+            short = 'c',
+            long = "config",
+            value_name = "FILE",
+            help = "Path to YAML config file"
+        )]
+        config: Option<String>,
+    },
+    /// Validate config and exit.
+    Validate {
+        #[arg(
+            short = 'c',
+            long = "config",
+            value_name = "FILE",
+            help = "Path to YAML config file"
+        )]
+        config: Option<String>,
+    },
+    /// Build pipelines without running.
+    DryRun {
+        #[arg(
+            short = 'c',
+            long = "config",
+            value_name = "FILE",
+            help = "Path to YAML config file"
+        )]
+        config: Option<String>,
+    },
+    /// Blast generated data into a destination sink via the normal runtime pipeline.
+    Blast(BlastArgs),
+    /// Run a blackhole receiver via the normal runtime pipeline.
+    Devour(DevourArgs),
+    /// Start OTLP blackhole receiver for testing.
+    Blackhole {
+        #[arg(
+            value_name = "BIND_ADDR",
+            help = "Bind address (default: 127.0.0.1:4318)"
+        )]
+        bind_addr: Option<String>,
+    },
+    /// Generate synthetic JSON log data.
+    GenerateJson {
+        #[arg(value_name = "NUM_LINES", help = "Number of lines to generate")]
+        num_lines: usize,
+        #[arg(
+            value_name = "OUTPUT_FILE",
+            help = "Path to write generated JSON lines"
+        )]
+        output_file: String,
+    },
+    /// Validate and print effective runnable config.
+    EffectiveConfig {
+        #[arg(
+            short = 'c',
+            long = "config",
+            value_name = "FILE",
+            help = "Path to YAML config file"
+        )]
+        config: Option<String>,
+    },
+    /// Generate starter config in current directory (logfwd.yaml).
+    Init,
+    /// Interactive config wizard — pick a use-case or build your own pipeline.
+    Wizard,
+    /// Print shell completions.
+    Completions {
+        #[arg(value_name = "SHELL", help = "Target shell")]
+        shell: CompletionShell,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -129,13 +417,24 @@ fn main() {
 
 #[tokio::main]
 async fn main_inner() -> i32 {
-    let args: Vec<String> = env::args().collect();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(err) => {
+            let code = match err.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => EXIT_OK,
+                _ => EXIT_CONFIG,
+            };
+            let _ = err.print();
+            return code;
+        }
+    };
 
-    if args.len() < 2 {
-        // No args: check for config in well-known locations before showing help.
+    let result = if let Some(command) = cli.command {
+        run_command(command).await
+    } else {
         if let Some(path) = discover_config() {
             eprintln!(
-                "{}hint{}: found config at {}{}{} — running it.",
+                "{}hint{}: found config at {}{}{}",
                 dim(),
                 reset(),
                 bold(),
@@ -143,59 +442,29 @@ async fn main_inner() -> i32 {
                 reset(),
             );
             eprintln!(
-                "{}      (use --config <path> to specify a different file){}",
+                "{}      run {}logfwd run --config {}{}",
                 dim(),
+                bold(),
+                path.display(),
                 reset()
             );
             eprintln!();
-            let synth_args = vec![
-                args[0].clone(),
-                "--config".to_string(),
-                path.to_string_lossy().to_string(),
-            ];
-            return match cmd_config(&synth_args).await {
-                Ok(()) => EXIT_OK,
-                Err(e) => {
-                    eprintln!("{}error{}: {e}", red(), reset());
-                    e.exit_code()
-                }
-            };
+        } else {
+            eprintln!(
+                "{}hint{}: no config found — try {}logfwd init{} or {}logfwd wizard{} to get started",
+                dim(),
+                reset(),
+                bold(),
+                reset(),
+                bold(),
+                reset(),
+            );
+            eprintln!();
         }
-        print_usage();
+        let mut cmd = Cli::command();
+        let _ = cmd.print_help();
+        println!();
         return EXIT_OK;
-    }
-
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        print_usage();
-        return EXIT_OK;
-    }
-
-    if args.iter().any(|a| a == "--version" || a == "-V") {
-        println!(
-            "logfwd {VERSION} ({GIT_HASH}{GIT_DIRTY} {BUILD_DATE}, {BUILD_TARGET}, {BUILD_PROFILE})"
-        );
-        return EXIT_OK;
-    }
-
-    // Normalise arg order: allow flags like --validate before --config.
-    // Scan for the primary command flag regardless of position.
-    let args = normalize_args(args);
-
-    let result = match args[1].as_str() {
-        "--config" | "-c" => cmd_config(&args).await,
-        "--blackhole" => cmd_blackhole(&args).await,
-        "--generate-json" => cmd_generate_json(&args),
-        "--dump-config" => cmd_dump_config(&args),
-        "--init" => cmd_init(),
-        "--completions" => cmd_completions(&args),
-        other => {
-            eprintln!("{}error{}: unknown command: {other}", red(), reset());
-            if let Some(suggestion) = suggest_flag(other) {
-                print_hint(suggestion);
-            }
-            eprintln!("Run {}logfwd --help{} for usage.", bold(), reset());
-            return EXIT_CONFIG;
-        }
     };
 
     match result {
@@ -207,146 +476,42 @@ async fn main_inner() -> i32 {
     }
 }
 
-fn print_usage() {
-    println!(
-        "{}logfwd{} {}v{VERSION}{} -- fast log forwarder with SQL transforms",
-        bold(),
-        reset(),
-        dim(),
-        reset(),
-    );
-    println!();
-    println!("{}USAGE:{}", bold(), reset());
-    println!("  logfwd --config <config.yaml> [--validate] [--dry-run]");
-    println!("  logfwd --blackhole [bind_addr]");
-    println!("  logfwd --generate-json <num_lines> <output_file>");
-    println!("  logfwd --dump-config [config.yaml]");
-    println!("  logfwd --init");
-    println!("  logfwd --completions <shell>");
-    println!();
-    println!("{}OPTIONS:{}", bold(), reset());
-    println!("  -c, --config <path>    Run pipeline from YAML config");
-    println!("      --validate         Validate config and exit (alias: --check)");
-    println!("      --dry-run          Build pipelines without running");
-    println!("      --blackhole [addr] OTLP blackhole receiver (default: 127.0.0.1:4318)");
-    println!("      --generate-json    Generate synthetic JSON log file");
-    println!("      --dump-config      Print resolved config to stdout");
-    println!("      --init             Generate starter config in current directory");
-    println!("      --completions      Print shell completions (bash, zsh, fish)");
-    println!("  -h, --help             Show this help");
-    println!("  -V, --version          Show version");
-    println!();
-    println!("{}EXAMPLES:{}", bold(), reset());
-    print_example("logfwd -c config.yaml", "run pipelines");
-    print_example("logfwd -c config.yaml --validate", "validate config only");
-    print_example("logfwd -c config.yaml --dry-run", "test SQL planning");
-    print_example("logfwd --blackhole", "start OTLP test receiver");
-    print_example("logfwd --generate-json 10000 test.json", "synthetic data");
-    print_example("logfwd --dump-config config.yaml", "show resolved config");
-    print_example("logfwd --init", "generate starter config");
-    print_example("logfwd --completions bash", "output bash completions");
-    println!();
-    println!("{}ENVIRONMENT:{}", bold(), reset());
-    println!("  LOGFWD_CONFIG          Config file path (auto-discovered if not set)");
-    println!("  LOGFWD_LOG             Set log filter (e.g. LOGFWD_LOG=debug)");
-    println!("  RUST_LOG               Fallback if LOGFWD_LOG is not set");
-    println!();
-    println!("{}CONFIG SEARCH ORDER:{}", bold(), reset());
-    print_example("1. --config <path>", "explicit flag always wins");
-    print_example("2. $LOGFWD_CONFIG", "environment variable");
-    print_example("3. ./logfwd.yaml", "current directory");
-    println!("  4. ~/.config/logfwd/config.yaml");
-    println!("  5. /etc/logfwd/config.yaml");
-    println!();
-    println!("{}EXIT CODES:{}", bold(), reset());
-    println!("  0  Success");
-    println!("  1  Configuration error");
-    println!("  2  Runtime error");
-    println!();
-    println!(
-        "{}Respects NO_COLOR (https://no-color.org){}",
-        dim(),
-        reset(),
-    );
-}
-
-// ---------------------------------------------------------------------------
-// Arg normalisation
-// ---------------------------------------------------------------------------
-
-/// Reorder args so that --config/-c always appears at position 1.
-///
-/// Users of tools like `nginx -t -c config` expect to put flags before the
-/// config path. This allows `logfwd --validate --config foo.yaml` in addition
-/// to the canonical `logfwd --config foo.yaml --validate`.
-fn normalize_args(args: Vec<String>) -> Vec<String> {
-    // If already in canonical form, nothing to do.
-    if args.get(1).is_some_and(|a| a == "--config" || a == "-c") {
-        return args;
-    }
-
-    // Find --config/-c anywhere in the arg list.
-    let config_pos = args
-        .iter()
-        .skip(1)
-        .position(|a| a == "--config" || a == "-c")
-        .map(|i| i + 1);
-
-    let Some(pos) = config_pos else {
-        return args;
-    };
-
-    // config_path is the value after --config/-c.
-    if pos + 1 >= args.len() {
-        return args;
-    }
-
-    // Build normalised list: program, --config, path, then everything else.
-    let mut out = Vec::with_capacity(args.len());
-    out.push(args[0].clone());
-    out.push(args[pos].clone());
-    out.push(args[pos + 1].clone());
-    for (i, a) in args.iter().enumerate().skip(1) {
-        if i == pos || i == pos + 1 {
-            continue;
+async fn run_command(command: Commands) -> Result<(), CliError> {
+    match command {
+        Commands::Run { config } => {
+            let config_path = resolve_config_path(config.as_deref())?;
+            cmd_run(&config_path, false, false).await
         }
-        out.push(a.clone());
+        Commands::Validate { config } => {
+            let config_path = resolve_config_path(config.as_deref())?;
+            cmd_run(&config_path, true, false).await
+        }
+        Commands::DryRun { config } => {
+            let config_path = resolve_config_path(config.as_deref())?;
+            cmd_run(&config_path, false, true).await
+        }
+        Commands::Blast(args) => cmd_blast(args).await,
+        Commands::Devour(args) => cmd_devour(args).await,
+        Commands::Blackhole { bind_addr } => cmd_blackhole(bind_addr.as_deref()).await,
+        Commands::GenerateJson {
+            num_lines,
+            output_file,
+        } => cmd_generate_json(num_lines, &output_file),
+        Commands::EffectiveConfig { config } => cmd_effective_config(config.as_deref()),
+        Commands::Init => cmd_init(),
+        Commands::Wizard => cmd_wizard(),
+        Commands::Completions { shell } => {
+            cmd_completions(shell);
+            Ok(())
+        }
     }
-    out
 }
 
 // ---------------------------------------------------------------------------
 // Commands
 // ---------------------------------------------------------------------------
 
-async fn cmd_config(args: &[String]) -> Result<(), CliError> {
-    if args.len() < 3 {
-        eprintln!("{}error{}: --config requires a path", red(), reset(),);
-        eprintln!("  logfwd --config <config.yaml> [--validate] [--dry-run]");
-        return Err(CliError::Config("missing config path".to_owned()));
-    }
-
-    let config_path = &args[2];
-    let mut validate_only = false;
-    let mut dry_run = false;
-
-    // Parse flags after the config path — reject unknown flags with suggestions.
-    for arg in &args[3..] {
-        match arg.as_str() {
-            "--validate" | "--check" => validate_only = true,
-            "--dry-run" => dry_run = true,
-            other => {
-                eprintln!("{}error{}: unknown flag: {other}", red(), reset());
-                let config_flags = &["--validate", "--check", "--dry-run"];
-                if let Some(closest) = closest_match(other, config_flags) {
-                    print_hint(closest);
-                }
-                eprintln!("  logfwd --config <config.yaml> [--validate] [--dry-run]");
-                return Err(CliError::Config(format!("unknown flag: {other}")));
-            }
-        }
-    }
-
+async fn cmd_run(config_path: &str, validate_only: bool, dry_run: bool) -> Result<(), CliError> {
     let config_yaml = std::fs::read_to_string(config_path)
         .map_err(|e| CliError::Config(format!("cannot read {config_path}: {e}")))?;
     let config = match logfwd_config::Config::load_str(&config_yaml) {
@@ -359,84 +524,247 @@ async fn cmd_config(args: &[String]) -> Result<(), CliError> {
     let base_path = std::path::Path::new(config_path).parent();
 
     if validate_only || dry_run {
-        // Both --validate and --dry-run build pipelines to catch SQL/wiring errors.
+        // Both `validate` and `dry-run` build pipelines to catch SQL/wiring errors.
         return validate_pipelines(&config, dry_run, base_path);
     }
 
-    run_pipelines(config, base_path, config_path, &config_yaml).await
+    run_pipelines(config, base_path, config_path, &config_yaml, None).await
 }
 
-async fn cmd_blackhole(args: &[String]) -> Result<(), CliError> {
-    let addr = args.get(2).map_or("127.0.0.1:4318", String::as_str);
+async fn cmd_blast(mut args: BlastArgs) -> Result<(), CliError> {
+    maybe_prompt_blast_setup(&mut args)?;
 
-    // Validate addr using the same hostname-accepting logic as the config
-    // validator (validate_host_port) so that a hostname like `localhost:4318`
-    // is accepted here and not only rejected later by the config layer.
-    logfwd_config::validate_host_port(addr)
-        .map_err(|e| CliError::Config(format!("invalid bind address: {e}")))?;
-
-    // Use port 0 for diagnostics so it never collides with an in-use port.
-    // Quote addr as a YAML string so bracketed IPv6 (e.g. [::1]:4318) does not
-    // break YAML parsing. Single-quote with '' escaping for any embedded quotes.
-    let yaml_addr = addr.replace('\'', "''");
-    let yaml = format!(
-        "input:\n  type: otlp\n  listen: '{yaml_addr}'\noutput:\n  type: null\nserver:\n  diagnostics: 127.0.0.1:0\n"
-    );
-    let config = logfwd_config::Config::load_str(&yaml)
-        .map_err(|e| CliError::Config(format!("internal config error: {e}")))?;
-
-    eprintln!(
-        "{}logfwd blackhole{} starting on {}{addr}{}",
-        bold(),
-        reset(),
-        bold(),
-        reset(),
-    );
-
-    run_pipelines(config, None, "<blackhole>", &yaml).await
-}
-
-fn cmd_generate_json(args: &[String]) -> Result<(), CliError> {
-    if args.len() < 4 {
-        eprintln!(
-            "{}error{}: --generate-json requires <num_lines> <output_file>",
-            red(),
-            reset(),
-        );
-        return Err(CliError::Config("missing arguments".to_owned()));
+    if args.duration_secs == Some(0) {
+        return Err(CliError::Config(
+            "--duration-secs must be at least 1 when provided".to_owned(),
+        ));
     }
-    let num_lines: usize = match args[2].parse() {
-        Ok(n) => n,
-        Err(e) => {
-            return Err(CliError::Config(format!("invalid num_lines: {e}")));
-        }
-    };
-    generate_json_log_file(num_lines, &args[3]).map_err(CliError::Runtime)
+    if args.workers == 0 {
+        return Err(CliError::Config("--workers must be at least 1".to_owned()));
+    }
+    if args.batch_lines == 0 {
+        return Err(CliError::Config(
+            "--batch-lines must be at least 1".to_owned(),
+        ));
+    }
+    logfwd_config::validate_host_port(&args.diagnostics_addr)
+        .map_err(|e| CliError::Config(format!("invalid diagnostics address: {e}")))?;
+
+    let destination = args
+        .destination
+        .ok_or_else(|| CliError::Config("blast requires --destination".to_owned()))?;
+    let generated = logfwd_runtime::generated_cli::build_blast_generated_config(
+        destination.as_output_type(),
+        args.endpoint.as_deref(),
+        args.auth_bearer_token.as_deref(),
+        &args.auth_header,
+        args.workers,
+        args.batch_lines,
+        &args.diagnostics_addr,
+    )
+    .map_err(CliError::Config)?;
+
+    println!("Starting blast (runtime pipeline shortcut)...");
+    println!(
+        "destination={} workers={} batch_lines={}",
+        destination.as_output_type(),
+        args.workers,
+        args.batch_lines
+    );
+    match args.duration_secs {
+        Some(duration) => println!("duration={}s", duration),
+        None => println!("duration=until-stopped (Ctrl-C)"),
+    }
+    if let Some(endpoint) = &args.endpoint {
+        println!("endpoint={endpoint}");
+    }
+    println!("diagnostics={}", args.diagnostics_addr);
+
+    let auto_shutdown_after = args.duration_secs.map(Duration::from_secs);
+    run_pipelines(
+        generated.config,
+        None,
+        "<blast-generated>",
+        &generated.yaml,
+        auto_shutdown_after,
+    )
+    .await
 }
 
-fn cmd_dump_config(args: &[String]) -> Result<(), CliError> {
-    let config_path = if args.len() >= 3 {
-        args[2].clone()
-    } else if let Some(path) = discover_config() {
-        path.to_string_lossy().to_string()
-    } else {
-        eprintln!(
-            "{}error{}: --dump-config requires a config file",
-            red(),
-            reset()
-        );
-        eprintln!("  logfwd --dump-config <config.yaml>");
-        return Err(CliError::Config("no config file found".to_owned()));
+async fn cmd_devour(args: DevourArgs) -> Result<(), CliError> {
+    let listen = args
+        .listen
+        .clone()
+        .unwrap_or_else(|| args.mode.default_listen().to_string());
+
+    logfwd_config::validate_host_port(&listen)
+        .map_err(|e| CliError::Config(format!("invalid listen address: {e}")))?;
+    logfwd_config::validate_host_port(&args.diagnostics_addr)
+        .map_err(|e| CliError::Config(format!("invalid diagnostics address: {e}")))?;
+
+    if args.duration_secs == Some(0) {
+        return Err(CliError::Config(
+            "--duration-secs must be at least 1 when provided".to_owned(),
+        ));
+    }
+
+    println!(
+        "devour mode={:?} listening={} target={}",
+        args.mode,
+        listen,
+        args.mode.target_hint(&listen)
+    );
+    println!("dropping all received data (blackhole mode)");
+    println!("diagnostics={}", args.diagnostics_addr);
+    if let Some(duration) = args.duration_secs {
+        println!("duration={}s", duration);
+    }
+
+    let generated = logfwd_runtime::generated_cli::build_devour_generated_config(
+        args.mode.spec(),
+        &listen,
+        &args.diagnostics_addr,
+    )
+    .map_err(CliError::Config)?;
+
+    let auto_shutdown_after = args.duration_secs.map(Duration::from_secs);
+    run_pipelines(
+        generated.config,
+        None,
+        "<devour-generated>",
+        &generated.yaml,
+        auto_shutdown_after,
+    )
+    .await
+}
+
+async fn cmd_blackhole(bind_addr: Option<&str>) -> Result<(), CliError> {
+    let args = DevourArgs {
+        mode: DevourMode::Otlp,
+        listen: bind_addr.map(ToOwned::to_owned),
+        duration_secs: None,
+        diagnostics_addr: "127.0.0.1:0".to_string(),
     };
+    cmd_devour(args).await
+}
+
+fn maybe_prompt_blast_setup(args: &mut BlastArgs) -> Result<(), CliError> {
+    if args.destination.is_some() {
+        return Ok(());
+    }
+
+    if !wizard_uses_interactive_terminals(io::stdin().is_terminal(), io::stdout().is_terminal()) {
+        return Err(CliError::Config(
+            "no destination provided. Pass --destination (wizard requires interactive stdin/stdout)"
+                .to_owned(),
+        ));
+    }
+
+    println!("blast quick setup");
+    println!("Press Enter to accept defaults.");
+    println!("Leave duration blank to run until Ctrl-C.");
+
+    let destination_raw = prompt_text(
+        "Destination [otlp/elasticsearch_otlp/elasticsearch/elasticsearch_bulk/loki/arrow_ipc/udp/tcp/null]",
+        "otlp",
+    )?;
+    let destination = BlastDestination::parse(&destination_raw).ok_or_else(|| {
+        CliError::Config(format!(
+            "unknown destination '{destination_raw}' (expected otlp/elasticsearch_otlp/elasticsearch/elasticsearch_bulk/loki/arrow_ipc/udp/tcp/null)"
+        ))
+    })?;
+    args.destination = Some(destination);
+
+    if destination.should_require_endpoint() && args.endpoint.is_none() {
+        let endpoint = prompt_text("Endpoint", destination.default_endpoint())?;
+        args.endpoint = Some(endpoint);
+    }
+
+    if args.auth_bearer_token.is_none() {
+        println!("Bearer token prompt skipped in wizard; pass --auth-bearer-token if needed.");
+    }
+
+    args.workers = prompt_text("Workers", &args.workers.to_string())?
+        .parse::<usize>()
+        .map_err(|_| CliError::Config("Workers must be a positive integer".to_owned()))?;
+    args.batch_lines = prompt_text("Batch lines", &args.batch_lines.to_string())?
+        .parse::<usize>()
+        .map_err(|_| CliError::Config("Batch lines must be a positive integer".to_owned()))?;
+    let duration_default = args
+        .duration_secs
+        .map(|v| v.to_string())
+        .unwrap_or_default();
+    let duration_raw = prompt_text(
+        "Duration seconds (optional, blank=run until Ctrl-C)",
+        &duration_default,
+    )?;
+    args.duration_secs = if duration_raw.trim().is_empty() {
+        None
+    } else {
+        Some(duration_raw.parse::<u64>().map_err(|_| {
+            CliError::Config("Duration seconds must be a positive integer".to_owned())
+        })?)
+    };
+
+    Ok(())
+}
+
+#[cfg(test)]
+fn resolve_blast_output_config(args: &BlastArgs) -> Result<logfwd_config::OutputConfig, CliError> {
+    let destination = args
+        .destination
+        .ok_or_else(|| CliError::Config("blast requires --destination".to_owned()))?;
+    logfwd_runtime::generated_cli::resolve_blast_output_config(
+        destination.as_output_type(),
+        args.endpoint.as_deref(),
+        args.auth_bearer_token.as_deref(),
+        &args.auth_header,
+    )
+    .map_err(CliError::Config)
+}
+
+#[cfg(test)]
+fn render_devour_yaml(args: &DevourArgs, listen: &str) -> String {
+    logfwd_runtime::generated_cli::render_devour_yaml(
+        args.mode.spec(),
+        listen,
+        &args.diagnostics_addr,
+    )
+}
+
+#[cfg(test)]
+fn yaml_quote(value: &str) -> String {
+    logfwd_runtime::generated_cli::yaml_quote(value)
+}
+
+fn cmd_generate_json(num_lines: usize, output_file: &str) -> Result<(), CliError> {
+    generate_json_log_file(num_lines, output_file).map_err(CliError::Runtime)
+}
+
+fn cmd_effective_config(config_path: Option<&str>) -> Result<(), CliError> {
+    let config_path = resolve_config_path(config_path)?;
 
     let config_yaml = std::fs::read_to_string(&config_path)
         .map_err(|e| CliError::Config(format!("cannot read {config_path}: {e}")))?;
+    let effective_yaml = logfwd_config::Config::expand_env_str(&config_yaml)
+        .map_err(|e| CliError::Config(e.to_string()))?;
 
-    // Validate that the config parses before dumping.
-    logfwd_config::Config::load_str(&config_yaml).map_err(|e| CliError::Config(e.to_string()))?;
+    // Read-only validation for inspection flows: reject configs that would
+    // fail format or SQL-plan checks without constructing runtime inputs that
+    // bind sockets or touch long-lived resources.
+    let config = logfwd_config::Config::load_str(&config_yaml)
+        .map_err(|e| CliError::Config(e.to_string()))?;
+    let base_path = std::path::Path::new(&config_path).parent();
+    validate_pipelines_read_only(
+        &config,
+        base_path,
+        |_name| {},
+        |err| eprintln!("  {}error{}: {err}", red(), reset()),
+    )?;
 
+    let redacted_yaml = logfwd_diagnostics::diagnostics::redact_config_yaml(&effective_yaml);
     eprintln!("{}# validated from {config_path}{}", dim(), reset());
-    print!("{config_yaml}");
+    print!("{redacted_yaml}");
     Ok(())
 }
 
@@ -446,11 +774,20 @@ fn cmd_init() -> Result<(), CliError> {
     let template = r#"# logfwd configuration
 # Docs: https://github.com/strawgate/memagent
 
-# Simple pipeline: tail a log file, transform with SQL, send via OTLP.
+# ── Quick start ─────────────────────────────────────────────
+# 1. Generate sample data:  logfwd generate-json 10000 sample.json
+# 2. Validate this config:  logfwd validate --config logfwd.yaml
+# 3. Run the pipeline:      logfwd run --config logfwd.yaml
+#
+# For production, change the input path and output to your real
+# source/destination — see the examples at https://github.com/strawgate/memagent/tree/main/examples/use-cases/
+# Or run `logfwd wizard` for an interactive setup.
+
+# Tail a JSON log file and stream new lines as they appear.
 input:
   type: file
-  path: /var/log/*.log
-  # format: json           # auto-detected; uncomment to force
+  path: ./sample.json
+  format: json
 
 # SQL transform (optional) — filter, reshape, or enrich logs.
 # Remove this section to forward all logs unmodified.
@@ -458,11 +795,11 @@ transform: |
   SELECT * FROM logs
   WHERE level IN ('WARN', 'ERROR')
 
+# Print matching logs to the terminal so you can see results immediately.
 output:
-  type: otlp
-  endpoint: http://localhost:4318
+  type: stdout
 
-# Optional: diagnostics dashboard
+# Optional: expose a diagnostics dashboard on http://127.0.0.1:9191
 # server:
 #   diagnostics: "127.0.0.1:9191"
 "#;
@@ -482,132 +819,300 @@ output:
                 CliError::Config(format!("cannot write {}: {e}", path.display()))
             }
         })?;
+    eprintln!("{}created{} {}", green(), reset(), path.display(),);
+    eprintln!();
+    eprintln!("{}Try it now:{}", bold(), reset());
     eprintln!(
-        "{}created{} {} — edit it, then run: {}logfwd -c logfwd.yaml --validate{}",
-        green(),
-        reset(),
-        path.display(),
-        bold(),
-        reset(),
+        "  logfwd generate-json 10000 sample.json   {}# create sample data{}",
+        dim(),
+        reset()
+    );
+    eprintln!(
+        "  logfwd run --config logfwd.yaml           {}# run the pipeline{}",
+        dim(),
+        reset()
     );
     Ok(())
 }
 
-fn cmd_completions(args: &[String]) -> Result<(), CliError> {
-    let shell = args.get(2).map_or("", String::as_str);
-    match shell {
-        "bash" => print!("{}", completions_bash()),
-        "zsh" => print!("{}", completions_zsh()),
-        "fish" => print!("{}", completions_fish()),
-        other => {
-            let msg = if other.is_empty() {
-                "--completions requires a shell name".to_string()
-            } else {
-                format!("unknown shell: {other}")
-            };
-            eprintln!("{}error{}: {msg}", red(), reset());
-            eprintln!("  logfwd --completions <bash|zsh|fish>");
-            return Err(CliError::Config(msg));
-        }
+fn cmd_wizard() -> Result<(), CliError> {
+    use config_templates::{
+        INPUT_TEMPLATES, OUTPUT_TEMPLATES, USE_CASE_TEMPLATES, render_config, render_use_case,
+    };
+
+    if !wizard_uses_interactive_terminals(io::stdin().is_terminal(), io::stdout().is_terminal()) {
+        return Err(CliError::Config(
+            "wizard requires an interactive terminal on stdin and stdout".to_owned(),
+        ));
     }
+    println!("{}logfwd config wizard{}", bold(), reset());
+    println!();
+
+    // Step 1: Choose between a use-case preset or custom input/output.
+    let mode = prompt_select(
+        "How do you want to get started?",
+        &[
+            "Start from a use-case preset",
+            "Pick input and output manually",
+        ],
+    )?;
+
+    let cfg = if mode == 0 {
+        // Use-case mode.
+        let labels: Vec<&str> = USE_CASE_TEMPLATES.iter().map(|t| t.title).collect();
+        let descs: Vec<&str> = USE_CASE_TEMPLATES.iter().map(|t| t.description).collect();
+        let uc_idx = prompt_select_described("Pick a scenario:", &labels, &descs)?;
+        let uc = &USE_CASE_TEMPLATES[uc_idx];
+        println!("{}selected{}: {}", green(), reset(), uc.title,);
+        println!();
+        // TODO: support multiline SQL input (currently single-line via read_line)
+        let sql = prompt_text(
+            "SQL transform (blank = keep the preset default)",
+            uc.transform,
+        )?;
+        let sql_final = if sql.trim().is_empty() {
+            uc.transform
+        } else {
+            sql.trim()
+        };
+        render_use_case(uc, sql_final)
+    } else {
+        // Manual input/output mode.
+        let input_labels: Vec<&str> = INPUT_TEMPLATES.iter().map(|t| t.label).collect();
+        let input_descs: Vec<&str> = INPUT_TEMPLATES.iter().map(|t| t.description).collect();
+        let input_idx =
+            prompt_select_described("What do you want to collect?", &input_labels, &input_descs)?;
+        let output_labels: Vec<&str> = OUTPUT_TEMPLATES.iter().map(|t| t.label).collect();
+        let output_descs: Vec<&str> = OUTPUT_TEMPLATES.iter().map(|t| t.description).collect();
+        let output_idx = prompt_select_described(
+            "Where do you want to send logs?",
+            &output_labels,
+            &output_descs,
+        )?;
+
+        // TODO: support multiline SQL input (currently single-line via read_line)
+        let sql = prompt_text(
+            "Optional SQL transform (blank = SELECT * FROM logs)",
+            "SELECT * FROM logs",
+        )?;
+        let sql = if sql.trim().is_empty() {
+            "SELECT * FROM logs"
+        } else {
+            sql.trim()
+        };
+
+        let input = &INPUT_TEMPLATES[input_idx];
+        let output = &OUTPUT_TEMPLATES[output_idx];
+        render_config(input, output, sql)
+    };
+
+    let output_path = prompt_text("Output file path", "logfwd.generated.yaml")?;
+    let path = std::path::PathBuf::from(output_path.trim());
+    validate_generated_config_read_only(&cfg, &path)?;
+
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .and_then(|mut f| f.write_all(cfg.as_bytes()))
+        .map_err(|e| {
+            if e.kind() == io::ErrorKind::AlreadyExists {
+                CliError::Config(format!(
+                    "{} already exists — refusing to overwrite",
+                    path.display()
+                ))
+            } else {
+                CliError::Config(format!("cannot write {}: {e}", path.display()))
+            }
+        })?;
+
+    eprintln!("{}created{} {}", green(), reset(), path.as_path().display(),);
+    eprintln!(
+        "{}next{}: run {}logfwd validate --config {}{}",
+        dim(),
+        reset(),
+        bold(),
+        path.display(),
+        reset()
+    );
     Ok(())
 }
 
-fn completions_bash() -> &'static str {
-    r#"# logfwd bash completion — add to ~/.bashrc or /etc/bash_completion.d/logfwd
-_logfwd() {
-    local cur prev commands
-    cur="${COMP_WORDS[COMP_CWORD]}"
-    prev="${COMP_WORDS[COMP_CWORD-1]}"
-    commands="--config -c --blackhole --generate-json --dump-config --init --completions --help -h --version -V"
-
-    case "$prev" in
-        --config|-c|--dump-config)
-            COMPREPLY=( $(compgen -f -X '!*.yaml' -- "$cur") $(compgen -f -X '!*.yml' -- "$cur") $(compgen -d -- "$cur") )
-            return 0
-            ;;
-        --completions)
-            COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") )
-            return 0
-            ;;
-    esac
-
-    # After --config <path>, suggest sub-flags
-    local i has_config=0
-    for (( i=1; i < COMP_CWORD; i++ )); do
-        case "${COMP_WORDS[i]}" in
-            --config|-c) has_config=1 ;;
-        esac
-    done
-    if (( has_config )); then
-        COMPREPLY=( $(compgen -W "--validate --check --dry-run" -- "$cur") )
-        return 0
-    fi
-
-    COMPREPLY=( $(compgen -W "$commands" -- "$cur") )
-}
-complete -F _logfwd logfwd
-"#
+fn validate_generated_config_read_only(
+    config_yaml: &str,
+    output_path: &std::path::Path,
+) -> Result<(), CliError> {
+    let config = logfwd_config::Config::load_str(config_yaml)
+        .map_err(|e| CliError::Config(e.to_string()))?;
+    let base_path = output_path.parent();
+    let mut validation_errors = Vec::new();
+    let result = validate_pipelines_read_only(
+        &config,
+        base_path,
+        |_name| {},
+        |err| validation_errors.push(err),
+    );
+    match result {
+        Ok(()) => Ok(()),
+        Err(_) if validation_errors.is_empty() => Err(CliError::Config(
+            "generated config failed validation".to_owned(),
+        )),
+        Err(_) => Err(CliError::Config(format!(
+            "generated config failed validation:\n{}",
+            validation_errors.join("\n")
+        ))),
+    }
 }
 
-fn completions_zsh() -> &'static str {
-    r#"#compdef logfwd
-# logfwd zsh completion — add to your fpath or source directly
+fn prompt_select(prompt: &str, options: &[&str]) -> Result<usize, CliError> {
+    let mut stdout = io::stdout();
+    let stdin = io::stdin();
+    let mut stdin = stdin.lock();
+    loop {
+        println!("{prompt}");
+        for (i, option) in options.iter().enumerate() {
+            println!("  {}) {option}", i + 1);
+        }
+        print!("Enter choice [1-{}]: ", options.len());
+        stdout.flush()?;
 
-_logfwd() {
-    local -a commands subflags
-    commands=(
-        '--config[Run pipeline from YAML config]:config file:_files -g "*.y(a|)ml"'
-        '-c[Run pipeline from YAML config]:config file:_files -g "*.y(a|)ml"'
-        '--blackhole[OTLP blackhole receiver]:bind addr:'
-        '--generate-json[Generate synthetic JSON log file]:lines: :output file:_files'
-        '--dump-config[Print resolved config]:config file:_files -g "*.y(a|)ml"'
-        '--init[Generate starter config]'
-        '--completions[Print shell completions]:shell:(bash zsh fish)'
-        '--help[Show help]'
-        '-h[Show help]'
-        '--version[Show version]'
-        '-V[Show version]'
-    )
-    subflags=(
-        '--validate[Validate config and exit]'
-        '--check[Validate config and exit]'
-        '--dry-run[Build pipelines without running]'
-    )
-
-    # If --config/-c already appears, offer subflags
-    if (( ${words[(I)--config]} || ${words[(I)-c]} )); then
-        _describe 'flag' subflags
-    else
-        _describe 'command' commands
-    fi
+        let line = read_wizard_line(&mut stdin)?;
+        let trimmed = line.trim();
+        if let Ok(v) = trimmed.parse::<usize>()
+            && (1..=options.len()).contains(&v)
+        {
+            println!();
+            return Ok(v - 1);
+        }
+        eprintln!(
+            "{}invalid choice{}: enter a number from 1 to {}",
+            yellow(),
+            reset(),
+            options.len()
+        );
+    }
 }
 
-_logfwd "$@"
-"#
+/// Like [`prompt_select`] but shows a one-line description below each option.
+fn prompt_select_described(
+    prompt: &str,
+    options: &[&str],
+    descriptions: &[&str],
+) -> Result<usize, CliError> {
+    debug_assert_eq!(
+        descriptions.len(),
+        options.len(),
+        "options/descriptions length mismatch"
+    );
+    let mut stdout = io::stdout();
+    let stdin = io::stdin();
+    let mut stdin = stdin.lock();
+    loop {
+        println!("{prompt}");
+        for (i, option) in options.iter().enumerate() {
+            println!("  {}{}) {option}{}", bold(), i + 1, reset());
+            if let Some(desc) = descriptions.get(i)
+                && !desc.is_empty()
+            {
+                println!("     {}{desc}{}", dim(), reset());
+            }
+        }
+        print!("Enter choice [1-{}]: ", options.len());
+        stdout.flush()?;
+
+        let line = read_wizard_line(&mut stdin)?;
+        let trimmed = line.trim();
+        if let Ok(v) = trimmed.parse::<usize>()
+            && (1..=options.len()).contains(&v)
+        {
+            println!();
+            return Ok(v - 1);
+        }
+        eprintln!(
+            "{}invalid choice{}: enter a number from 1 to {}",
+            yellow(),
+            reset(),
+            options.len()
+        );
+    }
 }
 
-fn completions_fish() -> &'static str {
-    r"# logfwd fish completion — save to ~/.config/fish/completions/logfwd.fish
+fn prompt_text(prompt: &str, default: &str) -> Result<String, CliError> {
+    let mut stdout = io::stdout();
+    print!("{prompt} [{default}]: ");
+    stdout.flush()?;
+    let stdin = io::stdin();
+    let mut stdin = stdin.lock();
+    let line = read_wizard_line(&mut stdin)?;
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        Ok(default.to_owned())
+    } else {
+        Ok(trimmed.to_owned())
+    }
+}
 
-# Disable file completions by default
-complete -c logfwd -f
+fn read_wizard_line<R: io::BufRead>(reader: &mut R) -> Result<String, CliError> {
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Err(CliError::Config(
+            "stdin closed while reading wizard input".to_owned(),
+        ));
+    }
+    Ok(line)
+}
 
-# Top-level commands
-complete -c logfwd -l config -s c -d 'Run pipeline from YAML config' -rF
-complete -c logfwd -l blackhole -d 'OTLP blackhole receiver'
-complete -c logfwd -l generate-json -d 'Generate synthetic JSON log file'
-complete -c logfwd -l dump-config -d 'Print resolved config' -rF
-complete -c logfwd -l init -d 'Generate starter config'
-complete -c logfwd -l completions -d 'Print shell completions' -xa 'bash zsh fish'
-complete -c logfwd -l help -s h -d 'Show help'
-complete -c logfwd -l version -s V -d 'Show version'
+fn cmd_completions(shell: CompletionShell) {
+    let mut cmd = Cli::command();
+    let mut stdout = io::stdout();
 
-# Sub-flags for --config
-complete -c logfwd -l validate -d 'Validate config and exit' -n '__fish_seen_argument -l config -s c'
-complete -c logfwd -l check -d 'Validate config and exit' -n '__fish_seen_argument -l config -s c'
-complete -c logfwd -l dry-run -d 'Build pipelines without running' -n '__fish_seen_argument -l config -s c'
-"
+    match shell {
+        CompletionShell::Bash => {
+            clap_complete::generate(clap_complete::Shell::Bash, &mut cmd, "logfwd", &mut stdout);
+        }
+        CompletionShell::Elvish => {
+            clap_complete::generate(
+                clap_complete::Shell::Elvish,
+                &mut cmd,
+                "logfwd",
+                &mut stdout,
+            );
+        }
+        CompletionShell::Fish => {
+            clap_complete::generate(clap_complete::Shell::Fish, &mut cmd, "logfwd", &mut stdout);
+        }
+        CompletionShell::PowerShell => {
+            clap_complete::generate(
+                clap_complete::Shell::PowerShell,
+                &mut cmd,
+                "logfwd",
+                &mut stdout,
+            );
+        }
+        CompletionShell::Zsh => {
+            clap_complete::generate(clap_complete::Shell::Zsh, &mut cmd, "logfwd", &mut stdout);
+        }
+        CompletionShell::Nushell => {
+            clap_complete::generate(
+                clap_complete_nushell::Nushell,
+                &mut cmd,
+                "logfwd",
+                &mut stdout,
+            );
+        }
+    }
+}
+
+fn resolve_config_path(config_path: Option<&str>) -> Result<String, CliError> {
+    if let Some(path) = config_path {
+        return Ok(path.to_owned());
+    }
+    if let Some(path) = discover_config() {
+        return Ok(path.to_string_lossy().to_string());
+    }
+    Err(CliError::Config(
+        "no config file found (use --config or set LOGFWD_CONFIG)".to_owned(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -647,10 +1152,10 @@ fn discover_config() -> Option<std::path::PathBuf> {
                 .ok()
                 .map(|h| PathBuf::from(h).join(".config"))
         });
-    if let Some(xdg) = xdg_base.map(|b| b.join("logfwd/config.yaml")) {
-        if xdg.is_file() {
-            return Some(xdg);
-        }
+    if let Some(xdg) = xdg_base.map(|b| b.join("logfwd/config.yaml"))
+        && xdg.is_file()
+    {
+        return Some(xdg);
     }
 
     // 4. System config
@@ -663,70 +1168,20 @@ fn discover_config() -> Option<std::path::PathBuf> {
 }
 
 // ---------------------------------------------------------------------------
-// Fuzzy flag suggestions (Levenshtein distance)
-// ---------------------------------------------------------------------------
-
-/// Suggest the closest known top-level command flag for a mistyped input.
-fn suggest_flag(input: &str) -> Option<&'static str> {
-    let known = &[
-        "--config",
-        "-c",
-        "--blackhole",
-        "--generate-json",
-        "--dump-config",
-        "--init",
-        "--completions",
-        "--help",
-        "-h",
-        "--version",
-        "-V",
-    ];
-    closest_match(input, known)
-}
-
-/// Return the closest string from `candidates` if within edit distance 3.
-fn closest_match<'a>(input: &str, candidates: &[&'a str]) -> Option<&'a str> {
-    let mut best: Option<(&str, usize)> = None;
-    for &candidate in candidates {
-        let dist = edit_distance(input, candidate);
-        if dist <= 3 && best.as_ref().is_none_or(|(_, d)| dist < *d) {
-            best = Some((candidate, dist));
-        }
-    }
-    best.map(|(s, _)| s)
-}
-
-/// Levenshtein edit distance between two strings.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let m = a.len();
-    let n = b.len();
-
-    let mut prev = (0..=n).collect::<Vec<_>>();
-    let mut curr = vec![0; n + 1];
-
-    for i in 1..=m {
-        curr[0] = i;
-        for j in 1..=n {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
-        }
-        std::mem::swap(&mut prev, &mut curr);
-    }
-    prev[n]
-}
-
-// ---------------------------------------------------------------------------
 // Pipeline runner
 // ---------------------------------------------------------------------------
 
-/// Validate config by building all pipelines. Used by --validate and --dry-run.
-fn validate_pipelines(
+/// Validate config by building all pipelines. Used by `validate` and `dry-run`.
+fn validate_pipelines_inner<FReady, FError>(
     config: &logfwd_config::Config,
-    dry_run: bool,
     base_path: Option<&std::path::Path>,
-) -> Result<(), CliError> {
+    mut on_ready: FReady,
+    mut on_error: FError,
+) -> Result<(), CliError>
+where
+    FReady: FnMut(&str),
+    FError: FnMut(String),
+{
     use logfwd::pipeline::Pipeline;
 
     // Build a no-op meter for validation (no OTel export needed).
@@ -741,19 +1196,14 @@ fn validate_pipelines(
                 // errors (duplicate aliases, bad window specs) that only
                 // surface on the first real batch at runtime.
                 if let Err(e) = pipeline.validate_sql_plan() {
-                    eprintln!(
-                        "  {}error{}: pipeline '{name}' SQL plan: {e}",
-                        red(),
-                        reset()
-                    );
+                    on_error(format!("pipeline '{name}' SQL plan: {e}"));
                     errors += 1;
                     continue;
                 }
-                // Success output goes to stdout so scripts can capture it.
-                println!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
+                on_ready(name);
             }
             Err(e) => {
-                eprintln!("  {}error{}: pipeline '{name}': {e}", red(), reset());
+                on_error(format!("pipeline '{name}': {e}"));
                 errors += 1;
             }
         }
@@ -764,6 +1214,408 @@ fn validate_pipelines(
             "{errors} error(s) during validation"
         )));
     }
+
+    Ok(())
+}
+
+fn validate_pipelines_read_only<FReady, FError>(
+    config: &logfwd_config::Config,
+    base_path: Option<&std::path::Path>,
+    mut on_ready: FReady,
+    mut on_error: FError,
+) -> Result<(), CliError>
+where
+    FReady: FnMut(&str),
+    FError: FnMut(String),
+{
+    let mut errors = 0;
+    for (name, pipe_cfg) in &config.pipelines {
+        match validate_pipeline_read_only(pipe_cfg, base_path) {
+            Ok(()) => on_ready(name),
+            Err(err) => {
+                on_error(format!("pipeline '{name}': {err}"));
+                errors += 1;
+            }
+        }
+    }
+
+    if errors > 0 {
+        return Err(CliError::Config(format!(
+            "{errors} error(s) during validation"
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_transform_probe_read_only(
+    transform: &mut logfwd::transform::SqlTransform,
+) -> Result<(), String> {
+    use arrow::array::{ArrayRef, StringArray};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::record_batch::RecordBatch;
+
+    let fields: Vec<Field> = if transform.analyzer().referenced_columns.is_empty() {
+        vec![
+            Field::new("body", DataType::Utf8, true),
+            Field::new("level", DataType::Utf8, true),
+            Field::new("msg", DataType::Utf8, true),
+        ]
+    } else {
+        transform
+            .analyzer()
+            .referenced_columns
+            .iter()
+            .map(|name| Field::new(name, DataType::Utf8, true))
+            .collect()
+    };
+
+    let schema = Arc::new(Schema::new(fields.clone()));
+    let arrays: Vec<ArrayRef> = fields
+        .iter()
+        .map(|_| Arc::new(StringArray::from(vec![Some("x")])) as ArrayRef)
+        .collect();
+    let batch = RecordBatch::try_new(schema, arrays)
+        .map_err(|e| format!("failed to build probe batch: {e}"))?;
+    transform
+        .execute_blocking(batch)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+fn validate_pipeline_read_only(
+    config: &logfwd_config::PipelineConfig,
+    base_path: Option<&std::path::Path>,
+) -> Result<(), String> {
+    use logfwd::transform::SqlTransform;
+    #[cfg(feature = "datafusion")]
+    use logfwd_config::{EnrichmentConfig, GeoDatabaseFormat};
+    use logfwd_config::{Format, InputTypeConfig};
+    #[cfg(feature = "datafusion")]
+    use std::path::PathBuf;
+
+    if config.workers == Some(0) {
+        return Err("workers must be >= 1".to_owned());
+    }
+    if config.batch_target_bytes == Some(0) {
+        return Err("batch_target_bytes must be > 0".to_owned());
+    }
+    #[cfg(not(feature = "datafusion"))]
+    let _ = base_path;
+
+    #[cfg(feature = "datafusion")]
+    let (enrichment_tables, geo_database) = {
+        let mut enrichment_tables: Vec<Arc<dyn logfwd::transform::enrichment::EnrichmentTable>> =
+            Vec::new();
+        let mut geo_database: Option<Arc<dyn logfwd::transform::enrichment::GeoDatabase>> = None;
+
+        for enrichment in &config.enrichment {
+            match enrichment {
+                EnrichmentConfig::GeoDatabase(geo_cfg) => {
+                    let mut path = PathBuf::from(&geo_cfg.path);
+                    if path.is_relative()
+                        && let Some(base) = base_path
+                    {
+                        path = base.join(path);
+                    }
+                    let db: Arc<dyn logfwd::transform::enrichment::GeoDatabase> =
+                        match geo_cfg.format {
+                            GeoDatabaseFormat::Mmdb => {
+                                let mmdb =
+                                    logfwd::transform::udf::geo_lookup::MmdbDatabase::open(&path)
+                                        .map_err(|e| {
+                                        format!(
+                                            "failed to open geo database '{}': {e}",
+                                            path.display()
+                                        )
+                                    })?;
+                                Arc::new(mmdb)
+                            }
+                            GeoDatabaseFormat::CsvRange => {
+                                let csv = logfwd::transform::udf::CsvRangeDatabase::open(&path)
+                                    .map_err(|e| {
+                                        format!(
+                                            "failed to open CSV range geo database '{}': {e}",
+                                            path.display()
+                                        )
+                                    })?;
+                                Arc::new(csv)
+                            }
+                            _ => {
+                                return Err(format!(
+                                    "unsupported geo database format: {:?}",
+                                    geo_cfg.format
+                                ));
+                            }
+                        };
+                    geo_database = Some(db);
+                }
+                EnrichmentConfig::Static(cfg) => {
+                    let labels: Vec<(String, String)> = cfg
+                        .labels
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    let table = Arc::new(
+                        logfwd::transform::enrichment::StaticTable::new(&cfg.table_name, &labels)
+                            .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?,
+                    );
+                    enrichment_tables.push(table);
+                }
+                EnrichmentConfig::HostInfo(_) => {
+                    enrichment_tables
+                        .push(Arc::new(logfwd::transform::enrichment::HostInfoTable::new()));
+                }
+                EnrichmentConfig::K8sPath(cfg) => {
+                    enrichment_tables.push(Arc::new(
+                        logfwd::transform::enrichment::K8sPathTable::new(&cfg.table_name),
+                    ));
+                }
+                EnrichmentConfig::Csv(cfg) => {
+                    let mut path = PathBuf::from(&cfg.path);
+                    if path.is_relative()
+                        && let Some(base) = base_path
+                    {
+                        path = base.join(path);
+                    }
+                    let table = Arc::new(logfwd::transform::enrichment::CsvFileTable::new(
+                        &cfg.table_name,
+                        &path,
+                    ));
+                    table
+                        .reload()
+                        .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
+                    enrichment_tables.push(table);
+                }
+                EnrichmentConfig::Jsonl(cfg) => {
+                    let mut path = PathBuf::from(&cfg.path);
+                    if path.is_relative()
+                        && let Some(base) = base_path
+                    {
+                        path = base.join(path);
+                    }
+                    let table = Arc::new(logfwd::transform::enrichment::JsonLinesFileTable::new(
+                        &cfg.table_name,
+                        &path,
+                    ));
+                    table
+                        .reload()
+                        .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
+                    enrichment_tables.push(table);
+                }
+                EnrichmentConfig::EnvVars(cfg) => {
+                    let table = Arc::new(
+                        logfwd::transform::enrichment::EnvTable::from_prefix(
+                            &cfg.table_name,
+                            &cfg.prefix,
+                        )
+                        .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?,
+                    );
+                    enrichment_tables.push(table);
+                }
+                EnrichmentConfig::ProcessInfo(_) => {
+                    enrichment_tables.push(Arc::new(
+                        logfwd::transform::enrichment::ProcessInfoTable::new(),
+                    ));
+                }
+                EnrichmentConfig::KvFile(cfg) => {
+                    let mut path = PathBuf::from(&cfg.path);
+                    if path.is_relative()
+                        && let Some(base) = base_path
+                    {
+                        path = base.join(path);
+                    }
+                    let table = Arc::new(logfwd::transform::enrichment::KvFileTable::new(
+                        &cfg.table_name,
+                        &path,
+                    ));
+                    table
+                        .reload()
+                        .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
+                    enrichment_tables.push(table);
+                }
+                EnrichmentConfig::NetworkInfo(_) => {
+                    enrichment_tables.push(Arc::new(
+                        logfwd::transform::enrichment::NetworkInfoTable::new(),
+                    ));
+                }
+                EnrichmentConfig::ContainerInfo(_) => {
+                    enrichment_tables.push(Arc::new(
+                        logfwd::transform::enrichment::ContainerInfoTable::new(),
+                    ));
+                }
+                EnrichmentConfig::K8sClusterInfo(_) => {
+                    enrichment_tables.push(Arc::new(
+                        logfwd::transform::enrichment::K8sClusterInfoTable::new(),
+                    ));
+                }
+            }
+        }
+
+        (enrichment_tables, geo_database)
+    };
+
+    #[cfg(not(feature = "datafusion"))]
+    if !config.enrichment.is_empty() {
+        return Err(
+            "pipeline enrichment requires DataFusion. Build default/full logfwd \
+             (or add `--features datafusion`)"
+                .to_owned(),
+        );
+    }
+
+    let pipeline_sql = config.transform.as_deref().unwrap_or("SELECT * FROM logs");
+    for (i, input_cfg) in config.inputs.iter().enumerate() {
+        let input_name = input_cfg
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("input_{i}"));
+        if matches!(
+            input_cfg.type_config,
+            InputTypeConfig::LinuxEbpfSensor(_)
+                | InputTypeConfig::MacosEsSensor(_)
+                | InputTypeConfig::WindowsEbpfSensor(_)
+                | InputTypeConfig::HostMetrics(_)
+                | InputTypeConfig::ArrowIpc(_)
+        ) {
+            if input_cfg.format.is_some() {
+                return Err(format!(
+                    "input '{input_name}': sensor inputs do not support 'format' (Arrow-native input)"
+                ));
+            }
+        } else {
+            let format = input_cfg
+                .format
+                .clone()
+                .unwrap_or(match input_cfg.type_config {
+                    InputTypeConfig::File(_) => Format::Auto,
+                    _ => Format::Json,
+                });
+            validate_input_format_read_only(&input_name, input_cfg.input_type(), &format)?;
+        }
+
+        let input_sql = input_cfg.sql.as_deref().unwrap_or(pipeline_sql);
+        let mut transform = SqlTransform::new(input_sql).map_err(|e| e.to_string())?;
+        #[cfg(feature = "datafusion")]
+        {
+            if let Some(ref db) = geo_database {
+                transform.set_geo_database(Arc::clone(db));
+            }
+            for table in &enrichment_tables {
+                transform
+                    .add_enrichment_table(Arc::clone(table))
+                    .map_err(|e| format!("input '{}': enrichment error: {e}", input_name))?;
+            }
+        }
+        validate_transform_probe_read_only(&mut transform)
+            .map_err(|e| format!("input '{}': {e}", input_name))?;
+    }
+
+    Ok(())
+}
+
+fn validate_input_format_read_only(
+    name: &str,
+    input_type: logfwd_config::InputType,
+    format: &logfwd_config::Format,
+) -> Result<(), String> {
+    use logfwd_config::{Format, InputType};
+
+    let supported = match input_type {
+        InputType::File => matches!(
+            format,
+            Format::Cri | Format::Auto | Format::Json | Format::Raw
+        ),
+        InputType::Generator | InputType::Otlp => matches!(format, Format::Json),
+        InputType::Http => matches!(format, Format::Json | Format::Raw),
+        InputType::Udp | InputType::Tcp => matches!(format, Format::Json | Format::Raw),
+        InputType::ArrowIpc => false,
+        InputType::Journald => matches!(format, Format::Json),
+        other => {
+            tracing::warn!(
+                "validate_input_format_read_only: unhandled input type {other:?} for input {name}"
+            );
+            return Err(format!(
+                "input '{name}': type {:?} is not yet supported in read-only validation",
+                other
+            ));
+        }
+    };
+
+    if supported {
+        return Ok(());
+    }
+
+    Err(format!(
+        "input '{name}': format {:?} is not supported for {:?} inputs",
+        format, input_type
+    ))
+}
+
+#[cfg(test)]
+fn collect_yaml_files_recursive(
+    dir: &std::path::Path,
+    out: &mut Vec<std::path::PathBuf>,
+) -> io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_dir() {
+            collect_yaml_files_recursive(&path, out)?;
+        } else if path.extension().is_some_and(|ext| ext == "yaml") {
+            out.push(path);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn replace_env_placeholders_for_example_validation(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut cursor = 0usize;
+
+    while let Some(rel_start) = input[cursor..].find("${") {
+        let start = cursor + rel_start;
+        out.push_str(&input[cursor..start]);
+        let value_start = start + 2;
+        if let Some(rel_end) = input[value_start..].find('}') {
+            let end = value_start + rel_end;
+            if end > value_start {
+                out.push_str("example-env-value");
+            } else {
+                out.push_str("${}");
+            }
+            cursor = end + 1;
+        } else {
+            out.push_str(&input[start..]);
+            cursor = input.len();
+            break;
+        }
+    }
+
+    if cursor < input.len() {
+        out.push_str(&input[cursor..]);
+    }
+
+    out
+}
+
+fn validate_pipelines(
+    config: &logfwd_config::Config,
+    dry_run: bool,
+    base_path: Option<&std::path::Path>,
+) -> Result<(), CliError> {
+    validate_pipelines_inner(
+        config,
+        base_path,
+        |name| {
+            // Success output goes to stdout so scripts can capture it.
+            println!("  {}ready{}: {}{name}{}", green(), reset(), bold(), reset());
+        },
+        |err| {
+            eprintln!("  {}error{}: {err}", red(), reset());
+        },
+    )?;
 
     let label = if dry_run { "dry run ok" } else { "config ok" };
     // Success summary goes to stdout so scripts can parse it reliably.
@@ -776,563 +1628,111 @@ fn validate_pipelines(
     Ok(())
 }
 
-fn input_label(i: &logfwd_config::InputConfig) -> String {
-    use logfwd_config::InputType;
-    match i.input_type {
-        InputType::File => format!("file  {}", i.path.as_deref().unwrap_or("*")),
-        InputType::Tcp => format!("tcp   {}", i.listen.as_deref().unwrap_or(":514")),
-        InputType::Udp => format!("udp   {}", i.listen.as_deref().unwrap_or(":514")),
-        InputType::Otlp => format!("otlp  {}", i.listen.as_deref().unwrap_or(":4318")),
-        InputType::Generator => "generator".to_string(),
-        _ => "unknown".to_string(),
-    }
-}
-
-fn output_label(o: &logfwd_config::OutputConfig) -> String {
-    use logfwd_config::OutputType;
-    match o.output_type {
-        OutputType::Otlp => format!("otlp  {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::Http => format!("http  {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::Elasticsearch => {
-            format!("elasticsearch  {}", o.endpoint.as_deref().unwrap_or(""))
-        }
-        OutputType::Loki => format!("loki  {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::Tcp => format!("tcp   {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::Udp => format!("udp   {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::File => format!("file  {}", o.path.as_deref().unwrap_or("")),
-        OutputType::Parquet => format!("parquet  {}", o.path.as_deref().unwrap_or("")),
-        OutputType::Stdout => "stdout".to_string(),
-        OutputType::Null => "null".to_string(),
-        _ => "unknown".to_string(),
-    }
-}
-
 async fn run_pipelines(
     config: logfwd_config::Config,
     base_path: Option<&std::path::Path>,
     config_path: &str,
     config_yaml: &str,
+    auto_shutdown_after: Option<Duration>,
 ) -> Result<(), CliError> {
-    let startup_start = std::time::Instant::now();
-    use logfwd::pipeline::Pipeline;
-    use logfwd_io::diagnostics::DiagnosticsServer;
-    use tracing_subscriber::Layer;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::util::SubscriberInitExt;
-
-    // Acquire exclusive lock only when tailing files — OTLP-only and
-    // blackhole pipelines don't need filesystem locking (#737).
-    let has_file_inputs = config.pipelines.values().any(|pipe| {
-        pipe.inputs
-            .iter()
-            .any(|input| matches!(input.input_type, logfwd_config::InputType::File))
-    });
-    let _lock_guard = if has_file_inputs {
-        acquire_instance_lock(&config)?
-    } else {
-        None
-    };
-
-    let shutdown = CancellationToken::new();
-
-    #[cfg(unix)]
-    let (mut sigterm, mut sighup) = {
-        use tokio::signal::unix::{SignalKind, signal};
-        let sigterm = signal(SignalKind::terminate()).map_err(|err| {
-            CliError::Runtime(io::Error::other(format!(
-                "failed to register SIGTERM handler: {err}"
-            )))
-        })?;
-        let sighup = signal(SignalKind::hangup()).map_err(|err| {
-            CliError::Runtime(io::Error::other(format!(
-                "failed to register SIGHUP handler: {err}"
-            )))
-        })?;
-        (sigterm, sighup)
-    };
-
-    // Listen for SIGINT (Ctrl-C) and SIGTERM to trigger graceful shutdown.
-    #[cfg(feature = "dhat-heap")]
-    let profiler = dhat::Profiler::new_heap();
-
-    #[cfg(feature = "cpu-profiling")]
-    let pprof_guard = pprof::ProfilerGuardBuilder::default()
-        .frequency(999)
-        .blocklist(&["libc", "libgcc", "pthread", "vdso"])
-        .build()
-        .map_err(|e| {
-            CliError::Runtime(io::Error::other(format!(
-                "failed to initialize pprof profiler: {e}"
-            )))
-        })?;
-
-    let shutdown_for_signal = shutdown.clone();
-    tokio::spawn(async move {
-        #[cfg(feature = "dhat-heap")]
-        let _profiler_to_drop = profiler;
-
-        #[cfg(feature = "cpu-profiling")]
-        let _pprof_to_drop = pprof_guard;
-
-        #[cfg(unix)]
-        {
-            // Install a SIGHUP handler so logrotate / supervisors don't kill us.
-            // Config reload is not yet implemented; we ignore SIGHUP and log a warning.
-            loop {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => break,
-                    _ = sigterm.recv() => break,
-                    _ = sighup.recv() => {
-                        eprintln!(
-                            "{}logfwd{}: SIGHUP received — config reload not yet implemented, ignoring",
-                            yellow(), reset(),
-                        );
-                        // Continue the loop — SIGHUP does not trigger shutdown.
-                    }
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        {
-            tokio::signal::ctrl_c().await.ok();
-        }
-
-        #[cfg(feature = "cpu-profiling")]
-        {
-            if let Ok(report) = _pprof_to_drop.report().build() {
-                if let Ok(file) = std::fs::File::create("flamegraph.svg") {
-                    let _ = report.flamegraph(file);
-                }
-            }
-        }
-
-        #[cfg(feature = "dhat-heap")]
-        drop(_profiler_to_drop);
-
-        shutdown_for_signal.cancel();
-    });
-
-    let meter_provider = build_meter_provider(&config)?;
-    let meter = meter_provider.meter("logfwd");
-
-    // Set up the tracing subscriber with an OTel layer that routes spans
-    // to our in-process ring buffer (and optionally to an OTLP endpoint),
-    // plus a stderr fmt layer so tracing events are visible on the console.
-    let trace_buf = logfwd_io::span_exporter::SpanBuffer::new();
-    let tracer_provider = build_tracer_provider(trace_buf.clone(), &config)?;
-    let tracer = opentelemetry::trace::TracerProvider::tracer(&tracer_provider, "logfwd");
-    let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-
-    let env_filter = tracing_subscriber::EnvFilter::try_from_env("LOGFWD_LOG")
-        .or_else(|_| tracing_subscriber::EnvFilter::try_from_default_env())
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-    let fmt_layer = if use_json_logs_for_stderr(io::stderr().is_terminal()) {
-        tracing_subscriber::fmt::layer()
-            .json()
-            .with_writer(io::stderr)
-            .with_target(true)
-            .boxed()
-    } else {
-        tracing_subscriber::fmt::layer()
-            .with_writer(io::stderr)
-            .with_target(true)
-            .boxed()
-    };
-    // Apply env_filter only to the fmt layer so it doesn't suppress OTel spans.
-    let _ = tracing_subscriber::registry()
-        .with(fmt_layer.with_filter(env_filter))
-        .with(otel_layer)
-        .try_init(); // ignore error if a subscriber is already installed (e.g. in tests)
-    opentelemetry::global::set_tracer_provider(tracer_provider.clone());
-
-    let mut pipelines = Vec::new();
-    for (name, pipe_cfg) in &config.pipelines {
-        match Pipeline::from_config(name, pipe_cfg, &meter, base_path) {
-            Ok(pipeline) => {
-                pipelines.push(pipeline);
-            }
-            Err(e) => {
-                return Err(CliError::Config(format!("pipeline '{name}': {e}")));
-            }
-        }
-    }
-
-    let diag_handle = if let Some(ref addr) = config.server.diagnostics {
-        let mut server = DiagnosticsServer::new(addr);
-        server.set_config(config_path, config_yaml);
-        server.set_trace_buffer(trace_buf);
-        for p in &pipelines {
-            server.add_pipeline(Arc::clone(p.metrics()));
-        }
-        #[cfg(unix)]
-        server.set_memory_stats_fn(jemalloc_stats);
-        let (handle, _) = server.start()?;
-        Some((handle, addr.clone()))
-    } else {
-        None
-    };
-
-    // Save metrics references for shutdown summary.
-    let pipeline_metrics: Vec<_> = pipelines.iter().map(|p| Arc::clone(p.metrics())).collect();
-
-    eprintln!("{}logfwd{} {}v{VERSION}{}", bold(), reset(), dim(), reset());
-
-    // Print startup summary after everything is ready.
-    for (name, pipe_cfg) in &config.pipelines {
-        eprintln!();
-        eprintln!("  {}✓{}  {}{name}{}", green(), reset(), bold(), reset());
-        for input in &pipe_cfg.inputs {
-            eprintln!("     {}in{}   {}", dim(), reset(), input_label(input));
-        }
-        if let Some(sql) = pipe_cfg.transform.as_deref() {
-            let sql = sql.trim();
-            let first_line = sql.lines().next().unwrap_or(sql);
-            let truncated = if first_line.chars().count() > 100 {
-                format!("{}…", first_line.chars().take(100).collect::<String>())
-            } else {
-                first_line.to_string()
-            };
-            eprintln!("     {}sql{}  {truncated}", dim(), reset());
-        }
-        for output in &pipe_cfg.outputs {
-            eprintln!("     {}out{}  {}", dim(), reset(), output_label(output));
-        }
-    }
-    if let Some((_, ref addr)) = diag_handle {
-        eprintln!();
-        eprintln!("  {}dashboard{}  http://{addr}", bold(), reset());
-    }
-    eprintln!();
-    let n = pipelines.len();
-    let startup_ms = startup_start.elapsed().as_millis();
-    eprintln!(
-        "{}ready{} · {n} pipeline{} {}(started in {startup_ms}ms){}",
-        green(),
-        reset(),
-        if n == 1 { "" } else { "s" },
-        dim(),
-        reset(),
-    );
-
-    let mut handles = Vec::new();
-    let main_pipeline = pipelines.pop();
-
-    for mut pipeline in pipelines {
-        let sd = shutdown.clone();
-        handles.push(tokio::spawn(async move { pipeline.run_async(&sd).await }));
-    }
-
-    if let Some(mut main_pipe) = main_pipeline {
-        let result = main_pipe.run_async(&shutdown).await;
-        // Always cancel + join siblings, even if main pipeline errored.
-        shutdown.cancel();
-        let mut had_sibling_error = false;
-        for h in handles {
-            match h.await {
-                Ok(Err(e)) => {
-                    eprintln!("pipeline error: {e}");
-                    had_sibling_error = true;
-                }
-                Err(e) => {
-                    eprintln!("pipeline task panicked: {e}");
-                    had_sibling_error = true;
-                }
-                Ok(Ok(())) => {}
-            }
-        }
-        result?;
-        if had_sibling_error {
-            return Err(CliError::Runtime(io::Error::other(
-                "one or more sibling pipelines failed",
-            )));
-        }
-    } else {
-        let mut had_error = false;
-        for h in handles {
-            match h.await {
-                Ok(Err(e)) => {
-                    eprintln!("pipeline error: {e}");
-                    had_error = true;
-                }
-                Err(e) => {
-                    eprintln!("pipeline task panicked: {e}");
-                    had_error = true;
-                }
-                Ok(Ok(())) => {}
-            }
-        }
-        if had_error {
-            return Err(CliError::Runtime(io::Error::other(
-                "one or more pipelines failed",
-            )));
-        }
-    }
-
-    // Print shutdown summary.
-    print_shutdown_stats(&pipeline_metrics, startup_start.elapsed());
-
-    if let Err(e) = meter_provider.shutdown() {
-        eprintln!(
-            "{}warning{}: meter provider shutdown: {e}",
-            yellow(),
-            reset()
-        );
-    }
-    if let Err(e) = tracer_provider.shutdown() {
-        eprintln!(
-            "{}warning{}: tracer provider shutdown: {e}",
-            yellow(),
-            reset()
-        );
-    }
-
-    Ok(())
+    logfwd_runtime::bootstrap::run_pipelines(
+        config,
+        base_path,
+        logfwd_runtime::bootstrap::RunOptions {
+            config_path,
+            config_yaml,
+            version: VERSION,
+            use_color: use_color(),
+            json_logs_for_stderr: use_json_logs_for_stderr(io::stderr().is_terminal()),
+            auto_shutdown_after,
+        },
+    )
+    .await
+    .map_err(Into::into)
 }
 
-// ---------------------------------------------------------------------------
-// Shutdown summary
-// ---------------------------------------------------------------------------
-
-fn print_shutdown_stats(
-    metrics: &[Arc<logfwd_io::diagnostics::PipelineMetrics>],
-    uptime: std::time::Duration,
-) {
-    use std::sync::atomic::Ordering::Relaxed;
-
-    let total_lines_in: u64 = metrics
-        .iter()
-        .map(|m| m.transform_in.lines_total.load(Relaxed))
-        .sum();
-    let total_lines_out: u64 = metrics
-        .iter()
-        .map(|m| m.transform_out.lines_total.load(Relaxed))
-        .sum();
-    let total_bytes_in: u64 = metrics
-        .iter()
-        .map(|m| m.transform_in.bytes_total.load(Relaxed))
-        .sum();
-    let total_batches: u64 = metrics.iter().map(|m| m.batches_total.load(Relaxed)).sum();
-    let total_errors: u64 = metrics
-        .iter()
-        .map(|m| m.transform_errors.load(Relaxed))
-        .sum();
-    let total_dropped: u64 = metrics
-        .iter()
-        .map(|m| m.dropped_batches_total.load(Relaxed))
-        .sum();
-
-    eprintln!();
-    eprintln!(
-        "{}stopped{} · uptime {}",
-        dim(),
-        reset(),
-        format_duration(uptime),
-    );
-
-    if total_lines_in > 0 || total_batches > 0 {
-        eprintln!(
-            "  lines  {} in → {} out  ({} batches)",
-            format_count(total_lines_in),
-            format_count(total_lines_out),
-            format_count(total_batches),
-        );
-        if total_bytes_in > 0 {
-            eprintln!("  bytes  {} in", format_bytes(total_bytes_in));
-        }
-        if total_errors > 0 || total_dropped > 0 {
-            eprintln!(
-                "  {}errors{} {} transform, {} dropped batches",
-                yellow(),
-                reset(),
-                total_errors,
-                total_dropped,
-            );
-        }
-    }
+#[cfg(test)]
+fn format_duration(d: Duration) -> String {
+    logfwd_runtime::bootstrap::format_duration(d)
 }
 
-fn format_duration(d: std::time::Duration) -> String {
-    let secs = d.as_secs();
-    if secs < 60 {
-        format!("{secs}s")
-    } else if secs < 3600 {
-        format!("{}m {}s", secs / 60, secs % 60)
-    } else {
-        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
-    }
-}
-
+#[cfg(test)]
 fn format_count(n: u64) -> String {
-    if n < 1_000 {
-        n.to_string()
-    } else if n < 1_000_000 {
-        format!("{:.1}K", n as f64 / 1_000.0)
-    } else if n < 1_000_000_000 {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    } else {
-        format!("{:.1}B", n as f64 / 1_000_000_000.0)
-    }
+    logfwd_runtime::bootstrap::format_count(n)
 }
 
+#[cfg(test)]
 fn format_bytes(b: u64) -> String {
-    if b < 1024 {
-        format!("{b} B")
-    } else if b < 1024 * 1024 {
-        format!("{:.1} KB", b as f64 / 1024.0)
-    } else if b < 1024 * 1024 * 1024 {
-        format!("{:.1} MB", b as f64 / (1024.0 * 1024.0))
-    } else {
-        format!("{:.1} GB", b as f64 / (1024.0 * 1024.0 * 1024.0))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Instance lock (#737)
-// ---------------------------------------------------------------------------
-
-/// Acquire an exclusive lock file to prevent multiple logfwd instances from
-/// processing the same data directory. Returns a guard that holds the lock
-/// for the lifetime of the caller.
-///
-/// On non-Unix platforms, logs a warning and returns a dummy guard.
-fn acquire_instance_lock(
-    config: &logfwd_config::Config,
-) -> Result<Option<std::fs::File>, CliError> {
-    let data_dir = config.storage.data_dir.as_ref().map_or_else(
-        logfwd_io::checkpoint::default_data_dir,
-        std::path::PathBuf::from,
-    );
-    std::fs::create_dir_all(&data_dir)?;
-    let lock_path = data_dir.join("logfwd.lock");
-    let lock_file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&lock_path)?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::io::AsRawFd;
-        // SAFETY: `lock_file` is an open `File`, so `as_raw_fd()` returns a valid
-        // file descriptor. `libc::flock` is safe to call on any valid fd — it only
-        // manipulates the kernel-level advisory lock, no memory mutation.
-        let ret = unsafe { libc::flock(lock_file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
-        if ret != 0 {
-            let err = io::Error::last_os_error();
-            if err.kind() == io::ErrorKind::WouldBlock || err.raw_os_error() == Some(libc::EAGAIN) {
-                return Err(CliError::Runtime(io::Error::other(format!(
-                    "another logfwd instance is already running (lock: {})",
-                    lock_path.display()
-                ))));
-            }
-            return Err(CliError::Runtime(err));
-        }
-        // Note: tracing subscriber not yet initialized at this point.
-    }
-
-    #[cfg(not(unix))]
-    eprintln!("warn: file-based instance locking not supported on this platform");
-
-    // Return the File so the lock is held until the caller drops it.
-    Ok(Some(lock_file))
-}
-
-// ---------------------------------------------------------------------------
-// OTel metrics
-// ---------------------------------------------------------------------------
-
-fn build_meter_provider(
-    config: &logfwd_config::Config,
-) -> io::Result<opentelemetry_sdk::metrics::SdkMeterProvider> {
-    use opentelemetry_sdk::metrics::SdkMeterProvider;
-
-    if let Some(ref endpoint) = config.server.metrics_endpoint {
-        let interval_secs = config.server.metrics_interval_secs.unwrap_or(60);
-
-        let otlp_exporter = opentelemetry_otlp::MetricExporter::builder()
-            .with_http()
-            .with_endpoint(endpoint)
-            .build()
-            .map_err(|e| io::Error::other(format!("OTLP metric exporter: {e}")))?;
-
-        let reader = opentelemetry_sdk::metrics::PeriodicReader::builder(otlp_exporter)
-            .with_interval(std::time::Duration::from_secs(interval_secs))
-            .build();
-
-        eprintln!(
-            "  {}metrics push{}: {endpoint} (every {interval_secs}s)",
-            dim(),
-            reset(),
-        );
-
-        Ok(SdkMeterProvider::builder().with_reader(reader).build())
-    } else {
-        Ok(SdkMeterProvider::builder().build())
-    }
-}
-
-// ---------------------------------------------------------------------------
-// OTel tracing + in-process span buffer
-// ---------------------------------------------------------------------------
-
-/// Build a `SdkTracerProvider` that writes completed spans into `buf`.
-/// If `config.server.traces_endpoint` is set, also pushes via OTLP.
-pub fn build_tracer_provider(
-    buf: logfwd_io::span_exporter::SpanBuffer,
-    config: &logfwd_config::Config,
-) -> io::Result<opentelemetry_sdk::trace::SdkTracerProvider> {
-    use logfwd_io::span_exporter::RingBufferExporter;
-    use opentelemetry_sdk::trace::{SdkTracerProvider, SimpleSpanProcessor};
-
-    let ring_processor = SimpleSpanProcessor::new(RingBufferExporter::new(buf));
-
-    let mut builder = SdkTracerProvider::builder().with_span_processor(ring_processor);
-
-    if let Some(ref endpoint) = config.server.traces_endpoint {
-        let otlp_exporter = opentelemetry_otlp::SpanExporter::builder()
-            .with_http()
-            .with_endpoint(endpoint)
-            .build()
-            .map_err(|e| io::Error::other(format!("OTLP trace exporter: {e}")))?;
-        builder = builder.with_span_processor(
-            opentelemetry_sdk::trace::BatchSpanProcessor::builder(otlp_exporter).build(),
-        );
-        eprintln!(
-            "  {}traces push{}: {}",
-            dim(),
-            reset(),
-            redact_url(endpoint)
-        );
-    }
-
-    Ok(builder.build())
-}
-
-/// Return a URL with credentials and query parameters stripped, for safe logging.
-/// Falls back to the original string if parsing fails.
-fn redact_url(url: &str) -> String {
-    // Find scheme end ("://")
-    let after_scheme = url.find("://").map_or(0, |i| i + 3);
-    let rest = &url[after_scheme..];
-    // Strip userinfo (anything before '@' in the authority)
-    let host_start = rest.find('@').map_or(0, |i| i + 1);
-    let authority_and_path = &rest[host_start..];
-    // Strip path/query/fragment — keep only host:port
-    let host_end = authority_and_path
-        .find(['/', '?', '#'])
-        .unwrap_or(authority_and_path.len());
-    let host = &authority_and_path[..host_end];
-    if host.is_empty() {
-        return url.to_string();
-    }
-    format!("{}://{}", &url[..after_scheme.saturating_sub(3)], host)
+    logfwd_runtime::bootstrap::format_bytes(b)
 }
 
 // ---------------------------------------------------------------------------
 // Data generation
 // ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TimestampParts {
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u64,
+    minute: u64,
+    second: u64,
+    millisecond: u64,
+}
+
+fn timestamp_parts_for_generated_log(offset_ms: u64) -> TimestampParts {
+    // Base timestamp for generated logs: 2024-01-15T10:00:00.000Z.
+    const BASE_HOUR_MS: u64 = 10 * 60 * 60 * 1000;
+    const MILLIS_PER_DAY: u64 = 24 * 60 * 60 * 1000;
+
+    let total_ms = BASE_HOUR_MS + offset_ms;
+    let day_offset = (total_ms / MILLIS_PER_DAY) as i64;
+    let ms_in_day = total_ms % MILLIS_PER_DAY;
+    let hour = ms_in_day / (60 * 60 * 1000);
+    let minute = (ms_in_day / (60 * 1000)) % 60;
+    let second = (ms_in_day / 1000) % 60;
+    let millisecond = ms_in_day % 1000;
+
+    let base_days = days_from_civil(2024, 1, 15);
+    let (year, month, day) = civil_from_days(base_days + day_offset);
+
+    TimestampParts {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+        second,
+        millisecond,
+    }
+}
+
+// Howard Hinnant civil-date conversion helpers:
+// https://howardhinnant.github.io/date_algorithms.html
+fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+    let y = year - i32::from(month <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let m = month as i32;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + day as i32 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    i64::from(era) * 146_097 + i64::from(doe) - 719_468
+}
+
+fn civil_from_days(days_since_epoch: i64) -> (i32, u32, u32) {
+    let z = days_since_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097; // [0, 146096]
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe as i32 + (era as i32) * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let day = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = mp + if mp < 10 { 3 } else { -9 }; // [1, 12]
+    let year = y + i32::from(month <= 2);
+    (year, month as u32, day as u32)
+}
 
 fn generate_json_log_file(num_lines: usize, output: &str) -> io::Result<()> {
     use std::io::BufWriter;
@@ -1358,23 +1758,31 @@ fn generate_json_log_file(num_lines: usize, output: &str) -> io::Result<()> {
     ];
 
     for i in 0..num_lines {
+        let seq = i as u64;
         let level = levels[i % 4];
         let path = paths[i % 5];
         let id = 10000 + (i * 7) % 90000;
         let dur = 1 + (i * 13) % 500;
-        let rid = format!("{:016x}", (i as u64).wrapping_mul(0x517cc1b727220a95));
+        let rid = format!("{:016x}", seq.wrapping_mul(0x517cc1b727220a95));
         let status = [200, 201, 400, 404, 500, 503][i % 6];
+        let ts = timestamp_parts_for_generated_log(seq);
 
         write!(
             writer,
-            r#"{{"timestamp":"2024-01-15T10:30:00.{:03}Z","level":"{}","message":"request handled GET {}/{}","duration_ms":{},"request_id":"{}","service":"myapp","status":{}}}"#,
-            i % 1000,
-            level,
-            path,
-            id,
-            dur,
-            rid,
-            status,
+            r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millisecond:03}Z","level":"{level}","message":"request handled GET {path}/{id}","duration_ms":{dur},"request_id":"{rid}","service":"myapp","status":{status}}}"#,
+            year = ts.year,
+            month = ts.month,
+            day = ts.day,
+            hour = ts.hour,
+            minute = ts.minute,
+            second = ts.second,
+            millisecond = ts.millisecond,
+            level = level,
+            path = path,
+            id = id,
+            dur = dur,
+            rid = rid,
+            status = status,
         )?;
         writer.write_all(b"\n")?;
     }
@@ -1396,33 +1804,6 @@ fn generate_json_log_file(num_lines: usize, output: &str) -> io::Result<()> {
 }
 
 // ---------------------------------------------------------------------------
-// Allocator memory stats
-// ---------------------------------------------------------------------------
-
-#[cfg(unix)]
-/// Read jemalloc memory stats: resident, allocated, and active bytes.
-///
-/// Returns `None` if the stats are unavailable (e.g. the epoch refresh fails).
-/// This function is passed to [`DiagnosticsServer`] so the `/admin/v1/status`
-/// endpoint can expose live allocator metrics.
-fn jemalloc_stats() -> Option<logfwd_io::diagnostics::MemoryStats> {
-    use tikv_jemalloc_ctl::{epoch, stats};
-
-    // Refresh the epoch so subsequent reads reflect current allocator state.
-    epoch::mib().ok()?.advance().ok()?;
-
-    let resident = stats::resident::mib().ok()?.read().ok()?;
-    let allocated = stats::allocated::mib().ok()?.read().ok()?;
-    let active = stats::active::mib().ok()?.read().ok()?;
-
-    Some(logfwd_io::diagnostics::MemoryStats {
-        resident,
-        allocated,
-        active,
-    })
-}
-
-// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1430,93 +1811,166 @@ fn jemalloc_stats() -> Option<logfwd_io::diagnostics::MemoryStats> {
 mod cli_tests {
     use super::*;
 
-    #[test]
-    fn edit_distance_identical() {
-        assert_eq!(edit_distance("--config", "--config"), 0);
+    fn blast_args_for_validation() -> BlastArgs {
+        BlastArgs {
+            destination: Some(BlastDestination::Otlp),
+            endpoint: Some("http://127.0.0.1:4318/v1/logs".to_owned()),
+            auth_bearer_token: None,
+            auth_header: Vec::new(),
+            workers: 2,
+            batch_lines: 5_000,
+            duration_secs: None,
+            diagnostics_addr: "127.0.0.1:0".to_owned(),
+        }
     }
 
     #[test]
-    fn edit_distance_one_off() {
-        assert_eq!(edit_distance("--confg", "--config"), 1);
+    fn clap_parses_validate_subcommand() {
+        let cli = Cli::try_parse_from(["logfwd", "validate", "--config", "foo.yaml"])
+            .expect("parser should accept validate subcommand");
+        match cli.command.expect("command") {
+            Commands::Validate { config } => assert_eq!(config.as_deref(), Some("foo.yaml")),
+            other => panic!("expected validate command, got {other:?}"),
+        }
     }
 
     #[test]
-    fn edit_distance_swap() {
-        assert_eq!(edit_distance("--conifg", "--config"), 2);
+    fn clap_parses_effective_config_with_optional_config_flag() {
+        let with_path = Cli::try_parse_from(["logfwd", "effective-config", "--config", "foo.yaml"])
+            .expect("parser should accept effective-config with path");
+        match with_path.command.expect("command") {
+            Commands::EffectiveConfig { config } => assert_eq!(config.as_deref(), Some("foo.yaml")),
+            other => panic!("expected effective-config command, got {other:?}"),
+        }
+
+        let without_path = Cli::try_parse_from(["logfwd", "effective-config"])
+            .expect("parser should accept effective-config without path");
+        match without_path.command.expect("command") {
+            Commands::EffectiveConfig { config } => assert!(config.is_none()),
+            other => panic!("expected effective-config command, got {other:?}"),
+        }
     }
 
     #[test]
-    fn suggest_flag_typo() {
-        assert_eq!(suggest_flag("--confg"), Some("--config"));
-        assert_eq!(suggest_flag("--confi"), Some("--config"));
-        assert_eq!(suggest_flag("--blackhol"), Some("--blackhole"));
-        assert_eq!(suggest_flag("--versin"), Some("--version"));
+    fn clap_parses_blackhole_default_form() {
+        let cli = Cli::try_parse_from(["logfwd", "blackhole"])
+            .expect("parser should accept blackhole without addr");
+        match cli.command.expect("command") {
+            Commands::Blackhole { bind_addr } => assert!(bind_addr.is_none()),
+            other => panic!("expected blackhole command, got {other:?}"),
+        }
     }
 
     #[test]
-    fn suggest_flag_no_match() {
-        assert_eq!(suggest_flag("--something-totally-different"), None);
+    fn clap_completions_supports_nushell_and_powershell_alias() {
+        let nu = Cli::try_parse_from(["logfwd", "completions", "nushell"])
+            .expect("nushell should parse");
+        match nu.command.expect("command") {
+            Commands::Completions { shell } => assert!(matches!(shell, CompletionShell::Nushell)),
+            other => panic!("expected completions command, got {other:?}"),
+        }
+
+        let pwsh = Cli::try_parse_from(["logfwd", "completions", "pwsh"])
+            .expect("pwsh alias should parse");
+        match pwsh.command.expect("command") {
+            Commands::Completions { shell } => {
+                assert!(matches!(shell, CompletionShell::PowerShell))
+            }
+            other => panic!("expected completions command, got {other:?}"),
+        }
     }
 
     #[test]
-    fn closest_match_prefers_exact() {
-        let candidates = &["--check", "--config"];
-        assert_eq!(closest_match("--check", candidates), Some("--check"));
+    fn clap_parses_generate_json_subcommand() {
+        let cli = Cli::try_parse_from(["logfwd", "generate-json", "5", "out.json"])
+            .expect("generate-json should parse");
+        match cli.command.expect("command") {
+            Commands::GenerateJson {
+                num_lines,
+                output_file,
+            } => {
+                assert_eq!(num_lines, 5);
+                assert_eq!(output_file, "out.json");
+            }
+            other => panic!("expected generate-json command, got {other:?}"),
+        }
     }
 
     #[test]
-    fn closest_match_within_threshold() {
-        let flags = &["--validate", "--check", "--dry-run"];
-        assert_eq!(closest_match("--validat", flags), Some("--validate"));
-        assert_eq!(closest_match("--chck", flags), Some("--check"));
-        assert_eq!(closest_match("--dry-ru", flags), Some("--dry-run"));
+    fn clap_supports_help_subcommand() {
+        let err = Cli::try_parse_from(["logfwd", "help"])
+            .expect_err("help subcommand should trigger help display");
+        assert_eq!(err.kind(), ErrorKind::DisplayHelp);
     }
 
     #[test]
-    fn normalize_args_canonical() {
-        let args = vec![
-            "logfwd".to_string(),
-            "--config".to_string(),
-            "foo.yaml".to_string(),
-            "--validate".to_string(),
-        ];
-        let out = normalize_args(args.clone());
-        assert_eq!(out, args);
+    fn clap_parses_blast_and_devour_aliases() {
+        let blast = Cli::try_parse_from([
+            "logfwd",
+            "blast",
+            "--destination",
+            "elasticsearch_otlp",
+            "--endpoint",
+            "http://127.0.0.1:4318/v1/logs",
+        ])
+        .expect("blast alias should parse");
+        match blast.command.expect("command") {
+            Commands::Blast(args) => {
+                assert!(matches!(args.destination, Some(BlastDestination::Otlp)))
+            }
+            other => panic!("expected blast command, got {other:?}"),
+        }
+
+        let blast_arrow = Cli::try_parse_from([
+            "logfwd",
+            "blast",
+            "--destination",
+            "arrow_ipc",
+            "--endpoint",
+            "http://127.0.0.1:18081",
+        ])
+        .expect("arrow_ipc alias should parse");
+        match blast_arrow.command.expect("command") {
+            Commands::Blast(args) => {
+                assert!(matches!(args.destination, Some(BlastDestination::ArrowIpc)))
+            }
+            other => panic!("expected blast command, got {other:?}"),
+        }
+
+        let devour = Cli::try_parse_from(["logfwd", "devour", "--mode", "elasticsearch"])
+            .expect("devour elasticsearch alias should parse");
+        match devour.command.expect("command") {
+            Commands::Devour(args) => assert!(matches!(args.mode, DevourMode::ElasticsearchBulk)),
+            other => panic!("expected devour command, got {other:?}"),
+        }
     }
 
     #[test]
-    fn normalize_args_reorders() {
-        let args = vec![
-            "logfwd".to_string(),
-            "--validate".to_string(),
-            "--config".to_string(),
-            "foo.yaml".to_string(),
-        ];
-        let out = normalize_args(args);
-        assert_eq!(out[1], "--config");
-        assert_eq!(out[2], "foo.yaml");
-        assert_eq!(out[3], "--validate");
+    fn clap_parses_devour_defaults() {
+        let cli = Cli::try_parse_from(["logfwd", "devour"]).expect("devour should parse");
+        match cli.command.expect("command") {
+            Commands::Devour(args) => {
+                assert!(matches!(args.mode, DevourMode::Otlp));
+                assert!(args.listen.is_none());
+                assert!(args.duration_secs.is_none());
+            }
+            other => panic!("expected devour command, got {other:?}"),
+        }
     }
 
     #[test]
     fn format_duration_seconds() {
-        assert_eq!(format_duration(std::time::Duration::from_secs(42)), "42s");
+        assert_eq!(format_duration(Duration::from_secs(42)), "42s");
     }
 
     #[test]
     fn format_duration_minutes() {
-        assert_eq!(
-            format_duration(std::time::Duration::from_secs(125)),
-            "2m 5s"
-        );
+        assert_eq!(format_duration(Duration::from_secs(125)), "2m 5s");
     }
 
     #[test]
     fn format_duration_hours() {
-        assert_eq!(
-            format_duration(std::time::Duration::from_secs(7260)),
-            "2h 1m"
-        );
+        assert_eq!(format_duration(Duration::from_secs(7260)), "2h 1m");
     }
 
     #[test]
@@ -1537,15 +1991,515 @@ mod cli_tests {
     }
 
     #[test]
-    fn suggest_flag_includes_new_commands() {
-        assert_eq!(suggest_flag("--ini"), Some("--init"));
-        assert_eq!(suggest_flag("--completion"), Some("--completions"));
-        assert_eq!(suggest_flag("--dump-confi"), Some("--dump-config"));
-    }
-
-    #[test]
     fn json_logs_are_used_only_when_stderr_is_not_a_tty() {
         assert!(!use_json_logs_for_stderr(true));
         assert!(use_json_logs_for_stderr(false));
+    }
+
+    #[test]
+    fn wizard_requires_interactive_stdin_and_stdout() {
+        assert!(!wizard_uses_interactive_terminals(false, false));
+        assert!(!wizard_uses_interactive_terminals(true, false));
+        assert!(!wizard_uses_interactive_terminals(false, true));
+        assert!(wizard_uses_interactive_terminals(true, true));
+    }
+
+    #[test]
+    fn blast_destination_http_is_rejected_by_cli_parser() {
+        let err = Cli::try_parse_from([
+            "logfwd",
+            "blast",
+            "--destination",
+            "http",
+            "--endpoint",
+            "http://127.0.0.1:8080",
+        ])
+        .expect_err("http destination should be rejected");
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn blast_duration_defaults_to_none() {
+        let cli = Cli::try_parse_from([
+            "logfwd",
+            "blast",
+            "--destination",
+            "otlp",
+            "--endpoint",
+            "http://127.0.0.1:4318/v1/logs",
+        ])
+        .expect("blast with explicit destination should parse");
+        match cli.command.expect("command") {
+            Commands::Blast(args) => assert!(args.duration_secs.is_none()),
+            other => panic!("expected blast command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn blast_missing_destination_fails_in_non_interactive_mode() {
+        let mut args = blast_args_for_validation();
+        args.destination = None;
+        args.endpoint = None;
+        let err = maybe_prompt_blast_setup(&mut args).expect_err("missing destination should fail");
+        assert!(
+            err.to_string().contains("no destination provided"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn blast_arrow_ipc_default_endpoint_is_http_url() {
+        assert_eq!(
+            BlastDestination::ArrowIpc.default_endpoint(),
+            "http://127.0.0.1:18081/v1/arrow"
+        );
+    }
+
+    #[test]
+    fn devour_elasticsearch_bulk_uses_bulk_path() {
+        let args = DevourArgs {
+            mode: DevourMode::ElasticsearchBulk,
+            listen: None,
+            duration_secs: None,
+            diagnostics_addr: "127.0.0.1:0".to_owned(),
+        };
+        let yaml = render_devour_yaml(&args, "127.0.0.1:9200");
+        assert!(yaml.contains("path: '/_bulk'"));
+        assert!(
+            yaml.contains(
+                "response_body: \"{\\\"took\\\":0,\\\"errors\\\":false,\\\"items\\\":[]}\""
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_blast_output_config_rejects_auth_for_udp_destination() {
+        let mut args = blast_args_for_validation();
+        args.destination = Some(BlastDestination::Udp);
+        args.endpoint = Some("127.0.0.1:15514".to_owned());
+        args.auth_bearer_token = Some("token".to_owned());
+        let err =
+            resolve_blast_output_config(&args).expect_err("udp destination should reject auth");
+        assert!(
+            err.to_string()
+                .contains("only supported for otlp, http, elasticsearch, loki, and arrow_ipc"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_blast_output_config_preserves_tcp_endpoint() {
+        let mut args = blast_args_for_validation();
+        args.destination = Some(BlastDestination::Tcp);
+        args.endpoint = Some("127.0.0.1:15140".to_owned());
+
+        let output_cfg =
+            resolve_blast_output_config(&args).expect("tcp destination should preserve endpoint");
+        assert_eq!(output_cfg.endpoint.as_deref(), Some("127.0.0.1:15140"));
+    }
+
+    #[test]
+    fn cmd_devour_rejects_invalid_diagnostics_addr() {
+        let args = DevourArgs {
+            mode: DevourMode::Otlp,
+            listen: Some("127.0.0.1:4318".to_owned()),
+            duration_secs: None,
+            diagnostics_addr: "http://127.0.0.1:9191".to_owned(),
+        };
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let err = rt
+            .block_on(cmd_devour(args))
+            .expect_err("invalid diagnostics addr should fail");
+        assert!(
+            err.to_string().contains("invalid diagnostics address"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_blast_rejects_zero_workers() {
+        let mut args = blast_args_for_validation();
+        args.workers = 0;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let err = rt
+            .block_on(cmd_blast(args))
+            .expect_err("zero workers should fail");
+        assert!(
+            err.to_string().contains("--workers must be at least 1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_blast_rejects_zero_batch_lines() {
+        let mut args = blast_args_for_validation();
+        args.batch_lines = 0;
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let err = rt
+            .block_on(cmd_blast(args))
+            .expect_err("zero batch lines should fail");
+        assert!(
+            err.to_string().contains("--batch-lines must be at least 1"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn cmd_blast_rejects_zero_duration_when_provided() {
+        let mut args = blast_args_for_validation();
+        args.duration_secs = Some(0);
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let err = rt
+            .block_on(cmd_blast(args))
+            .expect_err("zero duration should fail");
+        assert!(
+            err.to_string()
+                .contains("--duration-secs must be at least 1 when provided"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn yaml_quote_escapes_newlines_and_control_chars() {
+        let quoted = yaml_quote("line1\nline2\r\n\0tab\tquote\"slash\\");
+        assert_eq!(
+            quoted,
+            "\"line1\\nline2\\r\\n\\u0000tab\\tquote\\\"slash\\\\\""
+        );
+        assert!(!quoted.contains('\n'));
+        assert!(!quoted.contains('\r'));
+    }
+
+    #[test]
+    fn replace_env_placeholders_rewrites_all_braced_vars() {
+        let input = "a: ${FOO}\nb: ${BAR_BAZ}\nc: ${}\nd: ${UNTERMINATED";
+        let actual = replace_env_placeholders_for_example_validation(input);
+        assert_eq!(
+            actual,
+            "a: example-env-value\nb: example-env-value\nc: ${}\nd: ${UNTERMINATED"
+        );
+    }
+
+    #[test]
+    fn wizard_template_renders_with_sql() {
+        let input = &config_templates::INPUT_TEMPLATES[0];
+        let output = &config_templates::OUTPUT_TEMPLATES[0];
+        let cfg = config_templates::render_config(
+            input,
+            output,
+            "SELECT * FROM logs WHERE level='ERROR'",
+        );
+        assert!(cfg.contains("input:"));
+        assert!(cfg.contains("output:"));
+        assert!(cfg.contains("transform: |"));
+        assert!(cfg.contains("WHERE level='ERROR'"));
+    }
+
+    #[test]
+    fn validate_pipelines_read_only_rejects_otlp_raw() {
+        let yaml = r#"
+input:
+  type: otlp
+  listen: 127.0.0.1:4318
+  format: raw
+output:
+  type: null
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let result = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
+        assert!(matches!(result, Err(CliError::Config(_))));
+    }
+
+    #[test]
+    fn validate_pipelines_read_only_rejects_sensor_format() {
+        let yaml = r#"
+input:
+  type: linux_ebpf_sensor
+  format: raw
+output:
+  type: null
+"#;
+        let err = logfwd_config::Config::load_str(yaml)
+            .expect_err("sensor format should fail config validation");
+        assert!(
+            err.to_string()
+                .contains("sensor inputs do not support 'format'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_pipelines_read_only_accepts_arrow_native_sensor() {
+        let yaml = r#"
+input:
+  type: linux_ebpf_sensor
+  sensor:
+    poll_interval_ms: 1000
+output:
+  type: null
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        validate_pipelines_read_only(&config, None, |_name| {}, |_err| {})
+            .expect("sensor input without format should validate");
+    }
+    #[test]
+    fn read_wizard_line_rejects_eof() {
+        let mut cursor = io::Cursor::new(Vec::<u8>::new());
+        let err = read_wizard_line(&mut cursor).expect_err("EOF should fail");
+        assert_eq!(err.to_string(), "stdin closed while reading wizard input");
+    }
+
+    #[test]
+    fn effective_config_validation_does_not_bind_runtime_ports() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test port");
+        let port = listener.local_addr().expect("local addr").port();
+
+        let mut file = tempfile::NamedTempFile::new().expect("temp config");
+        writeln!(
+            file,
+            r#"input:
+  type: otlp
+  listen: 127.0.0.1:{port}
+output:
+  type: null
+"#
+        )
+        .expect("write config");
+
+        cmd_effective_config(Some(file.path().to_str().expect("utf-8 temp path")))
+            .expect("read-only validation should not bind the configured port");
+    }
+
+    #[test]
+    fn templates_avoid_unsupported_syslog_and_bare_otlp_http_endpoints() {
+        for input in config_templates::INPUT_TEMPLATES {
+            assert!(
+                !input.snippet.contains("format: syslog"),
+                "wizard input template should not emit unsupported syslog format: {}",
+                input.id
+            );
+        }
+        for output in config_templates::OUTPUT_TEMPLATES {
+            if output.id == "otlp" {
+                assert!(
+                    output.snippet.contains("/v1/logs"),
+                    "wizard OTLP output should include the HTTP logs path"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn generated_wizard_config_is_validated_before_write() {
+        let output_path = std::path::Path::new("logfwd.generated.yaml");
+        let invalid_yaml = r#"
+input:
+  type: otlp
+  listen: 127.0.0.1:4318
+output:
+  type: null
+transform: |
+  SELECT level AS x, msg AS x FROM logs
+"#;
+        let err = validate_generated_config_read_only(invalid_yaml, output_path)
+            .expect_err("invalid generated config should fail validation");
+        assert!(
+            err.to_string()
+                .contains("generated config failed validation"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn effective_config_validation_matches_runtime_sql_planning_errors() {
+        let yaml = r#"
+input:
+  type: otlp
+  listen: 127.0.0.1:4318
+output:
+  type: null
+transform: |
+  SELECT level AS x, msg AS x FROM logs
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let runtime = validate_pipelines_inner(&config, None, |_name| {}, |_err| {});
+        let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
+        assert!(
+            runtime.is_err(),
+            "runtime validation should reject duplicate aliases"
+        );
+        assert!(
+            read_only.is_err(),
+            "effective-config validation should reject duplicate aliases"
+        );
+    }
+
+    #[test]
+    fn all_yaml_examples_parse_and_validate_read_only() {
+        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let mut yaml_files = Vec::new();
+
+        collect_yaml_files_recursive(&repo_root.join("examples"), &mut yaml_files)
+            .expect("should collect yaml files under examples/");
+        collect_yaml_files_recursive(&repo_root.join("bench/scenarios"), &mut yaml_files)
+            .expect("should collect yaml files under bench/scenarios/");
+        yaml_files.sort();
+
+        assert!(
+            !yaml_files.is_empty(),
+            "expected at least one yaml example in examples/ or bench/scenarios/"
+        );
+
+        let mut failures = Vec::new();
+        for path in yaml_files {
+            let raw = match std::fs::read_to_string(&path) {
+                Ok(value) => value,
+                Err(err) => {
+                    failures.push(format!("{}: failed to read file: {err}", path.display()));
+                    continue;
+                }
+            };
+
+            // Keep example validation hermetic: inline secrets placeholders with dummy values.
+            let raw = replace_env_placeholders_for_example_validation(&raw);
+
+            let config = match logfwd_config::Config::load_str(&raw) {
+                Ok(cfg) => cfg,
+                Err(err) => {
+                    failures.push(format!(
+                        "{}: failed to parse config yaml: {err}",
+                        path.display()
+                    ));
+                    continue;
+                }
+            };
+
+            if let Err(err) =
+                validate_pipelines_read_only(&config, path.parent(), |_name| {}, |_err| {})
+            {
+                failures.push(format!(
+                    "{}: failed read-only config validation: {err}",
+                    path.display()
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "yaml examples must parse and validate read-only:\n{}",
+            failures.join("\n")
+        );
+    }
+}
+
+#[cfg(test)]
+mod generate_json_tests {
+    use super::*;
+
+    #[test]
+    fn generated_timestamp_carries_hour_and_day() {
+        // 10:59:59.999 -> 11:00:00.000
+        let before_hour = timestamp_parts_for_generated_log(3_599_999);
+        let after_hour = timestamp_parts_for_generated_log(3_600_000);
+        assert_eq!(
+            (
+                before_hour.year,
+                before_hour.month,
+                before_hour.day,
+                before_hour.hour,
+                before_hour.minute,
+                before_hour.second,
+                before_hour.millisecond
+            ),
+            (2024, 1, 15, 10, 59, 59, 999)
+        );
+        assert_eq!(
+            (
+                after_hour.year,
+                after_hour.month,
+                after_hour.day,
+                after_hour.hour,
+                after_hour.minute,
+                after_hour.second,
+                after_hour.millisecond
+            ),
+            (2024, 1, 15, 11, 0, 0, 0)
+        );
+
+        // 2024-01-15T23:59:59.999 -> 2024-01-16T00:00:00.000
+        // Base is 10:00:00, so day rollover happens at +14h.
+        let before_day = timestamp_parts_for_generated_log(50_399_999);
+        let after_day = timestamp_parts_for_generated_log(50_400_000);
+        assert_eq!(
+            (
+                before_day.year,
+                before_day.month,
+                before_day.day,
+                before_day.hour,
+                before_day.minute,
+                before_day.second,
+                before_day.millisecond
+            ),
+            (2024, 1, 15, 23, 59, 59, 999)
+        );
+        assert_eq!(
+            (
+                after_day.year,
+                after_day.month,
+                after_day.day,
+                after_day.hour,
+                after_day.minute,
+                after_day.second,
+                after_day.millisecond
+            ),
+            (2024, 1, 16, 0, 0, 0, 0)
+        );
+    }
+
+    /// generate_json_log_file must produce monotonically increasing timestamps
+    /// for files larger than 1000 lines.  Before the fix, line 1000 had the
+    /// same millisecond component as line 0 (both .000Z), making the timestamp
+    /// go backward between lines 999 and 1000.
+    #[test]
+    fn generate_json_timestamps_are_monotonic_across_1000_line_boundary() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("logs.json");
+        generate_json_log_file(1002, path.to_str().unwrap()).expect("generate");
+
+        let content = std::fs::read_to_string(&path).expect("read");
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 1002);
+
+        let ts_at = |idx: usize| -> String {
+            let obj: serde_json::Value = serde_json::from_str(lines[idx]).expect("parse json");
+            obj["timestamp"]
+                .as_str()
+                .expect("timestamp field")
+                .to_owned()
+        };
+
+        let ts_999 = ts_at(999);
+        let ts_1000 = ts_at(1000);
+
+        assert!(
+            ts_1000 > ts_999,
+            "timestamp at line 1000 ({ts_1000:?}) must be greater than at line 999 ({ts_999:?}); \
+             timestamps must not wrap at the 1000-line boundary"
+        );
     }
 }

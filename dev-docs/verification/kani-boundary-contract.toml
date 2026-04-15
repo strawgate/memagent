@@ -7,6 +7,12 @@ reason = "Pure StructArray conflict-column assembly invariants are already Kani-
 issue = 1314
 
 [[seams]]
+path = "crates/logfwd-arrow/src/conflict_schema.rs"
+status = "recommended"
+reason = "Conflict-struct detection and row-level precedence selection are bounded pure seams; full Arrow batch normalization remains too dynamic for required Kani."
+issue = 1485
+
+[[seams]]
 path = "crates/logfwd-types/src/pipeline/batch.rs"
 status = "required"
 reason = "Typestate batch transitions are a core local proof seam outside logfwd-core."
@@ -37,7 +43,7 @@ reason = "Local CRI metadata injection and mode dispatch helpers are already Kan
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-io/src/stderr_capture.rs"
+path = "crates/logfwd-diagnostics/src/stderr_capture.rs"
 status = "required"
 reason = "Pure escaping helpers are already Kani-targeted here."
 issue = 1314
@@ -49,9 +55,51 @@ reason = "Standalone receiver lifecycle reduction is now an isolated pure seam a
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-io/src/tail.rs"
+path = "crates/logfwd-io/src/polling_input_health.rs"
 status = "required"
-reason = "The EOF emission state machine is a local proof seam despite living in an IO crate."
+reason = "Polling input source-origin lifecycle reduction is an isolated local seam for tail, TCP, and UDP health."
+issue = 1415
+
+[[seams]]
+path = "crates/logfwd-diagnostics/src/diagnostics/policy.rs"
+status = "required"
+reason = "Control-plane readiness and component-health labeling must stay aligned with shared health semantics."
+issue = 1306
+
+[[seams]]
+path = "crates/logfwd-io/src/otlp_receiver.rs"
+status = "recommended"
+reason = "Post-split module shell still hosts HTTP/runtime orchestration; pure protojson parsing and hex-encoding proof seams now live in otlp_receiver/convert.rs."
+issue = 1484
+
+[[seams]]
+path = "crates/logfwd-io/src/otlp_receiver/convert.rs"
+status = "recommended"
+reason = "Structured conversion and protojson numeric normalization helpers are isolated pure seams inside OTLP receiver internals."
+issue = 1484
+
+[[seams]]
+path = "crates/logfwd-io/src/tail/verification.rs"
+status = "required"
+reason = "Pure tail reducers (`eof_model_transition`, `backoff_transition`) are local proof seams despite living in an IO crate."
+issue = 1314
+
+[[seams]]
+path = "crates/logfwd-io/src/tail/mod.rs"
+status = "recommended"
+reason = "Module shell gates tail-specific verification under #[cfg(kani)] and should stay aligned with the verification seam."
+issue = 1314
+
+[[seams]]
+path = "crates/logfwd-io/src/tcp_input.rs"
+status = "recommended"
+reason = "Per-client bounded-read stop policy is extracted as a local pure seam inside the TCP shell."
+issue = 1314
+
+[[seams]]
+path = "crates/logfwd-io/src/udp_input.rs"
+status = "recommended"
+reason = "Per-poll UDP bounded-drain stop policy is an isolated pure seam in an otherwise IO-heavy module."
 issue = 1314
 
 [[seams]]
@@ -79,27 +127,39 @@ reason = "Output lifecycle reduction and fanout health aggregation are isolated 
 issue = 1439
 
 [[seams]]
-path = "crates/logfwd/src/worker_pool.rs"
+path = "crates/logfwd-runtime/src/worker_pool/dispatch.rs"
 status = "required"
-reason = "Worker dispatch helpers already expose bounded local proof seams."
+reason = "Worker dispatch helpers are isolated in this module and remain bounded local proof seams."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd/src/worker_pool/health.rs"
+path = "crates/logfwd-runtime/src/pipeline/checkpoint_policy.rs"
+status = "required"
+reason = "The typed delivery outcome -> checkpoint disposition compatibility mapping is a local pure seam."
+issue = 1314
+
+[[seams]]
+path = "crates/logfwd-runtime/src/pipeline/checkpoint_io.rs"
+status = "recommended"
+reason = "Final checkpoint flush retry-window policy is an isolated local seam and should remain explicitly verified."
+issue = 1314
+
+[[seams]]
+path = "crates/logfwd-runtime/src/pipeline/input_poll.rs"
+status = "recommended"
+reason = "Turmoil input-loop flush predicate is a local pure seam within the async shell and should remain proof-backed."
+issue = 1314
+
+[[seams]]
+path = "crates/logfwd-runtime/src/worker_pool/health.rs"
 status = "required"
 reason = "Pool-level health insertion and aggregation policy is isolated here and should remain Kani-covered."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-io/src/diagnostics.rs"
+path = "crates/logfwd-diagnostics/src/diagnostics/server.rs"
 status = "exempt"
 reason = "Still mixes HTTP shell code, JSON formatting, and runtime snapshot assembly; pure policy extraction is tracked separately."
-issue = 1438
-
-[[seams]]
-path = "crates/logfwd-io/src/diagnostics/policy.rs"
-status = "recommended"
-reason = "Local readiness and health-rollup policy is isolated here and is a good future Kani target."
 issue = 1438
 
 [[seams]]
@@ -109,13 +169,37 @@ reason = "IO-heavy sink implementation; proof-worthy helpers should be extracted
 issue = 1313
 
 [[seams]]
-path = "crates/logfwd/src/pipeline.rs"
+path = "crates/logfwd-runtime/src/pipeline/mod.rs"
 status = "exempt"
 reason = "Async orchestration shell remains mixed; local proof seams are being extracted incrementally."
 issue = 1449
 
 [[seams]]
-path = "crates/logfwd/src/pipeline/health.rs"
+path = "crates/logfwd-runtime/src/pipeline/health.rs"
 status = "required"
 reason = "Pipeline input-loop health transitions are an isolated local reducer with bounded Kani invariants."
 issue = 1440
+
+[[seams]]
+path = "crates/logfwd-arrow/src/lib.rs"
+status = "required"
+reason = "check_dup_bits bitmask logic is a bounded pure seam with oracle-verified Kani proofs."
+issue = 2072
+
+[[seams]]
+path = "crates/logfwd-arrow/src/columnar/accumulator.rs"
+status = "required"
+reason = "make_string_view u128 packing and buffer selection are bounded pure seams with oracle-verified Kani proofs."
+issue = 2072
+
+[[seams]]
+path = "crates/logfwd-arrow/src/columnar/plan.rs"
+status = "required"
+reason = "FieldHandle index roundtrip and FieldSchemaMode observe dedup are bounded pure seams; HashMap-dependent BatchPlan invariants use proptest."
+issue = 2126
+
+[[seams]]
+path = "crates/logfwd-arrow/src/columnar/row_protocol.rs"
+status = "required"
+reason = "RowLifecycle state machine transitions are bounded pure seams with symbolic action sequence proofs."
+issue = 2072

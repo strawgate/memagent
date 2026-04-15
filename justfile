@@ -2,12 +2,113 @@
 # Install: cargo install just
 # Usage:  just --list
 
-# Default recipe: run all checks (same as CI)
+# Default recipe: run quick CI checks (default-members path).
+# Use `just ci-all` for full workspace CI checks (includes datafusion).
 
-# Limit cargo parallelism to avoid starving other processes.
-# Override with: JOBS=8 just test-all
+# Limit all parallelism to 2 vCPU to avoid starving other processes.
+# This caps cargo compilation, test execution, rayon workers, and any Tokio
+# runtime that reads TOKIO_WORKER_THREADS (including Pipeline::run()).
+# Override with: JOBS=8 just test
 export CARGO_BUILD_JOBS := env("JOBS", "2")
+export RUST_TEST_THREADS := env("JOBS", "2")
+export NEXTEST_TEST_THREADS := env("JOBS", "2")
+export TOKIO_WORKER_THREADS := env("JOBS", "2")
+export RAYON_NUM_THREADS := env("JOBS", "2")
 default: ci
+
+# ---------------------------------------------------------------------------
+# Bootstrap
+# ---------------------------------------------------------------------------
+
+# One-command bootstrap: install toolchain, dev tools, git hooks, and fetch deps.
+# Run this after cloning the repo. Safe to re-run — idempotent.
+setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    echo "==> Checking Rust toolchain (rust-toolchain.toml)"
+    if command -v rustup &>/dev/null; then
+        rustup show active-toolchain
+    else
+        echo "ERROR: rustup not found — install from https://rustup.rs" >&2
+        exit 1
+    fi
+    echo ""
+    echo "==> Installing dev tools"
+    if command -v mise &>/dev/null; then
+        echo "    mise detected — running mise install"
+        mise install
+    else
+        echo "    mise not found — falling back to cargo install"
+        just install-tools
+    fi
+    echo ""
+    echo "==> Fetching Cargo dependencies"
+    cargo fetch
+    echo ""
+    echo "==> Installing git hooks"
+    just install-hooks
+    echo ""
+    echo "==> Building diagnostics dashboard (Node.js)"
+    if command -v node &>/dev/null; then
+        just dashboard
+    else
+        echo "    SKIP: node not found — dashboard build requires Node.js 22+"
+        echo "    The dashboard is optional for most Rust development."
+    fi
+    echo ""
+    echo "==> Setup complete. Run 'just doctor' to verify, or 'just ci' to test."
+
+# Verify that all required dev tools are installed and report versions.
+doctor:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    MISSING_REQUIRED=0; MISSING_OPTIONAL=0
+    check() {
+        local name="$1" cmd="$2" required="${3:-true}"
+        if command -v "$cmd" &>/dev/null; then
+            ver=$("$cmd" --version 2>/dev/null | head -1)
+            printf "  %-18s %s\n" "✓ $name" "$ver"
+        elif [ "$required" = "true" ]; then
+            printf "  %-18s %s\n" "✗ $name" "MISSING (required)"
+            MISSING_REQUIRED=1
+        else
+            printf "  %-18s %s\n" "- $name" "not found (optional)"
+            MISSING_OPTIONAL=1
+        fi
+    }
+    echo "logfwd development environment"
+    echo "==============================="
+    echo ""
+    echo "Required:"
+    check "rustc"     rustc
+    check "cargo"     cargo
+    check "rustfmt"   rustfmt
+    check "clippy"    cargo-clippy
+    check "just"      just
+    check "nextest"   cargo-nextest
+    echo ""
+    echo "Recommended:"
+    check "taplo"     taplo     false
+    check "cargo-deny" cargo-deny false
+    check "cargo-machete" cargo-machete false
+    echo ""
+    echo "Optional:"
+    check "node"      node      false
+    check "npm"       npm       false
+    check "docker"    docker    false
+    check "mise"      mise      false
+    check "sccache"   sccache   false
+    check "java"      java      false
+    check "kani"      cargo-kani false
+    echo ""
+    if [ "$MISSING_REQUIRED" -ne 0 ]; then
+        echo "Some required tools are missing. Run: just setup"
+        exit 1
+    elif [ "$MISSING_OPTIONAL" -ne 0 ]; then
+        echo "All required tools present. Some optional tools missing — see mise.toml."
+    else
+        echo "All tools present."
+    fi
 
 # Format all Rust code
 fmt:
@@ -17,36 +118,143 @@ fmt:
 fmt-check:
     cargo fmt --check
 
-# Run clippy lints
+# Clippy — default-members only (skips datafusion, ~30s)
 clippy:
     cargo clippy -- -D warnings
 
-# Run all tests
-test:
-    cargo nextest run --profile ci
+# Clippy — full workspace including datafusion (~3min, CI uses this)
+clippy-all:
+    cargo clippy --workspace -- -D warnings
 
-# Run Kani formal verification proofs (logfwd-core only)
+# Tests — default-members only (skips datafusion)
+test:
+    LOGFWD_DISABLE_DEFAULT_CHECKPOINTS=1 cargo nextest run --profile ci
+
+# Tests — full workspace (CI uses this)
+test-all:
+    LOGFWD_DISABLE_DEFAULT_CHECKPOINTS=1 cargo nextest run --workspace --profile ci
+
+# Run required Kani formal verification proofs for production crates
 # Requires: cargo install --locked kani-verifier && cargo kani setup
 kani:
+    just kani-required
+
+# Run local Miri checks for proof-heavy pure crates.
+# Requires:
+#   rustup component add --toolchain nightly miri rust-src
+miri-setup:
+    rustup component add --toolchain nightly miri rust-src
+
+miri:
+    just miri-setup
+    RUSTC_WRAPPER="" cargo +nightly miri setup
+    just miri-core
+    just miri-types
+
+miri-core:
+    RUSTC_WRAPPER="" MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-core --lib
+
+miri-types:
+    RUSTC_WRAPPER="" MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-types --lib
+
+# Run the required Kani crate set enforced by CI guardrails.
+kani-required:
     RUSTC_WRAPPER="" cargo kani -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p logfwd-arrow --lib -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p logfwd-types -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p logfwd-io -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p logfwd-output -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p logfwd-runtime -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p logfwd-diagnostics -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p logfwd -Z function-contracts -Z mem-predicates -Z stubbing
 
 # Validate the non-core Kani boundary contract.
 kani-boundary:
     python3 scripts/verify_kani_boundary_contract.py
 
-# Run all tests with nextest (parallel, faster output)
-nextest:
-    cargo nextest run
+# Validate that CI's TLC matrix covers expected tla/*.cfg files.
+tlc-matrix-contract:
+    python3 scripts/verify_tlc_matrix_contract.py
 
-# Lint everything: format, clippy, TOML, deny (matches CI Lint job)
-lint: fmt-check kani-boundary clippy toml-check deny
+# Validate proptest regression-file and persistence policy.
+proptest-regressions:
+    python3 scripts/verify_proptest_regressions.py
 
-# Full CI suite: lint + test (run before pushing)
+# Validate CI/just verification trigger contracts stay in sync.
+verification-trigger-contract:
+    python3 scripts/verify_verification_trigger_contract.py
+
+# Run all lightweight verification guardrails enforced in CI.
+verification-guardrail: kani-boundary tlc-matrix-contract proptest-regressions verification-trigger-contract
+
+# Download tla2tools.jar to .tools/ if missing.
+tla-setup:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    JAR="{{justfile_directory()}}/.tools/tla2tools.jar"
+    if [[ -f "$JAR" ]]; then
+        echo "tla2tools.jar already present at $JAR"
+        exit 0
+    fi
+    mkdir -p "$(dirname "$JAR")"
+    URL="${TLA2TOOLS_URL:-https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar}"
+    echo "Downloading tla2tools.jar from $URL"
+    TMP="${JAR}.tmp.$$"
+    curl -fsSL "$URL" -o "$TMP"
+    mv "$TMP" "$JAR"
+    echo "Installed $JAR"
+
+# Run TLC with a given model and cfg from tla/.
+tlc model config:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    just tla-setup
+    JAR="{{justfile_directory()}}/.tools/tla2tools.jar"
+    JAVA_BIN="${JAVA_BIN:-}"
+    if [[ -n "$JAVA_BIN" ]] && ! "$JAVA_BIN" -version >/dev/null 2>&1; then
+        JAVA_BIN=""
+    fi
+    if [[ -z "$JAVA_BIN" ]]; then
+        for candidate in /opt/homebrew/opt/openjdk/bin/java /usr/local/opt/openjdk/bin/java java; do
+            if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -version >/dev/null 2>&1; then
+                JAVA_BIN="$candidate"
+                break
+            fi
+        done
+    fi
+    if [[ -z "$JAVA_BIN" ]]; then
+        echo "Java runtime not found. Install OpenJDK (e.g. 'brew install openjdk') or set JAVA_BIN."
+        exit 1
+    fi
+    cd "{{justfile_directory()}}/tla"
+    "$JAVA_BIN" -XX:+UseParallelGC -cp "$JAR" tlc2.TLC "{{model}}" -config "{{config}}"
+
+# Tail reducer state machine model.
+tlc-tail:
+    just tlc MCTailLifecycle.tla TailLifecycle.cfg
+
+# Lint — fast (default-members, skips datafusion)
+lint: fmt-check workspace-inheritance-guard clippy toml-check
+
+# Lint — full workspace (CI uses this)
+lint-all: fmt-check verification-guardrail workspace-inheritance-guard clippy-all toml-check deny
+
+# Quick CI — fast lint + test (default-members, no datafusion)
 ci: lint test
+
+# Compatibility alias used by pre-commit hooks.
+check: ci
+
+# Full CI — everything including datafusion and TLA+ tail verification (run before pushing)
+ci-all: lint-all test-all tlc-tail
 
 # Check TOML formatting (Cargo.toml, etc.)
 toml-check:
     taplo check
+
+# Guardrail: inherited dependencies must not override default-features locally.
+workspace-inheritance-guard:
+    python3 scripts/check_workspace_inherited_default_features.py
 
 # Format TOML files
 toml-fmt:
@@ -57,7 +265,7 @@ deny:
     cargo deny check
 
 # Build the diagnostics dashboard (Preact + TypeScript → single HTML file)
-# Requires Node.js. Output: crates/logfwd-io/src/dashboard.html
+# Requires Node.js. Output: crates/logfwd-diagnostics/src/dashboard.html
 # Must run before cargo build/test/clippy (CI does this automatically).
 dashboard:
     cd dashboard && npm install --prefer-offline && npm run build
@@ -70,9 +278,18 @@ test-extended:
     cargo nextest run --profile ci --run-ignored ignored-only
     cargo test -p logfwd --features turmoil --test turmoil_sim
 
-# Build release binary
+# Run turmoil simulation including Porcupine linearizability checker integration.
+test-linearizability:
+    cargo test -p logfwd --features turmoil --test turmoil_sim linearizability::porcupine_checker_accepts_runtime_history
+
+# Build release binary (full package, includes DataFusion SQL)
 build:
-    cargo build --release
+    cargo build --release -p logfwd
+
+# Build a fast local dev binary without DataFusion SQL.
+# Useful for tighter compile/edit loops; this is NOT the release artifact.
+build-dev-lite:
+    cargo build --release -p logfwd --no-default-features
 
 # ---------------------------------------------------------------------------
 # End-to-end pipeline benchmarks (bench/scenarios/*.yaml)
@@ -84,10 +301,10 @@ _bench-run name config seconds="10" diag="http://127.0.0.1:9090":
     #!/usr/bin/env bash
     set -euo pipefail
     LOGFWD=./target/release/logfwd
-    $LOGFWD --config {{config}} &
+    $LOGFWD run --config {{config}} &
     PID=$!
     sleep {{seconds}}
-    STATS=$(curl -s {{diag}}/api/stats 2>/dev/null || echo '{}')
+    STATS=$(curl -s {{diag}}/admin/v1/stats 2>/dev/null || echo '{}')
     kill $PID 2>/dev/null; wait $PID 2>/dev/null || true
     echo "$STATS" | python3 -c "
     import sys,json; d=json.load(sys.stdin)
@@ -103,7 +320,7 @@ _bench-pair name rx_config tx_config seconds="10":
     #!/usr/bin/env bash
     set -euo pipefail
     LOGFWD=./target/release/logfwd
-    $LOGFWD --config {{rx_config}} &
+    $LOGFWD run --config {{rx_config}} &
     RX=$!;
 
     # Poll /ready until the diagnostics HTTP server is up (503 → 200).
@@ -128,9 +345,9 @@ _bench-pair name rx_config tx_config seconds="10":
     # Give run_async() time to bind receiver sockets after /ready returns.
     sleep 1
 
-    $LOGFWD --config {{tx_config}} &
+    $LOGFWD run --config {{tx_config}} &
     TX=$!; sleep {{seconds}}
-    STATS=$(curl -s http://127.0.0.1:9091/api/stats 2>/dev/null || echo '{}')
+    STATS=$(curl -s http://127.0.0.1:9091/admin/v1/stats 2>/dev/null || echo '{}')
     kill $TX $RX 2>/dev/null; wait $TX $RX 2>/dev/null || true
     echo "$STATS" | python3 -c "
     import sys,json; d=json.load(sys.stdin)
@@ -307,7 +524,7 @@ profile-otlp-local lines="500000" seconds="6":
     cp target/release/logfwd "${ROOT}/bin/logfwd-prof"
 
     echo "==> Generate test data ({{lines}} lines)"
-    "${ROOT}/bin/logfwd-prof" --generate-json "{{lines}}" "${ROOT}/logs.json"
+    "${ROOT}/bin/logfwd-prof" generate-json "{{lines}}" "${ROOT}/logs.json"
 
     printf '%s\n' \
       "input:" \
@@ -324,7 +541,7 @@ profile-otlp-local lines="500000" seconds="6":
       > "${ROOT}/config.yaml"
 
     echo "==> Start blackhole on ${PORT}"
-    "${ROOT}/bin/logfwd-prof" --blackhole "127.0.0.1:${PORT}" > "${ROOT}/blackhole.log" 2>&1 &
+    "${ROOT}/bin/logfwd-prof" blackhole "127.0.0.1:${PORT}" > "${ROOT}/blackhole.log" 2>&1 &
     BLACKHOLE_PID=$!
     cleanup() {
         kill -TERM "${BLACKHOLE_PID}" 2>/dev/null || true
@@ -333,7 +550,7 @@ profile-otlp-local lines="500000" seconds="6":
 
     echo "==> Run profiled pipeline for {{seconds}}s"
     pushd "${ROOT}" >/dev/null
-    "${ROOT}/bin/logfwd-prof" --config "${ROOT}/config.yaml" > pipeline.log 2>&1 &
+    "${ROOT}/bin/logfwd-prof" run --config "${ROOT}/config.yaml" > pipeline.log 2>&1 &
     PIPELINE_PID=$!
     sleep "{{seconds}}"
     kill -TERM "${PIPELINE_PID}"
@@ -348,6 +565,22 @@ profile-otlp-local lines="500000" seconds="6":
         echo "flamegraph.svg missing"
         exit 1
     fi
+
+# Run OTLP I/O Criterion benchmarks (stage-separated: parser, decode, encode, compression, e2e).
+bench-otlp-io *ARGS:
+    cargo bench -p logfwd-bench --bench otlp_io -- {{ARGS}}
+
+# Run OTLP I/O benchmarks with fast local iteration settings.
+bench-otlp-io-fast *ARGS:
+    cargo bench -p logfwd-bench --bench otlp_io -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
+
+# Profile OTLP decode/encode CPU with the normal allocator (flamegraph, per-mode timings).
+profile-otlp-io *ARGS:
+    cargo run -p logfwd-bench --release --bin otlp_io_profile -- {{ARGS}}
+
+# Profile OTLP decode/encode allocation counts with stats_alloc instrumentation.
+profile-otlp-io-alloc *ARGS:
+    cargo run -p logfwd-bench --release --features otlp-profile-alloc --bin otlp_io_profile -- {{ARGS}}
 
 # Generate microbenchmark report (markdown)
 bench-report:
@@ -371,11 +604,36 @@ bench-rate *ARGS:
 bench-memory *ARGS:
     cargo run -p logfwd-bench --release --bin memory-profile -- {{ARGS}}
 
+# Start a local OTLP blackhole receiver using main CLI devour wrapper.
+bench-devour-otlp listen="127.0.0.1:4318":
+    cargo run -p logfwd --release -- devour --mode otlp --listen {{listen}}
+
+# Blast generated OTLP data to a receiver endpoint using main CLI blast wrapper.
+bench-blast-otlp endpoint="http://127.0.0.1:4318/v1/logs" duration="15":
+    cargo run -p logfwd --release -- blast --destination otlp --endpoint {{endpoint}} --duration-secs {{duration}}
+
 # Install development tools
 install-tools:
     cargo install taplo-cli cargo-deny cargo-audit cargo-nextest
     @echo "Optional: cargo install inferno"
     @echo "Install just: https://just.systems/man/en/installation.html"
+
+# Install recommended VS Code extensions from .vscode/extensions.json
+install-extensions:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v code &>/dev/null; then
+        echo "ERROR: 'code' CLI not found. Open VS Code and run:"
+        echo "  Cmd/Ctrl+Shift+P → 'Shell Command: Install code command in PATH'"
+        exit 1
+    fi
+    grep -oE '"[a-zA-Z0-9_-]+\.[a-zA-Z0-9._-]+"' .vscode/extensions.json \
+        | tr -d '"' \
+        | while read -r ext; do
+            echo "Installing $ext …"
+            code --install-extension "$ext" --force
+        done
+    echo "Done."
 
 # Set up git pre-commit hook (works from any worktree)
 install-hooks:

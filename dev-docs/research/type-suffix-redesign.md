@@ -1,7 +1,7 @@
 # Column Type Design
 
 > **Status:** Active
-> **Date:** 2026-03
+> **Date:** 2026-03-31
 > **Context:** StructArray conflict column design for mixed-type inputs; C3 not yet implemented.
 
 Context: #445, #625

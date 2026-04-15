@@ -58,6 +58,21 @@ impl SendResult {
             "called `SendResult::unwrap()` on a non-Ok value: {self:?}"
         );
     }
+
+    /// Convert an `io::Error` into a delivery outcome.
+    ///
+    /// `InvalidInput`/`InvalidData` are treated as permanent serialization or
+    /// payload-shape errors and mapped to `Rejected` so the worker pool does
+    /// not retry forever on an un-sendable batch. Other error kinds are
+    /// treated as transient I/O and mapped to `IoError`.
+    pub fn from_io_error(error: io::Error) -> Self {
+        match error.kind() {
+            io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => {
+                SendResult::Rejected(error.to_string())
+            }
+            _ => SendResult::IoError(error),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +114,17 @@ pub trait Sink: Send {
 
     /// Gracefully shut down the sink, flushing and releasing resources.
     fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>>;
+
+    /// Signal that a new logical batch is starting.
+    ///
+    /// **Calling contract:** The driver (e.g., `OutputWorkerPool`) MUST call
+    /// `begin_batch()` before the first `send_batch()` of each new logical
+    /// batch. Without this call, `AsyncFanoutSink` will skip all children
+    /// because their states are still terminal from the previous batch.
+    ///
+    /// Simple sinks can ignore this (the default is a no-op). Stateful sinks
+    /// like `AsyncFanoutSink` use it to reset per-child delivery tracking.
+    fn begin_batch(&mut self) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -133,15 +159,24 @@ pub trait SinkFactory: Send + Sync + 'static {
 // AsyncFanoutSink
 // ---------------------------------------------------------------------------
 
+/// Tracks the progress of a single batch through one child sink.
+#[derive(Clone, Debug, PartialEq)]
+enum ChildState {
+    Pending,
+    Ok,
+    Rejected(String),
+}
+
 /// Multiplexes output to multiple async [`Sink`] instances.
 ///
-/// Sends every batch to **all** child sinks regardless of failures. After all
-/// sinks have been called the worst result is returned using the precedence:
-/// `Rejected > IoError > RetryAfter > Ok`. This ensures that an explicit
-/// rejection is never masked by a later transient I/O error.
+/// Sends every batch to all child sinks. It tracks which children have
+/// successfully processed the current batch to prevent duplicate deliveries on
+/// retry. It also ensures that all children reach a terminal state (`Ok` or
+/// `Rejected`) before returning a terminal result to the worker pool.
 pub struct AsyncFanoutSink {
     name: String,
     sinks: Vec<Box<dyn Sink>>,
+    states: Vec<ChildState>,
 }
 
 impl AsyncFanoutSink {
@@ -152,58 +187,131 @@ impl AsyncFanoutSink {
     pub fn new(sinks: Vec<Box<dyn Sink>>) -> Self {
         let child_names: Vec<&str> = sinks.iter().map(|s| s.name()).collect();
         let name = format!("fanout({})", child_names.join(","));
-        AsyncFanoutSink { name, sinks }
+        let states = vec![ChildState::Pending; sinks.len()];
+        AsyncFanoutSink {
+            name,
+            sinks,
+            states,
+        }
+    }
+}
+
+fn merge_child_send_result(
+    result: SendResult,
+    any_pending: &mut bool,
+    last_io_error: &mut Option<io::Error>,
+    max_retry: &mut Option<Duration>,
+) -> Option<ChildState> {
+    match result {
+        SendResult::Ok => Some(ChildState::Ok),
+        SendResult::Rejected(reason) => Some(ChildState::Rejected(reason)),
+        SendResult::RetryAfter(d) => {
+            *any_pending = true;
+            if max_retry.is_none_or(|prev| d > prev) {
+                *max_retry = Some(d);
+            }
+            None
+        }
+        SendResult::IoError(e) => {
+            *any_pending = true;
+            *last_io_error = Some(e);
+            None
+        }
+    }
+}
+
+fn finalize_fanout_outcome(
+    states: &[ChildState],
+    any_pending: bool,
+    last_io_error: Option<io::Error>,
+    max_retry: Option<Duration>,
+) -> SendResult {
+    if any_pending {
+        return match max_retry {
+            Some(d) => SendResult::RetryAfter(d),
+            None => SendResult::IoError(last_io_error.unwrap_or_else(|| {
+                io::Error::other("fanout: pending children with no error (bug)")
+            })),
+        };
+    }
+
+    let mut first_rejection = None;
+    let mut all_rejected = true;
+    for state in states {
+        if let ChildState::Rejected(reason) = state {
+            if first_rejection.is_none() {
+                first_rejection = Some(reason.clone());
+            }
+        } else {
+            all_rejected = false;
+        }
+    }
+
+    if all_rejected && let Some(reason) = first_rejection {
+        SendResult::Rejected(reason)
+    } else {
+        SendResult::Ok
     }
 }
 
 impl Sink for AsyncFanoutSink {
+    fn begin_batch(&mut self) {
+        for state in &mut self.states {
+            *state = ChildState::Pending;
+        }
+        for sink in &mut self.sinks {
+            sink.begin_batch();
+        }
+    }
+
     fn send_batch<'a>(
         &'a mut self,
         batch: &'a RecordBatch,
         metadata: &'a BatchMetadata,
     ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
-            // Precedence: Rejected(3) > IoError(2) > RetryAfter(1) > Ok(0).
-            // We track the highest-priority failure seen so far; a later result
-            // can only raise the severity, never lower it.
-            let mut worst: SendResult = SendResult::Ok;
+            let mut any_pending = false;
+            let mut last_io_error: Option<io::Error> = None;
             let mut max_retry: Option<Duration> = None;
-            for sink in &mut self.sinks {
-                match sink.send_batch(batch, metadata).await {
-                    SendResult::Ok => {}
-                    SendResult::RetryAfter(d) => {
-                        if max_retry.is_none_or(|prev| d > prev) {
-                            max_retry = Some(d);
-                        }
-                    }
-                    // Only overwrite worst if the new result has strictly higher precedence.
-                    SendResult::IoError(e) => {
-                        if !matches!(worst, SendResult::Rejected(_)) {
-                            worst = SendResult::IoError(e);
-                        }
-                    }
-                    SendResult::Rejected(reason) => {
-                        // Rejected is the highest precedence — always overwrite.
-                        worst = SendResult::Rejected(reason);
-                    }
+
+            for (i, sink) in self.sinks.iter_mut().enumerate() {
+                if self.states[i] != ChildState::Pending {
+                    continue;
+                }
+
+                if let Some(next_state) = merge_child_send_result(
+                    sink.send_batch(batch, metadata).await,
+                    &mut any_pending,
+                    &mut last_io_error,
+                    &mut max_retry,
+                ) {
+                    self.states[i] = next_state;
                 }
             }
-            match worst {
-                SendResult::Ok => match max_retry {
-                    Some(d) => SendResult::RetryAfter(d),
-                    None => SendResult::Ok,
-                },
-                other => other,
-            }
+
+            finalize_fanout_outcome(&self.states, any_pending, last_io_error, max_retry)
         })
     }
 
+    /// Flush all child sinks, attempting every one even if earlier sinks fail.
+    ///
+    /// Consistent with `send_batch()`, which always delivers to all sinks
+    /// regardless of failures. The first error encountered is returned after
+    /// all sinks have been flushed. Fixes #1648.
     fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
         Box::pin(async move {
+            let mut first_err: Option<io::Error> = None;
             for sink in &mut self.sinks {
-                sink.flush().await?;
+                if let Err(e) = sink.flush().await
+                    && first_err.is_none()
+                {
+                    first_err = Some(e);
+                }
             }
-            Ok(())
+            match first_err {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
         })
     }
 
@@ -215,12 +323,25 @@ impl Sink for AsyncFanoutSink {
         aggregate_fanout_health(self.sinks.iter().map(|sink| sink.health()))
     }
 
+    /// Shut down all child sinks, attempting every one even if earlier sinks fail.
+    ///
+    /// Consistent with `send_batch()`, which always delivers to all sinks
+    /// regardless of failures. The first error encountered is returned after
+    /// all sinks have been shut down. Fixes #1648.
     fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
         Box::pin(async move {
+            let mut first_err: Option<io::Error> = None;
             for sink in &mut self.sinks {
-                sink.shutdown().await?;
+                if let Err(e) = sink.shutdown().await
+                    && first_err.is_none()
+                {
+                    first_err = Some(e);
+                }
             }
-            Ok(())
+            match first_err {
+                Some(e) => Err(e),
+                None => Ok(()),
+            }
         })
     }
 }
@@ -265,100 +386,151 @@ impl SinkFactory for AsyncFanoutFactory {
 #[cfg(kani)]
 mod verification {
     use super::*;
-    use std::time::Duration;
 
-    /// SendResult::Ok is not a RetryAfter or Rejected variant.
     #[kani::proof]
-    fn verify_ok_is_not_retry_or_rejection() {
-        let result = SendResult::Ok;
-        assert!(matches!(result, SendResult::Ok));
-        assert!(!matches!(result, SendResult::RetryAfter(_)));
-        assert!(!matches!(result, SendResult::Rejected(_)));
-        kani::cover!(true, "Ok variant exercised");
-    }
+    fn verify_merge_child_send_result_tracks_pending_signals() {
+        let tag: u8 = kani::any_where(|&v| v <= 3);
+        let mut any_pending = false;
+        let mut last_io_error = None;
+        // Use a symbolic initial max_retry so the proof covers both the
+        // `max_retry.is_none()` path and the `d > prev` / `d <= prev` branches
+        // inside the RetryAfter arm of merge_child_send_result.
+        let initial_ms: Option<u64> = kani::any();
+        let mut max_retry = initial_ms.map(Duration::from_millis);
 
-    /// SendResult::RetryAfter preserves the Duration for any bounded duration.
-    #[kani::proof]
-    fn verify_retry_after_preserves_duration() {
-        let secs: u64 = kani::any();
-        kani::assume(secs <= 3600);
-        let d = Duration::from_secs(secs);
-        let result = SendResult::RetryAfter(d);
-        assert!(!matches!(result, SendResult::Ok));
-        assert!(!matches!(result, SendResult::Rejected(_)));
-        if let SendResult::RetryAfter(dur) = result {
-            assert_eq!(dur.as_secs(), secs);
+        let result = match tag {
+            0 => SendResult::Ok,
+            1 => SendResult::Rejected("no".to_string()),
+            2 => {
+                let retry_ms: u64 = kani::any();
+                SendResult::RetryAfter(Duration::from_millis(retry_ms))
+            }
+            _ => SendResult::IoError(io::Error::other("boom")),
+        };
+
+        // Capture the duration we are about to pass (only meaningful for tag==2).
+        let retry_duration = if tag == 2 {
+            if let SendResult::RetryAfter(d) = &result {
+                Some(*d)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let state =
+            merge_child_send_result(result, &mut any_pending, &mut last_io_error, &mut max_retry);
+
+        match tag {
+            0 => {
+                assert_eq!(state, Some(ChildState::Ok));
+                assert!(!any_pending);
+                assert!(last_io_error.is_none());
+            }
+            1 => {
+                assert!(matches!(state, Some(ChildState::Rejected(_))));
+                assert!(!any_pending);
+                assert!(last_io_error.is_none());
+            }
+            2 => {
+                assert!(state.is_none());
+                assert!(any_pending);
+                let d = retry_duration.unwrap();
+                let prev = initial_ms.map(Duration::from_millis);
+                if prev.is_none_or(|p| d > p) {
+                    assert_eq!(max_retry, Some(d));
+                } else {
+                    assert_eq!(max_retry, prev);
+                }
+            }
+            _ => {
+                assert!(state.is_none());
+                assert!(any_pending);
+                assert!(last_io_error.is_some());
+            }
         }
-        kani::cover!(secs > 0, "non-zero retry duration");
-        kani::cover!(secs == 0, "zero retry duration");
+
+        kani::cover!(tag == 0, "ok becomes ChildState::Ok");
+        kani::cover!(tag == 1, "rejected becomes ChildState::Rejected");
+        kani::cover!(
+            tag == 2 && initial_ms.is_none(),
+            "retry with no prior max: sets max_retry"
+        );
+        kani::cover!(
+            tag == 2 && initial_ms.is_some(),
+            "retry with existing max: exercises d > prev branch"
+        );
+        kani::cover!(tag == 3, "io error keeps child pending and stores error");
+
+        // Exercise the `d > prev` branch: start with an existing max_retry and
+        // merge a second RetryAfter so the harness covers both the "new delay
+        // wins" and "existing delay wins" paths.
+        let prev_retry_ms: u64 = kani::any_where(|&v| v <= 30_000);
+        let mut any_pending2 = true;
+        let mut last_io_error2 = None;
+        let mut max_retry2 = Some(Duration::from_millis(prev_retry_ms));
+        let new_retry_ms: u64 = kani::any_where(|&v| v <= 30_000);
+        merge_child_send_result(
+            SendResult::RetryAfter(Duration::from_millis(new_retry_ms)),
+            &mut any_pending2,
+            &mut last_io_error2,
+            &mut max_retry2,
+        );
+        assert!(any_pending2);
+        assert_eq!(
+            max_retry2,
+            Some(Duration::from_millis(prev_retry_ms.max(new_retry_ms)))
+        );
+        kani::cover!(
+            new_retry_ms > prev_retry_ms,
+            "new RetryAfter delay replaces smaller existing delay"
+        );
+        kani::cover!(
+            new_retry_ms <= prev_retry_ms,
+            "existing delay is kept when new delay is not larger"
+        );
     }
 
-    /// SendResult::Rejected is not Ok or RetryAfter.
     #[kani::proof]
-    fn verify_rejected_is_not_ok_or_retry() {
-        let result = SendResult::Rejected("error".to_string());
-        assert!(!matches!(result, SendResult::Ok));
-        assert!(!matches!(result, SendResult::RetryAfter(_)));
-        assert!(matches!(result, SendResult::Rejected(_)));
-        kani::cover!(true, "Rejected variant exercised");
-    }
+    #[kani::unwind(3)]
+    fn verify_finalize_fanout_outcome_precedence() {
+        let max_retry_ms: u64 = kani::any_where(|&v| v <= 30_000);
+        // Mixed states: one Ok + one Rejected.
+        let mixed_states = [ChildState::Ok, ChildState::Rejected("bad".to_string())];
 
-    /// The three SendResult variants are mutually exclusive.
-    #[kani::proof]
-    fn verify_send_result_variants_are_mutually_exclusive() {
-        let ok = SendResult::Ok;
-        let retry = SendResult::RetryAfter(Duration::from_millis(100));
-        let rejected = SendResult::Rejected("fail".to_string());
-
-        assert!(matches!(ok, SendResult::Ok));
-        assert!(!matches!(ok, SendResult::RetryAfter(_)));
-        assert!(!matches!(ok, SendResult::Rejected(_)));
-
-        assert!(!matches!(retry, SendResult::Ok));
+        let retry = finalize_fanout_outcome(
+            &mixed_states,
+            true,
+            Some(io::Error::other("io")),
+            Some(Duration::from_millis(max_retry_ms)),
+        );
         assert!(matches!(retry, SendResult::RetryAfter(_)));
-        assert!(!matches!(retry, SendResult::Rejected(_)));
 
-        assert!(!matches!(rejected, SendResult::Ok));
-        assert!(!matches!(rejected, SendResult::RetryAfter(_)));
+        let io_only =
+            finalize_fanout_outcome(&mixed_states, true, Some(io::Error::other("io")), None);
+        assert!(matches!(io_only, SendResult::IoError(_)));
+
+        // Mixed Ok + Rejected with no pending/error → partial success → Ok.
+        let partial_ok = finalize_fanout_outcome(&mixed_states, false, None, None);
+        assert!(matches!(partial_ok, SendResult::Ok));
+
+        // All-rejected states → Rejected.
+        let all_rejected_states = [
+            ChildState::Rejected("bad".to_string()),
+            ChildState::Rejected("also bad".to_string()),
+        ];
+        let rejected = finalize_fanout_outcome(&all_rejected_states, false, None, None);
         assert!(matches!(rejected, SendResult::Rejected(_)));
 
-        kani::cover!(true, "all three variants are mutually exclusive");
-    }
+        let ok = finalize_fanout_outcome(&[ChildState::Ok], false, None, None);
+        assert!(matches!(ok, SendResult::Ok));
 
-    /// Regression proof for #1344:
-    /// the aggregation policy here must reflect `AsyncFanoutSink::send_batch`.
-    /// We intentionally avoid modeling retry-loop/backoff behavior because that
-    /// logic is implemented elsewhere (worker pool), not in this module.
-    #[kani::proof]
-    fn verify_fanout_result_precedence_model_matches_code() {
-        let d1_ms: u64 = kani::any_where(|&v| v <= 30_000);
-        let d2_ms: u64 = kani::any_where(|&v| v <= 30_000);
-        let retry1 = SendResult::RetryAfter(Duration::from_millis(d1_ms));
-        let retry2 = SendResult::RetryAfter(Duration::from_millis(d2_ms));
-
-        // Retry-only case: larger RetryAfter hint wins.
-        let merged_retry = match (retry1, retry2) {
-            (SendResult::RetryAfter(a), SendResult::RetryAfter(b)) => {
-                SendResult::RetryAfter(if a >= b { a } else { b })
-            }
-            _ => SendResult::Ok,
-        };
-        assert!(matches!(merged_retry, SendResult::RetryAfter(_)));
-        if let SendResult::RetryAfter(d) = merged_retry {
-            assert!(d.as_millis() as u64 == d1_ms || d.as_millis() as u64 == d2_ms);
-        }
-
-        // Any Rejected result dominates RetryAfter.
-        let rejected = SendResult::Rejected("rejected".to_string());
-        let out = match rejected {
-            SendResult::Rejected(_) => true,
-            _ => false,
-        };
-        assert!(out, "Rejected must dominate RetryAfter/Ok");
-
-        // Rejected dominates IoError (not the other way around). (#1468)
-        let io = SendResult::IoError(io::Error::other("io"));
-        assert!(matches!(io, SendResult::IoError(_)));
+        kani::cover!(
+            max_retry_ms == 0,
+            "zero-duration RetryAfter remains retryable"
+        );
+        kani::cover!(max_retry_ms > 0, "non-zero RetryAfter remains retryable");
     }
 }
 
@@ -512,9 +684,10 @@ mod tests {
         let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2), Box::new(s3)]);
 
         let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        // With #2102 fix, partial success returns Ok instead of Rejected
         assert!(
-            matches!(result, SendResult::Rejected(_)),
-            "expected Rejected, got {result:?}"
+            matches!(result, SendResult::Ok),
+            "expected Ok (partial success), got {result:?}"
         );
         assert_eq!(*calls1.lock().unwrap(), 1, "s1 must be called");
         assert_eq!(*calls2.lock().unwrap(), 1, "s2 must be called");
@@ -522,30 +695,80 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fanout_rejected_beats_io_error() {
-        // Rejected has higher precedence than IoError; a later IoError must not
-        // overwrite an earlier Rejected.
+    async fn fanout_all_rejected_returns_rejected() {
+        // When every child returns Rejected the fanout must propagate Rejected
+        // (no partial success to salvage).
+        let (s1, calls1) = FixedSink::new("s1", SendResult::Rejected("no-s1".into()));
+        let (s2, calls2) = FixedSink::new("s2", SendResult::Rejected("no-s2".into()));
+        let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
+
+        let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(
+            matches!(result, SendResult::Rejected(_)),
+            "all-rejected fanout must return Rejected, got {result:?}"
+        );
+        assert_eq!(*calls1.lock().unwrap(), 1, "s1 must be called");
+        assert_eq!(*calls2.lock().unwrap(), 1, "s2 must be called");
+    }
+
+    #[tokio::test]
+    async fn fanout_io_error_beats_rejected_for_retries() {
+        // Pending states (IoError, RetryAfter) must beat Rejected so the worker pool
+        // keeps retrying the partial failure.
         let (s1, _) = FixedSink::new("s1", SendResult::Rejected("explicit reject".into()));
         let (s2, _) = FixedSink::new("s2", SendResult::IoError(io::Error::other("network")));
         let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
 
         let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
         assert!(
-            matches!(result, SendResult::Rejected(_)),
-            "Rejected must beat IoError, got {result:?}"
+            matches!(result, SendResult::IoError(_)),
+            "IoError must beat Rejected to ensure retries, got {result:?}"
         );
     }
 
     #[tokio::test]
-    async fn fanout_io_error_beats_retry() {
+    async fn fanout_does_not_retry_successful_siblings() {
+        let (s1, calls1) = FixedSink::new("s1", SendResult::Ok);
+        let (s2, calls2) = FixedSink::new("s2", SendResult::RetryAfter(Duration::from_secs(1)));
+        let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
+
+        fanout.begin_batch();
+
+        // First attempt
+        let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(matches!(result, SendResult::RetryAfter(_)));
+        assert_eq!(*calls1.lock().unwrap(), 1);
+        assert_eq!(*calls2.lock().unwrap(), 1);
+
+        // Second attempt (simulating worker pool retry)
+        let result2 = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(matches!(result2, SendResult::RetryAfter(_)));
+        // s1 should NOT be called again
+        assert_eq!(*calls1.lock().unwrap(), 1, "s1 must not be retried");
+        assert_eq!(*calls2.lock().unwrap(), 2, "s2 must be retried");
+
+        // Now start a new batch
+        fanout.begin_batch();
+        let result3 = fanout.send_batch(&empty_batch(), &empty_meta()).await;
+        assert!(matches!(result3, SendResult::RetryAfter(_)));
+        assert_eq!(
+            *calls1.lock().unwrap(),
+            2,
+            "s1 should be called on new batch"
+        );
+        assert_eq!(*calls2.lock().unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn fanout_retry_after_beats_io_error() {
         let (s1, _) = FixedSink::new("s1", SendResult::RetryAfter(Duration::from_secs(5)));
         let (s2, _) = FixedSink::new("s2", SendResult::IoError(io::Error::other("net")));
         let mut fanout = AsyncFanoutSink::new(vec![Box::new(s1), Box::new(s2)]);
 
         let result = fanout.send_batch(&empty_batch(), &empty_meta()).await;
         assert!(
-            matches!(result, SendResult::IoError(_)),
-            "IoError must beat RetryAfter, got {result:?}"
+            matches!(result, SendResult::RetryAfter(_)),
+            "RetryAfter must beat IoError so server rate limits are respected, got {result:?}"
         );
     }
 
@@ -580,6 +803,143 @@ mod tests {
         );
     }
 
+    /// Regression test for #1648: flush() must try all sinks even if earlier ones fail.
+    #[tokio::test]
+    async fn fanout_flush_calls_all_sinks_even_after_error() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct FailFlushSink {
+            flushed: Arc<AtomicBool>,
+        }
+        impl Sink for FailFlushSink {
+            fn send_batch<'a>(
+                &'a mut self,
+                _batch: &'a RecordBatch,
+                _metadata: &'a BatchMetadata,
+            ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+                Box::pin(async { SendResult::Ok })
+            }
+            fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                self.flushed.store(true, Ordering::SeqCst);
+                Box::pin(async { Err(io::Error::other("flush error")) })
+            }
+            fn name(&self) -> &'static str {
+                "fail_flush"
+            }
+            fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let second_flushed = Arc::new(AtomicBool::new(false));
+        let second_flushed_clone = Arc::clone(&second_flushed);
+
+        struct RecordFlushSink {
+            flushed: Arc<AtomicBool>,
+        }
+        impl Sink for RecordFlushSink {
+            fn send_batch<'a>(
+                &'a mut self,
+                _batch: &'a RecordBatch,
+                _metadata: &'a BatchMetadata,
+            ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+                Box::pin(async { SendResult::Ok })
+            }
+            fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                self.flushed.store(true, Ordering::SeqCst);
+                Box::pin(async { Ok(()) })
+            }
+            fn name(&self) -> &'static str {
+                "record_flush"
+            }
+            fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let mut fanout = AsyncFanoutSink::new(vec![
+            Box::new(FailFlushSink {
+                flushed: Arc::new(AtomicBool::new(false)),
+            }),
+            Box::new(RecordFlushSink {
+                flushed: second_flushed_clone,
+            }),
+        ]);
+
+        let result = fanout.flush().await;
+        assert!(result.is_err(), "flush must propagate the error");
+        assert!(
+            second_flushed.load(Ordering::SeqCst),
+            "second sink must be flushed even though first sink failed"
+        );
+    }
+
+    /// Regression test for #1648: shutdown() must try all sinks even if earlier ones fail.
+    #[tokio::test]
+    async fn fanout_shutdown_calls_all_sinks_even_after_error() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        struct FailShutdownSink;
+        impl Sink for FailShutdownSink {
+            fn send_batch<'a>(
+                &'a mut self,
+                _batch: &'a RecordBatch,
+                _metadata: &'a BatchMetadata,
+            ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+                Box::pin(async { SendResult::Ok })
+            }
+            fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                Box::pin(async { Ok(()) })
+            }
+            fn name(&self) -> &'static str {
+                "fail_shutdown"
+            }
+            fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                Box::pin(async { Err(io::Error::other("shutdown error")) })
+            }
+        }
+
+        let second_shutdown = Arc::new(AtomicBool::new(false));
+        let second_shutdown_clone = Arc::clone(&second_shutdown);
+
+        struct RecordShutdownSink {
+            shutdown: Arc<AtomicBool>,
+        }
+        impl Sink for RecordShutdownSink {
+            fn send_batch<'a>(
+                &'a mut self,
+                _batch: &'a RecordBatch,
+                _metadata: &'a BatchMetadata,
+            ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
+                Box::pin(async { SendResult::Ok })
+            }
+            fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                Box::pin(async { Ok(()) })
+            }
+            fn name(&self) -> &'static str {
+                "record_shutdown"
+            }
+            fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
+                self.shutdown.store(true, Ordering::SeqCst);
+                Box::pin(async { Ok(()) })
+            }
+        }
+
+        let mut fanout = AsyncFanoutSink::new(vec![
+            Box::new(FailShutdownSink),
+            Box::new(RecordShutdownSink {
+                shutdown: second_shutdown_clone,
+            }),
+        ]);
+
+        let result = fanout.shutdown().await;
+        assert!(result.is_err(), "shutdown must propagate the error");
+        assert!(
+            second_shutdown.load(Ordering::SeqCst),
+            "second sink must be shut down even though first sink failed"
+        );
+    }
+
     #[test]
     fn once_async_factory_creates_once() {
         let factory = OnceAsyncFactory::new("test".into(), Box::new(StubSink));
@@ -596,5 +956,21 @@ mod tests {
                 "error should mention 'already consumed': {err}"
             ),
         }
+    }
+
+    #[test]
+    fn from_io_error_maps_invalid_input_to_rejected() {
+        let result =
+            SendResult::from_io_error(io::Error::new(io::ErrorKind::InvalidInput, "bad payload"));
+        assert!(matches!(result, SendResult::Rejected(_)));
+    }
+
+    #[test]
+    fn from_io_error_maps_connection_reset_to_io_error() {
+        let result = SendResult::from_io_error(io::Error::new(
+            io::ErrorKind::ConnectionReset,
+            "connection reset",
+        ));
+        assert!(matches!(result, SendResult::IoError(_)));
     }
 }

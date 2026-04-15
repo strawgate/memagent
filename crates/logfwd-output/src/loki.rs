@@ -35,7 +35,7 @@
 //! The `Content-Type` must be `application/json`. Loki 2.x also accepts
 //! Protobuf (snappy-compressed), but JSON is used here for simplicity.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::sync::Arc;
 
@@ -43,6 +43,7 @@ use arrow::array::AsArray;
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 
+use logfwd_core::otlp::parse_timestamp_nanos;
 use logfwd_types::diagnostics::ComponentStats;
 use logfwd_types::field_names;
 
@@ -55,8 +56,11 @@ use super::{BatchMetadata, build_col_infos, coalesce_as_str, write_row_json};
 /// A single Loki log entry: (timestamp_ns, log_line).
 type LokiEntry = (u64, String);
 
+/// Sorted Loki stream labels used as a deterministic grouping key.
+type StreamLabels = Vec<(String, String)>;
+
 /// Collect entries per stream label set.
-type StreamMap = HashMap<String, Vec<LokiEntry>>;
+type StreamMap = BTreeMap<StreamLabels, Vec<LokiEntry>>;
 
 fn sanitize_loki_label_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len().max(1));
@@ -187,11 +191,36 @@ impl LokiSink {
         let num_rows = batch.num_rows();
         let cols = build_col_infos(batch);
 
-        // Find timestamp column index (prefer `_timestamp`, fall back to `@timestamp`).
-        // Timestamp columns are always flat Int64/UInt64 — no struct conflict expected.
-        let ts_col_idx = schema.fields().iter().position(|f| {
-            f.name() == field_names::TIMESTAMP_UNDERSCORE || f.name() == field_names::TIMESTAMP_AT
-        });
+        // Find timestamp column index.
+        //
+        // Priority (highest first):
+        //   1. `_timestamp`  — logfwd canonical pipeline column
+        //   2. `@timestamp`  — Elasticsearch convention
+        //   3. Any other variant recognised by field_names::TIMESTAMP_VARIANTS
+        //      (canonical "timestamp", "time", "ts") — covers OTLP receiver output
+        //
+        // Separate position() calls preserve priority regardless of schema order.
+        // A single position() with `||` would return the first schema match, which
+        // may not be the highest-priority name. (fixes #1661, #1670)
+        let ts_col_idx = schema
+            .fields()
+            .iter()
+            .position(|f| f.name() == field_names::TIMESTAMP_UNDERSCORE)
+            .or_else(|| {
+                schema
+                    .fields()
+                    .iter()
+                    .position(|f| f.name() == field_names::TIMESTAMP_AT)
+            })
+            .or_else(|| {
+                schema.fields().iter().position(|f| {
+                    field_names::matches_any(
+                        f.name(),
+                        field_names::TIMESTAMP,
+                        field_names::TIMESTAMP_VARIANTS,
+                    )
+                })
+            });
 
         // Find label ColInfos for configured label columns.
         // Static labels are sanitized before collision detection (#1459, #1470).
@@ -229,7 +258,7 @@ impl LokiSink {
             }
         }
 
-        let mut stream_map: StreamMap = HashMap::new();
+        let mut stream_map: StreamMap = BTreeMap::new();
 
         for row in 0..num_rows {
             // --- Timestamp ---
@@ -253,6 +282,46 @@ impl LokiSink {
                         DataType::UInt64 => col
                             .as_primitive::<arrow::datatypes::UInt64Type>()
                             .value(row),
+                        // String timestamp columns (ISO 8601) — produced by the scanner
+                        // when tailing log files, and by star_to_flat for `_timestamp`.
+                        DataType::Utf8 => {
+                            parse_timestamp_nanos(col.as_string::<i32>().value(row).as_bytes())
+                                .unwrap_or(metadata.observed_time_ns)
+                        }
+                        DataType::Utf8View => {
+                            parse_timestamp_nanos(col.as_string_view().value(row).as_bytes())
+                                .unwrap_or(metadata.observed_time_ns)
+                        }
+                        DataType::LargeUtf8 => {
+                            parse_timestamp_nanos(col.as_string::<i64>().value(row).as_bytes())
+                                .unwrap_or(metadata.observed_time_ns)
+                        }
+                        DataType::Timestamp(unit, _) => {
+                            use arrow::datatypes::{
+                                TimeUnit, TimestampMicrosecondType, TimestampMillisecondType,
+                                TimestampNanosecondType, TimestampSecondType,
+                            };
+                            let raw_ns = match unit {
+                                TimeUnit::Nanosecond => {
+                                    Some(col.as_primitive::<TimestampNanosecondType>().value(row))
+                                }
+                                TimeUnit::Microsecond => col
+                                    .as_primitive::<TimestampMicrosecondType>()
+                                    .value(row)
+                                    .checked_mul(1_000),
+                                TimeUnit::Millisecond => col
+                                    .as_primitive::<TimestampMillisecondType>()
+                                    .value(row)
+                                    .checked_mul(1_000_000),
+                                TimeUnit::Second => col
+                                    .as_primitive::<TimestampSecondType>()
+                                    .value(row)
+                                    .checked_mul(1_000_000_000),
+                            };
+                            raw_ns
+                                .and_then(|ns| u64::try_from(ns).ok())
+                                .unwrap_or(metadata.observed_time_ns)
+                        }
                         _ => metadata.observed_time_ns,
                     }
                 }
@@ -263,27 +332,18 @@ impl LokiSink {
             // --- Labels ---
             // Use coalesce_as_str so that struct conflict columns (and plain Utf8
             // columns alike) always produce a string value for the label.
+            // static_labels is pre-sanitized once before this loop.
             let mut labels = static_labels.clone();
             for (label_name, col_info) in &label_col_infos {
                 if let Some(val) = coalesce_as_str(batch, row, col_info) {
                     // Skip empty label values — Loki API rejects them with HTTP 400.
                     if !val.is_empty() {
+                        // label_name is already sanitized (pre-computed in label_col_infos).
                         labels.push((label_name.clone(), val));
                     }
                 }
             }
             labels.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-
-            // Build stream key as a JSON array of [key, value] pairs.
-            // This is unambiguous even when label values contain commas or `=`,
-            // which the previous `k=v,...` encoding could not represent losslessly.
-            let stream_key = {
-                let pairs: Vec<String> = labels
-                    .iter()
-                    .map(|(k, v)| format!("[\"{}\",\"{}\"]", escape_json(k), escape_json(v)))
-                    .collect();
-                format!("[{}]", pairs.join(","))
-            };
 
             // --- Log line ---
             let mut log_line = Vec::new();
@@ -291,10 +351,7 @@ impl LokiSink {
             let log_str = String::from_utf8(log_line)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-            stream_map
-                .entry(stream_key)
-                .or_default()
-                .push((ts_ns, log_str));
+            stream_map.entry(labels).or_default().push((ts_ns, log_str));
         }
 
         Ok(stream_map)
@@ -309,20 +366,11 @@ impl LokiSink {
         let mut streams_json = Vec::new();
         let mut retained: u64 = 0;
 
-        for (stream_key, entries) in stream_map.iter_mut() {
+        for (labels, entries) in stream_map.iter_mut() {
             retained += sort_and_dedup_timestamps(entries) as u64;
 
-            // Parse stream_key (JSON array of [key, value] pairs) back into label map.
-            // The stream key already includes sanitized static and dynamic labels.
-            let mut labels_map: HashMap<String, String> = HashMap::new();
-            if let Ok(pairs) = serde_json::from_str::<Vec<[String; 2]>>(stream_key.as_str()) {
-                for [k, v] in pairs {
-                    labels_map.entry(k).or_insert(v);
-                }
-            }
-
             // Build stream JSON.
-            let labels_str = labels_map
+            let labels_str = labels
                 .iter()
                 .map(|(k, v)| format!("\"{}\":\"{}\"", escape_json(k), escape_json(v)))
                 .collect::<Vec<_>>()
@@ -404,12 +452,12 @@ impl super::sink::Sink for LokiSink {
             }
             let mut stream_map = match self.build_stream_map(batch, metadata) {
                 Ok(m) => m,
-                Err(e) => return super::sink::SendResult::IoError(e),
+                Err(e) => return super::sink::SendResult::from_io_error(e),
             };
             let (payload, retained_rows) = Self::serialize_loki_json(&mut stream_map);
             match self.do_send(payload, retained_rows).await {
                 Ok(r) => r,
-                Err(e) => super::sink::SendResult::IoError(e),
+                Err(e) => super::sink::SendResult::from_io_error(e),
             }
         })
     }
@@ -528,20 +576,33 @@ fn escape_json(s: &str) -> String {
     out
 }
 
-/// Wrap an already-valid JSON value (log line) as a JSON string.
-/// If it's a JSON object/array, wrap it in quotes with escaping.
-/// If it already starts with `"`, return as-is (already a JSON string).
+/// Ensure the input becomes a valid JSON *string* value (with enclosing quotes).
+///
+/// Loki's push API requires the second element of each `values` entry to be a
+/// JSON string — not an object, array, number, or other JSON value type.
+///
+/// - If the input is already a valid JSON string (starts with `"` and parses
+///   as `Value::String`), return it as-is.
+/// - If the input is any other valid JSON value (object, array, number, bool,
+///   null), re-encode it as a JSON string (serialize the raw text as a string).
+/// - Otherwise, escape it as a plain string value.
 fn escape_json_raw(s: &str) -> String {
     let trimmed = s.trim();
     // Bug #1048: leading quote is not enough to guarantee valid JSON string.
     // Verify it actually parses as complete valid JSON before passthrough.
-    if trimmed.starts_with('"') && serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
-        // Already a valid JSON string.
-        trimmed.to_string()
-    } else {
-        // A JSON object/array or plain string — escape it as a string value.
-        format!("\"{}\"", escape_json(trimmed))
+    if trimmed.starts_with('"') {
+        if let Ok(serde_json::Value::String(_)) = serde_json::from_str::<serde_json::Value>(trimmed)
+        {
+            // Already a valid JSON string — pass through as-is.
+            return trimmed.to_string();
+        }
+    } else if serde_json::from_str::<serde_json::Value>(trimmed).is_ok() {
+        // Valid JSON but not a string (object, array, number, bool, null).
+        // Loki requires the log line to be a JSON string, so re-encode it.
+        return format!("\"{}\"", escape_json(trimmed));
     }
+    // Not valid JSON. Escape it as a string value.
+    format!("\"{}\"", escape_json(trimmed))
 }
 
 // ---------------------------------------------------------------------------
@@ -633,35 +694,29 @@ mod tests {
     }
 
     #[test]
-    fn stream_key_encoding_roundtrip_with_special_chars() {
+    fn stream_labels_preserve_special_chars() {
         // These characters were lossy in the old k=v,... format.
-        let labels = [
+        let labels: StreamLabels = vec![
             ("env".to_string(), "prod=us-east,eu-west".to_string()),
             ("app".to_string(), r#"my"app"#.to_string()),
             ("path".to_string(), r"C:\Users\log".to_string()),
             ("normal".to_string(), "value".to_string()),
         ];
 
-        // Encode to stream key (same logic as build_stream_map).
-        let stream_key = {
-            let pairs: Vec<String> = labels
-                .iter()
-                .map(|(k, v)| format!("[\"{}\",\"{}\"]", escape_json(k), escape_json(v)))
-                .collect();
-            format!("[{}]", pairs.join(","))
-        };
+        let mut stream_map = StreamMap::new();
+        stream_map.insert(
+            labels.clone(),
+            vec![(1, "{\"message\":\"ok\"}".to_string())],
+        );
 
-        // Parse back (same logic as serialize_loki_json).
-        let parsed: Vec<[String; 2]> =
-            serde_json::from_str(&stream_key).expect("stream_key must be valid JSON array");
+        let (payload, retained) = LokiSink::serialize_loki_json(&mut stream_map);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&payload).expect("payload must be valid JSON");
+        let stream = &parsed["streams"][0]["stream"];
 
-        assert_eq!(parsed.len(), labels.len(), "label count must be preserved");
-        for (i, [k, v]) in parsed.iter().enumerate() {
-            assert_eq!(k, &labels[i].0, "key {i} must round-trip");
-            assert_eq!(
-                v, &labels[i].1,
-                "value {i} must round-trip through JSON encoding"
-            );
+        assert_eq!(retained, 1);
+        for (key, value) in labels {
+            assert_eq!(stream[&key], value);
         }
     }
 
@@ -738,6 +793,11 @@ mod tests {
         );
         assert_eq!(escaped, "\"\\\"not valid json\"", "should be fully escaped");
 
+        // Object with trailing characters
+        let malformed_obj = "{\"key\": \"value\"} trailing";
+        let escaped_obj = escape_json_raw(malformed_obj);
+        assert_eq!(escaped_obj, "\"{\\\"key\\\": \\\"value\\\"} trailing\"");
+
         let unterminated = "\"unterminated";
         let escaped_unterminated = escape_json_raw(unterminated);
         assert_eq!(
@@ -763,10 +823,182 @@ mod tests {
 
     #[test]
     fn test_escape_json_raw_object() {
-        // JSON object should be escaped and wrapped
+        // Valid JSON object must be re-encoded as a JSON string.
+        // Loki requires the log-line element to be a JSON string, not an object.
         let obj = "{\"key\": \"value\"}";
         let escaped = escape_json_raw(obj);
+        // The object text is wrapped in a JSON string.
         assert_eq!(escaped, "\"{\\\"key\\\": \\\"value\\\"}\"");
+        assert_ne!(escaped, obj, "JSON object must not be passed through raw");
+    }
+
+    #[test]
+    fn test_label_sanitization() {
+        assert_eq!(sanitize_loki_label_name("valid_label_1"), "valid_label_1");
+        assert_eq!(sanitize_loki_label_name("my.label.name"), "my_label_name");
+        assert_eq!(sanitize_loki_label_name("1invalid_start"), "_invalid_start");
+        assert_eq!(sanitize_loki_label_name("a-b*c/d"), "a_b_c_d");
+        // Empty input must produce a valid label name, not an empty string which
+        // Loki would reject (labels must match ^[a-zA-Z_][a-zA-Z0-9_]*$).
+        assert_eq!(sanitize_loki_label_name(""), "_");
+    }
+
+    /// Regression test for #1670: canonical "timestamp" column must be used as
+    /// the Loki entry timestamp when neither `_timestamp` nor `@timestamp` exist.
+    #[test]
+    fn test_canonical_timestamp_col_used_as_loki_ts() {
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        // Batch uses the canonical "timestamp" name (OTLP receiver output).
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("timestamp", DataType::Int64, true),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![5_000i64])),
+                Arc::new(arrow::array::StringArray::from(vec!["msg"])),
+            ],
+        )
+        .unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 99_999,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].0, 5_000,
+            "canonical 'timestamp' column value (5000) must be used, not observed_time_ns (99999)"
+        );
+    }
+
+    /// Regression test for #1661: when both `@timestamp` and `_timestamp` exist
+    /// and `@timestamp` appears FIRST in the schema, the sink must still use
+    /// `_timestamp` (the preferred field).
+    #[test]
+    fn test_timestamp_underscore_preferred_over_at_timestamp_regardless_of_schema_order() {
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        // @timestamp appears BEFORE _timestamp in the schema.
+        // The sink must select _timestamp (1000) not @timestamp (100).
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(field_names::TIMESTAMP_AT, DataType::Int64, true),
+            Field::new(field_names::TIMESTAMP_UNDERSCORE, DataType::Int64, true),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![100i64])),
+                Arc::new(Int64Array::from(vec![1_000i64])),
+                Arc::new(arrow::array::StringArray::from(vec!["hi"])),
+            ],
+        )
+        .unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 99_999,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].0, 1_000,
+            "_timestamp (1000) must be preferred over @timestamp (100)"
+        );
+    }
+
+    /// Regression test for #1676: Loki sink must parse ISO 8601 Utf8 timestamp
+    /// columns rather than falling back to observed_time_ns.
+    ///
+    /// The scanner produces Utf8 columns for string-typed timestamp fields in
+    /// tailed log files. star_to_flat also produces `_timestamp` as Utf8. The
+    /// previous `_ => metadata.observed_time_ns` default silently discarded the
+    /// actual log timestamp and stamped all records with the batch ingestion time.
+    #[test]
+    fn test_utf8_timestamp_column_used_as_loki_ts() {
+        use arrow::array::StringArray;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        // _timestamp column is Utf8 (scanner output from tailed log files and
+        // star_to_flat output).  The expected nanosecond value for
+        // "2024-01-15T10:30:00Z" is 1_705_314_600 * 1_000_000_000.
+        let expected_ns: u64 = 1_705_314_600_000_000_000;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(field_names::TIMESTAMP_UNDERSCORE, DataType::Utf8, true),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["2024-01-15T10:30:00Z"])),
+                Arc::new(StringArray::from(vec!["hello"])),
+            ],
+        )
+        .unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 99_999_999_999,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].0, expected_ns,
+            "Utf8 _timestamp '2024-01-15T10:30:00Z' must be parsed as {expected_ns} ns, \
+             not observed_time_ns ({})",
+            metadata.observed_time_ns
+        );
     }
 
     #[test]
@@ -816,10 +1048,9 @@ mod tests {
 
         let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
         let key = stream_map.keys().next().unwrap();
-        let parsed: Vec<[String; 2]> = serde_json::from_str(key).unwrap();
         assert_eq!(
-            parsed,
-            vec![["service_name".to_string(), "checkout".to_string()]]
+            key,
+            &vec![("service_name".to_string(), "checkout".to_string())]
         );
     }
 
@@ -941,6 +1172,60 @@ mod tests {
         );
     }
 
+    // Regression test for issue #1661: when both @timestamp and _timestamp are present,
+    // _timestamp must be preferred regardless of schema column order.
+    #[test]
+    fn underscore_timestamp_preferred_over_at_timestamp_regardless_of_schema_order() {
+        use arrow::array::Int64Array;
+        use arrow::datatypes::{Field, Schema};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        // Schema: @timestamp (index 0) BEFORE _timestamp (index 1).
+        // The old `position(|f| underscore || at)` would incorrectly pick @timestamp
+        // because it appears first in schema order.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(field_names::TIMESTAMP_AT, DataType::Int64, true),
+            Field::new(field_names::TIMESTAMP_UNDERSCORE, DataType::Int64, true),
+        ]));
+        let at_ts = 100i64; // @timestamp = 100 ns
+        let under_ts = 9999i64; // _timestamp = 9999 ns — this must win
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int64Array::from(vec![at_ts])),
+                Arc::new(Int64Array::from(vec![under_ts])),
+            ],
+        )
+        .unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        assert_eq!(entries.len(), 1, "expected exactly one log entry");
+        assert_eq!(
+            entries[0].0, under_ts as u64,
+            "_timestamp ({under_ts}) must be preferred over @timestamp ({at_ts}), \
+             even when @timestamp appears first in the schema; got {}",
+            entries[0].0
+        );
+    }
+
     #[test]
     fn dynamic_label_colliding_with_static_keeps_static() {
         use arrow::array::StringArray;
@@ -1047,8 +1332,8 @@ mod tests {
         assert_eq!(stream_map.len(), 1);
         let key = stream_map.keys().next().unwrap();
         assert!(
-            !key.contains("namespace"),
-            "empty label value must be excluded from stream key; key: {key}"
+            !key.iter().any(|(label, _)| label == "namespace"),
+            "empty label value must be excluded from stream key; key: {key:?}"
         );
     }
 
@@ -1096,6 +1381,228 @@ mod tests {
             entries[1].0, metadata.observed_time_ns,
             "Null timestamp should fall back to observed_time_ns"
         );
+    }
+    /// Regression: Loki sink must read Arrow Timestamp(Nanosecond) columns
+    /// and use the actual timestamp value, not fall back to observed_time_ns.
+    /// Before the fix, the `DataType::Timestamp` arm was missing entirely and
+    /// hit the `_ => metadata.observed_time_ns` default.
+    #[test]
+    fn test_arrow_timestamp_nanosecond_column_used_as_loki_ts() {
+        use arrow::array::TimestampNanosecondArray;
+        use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let expected_ns: i64 = 1_705_314_600_000_000_000;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                field_names::TIMESTAMP_UNDERSCORE,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![expected_ns])),
+                Arc::new(arrow::array::StringArray::from(vec!["hello"])),
+            ],
+        )
+        .unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 99_999,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].0, expected_ns as u64,
+            "Timestamp(Nanosecond) value ({expected_ns}) must be used, not observed_time_ns ({})",
+            metadata.observed_time_ns
+        );
+    }
+
+    #[test]
+    fn test_arrow_timestamp_microsecond_column_used_as_loki_ts() {
+        use arrow::array::TimestampMicrosecondArray;
+        use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let raw_us: i64 = 1_705_314_600_000_000;
+        let expected_ns: u64 = (raw_us * 1_000) as u64;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            field_names::TIMESTAMP_UNDERSCORE,
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(TimestampMicrosecondArray::from(vec![raw_us]))],
+        )
+        .unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 99_999,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, expected_ns);
+    }
+
+    #[test]
+    fn test_arrow_timestamp_millisecond_column_used_as_loki_ts() {
+        use arrow::array::TimestampMillisecondArray;
+        use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let raw_ms: i64 = 1_705_314_600_000;
+        let expected_ns: u64 = (raw_ms * 1_000_000) as u64;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            field_names::TIMESTAMP_UNDERSCORE,
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(TimestampMillisecondArray::from(vec![raw_ms]))],
+        )
+        .unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 99_999,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, expected_ns);
+    }
+
+    #[test]
+    fn test_arrow_timestamp_second_column_used_as_loki_ts() {
+        use arrow::array::TimestampSecondArray;
+        use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let raw_s: i64 = 1_705_314_600;
+        let expected_ns: u64 = (raw_s * 1_000_000_000) as u64;
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            field_names::TIMESTAMP_UNDERSCORE,
+            DataType::Timestamp(TimeUnit::Second, None),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(TimestampSecondArray::from(vec![raw_s]))],
+        )
+        .unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 99_999,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, expected_ns);
+    }
+
+    #[test]
+    fn test_arrow_timestamp_negative_or_overflow_falls_back_to_observed_time() {
+        use arrow::array::TimestampSecondArray;
+        use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            field_names::TIMESTAMP_UNDERSCORE,
+            DataType::Timestamp(TimeUnit::Second, None),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(TimestampSecondArray::from(vec![-1, i64::MAX]))],
+        )
+        .unwrap();
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 42,
+        };
+
+        let stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
+        let mut entries: Vec<LokiEntry> = stream_map.values().flatten().cloned().collect();
+        entries.sort_by_key(|(ts, _)| *ts);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, metadata.observed_time_ns);
+        assert_eq!(entries[1].0, metadata.observed_time_ns);
     }
 }
 

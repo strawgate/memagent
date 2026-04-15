@@ -26,7 +26,7 @@ spec:
         - name: logfwd
           image: logfwd:e2e
           imagePullPolicy: IfNotPresent
-          args: ["--config", "/etc/logfwd/config.yaml"]
+          args: ["run", "--config", "/etc/logfwd/config.yaml"]
           securityContext:
             runAsNonRoot: false
             runAsUser: 0

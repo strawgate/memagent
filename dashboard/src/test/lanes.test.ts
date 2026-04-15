@@ -32,6 +32,7 @@ function makeTr(overrides: Partial<TraceRecord> = {}): TraceRecord {
     flush_reason: "size",
     errors: 0,
     status: "unset",
+    lifecycle_state: "completed",
     ...overrides,
   };
 }
@@ -59,7 +60,7 @@ describe("buildLanes", () => {
       trace_id: "pending-1",
       worker_id: -1,
       in_progress: true,
-      stage: "output",
+      lifecycle_state: "queued_for_output",
     });
     const { pendingTraces, lanes } = buildLanes([pending]);
 
@@ -87,7 +88,12 @@ describe("buildLanes", () => {
   it("scan lane (workerId=SCAN_LANE) contains all traces", () => {
     const t0 = makeTr({ trace_id: "a", worker_id: 0 });
     const t1 = makeTr({ trace_id: "b", worker_id: 1 });
-    const pending = makeTr({ trace_id: "c", worker_id: -1, in_progress: true, stage: "output" });
+    const pending = makeTr({
+      trace_id: "c",
+      worker_id: -1,
+      in_progress: true,
+      lifecycle_state: "queued_for_output",
+    });
     const { lanes } = buildLanes([t0, t1, pending]);
 
     const scanLane = lanes.find((l) => l.workerId === SCAN_LANE);
@@ -120,7 +126,7 @@ describe("buildLanes", () => {
     const tr = makeTr({
       worker_id: -1,
       in_progress: true,
-      stage: "scan",
+      lifecycle_state: "scan_in_progress",
     });
     const { pendingTraces } = buildLanes([tr]);
     expect(pendingTraces).toHaveLength(0);
@@ -131,19 +137,18 @@ describe("buildLanes", () => {
     const completed = makeTr({
       trace_id: "done",
       worker_id: 0,
-      in_progress: false,
     });
     const inProgressWorker = makeTr({
       trace_id: "live-worker",
       worker_id: 1,
       in_progress: true,
-      stage: "output",
+      lifecycle_state: "output_in_progress",
     });
     const inProgressPending = makeTr({
       trace_id: "live-pending",
       worker_id: -1,
       in_progress: true,
-      stage: "output",
+      lifecycle_state: "queued_for_output",
     });
     const { lanes, pendingTraces } = buildLanes([completed, inProgressWorker, inProgressPending]);
 
@@ -157,8 +162,8 @@ describe("buildLanes", () => {
     expect(allWorkerIds).toContain("live-worker");
 
     // Scan lane contains all three
-    const scanLane = lanes.find((l) => l.workerId === SCAN_LANE)!;
-    expect(scanLane.traces).toHaveLength(3);
+    const scanLane = lanes.find((l) => l.workerId === SCAN_LANE);
+    expect(scanLane?.traces).toHaveLength(3);
   });
 
   // 9. Multiple traces on the same worker go into one lane

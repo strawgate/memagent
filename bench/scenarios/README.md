@@ -44,6 +44,18 @@ just bench-pipelines
 
 On Linux, use `taskset` to pin to specific cores:
 ```bash
-taskset -c 0 logfwd --config receiver.yaml &
-taskset -c 1 logfwd --config sender.yaml &
+taskset -c 0 logfwd run --config receiver.yaml &
+taskset -c 1 logfwd run --config sender.yaml &
 ```
+
+## Benchkit OTLP in CI
+
+The `Nightly Benchmarks` workflow also normalizes benchmark outputs with
+`strawgate/o11ykit/actions/parse-results` and publishes OTLP JSON artifacts:
+
+- `competitive-otlp.json`
+- `rate-otlp.json`
+- `criterion-otlp.json`
+
+On `main`, these OTLP snapshots are also stashed to `bench-data` under
+`data/runs/*-otlp.json` for downstream tooling and experiments.

@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10243a">
   <title>Development Metrics - Benchmark Dashboard</title>
   <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7"></script>
@@ -13,7 +14,14 @@
     <a href="index.html">Dashboard</a><span class="sep">/</span>Development
   </div>
 
-  <h1>Development Metrics</h1>
+  <header class="hero">
+    <p class="eyebrow">development lane</p>
+    <h1>Development Metrics</h1>
+    <p class="lede">Watch resource curves and criterion drift so we can defend scanner and pipeline performance with real trend evidence.</p>
+    <div class="hero-tags">
+      <span>criterion drift</span><span>rate pressure</span><span>perf confidence</span>
+    </div>
+  </header>
 
   <nav class="nav-pills">
     <a href="index.html">Overview</a>
@@ -23,16 +31,17 @@
 
   <div id="loading" class="loading">Loading development data...</div>
   <div id="content" style="display:none">
+    <div class="tracking-cards" id="development-kpis"></div>
 
     <!-- Rate Ingest Section -->
     <div id="rate-section" class="section" style="display:none">
       <h2>Rate Ingest: Resource Usage vs EPS</h2>
       <div class="chart-grid">
-        <div class="card">
+        <div class="card" id="rate-rss-card">
           <h3>RSS vs EPS Rate</h3>
           <canvas id="chart-rss"></canvas>
         </div>
-        <div class="card">
+        <div class="card" id="rate-cpu-card">
           <h3>CPU % vs EPS Rate</h3>
           <canvas id="chart-cpu"></canvas>
         </div>
@@ -40,11 +49,11 @@
       <div id="rate-trend-section" style="display:none">
         <h3>Rate Trends Over Time</h3>
         <div class="chart-grid">
-          <div class="card">
+          <div class="card" id="rate-rss-trend-card">
             <h3>RSS at 100K eps Over Time</h3>
             <canvas id="chart-rss-trend"></canvas>
           </div>
-          <div class="card">
+          <div class="card" id="rate-cpu-trend-card">
             <h3>CPU at 100K eps Over Time</h3>
             <canvas id="chart-cpu-trend"></canvas>
           </div>
@@ -55,7 +64,7 @@
     <!-- Criterion Section -->
     <div id="criterion-section" class="section" style="display:none">
       <h2>Criterion Benchmarks</h2>
-      <div class="card">
+      <div class="card table-card">
         <table id="criterion-table">
           <thead>
             <tr>
@@ -72,7 +81,9 @@
   </div>
 </div>
 
-<script>
+<script type="module">
+import { fetchBenchIndex, fetchBenchJson } from "./o11y-client.js";
+
 function formatNs(ns) {
   if (ns >= 1e9) return (ns / 1e9).toFixed(2) + 's';
   if (ns >= 1e6) return (ns / 1e6).toFixed(2) + 'ms';
@@ -107,21 +118,50 @@ function drawSparkline(canvas, data, color) {
   });
 }
 
-const DATA_BASE = 'https://raw.githubusercontent.com/strawgate/memagent/bench-data';
+function normalizeRateMap(rateRun) {
+  if (!rateRun || typeof rateRun !== 'object') return {};
+  if (rateRun.rates && typeof rateRun.rates === 'object') return rateRun.rates;
+  const out = {};
+  if (Array.isArray(rateRun.results)) {
+    for (const row of rateRun.results) {
+      const eps = Number(row?.eps);
+      if (!Number.isFinite(eps)) continue;
+      out[String(Math.trunc(eps))] = {
+        rss_mb: Number.isFinite(row?.rss_mb) ? row.rss_mb : (Number.isFinite(row?.rss_kb) ? row.rss_kb / 1024 : null),
+        cpu_pct: Number.isFinite(row?.cpu_pct) ? row.cpu_pct : (Number.isFinite(row?.cpu_percent) ? row.cpu_percent : null),
+        actual_eps: Number.isFinite(row?.actual_eps) ? row.actual_eps : null,
+      };
+    }
+  }
+  return out;
+}
+
+function formatCriterionThroughput(entry) {
+  if (!entry || typeof entry !== 'object') return '--';
+  if (Number.isFinite(entry.thrpt_mib_s)) return entry.thrpt_mib_s.toFixed(1) + ' MiB/s';
+  if (Number.isFinite(entry.thrpt_melem_s)) return entry.thrpt_melem_s.toFixed(1) + ' Melem/s';
+  const meanNs = Number(entry.mean_ns);
+  const bytes = Number(entry.throughput?.Bytes);
+  const elems = Number(entry.throughput?.Elements);
+  if (Number.isFinite(meanNs) && meanNs > 0 && Number.isFinite(bytes)) {
+    const mibPerSec = (bytes / (meanNs / 1e9)) / (1024 * 1024);
+    return mibPerSec.toFixed(1) + ' MiB/s';
+  }
+  if (Number.isFinite(meanNs) && meanNs > 0 && Number.isFinite(elems)) {
+    const melemPerSec = (elems / (meanNs / 1e9)) / 1e6;
+    return melemPerSec.toFixed(1) + ' Melem/s';
+  }
+  return '--';
+}
 
 function runId(entry) {
   if (entry && typeof entry === 'object') return entry.id;
   return entry;
 }
 
-async function loadJSON(url) {
-  try { const r = await fetch(url); if (!r.ok) return null; return await r.json(); }
-  catch { return null; }
-}
-
 async function main() {
   chartColors();
-  const index = await loadJSON(DATA_BASE + '/index.json');
+  const index = await fetchBenchIndex();
   if (!index) {
     document.getElementById('loading').textContent = 'No data found.';
     return;
@@ -130,8 +170,8 @@ async function main() {
   const rateRunIds = (index.rate_runs || []).map(runId).filter(Boolean).map(String);
   const criterionRunIds = (index.criterion_runs || []).map(runId).filter(Boolean).map(String);
 
-  const rateRuns = (await Promise.all(rateRunIds.map(id => loadJSON(DATA_BASE + '/rate-runs/' + id + '.json')))).filter(Boolean);
-  const criterionRuns = (await Promise.all(criterionRunIds.map(id => loadJSON(DATA_BASE + '/criterion-runs/' + id + '.json')))).filter(Boolean);
+  const rateRuns = (await Promise.all(rateRunIds.map(id => fetchBenchJson('rate-runs/' + id + '.json')))).filter(Boolean);
+  const criterionRuns = (await Promise.all(criterionRunIds.map(id => fetchBenchJson('criterion-runs/' + id + '.json')))).filter(Boolean);
 
   if (rateRuns.length === 0 && criterionRuns.length === 0) {
     document.getElementById('loading').textContent = 'No development data available.';
@@ -140,103 +180,167 @@ async function main() {
 
   document.getElementById('loading').style.display = 'none';
   document.getElementById('content').style.display = '';
+  const kpisEl = document.getElementById('development-kpis');
+  const latestRate = rateRuns.length ? rateRuns[rateRuns.length - 1] : null;
+  const latestCriterion = criterionRuns.length ? criterionRuns[criterionRuns.length - 1] : null;
+  const latestRateLabel = latestRate?.id || (rateRunIds.length ? rateRunIds[rateRunIds.length - 1] : null);
+  const latestRateMap = normalizeRateMap(latestRate);
+  const rss100k = latestRateMap["100000"]?.rss_mb;
+  const cpu100k = latestRateMap["100000"]?.cpu_pct;
+  const criterionCount = latestCriterion ? Object.keys(latestCriterion.benchmarks || {}).length : 0;
+  const ratePointCount = latestRate ? Object.keys(latestRateMap).filter(k => Number.isFinite(Number(k))).length : 0;
+  kpisEl.innerHTML = `
+    <div class="tracking-card">
+      <span class="label">Latest Rate Run</span>
+      <span class="value">${latestRateLabel ? '#' + latestRateLabel : '--'}</span>
+      <span class="subtitle">${ratePointCount} EPS steps captured</span>
+    </div>
+    <div class="tracking-card">
+      <span class="label">100K EPS Snapshot</span>
+      <span class="value">${rss100k != null ? rss100k.toFixed(1) + ' MB' : '--'}</span>
+      <span class="subtitle">${cpu100k != null ? cpu100k.toFixed(1) + '% CPU' : 'CPU unavailable at 100K'}</span>
+    </div>
+    <div class="tracking-card">
+      <span class="label">Criterion Benchmarks</span>
+      <span class="value">${criterionCount || '--'}</span>
+      <span class="subtitle">${criterionRuns.length} historical runs</span>
+    </div>
+  `;
 
   // Rate Ingest Charts
   if (rateRuns.length > 0) {
-    document.getElementById('rate-section').style.display = '';
     const latest = rateRuns[rateRuns.length - 1];
-    const rates = latest.rates || {};
-    const sortedRates = Object.keys(rates).map(Number).sort((a, b) => a - b);
-    const labels = sortedRates.map(r => r >= 1000 ? (r / 1000) + 'K' : r.toString());
+    const rates = normalizeRateMap(latest);
+    const sortedRates = Object.keys(rates).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+    const labels = sortedRates.map(r => r === 0 ? 'max' : (r >= 1000 ? (r / 1000) + 'K' : r.toString()));
+    const rssSeries = sortedRates.map(r => {
+      const value = rates[r]?.rss_mb;
+      return typeof value === 'number' ? value : null;
+    });
+    const cpuSeries = sortedRates.map(r => {
+      const value = rates[r]?.cpu_pct;
+      return typeof value === 'number' ? value : null;
+    });
+    const hasRssSeries = rssSeries.some(v => v != null);
+    const hasCpuSeries = cpuSeries.some(v => v != null);
+    const hasRateSeries = sortedRates.length > 0 && (hasRssSeries || hasCpuSeries);
 
-    // RSS chart
-    new Chart(document.getElementById('chart-rss'), {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [{
-          label: 'RSS (MB)',
-          data: sortedRates.map(r => rates[r]?.rss_mb),
-          borderColor: '#2563eb',
-          backgroundColor: 'rgba(37, 99, 235, 0.1)',
-          fill: true,
-          borderWidth: 2,
-          pointRadius: 4,
-          tension: 0.3
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: { tooltip: { callbacks: { label: ctx => ctx.raw?.toFixed(1) + ' MB' } } },
-        scales: {
-          x: { title: { display: true, text: 'Events/sec' }, grid: { color: gridColor() } },
-          y: { title: { display: true, text: 'RSS (MB)' }, grid: { color: gridColor() } }
+    if (hasRateSeries) {
+      document.getElementById('rate-section').style.display = '';
+
+      if (hasRssSeries) {
+        new Chart(document.getElementById('chart-rss'), {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [{
+              label: 'RSS (MB)',
+              data: rssSeries,
+              borderColor: '#2563eb',
+              backgroundColor: 'rgba(37, 99, 235, 0.1)',
+              fill: true,
+              borderWidth: 2,
+              pointRadius: 4,
+              tension: 0.3
+            }]
+          },
+          options: {
+            responsive: true,
+            plugins: { tooltip: { callbacks: { label: ctx => ctx.raw?.toFixed(1) + ' MB' } } },
+            scales: {
+              x: { title: { display: true, text: 'Events/sec' }, grid: { color: gridColor() } },
+              y: { title: { display: true, text: 'RSS (MB)' }, grid: { color: gridColor() } }
+            }
+          }
+        });
+      } else {
+        document.getElementById('chart-rss').style.display = 'none';
+        document.getElementById('rate-rss-card').insertAdjacentHTML('beforeend', '<p class="info-note">RSS data is not present in this rate run.</p>');
+      }
+
+      if (hasCpuSeries) {
+        new Chart(document.getElementById('chart-cpu'), {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [{
+              label: 'CPU %',
+              data: cpuSeries,
+              borderColor: '#d97706',
+              backgroundColor: 'rgba(217, 119, 6, 0.1)',
+              fill: true,
+              borderWidth: 2,
+              pointRadius: 4,
+              tension: 0.3
+            }]
+          },
+          options: {
+            responsive: true,
+            plugins: { tooltip: { callbacks: { label: ctx => ctx.raw?.toFixed(1) + '%' } } },
+            scales: {
+              x: { title: { display: true, text: 'Events/sec' }, grid: { color: gridColor() } },
+              y: { title: { display: true, text: 'CPU %' }, grid: { color: gridColor() } }
+            }
+          }
+        });
+      } else {
+        document.getElementById('chart-cpu').style.display = 'none';
+        document.getElementById('rate-cpu-card').insertAdjacentHTML('beforeend', '<p class="info-note">CPU data is not present in this rate run.</p>');
+      }
+
+      if (rateRuns.length > 1) {
+        const trendLabels = rateRuns.map(r => r.id || '');
+        const rss100kTrend = rateRuns.map(r => normalizeRateMap(r)["100000"]?.rss_mb ?? null);
+        const cpu100kTrend = rateRuns.map(r => normalizeRateMap(r)["100000"]?.cpu_pct ?? null);
+        const hasRssTrend = rss100kTrend.some(v => v != null);
+        const hasCpuTrend = cpu100kTrend.some(v => v != null);
+
+        if (hasRssTrend || hasCpuTrend) {
+          document.getElementById('rate-trend-section').style.display = '';
+        }
+
+        if (hasRssTrend) {
+          new Chart(document.getElementById('chart-rss-trend'), {
+            type: 'line',
+            data: {
+              labels: trendLabels,
+              datasets: [{ label: 'RSS at 100K', data: rss100kTrend, borderColor: '#2563eb', borderWidth: 2, pointRadius: 3, tension: 0.3, spanGaps: true }]
+            },
+            options: {
+              responsive: true,
+              scales: {
+                x: { grid: { color: gridColor() } },
+                y: { title: { display: true, text: 'MB' }, grid: { color: gridColor() } }
+              }
+            }
+          });
+        } else {
+          document.getElementById('chart-rss-trend').style.display = 'none';
+          document.getElementById('rate-rss-trend-card').insertAdjacentHTML('beforeend', '<p class="info-note">No RSS 100K trend points yet.</p>');
+        }
+
+        if (hasCpuTrend) {
+          new Chart(document.getElementById('chart-cpu-trend'), {
+            type: 'line',
+            data: {
+              labels: trendLabels,
+              datasets: [{ label: 'CPU at 100K', data: cpu100kTrend, borderColor: '#d97706', borderWidth: 2, pointRadius: 3, tension: 0.3, spanGaps: true }]
+            },
+            options: {
+              responsive: true,
+              scales: {
+                x: { grid: { color: gridColor() } },
+                y: { title: { display: true, text: 'CPU %' }, grid: { color: gridColor() } }
+              }
+            }
+          });
+        } else {
+          document.getElementById('chart-cpu-trend').style.display = 'none';
+          document.getElementById('rate-cpu-trend-card').insertAdjacentHTML('beforeend', '<p class="info-note">No CPU 100K trend points yet.</p>');
         }
       }
-    });
-
-    // CPU chart
-    new Chart(document.getElementById('chart-cpu'), {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [{
-          label: 'CPU %',
-          data: sortedRates.map(r => rates[r]?.cpu_pct),
-          borderColor: '#d97706',
-          backgroundColor: 'rgba(217, 119, 6, 0.1)',
-          fill: true,
-          borderWidth: 2,
-          pointRadius: 4,
-          tension: 0.3
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: { tooltip: { callbacks: { label: ctx => ctx.raw?.toFixed(1) + '%' } } },
-        scales: {
-          x: { title: { display: true, text: 'Events/sec' }, grid: { color: gridColor() } },
-          y: { title: { display: true, text: 'CPU %' }, grid: { color: gridColor() } }
-        }
-      }
-    });
-
-    // Trends over time at 100K eps
-    if (rateRuns.length > 1) {
-      document.getElementById('rate-trend-section').style.display = '';
-      const trendLabels = rateRuns.map(r => r.id || '');
-      const rss100k = rateRuns.map(r => r.rates?.["100000"]?.rss_mb ?? null);
-      const cpu100k = rateRuns.map(r => r.rates?.["100000"]?.cpu_pct ?? null);
-
-      new Chart(document.getElementById('chart-rss-trend'), {
-        type: 'line',
-        data: {
-          labels: trendLabels,
-          datasets: [{ label: 'RSS at 100K', data: rss100k, borderColor: '#2563eb', borderWidth: 2, pointRadius: 3, tension: 0.3, spanGaps: true }]
-        },
-        options: {
-          responsive: true,
-          scales: {
-            x: { grid: { color: gridColor() } },
-            y: { title: { display: true, text: 'MB' }, grid: { color: gridColor() } }
-          }
-        }
-      });
-
-      new Chart(document.getElementById('chart-cpu-trend'), {
-        type: 'line',
-        data: {
-          labels: trendLabels,
-          datasets: [{ label: 'CPU at 100K', data: cpu100k, borderColor: '#d97706', borderWidth: 2, pointRadius: 3, tension: 0.3, spanGaps: true }]
-        },
-        options: {
-          responsive: true,
-          scales: {
-            x: { grid: { color: gridColor() } },
-            y: { title: { display: true, text: 'CPU %' }, grid: { color: gridColor() } }
-          }
-        }
-      });
+    } else {
+      document.getElementById('rate-section').style.display = 'none';
     }
   }
 
@@ -247,16 +351,11 @@ async function main() {
     const benchmarks = latest.benchmarks || {};
     const tbody = document.getElementById('criterion-tbody');
 
-    // Gather all benchmark names across runs for trends
-    const allBenchNames = new Set();
-    criterionRuns.forEach(r => Object.keys(r.benchmarks || {}).forEach(n => allBenchNames.add(n)));
-
     let sparkIdx = 0;
     let rowsHtml = '';
     for (const name of Object.keys(benchmarks)) {
       const b = benchmarks[name];
-      const thrpt = b.thrpt_mib_s ? b.thrpt_mib_s.toFixed(1) + ' MiB/s'
-                  : b.thrpt_melem_s ? b.thrpt_melem_s.toFixed(1) + ' Melem/s' : '--';
+      const thrpt = formatCriterionThroughput(b);
 
       const sparkId = 'crit-spark-' + sparkIdx++;
       rowsHtml += `<tr>

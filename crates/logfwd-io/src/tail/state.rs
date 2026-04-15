@@ -1,0 +1,203 @@
+use std::time::{Duration, Instant};
+
+/// Number of consecutive idle polls required before EOF can be emitted.
+pub(super) const EOF_IDLE_POLLS_BEFORE_EMIT: u8 = 2;
+/// Initial delay used for exponential error backoff.
+pub(super) const INITIAL_BACKOFF_MS: u64 = 100;
+/// Upper bound for exponential error backoff.
+pub(super) const MAX_BACKOFF_MS: u64 = 5000;
+
+/// Pure EOF reducer state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct EofModelState {
+    /// Whether EOF has already been emitted for the current idle streak.
+    pub(super) emitted: bool,
+    /// Number of consecutive idle polls observed.
+    pub(super) idle_polls: u8,
+}
+
+/// Pure EOF transition model.
+///
+/// Returns `(next_state, should_emit_eof)`.
+pub(super) fn eof_model_transition(
+    state: EofModelState,
+    had_data: bool,
+    idle_window_elapsed: bool,
+) -> (EofModelState, bool) {
+    if had_data {
+        return (EofModelState::default(), false);
+    }
+
+    let next_idle = state.idle_polls.saturating_add(1);
+    let should_emit =
+        !state.emitted && next_idle >= EOF_IDLE_POLLS_BEFORE_EMIT && idle_window_elapsed;
+    (
+        EofModelState {
+            emitted: state.emitted || should_emit,
+            idle_polls: next_idle,
+        },
+        should_emit,
+    )
+}
+
+/// Mutable wrapper around the pure EOF reducer and idle timer.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct EofState {
+    model: EofModelState,
+    idle_since: Option<Instant>,
+}
+
+impl EofState {
+    /// Reset EOF state when new data arrives.
+    pub(super) fn on_data(&mut self) {
+        self.model = EofModelState::default();
+        self.idle_since = None;
+    }
+
+    /// Advance EOF state for an idle poll and return whether EOF should emit.
+    pub(super) fn on_no_data(&mut self, now: Instant, min_idle: Duration) -> bool {
+        let idle_since = self.idle_since.get_or_insert(now);
+        let idle_window_elapsed = now.duration_since(*idle_since) >= min_idle;
+        let (next, emit) = eof_model_transition(self.model, false, idle_window_elapsed);
+        self.model = next;
+        emit
+    }
+}
+
+/// Compute the bounded exponential backoff delay for a given error streak.
+pub(super) fn backoff_delay_ms(consecutive_error_polls: u32) -> u64 {
+    if consecutive_error_polls == 0 {
+        return 0;
+    }
+    let exponent = consecutive_error_polls.saturating_sub(1).min(6);
+    let multiplier = 1u64 << exponent;
+    INITIAL_BACKOFF_MS
+        .saturating_mul(multiplier)
+        .min(MAX_BACKOFF_MS)
+}
+
+/// Pure error-backoff transition.
+///
+/// Returns `(next_consecutive_error_polls, next_backoff_delay_ms)`.
+pub(super) fn backoff_transition(
+    consecutive_error_polls: u32,
+    had_error: bool,
+) -> (u32, Option<u64>) {
+    if had_error {
+        let next = consecutive_error_polls.saturating_add(1);
+        (next, Some(backoff_delay_ms(next)))
+    } else {
+        (0, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::{prop_assert, prop_assert_eq, proptest};
+
+    #[test]
+    fn eof_emits_on_second_idle_when_window_elapsed() {
+        let s0 = EofModelState::default();
+        let (s1, emit1) = eof_model_transition(s0, false, false);
+        let (s2, emit2) = eof_model_transition(s1, false, true);
+        assert!(!emit1);
+        assert!(emit2);
+        assert!(s2.emitted);
+    }
+
+    #[test]
+    fn eof_resets_on_data() {
+        let s = EofModelState {
+            emitted: true,
+            idle_polls: 9,
+        };
+        let (next, emit) = eof_model_transition(s, true, false);
+        assert_eq!(next, EofModelState::default());
+        assert!(!emit);
+    }
+
+    #[test]
+    fn backoff_doubles_until_cap() {
+        assert_eq!(backoff_delay_ms(0), 0);
+        assert_eq!(backoff_delay_ms(1), 100);
+        assert_eq!(backoff_delay_ms(2), 200);
+        assert_eq!(backoff_delay_ms(3), 400);
+        assert_eq!(backoff_delay_ms(4), 800);
+        assert_eq!(backoff_delay_ms(5), 1600);
+        assert_eq!(backoff_delay_ms(6), 3200);
+        assert_eq!(backoff_delay_ms(7), 5000);
+        assert_eq!(backoff_delay_ms(100), 5000);
+    }
+
+    #[test]
+    fn eof_state_requires_elapsed_idle_window_before_emit() {
+        let mut state = EofState::default();
+        let t0 = Instant::now();
+        let min_idle = Duration::from_millis(100);
+
+        assert!(!state.on_no_data(t0, min_idle));
+        assert!(!state.on_no_data(t0 + Duration::from_millis(50), min_idle));
+        assert!(state.on_no_data(t0 + Duration::from_millis(120), min_idle));
+    }
+
+    #[test]
+    fn eof_state_on_data_restarts_idle_window() {
+        let mut state = EofState::default();
+        let t0 = Instant::now();
+        let min_idle = Duration::from_millis(100);
+
+        assert!(!state.on_no_data(t0, min_idle));
+        assert!(state.on_no_data(t0 + Duration::from_millis(100), min_idle));
+
+        state.on_data();
+
+        assert!(!state.on_no_data(t0 + Duration::from_millis(100), min_idle));
+        assert!(!state.on_no_data(t0 + Duration::from_millis(150), min_idle));
+        assert!(state.on_no_data(t0 + Duration::from_millis(220), min_idle));
+    }
+
+    proptest! {
+        #[test]
+        fn eof_model_only_emits_on_threshold_crossing(
+            events in proptest::collection::vec((proptest::bool::ANY, proptest::bool::ANY), 0..128)
+        ) {
+            let mut state = EofModelState::default();
+            for (had_data, idle_window_elapsed) in events {
+                let old = state;
+                let (next, emit) = eof_model_transition(state, had_data, idle_window_elapsed);
+                if emit {
+                    prop_assert!(!old.emitted);
+                    prop_assert!(old.idle_polls.saturating_add(1) >= EOF_IDLE_POLLS_BEFORE_EMIT);
+                    prop_assert!(idle_window_elapsed);
+                }
+                if had_data {
+                    prop_assert_eq!(next, EofModelState::default());
+                }
+                state = next;
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn backoff_transition_is_monotonic_until_reset(errors in proptest::collection::vec(proptest::bool::ANY, 0..128)) {
+            let mut consecutive = 0u32;
+            let mut last_delay = 0u64;
+            for had_error in errors {
+                let (next, delay) = backoff_transition(consecutive, had_error);
+                if had_error {
+                    let d = delay.expect("error transition must set delay");
+                    prop_assert!(d >= last_delay);
+                    prop_assert!(d <= MAX_BACKOFF_MS);
+                    last_delay = d;
+                } else {
+                    prop_assert_eq!(next, 0);
+                    prop_assert!(delay.is_none());
+                    last_delay = 0;
+                }
+                consecutive = next;
+            }
+        }
+    }
+}

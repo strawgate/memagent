@@ -18,7 +18,7 @@ spec:
         - name: blackhole
           image: logfwd:e2e
           imagePullPolicy: IfNotPresent
-          args: ["--blackhole", "0.0.0.0:4318"]
+          args: ["blackhole", "0.0.0.0:4318"]
           ports:
             - containerPort: 4318
           readinessProbe:

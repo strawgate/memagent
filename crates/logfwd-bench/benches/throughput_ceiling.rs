@@ -6,7 +6,7 @@
 //!
 //! **Dimensions varied:**
 //! - Input schema: narrow (~120 B, 5 fields), production_mixed (~250 B, variable), wide (~600 B, 20+ fields)
-//! - Scan config: extract_all (default), 3-field pushdown, extract_all with keep_raw off
+//! - Scan config: extract_all (default), 3-field pushdown, extract_all with line_capture off
 //! - Batch size: 1K → 100K rows
 //! - Scan mode: streaming (StringViewArray) vs scan_detached (StringArray)
 //!
@@ -16,6 +16,7 @@
 
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 
 use logfwd_arrow::scanner::Scanner;
 use logfwd_bench::{NullSink, generators};
@@ -45,14 +46,14 @@ fn config_3_fields() -> ScanConfig {
             },
         ],
         extract_all: false,
-        keep_raw: false,
+        line_field_name: None,
         validate_utf8: false,
     }
 }
 
 fn config_no_raw() -> ScanConfig {
     ScanConfig {
-        keep_raw: false,
+        line_field_name: None,
         ..ScanConfig::default()
     }
 }
@@ -88,7 +89,8 @@ fn bench_ceiling_by_schema(c: &mut Criterion) {
                 let batch = scanner
                     .scan_detached(buf.clone())
                     .expect("scan should not fail");
-                std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
+                sink.send_batch(&batch, &meta).unwrap();
+                std::hint::black_box(());
             });
         });
 
@@ -101,7 +103,8 @@ fn bench_ceiling_by_schema(c: &mut Criterion) {
                 let batch = scanner
                     .scan_detached(buf.clone())
                     .expect("scan should not fail");
-                std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
+                sink.send_batch(&batch, &meta).unwrap();
+                std::hint::black_box(());
             });
         });
     }
@@ -132,7 +135,8 @@ fn bench_ceiling_by_batch_size(c: &mut Criterion) {
                 let batch = scanner
                     .scan_detached(buf.clone())
                     .expect("scan should not fail");
-                std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
+                sink.send_batch(&batch, &meta).unwrap();
+                std::hint::black_box(());
             });
         });
     }
@@ -162,7 +166,8 @@ fn bench_ceiling_by_scan_config(c: &mut Criterion) {
             let batch = scanner
                 .scan_detached(buf.clone())
                 .expect("scan should not fail");
-            std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
+            sink.send_batch(&batch, &meta).unwrap();
+            std::hint::black_box(());
         });
     });
 
@@ -175,22 +180,28 @@ fn bench_ceiling_by_scan_config(c: &mut Criterion) {
             let batch = scanner
                 .scan_detached(buf.clone())
                 .expect("scan should not fail");
-            std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
+            sink.send_batch(&batch, &meta).unwrap();
+            std::hint::black_box(());
         });
     });
 
-    // extract_all with keep_raw off
+    // extract_all with line_capture off
     group.throughput(Throughput::Elements(n as u64));
-    group.bench_with_input(BenchmarkId::new("lines", "no_raw"), &buf, |b, buf| {
-        let mut scanner = Scanner::new(config_no_raw());
-        let mut sink = NullSink;
-        b.iter(|| {
-            let batch = scanner
-                .scan_detached(buf.clone())
-                .expect("scan should not fail");
-            std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
-        });
-    });
+    group.bench_with_input(
+        BenchmarkId::new("lines", "line_capture_off"),
+        &buf,
+        |b, buf| {
+            let mut scanner = Scanner::new(config_no_raw());
+            let mut sink = NullSink;
+            b.iter(|| {
+                let batch = scanner
+                    .scan_detached(buf.clone())
+                    .expect("scan should not fail");
+                sink.send_batch(&batch, &meta).unwrap();
+                std::hint::black_box(());
+            });
+        },
+    );
 
     group.finish();
 }
@@ -215,7 +226,8 @@ fn bench_ceiling_by_scan_mode(c: &mut Criterion) {
         let mut sink = NullSink;
         b.iter(|| {
             let batch = scanner.scan(buf.clone()).expect("scan should not fail");
-            std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
+            sink.send_batch(&batch, &meta).unwrap();
+            std::hint::black_box(());
         });
     });
 
@@ -226,7 +238,8 @@ fn bench_ceiling_by_scan_mode(c: &mut Criterion) {
             let batch = scanner
                 .scan_detached(buf.clone())
                 .expect("scan should not fail");
-            std::hint::black_box(sink.send_batch(&batch, &meta).unwrap());
+            sink.send_batch(&batch, &meta).unwrap();
+            std::hint::black_box(());
         });
     });
 
@@ -274,7 +287,10 @@ fn bench_bottleneck_isolation(c: &mut Criterion) {
 
     group.bench_function(BenchmarkId::new("null_sink_only", n), |b| {
         let mut sink = NullSink;
-        b.iter(|| std::hint::black_box(sink.send_batch(&batch, &meta).unwrap()));
+        b.iter(|| {
+            sink.send_batch(&batch, &meta).unwrap();
+            std::hint::black_box(())
+        });
     });
 
     group.finish();

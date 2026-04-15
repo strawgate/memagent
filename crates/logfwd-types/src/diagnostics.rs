@@ -2,7 +2,7 @@
 
 mod health;
 
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use opentelemetry::KeyValue;
 use opentelemetry::metrics::{Counter, Meter};
@@ -24,6 +24,17 @@ pub struct ComponentStats {
     pub parse_errors_total: AtomicU64,
     /// Coarse lifecycle and health snapshot for readiness/diagnostics.
     health: AtomicU8,
+    // Transport specific
+    /// File: consecutive error polls.
+    pub file_error_polls: AtomicU32,
+    /// TCP: total accepted connections.
+    pub tcp_accepted: AtomicU64,
+    /// TCP: currently active connections.
+    pub tcp_active: AtomicUsize,
+    /// UDP: datagram drops detected.
+    pub udp_drops: AtomicU64,
+    /// UDP: actual kernel receive buffer size.
+    pub udp_recv_buf: AtomicUsize,
     // OTel counters (for OTLP push)
     otel_lines: Counter<u64>,
     otel_bytes: Counter<u64>,
@@ -48,6 +59,11 @@ impl ComponentStats {
             rotations_total: AtomicU64::new(0),
             parse_errors_total: AtomicU64::new(0),
             health: AtomicU8::new(initial_health.as_repr()),
+            file_error_polls: AtomicU32::new(0),
+            tcp_accepted: AtomicU64::new(0),
+            tcp_active: AtomicUsize::new(0),
+            udp_drops: AtomicU64::new(0),
+            udp_recv_buf: AtomicUsize::new(0),
             otel_lines: meter.u64_counter(format!("{prefix}_lines")).build(),
             otel_bytes: meter.u64_counter(format!("{prefix}_bytes")).build(),
             otel_errors: meter.u64_counter(format!("{prefix}_errors")).build(),

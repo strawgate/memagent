@@ -3,10 +3,12 @@ name: Deploy Docs
 on:
   pull_request:
     paths:
+      - "crates/**"
+      - "tla/**"
       - "book/**"
       - "dev-docs/**"
       - "docs/**"
-      - "README.md"
+      - "*.md"
       - "scripts/docs/**"
       - ".github/workflows/docs.yml"
   push:
@@ -16,8 +18,9 @@ on:
       - "dev-docs/**"
       - "bench/dashboard/**"
       - "crates/**"
+      - "tla/**"
       - "docs/**"
-      - "README.md"
+      - "*.md"
       - "scripts/docs/**"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
@@ -28,7 +31,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -41,30 +44,44 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Install mdBook
-        uses: peaceiris/actions-mdbook@v2
+      - uses: actions/setup-node@v6
         with:
-          mdbook-version: latest
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: book/package-lock.json
 
       - name: Link check (book + docs + README)
         uses: lycheeverse/lychee-action@v2
         with:
+          lycheeVersion: v0.23.0
           args: >-
             --no-progress
-            --accept 200,429
+            --accept 200,429,502
             --max-retries 3
+            --root-dir .
             --exclude 'mailto:'
             --exclude-loopback
-            README.md book/src dev-docs docs
+            --exclude '^file:///.*/(architecture|configuration|deployment|development|getting-started|how-it-works|quick-start|troubleshooting)(/|#|$)'
+            --exclude '^https://opentelemetry.io/docs/'
+            README.md book/src/content/docs dev-docs docs
 
       - name: Validate required operational doc sections
         run: python3 scripts/docs/validate_operational_sections.py
 
+      - name: Validate research metadata headers
+        run: python3 scripts/docs/validate_research_metadata.py
+
+      - name: Validate root markdown allowlist
+        run: python3 scripts/docs/validate_root_doc_allowlist.py
+
       - name: Report stale operational docs
         run: python3 scripts/docs/report_stale_docs.py
 
-      - name: Build mdBook
-        run: mdbook build book
+      - name: Install doc dependencies
+        run: cd book && npm ci
+
+      - name: Build docs (Starlight)
+        run: cd book && npm run build
 
       - name: Build rustdoc (public API only)
         run: |
@@ -74,19 +91,17 @@ jobs:
             -p logfwd-config \
             -p logfwd-output \
             -p logfwd-transform
-          cp -r target/doc book/book/api
+          cp -r target/doc book/dist/api
 
       - name: Include benchmark dashboard
         run: |
-          mkdir -p book/book/bench
-          cp -r bench/dashboard/* book/book/bench/ 2>/dev/null || true
-          # Data is served live from the bench-data branch via raw.githubusercontent.com
-          # — nothing to copy here.
+          mkdir -p book/dist/bench
+          cp -r bench/dashboard/* book/dist/bench/ 2>/dev/null || true
 
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v5
         with:
-          path: book/book
+          path: book/dist
 
   deploy:
     needs: build

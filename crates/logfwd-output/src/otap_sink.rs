@@ -42,12 +42,15 @@
 
 use std::future::Future;
 use std::io;
+use std::io::Write as _;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
 
 use arrow::record_batch::RecordBatch;
+use flate2::Compression as GzipLevel;
+use flate2::write::GzEncoder;
 use logfwd_otap_proto::otap::{
     ArrowPayload as ProtoArrowPayload, ArrowPayloadType as ProtoArrowPayloadType,
     BatchArrowRecords as ProtoBatchArrowRecords, BatchStatus as ProtoBatchStatus,
@@ -55,12 +58,14 @@ use logfwd_otap_proto::otap::{
 };
 use prost::Message;
 
+use logfwd_arrow::conflict_schema::{has_conflict_struct_columns, normalize_conflict_columns};
 use logfwd_arrow::star_schema::flat_to_star;
 use logfwd_types::diagnostics::ComponentStats;
 
 use super::arrow_ipc_sink::serialize_ipc;
 use super::sink::{SendResult, Sink, SinkFactory};
 use super::{BatchMetadata, Compression};
+use crate::http_classify::{self, DEFAULT_RETRY_AFTER_SECS};
 
 mod generated_fast {
     include!("generated/otap_fast_v1.rs");
@@ -68,10 +73,6 @@ mod generated_fast {
 
 /// Content-Type for protobuf-encoded OTAP messages.
 const CONTENT_TYPE_PROTOBUF: &str = "application/x-protobuf";
-
-/// Default retry-after duration when the server returns 429 without a
-/// Retry-After header.
-const DEFAULT_RETRY_AFTER_SECS: u64 = 5;
 
 // ---------------------------------------------------------------------------
 // ArrowPayloadType enum values (from OTAP proto)
@@ -303,6 +304,19 @@ impl OtapSink {
             return Ok(0);
         }
 
+        // Normalize conflict struct columns (e.g. `status: Struct { int, str }`)
+        // to flat Utf8 before the star schema pivot. Without this, struct-valued
+        // attributes can still produce star-schema rows, but their rendered value
+        // is empty because str_value_at returns "" for Struct types.
+        // The OTLP sink applies the same normalization before encoding.
+        let normalized;
+        let batch = if has_conflict_struct_columns(batch.schema().as_ref()) {
+            normalized = normalize_conflict_columns(batch.clone());
+            &normalized
+        } else {
+            batch
+        };
+
         let star = flat_to_star(batch).map_err(|e| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -346,7 +360,12 @@ impl OtapSink {
     fn maybe_compress(&self) -> io::Result<Vec<u8>> {
         match self.config.compression {
             Compression::Zstd => zstd::bulk::compress(&self.proto_buf, 1).map_err(io::Error::other),
-            Compression::None | Compression::Gzip => Ok(self.proto_buf.clone()),
+            Compression::Gzip => {
+                let mut encoder = GzEncoder::new(Vec::new(), GzipLevel::fast());
+                encoder.write_all(&self.proto_buf)?;
+                encoder.finish()
+            }
+            Compression::None => Ok(self.proto_buf.clone()),
         }
     }
 
@@ -357,8 +376,10 @@ impl OtapSink {
             .post(&self.config.endpoint)
             .header("Content-Type", CONTENT_TYPE_PROTOBUF);
 
-        if self.config.compression == Compression::Zstd {
-            req = req.header("Content-Encoding", "zstd");
+        match self.config.compression {
+            Compression::Zstd => req = req.header("Content-Encoding", "zstd"),
+            Compression::Gzip => req = req.header("Content-Encoding", "gzip"),
+            Compression::None => {}
         }
 
         for (k, v) in &self.config.headers {
@@ -368,26 +389,19 @@ impl OtapSink {
         let response = req.body(payload).send().await.map_err(io::Error::other)?;
         let status = response.status();
 
-        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let retry_after = response
-                .headers()
-                .get("Retry-After")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|s| s.parse::<u64>().ok())
-                .unwrap_or(DEFAULT_RETRY_AFTER_SECS);
-            return Ok(SendResult::RetryAfter(Duration::from_secs(retry_after)));
-        }
-
-        if status.is_server_error() {
-            let _body = response.text().await.unwrap_or_default();
-            return Ok(SendResult::RetryAfter(Duration::from_secs(
-                DEFAULT_RETRY_AFTER_SECS,
-            )));
-        }
-
         if !status.is_success() {
+            let retry_after = response.headers().get("Retry-After").cloned();
             let body = response.text().await.unwrap_or_default();
-            return Ok(SendResult::Rejected(format!("HTTP {status}: {body}")));
+            if let Some(send_result) = http_classify::classify_http_status(
+                status.as_u16(),
+                retry_after.as_ref(),
+                &format!("OTAP: {body}"),
+            ) {
+                return Ok(send_result);
+            }
+            return Err(io::Error::other(format!(
+                "OTAP request failed with status {status}: {body}"
+            )));
         }
 
         // Parse BatchStatus from the response body.
@@ -548,6 +562,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use logfwd_arrow::star_schema::{flat_to_star, star_to_flat};
     use logfwd_core::otlp::encode_varint_field;
+    use reqwest::header::{CONTENT_ENCODING, RETRY_AFTER};
 
     use super::super::arrow_ipc_sink::deserialize_ipc;
 
@@ -557,8 +572,8 @@ mod tests {
             Field::new("message", DataType::Utf8, true),
             Field::new("level", DataType::Utf8, true),
             Field::new("_timestamp", DataType::Utf8, true),
-            Field::new("_resource_host", DataType::Utf8, true),
-            Field::new("_resource_namespace", DataType::Utf8, true),
+            Field::new("resource.attributes.host", DataType::Utf8, true),
+            Field::new("resource.attributes.namespace", DataType::Utf8, true),
             Field::new("request_id", DataType::Utf8, true),
             Field::new("status", DataType::Int64, true),
         ]));
@@ -879,13 +894,13 @@ mod tests {
 
         // Check resource attributes are preserved.
         let host_idx = flat_schema
-            .index_of("_resource_host")
-            .expect("should have _resource_host column");
+            .index_of("resource.attributes.host")
+            .expect("should have resource.attributes.host column");
         let host_arr = flat
             .column(host_idx)
             .as_any()
             .downcast_ref::<StringArray>()
-            .expect("_resource_host should be StringArray");
+            .expect("resource.attributes.host should be StringArray");
         assert_eq!(host_arr.value(0), "host-a");
         assert_eq!(host_arr.value(1), "host-a");
         assert_eq!(host_arr.value(2), "host-b");
@@ -1010,5 +1025,221 @@ mod tests {
             generated_status.status_code as u32
         );
         assert_eq!(fast_status.status_message, generated_status.status_message);
+    }
+
+    /// Regression test for #1656: conflict struct columns must be normalized
+    /// before the flat→star pivot in encode_batch.
+    ///
+    /// Without the fix, a `status` column of type `Struct { int: Int64, str: Utf8 }`
+    /// would still emit LOG_ATTRS rows for non-null values, but the attribute string
+    /// value would not be populated correctly because `str_value_at` returns "" for
+    /// Struct data types. With the fix, the column is coalesced to a Utf8 column first.
+    #[test]
+    fn conflict_struct_column_is_normalized_not_dropped() {
+        use arrow::array::{Array, ArrayRef, Int64Array, StructArray};
+        use arrow::datatypes::Fields;
+
+        // Build a batch with a conflict struct column `status: Struct { int: Int64, str: Utf8 }`.
+        // Row 0: int=200 (int child non-null, str child null)
+        // Row 1: str="OK" (str child non-null, int child null)
+        let conflict_fields: Fields = Fields::from(vec![
+            Field::new("int", DataType::Int64, true),
+            Field::new("str", DataType::Utf8, true),
+        ]);
+        let int_child = Arc::new(Int64Array::from(vec![Some(200_i64), None])) as ArrayRef;
+        let str_child = Arc::new(StringArray::from(vec![None, Some("OK")])) as ArrayRef;
+        let conflict_col =
+            StructArray::new(conflict_fields.clone(), vec![int_child, str_child], None);
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("status", DataType::Struct(conflict_fields), true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("req1"), Some("req2")])) as ArrayRef,
+                Arc::new(conflict_col) as ArrayRef,
+            ],
+        )
+        .unwrap();
+
+        let config = Arc::new(OtapSinkConfig {
+            endpoint: "http://localhost:4317".to_string(),
+            compression: Compression::None,
+            headers: vec![],
+        });
+        let client = reqwest::Client::new();
+        let counter = Arc::new(AtomicI64::new(0));
+        let stats = Arc::new(ComponentStats::new());
+        let mut sink = OtapSink::new("test".to_string(), config, client, counter, stats);
+
+        // Must not error (before the fix, struct column values would be rendered as empty strings).
+        let batch_id = sink
+            .encode_batch(&batch)
+            .expect("encode_batch should succeed");
+        assert_eq!(batch_id, 1);
+
+        // Decode to verify the 'status' attribute appears in LOG_ATTRS.
+        let (_, payloads, _) =
+            decode_batch_arrow_records(&sink.proto_buf).expect("decode_batch_arrow_records");
+        assert_eq!(payloads.len(), 4);
+
+        let log_attrs_ipc = payloads
+            .iter()
+            .find(|(_, ptype, _)| *ptype == ArrowPayloadType::LogAttrs as u32)
+            .map(|(_, _, ipc)| ipc)
+            .expect("LOG_ATTRS payload must be present");
+        let log_attrs_batches = deserialize_ipc(log_attrs_ipc).expect("deserialize log_attrs IPC");
+        let log_attrs = log_attrs_batches
+            .into_iter()
+            .next()
+            .expect("log_attrs batch");
+
+        // The `status` column must appear as a LOG_ATTR key.
+        let key_arr = log_attrs.column_by_name("key").expect("key column");
+        let key_str = key_arr
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("key is StringArray");
+        let num_attrs = key_arr.len();
+        let keys: Vec<&str> = (0..num_attrs)
+            .filter(|&i| !key_arr.is_null(i))
+            .map(|i| key_str.value(i))
+            .collect();
+        assert!(
+            keys.contains(&"status"),
+            "expected 'status' in LOG_ATTRS keys, got: {keys:?}"
+        );
+
+        // Verify both coalesced values are present ("200" from int child and "OK" from str).
+        let str_arr = log_attrs.column_by_name("str").expect("str column");
+        let str_col = str_arr
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("str is StringArray");
+        let status_vals: Vec<&str> = (0..num_attrs)
+            .filter(|&i| !key_arr.is_null(i) && key_str.value(i) == "status")
+            .filter(|&i| !str_arr.is_null(i))
+            .map(|i| str_col.value(i))
+            .collect();
+        assert!(
+            status_vals.contains(&"200") && status_vals.contains(&"OK"),
+            "expected both coalesced status values (200 and OK), got: {status_vals:?}"
+        );
+    }
+
+    #[test]
+    fn maybe_compress_gzip_produces_valid_gzip_stream() {
+        use std::io::Read as _;
+
+        let config = Arc::new(OtapSinkConfig {
+            endpoint: "http://localhost:4318/v1/otap".to_string(),
+            compression: Compression::Gzip,
+            headers: vec![],
+        });
+        let mut sink = OtapSink::new(
+            "test".to_string(),
+            config,
+            reqwest::Client::new(),
+            Arc::new(AtomicI64::new(0)),
+            Arc::new(ComponentStats::new()),
+        );
+        sink.proto_buf = b"sample-otap-payload".to_vec();
+
+        let compressed = sink
+            .maybe_compress()
+            .expect("gzip compression should succeed");
+        assert_ne!(compressed, sink.proto_buf, "payload should be compressed");
+
+        let mut decoded = Vec::new();
+        flate2::read::GzDecoder::new(compressed.as_slice())
+            .read_to_end(&mut decoded)
+            .expect("gzip payload should decompress");
+        assert_eq!(
+            decoded, sink.proto_buf,
+            "gzip roundtrip should preserve protobuf bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn otap_send_gzip_sets_content_encoding_header() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/v1/otap")
+            .match_header(CONTENT_ENCODING.as_str(), "gzip")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        let config = Arc::new(OtapSinkConfig {
+            endpoint: format!("{}/v1/otap", server.url()),
+            compression: Compression::Gzip,
+            headers: vec![],
+        });
+        let sink = OtapSink::new(
+            "test".to_string(),
+            config,
+            reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("client"),
+            Arc::new(AtomicI64::new(0)),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let payload = b"sample-otap-payload".to_vec();
+        let send_result = sink
+            .do_send(payload, 1)
+            .await
+            .expect("do_send should succeed");
+        assert!(matches!(send_result, SendResult::Ok));
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn otap_send_retry_after_http_date_is_honored() {
+        let retry_after_http_date =
+            httpdate::fmt_http_date(std::time::SystemTime::now() + Duration::from_secs(60));
+
+        let mut server = mockito::Server::new_async().await;
+        let _mock = server
+            .mock("POST", "/v1/otap")
+            .with_status(429)
+            .with_header(RETRY_AFTER.as_str(), &retry_after_http_date)
+            .create_async()
+            .await;
+
+        let config = Arc::new(OtapSinkConfig {
+            endpoint: format!("{}/v1/otap", server.url()),
+            compression: Compression::None,
+            headers: vec![],
+        });
+        let sink = OtapSink::new(
+            "test".to_string(),
+            config,
+            reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .expect("client"),
+            Arc::new(AtomicI64::new(0)),
+            Arc::new(ComponentStats::new()),
+        );
+
+        let result = sink
+            .do_send(vec![0x01], 10)
+            .await
+            .expect("do_send should classify 429");
+
+        match result {
+            SendResult::RetryAfter(duration) => {
+                assert!(
+                    (58..=60).contains(&duration.as_secs()),
+                    "HTTP-date Retry-After should parse to ~60s, got {}s",
+                    duration.as_secs()
+                );
+            }
+            other => panic!("expected RetryAfter, got {other:?}"),
+        }
     }
 }

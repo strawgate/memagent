@@ -114,7 +114,7 @@ Rules for hot paths:
 - Chunk-level SIMD classification beats per-line SIMD (StructuralIndex approach)
 - HashMap field lookup was 60% of scan time → fixed with `resolve_field` optimization
 - StringViewArray memory reporting counts backing buffer per column (overcounts)
-- `keep_raw: false` saves 65% of table memory
+- Disabling scanner line capture (`line_field_name` unset) saves substantial table memory
 - PGO builds show measurable improvement — use `just build-pgo` for final measurements
 
 ## What NOT to Do

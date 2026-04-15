@@ -8,10 +8,10 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 
 use serial_test::serial;
 
-use logfwd_io::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{InputEvent, InputSource};
+use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 use std::collections::VecDeque;
 use std::io;
 use std::sync::Arc;
@@ -28,6 +28,7 @@ impl MockSource {
                 vec![InputEvent::Data {
                     bytes: chunk.to_vec(),
                     source_id: None,
+                    accounted_bytes: chunk.len() as u64,
                 }]
             })
             .collect();
@@ -45,6 +46,10 @@ impl InputSource for MockSource {
 
     fn name(&self) -> &str {
         &self.name
+    }
+
+    fn health(&self) -> ComponentHealth {
+        ComponentHealth::Healthy
     }
 }
 

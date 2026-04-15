@@ -39,9 +39,8 @@ pub struct UdpSink {
 impl UdpSink {
     /// Create a new UDP sink.
     ///
-    /// Binds a UDP socket to an ephemeral port (`0.0.0.0:0`) for outbound-only
-    /// traffic. The socket is set to non-blocking mode and converted to a
-    /// `tokio::net::UdpSocket`.
+    /// Binds an outbound UDP socket and defers target DNS resolution until send
+    /// time so startup does not block on or fail due to transient DNS issues.
     pub fn new(
         name: impl Into<String>,
         target: impl Into<String>,
@@ -52,12 +51,33 @@ impl UdpSink {
         let socket = UdpSocket::from_std(std_socket)?;
         Ok(Self {
             name: name.into(),
-            target: target.into(),
             socket,
+            target: target.into(),
             row_buf: Vec::with_capacity(2048),
             dgram_buf: Vec::with_capacity(MAX_DATAGRAM_PAYLOAD),
             stats,
         })
+    }
+
+    async fn send_packet(&self, payload: &[u8]) -> io::Result<()> {
+        let addr = tokio::net::lookup_host(&self.target)
+            .await?
+            .find(std::net::SocketAddr::is_ipv4)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    format!("DNS lookup returned no IPv4 addresses for {}", self.target),
+                )
+            })?;
+        match self.socket.send_to(payload, addr).await {
+            Ok(n) if n == payload.len() => Ok(()),
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "UDP datagram was only partially sent",
+            )),
+            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Send the current datagram buffer if non-empty, then clear it.
@@ -67,13 +87,7 @@ impl UdpSink {
         if self.dgram_buf.is_empty() {
             return Ok(());
         }
-        match self.socket.send_to(&self.dgram_buf, &self.target).await {
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
-                // Silently drop — UDP is best-effort.
-            }
-            Err(e) => return Err(e),
-        }
+        self.send_packet(&self.dgram_buf).await?;
         self.dgram_buf.clear();
         Ok(())
     }
@@ -101,11 +115,7 @@ impl UdpSink {
             // but that is better than silently dropping data.
             if row_len > MAX_DATAGRAM_PAYLOAD {
                 self.flush_dgram().await?;
-                match self.socket.send_to(&self.row_buf, &self.target).await {
-                    Ok(_) => {}
-                    Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {}
-                    Err(e) => return Err(e),
-                }
+                self.send_packet(&self.row_buf).await?;
                 continue;
             }
 
@@ -134,7 +144,7 @@ impl Sink for UdpSink {
         Box::pin(async move {
             match self.do_send_batch(batch).await {
                 Ok(()) => SendResult::Ok,
-                Err(e) => SendResult::IoError(e),
+                Err(e) => SendResult::from_io_error(e),
             }
         })
     }

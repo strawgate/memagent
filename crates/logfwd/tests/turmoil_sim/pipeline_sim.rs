@@ -43,6 +43,7 @@ fn graceful_shutdown_drains_buffered_data() {
         // 60s timeout — too long to fire during the 500ms test window.
         // Data MUST be flushed by the shutdown drain path.
         pipeline.set_batch_timeout(Duration::from_secs(60));
+        pipeline.set_batch_target_bytes(1024 * 1024);
         let mut pipeline = pipeline.with_input("test", Box::new(input));
 
         let shutdown = CancellationToken::new();

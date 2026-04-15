@@ -11,23 +11,35 @@
  *
  * THREE MODELS:
  *
- * 1. SAFETY (normal path, no ForceStop):
- *    Comment out ForceStop in PipelineMachine.tla Next relation.
- *    Check: TypeOK, NoDoubleComplete, DrainCompleteness,
- *           CheckpointOrderingInvariant, CommittedNeverAheadOfCreated
- *    Use: MCFast constants (2 sources, 3 batches) — < 30s
+ * 1. SAFETY (normal + ForceStop):
+ *    Check the invariants named in PipelineMachine.cfg:
+ *      TypeOK, NoDoubleComplete, DrainCompleteness,
+ *      NoHeldWorkAfterStop, QuiescenceHasNoSilentStrandedWork,
+ *      CheckpointOrderingInvariant, UnresolvedWorkNotCommittedPast,
+ *      CheckpointNeverAheadOfTerminalizedPrefix,
+ *      CommittedNeverAheadOfCreated, SentImpliesCreated,
+ *      InFlightImpliesCreated, InFlightImpliesSent,
+ *      HeldImpliesInFlight, RetriedImpliesSent, PanickedImpliesSent,
+ *      HoldCountOnlyForSent,
+ *      AckedImpliesCreated, AckedImpliesSent,
+ *      RejectedImpliesCreated, RejectedImpliesSent,
+ *      AbandonedImpliesCreated, AbandonedImpliesSent
+ *    Temporal properties in the safety model:
+ *      NoCreateAfterDrain, CommittedMonotonic, HeldTransitionsDoNotCommit,
+ *      ForceStopAbandonsAllInFlight, DrainMeansNoNewSending
+ *    Use: MCFast constants (2 sources, 3 batches, 1 hold) — < 10 min locally
  *
- * 2. LIVENESS (normal path, no ForceStop):
+ * 2. LIVENESS (normal path must converge without ForceStop fairness):
  *    SMALLER constants to keep TLC liveness check tractable.
  *    Check: EventualDrain, NoBatchLeftBehind, StoppedIsStable
- *    Use: MCLiveness constants (2 sources, 2 batches) — < 5 min
+ *    plus held/retry/panic terminalization liveness.
+ *    Use: MCLiveness constants (2 sources, 2 batches, 1 hold) — < 5 min
  *    WARNING: do NOT use CONSTRAINT to bound state space — it silently
  *    breaks liveness checking. Use model constants instead (this file).
  *
- * 3. FORCE-STOP (with ForceStop action enabled):
- *    Include ForceStop in Next. Omit DrainCompleteness from INVARIANTS.
- *    Verify: ForceStop reaches Stopped; other invariants still hold.
- *    Use: MCFast constants.
+ * 3. COVERAGE (reachability witnesses):
+ *    Use PipelineMachine.coverage.cfg. Verify create/ack/reject/force-stop/
+ *    hold/retry/panic/abandon paths are all reachable.
  *)
 
 EXTENDS PipelineMachine
@@ -45,17 +57,21 @@ EXTENDS PipelineMachine
 
 MCSourcesFast == {"s1", "s2"}
 MCMaxBatchesFast == 3
+MCMaxNonTerminalHoldsFast == 1
 
 \* Override CONSTANTS for the Fast model:
-\* In the Toolbox: set Sources <- MCSourcesFast, MaxBatchesPerSource <- 3
+\* In the Toolbox: set Sources <- MCSourcesFast, MaxBatchesPerSource <- 3,
+\* MaxNonTerminalHolds <- 1
 \* Declare MCSourcesFast as a SYMMETRY set.
 
 \* --- Liveness configuration (smaller for temporal checking) ---
 MCSourcesLiveness == {"s1", "s2"}
 MCMaxBatchesLiveness == 2
+MCMaxNonTerminalHoldsLiveness == 1
 
 \* --- Thorough configuration (pre-release) ---
 MCSourcesThorough == {"s1", "s2", "s3"}
 MCMaxBatchesThorough == 4
+MCMaxNonTerminalHoldsThorough == 2
 
 =============================================================================

@@ -26,7 +26,7 @@ cargo build --release -p logfwd && cp target/release/logfwd .
 **2. Generate test data**
 
 ```bash
-./logfwd --generate-json 100000 logs.json
+./logfwd generate-json 100000 logs.json
 ```
 
 **3. Create a pipeline**
@@ -51,7 +51,7 @@ output:
 **4. Run it**
 
 ```bash
-./logfwd --config config.yaml
+./logfwd run --config config.yaml
 ```
 
 You'll see only the records that match your SQL filter:
@@ -62,7 +62,7 @@ ERROR  request handled POST /api/v1/orders/10121  status=503 duration_ms=78
 ...
 ```
 
-Only error records with slow durations made it through — everything else was filtered by the SQL transform. See the [Quick Start guide](book/src/getting-started/quickstart.md) to keep going.
+Only error records with slow durations made it through — everything else was filtered by the SQL transform. See the [Quick Start guide](book/src/content/docs/quick-start.mdx) to keep going.
 
 ---
 
@@ -100,7 +100,7 @@ FROM logs
 WHERE status >= 400
 ```
 
-Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`. The `geo_lookup()` UDF is also available when a geo-IP database is configured. See the [SQL Transforms guide](book/src/config/sql-transforms.md).
+Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`. The `geo_lookup()` UDF is also available when a geo-IP database is configured. See the [SQL Transforms guide](book/src/content/docs/configuration/sql-transforms.md).
 
 ---
 
@@ -115,13 +115,16 @@ sudo mv logfwd /usr/local/bin/
 
 # Docker
 docker run --rm -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
-  ghcr.io/strawgate/memagent:latest --config /etc/logfwd/config.yaml
+  ghcr.io/strawgate/memagent:latest run --config /etc/logfwd/config.yaml
 
 # From source (requires Rust 1.85+)
 cargo build --release -p logfwd
+
+# Dev-only faster local build (no DataFusion SQL support)
+cargo build --release -p logfwd --no-default-features
 ```
 
-See [Installation](book/src/getting-started/installation.md) for all platforms and options.
+See [Installation](book/src/content/docs/quick-start.mdx) for all platforms and options.
 
 ---
 
@@ -167,7 +170,30 @@ pipelines:
         format: console
 ```
 
-See the [Configuration Reference](book/src/config/reference.md) for all YAML fields, input/output types, and enrichment tables.
+See the [Configuration Reference](book/src/content/docs/configuration/reference.mdx) for all YAML fields, input/output types, and enrichment tables.
+
+### Platform Sensors
+
+`logfwd` includes explicit sensor input lanes for all three major host platforms:
+
+- `linux_ebpf_sensor`
+- `macos_es_sensor`
+- `windows_ebpf_sensor`
+
+These inputs are platform-gated and emit Arrow-native sensor control/signal batches while
+deeper native sensor integrations are being brought online.
+
+```yaml
+input:
+  type: linux_ebpf_sensor
+  sensor:
+    poll_interval_ms: 2000
+    emit_signal_rows: true
+output:
+  type: stdout
+```
+
+See [Configuration Reference](book/src/content/docs/configuration/reference.mdx#input-types) for full status/details.
 
 ---
 
@@ -180,14 +206,14 @@ kubectl -n collectors rollout status daemonset/logfwd
 
 Runs one logfwd pod per node, reads all container logs from `/var/log`. Typical resource use: ~128 MiB memory, 250m CPU at moderate log volume.
 
-See the [Deployment Guide](book/src/deployment/kubernetes.md) for resource sizing, OTLP collector integration, and CRI log format details.
+See the [Deployment Guide](book/src/content/docs/deployment/kubernetes.md) for resource sizing, OTLP collector integration, and CRI log format details.
 
 ---
 
 ## Output Destinations
 
 For current output support status, see the canonical tables in the
-[Configuration Reference](book/src/config/reference.md#output-types). The
+[Configuration Reference](book/src/content/docs/configuration/reference.mdx#output-types). The
 README and task-oriented guides intentionally avoid duplicating status claims.
 
 ---
@@ -195,41 +221,54 @@ README and task-oriented guides intentionally avoid duplicating status claims.
 ## CLI Reference
 
 ```
-logfwd --config <file>                   Run the pipeline
-logfwd --config <file> --validate        Validate config syntax
-logfwd --config <file> --dry-run         Build pipeline, check SQL, don't start
-logfwd --blackhole [bind_addr]           Start OTLP blackhole receiver for testing
-logfwd --generate-json <n> <file>        Generate synthetic JSON log data
+logfwd run --config <file>               Run the pipeline
+logfwd validate --config <file>          Validate config and environment-dependent pipeline requirements
+logfwd dry-run --config <file>           Build and validate the pipeline without starting the runtime
+logfwd init                              Generate a starter config from built-in templates
+logfwd blackhole [bind_addr]             Start OTLP blackhole receiver for testing
+logfwd generate-json <n> <file>          Generate synthetic JSON log data
+logfwd effective-config [--config file]  Validate and print effective runnable config
+logfwd wizard                            Interactive config wizard
+logfwd completions <shell>               Generate shell completions (bash, zsh, fish, nushell, powershell, elvish)
 logfwd --version                         Print version
 ```
+
+For ready-made starters, see [`examples/use-cases/`](examples/use-cases/README.md) (20 common app/source patterns).
 
 ---
 
 ## Documentation
 
+**Contributors (first stop)**
+
+- Start at [dev-docs/README.md](dev-docs/README.md) for task routing and canonical engineering docs.
+- Use [CONTRIBUTING.md](CONTRIBUTING.md) for PR workflow and checks.
+- Use [DEVELOPING.md](DEVELOPING.md) for build/test/profiling loops.
+
 **Start here by goal**
 
-- Not sure where to begin: [Choose the Right Guide](book/src/getting-started/which-guide.md)
-- Run logfwd quickly: [Quick Start](book/src/getting-started/quickstart.md)
-- Build a safer production baseline: [Your First Pipeline](book/src/getting-started/first-pipeline.md)
-- Debug failures: [Troubleshooting](book/src/troubleshooting.md)
+- Not sure where to begin: [Choose the Right Guide](book/src/content/docs/quick-start.mdx)
+- Run logfwd quickly: [Quick Start](book/src/content/docs/quick-start.mdx)
+- Build a safer production baseline: [Your First Pipeline](book/src/content/docs/deployment/docker.md)
+- Debug failures: [Troubleshooting](book/src/content/docs/troubleshooting.md)
 
-**User guides** — [book/src/](book/src/)
+**User guides** — [book/src/content/docs/](book/src/content/docs/)
 
 | Guide | Description |
 |-------|-------------|
-| [Choose the Right Guide](book/src/getting-started/which-guide.md) | Goal-based chooser for operators, contributors, and evaluators |
-| [Quick Start](book/src/getting-started/quickstart.md) | Working pipeline in 10 minutes with copy/paste commands |
-| [Your First Pipeline](book/src/getting-started/first-pipeline.md) | Production config with monitoring and validation |
-| [Configuration Reference](book/src/config/reference.md) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
-| [SQL Transforms](book/src/config/sql-transforms.md) | DataFusion SQL examples, column naming, UDFs |
-| [Deployment](book/src/deployment/kubernetes.md) | Kubernetes DaemonSet, Docker, resource sizing |
-| [Troubleshooting](book/src/troubleshooting.md) | Common errors, debug mode, diagnostics API |
+| [Choose the Right Guide](book/src/content/docs/quick-start.mdx) | Goal-based starting point for operators, contributors, and evaluators |
+| [Quick Start](book/src/content/docs/quick-start.mdx) | Working pipeline in 10 minutes with copy/paste commands |
+| [Your First Pipeline](book/src/content/docs/deployment/docker.md) | Production config with monitoring and validation |
+| [Configuration Reference](book/src/content/docs/configuration/reference.mdx) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
+| [SQL Transforms](book/src/content/docs/configuration/sql-transforms.md) | DataFusion SQL examples, column naming, UDFs |
+| [Deployment](book/src/content/docs/deployment/kubernetes.md) | Kubernetes DaemonSet, Docker, resource sizing |
+| [Troubleshooting](book/src/content/docs/troubleshooting.md) | Common errors, debug mode, diagnostics API |
 
 **Developer guides**
 
 | Guide | Description |
 |-------|-------------|
+| [dev-docs/README.md](dev-docs/README.md) | Canonical developer-doc start page and task routing |
 | [DEVELOPING.md](DEVELOPING.md) | Build, test, lint, bench commands |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute — PR process, pre-commit checks |
 | [Architecture](dev-docs/ARCHITECTURE.md) | Pipeline data flow, SIMD stages, crate map |

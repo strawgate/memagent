@@ -20,11 +20,11 @@ use bytes::Bytes;
 use logfwd_arrow::scanner::Scanner;
 use logfwd_bench::{generators, make_otlp_sink};
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_io::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{InputEvent, InputSource};
 use logfwd_output::{BatchMetadata, Compression};
+use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 use pprof::ProfilerGuardBuilder;
 
 const DEFAULT_LINES: usize = 200_000;
@@ -326,6 +326,7 @@ impl MockSource {
                 vec![InputEvent::Data {
                     bytes: chunk.clone(),
                     source_id: None,
+                    accounted_bytes: chunk.len() as u64,
                 }]
             })
             .collect();
@@ -341,6 +342,12 @@ impl InputSource for MockSource {
 
     fn name(&self) -> &'static str {
         "mock"
+    }
+
+    fn health(&self) -> ComponentHealth {
+        // Benchmark input is deterministic in-process test scaffolding with no
+        // separate bind/startup/failure lifecycle.
+        ComponentHealth::Healthy
     }
 }
 

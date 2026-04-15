@@ -1,0 +1,380 @@
+use std::io::{self, Write};
+
+use arrow::array::{
+    Array, AsArray, BinaryArray, FixedSizeBinaryArray, LargeBinaryArray, LargeStringArray,
+    StringArray, StringViewArray, StructArray,
+};
+use arrow::datatypes::DataType;
+use arrow::record_batch::RecordBatch;
+use arrow::util::display::array_value_to_string;
+use memchr::memchr2;
+
+use crate::conflict_columns::{ColInfo, get_array, is_null};
+
+/// Coalesce a conflict field to a `String` using `str_variants` ordering
+/// (Utf8 wins, then Boolean, Int64, Float64).  Returns `None` if all variants
+/// are null.
+///
+/// Used by Loki label extraction to always produce a string value.
+pub(crate) fn coalesce_as_str(batch: &RecordBatch, row: usize, col: &ColInfo) -> Option<String> {
+    let variant = col.str_variants.iter().find(|v| !is_null(batch, v, row))?;
+    let arr = get_array(batch, variant)?;
+    let s = match arr.data_type() {
+        DataType::Int64 => {
+            let v = arr.as_primitive::<arrow::datatypes::Int64Type>().value(row);
+            itoa::Buffer::new().format(v).to_string()
+        }
+        DataType::Float64 => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::Float64Type>()
+                .value(row);
+            if v.is_finite() {
+                ryu::Buffer::new().format_finite(v).to_string()
+            } else {
+                return None;
+            }
+        }
+        DataType::Boolean => {
+            if arr.as_boolean().value(row) {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
+        _ => array_value_to_string(arr, row).ok()?,
+    };
+    Some(s)
+}
+
+/// Return the index of the first byte in `bytes` that requires JSON escaping,
+/// or `bytes.len()` if there are none.
+///
+/// Uses `memchr2` (SIMD-accelerated on x86-64 and ARM64) to quickly find `"`
+/// or `\` — the most common escape triggers — then checks the range up to that
+/// hit for control characters (< 0x20) that memchr2 cannot directly find.
+/// When the string contains no special bytes at all, a single `memchr2` pass
+/// returning `None` is the only work done, so the caller can bulk-copy the
+/// entire string with one `extend_from_slice`.
+#[inline]
+fn first_escape_pos(bytes: &[u8]) -> usize {
+    // Quickly find the next '"' or '\\' using SIMD memchr2.
+    let hit = memchr2(b'"', b'\\', bytes);
+    // Scan for control chars (< 0x20) only up to the memchr2 hit position;
+    // beyond that we know there's already an escape to handle.
+    let scan_end = hit.unwrap_or(bytes.len());
+    // Tight loop the compiler can auto-vectorize.
+    for (i, &b) in bytes[..scan_end].iter().enumerate() {
+        if b < 0x20 {
+            return i;
+        }
+    }
+    hit.unwrap_or(bytes.len())
+}
+
+/// Write a JSON string value with RFC 8259 escaping.
+///
+/// **Hot path optimization**: most log field values (timestamps, service names,
+/// HTTP paths, hex IDs, etc.) contain zero bytes requiring JSON escaping.  This
+/// implementation uses [`first_escape_pos`] to find the first special byte with
+/// a SIMD-accelerated scan, then falls through to a bulk `extend_from_slice`
+/// for the safe prefix (one optimized `memcpy` instead of N individual byte
+/// pushes).  Only when an escape byte is actually found does the slow per-byte
+/// path run for that single byte.
+///
+/// Benchmark impact (wide/10K): ~2–3× throughput improvement over the prior
+/// byte-by-byte loop.
+pub(crate) fn write_json_string(out: &mut Vec<u8>, v: &str) -> io::Result<()> {
+    out.push(b'"');
+    let bytes = v.as_bytes();
+    let mut start = 0;
+
+    while start < bytes.len() {
+        let remaining = &bytes[start..];
+        let rel_pos = first_escape_pos(remaining);
+
+        // Bulk-copy the safe prefix — compiles to a single `memcpy`.
+        if rel_pos > 0 {
+            out.extend_from_slice(&remaining[..rel_pos]);
+        }
+
+        if rel_pos == remaining.len() {
+            // No more bytes needing escaping — we're done.
+            break;
+        }
+
+        // Handle the one byte at `start + rel_pos` that needs escaping.
+        match remaining[rel_pos] {
+            b'"' => out.extend_from_slice(b"\\\""),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            b => Write::write_fmt(out, format_args!("\\u{:04x}", b))?,
+        }
+        start += rel_pos + 1;
+    }
+
+    out.push(b'"');
+    Ok(())
+}
+
+/// Write bytes as a lowercase hex JSON string prefixed with `0x`.
+fn write_json_hex_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    // Reserve for surrounding quotes + "0x" prefix + 2 hex chars per byte.
+    out.reserve(4 + bytes.len().saturating_mul(2));
+    out.push(b'"');
+    out.extend_from_slice(b"0x");
+    for &b in bytes {
+        out.push(HEX[(b >> 4) as usize]);
+        out.push(HEX[(b & 0x0f) as usize]);
+    }
+    out.push(b'"');
+}
+
+/// Write a single Arrow value as JSON, dispatching on the actual Arrow DataType.
+///
+/// Integer types → unquoted integer, float types → unquoted number (null for
+/// non-finite), Null → JSON null, Boolean → true/false/null, everything else →
+/// quoted string. This preserves JSON type fidelity on roundtrip without
+/// relying on column name suffixes.
+pub(crate) fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) -> io::Result<()> {
+    if arr.is_null(row) {
+        out.extend_from_slice(b"null");
+        return Ok(());
+    }
+
+    match arr.data_type() {
+        DataType::Null => {
+            out.extend_from_slice(b"null");
+        }
+        DataType::Int8 => {
+            let v = arr.as_primitive::<arrow::datatypes::Int8Type>().value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Int16 => {
+            let v = arr.as_primitive::<arrow::datatypes::Int16Type>().value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Int32 => {
+            let v = arr.as_primitive::<arrow::datatypes::Int32Type>().value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Int64 => {
+            let v = arr.as_primitive::<arrow::datatypes::Int64Type>().value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::UInt8 => {
+            let v = arr.as_primitive::<arrow::datatypes::UInt8Type>().value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::UInt16 => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::UInt16Type>()
+                .value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::UInt32 => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::UInt32Type>()
+                .value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::UInt64 => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::UInt64Type>()
+                .value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Float32 => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::Float32Type>()
+                .value(row);
+            if v.is_finite() {
+                out.extend_from_slice(ryu::Buffer::new().format_finite(v).as_bytes());
+            } else {
+                out.extend_from_slice(b"null");
+            }
+        }
+        DataType::Float64 => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::Float64Type>()
+                .value(row);
+            if v.is_finite() {
+                out.extend_from_slice(ryu::Buffer::new().format_finite(v).as_bytes());
+            } else {
+                out.extend_from_slice(b"null");
+            }
+        }
+        DataType::Boolean => {
+            let v = arr.as_boolean().value(row);
+            out.extend_from_slice(if v { b"true" } else { b"false" });
+        }
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, _) => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::TimestampNanosecondType>()
+                .value(row);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Microsecond, _) => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::TimestampMicrosecondType>()
+                .value(row)
+                .saturating_mul(1_000);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Millisecond, _) => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::TimestampMillisecondType>()
+                .value(row)
+                .saturating_mul(1_000_000);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        DataType::Timestamp(arrow::datatypes::TimeUnit::Second, _) => {
+            let v = arr
+                .as_primitive::<arrow::datatypes::TimestampSecondType>()
+                .value(row)
+                .saturating_mul(1_000_000_000);
+            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+        }
+        // String types: use write_json_string (memchr2 SIMD fast-path) instead of
+        // the fallback `array_value_to_string` which heap-allocates per call.
+        // StreamingBuilder uses Utf8View; these three arms cover all common cases.
+        DataType::Utf8 => {
+            let Some(string_arr) = arr.as_any().downcast_ref::<StringArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::Utf8 did not downcast to StringArray",
+                ));
+            };
+            write_json_string(out, string_arr.value(row))?;
+        }
+        DataType::LargeUtf8 => {
+            let Some(string_arr) = arr.as_any().downcast_ref::<LargeStringArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::LargeUtf8 did not downcast to LargeStringArray",
+                ));
+            };
+            write_json_string(out, string_arr.value(row))?;
+        }
+        DataType::Utf8View => {
+            let Some(string_arr) = arr.as_any().downcast_ref::<StringViewArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::Utf8View did not downcast to StringViewArray",
+                ));
+            };
+            write_json_string(out, string_arr.value(row))?;
+        }
+        DataType::Struct(schema_fields) => {
+            let Some(struct_arr) = arr.as_any().downcast_ref::<StructArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::Struct did not downcast to StructArray",
+                ));
+            };
+            out.push(b'{');
+            let num_fields = struct_arr.num_columns();
+            let mut first = true;
+            for field_idx in 0..num_fields {
+                if !first {
+                    out.push(b',');
+                }
+                first = false;
+                let field_name = schema_fields[field_idx].name();
+                write_json_string(out, field_name)?;
+                out.push(b':');
+                let child_arr = struct_arr.column(field_idx);
+                if child_arr.is_null(row) {
+                    out.extend_from_slice(b"null");
+                } else {
+                    write_json_value(child_arr.as_ref(), row, out)?;
+                }
+            }
+            out.push(b'}');
+        }
+        DataType::Binary => {
+            let Some(bin_arr) = arr.as_any().downcast_ref::<BinaryArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::Binary did not downcast to BinaryArray",
+                ));
+            };
+            let bytes = bin_arr.value(row);
+            write_json_hex_bytes(out, bytes);
+        }
+        DataType::LargeBinary => {
+            let Some(large_bin_arr) = arr.as_any().downcast_ref::<LargeBinaryArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::LargeBinary did not downcast to LargeBinaryArray",
+                ));
+            };
+            let bytes = large_bin_arr.value(row);
+            write_json_hex_bytes(out, bytes);
+        }
+        DataType::FixedSizeBinary(_) => {
+            let Some(fixed_bin_arr) = arr.as_any().downcast_ref::<FixedSizeBinaryArray>() else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "DataType::FixedSizeBinary did not downcast to FixedSizeBinaryArray",
+                ));
+            };
+            let bytes = fixed_bin_arr.value(row);
+            write_json_hex_bytes(out, bytes);
+        }
+        _ => {
+            let fallback = array_value_to_string(arr, row).unwrap_or_default();
+            write_json_string(out, &fallback)?;
+        }
+    }
+    Ok(())
+}
+
+/// Write a single row as a JSON object into `out`.
+///
+/// For fields backed by struct conflict columns or multiple flat typed columns,
+/// the first non-null variant (by `json_variants` ordering) is used. If all
+/// variants are null the field is omitted entirely — absent keys are the JSON
+/// convention for "no value". Type dispatch uses the Arrow DataType, not the
+/// column name suffix.
+pub fn write_row_json(
+    batch: &RecordBatch,
+    row: usize,
+    cols: &[ColInfo],
+    out: &mut Vec<u8>,
+) -> io::Result<()> {
+    out.push(b'{');
+    let mut first = true;
+    for col in cols {
+        // Find the first non-null variant for this field (json ordering).
+        let variant = col.json_variants.iter().find(|v| !is_null(batch, v, row));
+
+        let Some(v) = variant else {
+            // All variants null for this row — omit field entirely.
+            continue;
+        };
+        let Some(arr) = get_array(batch, v) else {
+            debug_assert!(
+                false,
+                "non-null variant but array not found for field {}",
+                col.field_name
+            );
+            continue;
+        };
+
+        if !first {
+            out.push(b',');
+        }
+        first = false;
+
+        // Key — pre-serialized `"fieldname":` bytes, built once at batch setup.
+        out.extend_from_slice(&col.key_json);
+
+        // Value — dispatch on Arrow DataType, not column name suffix
+        write_json_value(arr, row, out)?;
+    }
+    out.push(b'}');
+    Ok(())
+}

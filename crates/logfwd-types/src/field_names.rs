@@ -51,13 +51,10 @@ pub const SEVERITY_VARIANTS: &[&str] = &["severity", "log_level", "loglevel", "l
 /// Canonical body column — the log message text.
 ///
 /// Written by the OTLP receiver for the log record `body`.
-pub const BODY: &str = "message";
+pub const BODY: &str = "body";
 
 /// Additional names sinks accept for body from external sources.
-pub const BODY_VARIANTS: &[&str] = &["msg", "_msg", "body"];
-
-/// Raw unparsed line — fallback when no parsed body column exists.
-pub const RAW: &str = "_raw";
+pub const BODY_VARIANTS: &[&str] = &["message", "msg", "_msg"];
 
 // ---------------------------------------------------------------------------
 // Trace context
@@ -74,6 +71,82 @@ pub const TRACE_FLAGS: &str = "trace_flags";
 
 /// Additional names sinks accept for trace flags.
 pub const TRACE_FLAGS_VARIANTS: &[&str] = &["flags"];
+
+// ---------------------------------------------------------------------------
+// Observed timestamp
+// ---------------------------------------------------------------------------
+
+/// Observed timestamp column — collector-set receive time in nanoseconds.
+///
+/// Written by the OTLP receiver for `observedTimeUnixNano`.
+pub const OBSERVED_TIMESTAMP: &str = "observed_timestamp";
+
+// ---------------------------------------------------------------------------
+// Severity number
+// ---------------------------------------------------------------------------
+
+/// Numeric severity column — OTLP severity number (1-24).
+///
+/// Written by the OTLP receiver for `severityNumber`.
+pub const SEVERITY_NUMBER: &str = "severity_number";
+
+// ---------------------------------------------------------------------------
+// Flags
+// ---------------------------------------------------------------------------
+
+/// Log record flags column — W3C trace flags (UInt32).
+///
+/// Written by the OTLP receiver for `flags`.
+pub const FLAGS: &str = "flags";
+
+// ---------------------------------------------------------------------------
+// Instrumentation Scope
+// ---------------------------------------------------------------------------
+
+/// Instrumentation scope name column.
+///
+/// Written by the OTLP receiver for `InstrumentationScope.name`.
+pub const SCOPE_NAME: &str = "scope.name";
+
+/// Instrumentation scope version column.
+///
+/// Written by the OTLP receiver for `InstrumentationScope.version`.
+pub const SCOPE_VERSION: &str = "scope.version";
+
+// ---------------------------------------------------------------------------
+// Resource attribute prefix
+// ---------------------------------------------------------------------------
+
+/// Default prefix for resource attribute columns.
+///
+/// The OTLP receiver prefixes resource attribute keys with this string so
+/// output sinks can distinguish resource-level from log-level attributes.
+/// Example: OTLP `service.name` → column `resource.attributes.service.name`.
+pub const DEFAULT_RESOURCE_PREFIX: &str = "resource.attributes.";
+
+/// Legacy resource attribute prefix used before the `resource.attributes.`
+/// convention. Sinks check this as a fallback for backwards compatibility
+/// with older batches and config-level `resource_attrs`.
+pub const LEGACY_RESOURCE_PREFIX: &str = "_resource_";
+
+// ---------------------------------------------------------------------------
+// Internal columns
+// ---------------------------------------------------------------------------
+
+/// Internal raw-line column — excluded from OTLP attributes and star-schema.
+pub const RAW: &str = "_raw";
+
+// ---------------------------------------------------------------------------
+// Arrow field / schema metadata keys
+// ---------------------------------------------------------------------------
+
+/// Arrow field metadata key: stores the original resource attribute key
+/// when using the legacy `_resource_*` prefix, enabling round-trip conversion.
+pub const METADATA_RESOURCE_KEY: &str = "logfwd.resource_key";
+
+/// Arrow schema metadata key: overrides the default resource prefix
+/// detection on a per-batch basis.
+pub const METADATA_RESOURCE_PREFIX: &str = "logfwd.resource_prefix";
 
 // ---------------------------------------------------------------------------
 // Type-conflict struct children (Arrow schema)

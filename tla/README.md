@@ -4,6 +4,19 @@ Formal models for the logfwd pipeline design. These specs capture
 properties that Kani (bounded model checker) cannot express — temporal
 logic, liveness, and protocol-level design invariants.
 
+## Contributor Quickstart (CI parity)
+
+Run these TLC commands locally for parity with CI coverage:
+
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg
+```
+
 ## PipelineMachine.tla
 
 Models `PipelineMachine<S, C>` from
@@ -14,16 +27,29 @@ Models `PipelineMachine<S, C>` from
 | Property | Type | Description |
 |----------|------|-------------|
 | `DrainCompleteness` | Safety | `stop()` only reachable when all in_flight batches are resolved |
-| `CheckpointOrderingInvariant` | Safety | committed[s]=n implies all batches 1..n are acked, none in_flight |
-| `CommittedNeverAheadOfAcked` | Safety | committed[s] never exceeds count of acked batches |
-| `NoDoubleComplete` | Safety | batch cannot be both in_flight and acked |
+| `NoHeldWorkAfterStop` | Safety | `Stopped` never leaves non-terminal held work behind |
+| `QuiescenceHasNoSilentStrandedWork` | Safety | At `Stopped`, no in-flight batch is left without explicit terminal outcome |
+| `NoUnresolvedSentAtQuiescence` | Safety | At `Stopped`, every sent batch is terminalized (`acked`/`rejected`/`abandoned`) |
+| `StopMetadataConsistent` | Safety | `forced`/`stop_reason` remain phase-consistent (`Stopped` iff reason is not `none`) |
+| `CheckpointOrderingInvariant` | Safety | committed[s]=n implies all sent batches `<= n` are terminalized for commit (`acked` or `rejected`), none in_flight |
+| `UnresolvedWorkNotCommittedPast` | Safety | active or held in-flight work cannot be silently committed past |
+| `CheckpointNeverAheadOfTerminalizedPrefix` | Safety | committed checkpoint is never ahead of the ack/reject terminalized prefix |
+| `CommittedNeverAheadOfCreated` | Safety | committed[s] never exceeds highest created batch ID |
+| `NoDoubleComplete` | Safety | batch cannot be both in_flight and any terminal set |
 | `InFlightImpliesCreated` | Safety | structural: in_flight ⊆ created |
+| `HeldImpliesInFlight` | Safety | structural: non-terminal held work remains in_flight |
 | `AckedImpliesCreated` | Safety | structural: acked ⊆ created |
 | `CommittedMonotonic` | Safety (temporal) | checkpoint never goes backwards |
+| `HeldTransitionsDoNotCommit` | Safety (temporal) | hold/retry/force-stop held-state transitions do not advance checkpoints |
+| `ForceStopAbandonsAllInFlight` | Safety (temporal) | force-stop explicitly moves all unresolved in-flight work to `abandoned` |
 | `NoCreateAfterDrain` | Safety (temporal) | no new batches after begin_drain |
 | `DrainMeansNoNewSending` | Safety (temporal) | in_flight cannot grow once phase ≠ Running |
+| `FailureTerminalizationPreservesCheckpoint` | Safety (temporal) | force/crash terminalization does not advance checkpoints |
+| `FailureClassMustTerminalizePrototype` | Safety (temporal) | force/crash transition class preserves terminalization completeness |
 | `EventualDrain` | Liveness | every started drain eventually reaches Stopped |
-| `NoBatchLeftBehind` | Liveness | every in_flight batch eventually leaves in_flight |
+| `NoBatchLeftBehind` | Liveness | every in_flight batch eventually terminalizes (ack/reject/abandon) |
+| `HeldBatchEventuallyReleased` | Liveness | every non-terminal hold is eventually retried/released |
+| `PanickedBatchEventuallyAccountedFor` | Liveness | panic-held work eventually reaches ack/reject/abandon |
 | `StoppedIsStable` | Liveness | once Stopped, stays Stopped |
 | `AllCreatedBatchesEventuallyAccountedFor` | Liveness | every created batch is committed or machine is Stopped |
 | `BeginDrainReachable` | Reachability (invariant ~P) | Draining phase is reachable (vacuity guard) |
@@ -31,6 +57,13 @@ Models `PipelineMachine<S, C>` from
 | `AckOccurs` | Reachability (invariant ~P) | at least one batch is acked (AckBatch fires) |
 | `CheckpointAdvances` | Reachability (invariant ~P) | committed checkpoint advances at least once |
 | `ForcedReachable` | Reachability (invariant ~P) | ForceStop path is reachable (vacuity guard) |
+| `RejectOccurs` | Reachability (invariant ~P) | Reject path is reachable |
+| `HoldOccurs` | Reachability (invariant ~P) | non-terminal hold/failure path is reachable |
+| `RetryOccurs` | Reachability (invariant ~P) | held retry/release path is reachable |
+| `PanicHoldOccurs` | Reachability (invariant ~P) | panic-driven hold path is reachable |
+| `AbandonOccurs` | Reachability (invariant ~P) | ForceStop abandonment path is reachable |
+| `CrashReachable` | Reachability (invariant ~P) | panic/unwind-equivalent crash-stop path is reachable |
+| `HeldAbandonOccurs` | Reachability (invariant ~P) | ForceStop can explicitly abandon previously held work |
 
 ### File structure (two-file pattern)
 
@@ -42,16 +75,17 @@ tla/
   # Lifecycle state machine (ordered ACK, checkpoint ordering, drain guarantee)
   PipelineMachine.tla           — clean algorithm spec
   MCPipelineMachine.tla         — TLC config: symmetry sets, model constants
-  PipelineMachine.cfg           — safety model (~50K states)
+  PipelineMachine.cfg           — safety model (~10.8M distinct states locally)
   PipelineMachine.liveness.cfg  — liveness model (smaller constants, no SYMMETRY)
-  PipelineMachine.thorough.cfg  — thorough safety model (3 sources, 4 batches)
+  PipelineMachine.thorough.cfg  — PR-CI thorough safety model (3 sources, 3 batches)
+  PipelineMachine.nightly.thorough.cfg — nightly deep safety model (3 sources, 4 batches)
   PipelineMachine.coverage.cfg  — reachability / vacuity guards
 
-  # Shutdown coordination (multi-process drain protocol)
-  ShutdownProtocol.tla          — N inputs + channel + consumer + pool
-  MCShutdownProtocol.tla        — TLC config
-  ShutdownProtocol.cfg          — safety model
-  ShutdownProtocol.liveness.cfg — liveness model
+  # Shutdown coordination (two-tier I/O+CPU worker drain protocol)
+  ShutdownProtocol.tla          — N inputs with I/O+CPU workers, per-input io channels, shared pipeline channel, and pool drain
+  MCShutdownProtocol.tla        — TLC config (small capacities: IoChannel=2, Pipeline=3)
+  ShutdownProtocol.cfg          — safety model (ordering + conservation invariants)
+  ShutdownProtocol.liveness.cfg — liveness model (shutdown completion, no deadlock)
   ShutdownProtocol.coverage.cfg — reachability guards
 
   # Batching protocol (multi-source, checkpoint merge, reject handling)
@@ -66,20 +100,22 @@ tla/
 
 ### Four models to run
 
-**Model 1 — Safety (normal path, EnableForceStop=FALSE):**
+**Model 1 — Safety (normal + ForceStop paths):**
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.cfg
-# Sources={"s1","s2"}, MaxBatchesPerSource=3, symmetry on Sources
-# ~50K states, < 30s. Checks all INVARIANTS + temporal action properties.
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg
+# Sources={"s1","s2"}, MaxBatchesPerSource=3, MaxNonTerminalHolds=1
+# ~10.8M distinct states locally with one TLC worker, < 10 min. Checks all
+# INVARIANTS + temporal action properties.
 ```
 
 **Model 2 — Liveness (smaller constants, no SYMMETRY):**
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.liveness.cfg
-# Sources={"s1","s2"}, MaxBatchesPerSource=2 — liveness needs small constants
-# ~5K states, < 5 min. Checks EventualDrain, NoBatchLeftBehind, StoppedIsStable
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.liveness.cfg
+# Sources={"s1","s2"}, MaxBatchesPerSource=2, MaxNonTerminalHolds=1
+# ~77K distinct states locally with one TLC worker, < 5 min. Checks drain,
+# terminalization, held-release, and stopped-stability liveness.
 ```
 
 > **Warning:** Never use `CONSTRAINT` to bound state space for liveness
@@ -90,20 +126,15 @@ java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineM
 > that must be distinct for temporal reasoning, silently producing unsound results.
 > SYMMETRY is safe only for safety (INVARIANT) checks.
 
-**Model 3 — Safety with ForceStop:**
-
-ForceStop is always in `Next` — no separate config needed. The `forced` flag
-records when it fired, and `DrainCompleteness` is conditioned on `~forced`, so
-all configs check it unconditionally. To verify ForceStop-specific behavior, run
-the safety config and inspect the `forced=TRUE` traces in TLC's error output.
-
-**Model 4 — Coverage / reachability (vacuity guards):**
+**Model 3 — Coverage / reachability (vacuity guards):**
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.coverage.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.coverage.cfg
 # TLC will report INVARIANT VIOLATIONS for BeginDrainReachable, StopReachable,
-# AckOccurs, CheckpointAdvances, ForcedReachable — each violation is a witness
-# trace proving the state IS reachable. No violation = state unreachable = bug.
+# AckOccurs, RejectOccurs, HoldOccurs, RetryOccurs, PanicHoldOccurs,
+# CheckpointAdvances, ForcedReachable, AbandonOccurs, HeldAbandonOccurs —
+# each violation is a witness trace proving the state IS reachable.
+# No violation = state unreachable = bug.
 ```
 
 Each reachability assertion is defined as `~P` (negation of the target state).
@@ -115,6 +146,20 @@ This is the TLA+ equivalent of `kani::cover!()`. If you add a new invariant, add
 a corresponding reachability assertion to verify its precondition is not vacuously
 impossible.
 
+**Model 4 — Thorough safety sweep (optional, slower):**
+
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.thorough.cfg
+# PR CI default thorough depth: Sources={"s1","s2","s3"}, MaxBatchesPerSource=3
+```
+
+**Model 5 — Nightly deep safety sweep (slowest):**
+
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.nightly.thorough.cfg
+# Nightly CI depth: Sources={"s1","s2","s3"}, MaxBatchesPerSource=4
+```
+
 **Sabotage test** — verify no invariant is vacuously true:
 temporarily replace an invariant's consequent with `FALSE`. TLC must find a
 counterexample. If it reports "No error found," the precondition is unreachable
@@ -124,11 +169,10 @@ and the invariant was trivially satisfied.
 
 ```bash
 # CLI (requires tla2tools.jar)
-cd tla/
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg
 
 # With coverage stats (verify every action fires):
-java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineMachine.cfg -coverage 1
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg -coverage 1
 
 # Via TLA+ Toolbox:
 # File -> Open Spec -> MCPipelineMachine.tla
@@ -137,7 +181,70 @@ java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineM
 
 ---
 
+## ShutdownProtocol.tla
+
+Models the two-tier shutdown cascade from `feat/io-compute-separation` (PR #1512).
+Per input: I/O worker -> bounded io_cpu channel -> CPU worker -> shared pipeline channel.
+
+### Model parameters
+
+| Config | NumInputs | IoChannelCapacity | PipelineChannelCapacity | MaxItems |
+|--------|-----------|-------------------|-------------------------|----------|
+| Safety | 2 | 2 | 3 | 3 |
+| Liveness | 2 | 2 | 3 | 2 |
+| Coverage | 2 | 2 | 3 | 3 |
+
+Production uses IoChannelCapacity=4, PipelineChannelCapacity=16. The protocol is
+capacity-independent so small values suffice for model checking.
+
+### What it proves
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `NoCpuStopBeforeIoDrain` | Safety | cpu_workers_stopped implies io_channels_drained |
+| `NoJoinBeforePipelineDrain` | Safety | workers_joined implies pipeline_channel_drained |
+| `NoStopBeforeJoin` | Safety | machine_stopped implies workers_joined |
+| `MachineStoppedImpliesOutputTerminal` | Safety | machine_stopped implies output health is terminal (`Stopped` or `Failed`) |
+| `NormalStopImpliesPoolDrained` | Safety | normal stop (not forced) implies pool fully drained |
+| `ForcedStopImpliesOutputFailed` | Safety | forced stop reports terminal output failure |
+| `DrainFlagsConsistent` | Safety | latched shutdown milestones imply their underlying worker/channel state |
+| `IoConservation` | Safety | per-input: produced = in_io_channel + cpu_forwarded (no dup/loss) |
+| `PipelineConservation` | Safety | total forwarded = in_pipeline_channel + consumed (no dup/loss) |
+| `ShutdownCompletes` | Liveness | shutdown signal leads to machine_stopped |
+| `NoCpuWorkerDeadlock` | Liveness | io_channels_drained leads to cpu_workers_stopped |
+| `IoCpuChannelEventuallyDrained` | Liveness | all I/O workers stopped leads to io_channels_drained |
+| `CpuWorkersEventuallyStop` | Liveness | all I/O workers stopped leads to all CPU workers stopped |
+| `EventualStop` | Liveness | machine eventually reaches stopped state permanently |
+| `OutputFailureSticky` | Liveness | once output health is failed, it remains failed |
+| `ShutdownReachable` | Reachability | shutdown_signaled is reachable (vacuity guard) |
+| `IoChannelsDrainedReachable` | Reachability | io_channels_drained is reachable |
+| `CpuWorkersStoppedReachable` | Reachability | cpu_workers_stopped is reachable |
+| `PipelineChannelDrainedReachable` | Reachability | pipeline_channel_drained is reachable |
+| `WorkersJoinedReachable` | Reachability | workers_joined is reachable |
+| `PoolDrainedReachable` | Reachability | pool_drained is reachable |
+| `NormalStopReachable` | Reachability | normal stop is reachable |
+| `ForceStopReachable` | Reachability | force stop is reachable |
+| `OutputFailedReachable` | Reachability | output failure path is reachable |
+| `IoChannelFullReachable` | Reachability | at least one io channel reaches capacity (backpressure) |
+| `PipelineChannelFullReachable` | Reachability | pipeline channel reaches capacity (backpressure) |
+
+### Key design: per-input CPU worker stop
+
+Each CPU worker independently decides to exit when its own I/O worker is dead
+and its own io_cpu channel is empty (`~io_alive[i] /\ Len(io_channels[i]) = 0`).
+This matches the implementation where each `cpu_worker`'s `io_rx.recv()` returns
+`None` independently. No global barrier is needed for individual CPU workers to exit.
+
+The global `io_channels_drained` flag can be set by two transitions:
+`MarkIoChannelsDrained` (when all I/O workers are down and all per-input channels
+are empty) or `MarkCpuWorkersStopped` (as a derived consistency observation when
+all CPU workers have exited). Neither is a precondition for `CpuWorkerStop`.
+
+---
+
 ## Relationship to Kani proofs and proptest
+
+Use TLA+, Kani, and proptest as a layered verification stack:
 
 | Layer | Tool | File | Scope |
 |-------|------|------|-------|
@@ -145,7 +252,47 @@ java -cp /path/to/tla2tools.jar tlc2.TLC MCPipelineMachine.tla -config PipelineM
 | Implementation | Kani | `pipeline/batch.rs`, `pipeline/lifecycle.rs` | Memory safety, overflow, type transitions |
 | Property-based | proptest | `pipeline.rs` tests | State sequence correctness under arbitrary inputs |
 
-TLA+ proves the **design** is correct — no race conditions, correct ordering, drain is eventually possible. Kani proves the **Rust implementation** doesn't panic or overflow. They are complementary: a design bug is caught here; an implementation bug is caught by Kani.
+TLA+ proves the **design** is correct (ordering, drainability, eventual stop).
+Kani proves bounded implementation properties (no panic/overflow in pure logic).
+proptest stresses larger input/state spaces and integration behavior.
+
+## PipelineBatch.tla
+
+Models multi-source batch accumulation, flush, checkpoint merge behavior, and
+ack/reject handling at the batching seam.
+
+Run:
+
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.coverage.cfg
+```
+
+---
+
+## TailLifecycle.tla
+
+Models the pure tail reducer behavior extracted in `crates/logfwd-io/src/tail/state.rs`:
+
+- EOF emission thresholding (`eof_emitted` + idle streak)
+- EOF reset on data/truncate paths
+- error backoff growth/cap/reset (`consecutive_error_polls`, `backoff_ms`)
+
+### What it proves
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `EofEmissionRequiresThreshold` | Safety | EOF emit transition only occurs once idle threshold is reached |
+| `DataResetsEofState` | Safety | data transition always clears EOF state and idle streak |
+| `BackoffZeroIffNoErrors` | Safety | backoff state is cleared exactly when error streak is zero |
+| `BackoffDelayConsistent` | Safety | backoff delay follows the bounded exponential schedule |
+
+### Run
+
+```bash
+just tlc-tail
+```
 
 ---
 
@@ -168,21 +315,26 @@ cost of more explicit management.
 
 ## Key design decisions captured in this spec
 
-### 1. `fail()` is invisible to the machine
+### 1. Non-terminal hold/retry is explicit
 
-A `fail()`ed batch returns its ticket to Queued state but the machine still
-tracks it as in_flight (it was already `begin_send`'d). The TLA+ model has no
-`FailBatch` action because fail() changes no machine state. This models the
-Rust code exactly: `fail()` returns `BatchTicket<Queued, C>` but the BTreeMap
-entry in `in_flight[source]` is not removed until `apply_ack` is called.
+`HoldBatch` models fail(), retry exhaustion, dispatch failure, timeout, and
+similar control-plane outcomes that must not advance checkpoints. A held batch
+remains in `in_flight`, so it blocks normal `Stop` and cannot be committed past.
+`RetryHeldBatch` releases the hold without committing or terminalizing. Panic is
+modeled as `PanicHoldBatch`: the same non-terminal hold plus an audit marker so
+TLC can prove panic-held work is later terminalized or explicitly abandoned.
+
+`MaxNonTerminalHolds` bounds retry/failure churn for TLC. This is a model bound,
+not a production retry budget.
 
 ### 2. Rejected batches advance the checkpoint
 
-`RejectBatch` is aliased to `AckBatch` — same state transition. Permanently-
-undeliverable data must not block checkpoint progress forever; that would
-stall drain indefinitely. At-least-once is weakened to at-most-once only for
-rejected batches. This matches Filebeat's behavior (advance past malformed
-records) and differs from Fluent Bit (drops the route, retries via backlog).
+`RejectBatch` is a distinct transition from `AckBatch`, but both are explicit
+terminal outcomes that can advance ordered commit. Permanently-undeliverable
+data must not block checkpoint progress forever; that would stall drain
+indefinitely. At-least-once is weakened to at-most-once only for rejected
+batches. This matches Filebeat's behavior (advance past malformed records) and
+differs from Fluent Bit (drops the route, retries via backlog).
 
 **Implication:** if a batch is rejected, the data in that batch is lost. This
 is the correct behavior for a log forwarder where corrupted or oversized data
@@ -214,9 +366,10 @@ blocking that a stateless forwarder should not need.
 
 `ForceStop` is modeled to reflect that every production system has a hard-kill
 escape hatch. Under normal operation (no ForceStop), the spec proves that drain
-always eventually completes (`EventualDrain`). With `ForceStop` enabled,
-`DrainCompleteness` no longer holds — this is intentional and correct: force-
-stopping is explicitly the policy decision to accept data loss for liveness.
+always eventually completes (`EventualDrain`). With `ForceStop`, in-flight work
+including held and panic-held work is explicitly terminalized into `abandoned`,
+so `DrainCompleteness` still holds (`Stopped => in_flight = {}`). The explicit
+`abandoned` set captures the policy decision to accept data loss for liveness.
 
 **Fairness assumption for `WF(Stop)`:** Stop's enabledness is stable once
 reached during Draining, because `NoCreateAfterDrain` (verified invariant)
@@ -246,6 +399,11 @@ until all Sending tickets are resolved. If sinks are torn down early, `is_draine
 will never become true and drain will never complete. OTel enforces this via
 topological shutdown order (receivers stop before exporters). This is a caller
 constraint on the pipeline, not a property of the machine itself.
+
+**Retry timing and payload retention:** `HoldBatch`/`RetryHeldBatch` model
+lifecycle effects, not backoff timers, retry jitter, or retained batch payload
+storage. Runtime fault timing remains covered by Turmoil/proptest rather than
+this finite TLA model.
 
 ---
 

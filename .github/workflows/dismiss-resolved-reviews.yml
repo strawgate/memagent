@@ -1,0 +1,263 @@
+name: "Auto: dismiss resolved review requests"
+
+on:
+  pull_request:
+    types: [synchronize]
+  pull_request_review:
+    types: [submitted, edited]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: dismiss-resolved-reviews-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  dismiss-resolved-reviews:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dismiss stale change requests whose review threads are all resolved
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const dismissalMessage =
+              "Auto-dismissed because every review thread opened from this change request is now resolved. If additional changes are still required, please leave a new review.";
+
+            function extractPullNumbers(payload) {
+              if (payload.pull_request?.number) {
+                return [payload.pull_request.number];
+              }
+              if (payload.workflow_run?.pull_requests?.length) {
+                return payload.workflow_run.pull_requests
+                  .map((pr) => pr.number)
+                  .filter((n) => Number.isInteger(n));
+              }
+              if (payload.check_suite?.pull_requests?.length) {
+                return payload.check_suite.pull_requests
+                  .map((pr) => pr.number)
+                  .filter((n) => Number.isInteger(n));
+              }
+              return [];
+            }
+
+            async function listOpenPullNumbers() {
+              const pulls = await github.paginate(github.rest.pulls.list, {
+                owner,
+                repo,
+                state: "open",
+                per_page: 100,
+              });
+              return pulls.map((pr) => pr.number);
+            }
+
+            async function getPrThreadState(prNumber) {
+              let cursor = null;
+              let prState = null;
+              let isDraft = null;
+              const unresolvedReviewIds = new Set();
+              const resolvedReviewIds = new Set();
+              const threadedReviewIds = new Set();
+
+              while (true) {
+                const result = await github.graphql(
+                  `
+                  query DismissResolvedReviewThreads(
+                    $owner: String!,
+                    $repo: String!,
+                    $number: Int!,
+                    $cursor: String
+                  ) {
+                    repository(owner: $owner, name: $repo) {
+                      pullRequest(number: $number) {
+                        state
+                        isDraft
+                        reviewThreads(first: 100, after: $cursor) {
+                          pageInfo {
+                            hasNextPage
+                            endCursor
+                          }
+                          nodes {
+                            isResolved
+                            comments(first: 100) {
+                              nodes {
+                                pullRequestReview {
+                                  id
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                  `,
+                  {
+                    owner,
+                    repo,
+                    number: prNumber,
+                    cursor,
+                  }
+                );
+
+                const pr = result.repository.pullRequest;
+                if (!pr) {
+                  return null;
+                }
+
+                prState = pr.state;
+                isDraft = pr.isDraft;
+
+                for (const thread of pr.reviewThreads.nodes || []) {
+                  const reviewIds = new Set(
+                    (thread.comments?.nodes || [])
+                      .map((comment) => comment.pullRequestReview?.id)
+                      .filter(Boolean)
+                  );
+
+                  for (const reviewId of reviewIds) {
+                    threadedReviewIds.add(reviewId);
+                    if (thread.isResolved) {
+                      resolvedReviewIds.add(reviewId);
+                    } else {
+                      unresolvedReviewIds.add(reviewId);
+                    }
+                  }
+                }
+
+                if (!pr.reviewThreads.pageInfo.hasNextPage) {
+                  break;
+                }
+                cursor = pr.reviewThreads.pageInfo.endCursor;
+              }
+
+              return {
+                prState,
+                isDraft,
+                unresolvedReviewIds,
+                resolvedReviewIds,
+                threadedReviewIds,
+              };
+            }
+
+            async function listReviews(prNumber) {
+              return github.paginate(github.rest.pulls.listReviews, {
+                owner,
+                repo,
+                pull_number: prNumber,
+                per_page: 100,
+              });
+            }
+
+            function latestReviewByReviewer(reviews) {
+              const latest = new Map();
+              for (const review of reviews) {
+                const login = review.user?.login;
+                if (!login || !review.submitted_at) {
+                  continue;
+                }
+                const prev = latest.get(login);
+                if (
+                  !prev ||
+                  new Date(review.submitted_at).getTime() >
+                    new Date(prev.submitted_at).getTime()
+                ) {
+                  latest.set(login, review);
+                }
+              }
+              return latest;
+            }
+
+            let prNumbers = [...new Set(extractPullNumbers(context.payload))];
+            if (prNumbers.length === 0) {
+              prNumbers = [...new Set(await listOpenPullNumbers())];
+            }
+            if (prNumbers.length === 0) {
+              console.log("No PRs to inspect; exiting.");
+              return;
+            }
+
+            for (const prNumber of prNumbers) {
+              const prState = await getPrThreadState(prNumber);
+              if (!prState) {
+                console.log(`PR #${prNumber}: not found; skipping.`);
+                continue;
+              }
+
+              if (prState.prState !== "OPEN" || prState.isDraft) {
+                console.log(
+                  `PR #${prNumber}: state=${prState.prState} draft=${prState.isDraft}; skipping.`
+                );
+                continue;
+              }
+
+              const reviews = await listReviews(prNumber);
+              const latestByReviewer = latestReviewByReviewer(reviews);
+              const dismissalTargets = [];
+
+              for (const [login, review] of latestByReviewer.entries()) {
+                if (review.state !== "CHANGES_REQUESTED") {
+                  continue;
+                }
+
+                const reviewNodeId = review.node_id;
+                const hasThreadedComments = prState.threadedReviewIds.has(reviewNodeId);
+                const hasUnresolvedThreads = prState.unresolvedReviewIds.has(reviewNodeId);
+                const hasResolvedThreads = prState.resolvedReviewIds.has(reviewNodeId);
+
+                if (!hasThreadedComments) {
+                  console.log(
+                    `PR #${prNumber}: ${login} has a body-only change request; leaving it alone.`
+                  );
+                  continue;
+                }
+
+                if (hasUnresolvedThreads) {
+                  console.log(
+                    `PR #${prNumber}: ${login} still has unresolved threaded feedback; keeping review ${review.id}.`
+                  );
+                  continue;
+                }
+
+                if (!hasResolvedThreads) {
+                  console.log(
+                    `PR #${prNumber}: ${login} has no resolved threaded feedback attached to latest review ${review.id}; skipping.`
+                  );
+                  continue;
+                }
+
+                dismissalTargets.push({
+                  login,
+                  id: review.id,
+                });
+              }
+
+              if (dismissalTargets.length === 0) {
+                console.log(`PR #${prNumber}: no reviews eligible for dismissal.`);
+                continue;
+              }
+
+              for (const target of dismissalTargets) {
+                await github.request(
+                  "PUT /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/dismissals",
+                  {
+                    owner,
+                    repo,
+                    pull_number: prNumber,
+                    review_id: target.id,
+                    message: dismissalMessage,
+                    event: "DISMISS",
+                  }
+                );
+                console.log(
+                  `PR #${prNumber}: dismissed CHANGES_REQUESTED review ${target.id} from ${target.login}.`
+                );
+              }
+            }

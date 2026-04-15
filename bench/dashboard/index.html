@@ -3,13 +3,21 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10243a">
   <title>Benchmark Dashboard</title>
   <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7"></script>
 </head>
 <body>
 <div class="container">
-  <h1>Benchmark Dashboard</h1>
+  <header class="hero">
+    <p class="eyebrow">logfwd benchmark suite</p>
+    <h1>Benchmark Control Room</h1>
+    <p class="lede">Track competitive throughput, development resource curves, and run-level details from nightly data in one view.</p>
+    <div class="hero-tags">
+      <span>benchkit powered</span><span>nightly telemetry</span><span>main branch signal</span>
+    </div>
+  </header>
 
   <nav class="nav-pills">
     <a href="index.html" class="active">Overview</a>
@@ -58,7 +66,9 @@
   </div>
 </div>
 
-<script>
+<script type="module">
+import { fetchBenchIndex, fetchBenchJson, fetchBenchRun } from "./o11y-client.js";
+
 const SCENARIO_NAMES = {
   'passthrough': { title: 'Passthrough (No Transforms)', config: 'transform: "SELECT * FROM logs"' },
   'json_parse': { title: 'JSON Parsing & Extraction', config: 'transform: "SELECT timestamp_str, level_str, message_str, duration_ms_int AS latency_ms, request_id_str, service_str FROM logs"' },
@@ -84,6 +94,52 @@ function formatNs(ns) {
   if (ns >= 1e6) return (ns / 1e6).toFixed(2) + 'ms';
   if (ns >= 1e3) return (ns / 1e3).toFixed(1) + 'us';
   return Math.round(ns) + 'ns';
+}
+
+function averageLps(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  if (Number.isFinite(entry.avg_lps)) return Math.max(0, entry.avg_lps);
+  if (Array.isArray(entry.lps)) {
+    const values = entry.lps.filter((v) => Number.isFinite(v));
+    if (values.length > 0) return values.reduce((sum, v) => sum + v, 0) / values.length;
+  }
+  return null;
+}
+
+function normalizeRateMap(rateRun) {
+  if (!rateRun || typeof rateRun !== 'object') return {};
+  if (rateRun.rates && typeof rateRun.rates === 'object') return rateRun.rates;
+  const out = {};
+  if (Array.isArray(rateRun.results)) {
+    for (const row of rateRun.results) {
+      const eps = Number(row?.eps);
+      if (!Number.isFinite(eps)) continue;
+      out[String(Math.trunc(eps))] = {
+        rss_mb: Number.isFinite(row?.rss_mb) ? row.rss_mb : (Number.isFinite(row?.rss_kb) ? row.rss_kb / 1024 : null),
+        cpu_pct: Number.isFinite(row?.cpu_pct) ? row.cpu_pct : (Number.isFinite(row?.cpu_percent) ? row.cpu_percent : null),
+        actual_eps: Number.isFinite(row?.actual_eps) ? row.actual_eps : null,
+      };
+    }
+  }
+  return out;
+}
+
+function formatCriterionThroughput(entry) {
+  if (!entry || typeof entry !== 'object') return '--';
+  if (Number.isFinite(entry.thrpt_mib_s)) return entry.thrpt_mib_s.toFixed(1) + ' MiB/s';
+  if (Number.isFinite(entry.thrpt_melem_s)) return entry.thrpt_melem_s.toFixed(1) + ' Melem/s';
+  const meanNs = Number(entry.mean_ns);
+  const bytes = Number(entry.throughput?.Bytes);
+  const elems = Number(entry.throughput?.Elements);
+  if (Number.isFinite(meanNs) && meanNs > 0 && Number.isFinite(bytes)) {
+    const mibPerSec = (bytes / (meanNs / 1e9)) / (1024 * 1024);
+    return mibPerSec.toFixed(1) + ' MiB/s';
+  }
+  if (Number.isFinite(meanNs) && meanNs > 0 && Number.isFinite(elems)) {
+    const melemPerSec = (elems / (meanNs / 1e9)) / 1e6;
+    return melemPerSec.toFixed(1) + ' Melem/s';
+  }
+  return '--';
 }
 
 function isDark() {
@@ -113,21 +169,14 @@ function drawSparkline(canvas, data, color) {
   });
 }
 
-const DATA_BASE = 'https://raw.githubusercontent.com/strawgate/memagent/bench-data';
-
 function runId(entry) {
   if (entry && typeof entry === 'object') return entry.id;
   return entry;
 }
 
-async function loadJSON(url) {
-  try { const r = await fetch(url); if (!r.ok) return null; return r.json(); }
-  catch { return null; }
-}
-
 async function main() {
   chartDefaults();
-  const index = await loadJSON(DATA_BASE + '/index.json');
+  const index = await fetchBenchIndex();
   if (!index) {
     document.getElementById('loading').textContent = 'No data available.';
     return;
@@ -136,17 +185,17 @@ async function main() {
   const runEntries = index.competitive_runs || index.runs || [];
   // bench-data index is newest-first; normalize to oldest->newest for downstream logic
   const runs = runEntries.map(runId).filter(Boolean).map(String).reverse();
-  const rateRuns = index.rate_runs || [];
-  const criterionRuns = index.criterion_runs || [];
+  const rateRuns = (index.rate_runs || []).map(runId).filter(Boolean).map(String);
+  const criterionRuns = (index.criterion_runs || []).map(runId).filter(Boolean).map(String);
 
   // Load latest of each type
-  const latestRun = runs.length ? await loadJSON(DATA_BASE + '/runs/' + runs[runs.length - 1] + '.json') : null;
-  const latestRate = rateRuns.length ? await loadJSON(DATA_BASE + '/rate-runs/' + rateRuns[rateRuns.length - 1] + '.json') : null;
-  const latestCriterion = criterionRuns.length ? await loadJSON(DATA_BASE + '/criterion-runs/' + criterionRuns[criterionRuns.length - 1] + '.json') : null;
+  const latestRun = runs.length ? await fetchBenchRun(runs[runs.length - 1]) : null;
+  const latestRate = rateRuns.length ? await fetchBenchJson('rate-runs/' + rateRuns[rateRuns.length - 1] + '.json') : null;
+  const latestCriterion = criterionRuns.length ? await fetchBenchJson('criterion-runs/' + criterionRuns[criterionRuns.length - 1] + '.json') : null;
 
   // Load a few recent runs for sparklines
   const recentRunIds = runs.slice(-10);
-  const recentRuns = (await Promise.all(recentRunIds.map(id => loadJSON(DATA_BASE + '/runs/' + id + '.json')))).filter(Boolean);
+  const recentRuns = (await Promise.all(recentRunIds.map(id => fetchBenchRun(id)))).filter(Boolean);
 
   document.getElementById('loading').style.display = 'none';
   document.getElementById('content').style.display = '';
@@ -154,38 +203,60 @@ async function main() {
   // Headline cards
   const cardsEl = document.getElementById('headline-cards');
 
-  // Card 1: Latest logfwd throughput
-  let logfwdLps = null;
-  let logfwdSparkData = [];
+  // Card 1: Latest primary-scenario winner
+  let primaryWinner = null;
+  let primarySparkData = [];
   if (latestRun && latestRun.scenarios) {
     const firstScenario = latestRun.scenario_names?.[0] || Object.keys(latestRun.scenarios)[0];
-    if (firstScenario && latestRun.scenarios[firstScenario]?.logfwd) {
-      logfwdLps = latestRun.scenarios[firstScenario].logfwd.avg_lps;
+    const firstScenarioData = firstScenario ? latestRun.scenarios[firstScenario] : null;
+    if (firstScenarioData) {
+      let bestAgent = null;
+      let bestLps = 0;
+      for (const [agent, stats] of Object.entries(firstScenarioData)) {
+        const avg = averageLps(stats) || 0;
+        if (avg > bestLps) {
+          bestLps = avg;
+          bestAgent = agent;
+        }
+      }
+      if (bestAgent && bestLps > 0) {
+        primaryWinner = { agent: bestAgent, lps: bestLps, scenario: firstScenario };
+      }
     }
-    // Sparkline from recent runs
+    // Sparkline from recent runs (winner of primary scenario per run)
     for (const r of recentRuns) {
       const sc = r.scenario_names?.[0] || Object.keys(r.scenarios || {})[0];
-      if (sc && r.scenarios?.[sc]?.logfwd) logfwdSparkData.push(r.scenarios[sc].logfwd.avg_lps);
+      const scenarioData = sc ? r.scenarios?.[sc] : null;
+      if (!scenarioData) continue;
+      let bestLps = 0;
+      for (const stats of Object.values(scenarioData)) {
+        const avg = averageLps(stats) || 0;
+        if (avg > bestLps) bestLps = avg;
+      }
+      if (bestLps > 0) primarySparkData.push(bestLps);
     }
   }
   cardsEl.innerHTML += `
     <div class="tracking-card">
-      <span class="label">logfwd Throughput</span>
-      <span class="value">${logfwdLps ? formatLPS(logfwdLps) : '--'}</span>
-      <span class="subtitle">lines/sec (${getScenarioTitle(latestRun?.scenario_names?.[0]) || 'primary'})</span>
+      <span class="label">Primary Scenario Winner</span>
+      <span class="value">${primaryWinner ? formatLPS(primaryWinner.lps) : '--'}</span>
+      <span class="subtitle">${primaryWinner ? primaryWinner.agent + ' (' + getScenarioTitle(primaryWinner.scenario) + ')' : 'no recent competitive data'}</span>
       <canvas class="sparkline" id="spark-lps" width="120" height="36"></canvas>
     </div>`;
 
-  // Card 2: Best competitive ratio
+  // Card 2: Best logfwd ratio where available
   let bestRatio = null;
   if (latestRun && latestRun.scenarios) {
     for (const sn of (latestRun.scenario_names || Object.keys(latestRun.scenarios))) {
       const sc = latestRun.scenarios[sn];
       if (!sc?.logfwd) continue;
-      const scenarioLogfwdLps = sc.logfwd.avg_lps;
+      const scenarioLogfwdLps = averageLps(sc.logfwd);
+      if (!(scenarioLogfwdLps > 0)) continue;
       for (const agent of Object.keys(sc)) {
         if (agent === 'logfwd') continue;
-        const ratio = scenarioLogfwdLps / (sc[agent].avg_lps || 1);
+        const competitorLps = averageLps(sc[agent]) || 0;
+        if (!(competitorLps > 0)) continue;
+        const ratio = scenarioLogfwdLps / competitorLps;
         if (!bestRatio || ratio > bestRatio.value) bestRatio = { value: ratio, vs: agent, scenario: sn };
       }
     }
@@ -199,8 +270,9 @@ async function main() {
 
   // Card 3: RSS at 100K eps
   let rss100k = null;
-  if (latestRate && latestRate.rates?.["100000"]) {
-    rss100k = latestRate.rates["100000"].rss_mb;
+  const rateMap = normalizeRateMap(latestRate);
+  if (rateMap["100000"]) {
+    rss100k = rateMap["100000"].rss_mb;
   }
   cardsEl.innerHTML += `
     <div class="tracking-card">
@@ -210,7 +282,7 @@ async function main() {
     </div>`;
 
   // Draw sparklines after DOM update
-  if (logfwdSparkData.length > 1) drawSparkline(document.getElementById('spark-lps'), logfwdSparkData, '#2563eb');
+  if (primarySparkData.length > 1) drawSparkline(document.getElementById('spark-lps'), primarySparkData, '#2563eb');
 
   // Recent competitive results table
   if (latestRun && latestRun.scenarios) {
@@ -226,13 +298,19 @@ async function main() {
     for (const sn of (latestRun.scenario_names || Object.keys(latestRun.scenarios))) {
       const sc = latestRun.scenarios[sn];
       let bestAgent = null, bestLps = 0;
-      agents.forEach(a => { if (sc?.[a]?.avg_lps > bestLps) { bestLps = sc[a].avg_lps; bestAgent = a; } });
+      agents.forEach(a => {
+        const lps = averageLps(sc?.[a]) || 0;
+        if (lps > bestLps) {
+          bestLps = lps;
+          bestAgent = a;
+        }
+      });
 
       let row = `<td><a href="competitive.html">${getScenarioTitle(sn)}</a></td>`;
       agents.forEach(a => {
-        const lps = sc?.[a]?.avg_lps;
+        const lps = averageLps(sc?.[a]);
         const cls = a === bestAgent ? 'numeric winner' : 'numeric';
-        row += `<td class="${cls}">${lps ? formatLPS(lps) : '--'}</td>`;
+        row += `<td class="${cls}">${lps != null ? formatLPS(lps) : '--'}</td>`;
       });
       rowsHtml += `<tr>${row}</tr>`;
     }
@@ -247,8 +325,7 @@ async function main() {
     const benchmarks = latestCriterion.benchmarks;
     let rowsHtml = '';
     for (const [name, data] of Object.entries(benchmarks).slice(0, 10)) {
-      const thrpt = data.thrpt_mib_s ? data.thrpt_mib_s.toFixed(1) + ' MiB/s'
-                  : data.thrpt_melem_s ? data.thrpt_melem_s.toFixed(1) + ' Melem/s' : '--';
+      const thrpt = formatCriterionThroughput(data);
       rowsHtml += `<tr>
         <td><a href="development.html">${name}</a></td>
         <td class="numeric">${formatNs(data.mean_ns)}</td>

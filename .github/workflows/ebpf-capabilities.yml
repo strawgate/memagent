@@ -1,0 +1,318 @@
+name: eBPF Capabilities
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Run this workflow only for eBPF/sensor surfaces.
+      - ".github/workflows/ebpf-capabilities.yml"
+      - "scripts/ci-ebpf-capabilities.sh"
+      - "crates/logfwd-ebpf-proto/**"
+      - "crates/logfwd-io/src/host_metrics.rs"
+      - "crates/logfwd-io/src/platform_sensor.rs"
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      # Trigger on PR updates only when eBPF/sensor code changed.
+      - ".github/workflows/ebpf-capabilities.yml"
+      - "scripts/ci-ebpf-capabilities.sh"
+      - "crates/logfwd-ebpf-proto/**"
+      - "crates/logfwd-io/src/host_metrics.rs"
+      - "crates/logfwd-io/src/platform_sensor.rs"
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  linux-ebpf:
+    name: Linux eBPF probe + Linux sensor tests
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install eBPF userspace tooling
+        run: |
+          set -euo pipefail
+          if command -v bpftool >/dev/null 2>&1; then
+            echo "bpftool already present"
+            bpftool version || true
+            exit 0
+          fi
+
+          sudo apt-get update
+          if apt-cache show bpftool >/dev/null 2>&1; then
+            sudo apt-get install -y bpftool
+          else
+            echo "apt package 'bpftool' not directly available; trying linux-tools-common"
+            sudo apt-get install -y linux-tools-common || true
+          fi
+
+          if ! command -v bpftool >/dev/null 2>&1; then
+            candidate="$(find /usr/lib/linux-tools -type f -name bpftool 2>/dev/null | head -n1 || true)"
+            if [[ -n "${candidate}" ]]; then
+              sudo ln -sf "${candidate}" /usr/local/bin/bpftool
+            fi
+          fi
+
+          if command -v bpftool >/dev/null 2>&1; then
+            bpftool version || true
+          else
+            echo "bpftool still unavailable; capability probe will record this."
+          fi
+
+      - name: Test eBPF proto crate
+        run: cargo test -p logfwd-ebpf-proto --all-targets
+
+      - name: Test Linux sensor/config paths
+        run: |
+          cargo test -p logfwd-io host_metrics::tests -- --nocapture
+          cargo test -p logfwd-io platform_sensor::tests -- --nocapture
+          cargo test -p logfwd-config sensor_ -- --nocapture
+          cargo test -p logfwd validate_pipelines_read_only_rejects_sensor_format -- --nocapture
+
+      - name: Check pipe-capture userspace loader builds
+        run: cargo check --manifest-path crates/logfwd-ebpf-proto/pipe-capture/Cargo.toml
+
+      - name: Probe runner eBPF capabilities
+        run: scripts/ci-ebpf-capabilities.sh artifacts/ebpf-capabilities
+
+      - name: Add probe summary
+        if: always()
+        run: |
+          if [[ -f artifacts/ebpf-capabilities/summary.md ]]; then
+            cat artifacts/ebpf-capabilities/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## eBPF capability snapshot"
+              echo ""
+              echo "Probe summary not generated (earlier Linux steps failed)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload eBPF capability artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ebpf-capabilities-linux
+          path: artifacts/ebpf-capabilities/
+
+  macos-sensor:
+    name: macOS EndpointSecurity lane + sensor tests
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Host snapshot
+        run: |
+          uname -a
+          sw_vers
+          rustc --version
+
+      - name: Test macOS sensor/config paths
+        run: |
+          cargo test -p logfwd-io host_metrics::tests -- --nocapture
+          cargo test -p logfwd-config sensor_ -- --nocapture
+          cargo test -p logfwd validate_pipelines_read_only_rejects_sensor_format -- --nocapture
+
+      - name: Probe macOS sensor capabilities
+        run: |
+          set -euo pipefail
+          out_dir="artifacts/macos-sensor"
+          mkdir -p "$out_dir"
+          status_file="$out_dir/status.tsv"
+          summary_file="$out_dir/summary.md"
+          : > "$status_file"
+
+          record_check() {
+            local key="$1"
+            shift
+            if "$@"; then
+              printf "%s\t1\n" "$key" >> "$status_file"
+              return 0
+            fi
+            printf "%s\t0\n" "$key" >> "$status_file"
+            return 1
+          }
+
+          status_of() {
+            local key="$1"
+            awk -F '\t' -v k="$key" '$1 == k { print $2 }' "$status_file" | tail -n1
+          }
+
+          yes_no() {
+            if [[ "$1" == "1" ]]; then
+              echo "yes"
+              return
+            fi
+            echo "no"
+          }
+
+          record_check "endpointsecurity_framework" test -d /System/Library/Frameworks/EndpointSecurity.framework || true
+          record_check "networkextension_framework" test -d /System/Library/Frameworks/NetworkExtension.framework || true
+          record_check "openbsm_auditpipe" test -e /dev/auditpipe || true
+
+          sw_vers > "$out_dir/sw_vers.txt"
+
+          {
+            echo "## macOS sensor capability snapshot"
+            echo ""
+            echo "| Check | Result |"
+            echo "|---|---|"
+            echo "| EndpointSecurity framework present | $(yes_no "$(status_of endpointsecurity_framework)") |"
+            echo "| NetworkExtension framework present | $(yes_no "$(status_of networkextension_framework)") |"
+            echo "| OpenBSM auditpipe available | $(yes_no "$(status_of openbsm_auditpipe)") |"
+            echo ""
+            echo "### Artifacts"
+            echo ""
+            echo "- \`status.tsv\`: machine-readable pass/fail checks."
+            echo "- \`sw_vers.txt\`: macOS host version snapshot."
+          } > "$summary_file"
+
+      - name: Add macOS probe summary
+        if: always()
+        run: |
+          if [[ -f artifacts/macos-sensor/summary.md ]]; then
+            cat artifacts/macos-sensor/summary.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            {
+              echo "## macOS sensor capability snapshot"
+              echo ""
+              echo "Probe summary not generated (earlier macOS steps failed)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload macOS capability artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: macos-sensor-capabilities
+          path: artifacts/macos-sensor/
+
+  windows-ebpf:
+    name: Windows eBPF for Windows lane + sensor tests
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Host snapshot
+        shell: pwsh
+        run: |
+          systeminfo | Select-Object -First 20
+          rustc --version
+
+      - name: Test Windows sensor/config paths
+        shell: pwsh
+        run: |
+          cargo test -p logfwd-io host_metrics::tests -- --nocapture
+          cargo test -p logfwd-config sensor_ -- --nocapture
+          cargo test -p logfwd validate_pipelines_read_only_rejects_sensor_format -- --nocapture
+
+      - name: Probe eBPF for Windows capabilities
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $PSNativeCommandUseErrorActionPreference = $false
+          $outDir = "artifacts/windows-ebpf"
+          New-Item -Path $outDir -ItemType Directory -Force | Out-Null
+          $statusFile = Join-Path $outDir "status.tsv"
+          $summaryFile = Join-Path $outDir "summary.md"
+          if (Test-Path $statusFile) { Remove-Item $statusFile -Force }
+          if (Test-Path $summaryFile) { Remove-Item $summaryFile -Force }
+
+          function Add-Status {
+            param([string]$Key, [int]$Value)
+            "$Key`t$Value" | Out-File -FilePath $statusFile -Append -Encoding utf8
+          }
+
+          function Read-Status {
+            param([string]$Key)
+            $line = Get-Content $statusFile | Where-Object { $_ -like "$Key`t*" } | Select-Object -Last 1
+            if (-not $line) { return 0 }
+            return [int]$line.Split("`t")[1]
+          }
+
+          function YesNo {
+            param([int]$Value)
+            if ($Value -eq 1) { return "yes" }
+            return "no"
+          }
+
+          $hasNetsh = if (Get-Command netsh -ErrorAction SilentlyContinue) { 1 } else { 0 }
+          Add-Status -Key "netsh_present" -Value $hasNetsh
+
+          if ($hasNetsh -eq 1) {
+            cmd /c "netsh ebpf show programs" *> (Join-Path $outDir "netsh-ebpf-show-programs.txt")
+            Add-Status -Key "netsh_ebpf_show_programs" -Value $(if ($LASTEXITCODE -eq 0) { 1 } else { 0 })
+
+            cmd /c "netsh ebpf show disallowed_api_set" *> (Join-Path $outDir "netsh-ebpf-show-disallowed-api-set.txt")
+            Add-Status -Key "netsh_ebpf_show_disallowed_api_set" -Value $(if ($LASTEXITCODE -eq 0) { 1 } else { 0 })
+          } else {
+            Add-Status -Key "netsh_ebpf_show_programs" -Value 0
+            Add-Status -Key "netsh_ebpf_show_disallowed_api_set" -Value 0
+          }
+
+          @(
+            "## Windows eBPF capability snapshot",
+            "",
+            "| Check | Result |",
+            "|---|---|",
+            "| netsh present | $(YesNo (Read-Status -Key 'netsh_present')) |",
+            "| netsh ebpf show programs | $(YesNo (Read-Status -Key 'netsh_ebpf_show_programs')) |",
+            "| netsh ebpf show disallowed_api_set | $(YesNo (Read-Status -Key 'netsh_ebpf_show_disallowed_api_set')) |",
+            "",
+            "### Artifacts",
+            "",
+            "- `status.tsv`: machine-readable pass/fail checks.",
+            "- `netsh-ebpf-show-*.txt`: raw eBPF for Windows command output."
+          ) | Out-File -FilePath $summaryFile -Encoding utf8
+          exit 0
+
+      - name: Add Windows probe summary
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path "artifacts/windows-ebpf/summary.md") {
+            Get-Content artifacts/windows-ebpf/summary.md | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          } else {
+            @(
+              "## Windows eBPF capability snapshot",
+              "",
+              "Probe summary not generated (earlier Windows steps failed)."
+            ) | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          }
+
+      - name: Upload Windows capability artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-ebpf-capabilities
+          path: artifacts/windows-ebpf/

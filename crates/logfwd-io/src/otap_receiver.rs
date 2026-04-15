@@ -9,7 +9,6 @@
 //! as `otlp_receiver.rs`. Responds with a hand-encoded `BatchStatus` protobuf.
 
 use std::io;
-use std::io::Read as _;
 use std::sync::mpsc;
 use std::sync::{
     Arc,
@@ -18,6 +17,12 @@ use std::sync::{
 
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
+use axum::body::Body;
+use axum::extract::State;
+use axum::http::header::{CONTENT_ENCODING, CONTENT_TYPE};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::post;
 use logfwd_arrow::star_schema::{StarSchema, attrs_schema, star_to_flat};
 use logfwd_otap_proto::otap::{
     ArrowPayloadType as ProtoArrowPayloadType, BatchArrowRecords as ProtoBatchArrowRecords,
@@ -25,12 +30,14 @@ use logfwd_otap_proto::otap::{
 };
 use logfwd_types::diagnostics::ComponentHealth;
 use prost::Message;
+use tokio::sync::oneshot;
 
 use crate::InputError;
+use crate::background_http_task::BackgroundHttpTask;
 use crate::receiver_health::{ReceiverHealthEvent, reduce_receiver_health};
-
-/// Maximum request body size: 10 MB.
-const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
+use crate::receiver_http::{
+    MAX_REQUEST_BODY_SIZE, parse_content_length, parse_content_type, read_limited_body,
+};
 
 /// Bounded channel capacity.
 const CHANNEL_BOUND: usize = 256;
@@ -65,10 +72,16 @@ pub struct OtapReceiver {
     name: String,
     rx: Option<mpsc::Receiver<RecordBatch>>,
     addr: std::net::SocketAddr,
-    server: Arc<tiny_http::Server>,
+    background_task: BackgroundHttpTask,
     shutdown: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
-    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+#[derive(Clone)]
+struct OtapServerState {
+    tx: mpsc::SyncSender<RecordBatch>,
+    shutdown: Arc<AtomicBool>,
+    health: Arc<AtomicU8>,
 }
 
 impl OtapReceiver {
@@ -83,198 +96,64 @@ impl OtapReceiver {
         addr: &str,
         capacity: usize,
     ) -> io::Result<Self> {
-        let server = Arc::new(
-            tiny_http::Server::http(addr)
-                .map_err(|e| io::Error::other(format!("OTAP receiver bind {addr}: {e}")))?,
-        );
-
-        let bound_addr = match server.server_addr() {
-            tiny_http::ListenAddr::IP(a) => a,
-            tiny_http::ListenAddr::Unix(_) => {
-                return Err(io::Error::other("OTAP receiver: unexpected listen addr"));
-            }
-        };
+        let std_listener = std::net::TcpListener::bind(addr)
+            .map_err(|e| io::Error::other(format!("OTAP receiver bind {addr}: {e}")))?;
+        let bound_addr = std_listener.local_addr()?;
+        std_listener.set_nonblocking(true).map_err(|e| {
+            io::Error::other(format!("OTAP receiver set_nonblocking {bound_addr}: {e}"))
+        })?;
 
         let (tx, rx) = mpsc::sync_channel(capacity);
         let shutdown = Arc::new(AtomicBool::new(false));
-        let shutdown_clone = Arc::clone(&shutdown);
         let health = Arc::new(AtomicU8::new(ComponentHealth::Healthy.as_repr()));
-        let health_clone = Arc::clone(&health);
+        let state = Arc::new(OtapServerState {
+            tx,
+            shutdown: Arc::clone(&shutdown),
+            health: Arc::clone(&health),
+        });
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let shutdown_for_server = Arc::clone(&shutdown);
+        let health_for_server = Arc::clone(&health);
+        let state_for_server = Arc::clone(&state);
 
-        let server_clone = Arc::clone(&server);
         let handle = std::thread::Builder::new()
             .name("otap-receiver".into())
             .spawn(move || {
-                while !shutdown_clone.load(Ordering::Relaxed) {
-                    let store_event = |health: &AtomicU8, event| {
-                        let current = ComponentHealth::from_repr(health.load(Ordering::Relaxed));
-                        health.store(
-                            reduce_receiver_health(current, event).as_repr(),
-                            Ordering::Relaxed,
-                        );
-                    };
-                    let mut request = match server_clone.try_recv() {
-                        Ok(Some(req)) => req,
-                        Ok(None) => {
-                            std::thread::sleep(std::time::Duration::from_millis(10));
-                            continue;
-                        }
-                        // Exit the worker thread on accept-side I/O failure instead of
-                        // spinning forever and silently dropping all future requests.
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(_) => {
+                        store_health_event(&health_for_server, ReceiverHealthEvent::FatalFailure);
+                        return;
+                    }
+                };
+
+                runtime.block_on(async move {
+                    let listener = match tokio::net::TcpListener::from_std(std_listener) {
+                        Ok(listener) => listener,
                         Err(_) => {
-                            store_event(&health_clone, ReceiverHealthEvent::FatalFailure);
-                            break;
+                            store_health_event(
+                                &health_for_server,
+                                ReceiverHealthEvent::FatalFailure,
+                            );
+                            return;
                         }
                     };
 
-                    let url = request.url().to_string();
+                    let app = axum::Router::new()
+                        .route("/v1/arrow_logs", post(handle_otap_request))
+                        .with_state(state_for_server);
 
-                    let path = url.split('?').next().unwrap_or(&url);
-                    if path != "/v1/arrow_logs" {
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("not found").with_status_code(404),
-                        );
-                        continue;
+                    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+                        let _ = shutdown_rx.await;
+                    });
+
+                    if server.await.is_err() && !shutdown_for_server.load(Ordering::Relaxed) {
+                        store_health_event(&health_for_server, ReceiverHealthEvent::FatalFailure);
                     }
-                    if request.method() != &tiny_http::Method::Post {
-                        let allow_header = "Allow: POST"
-                            .parse::<tiny_http::Header>()
-                            .expect("static header is valid");
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("method not allowed")
-                                .with_status_code(405)
-                                .with_header(allow_header),
-                        );
-                        continue;
-                    }
-
-                    if request.body_length().unwrap_or(0) > MAX_BODY_SIZE {
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("payload too large")
-                                .with_status_code(413),
-                        );
-                        continue;
-                    }
-
-                    // Read body with hard cap.
-                    let mut body =
-                        Vec::with_capacity(request.body_length().unwrap_or(0).min(MAX_BODY_SIZE));
-                    match request
-                        .as_reader()
-                        .take(MAX_BODY_SIZE as u64 + 1)
-                        .read_to_end(&mut body)
-                    {
-                        Ok(n) if n > MAX_BODY_SIZE => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string("payload too large")
-                                    .with_status_code(413),
-                            );
-                            continue;
-                        }
-                        Err(_) => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string("read error")
-                                    .with_status_code(400),
-                            );
-                            continue;
-                        }
-                        Ok(_) => {}
-                    }
-
-                    // Decode BatchArrowRecords protobuf.
-                    let batch_records = match decode_batch_arrow_records(&body) {
-                        Ok(b) => b,
-                        Err(msg) => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(msg.to_string())
-                                    .with_status_code(400),
-                            );
-                            continue;
-                        }
-                    };
-
-                    // Group payloads by type, deserialize IPC bytes into
-                    // RecordBatches, and assemble a StarSchema.
-                    let star = match assemble_star_schema(&batch_records.payloads) {
-                        Ok(s) => s,
-                        Err(msg) => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(msg.to_string())
-                                    .with_status_code(400),
-                            );
-                            continue;
-                        }
-                    };
-
-                    // Convert star schema to flat RecordBatch.
-                    let flat = match star_to_flat(&star) {
-                        Ok(b) => b,
-                        Err(e) => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(format!(
-                                    "star_to_flat failed: {e}"
-                                ))
-                                .with_status_code(400),
-                            );
-                            continue;
-                        }
-                    };
-
-                    // Skip empty batches.
-                    if flat.num_rows() == 0 {
-                        store_event(&health_clone, ReceiverHealthEvent::DeliveryNoop);
-                        let resp_body =
-                            encode_batch_status(batch_records.batch_id, BATCH_STATUS_OK);
-                        let _ = request.respond(
-                            tiny_http::Response::from_data(resp_body)
-                                .with_header(
-                                    "Content-Type: application/x-protobuf"
-                                        .parse::<tiny_http::Header>()
-                                        .expect("static header is valid"),
-                                )
-                                .with_status_code(200),
-                        );
-                        continue;
-                    }
-
-                    // Send to pipeline via bounded channel.
-                    match tx.try_send(flat) {
-                        Ok(()) => {
-                            store_event(&health_clone, ReceiverHealthEvent::DeliveryAccepted);
-                            let resp_body =
-                                encode_batch_status(batch_records.batch_id, BATCH_STATUS_OK);
-                            let _ = request.respond(
-                                tiny_http::Response::from_data(resp_body)
-                                    .with_header(
-                                        "Content-Type: application/x-protobuf"
-                                            .parse::<tiny_http::Header>()
-                                            .expect("static header is valid"),
-                                    )
-                                    .with_status_code(200),
-                            );
-                        }
-                        Err(mpsc::TrySendError::Full(_)) => {
-                            store_event(&health_clone, ReceiverHealthEvent::Backpressure);
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(
-                                    "too many requests: pipeline backpressure",
-                                )
-                                .with_status_code(429),
-                            );
-                        }
-                        Err(mpsc::TrySendError::Disconnected(_)) => {
-                            if !shutdown_clone.load(Ordering::Relaxed) {
-                                store_event(&health_clone, ReceiverHealthEvent::FatalFailure);
-                            }
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(
-                                    "service unavailable: pipeline disconnected",
-                                )
-                                .with_status_code(503),
-                            );
-                        }
-                    }
-                }
+                });
             })
             .map_err(io::Error::other)?;
 
@@ -282,10 +161,9 @@ impl OtapReceiver {
             name: name.into(),
             rx: Some(rx),
             addr: bound_addr,
-            server,
+            background_task: BackgroundHttpTask::new_axum(shutdown_tx, handle),
             shutdown,
             health,
-            handle: Some(handle),
         })
     }
 
@@ -338,15 +216,145 @@ impl OtapReceiver {
     /// Coarse runtime health for readiness and diagnostics integration.
     pub fn health(&self) -> ComponentHealth {
         let stored = ComponentHealth::from_repr(self.health.load(Ordering::Relaxed));
-        if self
-            .handle
-            .as_ref()
-            .is_some_and(std::thread::JoinHandle::is_finished)
-            && !self.shutdown.load(Ordering::Relaxed)
-        {
+        if self.background_task.is_finished() && !self.shutdown.load(Ordering::Relaxed) {
             ComponentHealth::Failed
         } else {
             stored
+        }
+    }
+}
+
+fn store_health_event(health: &AtomicU8, event: ReceiverHealthEvent) {
+    let mut current = health.load(Ordering::Relaxed);
+    loop {
+        let current_health = ComponentHealth::from_repr(current);
+        let next = reduce_receiver_health(current_health, event).as_repr();
+        match health.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
+async fn handle_otap_request(
+    State(state): State<Arc<OtapServerState>>,
+    headers: HeaderMap,
+    body: Body,
+) -> Response {
+    let content_encoding = match parse_content_encoding(&headers) {
+        Ok(content_encoding) => content_encoding,
+        Err(status) => return (status, "invalid content-encoding header").into_response(),
+    };
+
+    match parse_content_type(&headers) {
+        Ok(Some(content_type)) => {
+            if content_type != "application/x-protobuf" {
+                return (
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                    "unsupported content-type",
+                )
+                    .into_response();
+            }
+        }
+        Ok(None) => {
+            return (StatusCode::UNSUPPORTED_MEDIA_TYPE, "missing content-type").into_response();
+        }
+        Err(status) => return (status, "invalid content-type header").into_response(),
+    }
+
+    let content_length = parse_content_length(&headers);
+    if content_length.is_some_and(|body_len| body_len > MAX_REQUEST_BODY_SIZE as u64) {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
+    }
+
+    let body = match read_limited_body(body, MAX_REQUEST_BODY_SIZE, content_length).await {
+        Ok(body) => body,
+        Err(status) => {
+            let message = if status == StatusCode::PAYLOAD_TOO_LARGE {
+                "payload too large"
+            } else {
+                "read error"
+            };
+            return (status, message).into_response();
+        }
+    };
+
+    let body = match content_encoding.as_deref() {
+        Some("gzip") => match decompress_gzip(&body, MAX_REQUEST_BODY_SIZE) {
+            Ok(decompressed) => decompressed,
+            Err(InputError::Io(_)) => {
+                return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
+            }
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "gzip decompression failed").into_response();
+            }
+        },
+        Some(other) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("unsupported content-encoding: {other}"),
+            )
+                .into_response();
+        }
+        None => body,
+    };
+
+    let batch_records = match decode_batch_arrow_records(&body) {
+        Ok(records) => records,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg.to_string()).into_response(),
+    };
+
+    let star = match assemble_star_schema(&batch_records.payloads) {
+        Ok(star) => star,
+        Err(msg) => return (StatusCode::BAD_REQUEST, msg.to_string()).into_response(),
+    };
+
+    let flat = match star_to_flat(&star) {
+        Ok(flat) => flat,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("star_to_flat failed: {e}")).into_response();
+        }
+    };
+
+    if flat.num_rows() == 0 {
+        store_health_event(&state.health, ReceiverHealthEvent::DeliveryNoop);
+        let resp_body = encode_batch_status(batch_records.batch_id, BATCH_STATUS_OK);
+        return (
+            StatusCode::OK,
+            [(CONTENT_TYPE, "application/x-protobuf")],
+            resp_body,
+        )
+            .into_response();
+    }
+
+    match state.tx.try_send(flat) {
+        Ok(()) => {
+            store_health_event(&state.health, ReceiverHealthEvent::DeliveryAccepted);
+            let resp_body = encode_batch_status(batch_records.batch_id, BATCH_STATUS_OK);
+            (
+                StatusCode::OK,
+                [(CONTENT_TYPE, "application/x-protobuf")],
+                resp_body,
+            )
+                .into_response()
+        }
+        Err(mpsc::TrySendError::Full(_)) => {
+            store_health_event(&state.health, ReceiverHealthEvent::Backpressure);
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many requests: pipeline backpressure",
+            )
+                .into_response()
+        }
+        Err(mpsc::TrySendError::Disconnected(_)) => {
+            if !state.shutdown.load(Ordering::Relaxed) {
+                store_health_event(&state.health, ReceiverHealthEvent::FatalFailure);
+            }
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "service unavailable: pipeline disconnected",
+            )
+                .into_response()
         }
     }
 }
@@ -387,6 +395,53 @@ fn decode_batch_arrow_records(buf: &[u8]) -> Result<BatchArrowRecords, InputErro
         batch_id: decoded.batch_id,
         payloads,
     })
+}
+
+fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusCode> {
+    let Some(value) = headers.get(CONTENT_ENCODING) else {
+        return Ok(None);
+    };
+    let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
+    let encoding = parsed.trim();
+    if encoding.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if encoding.eq_ignore_ascii_case("identity") {
+        return Ok(None);
+    }
+    Ok(Some(encoding.to_ascii_lowercase()))
+}
+
+fn decompress_gzip(body: &[u8], max_request_body_size: usize) -> Result<Vec<u8>, InputError> {
+    let decoder = flate2::read::GzDecoder::new(body);
+    read_decompressed_body(
+        decoder,
+        body.len(),
+        max_request_body_size,
+        "gzip decompression failed",
+    )
+}
+
+fn read_decompressed_body(
+    mut reader: impl io::Read,
+    compressed_len: usize,
+    max_request_body_size: usize,
+    error_label: &str,
+) -> Result<Vec<u8>, InputError> {
+    use std::io::Read;
+    let mut decompressed = Vec::with_capacity(compressed_len.min(max_request_body_size));
+    match reader
+        .by_ref()
+        .take(max_request_body_size as u64 + 1)
+        .read_to_end(&mut decompressed)
+    {
+        Ok(n) if n > max_request_body_size => Err(InputError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "payload too large",
+        ))),
+        Ok(_) => Ok(decompressed),
+        Err(_) => Err(InputError::Receiver(error_label.to_string())),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -509,10 +564,6 @@ impl Drop for OtapReceiver {
         );
         self.shutdown.store(true, Ordering::Relaxed);
         self.rx.take();
-        self.server.unblock();
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
         let current = ComponentHealth::from_repr(self.health.load(Ordering::Relaxed));
         self.health.store(
             reduce_receiver_health(current, ReceiverHealthEvent::ShutdownCompleted).as_repr(),
@@ -534,8 +585,31 @@ mod tests {
     };
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use std::sync::Arc;
+    use std::time::{Duration, Instant};
 
     use logfwd_arrow::star_schema::flat_to_star;
+
+    fn loopback_http_client() -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .proxy(None)
+            .timeout_global(Some(Duration::from_secs(5)))
+            .build()
+            .into()
+    }
+
+    fn wait_until<F>(timeout: Duration, mut predicate: F, failure_message: &str)
+    where
+        F: FnMut() -> bool,
+    {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if predicate() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(predicate(), "{failure_message}");
+    }
 
     // Regression test for issue #1142: clean shutdown
     #[test]
@@ -544,19 +618,16 @@ mod tests {
         let receiver = OtapReceiver::new("test", addr).unwrap();
         let port = receiver.local_addr().port();
 
-        // Wait briefly for thread to start blocking
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
         // Drop it
         drop(receiver);
 
-        // Wait briefly for the OS to actually release the port
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
         // The port should now be free to bind to immediately
         let new_addr = format!("127.0.0.1:{}", port);
-        let result = tiny_http::Server::http(&new_addr);
-        assert!(result.is_ok(), "Failed to bind to port {} after drop", port);
+        wait_until(
+            Duration::from_secs(1),
+            || tiny_http::Server::http(&new_addr).is_ok(),
+            &format!("failed to bind to port {port} after drop"),
+        );
     }
 
     /// Build a `BatchArrowRecords` protobuf from components.
@@ -781,7 +852,8 @@ mod tests {
             Field::new("_timestamp", DataType::Utf8, true),
             Field::new("level", DataType::Utf8, true),
             Field::new("message", DataType::Utf8, true),
-            Field::new("_resource_service_name", DataType::Utf8, true),
+            Field::new("resource.attributes.service_name", DataType::Utf8, true),
+            Field::new("resource.attributes.service.name", DataType::Utf8, true),
             Field::new("host", DataType::Utf8, true),
         ]));
 
@@ -799,6 +871,7 @@ mod tests {
                 Some("api-server"),
                 Some("api-server"),
             ])),
+            Arc::new(StringArray::from(vec![Some("orders"), Some("orders")])),
             Arc::new(StringArray::from(vec![Some("host-1"), Some("host-2")])),
         ];
 
@@ -854,7 +927,7 @@ mod tests {
         assert_eq!(lvl_arr.value(1), "ERROR");
 
         let rs_idx = rt_schema
-            .index_of("_resource_service_name")
+            .index_of("resource.attributes.service_name")
             .expect("resource col");
         let rs_arr = roundtrip
             .column(rs_idx)
@@ -863,6 +936,17 @@ mod tests {
             .expect("str");
         assert_eq!(rs_arr.value(0), "api-server");
         assert_eq!(rs_arr.value(1), "api-server");
+
+        let rs_dot_idx = rt_schema
+            .index_of("resource.attributes.service.name")
+            .expect("dotted resource col");
+        let rs_dot_arr = roundtrip
+            .column(rs_dot_idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("str");
+        assert_eq!(rs_dot_arr.value(0), "orders");
+        assert_eq!(rs_dot_arr.value(1), "orders");
 
         let host_idx = rt_schema.index_of("host").expect("host col");
         let host_arr = roundtrip
@@ -900,7 +984,8 @@ mod tests {
         );
 
         let url = format!("http://{addr}/v1/arrow_logs");
-        let response = ureq::post(&url)
+        let response = loopback_http_client()
+            .post(&url)
             .header("Content-Type", "application/x-protobuf")
             .send(&proto)
             .expect("POST should succeed");
@@ -908,7 +993,7 @@ mod tests {
 
         // Receive the flat batch.
         let received = receiver
-            .recv_timeout(std::time::Duration::from_secs(2))
+            .recv_timeout(Duration::from_secs(2))
             .expect("should receive a batch");
         assert_eq!(received.num_rows(), 2);
         assert_eq!(receiver.health(), ComponentHealth::Healthy);
@@ -921,7 +1006,7 @@ mod tests {
         let addr = receiver.local_addr();
 
         let url = format!("http://{addr}/v1/logs");
-        let result = ureq::post(&url).send(b"data" as &[u8]);
+        let result = loopback_http_client().post(&url).send(b"data" as &[u8]);
         match result {
             Err(ureq::Error::StatusCode(code)) => assert_eq!(code, 404),
             other => panic!("expected 404, got {other:?}"),
@@ -935,7 +1020,7 @@ mod tests {
         let addr = receiver.local_addr();
 
         let url = format!("http://{addr}/v1/arrow_logs");
-        let result = ureq::get(&url).call();
+        let result = loopback_http_client().get(&url).call();
         match result {
             Err(ureq::Error::StatusCode(code)) => assert_eq!(code, 405),
             other => panic!("expected 405, got {other:?}"),
@@ -954,7 +1039,8 @@ mod tests {
         let url = format!("http://{addr}/v1/arrow_logs");
 
         // Fill the channel (capacity = 1).
-        let resp = ureq::post(&url)
+        let resp = loopback_http_client()
+            .post(&url)
             .header("Content-Type", "application/x-protobuf")
             .send(&proto)
             .expect("first POST should succeed");
@@ -962,7 +1048,8 @@ mod tests {
         assert_eq!(receiver.health(), ComponentHealth::Healthy);
 
         // Next request should get 429.
-        let result = ureq::post(&url)
+        let result = loopback_http_client()
+            .post(&url)
             .header("Content-Type", "application/x-protobuf")
             .send(&proto);
         let status: u16 = match result {
@@ -970,21 +1057,19 @@ mod tests {
             Err(ureq::Error::StatusCode(code)) => code,
             Err(e) => panic!("unexpected error: {e}"),
         };
-        assert!(
-            status == 429 || status == 503,
-            "expected 429 or 503, got {status}"
-        );
+        assert_eq!(status, 429, "expected 429, got {status}");
         assert_eq!(receiver.health(), ComponentHealth::Degraded);
 
         // Drain so the receiver is valid.
         let _ = receiver.try_recv_all();
 
-        let resp = ureq::post(&url)
+        let resp = loopback_http_client()
+            .post(&url)
             .header("Content-Type", "application/x-protobuf")
             .send(&proto)
             .expect("recovery POST should succeed");
         assert_eq!(resp.status().as_u16(), 200);
-        let _ = receiver.recv_timeout(std::time::Duration::from_secs(2));
+        let _ = receiver.recv_timeout(Duration::from_secs(2));
         assert_eq!(receiver.health(), ComponentHealth::Healthy);
     }
 

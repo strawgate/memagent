@@ -29,6 +29,8 @@ concurrency:
 permissions:
   issues: write
   contents: write
+  pages: write
+  id-token: write
 
 env:
   LINES: ${{ inputs.lines || '20000000' }}
@@ -395,7 +397,7 @@ jobs:
       # Commit bench data to the bench-data branch so the dashboard can fetch
       # it live via raw.githubusercontent.com — no Pages redeploy needed.
       - name: Commit results to bench-data branch
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/master'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_ID: ${{ github.run_id }}
@@ -476,8 +478,9 @@ jobs:
           git commit -m "bench: add run ${RUN_ID} (${COMMIT})"
           git push origin HEAD:bench-data
 
-      # Note: docs.yml performs the only Pages deployment so docs + dashboard
-      # remain available under the same published site.
+      # The bench dashboard is served as /bench/ within the docs site deployment
+      # (docs.yml). Do not deploy Pages from here — it would overwrite the docs.
+
       # Upload summary for retention.
       - uses: actions/upload-artifact@v7
         with:
@@ -493,9 +496,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Ensure benchmark label exists (gh issue create --label fails otherwise).
-          gh label create benchmark --description "Nightly benchmark reports" --color "1D76DB" 2>/dev/null || true
-
           DATE=$(date -u +%Y-%m-%d)
           COMMIT=$(git rev-parse --short HEAD)
 

@@ -1,10 +1,76 @@
 # Developing logfwd
 
+## Fast Start
+
+If you are new, do this first:
+
+```bash
+just ci
+just test
+# Optional crate-local shortcut during focused iteration:
+# cargo test -p logfwd-core
+```
+
+Then read only the section needed for your task:
+- crate map: `Workspace layout`
+- command semantics: `Build, test, lint, bench, fuzz`
+- performance profiling: `Local CPU profiling (macOS)`
+- historical gotchas: `Things that will bite you`
+
+## Prerequisites
+
+| Tool | Version | Install |
+|------|---------|---------|
+| [Rust](https://rustup.rs) | Latest stable (managed by `rust-toolchain.toml`) | `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \| sh` |
+| [just](https://just.systems) | 1.40+ | `cargo install just` or `brew install just` |
+| [cargo-nextest](https://nexte.st) | 0.9+ | `cargo install cargo-nextest` |
+
+Optional but recommended:
+
+| Tool | Purpose | Install |
+|------|---------|---------|
+| [mise](https://mise.jdx.dev) | Manages all tool versions from `mise.toml` | [mise.jdx.dev](https://mise.jdx.dev/getting-started.html) |
+| [taplo](https://taplo.tamasfe.dev) | TOML linting (`just toml-check`) | `cargo install taplo-cli` |
+| [cargo-deny](https://embarkstudios.github.io/cargo-deny/) | License/advisory audit (`just deny`) | `cargo install cargo-deny` |
+| [Node.js](https://nodejs.org) 22+ | Dashboard build (`just dashboard`) | via mise, nvm, or nodejs.org |
+| [Docker](https://www.docker.com) | Local services (`docker-compose.dev.yml`) | docker.com |
+| [sccache](https://github.com/mozilla/sccache) | Compile caching | `cargo install sccache --locked` |
+| [OpenJDK](https://openjdk.org) | Run TLC model checks (`just tlc-tail`) | `brew install openjdk` (macOS) |
+| Miri nightly components | Local UB checks (`just miri`) | `just miri-setup` |
+
+All tool versions are declared in `mise.toml`. If you have [mise](https://mise.jdx.dev) installed, `mise install` sets everything up automatically. Otherwise, install the tools listed above manually.
+
+## Setup
+
+```bash
+git clone https://github.com/strawgate/memagent.git && cd memagent
+just setup     # install tools, fetch deps, set up git hooks
+just doctor    # verify everything is installed
+just ci        # fast lint + test (~30s)
+```
+
+`just setup` is idempotent — safe to re-run at any time.
+
+### Local services (optional)
+
+Some benchmarks and examples need Elasticsearch or an OTLP receiver:
+
+```bash
+docker compose -f docker-compose.dev.yml up -d   # start services
+docker compose -f docker-compose.dev.yml down     # stop
+```
+
+| Service | URL | Used by |
+|---------|-----|---------|
+| Elasticsearch | `http://localhost:9200` | `just bench-es`, `examples/elasticsearch/` |
+| OTLP blackhole | `http://localhost:4318` | OTLP end-to-end tests |
+
 ## Workspace layout
 
 ```
 crates/
-  logfwd/              Binary crate. CLI, async pipeline orchestration.
+  logfwd/              Binary crate. CLI entrypoints and compatibility re-exports.
+  logfwd-runtime/      Runtime orchestration. Pipeline loop, worker pool, processors.
   logfwd-core/         Proven kernel. Scanner, parsers, pipeline state machine, OTLP encoding. no_std.
   logfwd-arrow/        Arrow integration. ScanBuilder impls, SIMD backends, RecordBatch builders.
   logfwd-config/       YAML config parsing and validation.
@@ -20,15 +86,42 @@ crates/
 ## Build, test, lint, bench, fuzz
 
 ```bash
-just test                    # All tests
-just lint                    # fmt + clippy + toml + deny + typos
-just bench-framed-input -- --lines 200000 --iterations 5
-cargo test -p logfwd-core    # Core crate only (fastest iteration)
-
-RUSTFLAGS="-C target-cpu=native" cargo bench --bench scanner -p logfwd-core
-
-cd crates/logfwd-core && cargo +nightly fuzz run scanner -- -max_total_time=300
+just ci                      # lint + test (fast — skips datafusion)
+just ci-all                  # full workspace including datafusion
+just test                    # tests (default-members only, ~30s)
+just test-all                # tests (full workspace, ~3min)
+just lint                    # fmt + clippy + toml
+just lint-all                # full: fmt + clippy + toml + deny + kani-boundary
+just miri-setup              # install nightly Miri components locally
+just miri                    # Miri checks for logfwd-core and logfwd-types
+just tlc-tail                # run TailLifecycle TLA+ model check
+just build                   # release logfwd binary (includes DataFusion SQL)
+just build-dev-lite          # dev-only fast binary (no DataFusion SQL)
+cargo test -p logfwd-core    # single crate (fastest iteration)
+just fuzz scanner 300        # fuzz a target for 300s (nightly)
 ```
+
+> **Why two tiers?** The workspace `default-members` excludes `logfwd-transform`
+> (datafusion) and `logfwd` (binary). Bare `cargo check` / `just clippy` skip
+> them (~30s vs ~3min). Use `--workspace`, `-p logfwd`, or the `-all` just
+> targets when you need the full build. CI always uses `--workspace`.
+> Adding the `ci:full` PR label includes the slower verification lanes in
+> subsequent CI runs (for example, after pushing a commit or rerunning CI):
+> `miri`, macOS tests, and the deeper TLA/TLC sweeps.
+
+## DataFusion in Dev vs Release
+
+`logfwd` now has a feature-gated SQL engine:
+
+- **Release/full package (default):** includes DataFusion.
+  - `cargo build --release -p logfwd`
+  - `just build`
+- **Dev-lite (opt-in):** skips DataFusion for faster local iteration.
+  - `cargo build --release -p logfwd --no-default-features`
+  - `just build-dev-lite`
+
+Use the dev-lite build only when you're intentionally working on non-SQL paths.
+If your config uses `transform:` SQL or `enrichment:`, run the full/default build.
 
 ## Compile caching with sccache
 
@@ -138,6 +231,8 @@ Because maintaining column alignment across multiple type builders (str, int, fl
 
 The deferred pattern is correct by construction: each column is built independently. Gaps are nulls. Columns can never mismatch.
 
+Canonical design note: [dev-docs/research/columnar-batch-builder.md](dev-docs/research/columnar-batch-builder.md).
+
 ### Chunk-level SIMD classification beats per-line SIMD
 
 We tried three approaches:
@@ -165,13 +260,21 @@ Profiling showed `get_or_create_field` dominating — SipHash + probe per field 
 
 Arrow's `get_array_memory_size()` counts the backing buffer for every column sharing it. If 5 string columns point into the same buffer, reported memory is 5x actual. The `StreamingBuilder` produces shared-buffer columns; memory reports overcount significantly.
 
+### Source-byte accounting must happen before payload normalization
+
+If an input mutates payloads before framing or scanning, diagnostics must still
+charge bytes from the original source payload, not the normalized buffer. Two
+easy ways to get this wrong are synthetic newline insertion and compressed
+request decoding. Capture source bytes at the receiver boundary first, then
+carry them explicitly through `InputEvent::Data` or `InputEvent::Batch`.
+
 ### Arrow IPC compression is just a flag
 
 Compressed Arrow IPC is `StreamWriter` with `IpcWriteOptions::try_with_compression(Some(CompressionType::ZSTD))`. Any `RecordBatch` can be compressed. No special builder needed.
 
-### `keep_raw` costs 65% of table memory
+### Line Capture Can Dominate Table Memory
 
-The `_raw` column stores the full JSON line. Larger than all other columns combined. Default is `keep_raw: false`.
+The `body` column can store the full input line and is often larger than all parsed columns combined. Line capture is disabled unless configured (raw inputs default to `line_field_name: body`).
 
 ### Always use `just clippy`, never bare `cargo clippy`
 

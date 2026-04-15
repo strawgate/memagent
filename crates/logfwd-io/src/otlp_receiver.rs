@@ -1,282 +1,289 @@
 //! OTLP HTTP receiver input source.
 //!
 //! Listens for OTLP ExportLogsServiceRequest via HTTP POST, decodes the
-//! protobuf, and produces JSON lines that the scanner can process.
+//! protobuf or JSON payload, and produces structured Arrow record batches.
 //!
 //! Endpoint: POST /v1/logs (protobuf or JSON)
-//!
-//! This replaces the hand-rolled `--blackhole` with a proper pipeline input.
+
+mod convert;
+mod decode;
+#[cfg(any(feature = "otlp-research", test))]
+mod projection;
+mod server;
+#[cfg(test)]
+mod tests;
+#[cfg(any(feature = "otlp-research", test))]
+use bytes::Bytes;
+#[cfg(test)]
+use convert::*;
+use decode::decode_otlp_logs_to_batch;
+#[cfg(any(feature = "otlp-research", test))]
+use decode::decode_otlp_protobuf_bytes_with_mode;
+#[cfg(any(feature = "otlp-research", test))]
+use decode::decode_otlp_protobuf_with_prost;
+#[cfg(test)]
+use decode::*;
 
 use std::io;
-use std::io::Read as _;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, mpsc};
-use std::time::Duration;
 
-use base64::Engine as _;
-use opentelemetry_proto::tonic::common::v1::AnyValue;
-use opentelemetry_proto::tonic::common::v1::any_value::Value;
-use prost::Message;
+use arrow::record_batch::RecordBatch;
+use axum::routing::post;
+use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
+use logfwd_types::field_names;
+use tokio::sync::oneshot;
 
 use crate::InputError;
+use crate::background_http_task::BackgroundHttpTask;
 use crate::input::{InputEvent, InputSource};
-use logfwd_types::diagnostics::ComponentHealth;
-use logfwd_types::field_names;
 
-/// Maximum request body size: 10 MB.
-const MAX_BODY_SIZE: usize = 10 * 1024 * 1024;
-
-/// Bounded channel capacity — limits memory when the pipeline falls behind.
 const CHANNEL_BOUND: usize = 4096;
+/// Max payloads drained from the internal channel in a single `poll()` call.
+///
+/// This bounds per-poll work and prevents one call from aggregating an
+/// arbitrarily deep queue into memory.
+const MAX_DRAINED_PAYLOADS_PER_POLL: usize = 256;
+
+/// Protobuf decode strategy used by the OTLP HTTP receiver.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OtlpProtobufDecodeMode {
+    /// Decode through the generated prost OTLP model.
+    #[default]
+    Prost,
+    /// Decode supported primitive OTLP log shapes directly into Arrow.
+    ///
+    /// Valid but unsupported semantic cases fall back to prost. Malformed
+    /// protobuf remains an error so the fast path cannot accidentally accept
+    /// data the reference decoder rejects.
+    #[cfg(any(feature = "otlp-research", test))]
+    ProjectedFallback,
+    /// Decode only through the experimental projection path.
+    ///
+    /// This is for parity tests and benchmarks that need to isolate projection
+    /// coverage without hiding unsupported cases behind the reference decoder.
+    #[cfg(any(feature = "otlp-research", test))]
+    ProjectedOnly,
+}
 
 /// OTLP receiver that listens for log exports via HTTP.
 pub struct OtlpReceiverInput {
     name: String,
-    rx: Option<mpsc::Receiver<Vec<u8>>>,
+    rx: Option<mpsc::Receiver<ReceiverPayload>>,
     /// The address the HTTP server is bound to.
     addr: std::net::SocketAddr,
-    server: Arc<tiny_http::Server>,
-    /// Keep the server thread handle alive.
-    handle: Option<std::thread::JoinHandle<()>>,
+    background_task: BackgroundHttpTask,
     /// Shutdown mechanism for the background thread.
     is_running: Arc<AtomicBool>,
     /// Source-owned health snapshot for readiness and diagnostics.
     health: Arc<AtomicU8>,
 }
 
+struct ReceiverPayload {
+    batch: RecordBatch,
+    accounted_bytes: u64,
+}
+
+struct OtlpServerState {
+    tx: mpsc::SyncSender<ReceiverPayload>,
+    is_running: Arc<AtomicBool>,
+    health: Arc<AtomicU8>,
+    resource_prefix: String,
+    protobuf_decode_mode: OtlpProtobufDecodeMode,
+    stats: Option<Arc<ComponentStats>>,
+}
+
 impl OtlpReceiverInput {
     /// Bind an HTTP server on `addr` (e.g. "0.0.0.0:4318").
     /// Spawns a background thread to handle requests.
     pub fn new(name: impl Into<String>, addr: &str) -> io::Result<Self> {
-        Self::new_with_capacity(name, addr, CHANNEL_BOUND)
+        Self::new_with_resource_prefix(name, addr, field_names::DEFAULT_RESOURCE_PREFIX)
+    }
+
+    /// Like [`Self::new`], but with a custom resource attribute prefix used
+    /// when materializing OTLP resource attributes into flat columns.
+    pub fn new_with_resource_prefix(
+        name: impl Into<String>,
+        addr: &str,
+        resource_prefix: impl Into<String>,
+    ) -> io::Result<Self> {
+        Self::new_with_capacity_stats_and_prefix(
+            name,
+            addr,
+            CHANNEL_BOUND,
+            None,
+            resource_prefix.into(),
+        )
+    }
+
+    /// Like [`Self::new`], but wires input diagnostics into receiver-side
+    /// transport and decode failures.
+    pub fn new_with_stats(
+        name: impl Into<String>,
+        addr: &str,
+        stats: Arc<ComponentStats>,
+    ) -> io::Result<Self> {
+        Self::new_with_stats_and_resource_prefix(
+            name,
+            addr,
+            stats,
+            field_names::DEFAULT_RESOURCE_PREFIX,
+        )
+    }
+
+    /// Like [`Self::new_with_stats`], but allows configuring the resource
+    /// attribute prefix used when flattening OTLP resource attributes.
+    pub fn new_with_stats_and_resource_prefix(
+        name: impl Into<String>,
+        addr: &str,
+        stats: Arc<ComponentStats>,
+        resource_prefix: impl Into<String>,
+    ) -> io::Result<Self> {
+        Self::new_with_capacity_stats_and_prefix(
+            name,
+            addr,
+            CHANNEL_BOUND,
+            Some(stats),
+            resource_prefix.into(),
+        )
     }
 
     /// Like [`Self::new`] but with an explicit channel capacity. Useful for tests.
+    #[cfg(test)]
     fn new_with_capacity(name: impl Into<String>, addr: &str, capacity: usize) -> io::Result<Self> {
-        let server = Arc::new(
-            tiny_http::Server::http(addr)
-                .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?,
-        );
+        Self::new_with_capacity_stats_and_prefix(
+            name,
+            addr,
+            capacity,
+            None,
+            field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
+        )
+    }
 
-        let bound_addr = match server.server_addr() {
-            tiny_http::ListenAddr::IP(a) => a,
-            tiny_http::ListenAddr::Unix(_) => {
-                return Err(io::Error::other("OTLP receiver: unexpected listen addr"));
-            }
-        };
+    #[cfg(test)]
+    fn new_with_capacity_and_stats(
+        name: impl Into<String>,
+        addr: &str,
+        capacity: usize,
+        stats: Option<Arc<ComponentStats>>,
+    ) -> io::Result<Self> {
+        Self::new_with_capacity_stats_and_prefix(
+            name,
+            addr,
+            capacity,
+            stats,
+            field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
+        )
+    }
+
+    fn new_with_capacity_stats_and_prefix(
+        name: impl Into<String>,
+        addr: &str,
+        capacity: usize,
+        stats: Option<Arc<ComponentStats>>,
+        resource_prefix: String,
+    ) -> io::Result<Self> {
+        Self::new_with_capacity_stats_prefix_and_decode_mode(
+            name,
+            addr,
+            capacity,
+            stats,
+            resource_prefix,
+            OtlpProtobufDecodeMode::Prost,
+        )
+    }
+
+    #[cfg(any(feature = "otlp-research", test))]
+    #[doc(hidden)]
+    pub fn new_with_protobuf_decode_mode_experimental(
+        name: impl Into<String>,
+        addr: &str,
+        stats: Option<Arc<ComponentStats>>,
+        resource_prefix: impl Into<String>,
+        protobuf_decode_mode: OtlpProtobufDecodeMode,
+    ) -> io::Result<Self> {
+        Self::new_with_capacity_stats_prefix_and_decode_mode(
+            name,
+            addr,
+            CHANNEL_BOUND,
+            stats,
+            resource_prefix.into(),
+            protobuf_decode_mode,
+        )
+    }
+
+    fn new_with_capacity_stats_prefix_and_decode_mode(
+        name: impl Into<String>,
+        addr: &str,
+        capacity: usize,
+        stats: Option<Arc<ComponentStats>>,
+        resource_prefix: String,
+        protobuf_decode_mode: OtlpProtobufDecodeMode,
+    ) -> io::Result<Self> {
+        let std_listener = std::net::TcpListener::bind(addr)
+            .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?;
+        let bound_addr = std_listener.local_addr()?;
+        std_listener.set_nonblocking(true).map_err(|e| {
+            io::Error::other(format!("OTLP receiver set_nonblocking {bound_addr}: {e}"))
+        })?;
 
         let (tx, rx) = mpsc::sync_channel(capacity);
-
-        let server_clone = Arc::clone(&server);
         let is_running = Arc::new(AtomicBool::new(true));
-        let is_running_clone = Arc::clone(&is_running);
         let health = Arc::new(AtomicU8::new(ComponentHealth::Healthy.as_repr()));
-        let health_clone = Arc::clone(&health);
+        let state = Arc::new(OtlpServerState {
+            tx,
+            is_running: Arc::clone(&is_running),
+            health: Arc::clone(&health),
+            resource_prefix,
+            protobuf_decode_mode,
+            stats,
+        });
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
+        let state_for_server = Arc::clone(&state);
+        let is_running_for_server = Arc::clone(&is_running);
+        let health_for_server = Arc::clone(&health);
 
         let handle = std::thread::Builder::new()
             .name("otlp-receiver".into())
             .spawn(move || {
-                while is_running_clone.load(Ordering::Relaxed) {
-                    let mut request = match server_clone.recv_timeout(Duration::from_millis(100)) {
-                        Ok(Some(req)) => req,
-                        Ok(None) => continue, // timeout — check is_running and retry
+                let runtime = match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime,
+                    Err(_) => {
+                        server::record_error(state_for_server.stats.as_ref());
+                        health_for_server
+                            .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
+                        return;
+                    }
+                };
+
+                runtime.block_on(async move {
+                    let listener = match tokio::net::TcpListener::from_std(std_listener) {
+                        Ok(listener) => listener,
                         Err(_) => {
-                            health_clone
+                            server::record_error(state_for_server.stats.as_ref());
+                            health_for_server
                                 .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
-                            break;
+                            return;
                         }
                     };
 
-                    let url = request.url().to_string();
+                    let app = axum::Router::new()
+                        .route("/v1/logs", post(server::handle_otlp_request))
+                        .with_state(state_for_server);
 
-                    // Only accept the exact OTLP endpoint path (with optional query string).
-                    // Reject unrecognised paths with 404; wrong method with 405.
-                    let path = url.split('?').next().unwrap_or(&url);
-                    if path != "/v1/logs" {
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("not found").with_status_code(404),
-                        );
-                        continue;
+                    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+                        let _ = shutdown_rx.await;
+                    });
+
+                    if server.await.is_err() && is_running_for_server.load(Ordering::Relaxed) {
+                        server::record_error(state.stats.as_ref());
+                        health_for_server
+                            .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
                     }
-                    if request.method() != &tiny_http::Method::Post {
-                        // RFC 7231 §6.5.5: wrong method → 405 with Allow header.
-                        let allow_header = "Allow: POST"
-                            .parse::<tiny_http::Header>()
-                            .expect("static header is valid");
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("method not allowed")
-                                .with_status_code(405)
-                                .with_header(allow_header),
-                        );
-                        continue;
-                    }
-
-                    // Reject bodies that declare a size over the limit.
-                    if request.body_length().unwrap_or(0) > MAX_BODY_SIZE {
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("payload too large")
-                                .with_status_code(413),
-                        );
-                        continue;
-                    }
-
-                    // Read body with a hard cap.
-                    let mut body =
-                        Vec::with_capacity(request.body_length().unwrap_or(0).min(MAX_BODY_SIZE));
-                    match request
-                        .as_reader()
-                        .take(MAX_BODY_SIZE as u64 + 1)
-                        .read_to_end(&mut body)
-                    {
-                        Ok(n) if n > MAX_BODY_SIZE => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string("payload too large")
-                                    .with_status_code(413),
-                            );
-                            continue;
-                        }
-                        Err(_) => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string("read error")
-                                    .with_status_code(400),
-                            );
-                            continue;
-                        }
-                        Ok(_) => {}
-                    }
-
-                    // Decompress if Content-Encoding is set.
-                    let content_encoding = request
-                        .headers()
-                        .iter()
-                        .find(|h| h.field.equiv("Content-Encoding"))
-                        .map(|h| h.value.as_str().to_lowercase());
-
-                    let body = match content_encoding.as_deref() {
-                        Some("zstd") => {
-                            let decoder = match zstd::Decoder::new(&body[..]) {
-                                Ok(d) => d,
-                                Err(_) => {
-                                    let _ = request.respond(
-                                        tiny_http::Response::from_string(
-                                            "zstd decompression failed",
-                                        )
-                                        .with_status_code(400),
-                                    );
-                                    continue;
-                                }
-                            };
-                            let mut decompressed =
-                                Vec::with_capacity(body.len().min(MAX_BODY_SIZE));
-                            match decoder
-                                .take(MAX_BODY_SIZE as u64 + 1)
-                                .read_to_end(&mut decompressed)
-                            {
-                                Ok(n) if n > MAX_BODY_SIZE => {
-                                    let _ = request.respond(
-                                        tiny_http::Response::from_string("payload too large")
-                                            .with_status_code(413),
-                                    );
-                                    continue;
-                                }
-                                Ok(_) => decompressed,
-                                Err(_) => {
-                                    let _ = request.respond(
-                                        tiny_http::Response::from_string(
-                                            "zstd decompression failed",
-                                        )
-                                        .with_status_code(400),
-                                    );
-                                    continue;
-                                }
-                            }
-                        }
-                        None | Some("identity") => body,
-                        Some(other) => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(format!(
-                                    "unsupported content-encoding: {other}"
-                                ))
-                                .with_status_code(415),
-                            );
-                            continue;
-                        }
-                    };
-
-                    // Determine content type — accept protobuf and JSON.
-                    let content_type = request
-                        .headers()
-                        .iter()
-                        .find(|h| h.field.equiv("Content-Type"))
-                        .map_or("application/x-protobuf", |h| h.value.as_str());
-
-                    // Content-Type matching is case-insensitive per RFC 7231.
-                    let is_json = content_type
-                        .to_ascii_lowercase()
-                        .contains("application/json");
-
-                    // Decode and convert to JSON lines.
-                    let json_lines = if is_json {
-                        decode_otlp_logs_json(&body)
-                    } else {
-                        decode_otlp_logs(&body)
-                    };
-
-                    let json_lines = match json_lines {
-                        Ok(lines) => lines,
-                        Err(msg) => {
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(msg.to_string())
-                                    .with_status_code(400),
-                            );
-                            continue;
-                        }
-                    };
-
-                    let send_result = if json_lines.is_empty() {
-                        Ok(())
-                    } else {
-                        tx.try_send(json_lines)
-                    };
-
-                    match send_result {
-                        Ok(()) => {
-                            health_clone
-                                .store(ComponentHealth::Healthy.as_repr(), Ordering::Relaxed);
-                            // Return standard OTLP success response with Content-Type header.
-                            let response = tiny_http::Response::from_string("{}")
-                                .with_header(
-                                    "Content-Type: application/json"
-                                        .parse::<tiny_http::Header>()
-                                        .unwrap(),
-                                )
-                                .with_status_code(200);
-                            let _ = request.respond(response);
-                        }
-                        Err(mpsc::TrySendError::Full(_)) => {
-                            health_clone
-                                .store(ComponentHealth::Degraded.as_repr(), Ordering::Relaxed);
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(
-                                    "too many requests: pipeline backpressure",
-                                )
-                                .with_status_code(429),
-                            );
-                        }
-                        Err(mpsc::TrySendError::Disconnected(_)) => {
-                            if is_running_clone.load(Ordering::Relaxed) {
-                                health_clone
-                                    .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
-                            }
-                            let _ = request.respond(
-                                tiny_http::Response::from_string(
-                                    "service unavailable: pipeline disconnected",
-                                )
-                                .with_status_code(503),
-                            );
-                        }
-                    }
-                }
+                });
             })
             .map_err(io::Error::other)?;
 
@@ -284,8 +291,7 @@ impl OtlpReceiverInput {
             name: name.into(),
             rx: Some(rx),
             addr: bound_addr,
-            server,
-            handle: Some(handle),
+            background_task: BackgroundHttpTask::new_axum(shutdown_tx, handle),
             is_running,
             health,
         })
@@ -303,10 +309,6 @@ impl Drop for OtlpReceiverInput {
             .store(ComponentHealth::Stopping.as_repr(), Ordering::Relaxed);
         self.is_running.store(false, Ordering::Relaxed);
         self.rx.take();
-        self.server.unblock();
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
         self.health
             .store(ComponentHealth::Stopped.as_repr(), Ordering::Relaxed);
     }
@@ -314,21 +316,10 @@ impl Drop for OtlpReceiverInput {
 
 impl InputSource for OtlpReceiverInput {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
-        let mut all = Vec::new();
-
-        // Drain all available decoded batches.
-        while let Ok(data) = self.rx.as_ref().expect("rx is Some until drop").try_recv() {
-            all.extend_from_slice(&data);
-        }
-
-        if all.is_empty() {
-            Ok(vec![])
-        } else {
-            Ok(vec![InputEvent::Data {
-                bytes: all,
-                source_id: None,
-            }])
-        }
+        let Some(rx) = self.rx.as_ref() else {
+            return Ok(vec![]);
+        };
+        Ok(drain_receiver_payloads(rx, MAX_DRAINED_PAYLOADS_PER_POLL))
     }
 
     fn name(&self) -> &str {
@@ -337,12 +328,7 @@ impl InputSource for OtlpReceiverInput {
 
     fn health(&self) -> ComponentHealth {
         let stored = ComponentHealth::from_repr(self.health.load(Ordering::Relaxed));
-        if self
-            .handle
-            .as_ref()
-            .is_some_and(std::thread::JoinHandle::is_finished)
-            && self.is_running.load(Ordering::Relaxed)
-        {
+        if self.background_task.is_finished() && self.is_running.load(Ordering::Relaxed) {
             ComponentHealth::Failed
         } else {
             stored
@@ -350,1682 +336,163 @@ impl InputSource for OtlpReceiverInput {
     }
 }
 
-/// Decode an ExportLogsServiceRequest from JSON body and produce
-/// newline-delimited JSON lines. Parses the OTLP JSON structure directly
-/// since the protobuf types don't derive serde traits.
-fn decode_otlp_logs_json(body: &[u8]) -> Result<Vec<u8>, InputError> {
-    if body.is_empty() {
-        return Ok(Vec::new());
-    }
+/// Decode OTLP protobuf bytes into a structured `RecordBatch`.
+///
+/// This performs receiver-side protobuf decode plus batch materialization
+/// without HTTP transport overhead. Resource attributes are materialized with
+/// [`logfwd_types::field_names::DEFAULT_RESOURCE_PREFIX`].
+pub fn decode_protobuf_to_batch(body: &[u8]) -> Result<RecordBatch, InputError> {
+    decode_otlp_logs_to_batch(body)
+}
 
-    let root: serde_json::Value = sonic_rs::from_slice(body)
-        .map_err(|e| InputError::Receiver(format!("invalid JSON: {e}")))?;
+/// Decode OTLP protobuf bytes through the experimental projection path.
+///
+/// Supported primitive fields are projected directly into Arrow string views
+/// backed by `body`; unsupported but valid OTLP value shapes fall back to the
+/// prost reference decoder.
+#[cfg(any(feature = "otlp-research", test))]
+#[doc(hidden)]
+pub fn decode_protobuf_bytes_to_batch_projected_experimental(
+    body: Bytes,
+) -> Result<RecordBatch, InputError> {
+    decode_otlp_protobuf_bytes_with_mode(
+        body,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+        OtlpProtobufDecodeMode::ProjectedFallback,
+    )
+}
 
-    let resource_logs = match root.get("resourceLogs").and_then(|v| v.as_array()) {
-        Some(arr) => arr,
-        None => {
-            // An object that parses as valid JSON but lacks `resourceLogs` is
-            // not a valid ExportLogsServiceRequest. Return 400 so the client
-            // knows its payload was rejected rather than silently discarding it.
-            return Err(InputError::Receiver(
-                "missing required field 'resourceLogs' in OTLP JSON payload".to_string(),
-            ));
-        }
-    };
+/// Decode OTLP protobuf bytes through the projection path without prost fallback.
+#[cfg(any(feature = "otlp-research", test))]
+#[doc(hidden)]
+pub fn decode_protobuf_bytes_to_batch_projected_only_experimental(
+    body: Bytes,
+) -> Result<RecordBatch, InputError> {
+    decode_otlp_protobuf_bytes_with_mode(
+        body,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+        OtlpProtobufDecodeMode::ProjectedOnly,
+    )
+}
 
-    let mut out = Vec::new();
+/// Decode borrowed OTLP protobuf bytes through the detached projection path.
+///
+/// This is useful as a benchmark control for measuring wire projection without
+/// Arrow views attached to the request body.
+#[cfg(any(feature = "otlp-research", test))]
+#[doc(hidden)]
+pub fn decode_protobuf_to_batch_projected_detached_experimental(
+    body: &[u8],
+) -> Result<RecordBatch, InputError> {
+    projection::decode_projected_otlp_logs(body, field_names::DEFAULT_RESOURCE_PREFIX)
+        .map_err(|err| InputError::Receiver(err.to_string()))
+}
 
-    for rl in resource_logs {
-        // Collect resource attributes.
-        let mut resource_attrs: Vec<(&str, String)> = Vec::new();
-        if let Some(attrs) = rl
-            .get("resource")
-            .and_then(|r| r.get("attributes"))
-            .and_then(|a| a.as_array())
-        {
-            for kv in attrs {
-                let Some(key) = kv.get("key").and_then(|k| k.as_str()) else {
-                    continue;
-                };
-                let Some(value) = kv.get("value") else {
-                    continue;
-                };
-                if let Some(value) = json_any_value_to_string(value)? {
-                    resource_attrs.push((key, value));
-                }
-            }
-        }
+/// Decode OTLP protobuf bytes through the prost reference path.
+#[cfg(any(feature = "otlp-research", test))]
+#[doc(hidden)]
+pub fn decode_protobuf_to_batch_prost_reference(body: &[u8]) -> Result<RecordBatch, InputError> {
+    decode_otlp_protobuf_with_prost(body, field_names::DEFAULT_RESOURCE_PREFIX)
+}
 
-        let scope_logs = match rl.get("scopeLogs").and_then(|v| v.as_array()) {
-            Some(arr) => arr,
-            None => continue,
+fn drain_receiver_payloads(
+    rx: &mpsc::Receiver<ReceiverPayload>,
+    max_drained_payloads: usize,
+) -> Vec<InputEvent> {
+    let mut events = Vec::with_capacity(max_drained_payloads);
+    let mut drained_payloads = 0usize;
+
+    while drained_payloads < max_drained_payloads {
+        let Ok(data) = rx.try_recv() else {
+            break;
         };
-
-        for sl in scope_logs {
-            let records = match sl.get("logRecords").and_then(|v| v.as_array()) {
-                Some(arr) => arr,
-                None => continue,
-            };
-
-            for record in records {
-                out.push(b'{');
-
-                if let Some(ts) = record.get("timeUnixNano") {
-                    let parsed = parse_protojson_u64(ts).ok_or_else(|| {
-                        InputError::Receiver(
-                            "invalid OTLP JSON timeUnixNano: not a valid uint64".into(),
-                        )
-                    })?;
-                    if parsed > 0 {
-                        write_json_key(&mut out, field_names::TIMESTAMP);
-                        write_u64_to_buf(&mut out, parsed);
-                        out.push(b',');
-                    }
-                }
-
-                if let Some(sev) = record.get("severityText").and_then(|v| v.as_str()) {
-                    if !sev.is_empty() {
-                        write_json_string_field(&mut out, field_names::SEVERITY, sev);
-                        out.push(b',');
-                    }
-                }
-
-                if let Some(body_val) = record.get("body")
-                    && let Some(body_str) = json_any_value_to_string(body_val)?
-                {
-                    write_json_string_field(&mut out, field_names::BODY, &body_str);
-                    out.push(b',');
-                }
-
-                if let Some(attrs) = record.get("attributes").and_then(|v| v.as_array()) {
-                    for kv in attrs {
-                        if let (Some(key), Some(val)) =
-                            (kv.get("key").and_then(|k| k.as_str()), kv.get("value"))
-                            && write_json_any_value_field_from_json(&mut out, key, val)?
-                        {
-                            out.push(b',');
-                        }
-                    }
-                }
-
-                for (key, value) in &resource_attrs {
-                    write_json_string_field(&mut out, key, value);
-                    out.push(b',');
-                }
-
-                if let Some(tid) = record.get("traceId").and_then(|v| v.as_str()) {
-                    if !tid.is_empty() {
-                        write_json_string_field(&mut out, field_names::TRACE_ID, tid);
-                        out.push(b',');
-                    }
-                }
-                if let Some(sid) = record.get("spanId").and_then(|v| v.as_str()) {
-                    if !sid.is_empty() {
-                        write_json_string_field(&mut out, field_names::SPAN_ID, sid);
-                        out.push(b',');
-                    }
-                }
-
-                if out.last() == Some(&b',') {
-                    out.pop();
-                }
-                out.extend_from_slice(b"}\n");
-            }
-        }
+        drained_payloads += 1;
+        events.push(InputEvent::Batch {
+            batch: data.batch,
+            source_id: None,
+            accounted_bytes: data.accounted_bytes,
+        });
     }
 
-    Ok(out)
-}
-
-/// Extract a scalar OTLP JSON AnyValue as an owned string.
-/// Returns `Ok(None)` when the value is not a supported scalar string representation.
-fn json_any_value_to_string(v: &serde_json::Value) -> Result<Option<String>, InputError> {
-    if let Some(s) = v.get("stringValue").and_then(|v| v.as_str()) {
-        return Ok(Some(s.to_string()));
-    }
-    if let Some(i) = v.get("intValue") {
-        let parsed = parse_protojson_i64(i)
-            .ok_or_else(|| InputError::Receiver("invalid OTLP JSON intValue".into()))?;
-        return Ok(Some(parsed.to_string()));
-    }
-    if let Some(dv) = v.get("doubleValue") {
-        let parsed = parse_protojson_f64(dv)
-            .ok_or_else(|| InputError::Receiver("invalid OTLP JSON doubleValue".into()))?;
-        return Ok(Some(parsed.to_string()));
-    }
-    if let Some(b) = v.get("boolValue").and_then(serde_json::Value::as_bool) {
-        return Ok(Some(if b { "true" } else { "false" }.to_string()));
-    }
-    if let Some(bytes) = v.get("bytesValue").and_then(|v| v.as_str()) {
-        let decoded = decode_protojson_bytes(bytes)
-            .map_err(|e| InputError::Receiver(format!("invalid OTLP JSON bytesValue: {e}")))?;
-        return Ok(Some(hex::encode(&decoded)));
-    }
-    Ok(None)
-}
-
-/// Write an OTLP JSON AnyValue as a JSON field preserving primitive types.
-fn write_json_any_value_field_from_json(
-    out: &mut Vec<u8>,
-    key: &str,
-    value: &serde_json::Value,
-) -> Result<bool, InputError> {
-    if let Some(i) = value.get("intValue") {
-        write_json_key(out, key);
-        let parsed = parse_protojson_i64(i).ok_or_else(|| {
-            InputError::Receiver(format!(
-                "invalid OTLP JSON intValue for key {key}: not a valid integer"
-            ))
-        })?;
-        write_i64_to_buf(out, parsed);
-        return Ok(true);
-    }
-
-    if let Some(dv) = value.get("doubleValue") {
-        let parsed = parse_protojson_f64(dv).ok_or_else(|| {
-            InputError::Receiver(format!(
-                "invalid OTLP JSON doubleValue for key {key}: not a valid float"
-            ))
-        })?;
-        write_json_key(out, key);
-        write_f64_to_buf(out, parsed);
-        return Ok(true);
-    }
-
-    if let Some(b) = value.get("boolValue").and_then(serde_json::Value::as_bool) {
-        write_json_key(out, key);
-        if b {
-            out.extend_from_slice(b"true");
-        } else {
-            out.extend_from_slice(b"false");
-        }
-        return Ok(true);
-    }
-
-    if let Some(s) = json_any_value_to_string(value)? {
-        write_json_string_field(out, key, &s);
-        return Ok(true);
-    }
-
-    Ok(false)
-}
-
-/// Decode an ExportLogsServiceRequest protobuf and produce newline-delimited
-/// JSON. Each LogRecord becomes one JSON line with fields that the scanner
-/// can extract into Arrow columns.
-fn decode_otlp_logs(body: &[u8]) -> Result<Vec<u8>, InputError> {
-    use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
-
-    if body.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let request = ExportLogsServiceRequest::decode(body)
-        .map_err(|e| InputError::Receiver(format!("invalid protobuf: {e}")))?;
-
-    Ok(convert_request_to_json_lines(&request))
-}
-
-/// Shared conversion: ExportLogsServiceRequest -> newline-delimited JSON bytes.
-fn convert_request_to_json_lines(
-    request: &opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest,
-) -> Vec<u8> {
-    let mut out = Vec::new();
-
-    for resource_logs in &request.resource_logs {
-        // Extract resource attributes (e.g., service.name).
-        let mut resource_attrs: Vec<(&str, String)> = Vec::new();
-        if let Some(ref resource) = resource_logs.resource {
-            for attr in &resource.attributes {
-                if let Some(ref value) = attr.value {
-                    if let Some(value) = any_value_to_string(value) {
-                        resource_attrs.push((&attr.key, value));
-                    }
-                }
-            }
-        }
-
-        for scope_logs in &resource_logs.scope_logs {
-            for record in &scope_logs.log_records {
-                out.push(b'{');
-
-                // timestamp (write directly without allocation)
-                if record.time_unix_nano > 0 {
-                    out.push(b'"');
-                    out.extend_from_slice(field_names::TIMESTAMP.as_bytes());
-                    out.extend_from_slice(b"\":");
-                    write_u64_to_buf(&mut out, record.time_unix_nano);
-                    out.push(b',');
-                }
-
-                // severity
-                if !record.severity_text.is_empty() {
-                    write_json_string_field(&mut out, field_names::SEVERITY, &record.severity_text);
-                    out.push(b',');
-                }
-
-                // body
-                if let Some(ref body_val) = record.body {
-                    if let Some(body_str) = any_value_to_string(body_val) {
-                        write_json_string_field(&mut out, field_names::BODY, &body_str);
-                        out.push(b',');
-                    }
-                }
-
-                // log record attributes
-                for attr in &record.attributes {
-                    if let Some(ref value) = attr.value {
-                        if write_json_any_value(&mut out, &attr.key, value) {
-                            out.push(b',');
-                        }
-                    }
-                }
-
-                // resource attributes
-                for (key, value) in &resource_attrs {
-                    write_json_string_field(&mut out, key, value);
-                    out.push(b',');
-                }
-
-                // trace context (write hex directly to avoid allocation)
-                if !record.trace_id.is_empty() {
-                    out.push(b'"');
-                    out.extend_from_slice(field_names::TRACE_ID.as_bytes());
-                    out.extend_from_slice(b"\":\"");
-                    write_hex_to_buf(&mut out, &record.trace_id);
-                    out.extend_from_slice(b"\",");
-                }
-                if !record.span_id.is_empty() {
-                    out.push(b'"');
-                    out.extend_from_slice(field_names::SPAN_ID.as_bytes());
-                    out.extend_from_slice(b"\":\"");
-                    write_hex_to_buf(&mut out, &record.span_id);
-                    out.extend_from_slice(b"\",");
-                }
-
-                // Remove trailing comma.
-                if out.last() == Some(&b',') {
-                    out.pop();
-                }
-
-                out.extend_from_slice(b"}\n");
-            }
-        }
-    }
-
-    out
-}
-
-fn any_value_to_string(v: &AnyValue) -> Option<String> {
-    match &v.value {
-        Some(Value::StringValue(s)) => Some(s.clone()),
-        Some(Value::IntValue(i)) => Some(i.to_string()),
-        Some(Value::DoubleValue(d)) => Some(d.to_string()),
-        Some(Value::BoolValue(b)) => Some(b.to_string()),
-        Some(Value::BytesValue(b)) => Some(hex::encode(b)),
-        _ => None,
-    }
-}
-
-fn parse_protojson_i64(value: &serde_json::Value) -> Option<i64> {
-    if let Some(n) = value.as_i64() {
-        return Some(n);
-    }
-    if let Some(n) = value.as_u64() {
-        return i64::try_from(n).ok();
-    }
-    if let Some(n) = value.as_number() {
-        return parse_protojson_i64_str(&n.to_string());
-    }
-    if let Some(s) = value.as_str() {
-        return parse_protojson_i64_str(s);
-    }
-    None
-}
-
-fn parse_protojson_u64(value: &serde_json::Value) -> Option<u64> {
-    if let Some(n) = value.as_u64() {
-        return Some(n);
-    }
-    if let Some(s) = value.as_str() {
-        return parse_protojson_u64_str(s);
-    }
-    if let Some(n) = value.as_number() {
-        return parse_protojson_u64_str(&n.to_string());
-    }
-    None
-}
-
-fn parse_protojson_f64(value: &serde_json::Value) -> Option<f64> {
-    if let Some(n) = value.as_f64() {
-        return Some(n);
-    }
-    if let Some(s) = value.as_str() {
-        return match s {
-            "NaN" => Some(f64::NAN),
-            "Infinity" => Some(f64::INFINITY),
-            "-Infinity" => Some(f64::NEG_INFINITY),
-            _ => s.parse::<f64>().ok(),
-        };
-    }
-    None
-}
-
-fn parse_protojson_i64_str(s: &str) -> Option<i64> {
-    let (negative, digits) = normalize_protojson_integral_digits(s)?;
-    let magnitude = digits.parse::<u64>().ok()?;
-    if negative {
-        let signed = i128::from(magnitude).checked_neg()?;
-        i64::try_from(signed).ok()
-    } else {
-        i64::try_from(magnitude).ok()
-    }
-}
-
-fn parse_protojson_u64_str(s: &str) -> Option<u64> {
-    let (negative, digits) = normalize_protojson_integral_digits(s)?;
-    if negative {
-        return None;
-    }
-    digits.parse::<u64>().ok()
-}
-
-fn normalize_protojson_integral_digits(s: &str) -> Option<(bool, String)> {
-    const MAX_INTEGER_DECIMAL_DIGITS: usize = 20;
-
-    let s = s.trim();
-    if s.is_empty() {
-        return None;
-    }
-
-    let (negative, unsigned) = match s.as_bytes()[0] {
-        b'+' => (false, &s[1..]),
-        b'-' => (true, &s[1..]),
-        _ => (false, s),
-    };
-    if unsigned.is_empty() {
-        return None;
-    }
-
-    let (mantissa, exponent) = match unsigned.find(['e', 'E']) {
-        Some(idx) => (&unsigned[..idx], unsigned[idx + 1..].parse::<i32>().ok()?),
-        None => (unsigned, 0),
-    };
-
-    let (int_part, frac_part) = match mantissa.split_once('.') {
-        Some((int_part, frac_part)) => (int_part, frac_part),
-        None => (mantissa, ""),
-    };
-    if int_part.is_empty() && frac_part.is_empty() {
-        return None;
-    }
-    if !int_part.bytes().all(|b| b.is_ascii_digit())
-        || !frac_part.bytes().all(|b| b.is_ascii_digit())
-    {
-        return None;
-    }
-
-    let mut digits = String::with_capacity(int_part.len() + frac_part.len());
-    digits.push_str(int_part);
-    digits.push_str(frac_part);
-    if digits.is_empty() {
-        return None;
-    }
-    if digits.bytes().all(|b| b == b'0') {
-        return Some((false, "0".to_string()));
-    }
-
-    let fractional_digits = i32::try_from(frac_part.len()).ok()?;
-    let effective_exponent = exponent.checked_sub(fractional_digits)?;
-
-    if effective_exponent >= 0 {
-        let zeros = usize::try_from(effective_exponent).ok()?;
-        let total_len = digits.len().checked_add(zeros)?;
-        if total_len > MAX_INTEGER_DECIMAL_DIGITS {
-            return None;
-        }
-        digits.extend(std::iter::repeat_n('0', zeros));
-    } else {
-        let trim = usize::try_from(effective_exponent.checked_neg()?).ok()?;
-        if trim > digits.len() {
-            return None;
-        }
-        if !digits[digits.len() - trim..].bytes().all(|b| b == b'0') {
-            return None;
-        }
-        digits.truncate(digits.len() - trim);
-    }
-
-    let digits = digits.trim_start_matches('0');
-    if digits.is_empty() {
-        return Some((false, "0".to_string()));
-    }
-
-    Some((negative, digits.to_string()))
-}
-
-fn decode_protojson_bytes(value: &str) -> Result<Vec<u8>, base64::DecodeError> {
-    use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
-
-    STANDARD
-        .decode(value)
-        .or_else(|_| STANDARD_NO_PAD.decode(value))
-        .or_else(|_| URL_SAFE.decode(value))
-        .or_else(|_| URL_SAFE_NO_PAD.decode(value))
-}
-
-fn write_json_any_value(out: &mut Vec<u8>, key: &str, v: &AnyValue) -> bool {
-    match &v.value {
-        Some(Value::IntValue(i)) => {
-            write_json_key(out, key);
-            write_i64_to_buf(out, *i);
-            true
-        }
-        Some(Value::DoubleValue(d)) => {
-            write_json_key(out, key);
-            write_f64_to_buf(out, *d);
-            true
-        }
-        Some(Value::BoolValue(b)) => {
-            write_json_key(out, key);
-            out.extend_from_slice(if *b { b"true" } else { b"false" });
-            true
-        }
-        Some(Value::StringValue(s)) => {
-            write_json_string_field(out, key, s);
-            true
-        }
-        Some(Value::BytesValue(bytes)) => {
-            write_json_key(out, key);
-            out.push(b'"');
-            write_hex_to_buf(out, bytes);
-            out.push(b'"');
-            true
-        }
-        _ => false,
-    }
-}
-
-/// Write i64 to buffer without allocation using itoa algorithm.
-#[inline]
-fn write_i64_to_buf(out: &mut Vec<u8>, mut n: i64) {
-    if n == 0 {
-        out.push(b'0');
-        return;
-    }
-
-    if n < 0 {
-        out.push(b'-');
-        // Handle i64::MIN specially to avoid overflow
-        if n == i64::MIN {
-            out.extend_from_slice(b"9223372036854775808");
-            return;
-        }
-        n = -n;
-    }
-
-    // Count digits
-    let mut temp = n;
-    let mut digits = 0;
-    while temp > 0 {
-        temp /= 10;
-        digits += 1;
-    }
-
-    // Reserve space and write digits in reverse
-    let start = out.len();
-    out.resize(start + digits, 0);
-    let mut pos = start + digits - 1;
-    while n > 0 {
-        out[pos] = b'0' + (n % 10) as u8;
-        n /= 10;
-        pos = pos.wrapping_sub(1);
-    }
-}
-
-/// Write u64 to buffer without allocation using itoa algorithm.
-#[inline]
-fn write_u64_to_buf(out: &mut Vec<u8>, mut n: u64) {
-    if n == 0 {
-        out.push(b'0');
-        return;
-    }
-
-    // Count digits
-    let mut temp = n;
-    let mut digits = 0;
-    while temp > 0 {
-        temp /= 10;
-        digits += 1;
-    }
-
-    // Reserve space and write digits in reverse
-    let start = out.len();
-    out.resize(start + digits, 0);
-    let mut pos = start + digits - 1;
-    while n > 0 {
-        out[pos] = b'0' + (n % 10) as u8;
-        n /= 10;
-        pos = pos.wrapping_sub(1);
-    }
-}
-
-/// Write f64 to buffer without allocation using ryu algorithm.
-#[inline]
-fn write_f64_to_buf(out: &mut Vec<u8>, d: f64) {
-    use std::io::Write;
-    if !d.is_finite() {
-        out.extend_from_slice(b"null");
-        return;
-    }
-    // Use ryu for optimal float formatting (available in std)
-    let _ = write!(out, "{}", d);
-}
-
-fn write_json_string_field(out: &mut Vec<u8>, key: &str, value: &str) {
-    write_json_key(out, key);
-    write_json_quoted_string(out, value);
-}
-
-const HEX_DIGITS: [u8; 16] = *b"0123456789abcdef";
-
-fn write_json_key(out: &mut Vec<u8>, key: &str) {
-    write_json_quoted_string(out, key);
-    out.push(b':');
-}
-
-fn write_json_quoted_string(out: &mut Vec<u8>, value: &str) {
-    out.push(b'"');
-    write_json_escaped_string_contents(out, value);
-    out.push(b'"');
-}
-
-fn write_json_escaped_string_contents(out: &mut Vec<u8>, value: &str) {
-    // JSON escape per RFC 8259: all control chars (0x00-0x1f) must be escaped.
-    for &b in value.as_bytes() {
-        match b {
-            b'"' => out.extend_from_slice(b"\\\""),
-            b'\\' => out.extend_from_slice(b"\\\\"),
-            b'\n' => out.extend_from_slice(b"\\n"),
-            b'\r' => out.extend_from_slice(b"\\r"),
-            b'\t' => out.extend_from_slice(b"\\t"),
-            0x00..=0x1f => {
-                // Escape remaining control chars as \u00XX.
-                out.extend_from_slice(b"\\u00");
-                out.push(HEX_DIGITS[(b >> 4) as usize]);
-                out.push(HEX_DIGITS[(b & 0x0f) as usize]);
-            }
-            _ => out.push(b),
-        }
-    }
-}
-
-/// Write hex-encoded bytes directly to output buffer (zero allocation).
-fn write_hex_to_buf(out: &mut Vec<u8>, bytes: &[u8]) {
-    const HEX_TABLE: &[u8; 16] = b"0123456789abcdef";
-    for &b in bytes {
-        out.push(HEX_TABLE[(b >> 4) as usize]);
-        out.push(HEX_TABLE[(b & 0xf) as usize]);
-    }
-}
-
-/// Minimal hex encoding (avoid adding the `hex` crate).
-/// Only used in any_value_to_string for BytesValue (rare case).
-mod hex {
-    pub fn encode(bytes: &[u8]) -> String {
-        const HEX_TABLE: &[u8; 16] = b"0123456789abcdef";
-        let mut s = String::with_capacity(bytes.len() * 2);
-        for &b in bytes {
-            s.push(HEX_TABLE[(b >> 4) as usize] as char);
-            s.push(HEX_TABLE[(b & 0xf) as usize] as char);
-        }
-        s
-    }
+    events
 }
 
 #[cfg(test)]
-mod tests {
+mod poll_tests {
     use super::*;
-    use opentelemetry_proto::tonic::{
-        collector::logs::v1::ExportLogsServiceRequest,
-        common::v1::{AnyValue, KeyValue, any_value::Value},
-        logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
-        resource::v1::Resource,
-    };
-    use prost::Message;
+    use arrow::array::Int64Array;
+    use arrow::datatypes::{DataType, Field, Schema};
 
-    fn make_test_request() -> Vec<u8> {
-        let request = ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                scope_logs: vec![ScopeLogs {
-                    log_records: vec![
-                        LogRecord {
-                            time_unix_nano: 1_705_314_600_000_000_000,
-                            severity_text: "INFO".into(),
-                            body: Some(AnyValue {
-                                value: Some(Value::StringValue("hello world".into())),
-                            }),
-                            attributes: vec![
-                                KeyValue {
-                                    key: "service".into(),
-                                    value: Some(AnyValue {
-                                        value: Some(Value::StringValue("myapp".into())),
-                                    }),
-                                },
-                                KeyValue {
-                                    key: "payload".into(),
-                                    value: Some(AnyValue {
-                                        value: Some(Value::BytesValue(vec![
-                                            0x01, 0x02, 0x03, 0x04,
-                                        ])),
-                                    }),
-                                },
-                            ],
-                            ..Default::default()
-                        },
-                        LogRecord {
-                            severity_text: "ERROR".into(),
-                            body: Some(AnyValue {
-                                value: Some(Value::StringValue("something broke".into())),
-                            }),
-                            attributes: vec![KeyValue {
-                                key: "status".into(),
-                                value: Some(AnyValue {
-                                    value: Some(Value::IntValue(500)),
-                                }),
-                            }],
-                            ..Default::default()
-                        },
-                    ],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        };
-        request.encode_to_vec()
+    fn make_batch(value: i64) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![value]))])
+            .expect("record batch should build")
     }
 
     #[test]
-    fn decodes_otlp_to_json_lines() {
-        let body = make_test_request();
-        let json = decode_otlp_logs(&body).unwrap();
-        let text = String::from_utf8(json).unwrap();
-        let lines: Vec<&str> = text.lines().collect();
-
-        assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains("\"level\":\"INFO\""), "got: {}", lines[0]);
-        assert!(
-            lines[0].contains("\"message\":\"hello world\""),
-            "got: {}",
-            lines[0]
-        );
-        assert!(
-            lines[0].contains("\"service\":\"myapp\""),
-            "got: {}",
-            lines[0]
-        );
-        assert!(
-            lines[1].contains("\"level\":\"ERROR\""),
-            "got: {}",
-            lines[1]
-        );
-        assert!(lines[1].contains("\"status\":500"), "got: {}", lines[1]);
-    }
-
-    /// Contract test: protobuf and JSON OTLP inputs that represent the same
-    /// records must produce the same semantic JSON-line output.
-    #[test]
-    fn protobuf_and_json_inputs_match_semantics() {
-        let protobuf_lines = decode_otlp_logs(&make_test_request()).unwrap();
-
-        let json_body = r#"{
-            "resourceLogs": [{
-                "scopeLogs": [{
-                    "logRecords": [
-                        {
-                            "timeUnixNano": "1705314600000000000",
-                            "severityText": "INFO",
-                            "body": {"stringValue": "hello world"},
-                            "attributes": [
-                                {
-                                    "key": "service",
-                                    "value": {"stringValue": "myapp"}
-                                },
-                                {
-                                    "key": "payload",
-                                    "value": {"bytesValue": "AQIDBA=="}
-                                }
-                            ]
-                        },
-                        {
-                            "severityText": "ERROR",
-                            "body": {"stringValue": "something broke"},
-                            "attributes": [{
-                                "key": "status",
-                                "value": {"intValue": "500"}
-                            }]
-                        }
-                    ]
-                }]
-            }]
-        }"#;
-        let json_lines = decode_otlp_logs_json(json_body.as_bytes()).unwrap();
-
-        let parse = |lines: &[u8]| -> Vec<serde_json::Value> {
-            String::from_utf8(lines.to_vec())
-                .unwrap()
-                .lines()
-                .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-                .collect()
-        };
-
-        let left = parse(&protobuf_lines);
-        let right = parse(&json_lines);
-        assert_eq!(left.len(), 2, "expected 2 protobuf-decoded rows");
-        assert_eq!(right.len(), 2, "expected 2 json-decoded rows");
-
-        for (lhs, rhs) in left.iter().zip(right.iter()) {
-            assert_eq!(lhs.get("level"), rhs.get("level"));
-            assert_eq!(lhs.get("message"), rhs.get("message"));
-            assert_eq!(lhs.get("service"), rhs.get("service"));
-            assert_eq!(lhs.get("status"), rhs.get("status"));
-            assert_eq!(lhs.get("payload"), rhs.get("payload"));
-        }
-    }
-
-    #[test]
-    fn json_bytes_value_matches_protobuf_semantics() {
-        let request = ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                scope_logs: vec![ScopeLogs {
-                    log_records: vec![LogRecord {
-                        body: Some(AnyValue {
-                            value: Some(Value::BytesValue(vec![0x01, 0x02, 0x03, 0x04])),
-                        }),
-                        attributes: vec![KeyValue {
-                            key: "payload".into(),
-                            value: Some(AnyValue {
-                                value: Some(Value::BytesValue(vec![0x0a, 0x0b, 0x0c])),
-                            }),
-                        }],
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        };
-
-        let protobuf_lines = decode_otlp_logs(&request.encode_to_vec()).unwrap();
-        let json_lines = decode_otlp_logs_json(
-            br#"{
-                "resourceLogs": [{
-                    "scopeLogs": [{
-                        "logRecords": [{
-                            "body": {"bytesValue": "AQIDBA=="},
-                            "attributes": [{
-                                "key": "payload",
-                                "value": {"bytesValue": "CgsM"}
-                            }]
-                        }]
-                    }]
-                }]
-            }"#,
-        )
-        .unwrap();
-
-        let parse_first = |lines: &[u8]| -> serde_json::Value {
-            let line = String::from_utf8(lines.to_vec())
-                .unwrap()
-                .lines()
-                .next()
-                .expect("one decoded row")
-                .to_string();
-            serde_json::from_str(&line).unwrap()
-        };
-
-        let left = parse_first(&protobuf_lines);
-        let right = parse_first(&json_lines);
-
-        assert_eq!(
-            left.get("message").and_then(serde_json::Value::as_str),
-            Some("01020304")
-        );
-        assert_eq!(left.get("message"), right.get("message"));
-        assert_eq!(left.get("payload"), right.get("payload"));
-    }
-
-    #[test]
-    fn invalid_json_bytes_value_returns_error() {
-        let result = decode_otlp_logs_json(
-            br#"{
-                "resourceLogs": [{
-                    "scopeLogs": [{
-                        "logRecords": [{
-                            "attributes": [{
-                                "key": "payload",
-                                "value": {"bytesValue": "***not-base64***"}
-                            }]
-                        }]
-                    }]
-                }]
-            }"#,
-        );
-
-        assert!(result.is_err(), "invalid base64 bytesValue must fail");
-    }
-
-    #[test]
-    fn json_bytes_value_accepts_urlsafe_and_unpadded_base64() {
-        let json_lines = decode_otlp_logs_json(
-            br#"{
-                "resourceLogs": [{
-                    "scopeLogs": [{
-                        "logRecords": [{
-                            "attributes": [{
-                                "key": "payload",
-                                "value": {"bytesValue": "-_8"}
-                            }]
-                        }]
-                    }]
-                }]
-            }"#,
-        )
-        .expect("urlsafe unpadded base64 should decode");
-
-        let line = String::from_utf8(json_lines).expect("utf8");
-        let row: serde_json::Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
-        assert_eq!(
-            row.get("payload").and_then(serde_json::Value::as_str),
-            Some("fbff")
-        );
-    }
-
-    #[test]
-    fn invalid_json_int_value_returns_error() {
-        let result = decode_otlp_logs_json(
-            br#"{
-                "resourceLogs": [{
-                    "scopeLogs": [{
-                        "logRecords": [{
-                            "attributes": [{
-                                "key": "status",
-                                "value": {"intValue": true}
-                            }]
-                        }]
-                    }]
-                }]
-            }"#,
-        );
-
-        assert!(result.is_err(), "invalid intValue must fail");
-    }
-
-    #[test]
-    fn invalid_json_double_value_returns_error() {
-        let result = decode_otlp_logs_json(
-            br#"{
-                "resourceLogs": [{
-                    "scopeLogs": [{
-                        "logRecords": [{
-                            "attributes": [{
-                                "key": "latency_ratio",
-                                "value": {"doubleValue": "not-a-double"}
-                            }]
-                        }]
-                    }]
-                }]
-            }"#,
-        );
-
-        assert!(result.is_err(), "invalid doubleValue must fail");
-    }
-
-    #[test]
-    fn non_numeric_json_int_string_returns_error() {
-        let result = decode_otlp_logs_json(
-            br#"{
-                "resourceLogs": [{
-                    "scopeLogs": [{
-                        "logRecords": [{
-                            "attributes": [{
-                                "key": "status",
-                                "value": {"intValue": "notanumber"}
-                            }]
-                        }]
-                    }]
-                }]
-            }"#,
-        );
-
-        assert!(
-            result.is_err(),
-            "non-numeric intValue string must fail instead of emitting malformed JSON"
-        );
-    }
-
-    #[test]
-    fn exponent_form_json_int_value_is_accepted() {
-        let json_lines = decode_otlp_logs_json(
-            br#"{
-                "resourceLogs": [{
-                    "scopeLogs": [{
-                        "logRecords": [{
-                            "attributes": [{
-                                "key": "status",
-                                "value": {"intValue": "5e2"}
-                            }]
-                        }]
-                    }]
-                }]
-            }"#,
-        )
-        .expect("ProtoJSON exponent intValue should decode");
-
-        let line = String::from_utf8(json_lines).expect("utf8");
-        let row: serde_json::Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
-        assert_eq!(
-            row.get("status").and_then(serde_json::Value::as_i64),
-            Some(500)
-        );
-    }
-
-    #[test]
-    fn bare_exponent_json_int_value_is_accepted() {
-        let json_lines = decode_otlp_logs_json(
-            br#"{
-                "resourceLogs": [{
-                    "scopeLogs": [{
-                        "logRecords": [{
-                            "attributes": [{
-                                "key": "status",
-                                "value": {"intValue": 1e2}
-                            }]
-                        }]
-                    }]
-                }]
-            }"#,
-        )
-        .expect("bare exponent intValue should decode");
-
-        let line = String::from_utf8(json_lines).expect("utf8");
-        let row: serde_json::Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
-        assert_eq!(
-            row.get("status").and_then(serde_json::Value::as_i64),
-            Some(100)
-        );
-    }
-
-    #[test]
-    fn huge_positive_exponent_json_int_value_returns_error() {
-        let result = decode_otlp_logs_json(
-            br#"{
-                "resourceLogs": [{
-                    "scopeLogs": [{
-                        "logRecords": [{
-                            "attributes": [{
-                                "key": "status",
-                                "value": {"intValue": "1e2147483647"}
-                            }]
-                        }]
-                    }]
-                }]
-            }"#,
-        );
-
-        assert!(result.is_err(), "huge exponent intValue must fail");
-    }
-
-    #[test]
-    fn huge_negative_exponent_json_int_value_returns_error_without_panicking() {
-        let result = decode_otlp_logs_json(
-            br#"{
-                "resourceLogs": [{
-                    "scopeLogs": [{
-                        "logRecords": [{
-                            "attributes": [{
-                                "key": "status",
-                                "value": {"intValue": "1e-2147483648"}
-                            }]
-                        }]
-                    }]
-                }]
-            }"#,
-        );
-
-        assert!(
-            result.is_err(),
-            "extreme negative exponent intValue must fail without panicking"
-        );
-    }
-
-    #[test]
-    fn protojson_integral_normalization_accepts_integral_decimal_forms() {
-        assert_eq!(
-            normalize_protojson_integral_digits(" +001.2300e+2 "),
-            Some((false, "123".to_string()))
-        );
-        assert_eq!(
-            normalize_protojson_integral_digits("-9223372036854775808"),
-            Some((true, "9223372036854775808".to_string()))
-        );
-        assert_eq!(
-            normalize_protojson_integral_digits("0.000e+999999"),
-            Some((false, "0".to_string()))
-        );
-    }
-
-    #[test]
-    fn protojson_integral_normalization_rejects_non_integral_or_oversized_forms() {
-        assert_eq!(normalize_protojson_integral_digits("1.5"), None);
-        assert_eq!(normalize_protojson_integral_digits("1e-1"), None);
-        assert_eq!(normalize_protojson_integral_digits("1e20"), None);
-        assert_eq!(normalize_protojson_integral_digits("1e2147483647"), None);
-    }
-
-    #[test]
-    fn out_of_range_json_int_value_returns_error() {
-        let result = decode_otlp_logs_json(
-            br#"{
-                "resourceLogs": [{
-                    "scopeLogs": [{
-                        "logRecords": [{
-                            "attributes": [{
-                                "key": "status",
-                                "value": {"intValue": "9223372036854775808"}
-                            }]
-                        }]
-                    }]
-                }]
-            }"#,
-        );
-
-        assert!(result.is_err(), "out-of-range intValue must fail");
-    }
-
-    #[test]
-    fn invalid_json_time_unix_nano_returns_error() {
-        let result = decode_otlp_logs_json(
-            br#"{
-                "resourceLogs": [{
-                    "scopeLogs": [{
-                        "logRecords": [{
-                            "timeUnixNano": "not-a-number"
-                        }]
-                    }]
-                }]
-            }"#,
-        );
-
-        assert!(result.is_err(), "invalid timeUnixNano must fail");
-    }
-
-    #[test]
-    fn zero_json_time_unix_nano_is_accepted_and_omitted() {
-        let json_lines = decode_otlp_logs_json(
-            br#"{
-                "resourceLogs": [{
-                    "scopeLogs": [{
-                        "logRecords": [{
-                            "timeUnixNano": "0",
-                            "body": {"stringValue": "hello"}
-                        }]
-                    }]
-                }]
-            }"#,
-        )
-        .expect("zero timeUnixNano should be accepted");
-
-        let line = String::from_utf8(json_lines).expect("utf8");
-        let row: serde_json::Value = serde_json::from_str(line.lines().next().unwrap()).unwrap();
-        assert_eq!(
-            row.get(field_names::BODY)
-                .and_then(serde_json::Value::as_str),
-            Some("hello")
-        );
-        assert!(
-            row.get(field_names::TIMESTAMP).is_none(),
-            "unknown timestamp should be omitted, not emitted as 0"
-        );
-    }
-
-    #[test]
-    fn special_float_strings_match_protobuf_semantics() {
-        let request = ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                scope_logs: vec![ScopeLogs {
-                    log_records: vec![LogRecord {
-                        body: Some(AnyValue {
-                            value: Some(Value::DoubleValue(f64::NAN)),
-                        }),
-                        attributes: vec![
-                            KeyValue {
-                                key: "nan_attr".into(),
-                                value: Some(AnyValue {
-                                    value: Some(Value::DoubleValue(f64::NAN)),
-                                }),
-                            },
-                            KeyValue {
-                                key: "pos_inf".into(),
-                                value: Some(AnyValue {
-                                    value: Some(Value::DoubleValue(f64::INFINITY)),
-                                }),
-                            },
-                            KeyValue {
-                                key: "neg_inf".into(),
-                                value: Some(AnyValue {
-                                    value: Some(Value::DoubleValue(f64::NEG_INFINITY)),
-                                }),
-                            },
-                        ],
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        };
-
-        let protobuf_lines = decode_otlp_logs(&request.encode_to_vec()).unwrap();
-        let json_lines = decode_otlp_logs_json(
-            br#"{
-                "resourceLogs": [{
-                    "scopeLogs": [{
-                        "logRecords": [{
-                            "body": {"doubleValue": "NaN"},
-                            "attributes": [
-                                {"key": "nan_attr", "value": {"doubleValue": "NaN"}},
-                                {"key": "pos_inf", "value": {"doubleValue": "Infinity"}},
-                                {"key": "neg_inf", "value": {"doubleValue": "-Infinity"}}
-                            ]
-                        }]
-                    }]
-                }]
-            }"#,
-        )
-        .expect("special float string tokens should decode");
-
-        let parse_first = |lines: &[u8]| -> serde_json::Value {
-            let line = String::from_utf8(lines.to_vec())
-                .unwrap()
-                .lines()
-                .next()
-                .expect("one decoded row")
-                .to_string();
-            serde_json::from_str(&line).unwrap()
-        };
-
-        let protobuf_row = parse_first(&protobuf_lines);
-        let json_row = parse_first(&json_lines);
-        assert_eq!(protobuf_row, json_row);
-        assert_eq!(
-            json_row.get("message").and_then(serde_json::Value::as_str),
-            Some("NaN")
-        );
-        assert!(
-            json_row
-                .get("nan_attr")
-                .is_some_and(serde_json::Value::is_null)
-        );
-        assert!(
-            json_row
-                .get("pos_inf")
-                .is_some_and(serde_json::Value::is_null)
-        );
-        assert!(
-            json_row
-                .get("neg_inf")
-                .is_some_and(serde_json::Value::is_null)
-        );
-    }
-
-    #[test]
-    fn empty_string_body_and_unsupported_values_preserve_wire_equivalence() {
-        let request = ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                resource: Some(Resource {
-                    attributes: vec![
-                        KeyValue {
-                            key: "empty_resource".into(),
-                            value: Some(AnyValue {
-                                value: Some(Value::StringValue(String::new())),
-                            }),
-                        },
-                        KeyValue {
-                            key: "unsupported_resource".into(),
-                            value: Some(AnyValue {
-                                value: Some(Value::ArrayValue(Default::default())),
-                            }),
-                        },
-                    ],
-                    ..Default::default()
-                }),
-                scope_logs: vec![ScopeLogs {
-                    log_records: vec![LogRecord {
-                        body: Some(AnyValue {
-                            value: Some(Value::StringValue(String::new())),
-                        }),
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        };
-
-        let protobuf_lines = decode_otlp_logs(&request.encode_to_vec()).unwrap();
-        let json_lines = decode_otlp_logs_json(
-            br#"{
-                "resourceLogs": [{
-                    "resource": {
-                        "attributes": [
-                            {"key": "empty_resource", "value": {"stringValue": ""}},
-                            {"key": "unsupported_resource", "value": {"arrayValue": {"values": []}}}
-                        ]
-                    },
-                    "scopeLogs": [{
-                        "logRecords": [{
-                            "body": {"stringValue": ""}
-                        }]
-                    }]
-                }]
-            }"#,
-        )
-        .unwrap();
-
-        let parse_first = |lines: &[u8]| -> serde_json::Value {
-            let line = String::from_utf8(lines.to_vec())
-                .unwrap()
-                .lines()
-                .next()
-                .expect("one decoded row")
-                .to_string();
-            serde_json::from_str(&line).unwrap()
-        };
-
-        let protobuf_row = parse_first(&protobuf_lines);
-        let json_row = parse_first(&json_lines);
-        assert_eq!(protobuf_row, json_row);
-        assert_eq!(
-            protobuf_row
-                .get("empty_resource")
-                .and_then(serde_json::Value::as_str),
-            Some("")
-        );
-        assert!(protobuf_row.get("unsupported_resource").is_none());
-        assert_eq!(
-            protobuf_row
-                .get("message")
-                .and_then(serde_json::Value::as_str),
-            Some("")
-        );
-    }
-
-    #[test]
-    fn handles_invalid_protobuf() {
-        let result = decode_otlp_logs(b"not valid protobuf");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn handles_empty_body() {
-        let json = decode_otlp_logs(b"").unwrap();
-        assert!(json.is_empty());
-    }
-
-    #[test]
-    fn handles_request_with_no_log_records() {
-        let request = ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                scope_logs: vec![ScopeLogs {
-                    log_records: vec![],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        };
-        let body = request.encode_to_vec();
-        let json = decode_otlp_logs(&body).unwrap();
-        assert!(json.is_empty());
-    }
-
-    #[test]
-    fn handles_record_with_no_body() {
-        let request = ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                scope_logs: vec![ScopeLogs {
-                    log_records: vec![LogRecord {
-                        severity_text: "WARN".into(),
-                        body: None,
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-        };
-        let body = request.encode_to_vec();
-        let json = decode_otlp_logs(&body).unwrap();
-        let text = String::from_utf8(json).unwrap();
-        assert!(text.contains("\"level\":\"WARN\""));
-        assert!(!text.contains("\"message\""));
-    }
-
-    #[test]
-    fn hex_encode_empty() {
-        assert_eq!(hex::encode(&[]), "");
-    }
-
-    #[test]
-    fn json_escaping_control_chars() {
-        // Build a string with all control chars that are valid single-byte UTF-8 (0x00-0x1f all are).
-        let ctrl: String = (0u8..=0x1f).map(|b| b as char).collect();
-        let mut out = Vec::new();
-        write_json_string_field(&mut out, "k", &ctrl);
-        let text = String::from_utf8(out).unwrap();
-
-        // No raw control bytes should appear in the output.
-        for b in text.as_bytes() {
-            // The only bytes < 0x20 allowed are the literal `"` delimiters… but `"` is 0x22.
-            // So nothing < 0x20 should appear at all.
-            assert!(
-                *b >= 0x20,
-                "raw control byte 0x{:02x} found in output: {text}",
-                b
-            );
-        }
-
-        // Spot-check specific escapes.
-        assert!(text.contains(r"\u0000"), "NUL not escaped: {text}");
-        assert!(text.contains(r"\u0001"), "SOH not escaped: {text}");
-        assert!(text.contains(r"\u0008"), "BS not escaped: {text}");
-        assert!(text.contains(r"\t"), "TAB not escaped: {text}");
-        assert!(text.contains(r"\n"), "LF not escaped: {text}");
-        assert!(text.contains(r"\r"), "CR not escaped: {text}");
-        assert!(text.contains(r"\u000c"), "FF not escaped: {text}");
-    }
-
-    #[test]
-    fn json_escaping_unicode() {
-        // Multi-byte UTF-8 should pass through unchanged.
-        let input = "hello \u{00e9}\u{1f600} world \u{4e16}\u{754c}";
-        let mut out = Vec::new();
-        write_json_string_field(&mut out, "k", input);
-        let text = String::from_utf8(out).unwrap();
-
-        // The multi-byte chars should appear literally (not \u-escaped).
-        assert!(text.contains('\u{00e9}'), "e-acute missing: {text}");
-        assert!(text.contains('\u{1f600}'), "emoji missing: {text}");
-        assert!(text.contains('\u{4e16}'), "CJK char missing: {text}");
-
-        // Verify the whole thing is valid JSON.
-        let json_str = format!("{{{text}}}");
-        serde_json::from_str::<serde_json::Value>(&json_str)
-            .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json_str}"));
-    }
-
-    #[test]
-    fn json_escaping_key_chars() {
-        let mut out = Vec::new();
-        write_json_string_field(&mut out, "my\"key\\path", "value");
-        let text = String::from_utf8(out).unwrap();
-        let json_str = format!("{{{text}}}");
-        let parsed: serde_json::Value = serde_json::from_str(&json_str)
-            .unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json_str}"));
-        assert_eq!(parsed["my\"key\\path"], "value");
-    }
-
-    /// Regression test: when the pipeline channel is full the receiver must
-    /// return 429 rather than silently dropping the payload and returning 200.
-    #[test]
-    fn returns_429_when_channel_full_not_200() {
-        // Use a tiny channel so it fills up after 2 sends.
-        let mut receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 2).unwrap();
-        let addr = receiver.local_addr();
-        let url = format!("http://{addr}/v1/logs");
-
-        let body = serde_json::json!({
-            "resourceLogs": [{
-                "scopeLogs": [{
-                    "logRecords": [{"body": {"stringValue": "x"}}]
-                }]
-            }]
+    fn drain_respects_limit_and_leaves_remainder_queued() {
+        let (tx, rx) = mpsc::sync_channel(8);
+        tx.send(ReceiverPayload {
+            batch: make_batch(1),
+            accounted_bytes: 10,
         })
-        .to_string();
-
-        // Fill the channel (capacity = 2 so two sends succeed).
-        for i in 0..2 {
-            let resp = ureq::post(&url)
-                .header("content-type", "application/json")
-                .send(body.as_bytes())
-                .unwrap_or_else(|e| panic!("request {i} failed: {e}"));
-            assert_eq!(
-                resp.status(),
-                200,
-                "expected 200 while channel has capacity (request {i})"
-            );
-        }
-
-        // The channel is now full; the next request must not return 200.
-        let result = ureq::post(&url)
-            .header("content-type", "application/json")
-            .send(body.as_bytes());
-
-        let status: u16 = match result {
-            Ok(resp) => resp.status().as_u16(),
-            Err(ureq::Error::StatusCode(code)) => code,
-            Err(e) => panic!("unexpected error: {e}"),
-        };
-        assert_ne!(
-            status, 200,
-            "channel-full request must not return 200 (got {status})"
-        );
-        assert!(
-            status == 429 || status == 503,
-            "expected 429 or 503 for backpressure, got {status}"
-        );
-        assert_eq!(receiver.health(), ComponentHealth::Degraded);
-
-        // Drain the two buffered entries so the receiver is valid.
-        let _ = receiver.poll().unwrap();
-
-        let resp = ureq::post(&url)
-            .header("content-type", "application/json")
-            .send(body.as_bytes())
-            .expect("request after drain failed");
-        assert_eq!(resp.status().as_u16(), 200);
-        assert_eq!(receiver.health(), ComponentHealth::Healthy);
-    }
-
-    // Bug #686: /v1/logsFOO and /v1/logs/extra should return 404, not 200.
-    #[test]
-    fn path_prefix_variants_return_404() {
-        let receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
-        let port = receiver.local_addr().port();
-
-        for bad_path in &["/v1/logsFOO", "/v1/logs/extra", "/v1/logs2", "/v1/log"] {
-            let url = format!("http://127.0.0.1:{port}{bad_path}");
-            let status = match ureq::get(&url).call() {
-                Ok(r) => r.status().as_u16(),
-                Err(ureq::Error::StatusCode(c)) => c,
-                Err(e) => panic!("unexpected error for {bad_path}: {e}"),
-            };
-            assert_eq!(status, 404, "{bad_path} should return 404, got {status}");
-        }
-    }
-
-    // Bug #687: Content-Type: Application/JSON (capital A) should be treated as JSON.
-    #[test]
-    fn content_type_matching_is_case_insensitive() {
-        let mut receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
-        let port = receiver.local_addr().port();
-        let url = format!("http://127.0.0.1:{port}/v1/logs");
-
-        let body = serde_json::json!({
-            "resourceLogs": [{
-                "scopeLogs": [{
-                    "logRecords": [{"body": {"stringValue": "hello"}}]
-                }]
-            }]
+        .expect("send payload 1");
+        tx.send(ReceiverPayload {
+            batch: make_batch(2),
+            accounted_bytes: 20,
         })
-        .to_string();
+        .expect("send payload 2");
+        tx.send(ReceiverPayload {
+            batch: make_batch(3),
+            accounted_bytes: 30,
+        })
+        .expect("send payload 3");
 
-        let resp = ureq::post(&url)
-            .header("content-type", "Application/JSON")
-            .send(body.as_bytes())
-            .expect("request failed");
-        assert_eq!(
-            resp.status().as_u16(),
-            200,
-            "Application/JSON should be decoded as JSON and return 200"
-        );
+        let events = drain_receiver_payloads(&rx, 2);
+        assert_eq!(events.len(), 2);
 
-        std::thread::sleep(Duration::from_millis(50));
-        let data = receiver.poll().unwrap();
-        assert!(
-            !data.is_empty(),
-            "expected data from JSON body with mixed-case Content-Type"
-        );
+        let remainder = drain_receiver_payloads(&rx, 2);
+        assert_eq!(remainder.len(), 1, "one payload should remain queued");
     }
 
-    // Bug #723: wrong HTTP method should return 405, not 404.
     #[test]
-    fn wrong_http_method_returns_405() {
-        let receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
-        let port = receiver.local_addr().port();
-        let url = format!("http://127.0.0.1:{port}/v1/logs");
+    fn drain_preserves_batch_order_and_accounted_bytes() {
+        let (tx, rx) = mpsc::sync_channel(8);
+        tx.send(ReceiverPayload {
+            batch: make_batch(10),
+            accounted_bytes: 100,
+        })
+        .expect("send payload 1");
+        tx.send(ReceiverPayload {
+            batch: make_batch(20),
+            accounted_bytes: 200,
+        })
+        .expect("send payload 2");
 
-        for (method, result) in [
-            ("GET", ureq::get(&url).call()),
-            ("DELETE", ureq::delete(&url).call()),
-        ] {
-            let status: u16 = match result {
-                Ok(resp) => resp.status().as_u16(),
-                Err(ureq::Error::StatusCode(code)) => code,
-                Err(e) => panic!("unexpected error for {method}: {e}"),
-            };
-            assert_eq!(
-                status, 405,
-                "{method} /v1/logs should return 405 Method Not Allowed, got {status}"
-            );
+        let events = drain_receiver_payloads(&rx, 8);
+        assert_eq!(events.len(), 2);
+
+        match &events[0] {
+            InputEvent::Batch {
+                batch,
+                accounted_bytes,
+                ..
+            } => {
+                assert_eq!(batch.num_rows(), 1);
+                assert_eq!(*accounted_bytes, 100);
+            }
+            _ => panic!("expected first batch event"),
         }
-    }
-
-    // Bug #722: JSON body missing resourceLogs should return 400, not 200.
-    #[test]
-    fn missing_resource_logs_returns_400() {
-        let receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
-        let port = receiver.local_addr().port();
-        let url = format!("http://127.0.0.1:{port}/v1/logs");
-
-        let bad_bodies = [r"{}", r#"{"foo":"bar"}"#, r#"{"resourceLogs":null}"#];
-        for body in &bad_bodies {
-            let result = ureq::post(&url)
-                .header("content-type", "application/json")
-                .send(body.as_bytes());
-            let status: u16 = match result {
-                Ok(resp) => resp.status().as_u16(),
-                Err(ureq::Error::StatusCode(code)) => code,
-                Err(e) => panic!("unexpected error for body {body}: {e}"),
-            };
-            assert_eq!(status, 400, "body {body:?} should return 400, got {status}");
+        match &events[1] {
+            InputEvent::Batch {
+                batch,
+                accounted_bytes,
+                ..
+            } => {
+                assert_eq!(batch.num_rows(), 1);
+                assert_eq!(*accounted_bytes, 200);
+            }
+            _ => panic!("expected second batch event"),
         }
-    }
-
-    #[test]
-    fn receiver_shuts_down_cleanly_on_drop() {
-        // Create an input receiver binding to port 0 (OS assigns port).
-        let receiver =
-            OtlpReceiverInput::new("test-drop", "127.0.0.1:0").expect("should bind successfully");
-        let local_addr = receiver.local_addr();
-
-        // Drop the receiver. This should trigger `Drop`, set `is_running` to false,
-        // and join the thread, closing the HTTP server and releasing the port.
-        drop(receiver);
-
-        // Wait a tiny bit for the OS to actually release the port if needed,
-        // though join() in Drop should make it synchronous.
-        std::thread::sleep(Duration::from_millis(10));
-
-        // Try to bind to the exact same port again. If the previous receiver
-        // thread didn't shut down properly and leaked the server, this will fail
-        // with "Address already in use".
-        let _new_receiver = OtlpReceiverInput::new("test-drop-2", &local_addr.to_string())
-            .expect("should bind successfully to the exact same port");
-    }
-
-    #[test]
-    fn receiver_health_is_healthy_while_running() {
-        let receiver =
-            OtlpReceiverInput::new("test-health", "127.0.0.1:0").expect("should bind successfully");
-
-        assert_eq!(receiver.health(), ComponentHealth::Healthy);
-    }
-
-    #[test]
-    fn receiver_health_reports_stopping_when_shutdown_requested() {
-        let receiver = OtlpReceiverInput::new("test-health-stop", "127.0.0.1:0")
-            .expect("should bind successfully");
-        receiver.is_running.store(false, Ordering::Relaxed);
-        receiver
-            .health
-            .store(ComponentHealth::Stopping.as_repr(), Ordering::Relaxed);
-
-        assert_eq!(receiver.health(), ComponentHealth::Stopping);
-    }
-
-    #[test]
-    fn receiver_health_reports_failed_when_server_thread_exits() {
-        let mut receiver = OtlpReceiverInput::new("test-health-failed", "127.0.0.1:0")
-            .expect("should bind successfully");
-        receiver.handle = Some(std::thread::spawn(|| {}));
-        std::thread::sleep(Duration::from_millis(10));
-
-        assert_eq!(receiver.health(), ComponentHealth::Failed);
-    }
-
-    #[test]
-    fn receiver_health_reports_failed_when_pipeline_disconnects() {
-        let mut receiver =
-            OtlpReceiverInput::new_with_capacity("test-disconnect", "127.0.0.1:0", 16)
-                .expect("should bind successfully");
-        let port = receiver.local_addr().port();
-        let url = format!("http://127.0.0.1:{port}/v1/logs");
-        receiver.rx.take();
-
-        let status = match ureq::post(&url)
-            .header("content-type", "application/json")
-            .send(
-                br#"{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"body":{"stringValue":"hello"}}]}]}]}"#,
-            ) {
-            Ok(resp) => resp.status().as_u16(),
-            Err(ureq::Error::StatusCode(code)) => code,
-            Err(e) => panic!("unexpected error: {e}"),
-        };
-
-        assert_eq!(status, 503);
-        assert_eq!(receiver.health(), ComponentHealth::Failed);
-    }
-
-    // Valid OTLP JSON should still return 200 after the 400 fix.
-    #[test]
-    fn valid_otlp_json_returns_200() {
-        let receiver = OtlpReceiverInput::new_with_capacity("test", "127.0.0.1:0", 16).unwrap();
-        let port = receiver.local_addr().port();
-        let url = format!("http://127.0.0.1:{port}/v1/logs");
-
-        let valid_body = r#"{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"severityText":"INFO","body":{"stringValue":"hello"}}]}]}]}"#;
-        let result = ureq::post(&url)
-            .header("content-type", "application/json")
-            .send(valid_body.as_bytes());
-        let status: u16 = match result {
-            Ok(resp) => resp.status().as_u16(),
-            Err(ureq::Error::StatusCode(code)) => code,
-            Err(e) => panic!("unexpected error: {e}"),
-        };
-        assert_eq!(
-            status, 200,
-            "valid OTLP JSON should return 200, got {status}"
-        );
     }
 }

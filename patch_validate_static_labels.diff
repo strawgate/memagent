@@ -1,0 +1,42 @@
+<<<<<<< SEARCH
+                        if output.static_labels.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'static_labels' is only supported for loki outputs"
+                            )));
+                        }
+                        if output.label_columns.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'label_columns' is only supported for loki outputs"
+                            )));
+                        }
+                    } else if let Some(labels) = &output.static_labels {
+                        for (k, v) in labels {
+                            if k.trim().is_empty() || v.trim().is_empty() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': 'static_labels' keys and values must not be empty"
+                                )));
+                            }
+                        }
+                    }
+=======
+                        if output.static_labels.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'static_labels' is only supported for loki outputs"
+                            )));
+                        }
+                        if output.label_columns.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'label_columns' is only supported for loki outputs"
+                            )));
+                        }
+                    }
+                    if let Some(labels) = &output.static_labels {
+                        for (k, v) in labels {
+                            if k.trim().is_empty() || v.trim().is_empty() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': 'static_labels' keys and values must not be empty"
+                                )));
+                            }
+                        }
+                    }
+>>>>>>> REPLACE

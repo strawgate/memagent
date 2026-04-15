@@ -10,6 +10,11 @@ use logfwd_types::diagnostics::ComponentStats;
 
 pub mod generators;
 
+/// Re-export cardinality helpers from logfwd-io for backward compatibility.
+pub mod cardinality {
+    pub use logfwd_io::generator::cardinality::*;
+}
+
 // ---------------------------------------------------------------------------
 // Shared benchmark helpers
 // ---------------------------------------------------------------------------

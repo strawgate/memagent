@@ -12,14 +12,17 @@ pub struct FieldSpec {
     pub aliases: Vec<String>,
 }
 
-/// Controls which fields to extract and whether to keep _raw.
+/// Controls which fields to extract and whether to capture each full input line.
 pub struct ScanConfig {
     /// Fields to extract. Empty = extract all (SELECT *).
     pub wanted_fields: Vec<FieldSpec>,
     /// True if the query uses SELECT * (extract everything).
     pub extract_all: bool,
-    /// True if _raw column is needed.
-    pub keep_raw: bool,
+    /// Optional output field name that receives the full unparsed line.
+    ///
+    /// When `Some(name)`, the scanner appends the original line bytes into
+    /// column `name` for every row.
+    pub line_field_name: Option<String>,
     /// When true, validates that the input buffer is valid UTF-8 before scanning
     /// and panics with a descriptive message if it is not. Disabled by default
     /// for maximum throughput; enable when input provenance is untrusted.
@@ -31,13 +34,19 @@ impl Default for ScanConfig {
         ScanConfig {
             wanted_fields: vec![],
             extract_all: true,
-            keep_raw: false,
+            line_field_name: None,
             validate_utf8: false,
         }
     }
 }
 
 impl ScanConfig {
+    /// Returns true when scanner line capture is enabled.
+    #[inline]
+    pub fn captures_line(&self) -> bool {
+        self.line_field_name.is_some()
+    }
+
     /// Is this field name wanted?
     #[inline]
     pub fn is_wanted(&self, key: &[u8]) -> bool {
@@ -45,11 +54,11 @@ impl ScanConfig {
             return true;
         }
         for fs in &self.wanted_fields {
-            if key == fs.name.as_bytes() {
+            if key.eq_ignore_ascii_case(fs.name.as_bytes()) {
                 return true;
             }
             for a in &fs.aliases {
-                if key == a.as_bytes() {
+                if key.eq_ignore_ascii_case(a.as_bytes()) {
                     return true;
                 }
             }
@@ -111,6 +120,7 @@ pub fn parse_float_fast(bytes: &[u8]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
 
     #[test]
     fn test_parse_int_fast() {
@@ -131,6 +141,36 @@ mod tests {
     fn test_parse_float_fast() {
         assert!((parse_float_fast(b"3.25").unwrap() - 3.25).abs() < 1e-10);
         assert_eq!(parse_float_fast(b"abc"), None);
+    }
+
+    /// Regression test: is_wanted must return true when the JSON key differs
+    /// only in ASCII case from the configured field name.
+    ///
+    /// This covers the scenario where a SQL query references `Level` but the
+    /// JSON log line contains the key `level` (or any other case variant).
+    #[test]
+    fn test_is_wanted_case_insensitive() {
+        let config = ScanConfig {
+            wanted_fields: vec![FieldSpec {
+                name: "level".to_string(),
+                aliases: vec!["severity".to_string()],
+            }],
+            extract_all: false,
+            line_field_name: None,
+            validate_utf8: false,
+        };
+
+        // Exact match still works.
+        assert!(config.is_wanted(b"level"));
+        // Case-mismatched key must also match (the regression case).
+        assert!(config.is_wanted(b"Level"));
+        assert!(config.is_wanted(b"LEVEL"));
+        assert!(config.is_wanted(b"LeVeL"));
+        // Alias case-insensitive match.
+        assert!(config.is_wanted(b"Severity"));
+        assert!(config.is_wanted(b"SEVERITY"));
+        // Unrelated key must not match.
+        assert!(!config.is_wanted(b"message"));
     }
 }
 

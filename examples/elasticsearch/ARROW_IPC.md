@@ -56,7 +56,7 @@ output:
 
 Run logfwd:
 ```bash
-cargo run -p logfwd -- --config config.yaml
+cargo run -p logfwd -- run --config config.yaml
 ```
 
 ## Querying with Arrow IPC
@@ -67,7 +67,7 @@ cargo run -p logfwd -- --config config.yaml
 use std::sync::Arc;
 use logfwd_output::ElasticsearchSinkFactory;
 use logfwd_output::sink::SinkFactory;
-use logfwd_io::diagnostics::ComponentStats;
+use logfwd_types::diagnostics::ComponentStats;
 
 let factory = ElasticsearchSinkFactory::new(
     "query".into(),

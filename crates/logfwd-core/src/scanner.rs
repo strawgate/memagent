@@ -67,7 +67,7 @@ pub enum BuilderState {
 ///   within a batch (same key → same index). May create new columns.
 /// - `append_*_by_idx`: stores a typed value at the current row for the
 ///   given column index. Byte slices are borrowed from the input buffer.
-/// - `append_raw`: stores the entire unparsed line (if `keep_raw` is set).
+/// - `append_line`: stores the entire unparsed line (if line capture is enabled).
 /// - First-write-wins: if a key appears twice in one row, the first value
 ///   is kept and subsequent writes are silently ignored.
 ///
@@ -95,10 +95,12 @@ pub trait ScanBuilder {
     fn append_int_by_idx(&mut self, idx: usize, value: &[u8]);
     /// Append a float value (as raw ASCII) at the given column index.
     fn append_float_by_idx(&mut self, idx: usize, value: &[u8]);
+    /// Append a boolean value at the given column index.
+    fn append_bool_by_idx(&mut self, idx: usize, value: bool);
     /// Record a null value at the given column index.
     fn append_null_by_idx(&mut self, idx: usize);
-    /// Store the raw unparsed line (only called when `keep_raw` is set).
-    fn append_raw(&mut self, line: &[u8]);
+    /// Store the unparsed line (only called when line capture is enabled).
+    fn append_line(&mut self, line: &[u8]);
 }
 
 // ---------------------------------------------------------------------------
@@ -143,8 +145,8 @@ fn scan_line<B: ScanBuilder>(
     builder: &mut B,
 ) {
     builder.begin_row();
-    if config.keep_raw {
-        builder.append_raw(&buf[start..end]);
+    if config.captures_line() {
+        builder.append_line(&buf[start..end]);
     }
 
     let mut pos = skip_ws(buf, start, end);
@@ -199,35 +201,31 @@ fn scan_line<B: ScanBuilder>(
                 }
             }
             b't' | b'f' => {
-                let s = pos;
-                while pos < end
-                    && buf[pos] != b','
-                    && buf[pos] != b'}'
-                    && buf[pos] != b' '
-                    && buf[pos] != b'\t'
-                    && buf[pos] != b'\r'
-                {
-                    pos += 1;
-                }
-                if wanted {
-                    let idx = builder.resolve_field(key);
-                    builder.append_str_by_idx(idx, &buf[s..pos]);
+                if matches_json_literal(buf, pos, end, b"true") {
+                    if wanted {
+                        let idx = builder.resolve_field(key);
+                        builder.append_bool_by_idx(idx, true);
+                    }
+                    pos += 4;
+                } else if matches_json_literal(buf, pos, end, b"false") {
+                    if wanted {
+                        let idx = builder.resolve_field(key);
+                        builder.append_bool_by_idx(idx, false);
+                    }
+                    pos += 5;
+                } else {
+                    pos = skip_bare_value(buf, pos, end);
                 }
             }
             b'n' => {
-                // Scan past the null/identifier token to the next delimiter.
-                while pos < end
-                    && buf[pos] != b','
-                    && buf[pos] != b'}'
-                    && buf[pos] != b' '
-                    && buf[pos] != b'\t'
-                    && buf[pos] != b'\r'
-                {
-                    pos += 1;
-                }
-                if wanted {
-                    let idx = builder.resolve_field(key);
-                    builder.append_null_by_idx(idx);
+                if matches_json_literal(buf, pos, end, b"null") {
+                    if wanted {
+                        let idx = builder.resolve_field(key);
+                        builder.append_null_by_idx(idx);
+                    }
+                    pos += 4;
+                } else {
+                    pos = skip_bare_value(buf, pos, end);
                 }
             }
             _ => {
@@ -280,6 +278,33 @@ fn skip_ws(buf: &[u8], mut pos: usize, end: usize) -> usize {
     pos
 }
 
+#[inline(always)]
+fn skip_bare_value(buf: &[u8], mut pos: usize, end: usize) -> usize {
+    while pos < end && !is_json_delimiter(buf[pos]) {
+        pos += 1;
+    }
+    pos
+}
+
+#[inline(always)]
+fn matches_json_literal(buf: &[u8], pos: usize, end: usize, literal: &[u8]) -> bool {
+    let literal_end = match pos.checked_add(literal.len()) {
+        Some(v) => v,
+        None => return false,
+    };
+
+    if literal_end > end || &buf[pos..literal_end] != literal {
+        return false;
+    }
+
+    literal_end == end || is_json_delimiter(buf[literal_end])
+}
+
+#[inline(always)]
+fn is_json_delimiter(c: u8) -> bool {
+    c == b',' || c == b'}' || c == b']' || c == b' ' || c == b'\t' || c == b'\r' || c == b'\n'
+}
+
 #[cfg(kani)]
 mod verification {
     use super::*;
@@ -327,54 +352,162 @@ mod verification {
 mod kani_proofs {
     use super::BuilderState;
 
+    /// Operations for the Builder protocol.
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum BuilderOp {
+        BeginBatch,
+        BeginRow,
+        EndRow,
+        FinishBatch,
+        ResolveField,
+        Append,
+    }
+
+    impl BuilderOp {
+        fn from_u8(op: u8) -> Self {
+            match op % 6 {
+                0 => Self::BeginBatch,
+                1 => Self::BeginRow,
+                2 => Self::EndRow,
+                3 => Self::FinishBatch,
+                4 => Self::ResolveField,
+                5 => Self::Append,
+                _ => unreachable!(),
+            }
+        }
+    }
+
     /// Simulate a state transition. Returns `Some(next_state)` for valid
     /// transitions and `None` for invalid ones.
-    ///
-    /// Operations (op % 6):
-    ///   0 = begin_batch   (Idle → InBatch)
-    ///   1 = begin_row     (InBatch → InRow)
-    ///   2 = end_row       (InRow → InBatch)
-    ///   3 = finish_batch  (InBatch → Idle)
-    ///   4 = resolve_field (InBatch | InRow → same state)
-    ///   5 = append         (InRow → InRow)
-    fn transition(state: BuilderState, op: u8) -> Option<BuilderState> {
-        match (state, op % 6) {
-            (BuilderState::Idle, 0) => Some(BuilderState::InBatch),
-            (BuilderState::InBatch, 1) => Some(BuilderState::InRow),
-            (BuilderState::InRow, 2) => Some(BuilderState::InBatch),
-            (BuilderState::InBatch, 3) => Some(BuilderState::Idle),
-            (BuilderState::InBatch, 4) | (BuilderState::InRow, 4) => Some(state),
-            (BuilderState::InRow, 5) => Some(state),
+    fn transition(state: BuilderState, op: BuilderOp) -> Option<BuilderState> {
+        match (state, op) {
+            (BuilderState::Idle, BuilderOp::BeginBatch) => Some(BuilderState::InBatch),
+            (BuilderState::InBatch, BuilderOp::BeginRow) => Some(BuilderState::InRow),
+            (BuilderState::InRow, BuilderOp::EndRow) => Some(BuilderState::InBatch),
+            (BuilderState::InBatch, BuilderOp::FinishBatch) => Some(BuilderState::Idle),
+            (BuilderState::InBatch, BuilderOp::ResolveField)
+            | (BuilderState::InRow, BuilderOp::ResolveField) => Some(state),
+            (BuilderState::InRow, BuilderOp::Append) => Some(state),
             _ => None, // invalid transition
         }
     }
 
+    /// Independent oracle to verify the protocol.
+    struct Oracle {
+        in_batch: bool,
+        in_row: bool,
+        rows_opened: u8,
+        rows_closed: u8,
+    }
+
+    impl Oracle {
+        fn new() -> Self {
+            Self {
+                in_batch: false,
+                in_row: false,
+                rows_opened: 0,
+                rows_closed: 0,
+            }
+        }
+
+        fn check_and_apply(&mut self, op: BuilderOp) -> bool {
+            match op {
+                BuilderOp::BeginBatch => {
+                    if self.in_batch {
+                        return false;
+                    }
+                    self.in_batch = true;
+                    true
+                }
+                BuilderOp::BeginRow => {
+                    if !self.in_batch || self.in_row {
+                        return false;
+                    }
+                    self.in_row = true;
+                    self.rows_opened = self.rows_opened.saturating_add(1);
+                    true
+                }
+                BuilderOp::EndRow => {
+                    if !self.in_row {
+                        return false;
+                    }
+                    self.in_row = false;
+                    self.rows_closed = self.rows_closed.saturating_add(1);
+                    true
+                }
+                BuilderOp::FinishBatch => {
+                    if !self.in_batch || self.in_row {
+                        return false;
+                    }
+                    self.in_batch = false;
+                    true
+                }
+                BuilderOp::ResolveField => {
+                    if !self.in_batch {
+                        return false;
+                    }
+                    true
+                }
+                BuilderOp::Append => {
+                    if !self.in_row {
+                        return false;
+                    }
+                    true
+                }
+            }
+        }
+    }
+
     /// Prove that any sequence of valid transitions starting from `Idle`
-    /// never reaches an invalid state — the state is always one of
-    /// {Idle, InBatch, InRow}.
+    /// maintains semantic invariants over the trace.
     #[kani::proof]
     #[kani::unwind(8)]
-    fn verify_valid_sequence_no_invalid_state() {
+    fn verify_valid_sequence_maintains_invariants() {
         let ops: [u8; 7] = kani::any();
         let mut state = BuilderState::Idle;
+        let mut oracle = Oracle::new();
         let mut steps = 0u8;
 
-        let mut i = 0;
-        while i < 7 {
-            if let Some(next) = transition(state, ops[i]) {
+        for i in 0..7 {
+            let op = BuilderOp::from_u8(ops[i]);
+            let transition_ok = transition(state, op);
+            let oracle_ok = oracle.check_and_apply(op);
+
+            // The protocol transition function and the oracle must agree on validity.
+            assert_eq!(
+                transition_ok.is_some(),
+                oracle_ok,
+                "transition and oracle disagree on validity"
+            );
+
+            if let Some(next) = transition_ok {
                 state = next;
                 steps += 1;
             }
-            // Skip invalid transitions (filter approach)
-            i += 1;
-        }
 
-        // State is always one of the three valid variants
-        assert!(
-            state == BuilderState::Idle
-                || state == BuilderState::InBatch
-                || state == BuilderState::InRow
-        );
+            // Assert semantic invariants
+            assert!(oracle.rows_opened >= oracle.rows_closed);
+            if oracle.in_row {
+                assert_eq!(oracle.rows_opened, oracle.rows_closed + 1);
+            } else {
+                assert_eq!(oracle.rows_opened, oracle.rows_closed);
+            }
+
+            match state {
+                BuilderState::Idle => {
+                    assert!(!oracle.in_batch);
+                    assert!(!oracle.in_row);
+                }
+                BuilderState::InBatch => {
+                    assert!(oracle.in_batch);
+                    assert!(!oracle.in_row);
+                }
+                BuilderState::InRow => {
+                    assert!(oracle.in_batch);
+                    assert!(oracle.in_row);
+                }
+            }
+        }
 
         // Guard vacuity: at least some transitions were taken
         kani::cover!(steps >= 3, "at least 3 valid transitions taken");
@@ -395,21 +528,24 @@ mod kani_proofs {
         let mut state = BuilderState::Idle;
 
         // begin_batch
-        state = transition(state, 0).expect("begin_batch from Idle must succeed");
+        state =
+            transition(state, BuilderOp::BeginBatch).expect("begin_batch from Idle must succeed");
         assert!(state == BuilderState::InBatch);
 
         // n iterations of begin_row → end_row
         let mut i: u8 = 0;
         while i < n {
-            state = transition(state, 1).expect("begin_row from InBatch must succeed");
+            state = transition(state, BuilderOp::BeginRow)
+                .expect("begin_row from InBatch must succeed");
             assert!(state == BuilderState::InRow);
-            state = transition(state, 2).expect("end_row from InRow must succeed");
+            state = transition(state, BuilderOp::EndRow).expect("end_row from InRow must succeed");
             assert!(state == BuilderState::InBatch);
             i += 1;
         }
 
         // finish_batch
-        state = transition(state, 3).expect("finish_batch from InBatch must succeed");
+        state = transition(state, BuilderOp::FinishBatch)
+            .expect("finish_batch from InBatch must succeed");
         assert!(state == BuilderState::Idle);
 
         // Guard vacuity
@@ -429,9 +565,9 @@ mod kani_proofs {
 
         let mut i = 0;
         while i < 7 {
-            let op = ops[i] % 6;
-            if let Some(next) = transition(state, ops[i]) {
-                if op == 5 {
+            let op = BuilderOp::from_u8(ops[i]);
+            if let Some(next) = transition(state, op) {
+                if op == BuilderOp::Append {
                     // append succeeded — state must be InRow
                     assert!(
                         state == BuilderState::InRow,
@@ -447,6 +583,27 @@ mod kani_proofs {
         // Guard vacuity: verify append was actually tested
         kani::cover!(append_called, "append was called at least once");
     }
+
+    /// Explicitly prove that forbidden transitions are rejected
+    #[kani::proof]
+    fn verify_forbidden_transitions_rejected() {
+        // From Idle
+        assert!(transition(BuilderState::Idle, BuilderOp::BeginRow).is_none());
+        assert!(transition(BuilderState::Idle, BuilderOp::EndRow).is_none());
+        assert!(transition(BuilderState::Idle, BuilderOp::FinishBatch).is_none());
+        assert!(transition(BuilderState::Idle, BuilderOp::ResolveField).is_none());
+        assert!(transition(BuilderState::Idle, BuilderOp::Append).is_none());
+
+        // From InBatch
+        assert!(transition(BuilderState::InBatch, BuilderOp::BeginBatch).is_none());
+        assert!(transition(BuilderState::InBatch, BuilderOp::EndRow).is_none());
+        assert!(transition(BuilderState::InBatch, BuilderOp::Append).is_none());
+
+        // From InRow
+        assert!(transition(BuilderState::InRow, BuilderOp::BeginBatch).is_none());
+        assert!(transition(BuilderState::InRow, BuilderOp::BeginRow).is_none());
+        assert!(transition(BuilderState::InRow, BuilderOp::FinishBatch).is_none());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -457,6 +614,7 @@ mod kani_proofs {
 mod proptest_builder_state {
     use super::BuilderState;
     use proptest::prelude::*;
+    use proptest::test_runner::Config as ProptestConfig;
 
     /// Simulate a state transition (same logic as Kani proofs).
     fn transition(state: BuilderState, op: u8) -> Option<BuilderState> {
@@ -474,6 +632,10 @@ mod proptest_builder_state {
     // Generate a random valid operation sequence that ends with
     // `finish_batch`, then verify the final state is `Idle`.
     proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            .. ProptestConfig::default()
+        })]
         #[test]
         fn random_valid_sequence_ends_idle(ops in prop::collection::vec(0u8..6, 1..50)) {
             let mut state = BuilderState::Idle;

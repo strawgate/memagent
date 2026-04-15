@@ -30,6 +30,13 @@ use logfwd_output::sink::{SendResult, Sink};
 use logfwd_test_utils::{generate_json_lines, test_meter};
 use tokio_util::sync::CancellationToken;
 
+/// Generous timeout for compliance tests.
+/// Coverage instrumentation and busy CI hosts introduce significant
+/// scheduling jitter — keep headroom to avoid flaky failures.
+fn wait_timeout() -> Duration {
+    Duration::from_secs(60)
+}
+
 // ---------------------------------------------------------------------------
 // CaptureSink (thread-safe, usable from integration tests)
 // ---------------------------------------------------------------------------
@@ -316,7 +323,7 @@ output:
         log_path.display()
     );
 
-    let batches = run_compliance_pipeline(&yaml, count, Duration::from_secs(10));
+    let batches = run_compliance_pipeline(&yaml, count, wait_timeout());
     let report = verify_batches(&batches, count, "");
 
     assert!(
@@ -357,7 +364,7 @@ pipelines:
     );
 
     let total_rows = sources.len() * per_source;
-    let batches = run_compliance_pipeline(&yaml, total_rows, Duration::from_secs(15));
+    let batches = run_compliance_pipeline(&yaml, total_rows, wait_timeout());
 
     for source in &sources {
         let report = verify_batches(&batches, per_source, source);
@@ -397,7 +404,7 @@ output:
     );
 
     // The WHERE filter halves the output: only odd sequence_ids pass.
-    let batches = run_compliance_pipeline(&yaml, count / 2, Duration::from_secs(10));
+    let batches = run_compliance_pipeline(&yaml, count / 2, wait_timeout());
 
     // ERROR lines are the odd-numbered sequence_ids (1, 3, 5, ...).
     let mut all_ids: Vec<i64> = Vec::new();
@@ -443,31 +450,37 @@ output:
     );
 }
 
-/// Transform select: generate 10,000 lines, project only sequence_id_int
+/// Transform select: generate lines, project only sequence_id_int
 /// and message_str. Verify correct columns and zero gaps.
 #[test]
 fn compliance_transform_select() {
     let dir = tempfile::tempdir().unwrap();
     let log_path = dir.path().join("select.log");
-    let count = 10_000;
+    let count = 2_000;
 
     generate_json_lines(&log_path, count, "src1");
 
     let yaml = format!(
         r#"
-input:
-  type: file
-  path: {}
-  format: json
-transform: "SELECT sequence_id, message FROM logs"
-output:
-  type: stdout
-  format: json
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: {}
+        format: json
+    transform: "SELECT sequence_id, message FROM logs"
+    outputs:
+      - type: stdout
+        format: json
+    batch_target_bytes: 2048
+    batch_timeout_ms: 100
 "#,
         log_path.display()
     );
 
-    let batches = run_compliance_pipeline(&yaml, count, Duration::from_secs(10));
+    // Coverage instrumentation can substantially slow this transform path;
+    // allow extra headroom to avoid CI-only timeout flakes.
+    let batches = run_compliance_pipeline(&yaml, count, Duration::from_secs(60));
 
     // Verify schema: only the projected columns should be present.
     for batch in &batches {

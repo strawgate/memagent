@@ -1,226 +1,121 @@
 # Documentation Standards
 
-Rules for what documentation exists, where it lives, and how to keep it current.
+Rules for keeping docs dense, current, and useful for both humans and agents.
 
----
+## Canonical Surfaces
 
-## Doc surfaces
+| Surface | Path | Audience | Canonical Use |
+|---|---|---|---|
+| Root docs | `/*.md` | First-time contributors | project orientation and contribution entrypoints |
+| User book | `book/src/content/docs/` | Operators/users | install, config, deployment, troubleshooting |
+| Developer docs | `dev-docs/` | Engineers/agents | architecture, constraints, contracts, verification |
+| CI review guides | `dev-docs/review-guides/` | Reviewers | short pass/fail review checklists |
+| TLA specs | `tla/` | Formal/spec contributors | temporal properties and model configs |
 
-logfwd has five documentation surfaces. Each has a single purpose. Content belongs
-in exactly one surface — if you find the same information in two places, one is
-wrong and should be deleted.
+Do not duplicate canonical facts across surfaces.
 
-| Surface | Path | Audience | Purpose |
-|---------|------|----------|---------|
-| **GitHub root** | `/*.md` | Contributors hitting the repo for the first time | Orientation: what this is, how to build it, how to contribute |
-| **User book** | `book/src/` | Operators deploying and configuring logfwd | Config reference, deployment guides, troubleshooting, architecture overview |
-| **Dev docs** | `dev-docs/` | Engineers modifying the codebase | Architecture decisions, code style, crate rules, verification, scanner contract |
-| **Review guides** | `docs/ci/` | Code reviewers (human and AI) | PR review checklists, one per review dimension |
-| **Spec docs** | `tla/` | Engineers modifying formal specs | TLA+ specs, TLC configs, running instructions |
+## Mandatory Entry Points
 
-### What goes where
+- Root entrypoint: `README.md`
+- Developer entrypoint: `dev-docs/README.md`
+- Research index: `dev-docs/research/README.md`
+- References index: `dev-docs/references/README.md`
+- User-book navigation: `book/astro.config.mjs` (Starlight sidebar config)
 
-**GitHub root files** follow convention — GitHub and tooling look for these names:
+If you add or remove docs, update the corresponding index in the same PR.
 
-| File | Content |
-|------|---------|
-| `README.md` | What logfwd is, quick start, feature overview, links to book |
-| `DEVELOPING.md` | Build/test/bench commands, workspace layout, hard-won lessons |
-| `CONTRIBUTING.md` | PR workflow, commit conventions, where to read before contributing |
-| `CHANGELOG.md` | Release notes in Keep a Changelog format |
-| `AGENTS.md` / `CLAUDE.md` | Agent entry point: start-here list, reference doc table, issue labels |
+## Documentation Categories
 
-No other `.md` files should live at the repo root. Completed audits, reviews, and
-one-off reports belong in `dev-docs/research/`.
+The repository uses three documentation categories: living docs, research docs,
+and reference notes.
 
-**User book** (`book/src/`) is the canonical user-facing documentation. It is built
-with mdbook and published. If a user needs to know it to deploy or operate logfwd,
-it goes here. Do NOT maintain parallel user docs in `docs/` — that path is reserved
-for CI review guides.
+### Living docs (`dev-docs/*.md`, excluding subdirs: `research/`, `references/`, `review-guides/`, `verification/`)
 
-**Dev docs** (`dev-docs/`) are for engineers working on the code. They describe
-_why_ the code is shaped a certain way, not _how to use_ the product. Subcategories:
+- Represent current behavior and current policy.
+- Must be updated in the same PR as behavior/policy changes.
+- Must remain concise and task-oriented.
 
-| Subdirectory | Content |
-|-------------|---------|
-| `dev-docs/` (root) | Living standards and specs: ARCHITECTURE, DESIGN, CODE_STYLE, CRATE_RULES, VERIFICATION, SCANNER_CONTRACT |
-| `dev-docs/references/` | Pinned API references for specific library versions (Arrow, DataFusion, etc.) |
-| `dev-docs/research/` | Research artifacts with lifecycle headers (see below) |
-| `tla/` | TLA+ specs (PipelineMachine, ShutdownProtocol, PipelineBatch) |
+### Research docs (`dev-docs/research/**/*.md`)
 
-**Review guides** (`docs/ci/`) are self-contained review checklists loaded by CI
-review tooling. Each guide covers one review dimension (Rust practices, verification
-coverage, crate boundaries, documentation, maintainer fitness). These reference
-dev-docs by path but do not duplicate them.
+Research docs are point-in-time artifacts and are never canonical runtime behavior docs.
 
----
-
-## Document lifecycle
-
-Every document has a lifecycle stage. Living documents and research artifacts track
-this differently.
-
-### Living documents (dev-docs root)
-
-These are always current. If the code changes, the doc changes in the same PR.
-They do NOT need lifecycle headers — being in `dev-docs/` root means they're living.
-
-Examples: ARCHITECTURE.md, DESIGN.md, VERIFICATION.md
-
-**Update trigger:** Any PR that changes behavior described in a living doc MUST
-update that doc. The `docs/ci/documentation-thoroughly-updated.md` review guide
-enforces this.
-
-### Research artifacts (dev-docs/research/)
-
-Research docs are point-in-time artifacts. They capture investigation results,
-design explorations, audits, and benchmarks. Every research doc MUST have a
-status header as the first content after the title:
+Required lifecycle header directly under title:
 
 ```markdown
-# Title
-
-> **Status:** Historical | Active | Completed
+> **Status:** Active | Completed | Historical
 > **Date:** YYYY-MM-DD
-> **Context:** One line explaining why this was written
+> **Context:** one-line purpose
 ```
 
-| Status | Meaning | Action |
-|--------|---------|--------|
-| **Historical** | Superseded by implementation or later research. Kept for context. | Read for background only. Do not act on recommendations. |
-| **Active** | Contains open findings or gaps that drive current/future work. | Check findings before closing. |
-| **Completed** | Audit or investigation that finished with all actions resolved. | Reference only. |
+Allowed status meanings:
 
-When a research doc's findings are fully addressed, update its status to
-Completed or Historical. Never delete research docs — they provide decision
-context that git log cannot.
+- `Active`: unresolved decisions or implementation work remain.
+- `Completed`: findings resolved or merged into living docs.
+- `Historical`: superseded; retained only for context.
 
-### Reference docs (dev-docs/references/)
+Pruning policy:
 
-Pinned to a specific library version. The filename includes a version note inside
-the document. When upgrading a dependency:
+- Delete low-value or redundant research docs rather than keeping clutter.
+- Prefer one synthesis doc over many per-workstream artifacts.
+- Rely on git history for removed artifacts.
 
-1. Update the existing reference doc with new version info
-2. Keep the old content if it's still relevant (migration context)
-3. Update `AGENTS.md` if the filename changed
+### Reference notes (`dev-docs/references/`)
 
-Reference docs that cover unversioned patterns (e.g., `tokio-async-patterns.md`)
-are living documents — update them when patterns change.
-They do not carry version numbers in filenames but should note the library
-versions they were last verified against.
+Reference notes are repo-scoped guidance, not generic tutorials.
+Depth should be proportional to topic complexity and risk.
 
----
+- Simple/low-risk topics should stay short and implementation-specific.
+- Complex/high-risk topics (for example Kani, TLA+, scanner invariants) should be in-depth.
+- Deep references should be layered: quick orientation first, then detailed patterns, failure modes, and review checklists.
+- Link upstream docs for general education.
+- Keep all sections tied to repository decisions and implementation behavior.
 
-## Structure rules
+## Root Markdown Allowlist
 
-### Required sections by doc type
+Only these root markdown files are allowed:
 
-**Living dev-docs** (ARCHITECTURE, DESIGN, etc.):
-- Title (`# Name`) — what this document covers
-- Body — organized by topic, not chronologically
-- No date headers (these are always-current documents)
+- `AGENTS.md`
+- `CLAUDE.md` (symlink to `AGENTS.md` for Claude compatibility)
+- `CHANGELOG.md`
+- `CONTRIBUTING.md`
+- `DEVELOPING.md`
+- `README.md`
+- Optional governance docs: `SECURITY.md`, `CODE_OF_CONDUCT.md`, `SUPPORT.md`
 
-**Research docs**:
-- Title
-- Status header (see above)
-- Body — findings, analysis, recommendations
-- Optional: Summary table, action items
+One-off reports belong in `dev-docs/research/`.
 
-**User book pages**:
-- Title
-- Brief intro (1-2 sentences)
-- Content with examples
-- No internal jargon — write for an operator who has never seen the codebase
-
-**Review guides** (`docs/ci/`):
-- Title with "Full Review Guidance" suffix
-- Role statement ("You are reviewing...")
-- Checklist items with pass/fail criteria
-- References to canonical docs (by path)
-
-### Formatting
-
-- Use ATX headers (`#`, not underlines)
-- One sentence per line in source (makes diffs readable)
-- Code blocks with language tags (` ```rust `, ` ```yaml `, ` ```bash `)
-- Tables for structured comparisons
-- No emoji unless the user explicitly requests them
-- Relative links between docs (`[ARCHITECTURE](ARCHITECTURE.md)`, not absolute paths)
-
-### Cross-referencing
-
-- Always link to the canonical location. Never say "see the config docs" — say
-  `[Configuration Reference](../book/src/config/reference.md)` or
-  `[ARCHITECTURE](dev-docs/ARCHITECTURE.md)`.
-- When a dev-doc references a user-book page, link to the book path.
-- When a user-book page references internals, DON'T — user docs should be
-  self-contained. Link to other book pages instead.
-
----
-
-## Anti-drift rules
-
-Documentation drift is the #1 doc quality problem. These rules prevent it:
-
-### 1. Same-PR updates
-
-Any PR that changes behavior documented in a living doc MUST update that doc
-in the same PR. "I'll update the docs later" is not acceptable — it never
-happens. The CI review guide `documentation-thoroughly-updated.md` enforces
-this during review.
-
-### 2. Single source of truth
-
-Every fact has exactly one canonical location. Other documents may _link_ to
-it but must not _restate_ it. If you find the same information in two places,
-delete one and replace it with a link.
-
-**Canonical locations:**
+## Canonical Fact Mapping
 
 | Fact | Canonical doc |
-|------|---------------|
-| Config YAML fields | `book/src/config/reference.md` |
-| Column naming rules | `book/src/config/sql-transforms.md` |
-| Deployment manifests | `book/src/deployment/` |
-| Troubleshooting | `book/src/troubleshooting.md` |
-| Crate boundaries and deps | `dev-docs/CRATE_RULES.md` |
-| Architecture and data flow | `dev-docs/ARCHITECTURE.md` |
-| Design decisions | `dev-docs/DESIGN.md` |
-| Verification strategy | `dev-docs/VERIFICATION.md` |
-| Scanner input/output contract | `dev-docs/SCANNER_CONTRACT.md` |
-| Build/test/bench commands | `DEVELOPING.md` |
-| PR workflow | `dev-docs/PR_PROCESS.md` |
+|---|---|
+| Config schema and options | `book/src/content/docs/configuration/reference.mdx` |
+| SQL transform behavior | `book/src/content/docs/configuration/sql-transforms.md` |
+| Pipeline data flow and layer boundaries | `dev-docs/ARCHITECTURE.md` |
+| Crate constraints and boundaries | `dev-docs/CRATE_RULES.md` |
+| Verification requirements | `dev-docs/VERIFICATION.md` |
+| Scanner contract | `dev-docs/SCANNER_CONTRACT.md` |
+| Adapter/boundary contract | `dev-docs/ADAPTER_CONTRACT.md` |
+| Co-change rules | `dev-docs/CHANGE_MAP.md` |
+| PR mechanics | `dev-docs/PR_PROCESS.md` |
 
-### 3. No orphan docs
+## Change Expectations
 
-Every doc must be reachable from at least one index:
-- Root `.md` files → linked from `README.md` or `AGENTS.md`
-- `book/src/` pages → listed in `book/src/SUMMARY.md`
-- `dev-docs/` files → listed in `AGENTS.md` reference table
-- `dev-docs/research/` files → discoverable by convention (status headers)
-- `docs/ci/` guides → referenced by CI tooling configuration
+When behavior changes, docs must change in the same PR:
 
-### 4. Stale content markers
+- User-visible behavior -> update `book/src/content/docs/` docs.
+- Contributor-visible constraints -> update `dev-docs/` docs.
+- Review criteria changes -> update `dev-docs/review-guides/` checklist docs.
+- Architecture/invariant changes -> update `ARCHITECTURE.md`, `DESIGN.md`, and/or `VERIFICATION.md`.
 
-If you discover stale content but can't fix it now, add a visible warning:
+Use `dev-docs/CHANGE_MAP.md` before coding.
 
-```markdown
-> **Stale:** This section describes the old approach.
-> See `book/src/config/sql-transforms.md` for the current behavior.
-```
+## CI Validation
 
-This is better than leaving wrong information unmarked. But fix it soon — stale
-markers that linger become invisible.
+Docs CI must run:
 
----
+- `scripts/docs/validate_operational_sections.py`
+- `scripts/docs/validate_research_metadata.py`
+- `scripts/docs/validate_root_doc_allowlist.py`
+- `scripts/docs/report_stale_docs.py`
 
-## When NOT to write documentation
-
-- **Don't document what the code says.** If the function signature and name are
-  clear, a doc comment restating them adds noise. Document _why_, not _what_.
-- **Don't write a doc for a single PR.** PR descriptions cover this. Research
-  docs are for investigations that span multiple PRs or inform future work.
-- **Don't duplicate git log.** "What changed and when" is in the commit history
-  and CHANGELOG. Dev-docs capture _decisions_, not _events_.
-- **Don't write tutorials in dev-docs.** Tutorials are user docs and belong in
-  `book/src/`. Dev-docs assume the reader is already a contributor.
+If a docs governance rule is added, add a validator in the same PR.
