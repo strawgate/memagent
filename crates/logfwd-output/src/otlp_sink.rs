@@ -1135,7 +1135,12 @@ fn resolve_batch_columns<'a>(
         let mut key_encoding = Vec::with_capacity(2 + name.len());
         encode_bytes_field(&mut key_encoding, otlp::KEY_VALUE_KEY, name.as_bytes());
         let kv_key_cost = bytes_field_size(otlp::KEY_VALUE_KEY, name.len());
-        attribute_cols.push(ColAttr { name, key_encoding, kv_key_cost, array: attr });
+        attribute_cols.push(ColAttr {
+            name,
+            key_encoding,
+            kv_key_cost,
+            array: attr,
+        });
     }
 
     BatchColumns {
