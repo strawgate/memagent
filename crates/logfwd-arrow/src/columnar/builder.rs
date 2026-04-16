@@ -377,6 +377,92 @@ impl ColumnarBatchBuilder {
         self.columns[handle.index()].push_str(self.lifecycle.row_count(), sref);
     }
 
+    /// Write pre-validated UTF-8 bytes to the generated string buffer.
+    ///
+    /// Like [`write_str`](Self::write_str), but accepts `&[u8]` that the
+    /// caller guarantees is valid UTF-8. This avoids a redundant UTF-8
+    /// validation round-trip for producers (like protobuf decoders) that
+    /// already know their bytes are valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the string buffer would exceed u32 addressable range.
+    #[inline]
+    pub fn write_str_bytes(
+        &mut self,
+        handle: FieldHandle,
+        value: &[u8],
+    ) -> Result<(), BuilderError> {
+        debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
+        debug_assert!(handle.index() < self.columns.len());
+        if !self.columns[handle.index()].accepts_str() {
+            return Ok(());
+        }
+        if self.dedup_enabled && self.is_duplicate(handle) {
+            return Ok(());
+        }
+        let raw_offset = self
+            .original_buf
+            .len()
+            .checked_add(self.string_buf.len())
+            .ok_or(BuilderError::StringBufferOverflow {
+                buffer_len: self.string_buf.len(),
+                value_len: value.len(),
+            })?;
+        let offset = u32::try_from(raw_offset).map_err(|_| BuilderError::StringBufferOverflow {
+            buffer_len: self.string_buf.len(),
+            value_len: value.len(),
+        })?;
+        let len = u32::try_from(value.len()).map_err(|_| BuilderError::StringBufferOverflow {
+            buffer_len: self.string_buf.len(),
+            value_len: value.len(),
+        })?;
+        self.string_buf.extend_from_slice(value);
+        let sref = StringRef { offset, len };
+        self.columns[handle.index()].push_str(self.lifecycle.row_count(), sref);
+        Ok(())
+    }
+
+    /// Write a zero-copy reference to a subslice of the original input buffer.
+    ///
+    /// The `value` must be a subslice of the buffer previously set via
+    /// [`set_original_buffer`](Self::set_original_buffer). The offset is
+    /// computed via pointer arithmetic.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `value` is not within the bounds of the original buffer,
+    /// or if the computed offset exceeds `u32::MAX`.
+    #[inline]
+    pub fn write_input_ref(&mut self, handle: FieldHandle, value: &[u8]) {
+        debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
+        debug_assert!(handle.index() < self.columns.len());
+        if !self.columns[handle.index()].accepts_str() {
+            return;
+        }
+        if self.dedup_enabled && self.is_duplicate(handle) {
+            return;
+        }
+        let base = self.original_buf.as_ptr() as usize;
+        let ptr = value.as_ptr() as usize;
+        assert!(
+            ptr >= base && ptr + value.len() <= base + self.original_buf.len(),
+            "write_input_ref: value must be within original buffer bounds"
+        );
+        let raw_offset = ptr - base;
+        let offset = u32::try_from(raw_offset).unwrap_or_else(|_| {
+            panic!("write_input_ref: buffer offset exceeds u32::MAX ({raw_offset} bytes)")
+        });
+        let len = u32::try_from(value.len()).unwrap_or_else(|_| {
+            panic!(
+                "write_input_ref: value length exceeds u32::MAX ({} bytes)",
+                value.len()
+            )
+        });
+        let sref = StringRef { offset, len };
+        self.columns[handle.index()].push_str(self.lifecycle.row_count(), sref);
+    }
+
     /// Record that a field is explicitly null for the current row.
     ///
     /// Sparse fields default to null for rows with no writes, so this is only
@@ -1411,5 +1497,118 @@ mod tests {
         // Only field "z" — no stale columns.
         assert_eq!(batch2.num_columns(), 1);
         assert_eq!(batch2.schema().field(0).name(), "z");
+    }
+
+    #[test]
+    fn write_str_bytes_produces_correct_string() {
+        let mut plan = BatchPlan::new();
+        let name = plan.declare_planned("name", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        b.begin_batch();
+        b.begin_row();
+        b.write_str_bytes(name, b"hello world").unwrap();
+        b.end_row();
+        let batch = b.finish_batch().unwrap();
+        let col = batch.column(0).as_string_view();
+        assert_eq!(col.value(0), "hello world");
+    }
+
+    #[test]
+    fn write_str_bytes_multiple_values() {
+        let mut plan = BatchPlan::new();
+        let msg = plan.declare_planned("msg", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        b.begin_batch();
+        for i in 0..5 {
+            b.begin_row();
+            let val = format!("message-{i}");
+            b.write_str_bytes(msg, val.as_bytes()).unwrap();
+            b.end_row();
+        }
+        let batch = b.finish_batch().unwrap();
+        let col = batch.column(0).as_string_view();
+        for i in 0..5 {
+            assert_eq!(col.value(i), format!("message-{i}"));
+        }
+    }
+
+    #[test]
+    fn write_input_ref_zero_copy() {
+        let mut plan = BatchPlan::new();
+        let body = plan.declare_planned("body", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        let input = b"hello world from input buffer";
+        let buf = Buffer::from_vec(input.to_vec());
+        b.begin_batch();
+        b.set_original_buffer(buf.clone());
+        b.begin_row();
+        // Reference the subslice "world" at offset 6..11.
+        b.write_input_ref(body, &buf[6..11]);
+        b.end_row();
+        let batch = b.finish_batch().unwrap();
+        let col = batch.column(0).as_string_view();
+        assert_eq!(col.value(0), "world");
+    }
+
+    #[test]
+    fn write_input_ref_multiple_subslices() {
+        let mut plan = BatchPlan::new();
+        let f = plan.declare_planned("field", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        let input = b"aaa|bbb|ccc";
+        let buf = Buffer::from_vec(input.to_vec());
+        b.begin_batch();
+        b.set_original_buffer(buf.clone());
+        b.begin_row();
+        b.write_input_ref(f, &buf[0..3]); // "aaa"
+        b.end_row();
+        b.begin_row();
+        b.write_input_ref(f, &buf[4..7]); // "bbb"
+        b.end_row();
+        b.begin_row();
+        b.write_input_ref(f, &buf[8..11]); // "ccc"
+        b.end_row();
+        let batch = b.finish_batch().unwrap();
+        let col = batch.column(0).as_string_view();
+        assert_eq!(col.value(0), "aaa");
+        assert_eq!(col.value(1), "bbb");
+        assert_eq!(col.value(2), "ccc");
+    }
+
+    #[test]
+    fn write_str_bytes_and_input_ref_coexist() {
+        let mut plan = BatchPlan::new();
+        let f = plan.declare_planned("field", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        let input = b"original-data";
+        let buf = Buffer::from_vec(input.to_vec());
+        b.begin_batch();
+        b.set_original_buffer(buf.clone());
+        // Row 0: input ref
+        b.begin_row();
+        b.write_input_ref(f, &buf[0..8]); // "original"
+        b.end_row();
+        // Row 1: generated string
+        b.begin_row();
+        b.write_str_bytes(f, b"generated").unwrap();
+        b.end_row();
+        let batch = b.finish_batch().unwrap();
+        let col = batch.column(0).as_string_view();
+        assert_eq!(col.value(0), "original");
+        assert_eq!(col.value(1), "generated");
+    }
+
+    #[test]
+    #[should_panic(expected = "write_input_ref: value must be within original buffer bounds")]
+    fn write_input_ref_panics_on_oob() {
+        let mut plan = BatchPlan::new();
+        let f = plan.declare_planned("field", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        let buf = Buffer::from_vec(b"short".to_vec());
+        b.begin_batch();
+        b.set_original_buffer(buf);
+        b.begin_row();
+        // Not a subslice of original buffer — should panic.
+        b.write_input_ref(f, b"external");
     }
 }
