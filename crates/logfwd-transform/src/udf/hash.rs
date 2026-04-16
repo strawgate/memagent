@@ -154,6 +154,80 @@ impl ScalarUDFImpl for HashUdf {
     }
 }
 
+#[cfg(kani)]
+mod verification {
+    use super::fnv1a_64;
+
+    /// Prove the FNV-1a implementation matches the published spec constants.
+    ///
+    /// FNV-1a test vectors are fixed by the spec and published at
+    /// https://fnv.sourceforge.net — these values must never change.
+    /// Any regression (wrong constant, wrong op order XOR↔MUL, wrong seed)
+    /// would silently break deterministic sampling across deployments.
+    ///
+    /// Note: the empty-string case proves `fnv1a_64(b"") == OFFSET_BASIS`,
+    /// which verifies the seed is applied correctly (no accidental XOR of
+    /// the first byte before the seed initialisation).
+    #[kani::proof]
+    fn verify_fnv1a_spec_constants() {
+        assert_eq!(
+            fnv1a_64(b""),
+            14_695_981_039_346_656_037_u64,
+            "empty string must equal OFFSET_BASIS"
+        );
+        assert_eq!(
+            fnv1a_64(b"a"),
+            12_638_187_200_555_641_996_u64,
+            "single byte 'a' spec vector mismatch"
+        );
+        assert_eq!(
+            fnv1a_64(b"foobar"),
+            9_625_390_261_332_436_968_u64,
+            "'foobar' spec vector mismatch"
+        );
+        kani::cover!(true, "all FNV-1a spec vectors verified");
+    }
+
+    /// Oracle proof: for all ≤4-byte inputs, production code matches a
+    /// structurally independent FNV-1a reference implementation.
+    ///
+    /// The reference fuses XOR + multiply into a single expression
+    /// `(hash ^ byte).wrapping_mul(PRIME)`, making the FNV-1a order
+    /// (XOR-then-multiply) structurally explicit. If the production code
+    /// were accidentally changed to FNV-1 (multiply-then-XOR), this proof
+    /// would fail on any non-empty input — for example b"a" gives FNV-1a =
+    /// 12638187200555641996 but FNV-1 = 84696351499449571.
+    #[kani::proof]
+    #[kani::unwind(6)] // ≤4 byte loop + 2 exit-check overhead
+    #[kani::solver(kissat)]
+    fn verify_fnv1a_oracle_bounded() {
+        const N: usize = 4;
+        let arr: [u8; N] = kani::any();
+        let len: usize = kani::any_where(|&l| l <= N);
+        let bytes = &arr[..len];
+
+        // Reference: FNV-1a written as a single fused expression.
+        // XOR-then-multiply order is the defining property of FNV-1a vs FNV-1.
+        const OFFSET_BASIS: u64 = 14_695_981_039_346_656_037;
+        const PRIME: u64 = 1_099_511_628_211;
+        let mut reference = OFFSET_BASIS;
+        let mut i = 0;
+        while i < bytes.len() {
+            reference = (reference ^ bytes[i] as u64).wrapping_mul(PRIME);
+            i += 1;
+        }
+
+        assert_eq!(
+            fnv1a_64(bytes),
+            reference,
+            "production FNV-1a must match fused-expression reference"
+        );
+
+        kani::cover!(bytes.is_empty(), "empty input: both return OFFSET_BASIS");
+        kani::cover!(bytes.len() == 4, "4-byte input: full FNV-1a chain verified");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

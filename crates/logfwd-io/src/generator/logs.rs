@@ -63,7 +63,7 @@ pub(super) fn write_logs_event(
     } else {
         use std::fmt::Write;
         let _ = write!(&mut msg_buf, "{method} {path}/{id} {status}");
-    };
+    }
     let msg_str = &msg_buf;
 
     let mut synthetic_fields = String::new();
