@@ -13,6 +13,7 @@ use crate::BatchMetadata;
 use crate::sink::{SendResult, Sink, SinkFactory};
 
 use super::stdout::{StdoutFormat, StdoutSink};
+use logfwd_types::field_names;
 
 /// Append-only file sink.
 ///
@@ -32,8 +33,27 @@ impl FileSink {
         file: Arc<Mutex<tokio::fs::File>>,
         stats: Arc<ComponentStats>,
     ) -> Self {
+        Self::with_message_field(name, format, field_names::BODY.to_string(), file, stats)
+    }
+
+    /// Create a file sink with a custom text/console message field fallback.
+    ///
+    /// The serializer prefers canonical `body` when present, then this
+    /// configured field, then legacy aliases.
+    pub fn with_message_field(
+        name: String,
+        format: StdoutFormat,
+        message_field: String,
+        file: Arc<Mutex<tokio::fs::File>>,
+        stats: Arc<ComponentStats>,
+    ) -> Self {
         Self {
-            serializer: StdoutSink::new(name, format, Arc::clone(&stats)),
+            serializer: StdoutSink::with_message_field(
+                name,
+                format,
+                message_field,
+                Arc::clone(&stats),
+            ),
             file,
             output_buf: Vec::with_capacity(64 * 1024),
             stats,
@@ -53,14 +73,14 @@ impl Sink for FileSink {
                 .serializer
                 .write_batch_to(batch, metadata, &mut self.output_buf)
             {
-                return SendResult::IoError(e);
+                return SendResult::from_io_error(e);
             }
 
             let bytes_written = self.output_buf.len() as u64;
             let lines_written = memchr::memchr_iter(b'\n', &self.output_buf).count() as u64;
             let mut file = self.file.lock().await;
             if let Err(e) = file.write_all(&self.output_buf).await {
-                return SendResult::IoError(e);
+                return SendResult::from_io_error(e);
             }
 
             self.stats.inc_lines(lines_written);
@@ -72,7 +92,8 @@ impl Sink for FileSink {
     fn flush(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
         Box::pin(async move {
             let mut file = self.file.lock().await;
-            file.flush().await
+            file.flush().await?;
+            file.sync_data().await
         })
     }
 
@@ -83,7 +104,8 @@ impl Sink for FileSink {
     fn shutdown(&mut self) -> Pin<Box<dyn Future<Output = io::Result<()>> + Send + '_>> {
         Box::pin(async move {
             let mut file = self.file.lock().await;
-            file.flush().await
+            file.flush().await?;
+            file.sync_data().await
         })
     }
 }
@@ -91,6 +113,7 @@ impl Sink for FileSink {
 pub struct FileSinkFactory {
     name: String,
     format: StdoutFormat,
+    message_field: String,
     file: Arc<Mutex<tokio::fs::File>>,
     stats: Arc<ComponentStats>,
 }
@@ -102,6 +125,17 @@ impl FileSinkFactory {
         format: StdoutFormat,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
+        Self::with_message_field(name, path, format, field_names::BODY.to_string(), stats)
+    }
+
+    /// Create a file sink factory with a custom text/console message field fallback.
+    pub fn with_message_field(
+        name: String,
+        path: String,
+        format: StdoutFormat,
+        message_field: String,
+        stats: Arc<ComponentStats>,
+    ) -> io::Result<Self> {
         let std_file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -110,6 +144,7 @@ impl FileSinkFactory {
         Ok(Self {
             name,
             format,
+            message_field,
             file: Arc::new(Mutex::new(file)),
             stats,
         })
@@ -118,9 +153,10 @@ impl FileSinkFactory {
 
 impl SinkFactory for FileSinkFactory {
     fn create(&self) -> io::Result<Box<dyn Sink>> {
-        Ok(Box::new(FileSink::new(
+        Ok(Box::new(FileSink::with_message_field(
             self.name.clone(),
             self.format,
+            self.message_field.clone(),
             Arc::clone(&self.file),
             Arc::clone(&self.stats),
         )))
@@ -199,7 +235,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_sink_text_mode_passthroughs_raw() {
+    async fn file_sink_text_mode_writes_message_lines() {
         let path = temp_path("capture-log");
         let stats = Arc::new(ComponentStats::new());
         let factory = FileSinkFactory::new(
@@ -211,7 +247,7 @@ mod tests {
         .unwrap();
         let mut sink = factory.create().unwrap();
 
-        let schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, true)]));
+        let schema = Arc::new(Schema::new(vec![Field::new("body", DataType::Utf8, true)]));
         let batch = RecordBatch::try_new(
             schema,
             vec![Arc::new(StringArray::from(vec![
@@ -231,7 +267,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn file_sink_text_mode_skips_null_raw_rows_in_stats() {
+    async fn file_sink_text_mode_skips_null_message_rows_in_stats() {
         let path = temp_path("capture-log-null");
         let stats = Arc::new(ComponentStats::new());
         let factory = FileSinkFactory::new(
@@ -243,7 +279,7 @@ mod tests {
         .unwrap();
         let mut sink = factory.create().unwrap();
 
-        let schema = Arc::new(Schema::new(vec![Field::new("_raw", DataType::Utf8, true)]));
+        let schema = Arc::new(Schema::new(vec![Field::new("body", DataType::Utf8, true)]));
         let batch = RecordBatch::try_new(
             schema,
             vec![Arc::new(StringArray::from(vec![

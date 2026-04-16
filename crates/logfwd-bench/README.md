@@ -67,8 +67,14 @@ just bench-report
 
 ## Shared Data Generators
 
-All generators live in `src/generators.rs` and use seeded `fastrand::Rng` for
-deterministic, reproducible output.
+All generators live in the `logfwd-io` crate (`logfwd_io::generator`) and use
+seeded `fastrand::Rng` for deterministic, reproducible output.
+
+Several profiles now share the reusable cardinality helper layer in
+`logfwd_io::generator::cardinality`, which introduces hierarchical identity
+reuse, hot/warm/cold phase skew, and renewal windows for more realistic
+benchmark payloads without hard-coding a single scenario.
+
 
 | Generator | Description | Typical size |
 |-----------|-------------|-------------|
@@ -84,16 +90,17 @@ deterministic, reproducible output.
 |--------|-------------|
 | `NullSink` | Discards all data — measures pure iteration overhead |
 | `make_otlp_sink(compression)` | Buffer-only `OtlpSink` (no HTTP) for encode benchmarks |
+| `make_metadata()` | Standard `BatchMetadata` with K8s resource attrs |
 
 ### Determinism Guarantee
 
 Same `(count, seed)` → byte-identical output across runs, platforms, and CI.
 
 ```rust
-use logfwd_bench::generators;
+use logfwd_io::generator::cri::gen_cri_k8s;
 
-let a = generators::gen_cri_k8s(1000, 42);
-let b = generators::gen_cri_k8s(1000, 42);
+let a = gen_cri_k8s(1000, 42);
+let b = gen_cri_k8s(1000, 42);
 assert_eq!(a, b); // Always true
 ```
 

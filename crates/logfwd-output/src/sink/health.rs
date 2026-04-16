@@ -37,9 +37,10 @@ pub const fn reduce_output_health(
         OutputHealthEvent::StartupRequested => match current {
             ComponentHealth::Healthy
             | ComponentHealth::Degraded
+            | ComponentHealth::Stopping
             | ComponentHealth::Stopped
             | ComponentHealth::Failed => current,
-            _ => ComponentHealth::Starting,
+            ComponentHealth::Starting => ComponentHealth::Starting,
         },
         OutputHealthEvent::StartupSucceeded => match current {
             ComponentHealth::Degraded => ComponentHealth::Degraded,
@@ -145,6 +146,13 @@ mod tests {
                 OutputHealthEvent::StartupRequested
             ),
             ComponentHealth::Degraded
+        );
+        assert_eq!(
+            reduce_output_health(
+                ComponentHealth::Stopping,
+                OutputHealthEvent::StartupRequested
+            ),
+            ComponentHealth::Stopping
         );
     }
 

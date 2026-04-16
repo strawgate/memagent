@@ -33,15 +33,16 @@ pub struct UdpSink {
     row_buf: Vec<u8>,
     /// Accumulation buffer for the current datagram being assembled.
     dgram_buf: Vec<u8>,
+    /// How many rows are currently buffered in `dgram_buf`.
+    dgram_rows: u64,
     stats: Arc<ComponentStats>,
 }
 
 impl UdpSink {
     /// Create a new UDP sink.
     ///
-    /// Binds a UDP socket to an ephemeral port (`0.0.0.0:0`) for outbound-only
-    /// traffic. The socket is set to non-blocking mode and converted to a
-    /// `tokio::net::UdpSocket`.
+    /// Binds an outbound UDP socket and defers target DNS resolution until send
+    /// time so startup does not block on or fail due to transient DNS issues.
     pub fn new(
         name: impl Into<String>,
         target: impl Into<String>,
@@ -52,12 +53,34 @@ impl UdpSink {
         let socket = UdpSocket::from_std(std_socket)?;
         Ok(Self {
             name: name.into(),
-            target: target.into(),
             socket,
+            target: target.into(),
             row_buf: Vec::with_capacity(2048),
             dgram_buf: Vec::with_capacity(MAX_DATAGRAM_PAYLOAD),
+            dgram_rows: 0,
             stats,
         })
+    }
+
+    async fn send_packet(&self, payload: &[u8]) -> io::Result<()> {
+        let addr = tokio::net::lookup_host(&self.target)
+            .await?
+            .find(std::net::SocketAddr::is_ipv4)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::AddrNotAvailable,
+                    format!("DNS lookup returned no IPv4 addresses for {}", self.target),
+                )
+            })?;
+        match self.socket.send_to(payload, addr).await {
+            Ok(n) if n == payload.len() => Ok(()),
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "UDP datagram was only partially sent",
+            )),
+            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Send the current datagram buffer if non-empty, then clear it.
@@ -67,14 +90,12 @@ impl UdpSink {
         if self.dgram_buf.is_empty() {
             return Ok(());
         }
-        match self.socket.send_to(&self.dgram_buf, &self.target).await {
-            Ok(_) => {}
-            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {
-                // Silently drop — UDP is best-effort.
-            }
-            Err(e) => return Err(e),
-        }
+        let len = self.dgram_buf.len() as u64;
+        self.send_packet(&self.dgram_buf).await?;
+        self.stats.inc_lines(self.dgram_rows);
+        self.stats.inc_bytes(len);
         self.dgram_buf.clear();
+        self.dgram_rows = 0;
         Ok(())
     }
 
@@ -85,7 +106,6 @@ impl UdpSink {
         }
 
         let cols = build_col_infos(batch);
-        let mut total_bytes: u64 = 0;
 
         for row in 0..batch.num_rows() {
             // Serialize row into scratch buffer.
@@ -94,18 +114,15 @@ impl UdpSink {
             self.row_buf.push(b'\n');
 
             let row_len = self.row_buf.len();
-            total_bytes += row_len as u64;
 
             // If this single row exceeds the MTU, send it alone as an
             // oversized datagram (up to 65507). The network may fragment it
             // but that is better than silently dropping data.
             if row_len > MAX_DATAGRAM_PAYLOAD {
                 self.flush_dgram().await?;
-                match self.socket.send_to(&self.row_buf, &self.target).await {
-                    Ok(_) => {}
-                    Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => {}
-                    Err(e) => return Err(e),
-                }
+                self.send_packet(&self.row_buf).await?;
+                self.stats.inc_lines(1);
+                self.stats.inc_bytes(row_len as u64);
                 continue;
             }
 
@@ -115,12 +132,11 @@ impl UdpSink {
             }
 
             self.dgram_buf.extend_from_slice(&self.row_buf);
+            self.dgram_rows += 1;
         }
 
         // Flush any remaining rows.
         self.flush_dgram().await?;
-        self.stats.inc_lines(batch.num_rows() as u64);
-        self.stats.inc_bytes(total_bytes);
         Ok(())
     }
 }
@@ -134,7 +150,7 @@ impl Sink for UdpSink {
         Box::pin(async move {
             match self.do_send_batch(batch).await {
                 Ok(()) => SendResult::Ok,
-                Err(e) => SendResult::IoError(e),
+                Err(e) => SendResult::from_io_error(e),
             }
         })
     }

@@ -35,7 +35,7 @@ pub struct CriReassembler {
     pending: Vec<u8>,
     max_message_size: usize,
     /// Set to `true` when any chunk in the current P/F sequence was truncated
-    /// due to `max_message_size`. Reset in [`reset`].
+    /// due to `max_message_size`. Reset in `reset()`.
     truncated: bool,
 }
 
@@ -265,8 +265,13 @@ mod tests {
 mod proptests {
     use super::*;
     use proptest::prelude::*;
+    use proptest::test_runner::Config as ProptestConfig;
 
     proptest! {
+        #![proptest_config(ProptestConfig {
+            failure_persistence: None,
+            .. ProptestConfig::default()
+        })]
         /// Output never exceeds max_message_size for any sequence of P and F feeds.
         ///
         /// Extends the Kani proofs (fixed depth P+F, P+P+F) to arbitrary-length

@@ -40,11 +40,25 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
       - name: Install mdBook
         uses: peaceiris/actions-mdbook@v2
         with:
           mdbook-version: latest
+
+      - name: Install wasm-pack
+        run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+      - name: Build config WASM
+        env:
+          RUSTC_WRAPPER: ""
+        run: |
+          wasm-pack build crates/logfwd-config-wasm \
+            --target web \
+            --out-dir ../../book/public/wasm/logfwd-config \
+            --release
 
       - name: Link check (book + docs + README)
         uses: lycheeverse/lychee-action@v2

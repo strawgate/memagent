@@ -1,11 +1,22 @@
 use std::io;
 use std::path::PathBuf;
 
+use arrow::record_batch::RecordBatch;
 use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::pipeline::SourceId;
 
 use crate::filter_hints::FilterHints;
+use crate::poll_cadence::PollCadenceSignal;
 use crate::tail::{ByteOffset, FileTailer, TailConfig, TailEvent};
+
+/// Snapshot of source-driven cadence hints consumed by runtime poll loops.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InputCadence {
+    /// Last poll feedback (data/no-data and read-budget saturation).
+    pub signal: PollCadenceSignal,
+    /// Maximum immediate repolls allowed after a budget-saturated read.
+    pub adaptive_fast_polls_max: u8,
+}
 
 /// Events produced by an input source.
 pub enum InputEvent {
@@ -13,9 +24,24 @@ pub enum InputEvent {
     ///
     /// `source_id` identifies which logical source produced the data (e.g.,
     /// which tailed file). `None` for push sources that don't track identity.
+    /// `accounted_bytes` is the source-side byte count that should be charged
+    /// to input diagnostics for this event. For raw byte inputs this is
+    /// usually `bytes.len()`. Wrappers like `FramedInput` may consume this for
+    /// accounting and forward downstream data with `accounted_bytes = 0`.
     Data {
         bytes: Vec<u8>,
         source_id: Option<SourceId>,
+        accounted_bytes: u64,
+    },
+    /// New structured rows produced directly by the source.
+    ///
+    /// `accounted_bytes` is the source-side byte count represented by this
+    /// batch for diagnostics. Structured receivers should set this from their
+    /// accepted payload size rather than relying on Arrow memory-size proxies.
+    Batch {
+        batch: RecordBatch,
+        source_id: Option<SourceId>,
+        accounted_bytes: u64,
     },
     /// The underlying file was rotated (new inode).
     ///
@@ -41,6 +67,14 @@ pub enum InputEvent {
 }
 
 /// Trait for input sources that produce raw bytes.
+#[derive(Debug, Clone)]
+pub struct TlsInputConfig {
+    pub cert_file: Option<String>,
+    pub key_file: Option<String>,
+    pub client_ca_file: Option<String>,
+    pub require_client_auth: bool,
+}
+
 pub trait InputSource: Send {
     /// Poll for new events. Returns empty vec if no new data.
     fn poll(&mut self) -> io::Result<Vec<InputEvent>>;
@@ -48,23 +82,49 @@ pub trait InputSource: Send {
     fn name(&self) -> &str;
 
     /// Coarse runtime health for readiness and diagnostics.
-    ///
-    /// The default is optimistic until a concrete input type wires explicit
-    /// lifecycle state into the control plane.
-    fn health(&self) -> ComponentHealth {
-        ComponentHealth::Healthy
-    }
+    fn health(&self) -> ComponentHealth;
 
     /// Apply filter hints for predicate pushdown. Inputs that support
     /// pushdown use these to skip data early (e.g., XDP severity filtering).
     /// Default implementation ignores hints — correct but slower.
     fn apply_hints(&mut self, _hints: &FilterHints) {}
 
+    /// Source-specific polling feedback for adaptive cadence decisions.
+    ///
+    /// Default: no payload and no read-budget saturation signal.
+    fn get_poll_cadence_signal(&self) -> PollCadenceSignal {
+        PollCadenceSignal::default()
+    }
+
+    /// Upper bound for immediate repolls after a budget-saturated read.
+    ///
+    /// Default: disabled (0), so non-file inputs keep existing cadence.
+    fn get_adaptive_fast_polls_max(&self) -> u8 {
+        0
+    }
+
+    /// Snapshot cadence hints in one call to minimize forwarding surface for wrappers.
+    ///
+    /// Default implementation composes existing cadence hooks for compatibility.
+    fn get_cadence(&self) -> InputCadence {
+        InputCadence {
+            signal: self.get_poll_cadence_signal(),
+            adaptive_fast_polls_max: self.get_adaptive_fast_polls_max(),
+        }
+    }
+
     /// Return checkpoint data for all active sources.
     ///
     /// For file inputs, returns `(SourceId, ByteOffset)` per tailed file.
     /// Default: empty (push sources, generators).
     fn checkpoint_data(&self) -> Vec<(SourceId, ByteOffset)> {
+        vec![]
+    }
+
+    /// Return source-id to canonical-path mappings for active file-backed sources.
+    ///
+    /// Default: empty (push sources, generators).
+    fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
         vec![]
     }
 
@@ -83,8 +143,13 @@ pub struct FileInput {
 
 impl FileInput {
     /// Create a new `FileInput` wrapping a `FileTailer`.
-    pub fn new(name: String, paths: &[PathBuf], config: TailConfig) -> io::Result<Self> {
-        let tailer = FileTailer::new(paths, config)?;
+    pub fn new(
+        name: String,
+        paths: &[PathBuf],
+        config: TailConfig,
+        stats: std::sync::Arc<logfwd_types::diagnostics::ComponentStats>,
+    ) -> io::Result<Self> {
+        let tailer = FileTailer::new(paths, config, stats)?;
         Ok(FileInput { name, tailer })
     }
 
@@ -92,8 +157,13 @@ impl FileInput {
     ///
     /// Patterns are expanded immediately and re-evaluated periodically to
     /// discover files created after startup (e.g., new Kubernetes pods).
-    pub fn new_with_globs(name: String, patterns: &[&str], config: TailConfig) -> io::Result<Self> {
-        let tailer = FileTailer::new_with_globs(patterns, config)?;
+    pub fn new_with_globs(
+        name: String,
+        patterns: &[&str],
+        config: TailConfig,
+        stats: std::sync::Arc<logfwd_types::diagnostics::ComponentStats>,
+    ) -> io::Result<Self> {
+        let tailer = FileTailer::new_with_globs(patterns, config, stats)?;
         Ok(FileInput { name, tailer })
     }
 }
@@ -110,7 +180,12 @@ impl InputSource for FileInput {
                 TailEvent::Data {
                     bytes, source_id, ..
                 } => {
-                    events.push(InputEvent::Data { bytes, source_id });
+                    let accounted_bytes = bytes.len() as u64;
+                    events.push(InputEvent::Data {
+                        bytes,
+                        source_id,
+                        accounted_bytes,
+                    });
                 }
                 TailEvent::Rotated { source_id, .. } => {
                     events.push(InputEvent::Rotated { source_id });
@@ -138,9 +213,21 @@ impl InputSource for FileInput {
         self.tailer.file_offsets()
     }
 
+    fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
+        self.tailer.file_paths()
+    }
+
     fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) {
         if let Err(e) = self.tailer.set_offset_by_source(source_id, offset) {
             tracing::warn!(source_id = source_id.0, error = %e, "failed to restore offset");
         }
+    }
+
+    fn get_poll_cadence_signal(&self) -> PollCadenceSignal {
+        self.tailer.get_poll_cadence_signal()
+    }
+
+    fn get_adaptive_fast_polls_max(&self) -> u8 {
+        self.tailer.get_adaptive_fast_polls_max()
     }
 }

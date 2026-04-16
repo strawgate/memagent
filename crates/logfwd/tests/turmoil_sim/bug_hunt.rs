@@ -271,13 +271,13 @@ fn rejected_batch_checkpoint_behavior() {
         "expected exactly 1 send_batch call (1 batch, rejected)"
     );
 
-    // CONFIRMED BUG (issue #1001): checkpoint advances past rejected data.
-    // The PipelineMachine treats reject() identically to ack() for checkpoint
-    // advancement. On restart, rejected data is permanently skipped.
+    // issue #1001: Checkpoint must NOT advance past rejected data.
+    // The PipelineMachine used to treat reject() identically to ack() for checkpoint
+    // advancement. Now, rejected data must not advance the checkpoint so the pool correctly drops it
+    // and the file tailer does not permanently skip it.
     assert!(
-        durable.is_some() && durable.unwrap() > 0,
-        "CONFIRMED: checkpoint MUST advance past rejected data (current behavior). \
-         If this assertion fails, someone fixed issue #1001 — update this test. \
+        durable.is_none() || durable.unwrap() == 0,
+        "checkpoint MUST NOT advance past rejected data (issue #1001). \
          durable={durable:?}"
     );
 

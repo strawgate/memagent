@@ -32,6 +32,7 @@ fn make_framed_file_input(paths: &[PathBuf]) -> FramedInput {
             glob_rescan_interval_ms: 0,
             ..Default::default()
         },
+        Arc::clone(&stats),
     )
     .expect("create file input");
 
@@ -53,6 +54,7 @@ fn make_framed_glob_input(pattern: &str) -> FramedInput {
             glob_rescan_interval_ms: 0,
             ..Default::default()
         },
+        Arc::clone(&stats),
     )
     .expect("create glob file input");
 
@@ -77,7 +79,10 @@ fn poll_until_data(
 
     while Instant::now() < deadline {
         for event in input.poll().expect("poll file input") {
-            if let InputEvent::Data { bytes, source_id } = event {
+            if let InputEvent::Data {
+                bytes, source_id, ..
+            } = event
+            {
                 collected.push((source_id, bytes));
             }
         }

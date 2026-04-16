@@ -2,7 +2,9 @@
 resolver = "3"
 members = [
     "crates/logfwd-config",
+    "crates/logfwd-runtime",
     "crates/logfwd-types",
+    "crates/logfwd-diagnostics",
     "crates/logfwd-core",
     "crates/logfwd-arrow",
     "crates/logfwd-transform",
@@ -14,38 +16,66 @@ members = [
     "crates/logfwd-bench",
     "crates/logfwd-competitive-bench",
     "crates/logfwd-test-utils",
+    "crates/logfwd-ebpf-proto",
+    "crates/logfwd-ebpf-proto/sensor-ebpf/sensor-ebpf-common",
+    "crates/logfwd-config-wasm",
 ]
-# default-members: all non-bench crates — keep in sync with members
+# sensor-ebpf-kern requires nightly + bpfel-unknown-none target (eBPF bytecode).
+# sensor-ebpf requires Linux (aya uses Linux-only libc symbols: netlink, eBPF).
+# Both are intentionally excluded from the workspace.
+exclude = [
+    "crates/logfwd-ebpf-proto/sensor-ebpf/sensor-ebpf-kern",
+    "crates/logfwd-ebpf-proto/sensor-ebpf",
+]
+# default-members: crates that compile without datafusion (~30s vs ~3min).
+# Bare `cargo check/clippy` uses these. Use `--workspace` or `-p logfwd`
+# to include logfwd-transform (datafusion) and the binary crate.
+# CI and `just ci-all` always use --workspace.
 default-members = [
     "crates/logfwd-config",
     "crates/logfwd-types",
+    "crates/logfwd-diagnostics",
     "crates/logfwd-core",
     "crates/logfwd-arrow",
-    "crates/logfwd-transform",
     "crates/logfwd-io",
     "crates/logfwd-output",
-    "crates/logfwd",
+    "crates/logfwd-test-utils",
 ]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 
 [workspace.dependencies]
-arrow = { version = "55", default-features = false, features = ["ipc_compression"] }
+arrow = { version = "58", default-features = false, features = [
+    "ipc_compression",
+] }
 backon = { version = "1", default-features = false, features = ["tokio-sleep"] }
 bytes = "1"
-arrow-json = "55"
-datafusion = { version = "48", default-features = false, features = [
+chrono = { version = "0.4.44", default-features = false }
+clap = "4.5"
+clap_complete = "4.5"
+clap_complete_nushell = "4.6"
+arrow-json = "58"
+datafusion = { version = "53", default-features = false, features = [
+    "sql",
     "string_expressions",
     "unicode_expressions",
     "regex_expressions",
     "recursive_protection",
 ] }
+fail = "0.5"
+fastrand = "2"
+futures-util = "0.3"
 globset = "0.4"
 opentelemetry = "0.31"
 opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.31", default-features = false, features = ["http-proto", "reqwest-client", "trace", "metrics"] }
+opentelemetry-otlp = { version = "0.31", default-features = false, features = [
+    "http-proto",
+    "reqwest-client",
+    "trace",
+    "metrics",
+] }
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
 sonic-rs = "0.5"
@@ -57,7 +87,21 @@ turmoil = "0.7"
 walkdir = "2"
 smallvec = { version = "1", features = ["union"] }
 thiserror = { version = "2", default-features = false }
+url = "2"
 anyhow = "1"
+axum = { version = "0.8", default-features = false }
+libc = "0.2"
+lz4_flex = "0.11"
+serde_json = "1"
+serde_yaml_ng = "0.10"
+proptest = "1"
+tiny_http = "0.12"
+aya = "0.13.1"
+sysinfo = "0.38"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+csv = "1"
+wasm-bindgen = "0.2"
+js-sys = "0.3"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -95,7 +139,10 @@ needless_pass_by_ref_mut = "warn"
 undocumented_unsafe_blocks = "warn"
 
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(feature, values("turmoil"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(kani)',
+    'cfg(feature, values("turmoil", "internal-failpoints", "otlp-research", "otlp-profile-alloc"))',
+] }
 unused_qualifications = "warn"
 
 [profile.dev]
@@ -108,7 +155,7 @@ opt-level = 3
 lto = "thin"
 codegen-units = 1
 overflow-checks = true
-debug = true  # needed for flamegraphs and dhat to show source locations
+debug = true           # needed for flamegraphs and dhat to show source locations
 
 [profile.test]
 # line-tables-only keeps backtraces readable while shrinking test binaries

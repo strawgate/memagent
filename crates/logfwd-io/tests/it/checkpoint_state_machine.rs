@@ -234,7 +234,12 @@ impl Sut {
             ..Default::default()
         };
         let paths = vec![self.log_path.clone()];
-        let mut tailer = FileTailer::new(&paths, config).expect("create tailer after crash");
+        let mut tailer = FileTailer::new(
+            &paths,
+            config,
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .expect("create tailer after crash");
 
         if saved_offset > 0 {
             let _ = tailer.set_offset(&self.log_path, saved_offset);
@@ -271,7 +276,12 @@ impl StateMachineTest for TailCheckpointTest {
         };
 
         let paths = vec![log_path.clone()];
-        let tailer = FileTailer::new(&paths, config).expect("create tailer");
+        let tailer = FileTailer::new(
+            &paths,
+            config,
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .expect("create tailer");
 
         let checkpoint_store = FileCheckpointStore::open(dir.path().join("checkpoints"))
             .expect("open checkpoint store");
@@ -406,17 +416,24 @@ impl StateMachineTest for TailCheckpointTest {
     }
 }
 
+fn build_checkpoint_state_machine_proptest_config() -> ProptestConfig {
+    let mut config = ProptestConfig {
+        cases: logfwd_test_utils::state_machine_proptest_cases(),
+        max_shrink_iters: 5_000,
+        ..ProptestConfig::default()
+    };
+    if cfg!(miri) || std::env::var_os("LOGFWD_DISABLE_PROPTEST_PERSISTENCE").is_some() {
+        config.failure_persistence = None;
+    }
+    config
+}
+
 // ---------------------------------------------------------------------------
 // Macro invocation
 // ---------------------------------------------------------------------------
 
 prop_state_machine! {
-    #![proptest_config(ProptestConfig {
-        cases: logfwd_test_utils::state_machine_proptest_cases(),
-        max_shrink_iters: 5_000,
-        failure_persistence: None,
-        .. ProptestConfig::default()
-    })]
+    #![proptest_config(build_checkpoint_state_machine_proptest_config())]
 
     #[test]
     fn checkpoint_state_machine(sequential 5..30 => TailCheckpointTest);

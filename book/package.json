@@ -1,0 +1,18 @@
+{
+  "name": "logfwd-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:wasm": "wasm-pack build ../crates/logfwd-config-wasm --target web --out-dir ../book/public/wasm/logfwd-config --release",
+    "prebuild": "npm run build:wasm",
+    "predev": "npm run build:wasm",
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.38.3",
+    "astro": "^6.0.1",
+    "sharp": "^0.33.0"
+  }
+}

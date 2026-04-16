@@ -1,26 +1,60 @@
-import type { MetricSeries } from "../app";
-import { Chart } from "./Chart";
+import type { TelemetryStore } from "@otlpkit/views";
+import { Chart, type ChartConfig } from "./Chart";
+
+/** Interval for time-series bucketing (ms). */
+const INTERVAL_MS = 1000;
 
 interface Props {
-  series: MetricSeries[];
+  store: TelemetryStore;
+  charts: ChartConfig[];
+  tick: number;
+  /** Optional per-metric annotation overrides (keyed by metricName). */
+  annotations?: Record<string, string>;
 }
 
-export function ChartGrid({ series }: Props) {
+export function ChartGrid({ store, charts, tick: _tick, annotations }: Props) {
   return (
     <div class="chart-grid">
-      {series.map((s) => (
-        <div class="chart-card" key={s.id}>
-          <div class="chart-head">
-            <span class="chart-label">{s.label}</span>
-            <span class="chart-val">
-              {s.value}
-              <span class="unit">{s.unit}</span>
-              {s.limit && <span class="lim">{s.limit}</span>}
-            </span>
+      {charts.map((cfg) => {
+        const frame = store.selectTimeSeries({
+          metricName: cfg.metricName,
+          intervalMs: INTERVAL_MS,
+          reduce: "last",
+          ...(cfg.splitBy ? { splitBy: cfg.splitBy } : {}),
+        });
+        // Sum latest values across all series (e.g. multiple pipelines).
+        let displayVal = "-";
+        let total = 0;
+        let hasValue = false;
+        for (const s of frame.series) {
+          const last = s.points[s.points.length - 1];
+          if (last != null) {
+            total += last.value;
+            hasValue = true;
+          }
+        }
+        if (hasValue) {
+          displayVal = cfg.fmtAxis ? cfg.fmtAxis(total) : String(Math.round(total));
+        }
+        return (
+          <div class="chart-card" key={cfg.metricName}>
+            <div class="chart-head">
+              <span class="chart-label">{cfg.label}</span>
+              <span class="chart-val">
+                {displayVal}
+                <span class="unit">{cfg.unit}</span>
+                {(cfg.annotation || annotations?.[cfg.metricName]) && (
+                  <span class="chart-annotation">
+                    {" "}
+                    {annotations?.[cfg.metricName] ?? cfg.annotation}
+                  </span>
+                )}
+              </span>
+            </div>
+            <Chart frame={frame} config={cfg} />
           </div>
-          <Chart series={s} />
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

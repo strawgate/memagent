@@ -13,15 +13,15 @@
 use libfuzzer_sys::fuzz_target;
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_arrow::scanner::Scanner;
-use logfwd_io::diagnostics::ComponentStats;
 use logfwd_output::{BatchMetadata, Compression, JsonLinesSink, OtlpProtocol, OtlpSink};
+use logfwd_types::diagnostics::ComponentStats;
 use std::sync::Arc;
 
-fn run_sinks(data: &[u8], validate_utf8: bool) {
+fn run_sinks(data: &[u8], validate_utf8: bool, line_field_name: Option<&str>) {
     let mut scanner = Scanner::new(ScanConfig {
         wanted_fields: vec![],
         extract_all: true,
-        keep_raw: false,
+        line_field_name: line_field_name.map(ToString::to_string),
         validate_utf8,
     });
     let Ok(batch) = scanner.scan_detached(bytes::Bytes::copy_from_slice(data)) else { return; };
@@ -78,6 +78,8 @@ fn run_sinks(data: &[u8], validate_utf8: bool) {
 }
 
 fuzz_target!(|data: &[u8]| {
-    run_sinks(data, false);
-    run_sinks(data, true);
+    run_sinks(data, false, None);
+    run_sinks(data, true, None);
+    run_sinks(data, false, Some("body"));
+    run_sinks(data, true, Some("body"));
 });

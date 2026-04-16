@@ -46,14 +46,18 @@ impl ScanBuilder for StreamingBuilder {
         self.append_float_by_idx(idx, v);
     }
     #[inline(always)]
+    fn append_bool_by_idx(&mut self, idx: usize, v: bool) {
+        self.append_bool_by_idx(idx, v);
+    }
+    #[inline(always)]
     fn append_null_by_idx(&mut self, idx: usize) {
         self.append_null_by_idx(idx);
     }
     #[inline(always)]
-    fn append_raw(&mut self, line: &[u8]) {
+    fn append_line(&mut self, line: &[u8]) {
         // Explicitly call the inherent method to avoid any ambiguity
         // with this trait method of the same name.
-        StreamingBuilder::append_raw(self, line);
+        StreamingBuilder::append_line(self, line);
     }
 }
 
@@ -69,14 +73,25 @@ impl ScanBuilder for StreamingBuilder {
 pub struct Scanner {
     builder: StreamingBuilder,
     config: ScanConfig,
+    resource_attrs: Vec<(String, String)>,
 }
 
 impl Scanner {
     /// Create a new streaming scanner with the given configuration.
     pub fn new(config: ScanConfig) -> Self {
         Scanner {
-            builder: StreamingBuilder::new(config.keep_raw),
+            builder: StreamingBuilder::new(config.line_field_name.clone()),
             config,
+            resource_attrs: Vec::new(),
+        }
+    }
+
+    /// Create a scanner that injects constant `_resource_*` columns per row.
+    pub fn with_resource_attrs(config: ScanConfig, resource_attrs: Vec<(String, String)>) -> Self {
+        Scanner {
+            builder: StreamingBuilder::new(config.line_field_name.clone()),
+            config,
+            resource_attrs,
         }
     }
     /// Scan an NDJSON buffer into a zero-copy `RecordBatch`.
@@ -91,6 +106,8 @@ impl Scanner {
             })?;
         }
         self.builder.begin_batch(buf.clone());
+        self.builder
+            .set_resource_attributes(self.resource_attrs.as_slice());
         scan_streaming(&buf, &self.config, &mut self.builder);
         self.builder.finish_batch()
     }
@@ -110,6 +127,8 @@ impl Scanner {
             })?;
         }
         self.builder.begin_batch(buf.clone());
+        self.builder
+            .set_resource_attributes(self.resource_attrs.as_slice());
         scan_streaming(&buf, &self.config, &mut self.builder);
         self.builder.finish_batch_detached()
     }
@@ -118,9 +137,10 @@ impl Scanner {
 #[cfg(test)]
 mod tests {
     use crate::scanner::Scanner;
-    use arrow::array::{Array, Int64Array, StringArray};
+    use arrow::array::{Array, BooleanArray, Int64Array, StringArray};
     use bytes::Bytes;
     use logfwd_core::scan_config::{FieldSpec, ScanConfig};
+    use logfwd_types::field_names;
 
     fn default_scanner(_rows: usize) -> Scanner {
         Scanner::new(ScanConfig::default())
@@ -237,7 +257,7 @@ mod tests {
                 aliases: vec![],
             }],
             extract_all: false,
-            keep_raw: false,
+            line_field_name: None,
             validate_utf8: false,
         };
         let batch = Scanner::new(config)
@@ -252,18 +272,105 @@ mod tests {
         assert!(batch.column_by_name("b").is_none());
     }
     #[test]
-    fn test_keep_raw() {
+    fn test_line_capture() {
         let config = ScanConfig {
             wanted_fields: vec![],
             extract_all: true,
-            keep_raw: true,
+            line_field_name: Some("body".to_string()),
             validate_utf8: false,
         };
         let batch = Scanner::new(config)
             .scan_detached(Bytes::from(b"{\"msg\":\"hi\"}\n".to_vec()))
             .unwrap();
-        assert!(batch.column_by_name("_raw").is_some());
+        assert!(batch.column_by_name("body").is_some());
     }
+
+    #[test]
+    fn test_resource_columns_injected_detached() {
+        let input = br#"{"message":"a"}
+{"message":"b"}
+"#;
+        let scanner = Scanner::with_resource_attrs(
+            ScanConfig::default(),
+            vec![
+                ("service.name".to_string(), "checkout".to_string()),
+                ("k8s.namespace".to_string(), "prod".to_string()),
+            ],
+        );
+        let mut scanner = scanner;
+        let batch = scanner
+            .scan_detached(Bytes::from(input.to_vec()))
+            .expect("batch");
+
+        let service = batch
+            .column_by_name("resource.attributes.service.name")
+            .expect("resource service col")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("utf8");
+        assert_eq!(service.value(0), "checkout");
+        assert_eq!(service.value(1), "checkout");
+
+        let ns = batch
+            .column_by_name("resource.attributes.k8s.namespace")
+            .expect("resource namespace col")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("utf8");
+        assert_eq!(ns.value(0), "prod");
+        assert_eq!(ns.value(1), "prod");
+    }
+
+    #[test]
+    fn test_resource_columns_injected() {
+        // Mirrors test_resource_columns_injected_detached but uses scan()
+        // (StringViewArray) instead of scan_detached() (StringArray).
+        let input = br#"{"message":"a"}
+{"message":"b"}
+"#;
+        let scanner = Scanner::with_resource_attrs(
+            ScanConfig::default(),
+            vec![
+                ("service.name".to_string(), "checkout".to_string()),
+                ("k8s.namespace".to_string(), "prod".to_string()),
+            ],
+        );
+        let mut scanner = scanner;
+        let batch = scanner.scan(Bytes::from(input.to_vec())).expect("batch");
+
+        let service = batch
+            .column_by_name("resource.attributes.service.name")
+            .expect("resource service col")
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .expect("utf8view");
+        assert_eq!(service.value(0), "checkout");
+        assert_eq!(service.value(1), "checkout");
+
+        let ns = batch
+            .column_by_name("resource.attributes.k8s.namespace")
+            .expect("resource namespace col")
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .expect("utf8view");
+        assert_eq!(ns.value(0), "prod");
+        assert_eq!(ns.value(1), "prod");
+
+        // Verify that the original dotted key is stored in field metadata.
+        let schema = batch.schema();
+        let svc_field = schema
+            .field_with_name("resource.attributes.service.name")
+            .expect("field exists");
+        assert_eq!(
+            svc_field
+                .metadata()
+                .get(field_names::METADATA_RESOURCE_KEY)
+                .map(String::as_str),
+            Some("service.name"),
+            "field metadata must preserve original dotted key"
+        );
+    }
+
     #[test]
     fn test_batch_reuse() {
         let mut s = default_scanner(4);
@@ -282,16 +389,26 @@ mod tests {
                 b"{\"a\":true,\"b\":false,\"c\":null}\n".to_vec(),
             ))
             .unwrap();
-        // Single-type string field: bare name
+        // Single-type bool field: bare name
         assert_eq!(
             batch
                 .column_by_name("a")
                 .unwrap()
                 .as_any()
-                .downcast_ref::<StringArray>()
+                .downcast_ref::<BooleanArray>()
                 .unwrap()
                 .value(0),
-            "true"
+            true
+        );
+        assert_eq!(
+            batch
+                .column_by_name("b")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<BooleanArray>()
+                .unwrap()
+                .value(0),
+            false
         );
     }
     #[test]
@@ -376,10 +493,10 @@ mod tests {
                 .column_by_name("ok")
                 .unwrap()
                 .as_any()
-                .downcast_ref::<StringArray>()
+                .downcast_ref::<BooleanArray>()
                 .unwrap()
                 .value(0),
-            "true"
+            true
         );
     }
     #[test]
@@ -439,25 +556,25 @@ mod tests {
     }
 
     #[test]
-    fn test_streaming_keep_raw() {
+    fn test_streaming_line_capture() {
         let config = ScanConfig {
             wanted_fields: vec![],
             extract_all: true,
-            keep_raw: true,
+            line_field_name: Some("body".to_string()),
             validate_utf8: false,
         };
         let batch = Scanner::new(config)
             .scan(Bytes::from_static(b"{\"msg\":\"hi\"}\n"))
             .unwrap();
         assert!(
-            batch.column_by_name("_raw").is_some(),
-            "_raw column must be present when keep_raw=true"
+            batch.column_by_name("body").is_some(),
+            "body column must be present when line_capture=true"
         );
-        let raw_col = batch.column_by_name("_raw").unwrap();
+        let raw_col = batch.column_by_name("body").unwrap();
         let raw_arr = raw_col
             .as_any()
             .downcast_ref::<arrow::array::StringViewArray>()
-            .expect("_raw must be StringViewArray in Scanner");
+            .expect("body must be StringViewArray in Scanner");
         assert_eq!(raw_arr.value(0), "{\"msg\":\"hi\"}");
     }
 

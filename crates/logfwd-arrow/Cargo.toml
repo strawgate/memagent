@@ -8,14 +8,25 @@ publish = false
 [lib]
 doctest = false
 
+[features]
+# Expose columnar builder internals for allocation profiling integration tests.
+# Not for production use.
+_test-internals = []
+
 [dependencies]
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
+logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 arrow = { workspace = true }
 bytes = "1"
 
 [dev-dependencies]
+proptest = { workspace = true }
 serial_test = "3"
 stats_alloc = "0.1"
+
+[[bin]]
+name = "builder_profile"
+required-features = ["_test-internals"]
 
 [lints]
 workspace = true

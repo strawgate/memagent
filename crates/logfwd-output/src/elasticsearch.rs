@@ -115,11 +115,15 @@ impl ElasticsearchSink {
         self.batch_buf.reserve(estimated);
 
         let cols = build_col_infos(batch);
-        // Check whether any output field is named `@timestamp` or `_timestamp`
+        // Check whether any output field is a recognised timestamp column
+        // (any of: `_timestamp`, `@timestamp`, `timestamp`, `time`, `ts`)
         // to avoid injecting a duplicate timestamp key into the document.
         let has_timestamp_col = cols.iter().any(|c| {
-            c.field_name == field_names::TIMESTAMP_AT
-                || c.field_name == field_names::TIMESTAMP_UNDERSCORE
+            field_names::matches_any(
+                &c.field_name,
+                field_names::TIMESTAMP,
+                field_names::TIMESTAMP_VARIANTS,
+            )
         });
 
         for row in 0..num_rows {
@@ -185,7 +189,8 @@ impl ElasticsearchSink {
     /// Error kinds are chosen deliberately:
     /// - `Other`: structural/transient failures (malformed JSON, missing fields) — retriable
     /// - `InvalidData`: item-level document errors (mapper_parsing_exception, etc.) — permanent,
-    ///   retrying the same document is futile, so these map to `Rejected` in the caller
+    ///   retrying the same document is futile, so these map to `Rejected` in the caller.
+    ///   Also used when `errors:true` but no item-level details are present.
     fn parse_bulk_response(body: &[u8]) -> io::Result<()> {
         #[derive(serde::Deserialize)]
         struct BulkHeader {
@@ -221,6 +226,12 @@ impl ElasticsearchSink {
                 .and_then(|obj| obj.values().next())
                 .and_then(serde_json::Value::as_object);
             if let Some(action_obj) = action {
+                let status = action_obj
+                    .get("status")
+                    .and_then(serde_json::Value::as_u64)
+                    .ok_or_else(|| {
+                        io::Error::other("ES bulk response item missing numeric status field")
+                    })?;
                 if let Some(error) = action_obj.get("error") {
                     let error_type = error
                         .get("type")
@@ -230,15 +241,40 @@ impl ElasticsearchSink {
                         .get("reason")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("no reason provided");
+                    if status == 429 || (500..600).contains(&status) {
+                        // Status indicates transient backpressure/server failure.
+                        return Err(io::Error::other(format!(
+                            "ES bulk transient error (status {status}): {error_type}: {reason}"
+                        )));
+                    }
                     // InvalidData: document-level rejection — permanent, do not retry.
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
-                        format!("ES bulk error: {error_type}: {reason}"),
+                        format!("ES bulk error (status {status}): {error_type}: {reason}"),
+                    ));
+                }
+                // Some ES responses include only `status` for failed items (for example
+                // status-only 429/503 under pressure). Preserve retry semantics even when
+                // `error` is absent.
+                if status == 429 || (500..600).contains(&status) {
+                    return Err(io::Error::other(format!(
+                        "ES bulk transient error (status {status}): missing item error details"
+                    )));
+                }
+                if status >= 400 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("ES bulk error (status {status}): missing item error details"),
                     ));
                 }
             }
         }
-        Ok(())
+        // errors: true but no specific error found in items — treat as failure rather
+        // than silently returning Ok (which would cause data loss by masking the error).
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "ES bulk response indicated errors but no error details found in items",
+        ))
     }
 
     /// Query Elasticsearch using ES|QL and receive Arrow IPC response.
@@ -422,10 +458,14 @@ impl ElasticsearchSink {
         tracing::Span::current().record("send_ns", send_ns);
 
         let status = response.status();
+        tracing::Span::current().record("status_code", status.as_u16() as u64);
 
         // 413 is ES-specific: triggers reactive batch splitting.
         if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
             let detail = response.text().await.unwrap_or_default();
+            let recv_ns = (t0.elapsed().as_nanos() as u64).saturating_sub(send_ns);
+            tracing::Span::current().record("recv_ns", recv_ns);
+            tracing::Span::current().record("resp_bytes", detail.len() as u64);
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("ES returned 413 Payload Too Large (body {body_len} bytes): {detail}"),
@@ -438,6 +478,9 @@ impl ElasticsearchSink {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<unreadable>".to_string());
+            let recv_ns = (t0.elapsed().as_nanos() as u64).saturating_sub(send_ns);
+            tracing::Span::current().record("recv_ns", recv_ns);
+            tracing::Span::current().record("resp_bytes", detail.len() as u64);
             if let Some(send_result) = crate::http_classify::classify_http_status(
                 status.as_u16(),
                 retry_after.as_ref(),
@@ -497,9 +540,15 @@ impl ElasticsearchSink {
         let ts_no_comma = &ts_buf[1..];
 
         let cols = build_col_infos(&batch);
+        // Fixes #1680: use the same broad check as `serialize_batch` — canonical
+        // variants (`timestamp`, `time`, `ts`) must suppress synthetic @timestamp
+        // injection in streaming mode too.
         let has_timestamp_col = cols.iter().any(|c| {
-            c.field_name == field_names::TIMESTAMP_AT
-                || c.field_name == field_names::TIMESTAMP_UNDERSCORE
+            field_names::matches_any(
+                &c.field_name,
+                field_names::TIMESTAMP,
+                field_names::TIMESTAMP_VARIANTS,
+            )
         });
 
         let mut chunk = Vec::with_capacity(config.stream_chunk_bytes.max(64 * 1024));
@@ -574,10 +623,14 @@ impl ElasticsearchSink {
         tracing::Span::current().record("req_bytes", payload_len as u64);
 
         let status = response.status();
+        tracing::Span::current().record("status_code", status.as_u16() as u64);
 
         // 413 is ES-specific: triggers reactive batch splitting.
         if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
             let detail = response.text().await.unwrap_or_default();
+            let recv_ns = (t0.elapsed().as_nanos() as u64).saturating_sub(send_ns);
+            tracing::Span::current().record("recv_ns", recv_ns);
+            tracing::Span::current().record("resp_bytes", detail.len() as u64);
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
@@ -592,6 +645,9 @@ impl ElasticsearchSink {
                 .text()
                 .await
                 .unwrap_or_else(|_| "<unreadable>".to_string());
+            let recv_ns = (t0.elapsed().as_nanos() as u64).saturating_sub(send_ns);
+            tracing::Span::current().record("recv_ns", recv_ns);
+            tracing::Span::current().record("resp_bytes", detail.len() as u64);
             if let Some(send_result) = crate::http_classify::classify_http_status(
                 status.as_u16(),
                 retry_after.as_ref(),
@@ -784,7 +840,7 @@ impl ElasticsearchSinkFactory {
 /// Handles dates from 1970 to 9999 correctly via the Gregorian calendar.
 /// Timestamps beyond year 9999 are clamped to 9999-12-31T23:59:59 to fit
 /// the 19-byte ASCII buffer and comply with ISO 8601 4-digit year limit.
-fn write_unix_timestamp_utc_into(buf: &mut [u8; 19], mut secs: u64) {
+pub(crate) fn write_unix_timestamp_utc_into(buf: &mut [u8; 19], mut secs: u64) {
     const MAX_SECS: u64 = 253402300799; // 9999-12-31T23:59:59
     if secs > MAX_SECS {
         secs = MAX_SECS;
@@ -903,8 +959,15 @@ fn format_unix_timestamp_utc(secs: u64) -> String {
     String::from_utf8(Vec::from(buf)).expect("timestamp bytes are valid UTF-8")
 }
 
-fn is_leap_year(y: u32) -> bool {
-    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+#[cfg(test)]
+fn write_ts_suffix_simple(secs: u64, frac: u64) -> Vec<u8> {
+    let secs = secs.min(253402300799); // 9999-12-31T23:59:59
+    let ts = format_unix_timestamp_utc(secs);
+    format!(",\"@timestamp\":\"{ts}.{frac:09}Z\"}}").into_bytes()
+}
+
+pub(crate) fn is_leap_year(y: u32) -> bool {
+    (y.is_multiple_of(4) && !y.is_multiple_of(100)) || y.is_multiple_of(400)
 }
 
 #[cfg(test)]
@@ -912,13 +975,33 @@ mod tests {
     use super::*;
     use arrow::array::{Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
-    use std::sync::Arc;
+    use proptest::prelude::*;
+    use proptest::string::string_regex;
+    use std::sync::{Arc, OnceLock};
+
+    type RandomRow = (
+        Option<String>,
+        Option<String>,
+        Option<i64>,
+        Option<f64>,
+        Option<bool>,
+    );
 
     fn zero_metadata() -> BatchMetadata {
         BatchMetadata {
             resource_attrs: Arc::new(vec![]),
             observed_time_ns: 0,
         }
+    }
+
+    fn shared_test_client() -> reqwest::Client {
+        static TEST_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+        TEST_CLIENT.get_or_init(reqwest::Client::new).clone()
+    }
+
+    fn unicode_string(max_len: usize) -> impl Strategy<Value = String> {
+        proptest::collection::vec(any::<char>(), 0..=max_len)
+            .prop_map(|chars| chars.into_iter().collect())
     }
 
     fn make_test_sink(index: &str) -> ElasticsearchSink {
@@ -932,13 +1015,132 @@ mod tests {
             Arc::new(ComponentStats::default()),
         )
         .expect("factory creation failed");
-        let client = reqwest::Client::new();
+        let client = shared_test_client();
         ElasticsearchSink::new(
             "test".to_string(),
             Arc::clone(&factory.config),
             client,
             Arc::new(ComponentStats::default()),
         )
+    }
+
+    fn serialize_batch_simple_for_test(
+        batch: &RecordBatch,
+        metadata: &BatchMetadata,
+        index: &str,
+    ) -> io::Result<Vec<u8>> {
+        let mut out = Vec::new();
+        if batch.num_rows() == 0 {
+            return Ok(out);
+        }
+
+        let escaped_index = serde_json::to_string(index).map_err(io::Error::other)?;
+        let action_line = format!("{{\"index\":{{\"_index\":{escaped_index}}}}}\n");
+
+        let ts_nanos = metadata.observed_time_ns;
+        let ts_secs = ts_nanos / 1_000_000_000;
+        let ts_frac = ts_nanos % 1_000_000_000;
+        let ts_text = format!("{}.{ts_frac:09}Z", format_unix_timestamp_utc(ts_secs));
+
+        let cols = build_col_infos(batch);
+        let has_timestamp_col = cols.iter().any(|c| {
+            c.field_name == field_names::TIMESTAMP_AT
+                || c.field_name == field_names::TIMESTAMP_UNDERSCORE
+        });
+
+        for row in 0..batch.num_rows() {
+            out.extend_from_slice(action_line.as_bytes());
+
+            let doc_start = out.len();
+            write_row_json(batch, row, &cols, &mut out)?;
+            out.push(b'\n');
+
+            if !has_timestamp_col {
+                if !out.ends_with(b"}\n") {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "serialize_batch_simple_for_test: JSON doc must end with }\\n",
+                    ));
+                }
+                let trim_to = out.len() - 2;
+                if trim_to == doc_start + 1 {
+                    out.truncate(doc_start);
+                    let suffix = format!("{{\"@timestamp\":\"{ts_text}\"}}");
+                    out.extend_from_slice(suffix.as_bytes());
+                } else {
+                    out.truncate(trim_to);
+                    let suffix = format!(",\"@timestamp\":\"{ts_text}\"}}");
+                    out.extend_from_slice(suffix.as_bytes());
+                }
+                out.push(b'\n');
+            }
+        }
+
+        Ok(out)
+    }
+
+    fn parse_json_lines(bytes: &[u8]) -> Vec<serde_json::Value> {
+        if bytes.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut lines = bytes.split(|b| *b == b'\n').peekable();
+        while let Some(line) = lines.next() {
+            if line.is_empty() {
+                assert!(
+                    lines.peek().is_none(),
+                    "ndjson must not contain interior blank lines"
+                );
+                continue;
+            }
+            out.push(serde_json::from_slice::<serde_json::Value>(line).expect("valid ndjson line"));
+        }
+        out
+    }
+
+    fn build_random_batch(rows: &[RandomRow], include_timestamp: bool) -> RecordBatch {
+        let mut fields = Vec::new();
+        let mut columns: Vec<Arc<dyn arrow::array::Array>> = Vec::new();
+
+        if include_timestamp {
+            fields.push(Field::new(field_names::TIMESTAMP_AT, DataType::Utf8, true));
+            let ts: Vec<Option<String>> = (0..rows.len())
+                .map(|i| {
+                    if i % 3 == 0 {
+                        None
+                    } else {
+                        Some(format!("2026-04-08T12:00:{:02}.123456789Z", i % 60))
+                    }
+                })
+                .collect();
+            columns.push(Arc::new(StringArray::from(
+                ts.iter().map(|s| s.as_deref()).collect::<Vec<_>>(),
+            )));
+        }
+
+        fields.push(Field::new("level", DataType::Utf8, true));
+        fields.push(Field::new("message", DataType::Utf8, true));
+        fields.push(Field::new("status", DataType::Int64, true));
+        fields.push(Field::new("duration_ms", DataType::Float64, true));
+        fields.push(Field::new("active", DataType::Boolean, true));
+
+        let levels: Vec<Option<String>> = rows.iter().map(|r| r.0.clone()).collect();
+        let messages: Vec<Option<String>> = rows.iter().map(|r| r.1.clone()).collect();
+        let statuses: Vec<Option<i64>> = rows.iter().map(|r| r.2).collect();
+        let durations: Vec<Option<f64>> = rows.iter().map(|r| r.3).collect();
+        let active: Vec<Option<bool>> = rows.iter().map(|r| r.4).collect();
+
+        columns.push(Arc::new(StringArray::from(
+            levels.iter().map(|s| s.as_deref()).collect::<Vec<_>>(),
+        )));
+        columns.push(Arc::new(StringArray::from(
+            messages.iter().map(|s| s.as_deref()).collect::<Vec<_>>(),
+        )));
+        columns.push(Arc::new(Int64Array::from(statuses)));
+        columns.push(Arc::new(arrow::array::Float64Array::from(durations)));
+        columns.push(Arc::new(arrow::array::BooleanArray::from(active)));
+
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).expect("valid random batch")
     }
 
     #[test]
@@ -974,10 +1176,171 @@ mod tests {
         assert!(lines[3].contains(r#""level":"WARN""#));
     }
 
+    /// Regression test: batches with a canonical timestamp column name (`timestamp`,
+    /// `time`, `ts`) must NOT have a synthetic `@timestamp` injected.
+    ///
+    /// Before the fix, `has_timestamp_col` only checked `@timestamp`/`_timestamp`,
+    /// so a column named `timestamp`, `time`, or `ts` would cause two timestamp
+    /// fields in the ES document — the user's original field plus the injected
+    /// `@timestamp` derived from `metadata.observed_time_ns`.
+    #[test]
+    fn canonical_timestamp_variants_suppress_at_timestamp_injection() {
+        for col_name in &["timestamp", "time", "ts"] {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("msg", DataType::Utf8, false),
+                Field::new(*col_name, DataType::Utf8, false),
+            ]));
+            let batch = RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(StringArray::from(vec!["hello"])),
+                    Arc::new(StringArray::from(vec!["2024-01-01T00:00:00Z"])),
+                ],
+            )
+            .expect("batch creation failed");
+
+            let mut sink = make_test_sink("logs");
+            let meta = zero_metadata();
+            sink.serialize_batch(&batch, &meta)
+                .expect("serialize failed");
+            let output = String::from_utf8_lossy(&sink.batch_buf);
+            let lines: Vec<&str> = output.lines().collect();
+            // doc line is index 1
+            assert!(
+                !lines[1].contains(r#""@timestamp""#),
+                "column '{}': expected no @timestamp injection but got: {}",
+                col_name,
+                lines[1]
+            );
+        }
+    }
+
+    /// Regression test for issue #1680.
+    ///
+    /// `serialize_batch_streaming` used a narrow `has_timestamp_col` check that
+    /// only matched `@timestamp`/`_timestamp`.  A column named `timestamp`, `time`,
+    /// or `ts` caused a spurious `@timestamp` injection alongside the user's column.
+    #[test]
+    fn streaming_canonical_timestamp_variants_suppress_at_timestamp_injection() {
+        use std::sync::atomic::AtomicU64;
+
+        // Build a minimal streaming config.
+        let factory = ElasticsearchSinkFactory::new(
+            "test".to_string(),
+            "http://localhost:9200".to_string(),
+            "test-index".to_string(),
+            vec![],
+            false,
+            ElasticsearchRequestMode::Streaming,
+            Arc::new(ComponentStats::default()),
+        )
+        .expect("factory creation failed");
+        let config = Arc::clone(&factory.config);
+
+        for col_name in &["timestamp", "time", "ts"] {
+            let schema = Arc::new(Schema::new(vec![
+                Field::new("msg", DataType::Utf8, false),
+                Field::new(*col_name, DataType::Utf8, false),
+            ]));
+            let batch = RecordBatch::try_new(
+                schema,
+                vec![
+                    Arc::new(StringArray::from(vec!["hello"])),
+                    Arc::new(StringArray::from(vec!["2024-01-01T00:00:00Z"])),
+                ],
+            )
+            .expect("batch creation failed");
+
+            // We need a tokio runtime to drive the mpsc channel.
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("tokio runtime");
+            let (tx, mut rx) = mpsc::channel::<io::Result<Vec<u8>>>(16);
+            let emitted = Arc::new(AtomicU64::new(0));
+
+            rt.block_on(async {
+                let config_clone = Arc::clone(&config);
+                let batch_clone = batch.clone();
+                let meta = BatchMetadata {
+                    resource_attrs: Arc::new(vec![]),
+                    observed_time_ns: 0,
+                };
+                let tx_clone = tx.clone();
+                drop(tx); // ensure channel closes when producer is done
+                tokio::task::spawn_blocking(move || {
+                    ElasticsearchSink::serialize_batch_streaming(
+                        batch_clone,
+                        meta,
+                        config_clone,
+                        tx_clone,
+                        emitted,
+                    )
+                    .expect("serialize_batch_streaming should not error");
+                })
+                .await
+                .expect("task must not panic");
+
+                // Collect all chunks.
+                let mut output = Vec::new();
+                while let Some(chunk) = rx.recv().await {
+                    output.extend_from_slice(&chunk.expect("no io error"));
+                }
+
+                let doc_line = String::from_utf8_lossy(&output)
+                    .lines()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_string();
+                assert!(
+                    !doc_line.contains(r#""@timestamp""#),
+                    "streaming column '{}': expected no @timestamp injection but got: {}",
+                    col_name,
+                    doc_line
+                );
+            });
+        }
+    }
+
     #[test]
     fn parse_bulk_response_success() {
         let response = br#"{"took":5,"errors":false,"items":[{"index":{"_id":"1","status":201}}]}"#;
         ElasticsearchSink::parse_bulk_response(response).expect("should not error on success");
+    }
+
+    proptest! {
+        #[test]
+        fn proptest_serialize_batch_fast_matches_simple(
+            rows in proptest::collection::vec(
+                (
+                    prop::option::of(unicode_string(8)),
+                    prop::option::of(unicode_string(32)),
+                    prop::option::of(any::<i64>()),
+                    prop::option::of((-1_000_000i64..1_000_000i64).prop_map(|n| n as f64 / 10.0)),
+                    prop::option::of(any::<bool>()),
+                ),
+                0..40
+            ),
+            include_timestamp in any::<bool>(),
+            index in string_regex("[A-Za-z0-9_.-]{1,16}").expect("regex"),
+            observed_time_ns in any::<u64>()
+        ) {
+            let batch = build_random_batch(&rows, include_timestamp);
+            let metadata = BatchMetadata {
+                resource_attrs: Arc::new(vec![]),
+                observed_time_ns,
+            };
+
+            let mut sink = make_test_sink(index.as_str());
+            sink.serialize_batch(&batch, &metadata).expect("fast serialize must succeed");
+            let simple = serialize_batch_simple_for_test(&batch, &metadata, index.as_str())
+                .expect("simple serialize must succeed");
+
+            prop_assert_eq!(
+                parse_json_lines(&sink.batch_buf),
+                parse_json_lines(&simple),
+                "serialize_batch fast path drifted from simple reference"
+            );
+        }
     }
 
     #[test]
@@ -993,6 +1356,83 @@ mod tests {
         let err = ElasticsearchSink::parse_bulk_response(response)
             .expect_err("should error on bulk failure");
         assert!(err.to_string().contains("mapper_parsing_exception"));
+    }
+
+    #[test]
+    fn parse_bulk_response_retryable_item_error_is_transient() {
+        let response = br#"{
+            "took":5,
+            "errors":true,
+            "items":[
+                {"index":{"error":{"type":"es_rejected_execution_exception","reason":"too many requests"},"status":429}}
+            ]
+        }"#;
+        let err = ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("status 429 bulk item error must be transient");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::Other,
+            "429 item-level errors should be retried"
+        );
+    }
+
+    #[test]
+    fn parse_bulk_response_status_only_retryable_item_error_is_transient() {
+        let response = br#"{
+            "took":5,
+            "errors":true,
+            "items":[
+                {"index":{"status":429}}
+            ]
+        }"#;
+        let err = ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("status-only 429 bulk item error must be transient");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::Other,
+            "status-only 429 item-level errors should be retried"
+        );
+    }
+
+    #[test]
+    fn parse_bulk_response_status_only_permanent_item_error_is_invalid_data() {
+        let response = br#"{
+            "took":5,
+            "errors":true,
+            "items":[
+                {"index":{"status":400}}
+            ]
+        }"#;
+        let err = ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("status-only 400 bulk item error must be permanent");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "status-only 400 item-level errors should be rejected"
+        );
+    }
+
+    /// Regression test for issue #1675.
+    ///
+    /// `parse_bulk_response` used to return `Ok(())` when `errors:true` but no
+    /// parseable error could be found in `items[]`.  The batch would then be
+    /// silently treated as successfully delivered.
+    #[test]
+    fn parse_bulk_errors_true_without_parseable_error_returns_err() {
+        // Simulate a malformed ES response where errors:true but no item has
+        // an "error" key — the path that previously fell through to Ok(()).
+        let response = br#"{"took":5,"errors":true,"items":[{"index":{"status":200}}]}"#;
+        let err = ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("errors:true with no parseable error must return Err");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "errors:true must be classified as InvalidData so send_batch rejects it"
+        );
+        assert!(
+            err.to_string().contains("no error details found"),
+            "error message should mention no error details: {err}"
+        );
     }
 
     #[test]
@@ -1165,6 +1605,58 @@ mod tests {
         assert_eq!(ElasticsearchSink::extract_took(response), Some(123));
     }
 
+    proptest! {
+        #[test]
+        fn proptest_write_ts_suffix_fast_matches_simple(
+            secs in any::<u64>(),
+            frac in 0u64..1_000_000_000u64
+        ) {
+            let mut fast = [0u8; 47];
+            write_ts_suffix(&mut fast, secs, frac);
+            let simple = write_ts_suffix_simple(secs, frac);
+            prop_assert_eq!(fast.as_slice(), simple.as_slice());
+        }
+    }
+
+    /// Local microbenchmark for timestamp suffix writer.
+    ///
+    /// Run with:
+    /// `cargo test -p logfwd-output elasticsearch::tests::bench_write_ts_suffix_fast_vs_simple --release -- --ignored --nocapture`
+    #[test]
+    #[ignore = "microbenchmark"]
+    fn bench_write_ts_suffix_fast_vs_simple() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        const N: usize = 300_000;
+        let inputs: Vec<(u64, u64)> = (0..N)
+            .map(|i| {
+                let secs = (i as u64).wrapping_mul(2654435761) % (253402300799 + 5000);
+                let frac = (i as u64).wrapping_mul(11400714819323198485u64) % 1_000_000_000;
+                (secs, frac)
+            })
+            .collect();
+
+        let t0 = Instant::now();
+        for &(secs, frac) in &inputs {
+            let mut out = [0u8; 47];
+            write_ts_suffix(&mut out, secs, frac);
+            black_box(out);
+        }
+        let fast = t0.elapsed();
+
+        let t0 = Instant::now();
+        for &(secs, frac) in &inputs {
+            let out = write_ts_suffix_simple(secs, frac);
+            black_box(out.len());
+        }
+        let simple = t0.elapsed();
+
+        eprintln!("ts suffix bench N={N}");
+        eprintln!("  fast={:?}", fast);
+        eprintln!("  simple={:?}", simple);
+    }
+
     #[test]
     fn test_parse_bulk_response_malformed_is_error() {
         // Bug #1094: malformed bodies treated as success
@@ -1172,6 +1664,82 @@ mod tests {
             .expect_err("missing errors field should be an error");
         ElasticsearchSink::parse_bulk_response(b"not json")
             .expect_err("malformed json should be an error");
+    }
+
+    // Regression test for issue #1675: when errors:true but no item has an "error" key,
+    // the function must return Err rather than Ok (which would silently mask the failure).
+    #[test]
+    fn parse_bulk_response_errors_true_no_error_key_is_error() {
+        // ES says errors:true but all items look successful (no "error" key).
+        // This can happen with malformed/truncated responses or unexpected ES formats.
+        let response = br#"{"took":1,"errors":true,"items":[{"index":{"_id":"1","status":200}}]}"#;
+        ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("errors:true must return Err even when no item has an 'error' key");
+    }
+
+    /// Local microbenchmark for serialize_batch fast path vs simple baseline.
+    ///
+    /// Run with:
+    /// `cargo test -p logfwd-output elasticsearch::tests::bench_serialize_batch_fast_vs_simple --release -- --ignored --nocapture`
+    #[test]
+    #[ignore = "microbenchmark"]
+    fn bench_serialize_batch_fast_vs_simple() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        let rows: Vec<RandomRow> = (0..2_000)
+            .map(|i| {
+                (
+                    Some(match i % 4 {
+                        0 => "INFO".to_string(),
+                        1 => "WARN".to_string(),
+                        2 => "ERROR".to_string(),
+                        _ => "DEBUG".to_string(),
+                    }),
+                    Some(format!("request-{i}-payload")),
+                    Some(200 + (i % 7) as i64),
+                    Some((i % 1000) as f64 / 10.0),
+                    Some(i % 3 != 0),
+                )
+            })
+            .collect();
+        let batch = build_random_batch(&rows, false);
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(vec![]),
+            observed_time_ns: 1_710_000_000_123_456_789,
+        };
+        let index = "bench-index";
+
+        let mut sink = make_test_sink(index);
+        sink.serialize_batch(&batch, &metadata).unwrap();
+        let simple_once = serialize_batch_simple_for_test(&batch, &metadata, index).unwrap();
+        assert_eq!(
+            parse_json_lines(&sink.batch_buf),
+            parse_json_lines(&simple_once),
+            "fast and simple serializers must remain semantically equivalent"
+        );
+
+        const ITERS: usize = 120;
+        let t0 = Instant::now();
+        for _ in 0..ITERS {
+            sink.serialize_batch(&batch, &metadata).unwrap();
+            black_box(sink.serialized_len());
+        }
+        let fast = t0.elapsed();
+
+        let t0 = Instant::now();
+        for _ in 0..ITERS {
+            let out = serialize_batch_simple_for_test(&batch, &metadata, index).unwrap();
+            black_box(out.len());
+        }
+        let simple = t0.elapsed();
+
+        eprintln!(
+            "serialize_batch bench rows={} iters={ITERS}",
+            batch.num_rows()
+        );
+        eprintln!("  fast={:?}", fast);
+        eprintln!("  simple={:?}", simple);
     }
 
     #[test]
