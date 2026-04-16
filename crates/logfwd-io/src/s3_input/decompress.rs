@@ -2,9 +2,11 @@
 
 use std::io::{self, Read};
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 use bytes::Bytes;
-use tokio::io::{AsyncBufRead, BufReader};
+use tokio::io::{AsyncBufRead, AsyncRead, BufReader, ReadBuf};
 
 /// Compression format for an S3 object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,14 +93,50 @@ pub fn detect_compression(
 }
 
 /// Type-erased async reader for streaming decompression.
-pub type AsyncDecompressReader = Pin<Box<dyn tokio::io::AsyncRead + Send>>;
+pub type AsyncDecompressReader = Pin<Box<dyn AsyncRead + Send>>;
+
+/// Wraps a `DuplexStream` reader and checks for a producer error on EOF.
+///
+/// When the snappy decompression task encounters an error, it stores it in
+/// the shared `error` slot and drops the writer half. Without this wrapper
+/// the reader would see a clean EOF, causing the caller to treat truncated
+/// data as a successful read. With this wrapper the stored error is
+/// surfaced on the first zero-length read.
+struct ErrorAwareReader {
+    inner: tokio::io::DuplexStream,
+    error: Arc<Mutex<Option<io::Error>>>,
+}
+
+impl AsyncRead for ErrorAwareReader {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        let before = buf.filled().len();
+        match Pin::new(&mut this.inner).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) if buf.filled().len() == before => {
+                // Zero-length read (EOF) — check if the producer stored an error.
+                if let Ok(mut guard) = this.error.lock()
+                    && let Some(err) = guard.take()
+                {
+                    return Poll::Ready(Err(err));
+                }
+                Poll::Ready(Ok(()))
+            }
+            other => other,
+        }
+    }
+}
 
 /// Wrap an `AsyncBufRead` source in the appropriate streaming decompressor.
 ///
 /// For `Compression::None`, returns the reader as-is (no copy).
 /// For gzip/zstd, wraps in `async-compression` streaming decoders.
 /// For snappy, falls back to buffered sync decompression (no async snappy
-/// decoder in `async-compression`).
+/// decoder in `async-compression`). Errors are propagated through an
+/// `ErrorAwareReader` wrapper so decode failures surface as read errors.
 pub fn wrap_decompressor<R: AsyncBufRead + Send + 'static>(
     reader: R,
     compression: Compression,
@@ -109,17 +147,25 @@ pub fn wrap_decompressor<R: AsyncBufRead + Send + 'static>(
         Compression::Zstd => Box::pin(async_compression::tokio::bufread::ZstdDecoder::new(reader)),
         Compression::Snappy => {
             // async-compression doesn't support snappy framing format.
-            // Use a pipe: spawn a blocking task that reads compressed bytes
-            // from a channel and writes decompressed bytes to another.
+            // Use a duplex pipe: a spawned task reads compressed data, decodes
+            // with snap, and writes decompressed bytes to the writer half.
+            // Errors are stored in a shared slot and surfaced via ErrorAwareReader.
             let (async_reader, writer) = tokio::io::duplex(256 * 1024);
+            let error_slot: Arc<Mutex<Option<io::Error>>> = Arc::new(Mutex::new(None));
+            let task_error = Arc::clone(&error_slot);
             let buf_reader = Box::pin(BufReader::new(reader));
+
             tokio::spawn(async move {
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let mut buf_reader = buf_reader;
                 let mut writer = writer;
                 let mut compressed = Vec::new();
                 if let Err(e) = buf_reader.read_to_end(&mut compressed).await {
-                    tracing::warn!(error = %e, "snappy: failed to read compressed data");
+                    if let Ok(mut guard) = task_error.lock() {
+                        *guard = Some(io::Error::other(format!(
+                            "snappy: read compressed data: {e}"
+                        )));
+                    }
                     return;
                 }
                 let mut decoder = snap::read::FrameDecoder::new(compressed.as_slice());
@@ -129,17 +175,23 @@ pub fn wrap_decompressor<R: AsyncBufRead + Send + 'static>(
                         Ok(0) => break,
                         Ok(n) => {
                             if writer.write_all(&buf[..n]).await.is_err() {
-                                break;
+                                break; // Reader dropped — shutting down.
                             }
                         }
                         Err(e) => {
-                            tracing::warn!(error = %e, "snappy decompress error");
-                            break;
+                            if let Ok(mut guard) = task_error.lock() {
+                                *guard = Some(io::Error::other(format!("snappy decompress: {e}")));
+                            }
+                            return;
                         }
                     }
                 }
             });
-            Box::pin(async_reader)
+
+            Box::pin(ErrorAwareReader {
+                inner: async_reader,
+                error: error_slot,
+            })
         }
     }
 }

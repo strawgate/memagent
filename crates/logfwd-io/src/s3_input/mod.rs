@@ -951,7 +951,23 @@ async fn fetch_object(
             match reader.read(&mut buf[filled..]).await {
                 Ok(0) => break, // EOF
                 Ok(n) => filled += n,
-                Err(e) => return Err(io::Error::other(format!("streaming read: {e}"))),
+                Err(e) => {
+                    // Send an EOF marker so the framer flushes any partial
+                    // remainder for this SourceId. Without this, a retry
+                    // reuses the same SourceId and the stale bytes corrupt
+                    // the first reconstructed line.
+                    if !first {
+                        let eof_payload = ChunkPayload {
+                            bytes: Vec::new(),
+                            accounted_bytes: 0,
+                            source_id,
+                            is_eof: true,
+                        };
+                        let tx = out_tx.clone();
+                        let _ = tokio::task::spawn_blocking(move || tx.send(eof_payload)).await;
+                    }
+                    return Err(io::Error::other(format!("streaming read: {e}")));
+                }
             }
         }
 
@@ -1118,7 +1134,25 @@ async fn fetch_parallel_stream(
     let mut first_chunk = true;
     for mut part_rx in part_receivers {
         while let Some(result) = part_rx.recv().await {
-            let chunk = result?;
+            let chunk = match result {
+                Ok(c) => c,
+                Err(e) => {
+                    // A part failed. Send an EOF so the framer flushes any
+                    // stale partial remainder for this SourceId before retry.
+                    if !first_chunk {
+                        let eof = ChunkPayload {
+                            bytes: Vec::new(),
+                            accounted_bytes: 0,
+                            source_id,
+                            is_eof: true,
+                        };
+                        let tx = out_tx.clone();
+                        let _ = tokio::task::spawn_blocking(move || tx.send(eof)).await;
+                    }
+                    join_set.abort_all();
+                    return Err(e);
+                }
+            };
             let ab = if first_chunk {
                 first_chunk = false;
                 size
