@@ -11,11 +11,16 @@ mod compat;
 mod env;
 mod load;
 mod serde_helpers;
+mod shared;
 mod types;
 mod validate;
 
 #[cfg(test)]
 pub(crate) use env::expand_env_vars;
+pub use shared::{
+    BatchConfig, Compression, NetworkConfig, RetryConfig, TlsClientConfig, TlsInputConfig,
+    TlsServerConfig,
+};
 pub use types::{
     ArrowIpcTypeConfig, AuthConfig, Config, ConfigError, CsvEnrichmentConfig, EnrichmentConfig,
     FileTypeConfig, Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig,
@@ -25,7 +30,7 @@ pub use types::{
     JournaldBackendConfig, JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig,
     K8sPathConfig, OtlpProtobufDecodeModeConfig, OtlpTypeConfig, OutputConfig, OutputType,
     PipelineConfig, SensorTypeConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig,
-    TcpTypeConfig, TlsInputConfig, UdpTypeConfig,
+    TcpTypeConfig, UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 
