@@ -274,26 +274,47 @@ pub fn hex_decode(hex_bytes: &[u8], out: &mut [u8]) -> bool {
     if hex_bytes.len() != out.len() * 2 {
         return false;
     }
+    // Validate all nibbles first: collect the bitwise OR of all LUT values.
+    // Invalid bytes produce 0xFF; valid nibbles produce 0x00–0x0F.  The high
+    // nibble of the OR will be set (≥ 0x10) iff any invalid byte was present.
+    // Doing validation as a single pass over the input lets the compiler
+    // vectorise the check without a per-pair early-return branch.
+    let mut any_invalid = 0u8;
+    for &b in hex_bytes {
+        any_invalid |= HEX_NIBBLE_LUT[b as usize];
+    }
+    if any_invalid & 0xF0 != 0 {
+        return false;
+    }
+    // All nibbles are valid; decode without any per-pair branch.
     for (i, byte) in out.iter_mut().enumerate() {
-        let hi = hex_nibble(hex_bytes[i * 2]);
-        let lo = hex_nibble(hex_bytes[i * 2 + 1]);
-        if hi > 0x0F || lo > 0x0F {
-            return false;
-        }
-        *byte = (hi << 4) | lo;
+        *byte = (HEX_NIBBLE_LUT[hex_bytes[i * 2] as usize] << 4)
+            | HEX_NIBBLE_LUT[hex_bytes[i * 2 + 1] as usize];
     }
     true
 }
 
-#[inline(always)]
-fn hex_nibble(c: u8) -> u8 {
-    match c {
-        b'0'..=b'9' => c - b'0',
-        b'a'..=b'f' => c - b'a' + 10,
-        b'A'..=b'F' => c - b'A' + 10,
-        _ => 0xFF,
+/// 256-entry lookup table for hex nibble decoding.
+///
+/// Valid ASCII hex digits map to their 0x00–0x0F value; everything else maps
+/// to the sentinel 0xFF used by callers to signal an invalid character.
+/// Using a LUT replaces the three-branch match with a single indexed load.
+/// The table is 256 bytes and stays hot in L1 cache during batch decode loops.
+const HEX_NIBBLE_LUT: [u8; 256] = {
+    let mut lut = [0xFF_u8; 256];
+    let mut i = 0u16;
+    while i < 256 {
+        let c = i as u8;
+        lut[c as usize] = match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            b'A'..=b'F' => c - b'A' + 10,
+            _ => 0xFF,
+        };
+        i += 1;
     }
-}
+    lut
+};
 
 // --- OTLP Severity mapping ---
 
@@ -960,6 +981,76 @@ mod tests {
         assert!(!hex_decode(b"01 20304", &mut out)); // space is invalid
     }
 
+    /// Oracle: the reference (branch-based) nibble decoder used to verify the
+    /// LUT implementation.  Kept private to this test module.
+    fn hex_nibble_oracle(c: u8) -> u8 {
+        match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            b'A'..=b'F' => c - b'A' + 10,
+            _ => 0xFF,
+        }
+    }
+
+    /// Oracle: reference `hex_decode` implementation (original single-pass loop).
+    fn hex_decode_oracle(hex_bytes: &[u8], out: &mut [u8]) -> bool {
+        if hex_bytes.len() != out.len() * 2 {
+            return false;
+        }
+        for (i, byte) in out.iter_mut().enumerate() {
+            let hi = hex_nibble_oracle(hex_bytes[i * 2]);
+            let lo = hex_nibble_oracle(hex_bytes[i * 2 + 1]);
+            if hi > 0x0F || lo > 0x0F {
+                return false;
+            }
+            *byte = (hi << 4) | lo;
+        }
+        true
+    }
+
+    proptest::proptest! {
+        /// LUT nibble lookup must agree with the branch-based oracle for every
+        /// possible byte value (0x00–0xFF).
+        #[test]
+        fn proptest_hex_nibble_lut_matches_oracle(b: u8) {
+            proptest::prop_assert_eq!(
+                HEX_NIBBLE_LUT[b as usize],
+                hex_nibble_oracle(b),
+                "LUT[{:#04x}] != oracle({:#04x})",
+                b, b,
+            );
+        }
+
+        /// LUT-based `hex_decode` must agree with the oracle on every possible
+        /// input byte sequence of lengths 0, 2, 4, 8, 16, and 32.
+        ///
+        /// Covers: valid hex, invalid chars, mixed case, and arbitrary garbage.
+        #[test]
+        fn proptest_hex_decode_lut_matches_oracle(
+            input in proptest::collection::vec(proptest::num::u8::ANY, 0..=64),
+        ) {
+            // Test all output sizes that are representable as hex strings of
+            // the given input length.
+            for out_len in [0usize, 1, 2, 4, 8, 16] {
+                let expected_input_len = out_len * 2;
+                if input.len() < expected_input_len {
+                    continue;
+                }
+                let hex = &input[..expected_input_len];
+                let mut got = alloc::vec![0u8; out_len];
+                let mut expected = alloc::vec![0u8; out_len];
+                let got_ok = hex_decode(hex, &mut got);
+                let expected_ok = hex_decode_oracle(hex, &mut expected);
+                proptest::prop_assert_eq!(got_ok, expected_ok,
+                    "return value mismatch for input {:?}", hex);
+                if got_ok {
+                    proptest::prop_assert_eq!(&got, &expected,
+                        "output mismatch for input {:?}", hex);
+                }
+            }
+        }
+    }
+
     /// Spot-check protobuf field number constants against the OTLP proto spec.
     /// Catches drift without requiring the Kani toolchain.
     #[test]
@@ -1599,12 +1690,12 @@ mod verification {
         assert_eq!(original, decoded);
     }
 
-    /// Prove hex_nibble returns the correct value for all 256 byte inputs:
+    /// Prove HEX_NIBBLE_LUT returns the correct value for all 256 byte inputs:
     /// valid hex digits map to 0x00..=0x0F, everything else maps to 0xFF.
     #[kani::proof]
     fn verify_hex_nibble_valid_range() {
         let b: u8 = kani::any();
-        let result = hex_nibble(b);
+        let result = HEX_NIBBLE_LUT[b as usize];
         if result <= 0x0F {
             // Valid hex digit — verify correctness
             match b {
