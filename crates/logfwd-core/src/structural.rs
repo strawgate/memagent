@@ -390,7 +390,7 @@ impl StructuralIndex {
                             b']'
                         };
                         if b != expected_close {
-                            return end; // mismatch — fail-closed to avoid emitting truncated values
+                            return pos; // mismatch — fail-closed to avoid emitting truncated values
                         }
                     }
                     pos += 1;

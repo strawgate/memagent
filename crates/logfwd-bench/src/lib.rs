@@ -1,12 +1,15 @@
-//! Benchmark infrastructure helpers for logfwd.
+//! Shared deterministic data generators and helpers for logfwd benchmarks.
 //!
-//! Provides `NullSink`, `make_otlp_sink`, and `make_metadata` for
-//! criterion benchmarks and profiling binaries.
+//! All generators accept a `seed` parameter for reproducible output. Given the
+//! same `(count, seed)` pair, every call returns byte-identical results.
 
 use std::sync::Arc;
 
 use logfwd_output::{BatchMetadata, Compression, OtlpProtocol, OtlpSink};
 use logfwd_types::diagnostics::ComponentStats;
+
+pub mod cardinality;
+pub mod generators;
 
 // ---------------------------------------------------------------------------
 // Shared benchmark helpers
@@ -48,16 +51,4 @@ pub fn make_otlp_sink(compression: Compression) -> OtlpSink {
         Arc::new(ComponentStats::default()),
     )
     .expect("valid otlp sink for bench")
-}
-
-/// Create benchmark-standard `BatchMetadata` with typical K8s resource attributes.
-pub fn make_metadata() -> BatchMetadata {
-    BatchMetadata {
-        resource_attrs: Arc::new(vec![
-            ("service.name".into(), "bench-service".into()),
-            ("service.version".into(), "1.0.0".into()),
-            ("host.name".into(), "bench-node-01".into()),
-        ]),
-        observed_time_ns: 1_705_312_200_000_000_000, // 2024-01-15T10:30:00Z
-    }
 }

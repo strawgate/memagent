@@ -216,7 +216,7 @@ available regardless.
 
 ## What's next
 
-- [Docker Deployment](/deployment/docker/) -- container setup, volumes, and resource constraints.
-- [Kubernetes Deployment](/deployment/kubernetes/) -- DaemonSet manifests and production defaults.
-- [Output Types](/configuration/outputs/) -- configure OTLP and other destinations.
-- [Troubleshooting](/troubleshooting/) -- common issues and diagnostic steps.
+- [Docker Deployment](/memagent/deployment/docker/) -- container setup, volumes, and resource constraints.
+- [Kubernetes Deployment](/memagent/deployment/kubernetes/) -- DaemonSet manifests and production defaults.
+- [Output Types](/memagent/configuration/outputs/) -- configure OTLP and other destinations.
+- [Troubleshooting](/memagent/troubleshooting/) -- common issues and diagnostic steps.

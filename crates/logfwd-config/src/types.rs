@@ -55,8 +55,6 @@ pub enum InputType {
     /// Host metrics input (process snapshots, CPU, memory, network stats via sysinfo).
     #[serde(rename = "host_metrics")]
     HostMetrics,
-    /// AWS S3 (and S3-compatible) object storage input.
-    S3,
 }
 
 impl fmt::Display for InputType {
@@ -74,7 +72,6 @@ impl fmt::Display for InputType {
             InputType::ArrowIpc => f.write_str("arrow_ipc"),
             InputType::Journald => f.write_str("journald"),
             InputType::HostMetrics => f.write_str("host_metrics"),
-            InputType::S3 => f.write_str("s3"),
         }
     }
 }
@@ -295,7 +292,7 @@ pub struct GeneratorInputConfig {
     pub attributes: HashMap<String, GeneratorAttributeValueConfig>,
     pub sequence: Option<GeneratorSequenceConfig>,
     pub event_created_unix_nano_field: Option<String>,
-    /// Timestamp configuration (only applies to the `logs` profile; ignored by other profiles).
+    /// Timestamp configuration for the `logs` profile.
     pub timestamp: Option<GeneratorTimestampConfig>,
 }
 
@@ -374,44 +371,6 @@ pub struct TlsInputConfig {
     pub client_ca_file: Option<String>,
     #[serde(default)]
     pub require_client_auth: bool,
-}
-
-/// Configuration for the S3 (and S3-compatible) object storage input.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct S3InputConfig {
-    /// S3 bucket name.
-    pub bucket: String,
-    /// AWS region (e.g. `"us-east-1"`). Defaults to `"us-east-1"`.
-    pub region: Option<String>,
-    /// Override S3 endpoint URL (e.g. `"http://localhost:9000"` for MinIO).
-    /// When set, path-style addressing is used automatically.
-    pub endpoint: Option<String>,
-    /// Only process keys with this prefix.
-    pub prefix: Option<String>,
-    /// SQS queue URL for event-driven object discovery.
-    pub sqs_queue_url: Option<String>,
-    /// `ListObjectsV2` `StartAfter` key for resumable prefix scanning.
-    pub start_after: Option<String>,
-    /// AWS access key ID. Falls back to `AWS_ACCESS_KEY_ID` env var.
-    pub access_key_id: Option<String>,
-    /// AWS secret access key. Falls back to `AWS_SECRET_ACCESS_KEY` env var.
-    pub secret_access_key: Option<String>,
-    /// AWS session token for temporary credentials. Falls back to `AWS_SESSION_TOKEN` env var.
-    pub session_token: Option<String>,
-    /// Range-GET part size in bytes. Default: 8 MiB.
-    pub part_size_bytes: Option<u64>,
-    /// Max concurrent range GET tasks per object. Default: 8.
-    pub max_concurrent_fetches: Option<usize>,
-    /// Max objects being fetched simultaneously. Default: 4.
-    pub max_concurrent_objects: Option<usize>,
-    /// SQS visibility timeout in seconds. Default: 300.
-    pub visibility_timeout_secs: Option<u32>,
-    /// Compression override: `"auto"`, `"gzip"`, `"zstd"`, `"snappy"`, or `"none"`.
-    /// Default: `"auto"` (detect from key extension or Content-Type).
-    pub compression: Option<String>,
-    /// Polling interval for `ListObjectsV2` mode in milliseconds. Default: 5000.
-    pub poll_interval_ms: Option<u64>,
 }
 
 /// Journald (systemd journal) input configuration.
@@ -541,8 +500,6 @@ pub enum InputTypeConfig {
     /// Host metrics input (process snapshots, CPU, memory, network stats via sysinfo).
     #[serde(rename = "host_metrics")]
     HostMetrics(SensorTypeConfig),
-    /// AWS S3 (and S3-compatible) object storage input.
-    S3(S3TypeConfig),
 }
 
 impl InputTypeConfig {
@@ -561,7 +518,6 @@ impl InputTypeConfig {
             Self::ArrowIpc(_) => InputType::ArrowIpc,
             Self::Journald(_) => InputType::Journald,
             Self::HostMetrics(_) => InputType::HostMetrics,
-            Self::S3(_) => InputType::S3,
         }
     }
 }
@@ -667,14 +623,8 @@ pub struct JournaldTypeConfig {
     pub journald: Option<JournaldInputConfig>,
 }
 
-/// Tagged‐union wrapper for S3 input configuration.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct S3TypeConfig {
-    pub s3: S3InputConfig,
-}
-
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct OutputConfig {
     pub name: Option<String>,
     #[serde(rename = "type")]
@@ -912,10 +862,6 @@ pub struct ServerConfig {
 #[serde(deny_unknown_fields)]
 pub struct StorageConfig {
     pub data_dir: Option<String>,
-    /// Minimum interval between checkpoint flushes to disk, in milliseconds.
-    /// Defaults to `5000` (5 seconds). Must be greater than zero.
-    #[serde(default)]
-    pub checkpoint_flush_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]

@@ -20,7 +20,7 @@ export function useTelemetryStore(): {
 } {
   const storeRef = useRef<TelemetryStore | null>(null);
   if (!storeRef.current) {
-    storeRef.current = createTelemetryStore({ maxAgeMs: MAX_AGE_MS, maxPoints: 10_000 });
+    storeRef.current = createTelemetryStore({ maxAgeMs: MAX_AGE_MS });
   }
   const store = storeRef.current;
   const [tick, setTick] = useState(0);
