@@ -188,10 +188,11 @@ impl ColumnarBatchBuilder {
     /// re-resolved from scratch each batch), and resets string buffers.
     pub fn begin_batch(&mut self) {
         self.lifecycle.begin_batch();
-        // Recycle dynamic columns: clear data but retain Vec capacity.
+        // Recycle dynamic columns: drain columns beyond the planned set,
+        // clear their data but retain Vec capacity for reuse.
         // Cap the pool to avoid holding memory from one anomalously wide batch.
         const MAX_RECYCLED: usize = 128;
-        let num_planned = self.plan.len();
+        let num_planned = self.plan.num_planned();
         for col in self.columns.drain(num_planned..) {
             if self.recycled_columns.len() < MAX_RECYCLED {
                 self.recycled_columns.push(col);
@@ -455,38 +456,54 @@ impl ColumnarBatchBuilder {
     /// [`set_original_buffer`](Self::set_original_buffer). The offset is
     /// computed via pointer arithmetic.
     ///
-    /// # Panics
-    ///
-    /// Panics if `value` is not within the bounds of the original buffer,
-    /// or if the computed offset exceeds `u32::MAX`.
+    /// Returns `BuilderError::StringBufferOverflow` if the value is not within
+    /// the original buffer bounds or the offset exceeds `u32::MAX`.
     #[inline]
-    pub fn write_input_ref(&mut self, handle: FieldHandle, value: &[u8]) {
+    pub fn write_input_ref(
+        &mut self,
+        handle: FieldHandle,
+        value: &[u8],
+    ) -> Result<(), BuilderError> {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
         if !self.columns[handle.index()].accepts_str() {
-            return;
+            return Ok(());
         }
         if self.dedup_enabled && self.is_duplicate(handle) {
-            return;
+            return Ok(());
         }
         let base = self.original_buf.as_ptr() as usize;
         let ptr = value.as_ptr() as usize;
-        assert!(
-            ptr >= base && ptr + value.len() <= base + self.original_buf.len(),
-            "write_input_ref: value must be within original buffer bounds"
-        );
+        let value_end = ptr
+            .checked_add(value.len())
+            .ok_or(BuilderError::StringBufferOverflow {
+                buffer_len: self.original_buf.len(),
+                value_len: value.len(),
+            })?;
+        let buf_end = base.checked_add(self.original_buf.len()).ok_or(
+            BuilderError::StringBufferOverflow {
+                buffer_len: self.original_buf.len(),
+                value_len: value.len(),
+            },
+        )?;
+        if ptr < base || value_end > buf_end {
+            return Err(BuilderError::StringBufferOverflow {
+                buffer_len: self.original_buf.len(),
+                value_len: value.len(),
+            });
+        }
         let raw_offset = ptr - base;
-        let offset = u32::try_from(raw_offset).unwrap_or_else(|_| {
-            panic!("write_input_ref: buffer offset exceeds u32::MAX ({raw_offset} bytes)")
-        });
-        let len = u32::try_from(value.len()).unwrap_or_else(|_| {
-            panic!(
-                "write_input_ref: value length exceeds u32::MAX ({} bytes)",
-                value.len()
-            )
-        });
+        let offset = u32::try_from(raw_offset).map_err(|_| BuilderError::StringBufferOverflow {
+            buffer_len: self.original_buf.len(),
+            value_len: value.len(),
+        })?;
+        let len = u32::try_from(value.len()).map_err(|_| BuilderError::StringBufferOverflow {
+            buffer_len: self.original_buf.len(),
+            value_len: value.len(),
+        })?;
         let sref = StringRef { offset, len };
         self.columns[handle.index()].push_str(self.lifecycle.row_count(), sref);
+        Ok(())
     }
 
     /// Record that a field is explicitly null for the current row.
@@ -1515,7 +1532,7 @@ mod tests {
         b.set_original_buffer(buf.clone());
         b.begin_row();
         // Reference the subslice "world" at offset 6..11.
-        b.write_input_ref(body, &buf[6..11]);
+        b.write_input_ref(body, &buf[6..11]).unwrap();
         b.end_row();
         let batch = b.finish_batch().unwrap();
         let col = batch.column(0).as_string_view();
@@ -1532,13 +1549,13 @@ mod tests {
         b.begin_batch();
         b.set_original_buffer(buf.clone());
         b.begin_row();
-        b.write_input_ref(f, &buf[0..3]); // "aaa"
+        b.write_input_ref(f, &buf[0..3]).unwrap(); // "aaa"
         b.end_row();
         b.begin_row();
-        b.write_input_ref(f, &buf[4..7]); // "bbb"
+        b.write_input_ref(f, &buf[4..7]).unwrap(); // "bbb"
         b.end_row();
         b.begin_row();
-        b.write_input_ref(f, &buf[8..11]); // "ccc"
+        b.write_input_ref(f, &buf[8..11]).unwrap(); // "ccc"
         b.end_row();
         let batch = b.finish_batch().unwrap();
         let col = batch.column(0).as_string_view();
@@ -1558,7 +1575,7 @@ mod tests {
         b.set_original_buffer(buf.clone());
         // Row 0: input ref
         b.begin_row();
-        b.write_input_ref(f, &buf[0..8]); // "original"
+        b.write_input_ref(f, &buf[0..8]).unwrap(); // "original"
         b.end_row();
         // Row 1: generated string
         b.begin_row();
@@ -1571,8 +1588,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "write_input_ref: value must be within original buffer bounds")]
-    fn write_input_ref_panics_on_oob() {
+    fn write_input_ref_returns_error_on_oob() {
         let mut plan = BatchPlan::new();
         let f = plan.declare_planned("field", FieldKind::Utf8View).unwrap();
         let mut b = ColumnarBatchBuilder::new(plan);
@@ -1580,8 +1596,9 @@ mod tests {
         b.begin_batch();
         b.set_original_buffer(buf);
         b.begin_row();
-        // Not a subslice of original buffer — should panic.
-        b.write_input_ref(f, b"external");
+        // Not a subslice of original buffer — should return error.
+        let result = b.write_input_ref(f, b"external");
+        assert!(result.is_err());
     }
 }
 
@@ -1594,20 +1611,6 @@ mod proptests {
     use crate::columnar::plan::{BatchPlan, FieldHandle, FieldKind};
     use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, StringViewArray};
     use proptest::prelude::*;
-
-    /// Strategy for generating a field kind.
-    /// Covers all `FieldKind` variants so new additions cause a compile error
-    /// rather than being silently ignored.
-    fn field_kind_strategy() -> impl Strategy<Value = FieldKind> {
-        prop_oneof![
-            Just(FieldKind::Int64),
-            Just(FieldKind::Float64),
-            Just(FieldKind::Bool),
-            Just(FieldKind::Utf8View),
-            Just(FieldKind::BinaryView),
-            Just(FieldKind::FixedBinary(16)),
-        ]
-    }
 
     proptest! {
         /// End-to-end builder: random planned fields, random writes, verify

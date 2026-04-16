@@ -921,7 +921,9 @@ fn write_wire_str(
             .write_str_bytes(handle, value)
             .map_err(|e| ProjectionError::Batch(e.to_string()))?,
         #[cfg(any(feature = "otlp-research", test))]
-        StringStorage::InputView => builder.write_input_ref(handle, value),
+        StringStorage::InputView => builder
+            .write_input_ref(handle, value)
+            .map_err(|e| ProjectionError::Batch(e.to_string()))?,
     }
     Ok(())
 }
