@@ -36,23 +36,6 @@ const fn should_stop_udp_drain(datagrams_read: usize, emitted_bytes: usize) -> b
     datagrams_read >= MAX_DATAGRAMS_PER_POLL || emitted_bytes >= MAX_EMIT_BYTES_PER_POLL
 }
 
-#[derive(Debug, Clone)]
-pub struct UdpInputOptions {
-    /// Maximum UDP packet payload size in bytes. Defaults to `MAX_UDP_PAYLOAD`.
-    pub max_message_size_bytes: usize,
-    /// Desired socket receive buffer size (SO_RCVBUF). Defaults to `RECV_BUF_SIZE`.
-    pub so_rcvbuf: usize,
-}
-
-impl Default for UdpInputOptions {
-    fn default() -> Self {
-        Self {
-            max_message_size_bytes: MAX_UDP_PAYLOAD,
-            so_rcvbuf: RECV_BUF_SIZE,
-        }
-    }
-}
-
 /// UDP input that listens for datagrams. Each datagram is treated as one
 /// or more newline-delimited log lines.
 pub struct UdpInput {
@@ -69,11 +52,10 @@ pub struct UdpInput {
 }
 
 impl UdpInput {
-    /// Bind to `addr` (e.g. "0.0.0.0:514" for syslog) with the given options.
-    pub fn with_options(
+    /// Bind to `addr` (e.g. "0.0.0.0:514" for syslog).
+    pub fn new(
         name: impl Into<String>,
         addr: &str,
-        options: UdpInputOptions,
         stats: Arc<logfwd_types::diagnostics::ComponentStats>,
     ) -> io::Result<Self> {
         let parsed_addr: std::net::SocketAddr = addr.parse().map_err(io::Error::other)?;
@@ -91,7 +73,7 @@ impl UdpInput {
         sock2.bind(&parsed_addr.into())?;
 
         // Tune kernel receive buffer to reduce packet loss under load.
-        let _ = sock2.set_recv_buffer_size(options.so_rcvbuf); // best-effort
+        let _ = sock2.set_recv_buffer_size(RECV_BUF_SIZE); // best-effort
 
         // Read back actual buffer size — the OS may cap it.
         let actual_recv_buf = sock2.recv_buffer_size().unwrap_or(0);
@@ -105,21 +87,12 @@ impl UdpInput {
         Ok(Self {
             name: name.into(),
             socket,
-            buf: vec![0u8; options.max_message_size_bytes],
+            buf: vec![0u8; MAX_UDP_PAYLOAD],
             actual_recv_buf,
             drops_detected: Arc::new(AtomicU64::new(0)),
             health: ComponentHealth::Healthy,
             stats,
         })
-    }
-
-    /// Bind to `addr` (e.g. "0.0.0.0:514" for syslog) with the default options.
-    pub fn new(
-        name: impl Into<String>,
-        addr: &str,
-        stats: Arc<logfwd_types::diagnostics::ComponentStats>,
-    ) -> io::Result<Self> {
-        Self::with_options(name, addr, UdpInputOptions::default(), stats)
     }
 
     /// Returns the local address this socket is bound to.
@@ -366,23 +339,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(input.buf.len(), MAX_UDP_PAYLOAD);
-    }
-
-    #[test]
-    fn test_udp_custom_options() {
-        let options = UdpInputOptions {
-            max_message_size_bytes: 1024,
-            so_rcvbuf: 131072, // 128KB
-        };
-        let input = UdpInput::with_options(
-            "test_custom",
-            "127.0.0.1:0",
-            options,
-            Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
-        )
-        .unwrap();
-        assert_eq!(input.buf.len(), 1024);
-        assert!(input.recv_buffer_size() >= 131072);
     }
 
     #[test]

@@ -642,7 +642,6 @@ pub fn sample_all_metrics(
         if uptime_secs > 0.0 {
             let scan_s = pm.scan_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
             let transform_s = pm.transform_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
-            let output_s = pm.output_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
             let queue_wait_s = pm.queue_wait_nanos_total.load(Ordering::Relaxed) as f64 / 1e9;
             let backpressure = pm.backpressure_stalls.load(Ordering::Relaxed);
 
@@ -650,12 +649,8 @@ pub fn sample_all_metrics(
             let stalls_per_sec = backpressure as f64 / uptime_secs;
             let transform_ratio = transform_s / uptime_secs;
             let scan_ratio = scan_s / uptime_secs;
-            let output_ratio = output_s / uptime_secs;
 
-            // Distinguish true output bottleneck from pipeline throughput saturation.
-            // High queue_wait with negligible output time means workers contend for the
-            // channel, not that the output destination is slow.
-            let stage = if queue_wait_ratio > 0.5 && output_ratio > 0.1 {
+            let stage = if queue_wait_ratio > 0.5 {
                 "output"
             } else if stalls_per_sec > 10.0 {
                 "input"
@@ -849,43 +844,25 @@ pub fn collect_all_spans(
 
 /// Sample new stderr lines into the log buffer.
 ///
-/// Uses a monotonic cursor (`u64`) from `get_logs_since` so that ring-buffer
-/// evictions can never stall delivery or produce duplicate `LogPoint` entries.
-/// Each new line becomes a `LogPoint` with `Severity::Info`. Lines evicted
-/// before we could read them are reported as a single `Severity::Warn` record.
+/// Tracks the last seen line count to avoid re-pushing already-sampled lines.
+/// Each new line becomes a `LogPoint` with `Severity::Info`.
 pub fn sample_stderr_logs(
     stderr: &crate::stderr_capture::StderrCapture,
     buf: &RingBuffer<LogPoint>,
-    cursor: &mut u64,
+    last_cursor: &mut u64,
 ) {
-    let (new_lines, new_cursor) = stderr.get_logs_since(*cursor);
+    let (new_lines, new_cursor) = stderr.get_logs_since(*last_cursor);
+    *last_cursor = new_cursor;
     let now = now_nanos();
 
-    // Detect lines evicted between the last cursor and now.
-    let pushed = new_cursor.saturating_sub(*cursor);
-    let evicted = pushed.saturating_sub(new_lines.len() as u64);
-    if evicted > 0 {
-        buf.push(LogPoint {
-            severity: Severity::Warn,
-            body: format!(
-                "Ring buffer evicted {} stderr lines before they could be read",
-                evicted
-            ),
-            attributes: vec![("source", "stderr".to_string())],
-            time_unix_nano: now,
-        });
-    }
-
-    for line in &new_lines {
+    for line in new_lines {
         buf.push(LogPoint {
             severity: Severity::Info,
-            body: line.clone(),
+            body: line,
             attributes: vec![("source", "stderr".to_string())],
             time_unix_nano: now,
         });
     }
-
-    *cursor = new_cursor;
 }
 
 /// Detect component health transitions and emit log records for changes.
@@ -1349,12 +1326,10 @@ mod tests {
     fn sample_all_metrics_includes_bottleneck() {
         let meter = opentelemetry::global::meter("test");
         let pm = PipelineMetrics::new("p", "", &meter);
-        // Simulate high queue wait AND high output time → true output bottleneck.
+        // Simulate high queue wait → output bottleneck.
         pm.queue_wait_nanos_total
             .store(10_000_000_000, Ordering::Relaxed); // 10s queue wait
-        pm.output_nanos_total
-            .store(2_000_000_000, Ordering::Relaxed); // 2s output (ratio 0.2 > 0.1)
-        let uptime_secs = 10.0; // 10s uptime → queue_wait ratio = 1.0 > 0.5
+        let uptime_secs = 10.0; // 10s uptime → ratio = 1.0 > 0.5
 
         let buffers = TelemetryBuffers::new();
         sample_all_metrics(&[Arc::new(pm)], None, uptime_secs, &buffers);
@@ -1371,37 +1346,6 @@ mod tests {
             .find(|(k, _)| *k == "stage")
             .expect("bottleneck must have stage attribute");
         assert_eq!(stage_attr.1, "output", "expected output bottleneck");
-    }
-
-    #[test]
-    fn bottleneck_none_when_queue_wait_high_but_output_fast() {
-        let meter = opentelemetry::global::meter("test");
-        let pm = PipelineMetrics::new("p", "", &meter);
-        // High queue wait but negligible output time → throughput saturation, not output-bound.
-        pm.queue_wait_nanos_total
-            .store(10_000_000_000, Ordering::Relaxed); // 10s queue wait
-        // output_nanos_total defaults to 0 → output_ratio = 0 < 0.1
-        let uptime_secs = 10.0;
-
-        let buffers = TelemetryBuffers::new();
-        sample_all_metrics(&[Arc::new(pm)], None, uptime_secs, &buffers);
-        let points = buffers.metrics.snapshot();
-
-        let bottleneck = points
-            .iter()
-            .find(|p| p.name == "logfwd.pipeline.bottleneck")
-            .expect("expected logfwd.pipeline.bottleneck gauge");
-
-        let stage_attr = bottleneck
-            .attributes
-            .iter()
-            .find(|(k, _)| *k == "stage")
-            .expect("bottleneck must have stage attribute");
-        // Should NOT be "output" — the output is fast, workers are just contending.
-        assert_ne!(
-            stage_attr.1, "output",
-            "null/fast output should not be classified as output-bound"
-        );
     }
 
     // -- Step 3: trace conversion tests --

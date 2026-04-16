@@ -346,14 +346,7 @@ pub(super) fn build_input_state(
             let addr = require_non_empty(name, "arrow_ipc", "listen", Some(&a.listen))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::ArrowIpc, &format)?;
-            let mut options = logfwd_io::arrow_ipc_receiver::ArrowIpcReceiverOptions::default();
-            if let Some(v) = a.max_connections {
-                options.max_connections = v;
-            }
-            if let Some(v) = a.max_message_size_bytes {
-                options.max_message_size_bytes = v;
-            }
-            let source = logfwd_io::arrow_ipc_receiver::ArrowIpcReceiver::new(name, addr, options)
+            let source = logfwd_io::arrow_ipc_receiver::ArrowIpcReceiver::new(name, addr)
                 .map_err(|e| format!("input '{name}': failed to start Arrow IPC receiver: {e}"))?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
@@ -411,20 +404,8 @@ pub(super) fn build_input_state(
                     "input '{name}': CRI/auto format is not supported for UDP inputs (CRI is a file-based container log format)"
                 ));
             }
-            let mut options = logfwd_io::udp_input::UdpInputOptions::default();
-            if let Some(v) = u.max_message_size_bytes {
-                options.max_message_size_bytes = v;
-            }
-            if let Some(v) = u.so_rcvbuf {
-                options.so_rcvbuf = v;
-            }
-            let source = logfwd_io::udp_input::UdpInput::with_options(
-                name,
-                addr,
-                options,
-                Arc::clone(&stats),
-            )
-            .map_err(|e| format!("input '{name}': failed to bind UDP {addr}: {e}"))?;
+            let source = logfwd_io::udp_input::UdpInput::new(name, addr, Arc::clone(&stats))
+                .map_err(|e| format!("input '{name}': failed to bind UDP {addr}: {e}"))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Udp, &format)?;
             (Box::new(source), format, 1024 * 1024)
@@ -436,23 +417,8 @@ pub(super) fn build_input_state(
                     "input '{name}': CRI/auto format is not supported for TCP inputs (CRI is a file-based container log format)"
                 ));
             }
-            let mut options = logfwd_io::tcp_input::TcpInputOptions::default();
-            if let Some(v) = t.max_connections {
-                options.max_connections = v;
-            }
-            if let Some(v) = t.connection_timeout_ms {
-                options.connection_timeout_ms = v;
-            }
-            if let Some(v) = t.read_timeout_ms {
-                options.read_timeout_ms = Some(v);
-            }
-            let source = logfwd_io::tcp_input::TcpInput::with_options(
-                name,
-                addr,
-                options,
-                Arc::clone(&stats),
-            )
-            .map_err(|e| format!("input '{name}': failed to bind TCP {addr}: {e}"))?;
+            let source = logfwd_io::tcp_input::TcpInput::new(name, addr, Arc::clone(&stats))
+                .map_err(|e| format!("input '{name}': failed to bind TCP {addr}: {e}"))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Tcp, &format)?;
             (Box::new(source), format, 4 * 1024 * 1024)
@@ -507,24 +473,6 @@ pub(super) fn build_input_state(
                     ebpf_binary_path: ebpf_path.into(),
                     max_events_per_poll: max_events,
                     filter_self: true,
-                    include_process_names: s
-                        .sensor
-                        .as_ref()
-                        .and_then(|c| c.include_process_names.clone()),
-                    exclude_process_names: s
-                        .sensor
-                        .as_ref()
-                        .and_then(|c| c.exclude_process_names.clone()),
-                    include_event_types: s
-                        .sensor
-                        .as_ref()
-                        .and_then(|c| c.include_event_types.clone()),
-                    exclude_event_types: s
-                        .sensor
-                        .as_ref()
-                        .and_then(|c| c.exclude_event_types.clone()),
-                    ring_buffer_size_kb: s.sensor.as_ref().and_then(|c| c.ring_buffer_size_kb),
-                    poll_interval_ms: s.sensor.as_ref().and_then(|c| c.poll_interval_ms),
                 };
 
                 let source = PlatformSensorInput::new(name, sensor_cfg).map_err(|e| {
@@ -653,8 +601,6 @@ fn build_host_metrics_config(
     let control_reload_interval_ms = cfg
         .and_then(|c| c.control_reload_interval_ms)
         .unwrap_or(DEFAULT_SENSOR_CONTROL_RELOAD_INTERVAL_MS);
-    let collection_interval_ms = cfg.and_then(|c| c.collection_interval_ms).unwrap_or(10_000);
-
     logfwd_io::host_metrics::HostMetricsConfig {
         poll_interval: std::time::Duration::from_millis(poll_interval_ms.max(1)),
         control_path: cfg.and_then(|c| c.control_path.clone()).map(PathBuf::from),
@@ -667,20 +613,6 @@ fn build_host_metrics_config(
             .and_then(|c| c.max_rows_per_poll)
             .filter(|&n| n > 0)
             .unwrap_or(256),
-        scrapers: cfg.and_then(|c| {
-            c.scrapers
-                .as_ref()
-                .map(|s| s.iter().map(|v| v.trim().to_lowercase()).collect())
-        }),
-        collection_interval: std::time::Duration::from_millis(collection_interval_ms.max(1)),
-        disk_include_devices: cfg.and_then(|c| c.disk_include_devices.clone()),
-        disk_exclude_devices: cfg.and_then(|c| c.disk_exclude_devices.clone()),
-        network_include_interfaces: cfg.and_then(|c| c.network_include_interfaces.clone()),
-        network_exclude_interfaces: cfg.and_then(|c| c.network_exclude_interfaces.clone()),
-        filesystem_include_mount_points: cfg
-            .and_then(|c| c.filesystem_include_mount_points.clone()),
-        filesystem_exclude_mount_points: cfg
-            .and_then(|c| c.filesystem_exclude_mount_points.clone()),
     }
 }
 
@@ -867,8 +799,6 @@ mod tests {
                 (|listen: &str| {
                     InputTypeConfig::Udp(logfwd_config::UdpTypeConfig {
                         listen: listen.to_string(),
-                        max_message_size_bytes: None,
-                        so_rcvbuf: None,
                     })
                 }) as fn(&str) -> InputTypeConfig,
             ),
@@ -878,9 +808,6 @@ mod tests {
                     InputTypeConfig::Tcp(logfwd_config::TcpTypeConfig {
                         listen: listen.to_string(),
                         tls: None,
-                        max_connections: None,
-                        connection_timeout_ms: None,
-                        read_timeout_ms: None,
                     })
                 }) as fn(&str) -> InputTypeConfig,
             ),
@@ -948,8 +875,6 @@ mod tests {
                 InputType::ArrowIpc,
                 InputTypeConfig::ArrowIpc(logfwd_config::ArrowIpcTypeConfig {
                     listen: "   ".to_string(),
-                    max_connections: None,
-                    max_message_size_bytes: None,
                 }),
             ),
             (
@@ -963,8 +888,6 @@ mod tests {
                 InputType::Udp,
                 InputTypeConfig::Udp(logfwd_config::UdpTypeConfig {
                     listen: "   ".to_string(),
-                    max_message_size_bytes: None,
-                    so_rcvbuf: None,
                 }),
             ),
             (
@@ -972,9 +895,6 @@ mod tests {
                 InputTypeConfig::Tcp(logfwd_config::TcpTypeConfig {
                     listen: "   ".to_string(),
                     tls: None,
-                    max_connections: None,
-                    connection_timeout_ms: None,
-                    read_timeout_ms: None,
                 }),
             ),
         ];

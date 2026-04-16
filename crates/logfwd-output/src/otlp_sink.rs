@@ -88,7 +88,6 @@ type ScopeKey<'a> = (Option<&'a str>, Option<&'a str>);
 type ResourceGroup<'a> = (ResourceKey<'a>, ScopeKey<'a>, Vec<(usize, usize)>);
 
 impl OtlpSink {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         endpoint: String,
@@ -682,7 +681,6 @@ pub struct OtlpSinkFactory {
 
 impl OtlpSinkFactory {
     /// Create a new factory.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         endpoint: String,
@@ -690,9 +688,13 @@ impl OtlpSinkFactory {
         compression: Compression,
         headers: Vec<(String, String)>,
         message_field: String,
-        client: reqwest::Client,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(64)
+            .build()
+            .map_err(io::Error::other)?;
         Ok(OtlpSinkFactory {
             name,
             endpoint,
