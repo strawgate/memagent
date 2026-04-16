@@ -12,9 +12,7 @@ use bytes::Bytes;
 use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 
 use crate::InputError;
-use crate::receiver_http::{
-    MAX_REQUEST_BODY_SIZE, parse_content_length, parse_content_type, read_limited_body,
-};
+use crate::receiver_http::{parse_content_length, parse_content_type, read_limited_body};
 
 use super::decode::{
     decode_otlp_json, decode_otlp_protobuf, decode_otlp_protobuf_bytes_with_mode, decompress_gzip,
@@ -39,8 +37,9 @@ pub(super) async fn handle_otlp_request(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
+    let max_body = state.max_message_size_bytes;
     let content_length = parse_content_length(&headers);
-    if content_length.is_some_and(|body_len| body_len > MAX_REQUEST_BODY_SIZE as u64) {
+    if content_length.is_some_and(|body_len| body_len > max_body as u64) {
         record_error(state.stats.as_ref());
         return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
     }
@@ -53,7 +52,7 @@ pub(super) async fn handle_otlp_request(
         }
     };
 
-    let mut body = match read_limited_body(body, MAX_REQUEST_BODY_SIZE, content_length).await {
+    let mut body = match read_limited_body(body, max_body, content_length).await {
         Ok(body) => body,
         Err(status) => {
             record_error(state.stats.as_ref());

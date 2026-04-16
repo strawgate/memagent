@@ -2932,6 +2932,7 @@ dependencies = [
  "logfwd-otap-proto",
  "logfwd-test-utils",
  "logfwd-types",
+ "lz4_flex",
  "memchr",
  "notify",
  "opentelemetry-proto",

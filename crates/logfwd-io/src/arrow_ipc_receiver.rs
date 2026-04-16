@@ -6,9 +6,10 @@
 //!
 //! Endpoint: POST /v1/arrow
 //!
-//! Content-Type: `application/vnd.apache.arrow.stream` (uncompressed)
-//! or `application/vnd.apache.arrow.stream+zstd` (zstd compressed).
-//! Also supports `Content-Encoding: zstd` header.
+//! Content-Type: `application/vnd.apache.arrow.stream` (uncompressed),
+//! `application/vnd.apache.arrow.stream+zstd` (zstd compressed), or
+//! `application/vnd.apache.arrow.stream+lz4` (lz4 compressed).
+//! Also supports `Content-Encoding: zstd` and `Content-Encoding: lz4` headers.
 
 use std::io;
 use std::io::Read as _;
@@ -269,6 +270,21 @@ fn decompress_zstd(body: &[u8], max_message_size_bytes: usize) -> Result<Vec<u8>
     }
 }
 
+/// Decompress lz4 (frame format) body with size limit.
+fn decompress_lz4(body: &[u8], max_message_size_bytes: usize) -> Result<Vec<u8>, InputError> {
+    lz4_flex::decompress_size_prepended(body)
+        .map_err(|e| InputError::Receiver(format!("lz4 decompression failed: {e}")))
+        .and_then(|decompressed| {
+            if decompressed.len() > max_message_size_bytes {
+                Err(InputError::Receiver(
+                    "decompressed payload too large".to_string(),
+                ))
+            } else {
+                Ok(decompressed)
+            }
+        })
+}
+
 /// Decode an Arrow IPC stream from bytes into RecordBatches.
 fn decode_ipc_stream(body: &[u8]) -> Result<Vec<RecordBatch>, InputError> {
     if body.is_empty() {
@@ -341,9 +357,16 @@ async fn handle_arrow_ipc_request(
     let has_zstd_content_encoding = content_encodings
         .as_ref()
         .is_some_and(|encoding| encoding.has_zstd);
+    let has_lz4_content_encoding = content_encodings
+        .as_ref()
+        .is_some_and(|encoding| encoding.has_lz4);
     let is_zstd = has_zstd_content_encoding
         || content_type.as_ref().is_some_and(|media_type| {
             media_type.eq_ignore_ascii_case("application/vnd.apache.arrow.stream+zstd")
+        });
+    let is_lz4 = has_lz4_content_encoding
+        || content_type.as_ref().is_some_and(|media_type| {
+            media_type.eq_ignore_ascii_case("application/vnd.apache.arrow.stream+lz4")
         });
 
     let body = if is_zstd {
@@ -358,6 +381,16 @@ async fn handle_arrow_ipc_request(
                     "zstd decompression failed: invalid header",
                 )
                     .into_response();
+            }
+        }
+    } else if is_lz4 {
+        match decompress_lz4(&body, state.max_message_size_bytes) {
+            Ok(body) => body,
+            Err(InputError::Receiver(msg)) => {
+                return (StatusCode::BAD_REQUEST, msg).into_response();
+            }
+            Err(_) => {
+                return (StatusCode::BAD_REQUEST, "lz4 decompression failed").into_response();
             }
         }
     } else {
@@ -446,6 +479,7 @@ async fn handle_arrow_ipc_request(
 #[derive(Debug, Default, Eq, PartialEq)]
 struct ContentEncodingFlags {
     has_zstd: bool,
+    has_lz4: bool,
 }
 
 fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<ContentEncodingFlags>, StatusCode> {
@@ -461,6 +495,8 @@ fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<ContentEncodingF
         }
         if token.eq_ignore_ascii_case("zstd") {
             flags.has_zstd = true;
+        } else if token.eq_ignore_ascii_case("lz4") {
+            flags.has_lz4 = true;
         } else if !token.eq_ignore_ascii_case("identity") {
             return Err(StatusCode::BAD_REQUEST);
         }

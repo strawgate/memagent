@@ -244,6 +244,7 @@ pub(super) fn build_input_state(
                 }),
                 event_created_unix_nano_field: generator_cfg
                     .and_then(|c| c.event_created_unix_nano_field.clone()),
+                message_template: generator_cfg.and_then(|c| c.message_template.clone()),
                 timestamp: match generator_cfg.and_then(|c| c.timestamp.as_ref()) {
                     None => GeneratorTimestamp::default(),
                     Some(ts) => {
@@ -294,11 +295,12 @@ pub(super) fn build_input_state(
             .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             #[cfg(not(feature = "otlp-research"))]
             let source =
-                logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats_and_resource_prefix(
+                logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats_resource_prefix_and_max_size(
                     name,
                     addr,
                     Arc::clone(&stats),
                     resource_prefix,
+                    o.max_recv_message_size_bytes,
                 )
                 .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             #[cfg(not(feature = "otlp-research"))]

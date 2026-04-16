@@ -97,6 +97,11 @@ pub struct GeneratorConfig {
     pub event_created_unix_nano_field: Option<String>,
     /// Timestamp configuration for the `logs` profile.
     pub timestamp: GeneratorTimestamp,
+    /// Optional template string used as the `message` field value in generated
+    /// log events. When `None`, the default synthetic message is used.
+    /// The string is JSON-escaped before embedding so special characters
+    /// (quotes, backslashes, newlines, etc.) produce valid JSON.
+    pub message_template: Option<String>,
 }
 
 impl Default for GeneratorConfig {
@@ -111,6 +116,7 @@ impl Default for GeneratorConfig {
             sequence: None,
             event_created_unix_nano_field: None,
             timestamp: GeneratorTimestamp::default(),
+            message_template: None,
         }
     }
 }
@@ -125,6 +131,9 @@ pub struct GeneratorInput {
     last_refill: std::time::Instant,
     rate_credit_events: f64,
     record_fields: RecordFields,
+    /// Pre-escaped `message_template` bytes (the inner JSON string content,
+    /// without surrounding quotes). `None` means use the default message.
+    message_template_escaped: Option<Vec<u8>>,
 }
 
 const LEVELS: [&str; 4] = ["INFO", "DEBUG", "WARN", "ERROR"];
@@ -288,6 +297,12 @@ impl GeneratorInput {
                 }),
             event_created_unix_nano_field: config.event_created_unix_nano_field.clone(),
         };
+        // Pre-escape the message_template so we don't re-escape on every event.
+        let message_template_escaped = config.message_template.as_deref().map(|tmpl| {
+            let mut escaped = Vec::with_capacity(tmpl.len() + 4);
+            write_json_escaped_string_contents(&mut escaped, tmpl);
+            escaped
+        });
         Self {
             name,
             buf: Vec::with_capacity(batch_size * 512),
@@ -299,6 +314,7 @@ impl GeneratorInput {
             // Seed one batch worth of credits so the first poll() can emit
             // immediately in rate-limited mode.
             rate_credit_events: initial_rate_credit_events,
+            message_template_escaped,
         }
     }
 
@@ -371,11 +387,40 @@ impl GeneratorInput {
         };
         let (year, month, day, hour, min, sec, msec) = epoch_ms_to_parts(event_ms);
 
+        // Write the "message" JSON field value: either the pre-escaped template
+        // or the default computed message string.
+        let write_message = |buf: &mut Vec<u8>,
+                             method: &str,
+                             path: &str,
+                             id: u64,
+                             status: u32,
+                             tmpl: &Option<Vec<u8>>| {
+            buf.extend_from_slice(b"\"message\":\"");
+            if let Some(escaped) = tmpl {
+                buf.extend_from_slice(escaped);
+            } else {
+                let _ = write!(buf, "{method} {path}/{id} {status}");
+            }
+            buf.push(b'"');
+        };
+
         match self.config.complexity {
             GeneratorComplexity::Simple => {
                 let _ = write!(
                     self.buf,
-                    r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status}}}"#,
+                    r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","#,
+                );
+                write_message(
+                    &mut self.buf,
+                    method,
+                    path,
+                    id,
+                    status,
+                    &self.message_template_escaped,
+                );
+                let _ = write!(
+                    self.buf,
+                    r#","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status}}}"#,
                 );
             }
             GeneratorComplexity::Complex => {
@@ -384,18 +429,54 @@ impl GeneratorInput {
                 if seq.is_multiple_of(5) {
                     let _ = write!(
                         self.buf,
-                        r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"headers":{{"content-type":"application/json","x-request-id":"{rid:016x}"}},"tags":["web","{service}","{level}"]}}"#,
+                        r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","#,
+                    );
+                    write_message(
+                        &mut self.buf,
+                        method,
+                        path,
+                        id,
+                        status,
+                        &self.message_template_escaped,
+                    );
+                    let _ = write!(
+                        self.buf,
+                        r#","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"headers":{{"content-type":"application/json","x-request-id":"{rid:016x}"}},"tags":["web","{service}","{level}"]}}"#,
                     );
                 } else if seq.is_multiple_of(7) {
                     let upstream_ms = 1 + seq.wrapping_mul(19) % 200;
                     let _ = write!(
                         self.buf,
-                        r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"upstream":[{{"host":"10.0.0.1","latency_ms":{upstream_ms}}},{{"host":"10.0.0.2","latency_ms":{dur}}}]}}"#,
+                        r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","#,
+                    );
+                    write_message(
+                        &mut self.buf,
+                        method,
+                        path,
+                        id,
+                        status,
+                        &self.message_template_escaped,
+                    );
+                    let _ = write!(
+                        self.buf,
+                        r#","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"upstream":[{{"host":"10.0.0.1","latency_ms":{upstream_ms}}},{{"host":"10.0.0.2","latency_ms":{dur}}}]}}"#,
                     );
                 } else {
                     let _ = write!(
                         self.buf,
-                        r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out}}}"#,
+                        r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","#,
+                    );
+                    write_message(
+                        &mut self.buf,
+                        method,
+                        path,
+                        id,
+                        status,
+                        &self.message_template_escaped,
+                    );
+                    let _ = write!(
+                        self.buf,
+                        r#","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out}}}"#,
                     );
                 }
             }
