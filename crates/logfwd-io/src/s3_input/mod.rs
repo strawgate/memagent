@@ -1107,7 +1107,10 @@ async fn fetch_parallel_stream(
          s3: &Arc<S3Client>,
          key: &str| {
             let (start, end) = ranges[idx];
-            let part_tx = part_senders[idx].take().expect("part sender already taken");
+            let Some(part_tx) = part_senders[idx].take() else {
+                error!(part_idx = idx, "part sender already taken — skipping spawn");
+                return;
+            };
             let s3 = Arc::clone(s3);
             let key_owned = key.to_string();
             let part_idx = idx;
