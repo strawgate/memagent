@@ -566,7 +566,7 @@ mod tests {
         ];
         let err = generated_fast::decode_batch_arrow_records_generated_fast(&data).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
-        assert_eq!(err.to_string(), "overflow");
+        assert_eq!(err.to_string(), "varint: too many bytes");
     }
     use arrow::array::{Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
