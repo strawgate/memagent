@@ -61,7 +61,7 @@ jobs:
             --root-dir .
             --exclude 'mailto:'
             --exclude-loopback
-            --exclude '^file:///.*/(architecture|configuration|deployment|development|getting-started|how-it-works|quick-start|troubleshooting)(/|#|$)'
+            --exclude '^file:///.*/(architecture|configuration|deployment|development|getting-started|how-it-works|learn|quick-start|troubleshooting)(/|#|$)'
             --exclude '^https://opentelemetry.io/docs/'
             README.md book/src/content/docs dev-docs docs
 
