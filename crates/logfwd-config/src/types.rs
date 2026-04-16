@@ -1,5 +1,6 @@
 use crate::compat;
 use crate::serde_helpers::deserialize_one_or_many;
+use crate::shared::{TlsClientConfig, TlsInputConfig};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt;
@@ -363,16 +364,6 @@ pub struct HostMetricsInputConfig {
     pub filesystem_exclude_mount_points: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct TlsInputConfig {
-    pub cert_file: Option<String>,
-    pub key_file: Option<String>,
-    pub client_ca_file: Option<String>,
-    #[serde(default)]
-    pub require_client_auth: bool,
-}
-
 /// Journald (systemd journal) input configuration.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -681,17 +672,6 @@ pub struct OutputConfig {
     /// Whether to write the schema immediately upon connection.
     #[serde(default)]
     pub write_schema_on_connect: Option<bool>,
-}
-
-/// Client TLS configuration for outbound connections.
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(deny_unknown_fields)]
-pub struct TlsClientConfig {
-    pub cert_file: Option<String>,
-    pub key_file: Option<String>,
-    pub ca_file: Option<String>,
-    #[serde(default)]
-    pub insecure_skip_verify: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
