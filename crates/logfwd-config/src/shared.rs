@@ -1,8 +1,8 @@
 //! Shared configuration types used across inputs and outputs.
 //!
 //! These types provide a uniform config surface so every input and output uses
-//! the same structs, naming, and validation for cross-cutting concerns like
-//! TLS, retries, batching, and compression.
+//! the same structs and naming for cross-cutting concerns like TLS, retries,
+//! batching, compression, and network settings.
 
 use serde::Deserialize;
 
@@ -93,4 +93,23 @@ pub enum Compression {
     Zstd,
     Snappy,
     Lz4,
+}
+
+// ── Network ──────────────────────────────────────────────────────────
+
+/// Network and connection configuration shared across inputs and outputs.
+///
+/// Provides uniform timeout and connection limit fields. When all fields
+/// are `None` the component falls back to its built-in defaults.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkConfig {
+    /// Request or send timeout in seconds.
+    pub timeout_secs: Option<u64>,
+    /// Connection establishment timeout in seconds.
+    pub connection_timeout_secs: Option<u64>,
+    /// Maximum concurrent connections.
+    pub max_connections: Option<usize>,
+    /// Maximum incoming message or packet size in bytes.
+    pub max_message_size_bytes: Option<usize>,
 }

@@ -11,14 +11,15 @@ mod compat;
 mod env;
 mod load;
 mod serde_helpers;
-pub mod shared;
+mod shared;
 mod types;
 mod validate;
 
 #[cfg(test)]
 pub(crate) use env::expand_env_vars;
 pub use shared::{
-    BatchConfig, Compression, RetryConfig, TlsClientConfig, TlsInputConfig, TlsServerConfig,
+    BatchConfig, Compression, NetworkConfig, RetryConfig, TlsClientConfig, TlsInputConfig,
+    TlsServerConfig,
 };
 pub use types::{
     ArrowIpcTypeConfig, AuthConfig, Config, ConfigError, CsvEnrichmentConfig, EnrichmentConfig,
