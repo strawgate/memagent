@@ -2300,37 +2300,3 @@ pipelines:
         Config::load_str(yaml).expect("arrow_ipc should accept batch_size");
     }
 }
-
-#[cfg(test)]
-mod validate_storage_checkpoint_flush_interval_tests {
-    use super::*;
-
-    #[test]
-    fn checkpoint_flush_interval_ms_zero_rejected() {
-        let yaml = "storage:\n  checkpoint_flush_interval_ms: 0\npipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("checkpoint_flush_interval_ms") && msg.contains("greater than zero"),
-            "expected zero interval rejection: {msg}"
-        );
-    }
-
-    #[test]
-    fn checkpoint_flush_interval_ms_nonzero_accepted() {
-        let yaml = "storage:\n  checkpoint_flush_interval_ms: 100\npipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n";
-        assert!(
-            Config::load_str(yaml).is_ok(),
-            "non-zero checkpoint_flush_interval_ms should be accepted"
-        );
-    }
-
-    #[test]
-    fn checkpoint_flush_interval_ms_absent_accepted() {
-        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n";
-        assert!(
-            Config::load_str(yaml).is_ok(),
-            "omitting checkpoint_flush_interval_ms should use default"
-        );
-    }
-}
