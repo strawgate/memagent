@@ -340,10 +340,6 @@ fn bench_elasticsearch_serialize(c: &mut Criterion) {
         vec![],
         false,
         ElasticsearchRequestMode::Buffered,
-        None,
-        None,
-        None,
-        None,
         Arc::clone(&stats),
     )
     .expect("factory creation failed");

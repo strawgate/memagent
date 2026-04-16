@@ -203,27 +203,3 @@ path = "crates/logfwd-arrow/src/columnar/row_protocol.rs"
 status = "required"
 reason = "RowLifecycle state machine transitions are bounded pure seams with symbolic action sequence proofs."
 issue = 2072
-
-[[seams]]
-path = "crates/logfwd-io/src/http_input.rs"
-status = "required"
-reason = "Per-poll drain accumulator saturating_add safety and memory-cap correctness are bounded arithmetic seams with overflow and monotonicity proofs."
-issue = 2147
-
-[[seams]]
-path = "crates/logfwd-output/src/generated/otap_fast_v1.rs"
-status = "required"
-reason = "Generated protobuf decoder crash-freedom and usize overflow guards on len-delimited field arithmetic are isolated pure seams."
-issue = 2147
-
-[[seams]]
-path = "crates/logfwd-transform/src/udf/regexp_extract.rs"
-status = "required"
-reason = "Group-index i64-to-usize conversion correctness (negative → 0, non-negative → exact) is a bounded pure seam covering the *v as usize → try_from fix."
-issue = 2147
-
-[[seams]]
-path = "crates/logfwd-transform/src/udf/hash.rs"
-status = "required"
-reason = "FNV-1a spec-constant verification and bounded XOR-then-multiply order oracle are pure deterministic seams — hash stability is safety-critical for sampling decisions."
-issue = 2147

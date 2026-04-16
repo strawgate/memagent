@@ -252,21 +252,11 @@ impl Drop for JournaldInput {
         // Atomically take the child PID (if any) so only one thread calls kill.
         let pid = self.child_pid.swap(0, Ordering::AcqRel);
         if pid != 0 {
-            #[cfg(unix)]
-            {
-                // SAFETY: sending SIGKILL to a child PID we exclusively own via the
-                // swap above. The reader thread also uses swap(0) before child.wait(),
-                // so only one side ever sends the signal.
-                unsafe {
-                    libc::kill(pid as i32, libc::SIGKILL);
-                }
-            }
-            #[cfg(not(unix))]
-            {
-                // On Windows/non-unix, we cannot use libc::kill.
-                // However, journald input is primarily a Linux feature.
-                // For completeness across targets, we could try to invoke std::process::Command to kill the process if we had its Child handle, but here we only have the pid.
-                let _ = pid;
+            // SAFETY: sending SIGKILL to a child PID we exclusively own via the
+            // swap above. The reader thread also uses swap(0) before child.wait(),
+            // so only one side ever sends the signal.
+            unsafe {
+                libc::kill(pid as i32, libc::SIGKILL);
             }
         }
     }

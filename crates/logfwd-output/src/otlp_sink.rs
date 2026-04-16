@@ -88,7 +88,6 @@ type ScopeKey<'a> = (Option<&'a str>, Option<&'a str>);
 type ResourceGroup<'a> = (ResourceKey<'a>, ScopeKey<'a>, Vec<(usize, usize)>);
 
 impl OtlpSink {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         endpoint: String,
@@ -497,12 +496,6 @@ impl OtlpSink {
                 self.compress_buf = encoder.finish()?;
                 &self.compress_buf
             }
-            Compression::Lz4 => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "LZ4 unsupported for OTLP",
-                ));
-            }
             Compression::None => &self.encoder_buf,
         };
 
@@ -521,7 +514,6 @@ impl OtlpSink {
         let payload_is_compressed = match self.compression {
             Compression::Zstd => self.compressor.is_some(),
             Compression::Gzip => true,
-            Compression::Lz4 => true,
             Compression::None => false,
         };
         let payload: &[u8] = if self.protocol == OtlpProtocol::Grpc {
@@ -544,7 +536,6 @@ impl OtlpSink {
                 let encoding = match self.compression {
                     Compression::Zstd => "zstd",
                     Compression::Gzip => "gzip",
-                    Compression::Lz4 => "lz4",
                     Compression::None => unreachable!("header only set when compressed"),
                 };
                 req = req.header("grpc-encoding", encoding);
@@ -552,7 +543,6 @@ impl OtlpSink {
                 let encoding = match self.compression {
                     Compression::Zstd => "zstd",
                     Compression::Gzip => "gzip",
-                    Compression::Lz4 => "lz4",
                     Compression::None => unreachable!("header only set when compressed"),
                 };
                 req = req.header("Content-Encoding", encoding);
@@ -691,7 +681,6 @@ pub struct OtlpSinkFactory {
 
 impl OtlpSinkFactory {
     /// Create a new factory.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         endpoint: String,
@@ -699,9 +688,13 @@ impl OtlpSinkFactory {
         compression: Compression,
         headers: Vec<(String, String)>,
         message_field: String,
-        client: reqwest::Client,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(64)
+            .build()
+            .map_err(io::Error::other)?;
         Ok(OtlpSinkFactory {
             name,
             endpoint,

@@ -38,10 +38,10 @@ describe("fmt", () => {
     it("returns '999.9M' for 999_900_000", () => expect(fmt(999_900_000)).toBe("999.9M"));
   });
 
-  describe("B suffix at 1,000,000,000 threshold", () => {
-    it("returns '1.0B' for 1e9", () => expect(fmt(1e9)).toBe("1.0B"));
-    it("returns '5.0B' for 5e9", () => expect(fmt(5e9)).toBe("5.0B"));
-    it("handles very large values", () => expect(fmt(1e15)).toBe("1000000.0B"));
+  describe("G suffix at 1,000,000,000 threshold", () => {
+    it("returns '1.0G' for 1e9", () => expect(fmt(1e9)).toBe("1.0G"));
+    it("returns '5.0G' for 5e9", () => expect(fmt(5e9)).toBe("5.0G"));
+    it("handles very large values", () => expect(fmt(1e15)).toBe("1000000.0G"));
   });
 
   describe("negative values", () => {
@@ -159,26 +159,26 @@ describe("fmtBytesCompact", () => {
   it("returns '1B' for 1", () => expect(fmtBytesCompact(1)).toBe("1B"));
   it("returns '1023B' for 1023", () => expect(fmtBytesCompact(1023)).toBe("1023B"));
 
-  describe("KB suffix at 1024 threshold", () => {
-    it("returns '1KB' for 1024", () => expect(fmtBytesCompact(1024)).toBe("1KB"));
-    it("returns '2KB' for 2048", () => expect(fmtBytesCompact(2048)).toBe("2KB"));
-    // toFixed(0) means 1535 → 1KB (rounds down), 1536 → 2KB (rounds up)
-    it("rounds to nearest KB", () => {
-      expect(fmtBytesCompact(1535)).toBe("1KB");
-      expect(fmtBytesCompact(1536)).toBe("2KB");
+  describe("K suffix at 1024 threshold", () => {
+    it("returns '1K' for 1024", () => expect(fmtBytesCompact(1024)).toBe("1K"));
+    it("returns '2K' for 2048", () => expect(fmtBytesCompact(2048)).toBe("2K"));
+    // toFixed(0) means 1535 → 1K (rounds down), 1536 → 2K (rounds up)
+    it("rounds to nearest K", () => {
+      expect(fmtBytesCompact(1535)).toBe("1K");
+      expect(fmtBytesCompact(1536)).toBe("2K");
     });
   });
 
-  describe("MB suffix at 1_048_576 threshold", () => {
-    it("returns '1MB' for 1_048_576", () => expect(fmtBytesCompact(1_048_576)).toBe("1MB"));
-    it("returns '10MB' for 10_485_760", () => expect(fmtBytesCompact(10_485_760)).toBe("10MB"));
+  describe("M suffix at 1_048_576 threshold", () => {
+    it("returns '1M' for 1_048_576", () => expect(fmtBytesCompact(1_048_576)).toBe("1M"));
+    it("returns '10M' for 10_485_760", () => expect(fmtBytesCompact(10_485_760)).toBe("10M"));
   });
 
-  describe("GB suffix at 1_073_741_824 threshold", () => {
-    it("returns '1.0GB' for 1_073_741_824", () =>
-      expect(fmtBytesCompact(1_073_741_824)).toBe("1.0GB"));
-    it("returns '2.5GB' for 2_684_354_560", () =>
-      expect(fmtBytesCompact(2_684_354_560)).toBe("2.5GB"));
+  describe("G suffix at 1_073_741_824 threshold", () => {
+    it("returns '1.0G' for 1_073_741_824", () =>
+      expect(fmtBytesCompact(1_073_741_824)).toBe("1.0G"));
+    it("returns '2.5G' for 2_684_354_560", () =>
+      expect(fmtBytesCompact(2_684_354_560)).toBe("2.5G"));
   });
 
   describe("property-based: result is always a non-empty string for non-negative finite inputs", () => {

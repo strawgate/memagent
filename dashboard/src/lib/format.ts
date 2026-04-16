@@ -1,6 +1,6 @@
 export function fmt(n: number | null | undefined): string {
   if (n == null) return "-";
-  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B`;
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}G`;
   if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
   if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K`;
   return String(Math.round(n));
@@ -22,9 +22,9 @@ export function fmtBytes(b: number | null | undefined): string {
 }
 
 export function fmtBytesCompact(b: number): string {
-  if (b >= 1073741824) return `${(b / 1073741824).toFixed(1)}GB`;
-  if (b >= 1048576) return `${(b / 1048576).toFixed(0)}MB`;
-  if (b >= 1024) return `${(b / 1024).toFixed(0)}KB`;
+  if (b >= 1073741824) return `${(b / 1073741824).toFixed(1)}G`;
+  if (b >= 1048576) return `${(b / 1048576).toFixed(0)}M`;
+  if (b >= 1024) return `${(b / 1024).toFixed(0)}K`;
   return `${Math.round(b)}B`;
 }
 

@@ -2640,48 +2640,6 @@ pipelines:
     }
 
     #[test]
-    fn elasticsearch_output_rejects_empty_pipeline() {
-        let yaml = r#"
-pipelines:
-  test:
-    inputs:
-      - type: file
-        path: /tmp/test.log
-    outputs:
-      - type: elasticsearch
-        endpoint: http://localhost:9200
-        pipeline: "   "
-"#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("elasticsearch 'pipeline' must not be empty"),
-            "expected empty pipeline rejection: {err}"
-        );
-    }
-
-    #[test]
-    fn elasticsearch_output_rejects_zero_max_bulk_bytes() {
-        let yaml = r#"
-pipelines:
-  test:
-    inputs:
-      - type: file
-        path: /tmp/test.log
-    outputs:
-      - type: elasticsearch
-        endpoint: http://localhost:9200
-        max_bulk_bytes: 0
-"#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("elasticsearch 'max_bulk_bytes' must be > 0"),
-            "expected zero max bulk bytes rejection: {err}"
-        );
-    }
-
-    #[test]
     fn elasticsearch_output_rejects_invalid_action() {
         let yaml = r#"
 pipelines:
@@ -2886,72 +2844,6 @@ pipelines:
     }
 
     #[test]
-    fn host_metrics_scrapers_and_intervals() {
-        let yaml = r#"
-input:
-  type: host_metrics
-  sensor:
-    scrapers: ["CPU", "Memory", "cpu", "memory"]
-    collection_interval_ms: 5000
-    disk_include_devices: ["sda1"]
-output:
-  type: stdout
-"#;
-        let cfg = Config::load_str(yaml).unwrap();
-
-        let host_metrics = match &cfg.pipelines["default"].inputs[0].type_config {
-            InputTypeConfig::HostMetrics(cfg) => cfg,
-            _ => panic!("Expected host_metrics input"),
-        };
-        let sensor = host_metrics.sensor.as_ref().unwrap();
-        assert_eq!(
-            sensor.scrapers,
-            Some(vec![
-                "CPU".to_string(),
-                "Memory".to_string(),
-                "cpu".to_string(),
-                "memory".to_string()
-            ])
-        );
-        assert_eq!(sensor.collection_interval_ms, Some(5000));
-        assert_eq!(sensor.disk_include_devices, Some(vec!["sda1".to_string()]));
-
-        // Invalid scraper test
-        let invalid_scraper_yaml = r#"
-input:
-  type: host_metrics
-  sensor:
-    scrapers: ["invalid_scraper"]
-output:
-  type: stdout
-"#;
-        let cfg_invalid = Config::load_str(invalid_scraper_yaml);
-        assert!(cfg_invalid.is_err());
-        let err = cfg_invalid.unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("unknown scraper 'invalid_scraper'")
-        );
-
-        // Invalid collection interval test
-        let invalid_interval_yaml = r#"
-input:
-  type: host_metrics
-  sensor:
-    collection_interval_ms: 0
-output:
-  type: stdout
-"#;
-        let cfg_invalid_interval = Config::load_str(invalid_interval_yaml);
-        assert!(cfg_invalid_interval.is_err());
-        let err = cfg_invalid_interval.unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("sensor.collection_interval_ms must be at least 1")
-        );
-    }
-
-    #[test]
     fn csv_enrichment_empty_path_rejected() {
         let yaml = r#"
 pipelines:
@@ -3059,6 +2951,3 @@ pipelines:
 mod tests_generator_unsupported;
 mod tests_otlp_config;
 mod tests_static_labels;
-
-#[cfg(test)]
-mod tests_sensor;
