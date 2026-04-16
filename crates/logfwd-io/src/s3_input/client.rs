@@ -28,10 +28,7 @@ async fn error_body_preview(resp: reqwest::Response) -> String {
         body
     } else {
         // Find a valid UTF-8 char boundary at or before the limit.
-        let mut end = ERROR_BODY_PREVIEW_LEN;
-        while end > 0 && !body.is_char_boundary(end) {
-            end -= 1;
-        }
+        let end = body.floor_char_boundary(ERROR_BODY_PREVIEW_LEN);
         let truncated = &body[..end];
         format!("{truncated}... (truncated)")
     }
@@ -726,13 +723,15 @@ fn parse_list_objects_response(data: &[u8]) -> io::Result<(Vec<S3Object>, Option
                     capture = None;
                 }
             }
-            Ok(Event::End(e)) if e.local_name().as_ref() == b"Contents" && in_contents => {
-                objects.push(S3Object {
-                    key: current_key.clone(),
-                    size: current_size,
-                });
-                in_contents = false;
-                capture = None;
+            Ok(Event::End(e)) => {
+                if e.local_name().as_ref() == b"Contents" && in_contents {
+                    objects.push(S3Object {
+                        key: current_key.clone(),
+                        size: current_size,
+                    });
+                    in_contents = false;
+                    capture = None;
+                }
             }
             Ok(Event::Eof) => break,
             Err(e) => {

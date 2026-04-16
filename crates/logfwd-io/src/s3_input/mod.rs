@@ -719,8 +719,11 @@ async fn run_list_discovery(
                                         warn!(name = %name, key = %kc.key, failures = *count,
                                               "S3 key exceeded max retries, skipping");
                                         completed_set.insert(kc.key.clone());
+                                        // Leave in in_flight so re-discovery skips it
+                                        // until the watermark advances past it.
+                                    } else {
+                                        in_flight.remove(&kc.key);
                                     }
-                                    in_flight.remove(&kc.key);
                                 }
                             }
 
@@ -741,8 +744,9 @@ async fn run_list_discovery(
                                             warn!(name = %name, key = %kc.key, failures = *count,
                                                   "S3 key exceeded max retries, skipping");
                                             completed_set.insert(kc.key.clone());
+                                        } else {
+                                            in_flight.remove(&kc.key);
                                         }
-                                        in_flight.remove(&kc.key);
                                     }
                                 }
                             }
@@ -766,8 +770,9 @@ async fn run_list_discovery(
                                 warn!(name = %name, key = %kc.key, failures = *count,
                                       "S3 key exceeded max retries, skipping");
                                 completed_set.insert(kc.key.clone());
+                            } else {
+                                in_flight.remove(&kc.key);
                             }
-                            in_flight.remove(&kc.key);
                         }
                     }
                     while let Some(front) = dispatched.front() {
@@ -1245,7 +1250,7 @@ async fn fetch_parallel_stream(
                     match resp_ok {
                         Some(r) => r,
                         None => {
-                            let _ = part_tx.send(Err(last_err.unwrap())).await;
+                            let _ = part_tx.send(Err(last_err.expect("last_err is Some when all attempts fail"))).await;
                             return;
                         }
                     }
@@ -1338,6 +1343,28 @@ async fn fetch_parallel_stream(
             if send_result.is_err() {
                 join_set.abort_all();
                 return Err(io::Error::other("output channel closed"));
+            }
+        }
+        // Check for panicked tasks before proceeding to the next part.
+        // A panicked task drops its sender without sending an error, so
+        // part_rx.recv() returns None — but partial/corrupt data may
+        // already have been forwarded. Abort immediately.
+        while let Some(result) = join_set.try_join_next() {
+            if let Err(e) = result {
+                if e.is_panic() {
+                    join_set.abort_all();
+                    if !first_chunk {
+                        let eof = ChunkPayload {
+                            bytes: Vec::new(),
+                            accounted_bytes: 0,
+                            source_id,
+                            is_eof: true,
+                        };
+                        let tx = out_tx.clone();
+                        let _ = tokio::task::spawn_blocking(move || tx.send(eof)).await;
+                    }
+                    return Err(io::Error::other(format!("range GET task panicked: {e}")));
+                }
             }
         }
         // Spawn the next part now that this one is fully delivered.
