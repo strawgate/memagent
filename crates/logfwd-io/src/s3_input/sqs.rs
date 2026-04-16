@@ -416,12 +416,14 @@ fn parse_receive_messages_response(data: &Bytes) -> io::Result<Vec<SqsMessage>> 
                 if e.local_name().as_ref() == b"Message" && in_message {
                     in_message = false;
                     let records = parse_s3_event_body(&body);
-                    if !records.is_empty() {
-                        messages.push(SqsMessage {
-                            receipt_handle: receipt_handle.clone(),
-                            records,
-                        });
-                    }
+                    // Always push the message even when records is empty.
+                    // The discovery loop deletes non-actionable messages
+                    // (test notifications, non-ObjectCreated events) by
+                    // checking `records.is_empty()`.
+                    messages.push(SqsMessage {
+                        receipt_handle: receipt_handle.clone(),
+                        records,
+                    });
                     capture = None;
                 }
             }

@@ -607,6 +607,7 @@ async fn run_list_discovery(
     // Track dispatched keys in S3 sort order and completed keys.
     // Cursor only advances past the contiguous prefix of completed keys.
     let mut dispatched: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    let mut dispatched_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut completed_set: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Deduplicate: skip keys that are still in flight from a previous poll cycle.
     // Keys stay in in_flight until the watermark cursor advances past them,
@@ -648,8 +649,17 @@ async fn run_list_discovery(
                             continue;
                         }
 
-                        dispatched.push_back(obj.key.clone());
-                        in_flight.insert(obj.key.clone());
+                        // A failed key remains in dispatched (for watermark tracking)
+                        // but was removed from in_flight (to reach here). Re-add to
+                        // in_flight and re-dispatch the work without duplicating the
+                        // dispatched entry.
+                        if dispatched_set.contains(&obj.key) {
+                            in_flight.insert(obj.key.clone());
+                        } else {
+                            dispatched.push_back(obj.key.clone());
+                            dispatched_set.insert(obj.key.clone());
+                            in_flight.insert(obj.key.clone());
+                        }
 
                         // Acquire a send permit, interleaving with completion
                         // draining to prevent deadlock when the work channel
@@ -703,6 +713,7 @@ async fn run_list_discovery(
                         if completed_set.contains(front) {
                             let key = dispatched.pop_front().expect("front existed");
                             completed_set.remove(&key);
+                            dispatched_set.remove(&key);
                             in_flight.remove(&key);
                             start_after = Some(key);
                         } else {
