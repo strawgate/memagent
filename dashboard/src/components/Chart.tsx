@@ -20,7 +20,21 @@ export interface ChartConfig {
   readonly unit: string;
   readonly fmtAxis?: (v: number) => string;
   readonly yRange?: [number, number];
+  /** When set, `selectTimeSeries` splits by this attribute (e.g. "pipeline"). */
+  readonly splitBy?: string;
 }
+
+/** Palette for multi-pipeline series. Cycles through these colors. */
+export const SERIES_PALETTE = [
+  "#3b82f6",
+  "#22c55e",
+  "#f59e0b",
+  "#ef4444",
+  "#a78bfa",
+  "#ec4899",
+  "#14b8a6",
+  "#f97316",
+];
 
 /** Build uPlot options for a chart. */
 function buildOpts(cfg: ChartConfig, width: number, now: number, age: number): uPlot.Options {

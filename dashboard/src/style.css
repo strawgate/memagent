@@ -168,6 +168,40 @@ main {
   gap: 10px;
   margin-bottom: 16px;
 }
+/* ── Pipeline legend bar ── */
+.pipeline-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.legend-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  border-radius: 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  color: var(--t2);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+.legend-pill.off {
+  opacity: 0.4;
+  text-decoration: line-through;
+}
+.legend-pill:hover {
+  border-color: var(--t3);
+}
+.legend-swatch {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
 .chart-card {
   background: var(--card);
   border: 1px solid var(--border);

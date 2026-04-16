@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { api } from "./api";
 import type { ChartConfig } from "./components/Chart";
-import { ChartGrid } from "./components/ChartGrid";
+import { ChartGrid, discoverPipelines, PipelineLegend } from "./components/ChartGrid";
 import { ConfigView } from "./components/ConfigView";
 import { LogViewer } from "./components/LogViewer";
 import { MetricBadges } from "./components/MetricBadges";
@@ -23,7 +23,8 @@ const POLL_OPTIONS = [
 
 // ── Chart configurations (pure data — no mutable state) ────────────────────
 
-const PIPELINE_CHARTS: ChartConfig[] = [
+/** Always-visible primary charts. */
+const PRIMARY_CHARTS: ChartConfig[] = [
   {
     metricName: "logfwd.input_lines_per_sec",
     label: "Lines / sec",
@@ -31,6 +32,7 @@ const PIPELINE_CHARTS: ChartConfig[] = [
     unit: "/s",
     fmtAxis: fmtCompact,
     yRange: [0, 1000],
+    splitBy: "pipeline",
   },
   {
     metricName: "logfwd.input_bytes_per_sec",
@@ -39,6 +41,7 @@ const PIPELINE_CHARTS: ChartConfig[] = [
     unit: "/s",
     fmtAxis: fmtBytesCompact,
     yRange: [0, 102400],
+    splitBy: "pipeline",
   },
   {
     metricName: "logfwd.output_bytes_per_sec",
@@ -47,7 +50,12 @@ const PIPELINE_CHARTS: ChartConfig[] = [
     unit: "/s",
     fmtAxis: fmtBytesCompact,
     yRange: [0, 102400],
+    splitBy: "pipeline",
   },
+];
+
+/** Charts shown only when "Show More" is toggled or they have non-zero values. */
+const EXTRA_CHARTS: ChartConfig[] = [
   {
     metricName: "logfwd.output_errors_per_sec",
     label: "Errors / sec",
@@ -55,6 +63,7 @@ const PIPELINE_CHARTS: ChartConfig[] = [
     unit: "/s",
     fmtAxis: fmtCompact,
     yRange: [0, 10],
+    splitBy: "pipeline",
   },
   {
     metricName: "logfwd.batches_per_min",
@@ -63,6 +72,7 @@ const PIPELINE_CHARTS: ChartConfig[] = [
     unit: "/min",
     fmtAxis: fmtCompact,
     yRange: [0, 10],
+    splitBy: "pipeline",
   },
   {
     metricName: "logfwd.backpressure_stalls_per_sec",
@@ -71,6 +81,7 @@ const PIPELINE_CHARTS: ChartConfig[] = [
     unit: "/s",
     fmtAxis: (v) => v.toFixed(1),
     yRange: [0, 1],
+    splitBy: "pipeline",
   },
 ];
 
@@ -107,7 +118,9 @@ export function App() {
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [traces, setTraces] = useState<TraceRecord[]>([]);
   const [totalErrors, setTotalErrors] = useState(0);
-  const [pollMs, setPollMs] = useState(POLL_OPTIONS[2].ms); // default 2s
+  const [showMoreCharts, setShowMoreCharts] = useState(false);
+  const [hiddenPipelines, setHiddenPipelines] = useState<Set<string>>(new Set());
+  const [pollMs, setPollMs] = useState(POLL_OPTIONS[1].ms); // default 1s
 
   // ── WebSocket telemetry → TelemetryStore ─────────────────────────────────
   const { store, tick, ingest } = useTelemetryStore();
@@ -219,6 +232,34 @@ export function App() {
   const ready = status?.ready.status ?? "not_ready";
   const statusReason = status?.ready.reason ?? status?.component_health.reason ?? "";
 
+  // Decide which extra charts to show: always show charts with non-zero data,
+  // or show all when user clicks "Show More".
+  const visibleExtras = showMoreCharts
+    ? EXTRA_CHARTS
+    : EXTRA_CHARTS.filter((cfg) => {
+        const frame = store.selectTimeSeries({
+          metricName: cfg.metricName,
+          intervalMs: 1000,
+          reduce: "last",
+          ...(cfg.splitBy ? { splitBy: cfg.splitBy } : {}),
+        });
+        return frame.series.some((s) => s.points.some((pt) => pt.value > 0));
+      });
+
+  const hasHiddenCharts = !showMoreCharts && visibleExtras.length < EXTRA_CHARTS.length;
+
+  // Discover pipeline names for the legend from chart data.
+  const allPipelineCharts = [...PRIMARY_CHARTS, ...EXTRA_CHARTS];
+  const pipelineNames = discoverPipelines(store, allPipelineCharts);
+  const togglePipeline = useCallback((key: string) => {
+    setHiddenPipelines((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
   return (
     <>
       <StatusBar
@@ -235,7 +276,27 @@ export function App() {
 
         <div class="section">
           <div class="heading">Pipeline Metrics</div>
-          <ChartGrid store={store} charts={PIPELINE_CHARTS} tick={tick} />
+          <PipelineLegend
+            pipelines={pipelineNames}
+            hidden={hiddenPipelines}
+            onToggle={togglePipeline}
+          />
+          <ChartGrid
+            store={store}
+            charts={[...PRIMARY_CHARTS, ...visibleExtras]}
+            tick={tick}
+            hiddenPipelines={hiddenPipelines}
+          />
+          {hasHiddenCharts && (
+            <button type="button" class="show-more-btn" onClick={() => setShowMoreCharts(true)}>
+              Show More Charts
+            </button>
+          )}
+          {showMoreCharts && visibleExtras.length === EXTRA_CHARTS.length && (
+            <button type="button" class="show-more-btn" onClick={() => setShowMoreCharts(false)}>
+              Show Less
+            </button>
+          )}
         </div>
 
         <div class="section">
