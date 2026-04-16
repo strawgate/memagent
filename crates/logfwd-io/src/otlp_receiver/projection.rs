@@ -1,17 +1,19 @@
 //! Experimental OTLP logs wire projection into Arrow.
 //!
 //! This module decodes the common OTLP logs protobuf shape directly into
-//! `StreamingBuilder`, bypassing allocation of the full prost object graph.
-//! It intentionally implements a projection, not a complete protobuf object
-//! model: unsupported semantic cases return [`ProjectionError::Unsupported`]
+//! a [`ColumnarBatchBuilder`], bypassing allocation of the full prost object
+//! graph. It intentionally implements a projection, not a complete protobuf
+//! object model: unsupported semantic cases return [`ProjectionError::Unsupported`]
 //! so the receiver can fall back to the prost decoder.
 
 use std::fmt;
 use std::io::Write as _;
 
+use arrow::buffer::Buffer;
 use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
-use logfwd_arrow::StreamingBuilder;
+use logfwd_arrow::columnar::builder::ColumnarBatchBuilder;
+use logfwd_arrow::columnar::plan::{BatchPlan, FieldHandle, FieldKind};
 use logfwd_types::field_names;
 
 #[derive(Debug)]
@@ -57,24 +59,17 @@ enum StringStorage {
     InputView,
 }
 
-#[derive(Clone, Copy)]
-enum BatchFinish {
-    Detached,
-    #[cfg(any(feature = "otlp-research", test))]
-    View,
-}
-
-struct OtlpFieldIdx {
-    timestamp: usize,
-    observed_timestamp: usize,
-    severity: usize,
-    severity_number: usize,
-    body: usize,
-    trace_id: usize,
-    span_id: usize,
-    flags: usize,
-    scope_name: usize,
-    scope_version: usize,
+struct OtlpFieldHandles {
+    timestamp: FieldHandle,
+    observed_timestamp: FieldHandle,
+    severity: FieldHandle,
+    severity_number: FieldHandle,
+    body: FieldHandle,
+    trace_id: FieldHandle,
+    span_id: FieldHandle,
+    flags: FieldHandle,
+    scope_name: FieldHandle,
+    scope_version: FieldHandle,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -144,13 +139,7 @@ pub(super) fn decode_projected_otlp_logs(
     body: &[u8],
     resource_prefix: &str,
 ) -> Result<RecordBatch, ProjectionError> {
-    decode_projected_otlp_logs_inner(
-        body,
-        Bytes::new(),
-        resource_prefix,
-        StringStorage::Decoded,
-        BatchFinish::Detached,
-    )
+    decode_projected_otlp_logs_inner(body, Bytes::new(), resource_prefix, StringStorage::Decoded)
 }
 
 #[cfg(any(feature = "otlp-research", test))]
@@ -170,8 +159,45 @@ pub(super) fn decode_projected_otlp_logs_view_bytes(
         backing,
         resource_prefix,
         StringStorage::InputView,
-        BatchFinish::View,
     )
+}
+
+/// Build a `BatchPlan` with all canonical OTLP log fields declared as planned.
+fn build_otlp_plan() -> (BatchPlan, OtlpFieldHandles) {
+    let mut plan = BatchPlan::new();
+    let handles = OtlpFieldHandles {
+        timestamp: plan
+            .declare_planned(field_names::TIMESTAMP, FieldKind::Int64)
+            .expect("duplicate planned field"),
+        observed_timestamp: plan
+            .declare_planned(field_names::OBSERVED_TIMESTAMP, FieldKind::Int64)
+            .expect("duplicate planned field"),
+        severity: plan
+            .declare_planned(field_names::SEVERITY, FieldKind::Utf8View)
+            .expect("duplicate planned field"),
+        severity_number: plan
+            .declare_planned(field_names::SEVERITY_NUMBER, FieldKind::Int64)
+            .expect("duplicate planned field"),
+        body: plan
+            .declare_planned(field_names::BODY, FieldKind::Utf8View)
+            .expect("duplicate planned field"),
+        trace_id: plan
+            .declare_planned(field_names::TRACE_ID, FieldKind::Utf8View)
+            .expect("duplicate planned field"),
+        span_id: plan
+            .declare_planned(field_names::SPAN_ID, FieldKind::Utf8View)
+            .expect("duplicate planned field"),
+        flags: plan
+            .declare_planned(field_names::FLAGS, FieldKind::Int64)
+            .expect("duplicate planned field"),
+        scope_name: plan
+            .declare_planned(field_names::SCOPE_NAME, FieldKind::Utf8View)
+            .expect("duplicate planned field"),
+        scope_version: plan
+            .declare_planned(field_names::SCOPE_VERSION, FieldKind::Utf8View)
+            .expect("duplicate planned field"),
+    };
+    (plan, handles)
 }
 
 fn decode_projected_otlp_logs_inner(
@@ -179,7 +205,6 @@ fn decode_projected_otlp_logs_inner(
     backing: Bytes,
     resource_prefix: &str,
     string_storage: StringStorage,
-    finish: BatchFinish,
 ) -> Result<RecordBatch, ProjectionError> {
     if body.is_empty() {
         return Ok(RecordBatch::new_empty(
@@ -187,20 +212,12 @@ fn decode_projected_otlp_logs_inner(
         ));
     }
 
-    let mut builder = StreamingBuilder::new(None);
-    builder.begin_batch(backing);
-    let fields = OtlpFieldIdx {
-        timestamp: builder.resolve_field(field_names::TIMESTAMP.as_bytes()),
-        observed_timestamp: builder.resolve_field(field_names::OBSERVED_TIMESTAMP.as_bytes()),
-        severity: builder.resolve_field(field_names::SEVERITY.as_bytes()),
-        severity_number: builder.resolve_field(field_names::SEVERITY_NUMBER.as_bytes()),
-        body: builder.resolve_field(field_names::BODY.as_bytes()),
-        trace_id: builder.resolve_field(field_names::TRACE_ID.as_bytes()),
-        span_id: builder.resolve_field(field_names::SPAN_ID.as_bytes()),
-        flags: builder.resolve_field(field_names::FLAGS.as_bytes()),
-        scope_name: builder.resolve_field(field_names::SCOPE_NAME.as_bytes()),
-        scope_version: builder.resolve_field(field_names::SCOPE_VERSION.as_bytes()),
-    };
+    let (plan, fields) = build_otlp_plan();
+    let mut builder = ColumnarBatchBuilder::new(plan);
+    builder.begin_batch();
+    if !backing.is_empty() {
+        builder.set_original_buffer(Buffer::from(backing));
+    }
     let mut scratch = WireScratch::default();
 
     for_each_field(body, |field, value| {
@@ -225,12 +242,7 @@ fn decode_projected_otlp_logs_inner(
         Ok(())
     })?;
 
-    let batch = match finish {
-        BatchFinish::Detached => builder.finish_batch_detached(),
-        #[cfg(any(feature = "otlp-research", test))]
-        BatchFinish::View => builder.finish_batch(),
-    };
-    batch.map_err(|e| {
+    builder.finish_batch().map_err(|e| {
         ProjectionError::Batch(format!("structured OTLP projection batch build error: {e}"))
     })
 }
@@ -247,12 +259,12 @@ struct WireScratch {
 #[derive(Default)]
 struct AttrFieldCache {
     key: Vec<u8>,
-    idx: usize,
+    handle: Option<FieldHandle>,
 }
 
 fn decode_resource_logs_wire(
-    builder: &mut StreamingBuilder,
-    fields: &OtlpFieldIdx,
+    builder: &mut ColumnarBatchBuilder,
+    fields: &OtlpFieldHandles,
     scratch: &mut WireScratch,
     resource_prefix: &str,
     resource_logs: &[u8],
@@ -305,9 +317,9 @@ fn decode_resource_logs_wire(
 }
 
 fn collect_resource_attrs<'a>(
-    builder: &mut StreamingBuilder,
+    builder: &mut ColumnarBatchBuilder,
     scratch: &mut WireScratch,
-    resource_attrs: &mut Vec<(usize, WireAny<'a>)>,
+    resource_attrs: &mut Vec<(FieldHandle, WireAny<'a>)>,
     resource_prefix: &str,
     resource: &'a [u8],
 ) -> Result<(), ProjectionError> {
@@ -323,8 +335,14 @@ fn collect_resource_attrs<'a>(
                         .resource_key
                         .extend_from_slice(resource_prefix.as_bytes());
                     scratch.resource_key.extend_from_slice(key);
-                    let idx = builder.resolve_field(&scratch.resource_key);
-                    resource_attrs.push((idx, value));
+                    let key_str = std::str::from_utf8(&scratch.resource_key)
+                        .expect("resource prefix + validated UTF-8 key must be valid UTF-8");
+                    let handle = builder
+                        .resolve_dynamic(key_str, wire_any_field_kind(&value))
+                        .map_err(|e| {
+                            ProjectionError::Batch(format!("resolve resource attr: {e}"))
+                        })?;
+                    resource_attrs.push((handle, value));
                 }
             }
             (spec::resource::ATTRIBUTES, _) => {
@@ -339,10 +357,10 @@ fn collect_resource_attrs<'a>(
 }
 
 fn decode_scope_logs_wire(
-    builder: &mut StreamingBuilder,
-    fields: &OtlpFieldIdx,
+    builder: &mut ColumnarBatchBuilder,
+    fields: &OtlpFieldHandles,
     scratch: &mut WireScratch,
-    resource_attrs: &[(usize, WireAny<'_>)],
+    resource_attrs: &[(FieldHandle, WireAny<'_>)],
     scope_logs: &[u8],
     string_storage: StringStorage,
 ) -> Result<(), ProjectionError> {
@@ -417,10 +435,10 @@ fn merge_scope_wire<'a>(
 }
 
 fn decode_log_record_wire(
-    builder: &mut StreamingBuilder,
-    fields: &OtlpFieldIdx,
+    builder: &mut ColumnarBatchBuilder,
+    fields: &OtlpFieldHandles,
     scratch: &mut WireScratch,
-    resource_attrs: &[(usize, WireAny<'_>)],
+    resource_attrs: &[(FieldHandle, WireAny<'_>)],
     scope_fields: ScopeFields<'_>,
     log_record: &[u8],
     string_storage: StringStorage,
@@ -537,49 +555,55 @@ fn decode_log_record_wire(
     if let Ok(value) = i64::try_from(timestamp)
         && value > 0
     {
-        builder.append_i64_value_by_idx(fields.timestamp, value);
+        builder.write_i64(fields.timestamp, value);
     }
     if let Ok(value) = i64::try_from(observed_time_unix_nano)
         && value > 0
     {
-        builder.append_i64_value_by_idx(fields.observed_timestamp, value);
+        builder.write_i64(fields.observed_timestamp, value);
     }
     if let Some(value) = severity_text {
-        append_validated_wire_str(builder, fields.severity, value, string_storage);
+        write_wire_str(builder, fields.severity, value, string_storage)?;
     }
     if severity_number > 0 {
-        builder.append_i64_value_by_idx(fields.severity_number, severity_number);
+        builder.write_i64(fields.severity_number, severity_number);
     }
     if let Some(value) = body {
-        append_wire_any_as_string(builder, fields.body, value, scratch, string_storage);
+        write_wire_any_as_string(builder, fields.body, value, scratch, string_storage)?;
     }
     if let Some(value) = trace_id {
-        append_hex_field(builder, fields.trace_id, value, &mut scratch.hex);
+        write_hex_field(builder, fields.trace_id, value, &mut scratch.hex)?;
     }
     if let Some(value) = span_id {
-        append_hex_field(builder, fields.span_id, value, &mut scratch.hex);
+        write_hex_field(builder, fields.span_id, value, &mut scratch.hex)?;
     }
     if flags > 0 {
-        builder.append_i64_value_by_idx(fields.flags, flags);
+        builder.write_i64(fields.flags, flags);
     }
     if let Some(value) = scope_fields.name
         && !value.is_empty()
     {
-        append_validated_wire_str(builder, fields.scope_name, value, string_storage);
+        write_wire_str(builder, fields.scope_name, value, string_storage)?;
     }
     if let Some(value) = scope_fields.version
         && !value.is_empty()
     {
-        append_validated_wire_str(builder, fields.scope_version, value, string_storage);
+        write_wire_str(builder, fields.scope_version, value, string_storage)?;
     }
 
     for (attr_idx, key, value) in decoded_attrs {
-        let idx = resolve_record_attr_field(builder, &mut scratch.attr_field_cache, attr_idx, key);
-        append_wire_any(builder, idx, value, scratch, string_storage);
+        let handle = resolve_record_attr_field(
+            builder,
+            &mut scratch.attr_field_cache,
+            attr_idx,
+            key,
+            &value,
+        )?;
+        write_wire_any(builder, handle, value, scratch, string_storage)?;
     }
 
-    for &(idx, value) in resource_attrs {
-        append_wire_any(builder, idx, value, scratch, string_storage);
+    for &(handle, value) in resource_attrs {
+        write_wire_any(builder, handle, value, scratch, string_storage)?;
     }
 
     builder.end_row();
@@ -617,29 +641,44 @@ fn decode_key_value_wire(kv: &[u8]) -> Result<Option<(&[u8], WireAny<'_>)>, Proj
 }
 
 fn resolve_record_attr_field(
-    builder: &mut StreamingBuilder,
+    builder: &mut ColumnarBatchBuilder,
     cache: &mut Vec<AttrFieldCache>,
     position: usize,
     key: &[u8],
-) -> usize {
+    value: &WireAny<'_>,
+) -> Result<FieldHandle, ProjectionError> {
     if let Some(cached) = cache.get(position)
         && cached.key.as_slice() == key
+        && let Some(handle) = cached.handle
     {
-        return cached.idx;
+        return Ok(handle);
     }
 
-    let idx = builder.resolve_field(key);
+    let key_str = std::str::from_utf8(key).expect("attribute key already validated as UTF-8");
+    let handle = builder
+        .resolve_dynamic(key_str, wire_any_field_kind(value))
+        .map_err(|e| ProjectionError::Batch(format!("resolve attr field: {e}")))?;
     if let Some(cached) = cache.get_mut(position) {
         cached.key.clear();
         cached.key.extend_from_slice(key);
-        cached.idx = idx;
+        cached.handle = Some(handle);
     } else {
         cache.push(AttrFieldCache {
             key: key.to_vec(),
-            idx,
+            handle: Some(handle),
         });
     }
-    idx
+    Ok(handle)
+}
+
+/// Map a `WireAny` variant to a `FieldKind` for dynamic field resolution.
+fn wire_any_field_kind(value: &WireAny<'_>) -> FieldKind {
+    match value {
+        WireAny::String(_) | WireAny::Bytes(_) => FieldKind::Utf8View,
+        WireAny::Bool(_) => FieldKind::Bool,
+        WireAny::Int(_) => FieldKind::Int64,
+        WireAny::Double(_) => FieldKind::Float64,
+    }
 }
 
 fn decode_any_value_wire(value: &[u8]) -> Result<Option<WireAny<'_>>, ProjectionError> {
@@ -742,69 +781,88 @@ fn subslice_range(parent: &[u8], child: &[u8]) -> Result<(usize, usize), Project
     Ok((child_start - parent_start, child.len()))
 }
 
-fn append_wire_any(
-    builder: &mut StreamingBuilder,
-    idx: usize,
+fn write_wire_any(
+    builder: &mut ColumnarBatchBuilder,
+    handle: FieldHandle,
     value: WireAny<'_>,
     scratch: &mut WireScratch,
     string_storage: StringStorage,
-) {
+) -> Result<(), ProjectionError> {
     match value {
-        WireAny::String(value) => append_validated_wire_str(builder, idx, value, string_storage),
-        WireAny::Bool(value) => builder.append_bool_by_idx(idx, value),
-        WireAny::Int(value) => builder.append_i64_value_by_idx(idx, value),
-        WireAny::Double(value) => builder.append_f64_value_by_idx(idx, value),
-        WireAny::Bytes(value) => append_hex_field(builder, idx, value, &mut scratch.hex),
+        WireAny::String(value) => write_wire_str(builder, handle, value, string_storage)?,
+        WireAny::Bool(value) => builder.write_bool(handle, value),
+        WireAny::Int(value) => builder.write_i64(handle, value),
+        WireAny::Double(value) => builder.write_f64(handle, value),
+        WireAny::Bytes(value) => write_hex_field(builder, handle, value, &mut scratch.hex)?,
     }
+    Ok(())
 }
 
-fn append_wire_any_as_string(
-    builder: &mut StreamingBuilder,
-    idx: usize,
+fn write_wire_any_as_string(
+    builder: &mut ColumnarBatchBuilder,
+    handle: FieldHandle,
     value: WireAny<'_>,
     scratch: &mut WireScratch,
     string_storage: StringStorage,
-) {
+) -> Result<(), ProjectionError> {
     match value {
-        WireAny::String(value) => append_validated_wire_str(builder, idx, value, string_storage),
-        WireAny::Bool(true) => builder.append_validated_decoded_str_by_idx(idx, b"true"),
-        WireAny::Bool(false) => builder.append_validated_decoded_str_by_idx(idx, b"false"),
+        WireAny::String(value) => write_wire_str(builder, handle, value, string_storage)?,
+        WireAny::Bool(true) => {
+            builder
+                .write_str_bytes(handle, b"true")
+                .map_err(|e| ProjectionError::Batch(e.to_string()))?;
+        }
+        WireAny::Bool(false) => {
+            builder
+                .write_str_bytes(handle, b"false")
+                .map_err(|e| ProjectionError::Batch(e.to_string()))?;
+        }
         WireAny::Int(value) => {
             scratch.decimal.clear();
             write!(scratch.decimal, "{value}").expect("writing to Vec cannot fail");
-            builder.append_validated_decoded_str_by_idx(idx, &scratch.decimal);
+            builder
+                .write_str_bytes(handle, &scratch.decimal)
+                .map_err(|e| ProjectionError::Batch(e.to_string()))?;
         }
         WireAny::Double(value) => {
             scratch.decimal.clear();
             write!(scratch.decimal, "{value}").expect("writing to Vec cannot fail");
-            builder.append_validated_decoded_str_by_idx(idx, &scratch.decimal);
+            builder
+                .write_str_bytes(handle, &scratch.decimal)
+                .map_err(|e| ProjectionError::Batch(e.to_string()))?;
         }
-        WireAny::Bytes(value) => append_hex_field(builder, idx, value, &mut scratch.hex),
+        WireAny::Bytes(value) => write_hex_field(builder, handle, value, &mut scratch.hex)?,
     }
+    Ok(())
 }
 
-fn append_validated_wire_str(
-    builder: &mut StreamingBuilder,
-    idx: usize,
+fn write_wire_str(
+    builder: &mut ColumnarBatchBuilder,
+    handle: FieldHandle,
     value: &[u8],
     string_storage: StringStorage,
-) {
+) -> Result<(), ProjectionError> {
     match string_storage {
-        StringStorage::Decoded => builder.append_validated_decoded_str_by_idx(idx, value),
+        StringStorage::Decoded => builder
+            .write_str_bytes(handle, value)
+            .map_err(|e| ProjectionError::Batch(e.to_string()))?,
         #[cfg(any(feature = "otlp-research", test))]
-        StringStorage::InputView => builder.append_validated_str_by_idx(idx, value),
+        StringStorage::InputView => builder.write_input_ref(handle, value),
     }
+    Ok(())
 }
 
-fn append_hex_field(
-    builder: &mut StreamingBuilder,
-    idx: usize,
+fn write_hex_field(
+    builder: &mut ColumnarBatchBuilder,
+    handle: FieldHandle,
     bytes: &[u8],
     hex_buf: &mut Vec<u8>,
-) {
+) -> Result<(), ProjectionError> {
     hex_buf.clear();
     write_hex_to_buf(hex_buf, bytes);
-    builder.append_validated_decoded_str_by_idx(idx, hex_buf);
+    builder
+        .write_str_bytes(handle, hex_buf)
+        .map_err(|e| ProjectionError::Batch(e.to_string()))
 }
 
 fn write_hex_to_buf(out: &mut Vec<u8>, bytes: &[u8]) {
@@ -943,6 +1001,8 @@ fn read_varint(input: &mut &[u8]) -> Result<u64, ProjectionError> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
     use opentelemetry_proto::tonic::common::v1::{
@@ -1559,12 +1619,98 @@ mod tests {
         assert_projected_payload_matches_prost(&payload);
     }
 
+    /// Compare prost (StreamingBuilder) and projected (ColumnarBatchBuilder) batches.
+    ///
+    /// ColumnarBatchBuilder produces `Utf8View` (including inside Struct
+    /// conflict columns) while StreamingBuilder produces `Utf8`. This function
+    /// normalizes Utf8View → Utf8 recursively, then compares by column name
+    /// so column ordering differences don't cause false failures.
     fn assert_batches_match(expected: &RecordBatch, actual: &RecordBatch) {
-        assert_eq!(expected.schema(), actual.schema());
-        assert_eq!(expected.num_rows(), actual.num_rows());
-        for (expected_column, actual_column) in expected.columns().iter().zip(actual.columns()) {
-            assert_eq!(expected_column.to_data(), actual_column.to_data());
+        use arrow::array::StructArray;
+        use arrow::compute::cast;
+        assert_eq!(expected.num_rows(), actual.num_rows(), "row count mismatch");
+
+        /// Recursively cast Utf8View → Utf8 inside an array (handles Struct children).
+        fn normalize_utf8view(arr: &dyn arrow::array::Array) -> Arc<dyn arrow::array::Array> {
+            use arrow::array::Array;
+            use arrow::datatypes::DataType;
+            match arr.data_type() {
+                DataType::Utf8View => cast(arr, &DataType::Utf8).expect("cast Utf8View→Utf8"),
+                DataType::Struct(fields) => {
+                    let struct_arr = arr
+                        .as_any()
+                        .downcast_ref::<StructArray>()
+                        .expect("struct downcast");
+                    let new_fields: Vec<_> = fields
+                        .iter()
+                        .enumerate()
+                        .map(|(i, f)| {
+                            let child = normalize_utf8view(struct_arr.column(i).as_ref());
+                            let new_field = if f.data_type() == &DataType::Utf8View {
+                                Arc::new(arrow::datatypes::Field::new(
+                                    f.name(),
+                                    DataType::Utf8,
+                                    f.is_nullable(),
+                                ))
+                            } else {
+                                Arc::clone(f)
+                            };
+                            (new_field, child)
+                        })
+                        .collect();
+                    let (new_field_refs, new_arrays): (Vec<_>, Vec<_>) =
+                        new_fields.into_iter().unzip();
+                    Arc::new(
+                        StructArray::try_new(
+                            new_field_refs.into(),
+                            new_arrays,
+                            struct_arr.nulls().cloned(),
+                        )
+                        .expect("struct rebuild"),
+                    )
+                }
+                _ => arrow::array::make_array(arr.to_data()),
+            }
         }
+
+        // Match columns by name so ordering differences don't cause failures.
+        let actual_schema = actual.schema();
+        for (i, expected_field) in expected.schema().fields().iter().enumerate() {
+            let name = expected_field.name();
+            let actual_idx = actual_schema
+                .index_of(name)
+                .unwrap_or_else(|_| panic!("projected batch missing column '{name}'"));
+            let expected_col = expected.column(i);
+            let actual_col = actual.column(actual_idx);
+
+            let actual_normalized = normalize_utf8view(actual_col.as_ref());
+
+            assert_eq!(
+                expected_col.to_data(),
+                actual_normalized.to_data(),
+                "column '{name}' data mismatch"
+            );
+        }
+
+        // Both batches should now have the same column count since unwritten
+        // planned fields are omitted (matching StreamingBuilder).
+        assert_eq!(
+            expected.num_columns(),
+            actual.num_columns(),
+            "column count mismatch: expected columns {:?}, actual columns {:?}",
+            expected
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect::<Vec<_>>(),
+            actual
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| f.name().as_str())
+                .collect::<Vec<_>>(),
+        );
     }
 
     fn encode_len_field(out: &mut Vec<u8>, field: u32, value: &[u8]) {
