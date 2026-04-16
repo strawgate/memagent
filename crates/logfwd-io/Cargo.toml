@@ -79,6 +79,7 @@ sensor-ebpf-common = { path = "../logfwd-ebpf-proto/sensor-ebpf/sensor-ebpf-comm
 chrono = { workspace = true }
 dhat = "0.3"
 logfwd-test-utils = { version = "0.1.0", path = "../logfwd-test-utils" }
+mockito = "1.7.2"
 proptest = "1"
 proptest-state-machine = "0.8"
 serial_test = "3"
