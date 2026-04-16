@@ -505,9 +505,9 @@ fn status_payload(state: &DiagnosticsState) -> StatusSnapshotResponse {
         }
 
         let batch_latency_avg_ns = if latency_batches > 0 {
-            Some(batch_latency_total / latency_batches)
+            batch_latency_total / latency_batches
         } else {
-            None
+            0
         };
         let inflight = pm.inflight_batches.load(Ordering::Relaxed);
         let backpressure = pm.backpressure_stalls.load(Ordering::Relaxed);
@@ -526,28 +526,13 @@ fn status_payload(state: &DiagnosticsState) -> StatusSnapshotResponse {
         let stalls_per_sec = backpressure as f64 / uptime_s_nonzero;
 
         let (bottleneck_stage, bottleneck_reason): (&str, String) = if queue_wait_ratio > 0.5 {
-            // Distinguish true output bottleneck from pipeline throughput saturation.
-            // High queue_wait with negligible output time means workers contend for the
-            // channel (throughput saturation), not that the output destination is slow.
-            let output_ratio = output_s / uptime_s_nonzero;
-            if output_ratio > 0.1 {
-                (
-                    "output",
-                    format!(
-                        "output consuming {:.0}% of worker time, queue wait {:.0}%",
-                        output_ratio * 100.0,
-                        queue_wait_ratio * 100.0
-                    ),
-                )
-            } else {
-                (
-                    "none",
-                    format!(
-                        "pipeline saturated ({:.0}% queue contention, output itself is fast)",
-                        queue_wait_ratio * 100.0
-                    ),
-                )
-            }
+            (
+                "output",
+                format!(
+                    "workers spending {:.0}% of wall-time in output queue",
+                    queue_wait_ratio * 100.0
+                ),
+            )
         } else if stalls_per_sec > 10.0 {
             (
                 "input",
@@ -959,8 +944,7 @@ fn build_traces_body(state: &DiagnosticsState) -> String {
 
 fn build_logs_body(state: &DiagnosticsState) -> String {
     let lines = state.stderr.get_logs();
-    let dropped = state.stderr.count_lines_dropped();
-    let mut body = String::with_capacity(lines.len() * 80 + 64);
+    let mut body = String::with_capacity(lines.len() * 80 + 32);
     body.push_str(r#"{"lines":["#);
     for (i, line) in lines.iter().enumerate() {
         if i > 0 {
@@ -976,8 +960,6 @@ fn build_logs_body(state: &DiagnosticsState) -> String {
     } else {
         "false"
     });
-    body.push_str(r#","lines_dropped":"#);
-    body.push_str(&dropped.to_string());
     body.push('}');
     body
 }
@@ -1078,72 +1060,15 @@ async fn ws_telemetry(
 
 async fn handle_ws(mut socket: WebSocket, state: Arc<DiagnosticsState>) {
     let mut rx = state.telemetry_tx.subscribe();
-    // Per-client cursors — start at 0 so the first frame delivers all
-    // buffered history (resync on connect).
-    let mut span_cursor: usize = 0;
-    let mut log_cursor: u64 = 0;
-    let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
-
-    // Send initial span/log snapshot immediately on connect (cursor=0 → full
-    // buffer). Then the interval fires every 1s for deltas.
-    {
-        let spans = super::telemetry::collect_new_spans(
-            state.trace_buf.as_ref(),
-            &state.pipelines,
-            &mut span_cursor,
-        );
-        let span_json = super::telemetry::spans_to_otlp_json(&spans);
-        if socket.send(Message::Text(span_json.into())).await.is_err() {
-            return;
-        }
-        let logs = super::telemetry::collect_new_logs(&state.stderr, &mut log_cursor);
-        if !logs.is_empty() {
-            let log_json = super::telemetry::logs_to_otlp_json(&logs);
-            if socket.send(Message::Text(log_json.into())).await.is_err() {
-                return;
-            }
-        }
-    }
-
     loop {
-        tokio::select! {
-            // Forward pre-computed metrics (incl. rate gauges) from broadcast.
-            msg = rx.recv() => {
-                match msg {
-                    Ok(text) => {
-                        if socket.send(Message::Text(text.into())).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {} // skip missed metrics
-                    Err(_) => break,
-                }
-            }
-            // Per-client span + log sampling on a 2-second cadence.
-            _ = interval.tick() => {
-                let spans = super::telemetry::collect_new_spans(
-                    state.trace_buf.as_ref(),
-                    &state.pipelines,
-                    &mut span_cursor,
-                );
-                // Always send traces — even empty — so clients clear stale
-                // in-progress state when all batches complete.
-                let span_json = super::telemetry::spans_to_otlp_json(&spans);
-                if socket.send(Message::Text(span_json.into())).await.is_err() {
+        match rx.recv().await {
+            Ok(text) => {
+                if socket.send(Message::Text(text.into())).await.is_err() {
                     break;
                 }
-
-                let logs = super::telemetry::collect_new_logs(
-                    &state.stderr,
-                    &mut log_cursor,
-                );
-                if !logs.is_empty() {
-                    let log_json = super::telemetry::logs_to_otlp_json(&logs);
-                    if socket.send(Message::Text(log_json.into())).await.is_err() {
-                        break;
-                    }
-                }
             }
+            Err(broadcast::error::RecvError::Lagged(_)) => {} // skip missed
+            Err(_) => break,
         }
     }
 }
@@ -1154,10 +1079,12 @@ async fn handle_ws(mut socket: WebSocket, state: Arc<DiagnosticsState>) {
 
 async fn sampler_loop(state: Arc<DiagnosticsState>) {
     let mut last_stderr_cursor: u64 = 0;
+    let mut ws_last_log_cursor: u64 = 0;
+    let mut ws_last_span_count: usize = 0;
     let mut prev_health = std::collections::HashMap::new();
     let mut prev_snapshot: Option<super::telemetry::MetricSnapshot> = None;
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
 
         // Always sample metrics + logs into the history/telemetry buffers.
         sample_metrics(&state.pipelines, &state.history, state.memory_stats_fn);
@@ -1180,9 +1107,8 @@ async fn sampler_loop(state: Arc<DiagnosticsState>) {
             &mut prev_health,
         );
 
-        // Broadcast metrics OTLP JSON to WebSocket clients.
-        // Spans and logs are sampled per-client in handle_ws with independent
-        // cursors, so only metrics need the shared broadcast.
+        // Push OTLP JSON telemetry to WebSocket clients.
+        // Three separate messages: resourceMetrics, resourceSpans, resourceLogs.
         if state.telemetry_tx.receiver_count() > 0 {
             let mut metrics = super::telemetry::sample_metrics(
                 &state.pipelines,
@@ -1210,6 +1136,24 @@ async fn sampler_loop(state: Arc<DiagnosticsState>) {
                 ),
                 time: Instant::now(),
             });
+
+            let spans = super::telemetry::collect_new_spans(
+                state.trace_buf.as_ref(),
+                &state.pipelines,
+                &mut ws_last_span_count,
+            );
+            // Always send traces — even empty payloads — so clients can
+            // clear stale in-progress state when all batches complete.
+            let _ = state
+                .telemetry_tx
+                .send(super::telemetry::spans_to_otlp_json(&spans));
+
+            let logs = super::telemetry::collect_new_logs(&state.stderr, &mut ws_last_log_cursor);
+            if !logs.is_empty() {
+                let _ = state
+                    .telemetry_tx
+                    .send(super::telemetry::logs_to_otlp_json(&logs));
+            }
         }
     }
 }

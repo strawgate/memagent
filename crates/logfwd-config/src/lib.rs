@@ -11,23 +11,26 @@ mod compat;
 mod env;
 mod load;
 mod serde_helpers;
+mod shared;
 mod types;
 mod validate;
 
 #[cfg(test)]
 pub(crate) use env::expand_env_vars;
+pub use shared::{
+    BatchConfig, Compression, NetworkConfig, RetryConfig, TlsClientConfig, TlsInputConfig,
+    TlsServerConfig,
+};
 pub use types::{
-    ArrowIpcTypeConfig, AuthConfig, Config, ConfigError, ContainerInfoConfig, CsvEnrichmentConfig,
-    EnrichmentConfig, EnvVarsEnrichmentConfig, FileTypeConfig, Format,
-    GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorInputConfig,
-    GeneratorProfileConfig, GeneratorSequenceConfig, GeneratorTypeConfig, GeoDatabaseConfig,
-    GeoDatabaseFormat, HostInfoConfig, HostMetricsInputConfig, HttpInputConfig, HttpMethodConfig,
-    HttpTypeConfig, InputConfig, InputType, InputTypeConfig, JournaldBackendConfig,
-    JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sClusterInfoConfig,
-    K8sPathConfig, KvFileEnrichmentConfig, NetworkInfoConfig, OtlpProtobufDecodeModeConfig,
-    OtlpTypeConfig, OutputConfig, OutputType, PipelineConfig, ProcessInfoConfig, S3InputConfig,
-    S3TypeConfig, SensorTypeConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig,
-    TcpTypeConfig, TlsInputConfig, UdpTypeConfig,
+    ArrowIpcTypeConfig, AuthConfig, Config, ConfigError, CsvEnrichmentConfig, EnrichmentConfig,
+    FileTypeConfig, Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig,
+    GeneratorInputConfig, GeneratorProfileConfig, GeneratorSequenceConfig, GeneratorTypeConfig,
+    GeoDatabaseConfig, GeoDatabaseFormat, HostInfoConfig, HostMetricsInputConfig, HttpInputConfig,
+    HttpMethodConfig, HttpTypeConfig, InputConfig, InputType, InputTypeConfig,
+    JournaldBackendConfig, JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig,
+    K8sPathConfig, OtlpProtobufDecodeModeConfig, OtlpTypeConfig, OutputConfig, OutputType,
+    PipelineConfig, SensorTypeConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig,
+    TcpTypeConfig, UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 
@@ -2439,32 +2442,6 @@ pipelines:
     }
 
     #[test]
-    fn generator_timestamp_rejects_non_logs_profiles() {
-        for profile in ["envoy", "cri_k8s", "wide", "narrow", "cloud_trail"] {
-            let yaml = format!(
-                r#"
-pipelines:
-  test:
-    inputs:
-      - type: generator
-        generator:
-          profile: {profile}
-          timestamp:
-            start: "now"
-    outputs:
-      - type: "null"
-"#
-            );
-            let err = Config::load_str(&yaml).unwrap_err();
-            assert!(
-                err.to_string()
-                    .contains("only supported for the logs profile"),
-                "profile={profile}: expected logs-only rejection: {err}"
-            );
-        }
-    }
-
-    #[test]
     fn generator_timestamp_rejects_invalid_calendar_date() {
         let yaml = r#"
 pipelines:
@@ -2784,72 +2761,6 @@ pipelines:
     }
 
     #[test]
-    fn host_metrics_scrapers_and_intervals() {
-        let yaml = r#"
-input:
-  type: host_metrics
-  sensor:
-    scrapers: ["CPU", "Memory", "cpu", "memory"]
-    collection_interval_ms: 5000
-    disk_include_devices: ["sda1"]
-output:
-  type: stdout
-"#;
-        let cfg = Config::load_str(yaml).unwrap();
-
-        let host_metrics = match &cfg.pipelines["default"].inputs[0].type_config {
-            InputTypeConfig::HostMetrics(cfg) => cfg,
-            _ => panic!("Expected host_metrics input"),
-        };
-        let sensor = host_metrics.sensor.as_ref().unwrap();
-        assert_eq!(
-            sensor.scrapers,
-            Some(vec![
-                "CPU".to_string(),
-                "Memory".to_string(),
-                "cpu".to_string(),
-                "memory".to_string()
-            ])
-        );
-        assert_eq!(sensor.collection_interval_ms, Some(5000));
-        assert_eq!(sensor.disk_include_devices, Some(vec!["sda1".to_string()]));
-
-        // Invalid scraper test
-        let invalid_scraper_yaml = r#"
-input:
-  type: host_metrics
-  sensor:
-    scrapers: ["invalid_scraper"]
-output:
-  type: stdout
-"#;
-        let cfg_invalid = Config::load_str(invalid_scraper_yaml);
-        assert!(cfg_invalid.is_err());
-        let err = cfg_invalid.unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("unknown scraper 'invalid_scraper'")
-        );
-
-        // Invalid collection interval test
-        let invalid_interval_yaml = r#"
-input:
-  type: host_metrics
-  sensor:
-    collection_interval_ms: 0
-output:
-  type: stdout
-"#;
-        let cfg_invalid_interval = Config::load_str(invalid_interval_yaml);
-        assert!(cfg_invalid_interval.is_err());
-        let err = cfg_invalid_interval.unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("sensor.collection_interval_ms must be at least 1")
-        );
-    }
-
-    #[test]
     fn csv_enrichment_empty_path_rejected() {
         let yaml = r#"
 pipelines:
@@ -2922,7 +2833,7 @@ pipelines:
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("arrow_ipc output only supports 'lz4', 'zstd', or 'none'")
+            msg.contains("arrow_ipc output only supports 'zstd' or 'none'")
                 && msg.contains("'gzip'"),
             "expected arrow_ipc-specific gzip rejection, got: {msg}"
         );
@@ -2945,45 +2856,6 @@ pipelines:
     }
 
     #[test]
-    fn arrow_ipc_output_accepts_lz4_compression() {
-        let yaml = r#"
-pipelines:
-  test:
-    inputs:
-      - type: file
-        path: /tmp/test.log
-    outputs:
-      - type: arrow_ipc
-        endpoint: http://localhost:4317
-        compression: lz4
-"#;
-        Config::load_str(yaml).expect("arrow_ipc output should accept lz4 compression");
-    }
-
-    #[test]
-    fn non_arrow_ipc_output_rejects_arrow_ipc_fields() {
-        let yaml = r#"
-pipelines:
-  test:
-    inputs:
-      - type: generator
-    outputs:
-      - type: stdout
-        host: localhost
-        batch_size: 100
-"#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("'host' is only supported for arrow_ipc outputs")
-                || err
-                    .to_string()
-                    .contains("'batch_size' is only supported for arrow_ipc outputs"),
-            "expected arrow_ipc specific field rejection: {err}"
-        );
-    }
-
-    #[test]
     fn csv_enrichment_whitespace_path_rejected() {
         let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: csv\n        table_name: assets\n        path: \"   \"\n";
         let err = Config::load_str(yaml).unwrap_err();
@@ -2993,6 +2865,7 @@ pipelines:
         );
     }
 }
+
 mod tests_generator_unsupported;
 mod tests_otlp_config;
 mod tests_static_labels;

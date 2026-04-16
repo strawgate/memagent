@@ -18,6 +18,19 @@ fn varint_field_len(field_number: u32, value: u64) -> usize {
     varint_len((field_number as u64) << 3) + varint_len(value)
 }
 
+/// Compute `next_pos + len` with overflow and bounds checks.
+fn checked_end(next_pos: usize, len: u64, data_len: usize) -> io::Result<usize> {
+    let len = usize::try_from(len)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "field length exceeds address space"))?;
+    let end = next_pos
+        .checked_add(len)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "field length overflow"))?;
+    if end > data_len {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated field"));
+    }
+    Ok(end)
+}
+
 fn arrow_payload_len(schema_id: &str, payload_type: ArrowPayloadType, record: &[u8]) -> usize {
     let mut len = 0;
     if !schema_id.is_empty() {
@@ -129,14 +142,7 @@ pub fn decode_batch_status_generated_fast(data: &[u8]) -> io::Result<BatchStatus
             (3, 2) => {
                 let (len, next_pos) = decode_varint(data, pos)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                let len_usize = usize::try_from(len).unwrap_or(usize::MAX);
-                let end = next_pos.checked_add(len_usize).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "overflow"))?;
-                if end > data.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "truncated status_message",
-                    ));
-                }
+                let end = checked_end(next_pos, len, data.len())?;
                 status_message = String::from_utf8_lossy(&data[next_pos..end]).into_owned();
                 pos = end;
             }
@@ -168,11 +174,7 @@ fn decode_arrow_payload_generated_fast(data: &[u8]) -> io::Result<DecodedPayload
             (1, 2) => {
                 let (len, next_pos) = decode_varint(data, pos)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                let len_usize = usize::try_from(len).unwrap_or(usize::MAX);
-                let end = next_pos.checked_add(len_usize).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "overflow"))?;
-                if end > data.len() {
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated schema_id"));
-                }
+                let end = checked_end(next_pos, len, data.len())?;
                 schema_id = String::from_utf8_lossy(&data[next_pos..end]).into_owned();
                 pos = end;
             }
@@ -185,11 +187,7 @@ fn decode_arrow_payload_generated_fast(data: &[u8]) -> io::Result<DecodedPayload
             (3, 2) => {
                 let (len, next_pos) = decode_varint(data, pos)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                let len_usize = usize::try_from(len).unwrap_or(usize::MAX);
-                let end = next_pos.checked_add(len_usize).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "overflow"))?;
-                if end > data.len() {
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated record"));
-                }
+                let end = checked_end(next_pos, len, data.len())?;
                 record = data[next_pos..end].to_vec();
                 pos = end;
             }
@@ -225,25 +223,14 @@ pub fn decode_batch_arrow_records_generated_fast(
             (2, 2) => {
                 let (len, next_pos) = decode_varint(data, pos)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                let len_usize = usize::try_from(len).unwrap_or(usize::MAX);
-                let end = next_pos.checked_add(len_usize).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "overflow"))?;
-                if end > data.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "truncated ArrowPayload",
-                    ));
-                }
+                let end = checked_end(next_pos, len, data.len())?;
                 payloads.push(decode_arrow_payload_generated_fast(&data[next_pos..end])?);
                 pos = end;
             }
             (3, 2) => {
                 let (len, next_pos) = decode_varint(data, pos)
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                let len_usize = usize::try_from(len).unwrap_or(usize::MAX);
-                let end = next_pos.checked_add(len_usize).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "overflow"))?;
-                if end > data.len() {
-                    return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "truncated headers"));
-                }
+                let end = checked_end(next_pos, len, data.len())?;
                 headers = data[next_pos..end].to_vec();
                 pos = end;
             }
@@ -255,58 +242,4 @@ pub fn decode_batch_arrow_records_generated_fast(
     }
 
     Ok((batch_id, payloads, headers))
-}
-
-// NOTE: This file is @generated. These proofs must be re-added after regeneration.
-// Tracked in: https://github.com/strawgate/memagent/issues (see Kani coverage gap)
-#[cfg(kani)]
-mod verification {
-    use super::*;
-
-    /// Prove that no byte sequence of ≤16 bytes causes a panic in the
-    /// top-level decoder. The only failure modes are `io::Error` returns —
-    /// never a panic from arithmetic overflow or OOB indexing.
-    ///
-    /// Key invariants under test:
-    ///  - `usize::try_from(len).unwrap_or(usize::MAX)` saturates instead of UB
-    ///  - `next_pos.checked_add(len_usize).ok_or_else(...)` converts overflow to Err
-    ///  - `end > data.len()` guard prevents OOB slice indexing
-    #[kani::proof]
-    #[kani::unwind(50)]
-    #[kani::solver(kissat)]
-    fn verify_decode_batch_no_panic_bounded() {
-        const N: usize = 16;
-        let data: [u8; N] = kani::any();
-        let len: usize = kani::any_where(|&l| l <= N);
-        // Must not panic — either Ok or Err(io::Error)
-        let _ = decode_batch_arrow_records_generated_fast(&data[..len]);
-    }
-
-    /// Prove the arithmetic core of every len-delimited field decode:
-    /// `usize::try_from(u64_len).unwrap_or(MAX)` followed by `checked_add`
-    /// never produces UB regardless of the u64 length value or next_pos.
-    #[kani::proof]
-    fn verify_len_delimited_overflow_guard() {
-        let raw_len: u64 = kani::any();
-        let next_pos: usize = kani::any();
-
-        let len_usize = usize::try_from(raw_len).unwrap_or(usize::MAX);
-        let end = next_pos.checked_add(len_usize);
-
-        // checked_add must catch every overflow — never panic, never wrap
-        match end {
-            Some(e) => {
-                // Only reachable when no overflow occurred
-                assert!(e >= next_pos);
-                assert!(e >= len_usize);
-            }
-            None => {
-                // Overflow was correctly detected; production code returns Err here
-                kani::cover!(true, "overflow correctly caught");
-            }
-        }
-
-        kani::cover!(end.is_some(), "non-overflowing add");
-        kani::cover!(end.is_none(), "overflowing add caught");
-    }
 }

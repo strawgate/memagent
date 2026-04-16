@@ -19,9 +19,7 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 use logfwd_core::scan_config::{FieldSpec, ScanConfig};
 
 use logfwd_arrow::scanner::Scanner;
-use logfwd_bench::{NullSink, make_metadata};
-use logfwd_io::generator::cri::{gen_narrow, gen_production_mixed};
-use logfwd_io::generator::wide::gen_wide;
+use logfwd_bench::{NullSink, generators};
 
 // ---------------------------------------------------------------------------
 // Scan configs
@@ -70,12 +68,12 @@ fn bench_ceiling_by_schema(c: &mut Criterion) {
     group.sample_size(30);
 
     let n = 50_000usize;
-    let meta = make_metadata();
+    let meta = generators::make_metadata();
 
     let schemas: Vec<(&str, Vec<u8>)> = vec![
-        ("narrow_5f", gen_narrow(n, 42)),
-        ("mixed_var", gen_production_mixed(n, 42)),
-        ("wide_20f", gen_wide(n, 42)),
+        ("narrow_5f", generators::gen_narrow(n, 42)),
+        ("mixed_var", generators::gen_production_mixed(n, 42)),
+        ("wide_20f", generators::gen_wide(n, 42)),
     ];
 
     for (schema_name, data) in &schemas {
@@ -122,11 +120,11 @@ fn bench_ceiling_by_batch_size(c: &mut Criterion) {
     let mut group = c.benchmark_group("ceiling_by_batch_size");
     group.sample_size(30);
 
-    let meta = make_metadata();
+    let meta = generators::make_metadata();
     let batch_sizes: &[usize] = &[1_000, 5_000, 10_000, 50_000, 100_000];
 
     for &n in batch_sizes {
-        let data = gen_production_mixed(n, 42);
+        let data = generators::gen_production_mixed(n, 42);
         let buf = Bytes::from(data.clone());
 
         group.throughput(Throughput::Elements(n as u64));
@@ -155,9 +153,9 @@ fn bench_ceiling_by_scan_config(c: &mut Criterion) {
     group.sample_size(30);
 
     let n = 50_000usize;
-    let data = gen_production_mixed(n, 42);
+    let data = generators::gen_production_mixed(n, 42);
     let buf = Bytes::from(data);
-    let meta = make_metadata();
+    let meta = generators::make_metadata();
 
     // extract_all (default)
     group.throughput(Throughput::Elements(n as u64));
@@ -217,9 +215,9 @@ fn bench_ceiling_by_scan_mode(c: &mut Criterion) {
     group.sample_size(30);
 
     let n = 50_000usize;
-    let data = gen_production_mixed(n, 42);
+    let data = generators::gen_production_mixed(n, 42);
     let buf = Bytes::from(data);
-    let meta = make_metadata();
+    let meta = generators::make_metadata();
 
     group.throughput(Throughput::Elements(n as u64));
 
@@ -257,19 +255,19 @@ fn bench_bottleneck_isolation(c: &mut Criterion) {
     group.sample_size(30);
 
     let n = 50_000usize;
-    let meta = make_metadata();
+    let meta = generators::make_metadata();
 
     // (a) Generator only: measure data generation cost
     group.throughput(Throughput::Elements(n as u64));
     group.bench_function(BenchmarkId::new("generator_only", n), |b| {
         b.iter(|| {
-            let data = gen_production_mixed(n, 42);
+            let data = generators::gen_production_mixed(n, 42);
             std::hint::black_box(data.len());
         });
     });
 
     // (b) Scan only: measure scan without sink dispatch
-    let data = gen_production_mixed(n, 42);
+    let data = generators::gen_production_mixed(n, 42);
     let buf = Bytes::from(data);
     group.bench_with_input(BenchmarkId::new("scan_only", n), &buf, |b, buf| {
         let mut scanner = Scanner::new(config_extract_all());
@@ -282,7 +280,7 @@ fn bench_bottleneck_isolation(c: &mut Criterion) {
     });
 
     // (c) Null sink only: measure dispatch cost on pre-built batch
-    let data = gen_production_mixed(n, 42);
+    let data = generators::gen_production_mixed(n, 42);
     let buf = Bytes::from(data);
     let mut scanner = Scanner::new(config_extract_all());
     let batch = scanner.scan_detached(buf).expect("scan should not fail");

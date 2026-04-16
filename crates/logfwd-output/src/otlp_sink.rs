@@ -497,12 +497,6 @@ impl OtlpSink {
                 self.compress_buf = encoder.finish()?;
                 &self.compress_buf
             }
-            Compression::Lz4 => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "LZ4 unsupported for OTLP",
-                ));
-            }
             Compression::None => &self.encoder_buf,
         };
 
@@ -521,7 +515,6 @@ impl OtlpSink {
         let payload_is_compressed = match self.compression {
             Compression::Zstd => self.compressor.is_some(),
             Compression::Gzip => true,
-            Compression::Lz4 => true,
             Compression::None => false,
         };
         let payload: &[u8] = if self.protocol == OtlpProtocol::Grpc {
@@ -544,7 +537,6 @@ impl OtlpSink {
                 let encoding = match self.compression {
                     Compression::Zstd => "zstd",
                     Compression::Gzip => "gzip",
-                    Compression::Lz4 => "lz4",
                     Compression::None => unreachable!("header only set when compressed"),
                 };
                 req = req.header("grpc-encoding", encoding);
@@ -552,7 +544,6 @@ impl OtlpSink {
                 let encoding = match self.compression {
                     Compression::Zstd => "zstd",
                     Compression::Gzip => "gzip",
-                    Compression::Lz4 => "lz4",
                     Compression::None => unreachable!("header only set when compressed"),
                 };
                 req = req.header("Content-Encoding", encoding);

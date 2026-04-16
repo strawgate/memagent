@@ -1044,8 +1044,11 @@ mod tests {
 
         let cols = build_col_infos(batch);
         let has_timestamp_col = cols.iter().any(|c| {
-            c.field_name == field_names::TIMESTAMP_AT
-                || c.field_name == field_names::TIMESTAMP_UNDERSCORE
+            field_names::matches_any(
+                &c.field_name,
+                field_names::TIMESTAMP,
+                field_names::TIMESTAMP_VARIANTS,
+            )
         });
 
         for row in 0..batch.num_rows() {

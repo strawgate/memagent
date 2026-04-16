@@ -4,7 +4,7 @@ use arrow::array::{Array, BooleanArray, StringArray};
 use serde_json::Value;
 
 use super::*;
-use crate::generator::test_support::scan_json;
+use crate::generators::test_support::scan_json;
 
 #[test]
 fn cloudtrail_deterministic() {

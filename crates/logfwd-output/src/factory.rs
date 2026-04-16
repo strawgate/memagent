@@ -94,38 +94,24 @@ pub fn build_sink_factory(
             Ok(Arc::new(factory))
         }
         OutputType::ArrowIpc => {
-            // Accept either an explicit `endpoint` URL or a `host` + `port` pair.
-            let endpoint = if let Some(ep) = cfg.endpoint.as_ref() {
-                ep.clone()
-            } else if let (Some(host), Some(port)) = (cfg.host.as_ref(), cfg.port) {
-                format!("http://{host}:{port}")
-            } else {
-                return Err(OutputError::Construction(format!(
-                    "output '{name}': arrow_ipc requires either 'endpoint' or both 'host' and 'port'"
-                )));
-            };
+            let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
+                OutputError::Construction(format!("output '{name}': arrow_ipc requires 'endpoint'"))
+            })?;
             let compression = match cfg.compression.as_deref() {
                 Some("zstd") => Compression::Zstd,
-                Some("lz4") => Compression::Lz4,
                 Some("none") => Compression::None,
                 Some(other) => {
                     return Err(OutputError::Construction(format!(
-                        "output '{name}': arrow_ipc does not support '{other}' compression (use 'lz4', 'zstd', 'none', or omit)"
+                        "output '{name}': arrow_ipc does not support '{other}' compression (use 'zstd', 'none', or omit)"
                     )));
                 }
                 None => Compression::None,
             };
-            let write_legacy_ipc_format = cfg.write_legacy_ipc_format.unwrap_or(false);
-            let write_schema_on_connect = cfg.write_schema_on_connect.unwrap_or(false);
             let factory = ArrowIpcSinkFactory::new(
                 name.to_string(),
-                endpoint,
+                endpoint.clone(),
                 compression,
                 auth_headers,
-                write_legacy_ipc_format,
-                cfg.buffer_size_bytes,
-                cfg.batch_size,
-                write_schema_on_connect,
                 stats,
             )
             .map_err(|e| {

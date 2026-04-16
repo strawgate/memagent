@@ -262,7 +262,7 @@ pub fn flat_to_star(batch: &RecordBatch) -> Result<StarSchema, ArrowError> {
             flags_col = Some(idx);
             continue;
         }
-        if name.starts_with("scope.") {
+        if name.starts_with("scope.") || name.starts_with("_scope_") {
             has_scope_cols = true;
         }
 
@@ -546,10 +546,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
     // severity_text → level
     if let Ok(sev_idx) = logs_schema.index_of("severity_text") {
         let sev_arr = star.logs.column(sev_idx);
-        if !matches!(
-            sev_arr.data_type(),
-            DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8
-        ) {
+        if !matches!(sev_arr.data_type(), DataType::Utf8 | DataType::Utf8View) {
             return Err(ArrowError::SchemaError(format!(
                 "severity_text must be Utf8 or Utf8View, got {}",
                 sev_arr.data_type()
@@ -572,10 +569,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
     // body_str → message
     if let Ok(body_idx) = logs_schema.index_of("body_str") {
         let body_arr = star.logs.column(body_idx);
-        if !matches!(
-            body_arr.data_type(),
-            DataType::Utf8 | DataType::Utf8View | DataType::LargeUtf8
-        ) {
+        if !matches!(body_arr.data_type(), DataType::Utf8 | DataType::Utf8View) {
             return Err(ArrowError::SchemaError(format!(
                 "body_str must be Utf8 or Utf8View, got {}",
                 body_arr.data_type()
@@ -692,7 +686,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
         |key| match key {
             "scope_name" => "scope.name".to_string(),
             "scope_version" => "scope.version".to_string(),
-            _ if key.starts_with("scope.") => key.to_string(),
+            _ if key.starts_with("scope.") || key.starts_with("_scope_") => key.to_string(),
             _ => format!("scope.{key}"),
         },
         &unprotected_cols,
@@ -926,11 +920,6 @@ fn str_from_array(arr: &dyn Array, row: usize) -> String {
         DataType::Utf8View => arr
             .as_any()
             .downcast_ref::<arrow::array::StringViewArray>()
-            .map(|a| a.value(row).to_string())
-            .unwrap_or_default(),
-        DataType::LargeUtf8 => arr
-            .as_any()
-            .downcast_ref::<LargeStringArray>()
             .map(|a| a.value(row).to_string())
             .unwrap_or_default(),
         _ => String::new(),
@@ -1577,7 +1566,7 @@ pub(crate) fn days_from_civil(year: i64, month: u32, day: u32) -> Option<i64> {
 }
 
 /// Format nanosecond epoch timestamp as RFC 3339 string.
-fn chrono_timestamp(secs: i64, nanos: u32) -> String {
+pub fn chrono_timestamp(secs: i64, nanos: u32) -> String {
     // Reverse the days_from_civil calculation.
     let total_days = secs.div_euclid(86400);
     let day_secs = secs.rem_euclid(86400);
@@ -1984,7 +1973,7 @@ fn scatter_scope_attrs(
 ) {
     let scope_col_indices: Vec<usize> = col_index
         .iter()
-        .filter(|(name, _)| name.starts_with("scope."))
+        .filter(|(name, _)| name.starts_with("scope.") || name.starts_with("_scope_"))
         .map(|(_, &idx)| idx)
         .collect();
 
@@ -3470,12 +3459,6 @@ mod str_value_at_tests {
     }
 
     #[test]
-    fn str_from_array_large_utf8() {
-        let arr = LargeStringArray::from(vec![Some("hello large str_from_array")]);
-        assert_eq!(str_from_array(&arr, 0), "hello large str_from_array");
-    }
-
-    #[test]
     fn float_types() {
         let f32_arr = Float32Array::from(vec![Some(3.14f32)]);
         let val = str_value_at(&f32_arr, 0);
@@ -3483,13 +3466,6 @@ mod str_value_at_tests {
         let f64_arr = Float64Array::from(vec![Some(2.718f64)]);
         let val = str_value_at(&f64_arr, 0);
         assert!(val.starts_with("2.718"), "got: {val}");
-    }
-
-    #[test]
-    #[test]
-    fn large_utf8_in_str_from_array() {
-        let arr = LargeStringArray::from(vec![Some("hello large")]);
-        assert_eq!(str_from_array(&arr, 0), "hello large");
     }
 
     #[test]

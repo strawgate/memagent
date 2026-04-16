@@ -34,6 +34,7 @@ impl LogBuf {
         }
     }
 
+    #[allow(dead_code)]
     fn push(&mut self, line: String) {
         let line_bytes = line.len() + 1; // +1 accounts for the stripped newline
         // Drop lines that would alone exceed the cap — they can never fit.
@@ -89,6 +90,7 @@ impl CaptureState {
         }
     }
 
+    #[allow(dead_code)]
     fn push_line(&self, line: String) {
         if let Ok(mut buf) = self.buf.lock() {
             buf.push(line);
@@ -319,6 +321,7 @@ fn reader_loop(read_fd: i32, orig_fd: i32, state: &CaptureState) {
 }
 
 /// Strip ANSI escape sequences (colors, bold, OSC sequences, etc).
+#[allow(dead_code)]
 fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars();
