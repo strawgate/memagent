@@ -18,8 +18,8 @@ use logfwd_bench::generators::otlp::{self, OtlpFixtureProfile};
 use logfwd_bench::{generators, make_otlp_sink};
 use logfwd_io::compress::ChunkCompressor;
 use logfwd_io::otlp_receiver::{
-    decode_protobuf_bytes_to_batch_projected_experimental, decode_protobuf_to_batch,
-    decode_protobuf_to_batch_projected_detached_experimental,
+    ProjectedOtlpDecoder, decode_protobuf_bytes_to_batch_projected_experimental,
+    decode_protobuf_to_batch, decode_protobuf_to_batch_projected_detached_experimental,
     decode_protobuf_to_batch_prost_reference,
 };
 use logfwd_output::Compression;
@@ -465,12 +465,135 @@ fn bench_end_to_end(c: &mut Criterion) {
     group.finish();
 }
 
+/// Multi-batch decoder reuse: measures steady-state decode performance when the
+/// same `ProjectedOtlpDecoder` processes multiple batches in sequence.
+///
+/// Scenarios:
+/// - **repeated**: same fixture decoded N times (steady-state, column hints warm)
+/// - **alternating**: two different fixtures decoded alternately (schema churn)
+/// - **spike-recovery**: one wide batch followed by many narrow batches
+///   (tests that a single anomalous batch doesn't permanently inflate overhead)
+fn bench_multi_batch_reuse(c: &mut Criterion) {
+    let mut group = c.benchmark_group("otlp_multi_batch_reuse");
+    group.sample_size(10);
+
+    // --- Repeated: same payload decoded 10 times ---
+    let profiles_for_repeat = [
+        otlp::NARROW_1K,
+        otlp::WIDE_10K,
+        otlp::ATTRS_HEAVY,
+        otlp::MINIMAL,
+    ];
+    for profile in &profiles_for_repeat {
+        if profile.has_complex_any {
+            continue;
+        }
+        let fixture = otlp::build_fixture(*profile);
+        let batches_per_iter = 10;
+        let total_rows = profile.total_rows() * batches_per_iter;
+        group.throughput(Throughput::Elements(total_rows as u64));
+        group.bench_with_input(
+            BenchmarkId::new("repeated_10x", profile.name),
+            &fixture.payload_bytes,
+            |b, payload| {
+                let mut decoder = ProjectedOtlpDecoder::new("resource.");
+                // Warm with one batch outside timing.
+                let _ = decoder.decode_view_bytes(payload.clone()).unwrap();
+                b.iter(|| {
+                    for _ in 0..batches_per_iter {
+                        let batch = decoder
+                            .decode_view_bytes(payload.clone())
+                            .expect("repeated decode should succeed");
+                        std::hint::black_box(batch.num_rows());
+                    }
+                });
+            },
+        );
+    }
+
+    // --- Alternating: two different schemas decoded alternately ---
+    let pairs = [
+        (otlp::NARROW_1K, otlp::ATTRS_HEAVY, "narrow_vs_heavy"),
+        (otlp::MINIMAL, otlp::WIDE_10K, "minimal_vs_wide"),
+    ];
+    for (a, b_profile, label) in &pairs {
+        if a.has_complex_any || b_profile.has_complex_any {
+            continue;
+        }
+        let fix_a = otlp::build_fixture(*a);
+        let fix_b = otlp::build_fixture(*b_profile);
+        let rounds = 5;
+        let total_rows = (a.total_rows() + b_profile.total_rows()) * rounds;
+        group.throughput(Throughput::Elements(total_rows as u64));
+        group.bench_with_input(
+            BenchmarkId::new("alternating_5x", *label),
+            &(fix_a.payload_bytes.clone(), fix_b.payload_bytes.clone()),
+            |bench, (pa, pb)| {
+                let mut decoder = ProjectedOtlpDecoder::new("resource.");
+                // Warm
+                let _ = decoder.decode_view_bytes(pa.clone()).unwrap();
+                bench.iter(|| {
+                    for _ in 0..rounds {
+                        let ba = decoder
+                            .decode_view_bytes(pa.clone())
+                            .expect("decode A should succeed");
+                        std::hint::black_box(ba.num_rows());
+                        let bb = decoder
+                            .decode_view_bytes(pb.clone())
+                            .expect("decode B should succeed");
+                        std::hint::black_box(bb.num_rows());
+                    }
+                });
+            },
+        );
+    }
+
+    // --- Spike recovery: 1 wide batch then 10 narrow batches ---
+    // Tests that processing one anomalously wide batch doesn't permanently
+    // inflate allocations for subsequent normal batches.
+    {
+        let spike = otlp::build_fixture(otlp::WIDE_ATTRS);
+        let normal = otlp::build_fixture(otlp::NARROW_1K);
+        let narrow_count = 10;
+        let total_rows =
+            otlp::WIDE_ATTRS.total_rows() + otlp::NARROW_1K.total_rows() * narrow_count;
+        group.throughput(Throughput::Elements(total_rows as u64));
+        group.bench_function(
+            BenchmarkId::new("spike_then_narrow_10x", "wide_attrs_then_narrow"),
+            |bench| {
+                let mut decoder = ProjectedOtlpDecoder::new("resource.");
+                // Warm
+                let _ = decoder
+                    .decode_view_bytes(normal.payload_bytes.clone())
+                    .unwrap();
+                bench.iter(|| {
+                    // Spike batch
+                    let batch = decoder
+                        .decode_view_bytes(spike.payload_bytes.clone())
+                        .expect("spike decode should succeed");
+                    std::hint::black_box(batch.num_rows());
+                    // Normal batches
+                    for _ in 0..narrow_count {
+                        let batch = decoder
+                            .decode_view_bytes(normal.payload_bytes.clone())
+                            .expect("narrow decode should succeed");
+                        std::hint::black_box(batch.num_rows());
+                    }
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_parser_only,
     bench_decode_materialize,
     bench_output_encode_only,
     bench_output_compression,
-    bench_end_to_end
+    bench_end_to_end,
+    bench_multi_batch_reuse
 );
 criterion_main!(benches);
