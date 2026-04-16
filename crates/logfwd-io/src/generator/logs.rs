@@ -55,13 +55,16 @@ pub(super) fn write_logs_event(
     let (year, month, day, hour, min, sec, msec) = super::epoch_ms_to_parts(event_ms);
 
     let mut msg_buf = String::new();
-    let msg_str = if let Some(template) = message_template {
-        template
+    if let Some(template) = message_template {
+        // Safe to unwrap because json_escape_bytes returns valid UTF-8 if given valid UTF-8.
+        let mut tmp_buf = Vec::with_capacity(template.len());
+        logfwd_core::cri::json_escape_bytes(template.as_bytes(), &mut tmp_buf);
+        msg_buf.push_str(std::str::from_utf8(&tmp_buf).unwrap());
     } else {
         use std::fmt::Write;
         let _ = write!(&mut msg_buf, "{method} {path}/{id} {status}");
-        &msg_buf
     };
+    let msg_str = &msg_buf;
 
     let mut synthetic_fields = String::new();
     if let Some(count) = field_count {

@@ -1,10 +1,10 @@
 use std::time::Instant;
 
-use logfwd_io::generator::cloudtrail::gen_cloudtrail_batch_with_profile;
-use logfwd_io::generator::cri::{gen_narrow_batch, gen_production_mixed_batch};
-use logfwd_io::generator::envoy::{EnvoyAccessProfile, gen_envoy_access_batch_with_profile};
-use logfwd_io::generator::shared::CloudTrailProfile;
-use logfwd_io::generator::wide::gen_wide_batch;
+use logfwd_bench::generators::cloudtrail::gen_cloudtrail_batch_with_profile;
+use logfwd_bench::generators::{
+    CloudTrailProfile, EnvoyAccessProfile, gen_envoy_access_batch_with_profile, gen_narrow_batch,
+    gen_production_mixed_batch, gen_wide_batch,
+};
 
 const DEFAULT_LINES: usize = 100_000;
 const DEFAULT_ITERATIONS: usize = 20;

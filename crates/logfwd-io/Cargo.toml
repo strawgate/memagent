@@ -11,18 +11,6 @@ doctest = false
 [features]
 default = []
 otlp-research = []
-s3 = [
-    "dep:reqwest",
-    "dep:hmac",
-    "dep:sha2",
-    "dep:hex",
-    "dep:quick-xml",
-    "dep:snap",
-    "tokio/rt-multi-thread",
-    "tokio/sync",
-    "tokio/time",
-    "tokio/macros",
-]
 
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
@@ -37,8 +25,6 @@ crossbeam-channel = "0.5"
 fastrand = { workspace = true }
 flate2 = "1"
 globset = { workspace = true }
-hex = { version = "0.4", optional = true }
-hmac = { version = "0.12", optional = true }
 http-body-util = "0.1"
 itoa = "1"
 ryu = "1"
@@ -46,10 +32,6 @@ libc = "0.2"
 libloading = "0.8"
 memchr = "2"
 notify = "8"
-quick-xml = { version = "0.37", features = ["serialize"], optional = true }
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"], optional = true }
-sha2 = { version = "0.10", optional = true }
-snap = { version = "1", optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }

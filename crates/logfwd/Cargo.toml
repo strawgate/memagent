@@ -19,7 +19,6 @@ otlp-research = [
     "logfwd-runtime/otlp-research",
     "logfwd-io/otlp-research",
 ]
-s3 = ["logfwd-runtime/s3"]
 
 [dependencies]
 arrow = { workspace = true }
