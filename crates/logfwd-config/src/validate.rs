@@ -2277,9 +2277,8 @@ mod validate_metrics_endpoint_tests {
 
 #[cfg(test)]
 mod additional_tests {
-    use super::*;
     use crate::ConfigError;
-    use crate::types::{FileTypeConfig, InputTypeConfig, MultilineConfig, MultilineMatchMode};
+    use crate::types::{FileTypeConfig, MultilineConfig, MultilineMatchMode};
 
     // Helper for testing file input validation
     fn validate_file_input(f: &FileTypeConfig) -> Result<(), ConfigError> {
