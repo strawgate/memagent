@@ -14,7 +14,6 @@
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use tokio::runtime::Runtime;
 
 #[cfg(feature = "s3")]
 use logfwd_io::s3_input::client::S3Client;
