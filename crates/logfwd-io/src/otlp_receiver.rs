@@ -178,25 +178,6 @@ impl OtlpReceiverInput {
         )
     }
 
-    #[cfg(test)]
-    fn new_with_capacity_stats_and_max_size(
-        name: impl Into<String>,
-        addr: &str,
-        capacity: usize,
-        stats: Option<Arc<ComponentStats>>,
-        max_message_size_bytes: Option<usize>,
-    ) -> io::Result<Self> {
-        Self::new_with_capacity_stats_prefix_and_decode_mode(
-            name,
-            addr,
-            capacity,
-            stats,
-            field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
-            OtlpProtobufDecodeMode::Prost,
-            max_message_size_bytes,
-        )
-    }
-
     fn new_with_capacity_stats_and_prefix(
         name: impl Into<String>,
         addr: &str,
