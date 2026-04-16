@@ -35,8 +35,6 @@ pub struct UdpSink {
     row_buf: Vec<u8>,
     /// Accumulation buffer for the current datagram being assembled.
     dgram_buf: Vec<u8>,
-    /// How many rows are currently buffered in `dgram_buf`.
-    dgram_rows: u64,
     stats: Arc<ComponentStats>,
     max_datagram_size: Option<usize>,
     #[allow(dead_code)]
@@ -67,7 +65,6 @@ impl UdpSink {
             target: target.into(),
             row_buf: Vec::with_capacity(2048),
             dgram_buf: Vec::with_capacity(max_size),
-            dgram_rows: 0,
             stats,
             max_datagram_size,
             encoding,
@@ -102,12 +99,8 @@ impl UdpSink {
         if self.dgram_buf.is_empty() {
             return Ok(());
         }
-        let len = self.dgram_buf.len() as u64;
         self.send_packet(&self.dgram_buf).await?;
-        self.stats.inc_lines(self.dgram_rows);
-        self.stats.inc_bytes(len);
         self.dgram_buf.clear();
-        self.dgram_rows = 0;
         Ok(())
     }
 
@@ -118,6 +111,7 @@ impl UdpSink {
         }
 
         let cols = build_col_infos(batch);
+        let mut total_bytes: u64 = 0;
 
         for row in 0..batch.num_rows() {
             // Serialize row into scratch buffer.
@@ -126,6 +120,7 @@ impl UdpSink {
             self.row_buf.push(b'\n');
 
             let row_len = self.row_buf.len();
+            total_bytes += row_len as u64;
 
             let max_size = self.max_datagram_size.unwrap_or(MAX_DATAGRAM_PAYLOAD);
 
@@ -135,8 +130,6 @@ impl UdpSink {
             if row_len > max_size {
                 self.flush_dgram().await?;
                 self.send_packet(&self.row_buf).await?;
-                self.stats.inc_lines(1);
-                self.stats.inc_bytes(row_len as u64);
                 continue;
             }
 
@@ -146,11 +139,12 @@ impl UdpSink {
             }
 
             self.dgram_buf.extend_from_slice(&self.row_buf);
-            self.dgram_rows += 1;
         }
 
         // Flush any remaining rows.
         self.flush_dgram().await?;
+        self.stats.inc_lines(batch.num_rows() as u64);
+        self.stats.inc_bytes(total_bytes);
         Ok(())
     }
 }

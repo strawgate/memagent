@@ -136,31 +136,26 @@ impl TcpSink {
 
         let mut backoff_ms = self.retry_backoff_ms.unwrap_or(100);
 
-        let mut last_err = io::Error::new(io::ErrorKind::NotConnected, "no attempts made");
-
         for attempt in 0..max_attempts {
-            match self.connect().await {
-                Ok(()) => {}
-                Err(e) => {
-                    last_err = e;
-                    if attempt < max_attempts - 1 {
-                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                        backoff_ms = std::cmp::min(backoff_ms * 2, 5000);
-                    }
-                    continue;
-                }
-            }
+            self.connect().await?;
             if let Some(ref mut stream) = self.stream {
                 let result = tokio::time::timeout(WRITE_TIMEOUT, stream.write_all(&self.buf)).await;
                 match result {
                     Ok(Ok(())) => return Ok(()),
                     Ok(Err(e)) => {
                         self.stream = None;
-                        last_err = e;
+                        if attempt == max_attempts - 1 {
+                            return Err(e);
+                        }
                     }
                     Err(_) => {
                         self.stream = None;
-                        last_err = io::Error::new(io::ErrorKind::TimedOut, "TCP write timed out");
+                        if attempt == max_attempts - 1 {
+                            return Err(io::Error::new(
+                                io::ErrorKind::TimedOut,
+                                "TCP write timed out",
+                            ));
+                        }
                     }
                 }
             }
@@ -170,7 +165,7 @@ impl TcpSink {
             }
         }
 
-        Err(last_err)
+        Ok(())
     }
 }
 

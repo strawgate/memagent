@@ -223,6 +223,25 @@ output:
 // 4. HTTP output: supported config validates at load time
 // ---------------------------------------------------------------------------
 
+#[test]
+fn test_http_output_is_rejected_at_config_load() {
+    let yaml = r#"
+input:
+  type: file
+  path: /tmp/http_test.log
+  format: json
+output:
+  type: http
+  endpoint: "http://127.0.0.1:9999/logs"
+"#;
+    let err = Config::load_str(yaml).unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("not yet implemented"),
+        "http output must be rejected with 'not yet implemented', got: {msg}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 5. File rotation: write → rotate → write more → verify no data loss
 // ---------------------------------------------------------------------------

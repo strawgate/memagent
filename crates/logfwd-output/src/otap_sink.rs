@@ -365,10 +365,6 @@ impl OtapSink {
                 encoder.write_all(&self.proto_buf)?;
                 encoder.finish()
             }
-            Compression::Lz4 => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "LZ4 compression is not supported for OTAP",
-            )),
             Compression::None => Ok(self.proto_buf.clone()),
         }
     }
@@ -383,8 +379,7 @@ impl OtapSink {
         match self.config.compression {
             Compression::Zstd => req = req.header("Content-Encoding", "zstd"),
             Compression::Gzip => req = req.header("Content-Encoding", "gzip"),
-            // Lz4 is rejected by maybe_compress() above; no header should be set.
-            Compression::Lz4 | Compression::None => {}
+            Compression::None => {}
         }
 
         for (k, v) in &self.config.headers {

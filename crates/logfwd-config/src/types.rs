@@ -55,8 +55,6 @@ pub enum InputType {
     /// Host metrics input (process snapshots, CPU, memory, network stats via sysinfo).
     #[serde(rename = "host_metrics")]
     HostMetrics,
-    /// AWS S3 (and S3-compatible) object storage input.
-    S3,
 }
 
 impl fmt::Display for InputType {
@@ -74,7 +72,6 @@ impl fmt::Display for InputType {
             InputType::ArrowIpc => f.write_str("arrow_ipc"),
             InputType::Journald => f.write_str("journald"),
             InputType::HostMetrics => f.write_str("host_metrics"),
-            InputType::S3 => f.write_str("s3"),
         }
     }
 }
@@ -351,45 +348,6 @@ pub struct HostMetricsInputConfig {
     pub ebpf_binary_path: Option<String>,
     /// Maximum events to drain per poll cycle (default: 4096).
     pub max_events_per_poll: Option<usize>,
-    /// Glob patterns for process names to include (e.g., `["nginx*", "python"]`).
-    #[serde(default)]
-    pub include_process_names: Option<Vec<String>>,
-    /// Glob patterns for process names to exclude.
-    #[serde(default)]
-    pub exclude_process_names: Option<Vec<String>>,
-    /// Specific event types to enable (e.g., `["process_exec", "tcp_connect"]`).
-    #[serde(default)]
-    pub include_event_types: Option<Vec<String>>,
-    /// Specific event types to disable.
-    #[serde(default)]
-    pub exclude_event_types: Option<Vec<String>>,
-    /// Ring buffer size in kilobytes.
-    #[serde(default)]
-    pub ring_buffer_size_kb: Option<usize>,
-    /// Optional list of scrapers to run (e.g. `["cpu", "memory", "disk", "network", "filesystem"]`).
-    #[serde(default)]
-    pub scrapers: Option<Vec<String>>,
-    /// Cadence for metrics collection in milliseconds.
-    #[serde(default)]
-    pub collection_interval_ms: Option<u64>,
-    /// List of disk devices to include.
-    #[serde(default)]
-    pub disk_include_devices: Option<Vec<String>>,
-    /// List of disk devices to exclude.
-    #[serde(default)]
-    pub disk_exclude_devices: Option<Vec<String>>,
-    /// List of network interfaces to include.
-    #[serde(default)]
-    pub network_include_interfaces: Option<Vec<String>>,
-    /// List of network interfaces to exclude.
-    #[serde(default)]
-    pub network_exclude_interfaces: Option<Vec<String>>,
-    /// List of filesystem mount points to include.
-    #[serde(default)]
-    pub filesystem_include_mount_points: Option<Vec<String>>,
-    /// List of filesystem mount points to exclude.
-    #[serde(default)]
-    pub filesystem_exclude_mount_points: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -403,7 +361,7 @@ pub struct TlsInputConfig {
 }
 
 /// Configuration for an outbound TLS client connection.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsClientConfig {
     /// Path to a file containing the client's TLS certificate.
@@ -416,50 +374,6 @@ pub struct TlsClientConfig {
     /// Whether to require client-side authentication.
     #[serde(default)]
     pub require_client_auth: bool,
-    /// Path to a CA certificate file for verifying the server's certificate
-    /// (alternative to `client_ca_file`).
-    pub ca_file: Option<String>,
-    /// Whether to skip TLS certificate verification (insecure; for testing only).
-    #[serde(default)]
-    pub insecure_skip_verify: bool,
-}
-
-/// Configuration for the S3 (and S3-compatible) object storage input.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct S3InputConfig {
-    /// S3 bucket name.
-    pub bucket: String,
-    /// AWS region (e.g. `"us-east-1"`). Defaults to `"us-east-1"`.
-    pub region: Option<String>,
-    /// Override S3 endpoint URL (e.g. `"http://localhost:9000"` for MinIO).
-    /// When set, path-style addressing is used automatically.
-    pub endpoint: Option<String>,
-    /// Only process keys with this prefix.
-    pub prefix: Option<String>,
-    /// SQS queue URL for event-driven object discovery.
-    pub sqs_queue_url: Option<String>,
-    /// `ListObjectsV2` `StartAfter` key for resumable prefix scanning.
-    pub start_after: Option<String>,
-    /// AWS access key ID. Falls back to `AWS_ACCESS_KEY_ID` env var.
-    pub access_key_id: Option<String>,
-    /// AWS secret access key. Falls back to `AWS_SECRET_ACCESS_KEY` env var.
-    pub secret_access_key: Option<String>,
-    /// AWS session token for temporary credentials. Falls back to `AWS_SESSION_TOKEN` env var.
-    pub session_token: Option<String>,
-    /// Range-GET part size in bytes. Default: 8 MiB.
-    pub part_size_bytes: Option<u64>,
-    /// Max concurrent range GET tasks per object. Default: 8.
-    pub max_concurrent_fetches: Option<usize>,
-    /// Max objects being fetched simultaneously. Default: 4.
-    pub max_concurrent_objects: Option<usize>,
-    /// SQS visibility timeout in seconds. Default: 300.
-    pub visibility_timeout_secs: Option<u32>,
-    /// Compression override: `"auto"`, `"gzip"`, `"zstd"`, `"snappy"`, or `"none"`.
-    /// Default: `"auto"` (detect from key extension or Content-Type).
-    pub compression: Option<String>,
-    /// Polling interval for `ListObjectsV2` mode in milliseconds. Default: 5000.
-    pub poll_interval_ms: Option<u64>,
 }
 
 /// Journald (systemd journal) input configuration.
@@ -589,8 +503,6 @@ pub enum InputTypeConfig {
     /// Host metrics input (process snapshots, CPU, memory, network stats via sysinfo).
     #[serde(rename = "host_metrics")]
     HostMetrics(SensorTypeConfig),
-    /// AWS S3 (and S3-compatible) object storage input.
-    S3(S3TypeConfig),
 }
 
 impl InputTypeConfig {
@@ -609,7 +521,6 @@ impl InputTypeConfig {
             Self::ArrowIpc(_) => InputType::ArrowIpc,
             Self::Journald(_) => InputType::Journald,
             Self::HostMetrics(_) => InputType::HostMetrics,
-            Self::S3(_) => InputType::S3,
         }
     }
 }
@@ -637,10 +548,6 @@ pub struct FileTypeConfig {
 #[serde(deny_unknown_fields)]
 pub struct UdpTypeConfig {
     pub listen: String,
-    #[serde(default)]
-    pub max_message_size_bytes: Option<usize>,
-    #[serde(default)]
-    pub so_rcvbuf: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -649,12 +556,6 @@ pub struct TcpTypeConfig {
     pub listen: String,
     #[serde(default)]
     pub tls: Option<TlsInputConfig>,
-    #[serde(default)]
-    pub max_connections: Option<usize>,
-    #[serde(default)]
-    pub connection_timeout_ms: Option<u64>,
-    #[serde(default)]
-    pub read_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -702,10 +603,6 @@ pub struct SensorTypeConfig {
 #[serde(deny_unknown_fields)]
 pub struct ArrowIpcTypeConfig {
     pub listen: String,
-    #[serde(default)]
-    pub max_connections: Option<usize>,
-    #[serde(default)]
-    pub max_message_size_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -715,14 +612,8 @@ pub struct JournaldTypeConfig {
     pub journald: Option<JournaldInputConfig>,
 }
 
-/// Tagged‐union wrapper for S3 input configuration.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct S3TypeConfig {
-    pub s3: S3InputConfig,
-}
-
 #[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct OutputConfig {
     pub name: Option<String>,
     #[serde(rename = "type")]
@@ -740,27 +631,6 @@ pub struct OutputConfig {
     pub static_labels: Option<HashMap<String, String>>,
     pub label_columns: Option<Vec<String>>,
 
-    /// Custom HTTP headers to include in requests.
-    #[serde(default)]
-    pub headers: Option<HashMap<String, String>>,
-    /// Number of retry attempts for transient errors.
-    #[serde(default)]
-    pub retry_attempts: Option<u32>,
-    /// Initial backoff delay for retries.
-    #[serde(default)]
-    pub retry_initial_backoff_ms: Option<u64>,
-    /// Maximum backoff delay for retries.
-    #[serde(default)]
-    pub retry_max_backoff_ms: Option<u64>,
-    /// Timeout for each HTTP request.
-    #[serde(default)]
-    pub request_timeout_ms: Option<u64>,
-    /// Maximum number of log records to send per batch.
-    #[serde(default)]
-    pub batch_size: Option<usize>,
-    /// Maximum time to wait before sending a batch.
-    #[serde(default)]
-    pub batch_timeout_ms: Option<u64>,
     /// Host name or IP to connect to (alternative to `endpoint`).
     #[serde(default)]
     pub host: Option<String>,
@@ -770,12 +640,6 @@ pub struct OutputConfig {
     /// TLS connection configuration for the output sink.
     #[serde(default)]
     pub tls: Option<TlsClientConfig>,
-    /// Maximum number of retries before dropping a batch or failing.
-    #[serde(default)]
-    pub max_retries: Option<usize>,
-    /// Initial backoff interval (e.g. "100ms", "5s") when retrying a connection or request.
-    #[serde(default, deserialize_with = "deserialize_duration_ms")]
-    pub retry_backoff_ms: Option<u64>,
     /// Maximum time (e.g. "5s", "1000ms") to wait for a connection to be established.
     #[serde(default, deserialize_with = "deserialize_duration_ms")]
     pub connect_timeout_ms: Option<u64>,
@@ -787,19 +651,44 @@ pub struct OutputConfig {
     pub framing: Option<TcpFraming>,
     /// Maximum size of a single UDP datagram payload in bytes.
     #[serde(default)]
-    pub max_datagram_size: Option<usize>,
+    pub max_datagram_size_bytes: Option<usize>,
     /// How to encode log messages (e.g., json, syslog_rfc5424).
     #[serde(default)]
     pub encoding: Option<OutputEncoding>,
-    /// Write the legacy IPC format (default: false).
+
+    /// Retry configuration block (e.g. `max_attempts`, `initial_interval`).
     #[serde(default)]
-    pub write_legacy_ipc_format: Option<bool>,
-    /// Buffer size for the IPC writer in bytes.
+    pub retry: Option<RetryConfig>,
+    /// Batching configuration block (e.g. `max_bytes`, `timeout`).
     #[serde(default)]
-    pub buffer_size_bytes: Option<usize>,
-    /// Whether to write the schema immediately upon connection.
-    #[serde(default)]
-    pub write_schema_on_connect: Option<bool>,
+    pub batch: Option<BatchConfig>,
+}
+
+/// Configuration block for output retries.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RetryConfig {
+    /// Maximum number of delivery attempts (default: infinite, or specific to the output).
+    pub max_attempts: Option<usize>,
+    /// Initial backoff interval before retrying a failed delivery (e.g. "1s").
+    #[serde(default, deserialize_with = "deserialize_duration_ms")]
+    pub initial_interval_ms: Option<u64>,
+    /// Maximum backoff interval between retries (e.g. "30s").
+    #[serde(default, deserialize_with = "deserialize_duration_ms")]
+    pub max_interval_ms: Option<u64>,
+}
+
+/// Configuration block for output batching.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct BatchConfig {
+    /// Maximum payload size in bytes per batch (e.g. 1048576).
+    pub max_bytes: Option<usize>,
+    /// Maximum time to wait before flushing an incomplete batch (e.g. "1s").
+    #[serde(default, deserialize_with = "deserialize_duration_ms")]
+    pub timeout_ms: Option<u64>,
+    /// Maximum number of events to include in a single batch.
+    pub max_events: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -970,10 +859,6 @@ pub struct ServerConfig {
 #[serde(deny_unknown_fields)]
 pub struct StorageConfig {
     pub data_dir: Option<String>,
-    /// Minimum interval between checkpoint flushes to disk, in milliseconds.
-    /// Defaults to `5000` (5 seconds). Must be greater than zero.
-    #[serde(default)]
-    pub checkpoint_flush_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone)]

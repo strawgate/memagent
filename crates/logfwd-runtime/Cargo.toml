@@ -20,7 +20,6 @@ datafusion = ["dep:logfwd-transform"]
 dhat-heap = ["dep:dhat"]
 cpu-profiling = ["dep:pprof", "dep:flate2"]
 otlp-research = ["logfwd-config/otlp-research", "logfwd-io/otlp-research"]
-s3 = ["logfwd-io/s3"]
 
 [dependencies]
 arrow = { workspace = true }

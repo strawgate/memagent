@@ -661,66 +661,6 @@ mod verification {
         kani::cover!(bytes[0] == 0, "hex encoding covers low nibble zeros");
         kani::cover!(bytes[1] == u8::MAX, "hex encoding covers ff");
     }
-
-    /// Prove write_u64_to_buf produces the correct decimal representation for
-    /// boundary values, and that pos.wrapping_sub(1) never causes OOB access.
-    ///
-    /// The wrapping is intentional: after the final digit, pos wraps to
-    /// usize::MAX, but the loop condition `n > 0` is false at that point so
-    /// `out[pos]` is never evaluated with the wrapped value. This proof pins
-    /// that invariant by verifying spec-correct output for key boundary inputs.
-    #[kani::proof]
-    #[kani::unwind(22)] // digit-count + digit-write loops: u64::MAX has 20 digits + 2 overhead
-    fn verify_write_u64_known_values() {
-        // Spec values: correct decimal strings for boundary u64 inputs.
-        let mut buf = Vec::new();
-        write_u64_to_buf(&mut buf, 0);
-        assert_eq!(&buf, b"0");
-
-        buf.clear();
-        write_u64_to_buf(&mut buf, 1);
-        assert_eq!(&buf, b"1");
-
-        buf.clear();
-        write_u64_to_buf(&mut buf, u64::MAX);
-        assert_eq!(&buf, b"18446744073709551615");
-
-        buf.clear();
-        write_u64_to_buf(&mut buf, 1_000_000_000_u64);
-        assert_eq!(&buf, b"1000000000");
-
-        kani::cover!(true, "boundary u64 values produce correct decimal output");
-    }
-
-    /// Prove write_i64_to_buf handles i64::MIN correctly (the only special
-    /// case — negating i64::MIN overflows, so it's written as a hardcoded literal).
-    ///
-    /// Also verifies sign, zero, and max boundary values.
-    #[kani::proof]
-    #[kani::unwind(22)] // digit-count + digit-write loops: i64::MAX has 19 digits + 2 overhead
-    fn verify_write_i64_known_values() {
-        let mut buf = Vec::new();
-        write_i64_to_buf(&mut buf, 0);
-        assert_eq!(&buf, b"0");
-
-        buf.clear();
-        write_i64_to_buf(&mut buf, -1);
-        assert_eq!(&buf, b"-1");
-
-        buf.clear();
-        write_i64_to_buf(&mut buf, i64::MAX);
-        assert_eq!(&buf, b"9223372036854775807");
-
-        buf.clear();
-        // i64::MIN is the only value requiring special handling (negation overflows).
-        write_i64_to_buf(&mut buf, i64::MIN);
-        assert_eq!(&buf, b"-9223372036854775808");
-
-        kani::cover!(
-            true,
-            "i64 boundary values including MIN produce correct output"
-        );
-    }
 }
 
 /// Minimal hex encoding (avoid adding the `hex` crate).

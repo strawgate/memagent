@@ -31,7 +31,6 @@ flate2 = "1"
 tokio-stream = "0.1.18"
 serde = { workspace = true, features = ["derive"] }
 socket2 = "0.6.3"
-lz4_flex = { workspace = true }
 
 [dev-dependencies]
 proptest = "1"

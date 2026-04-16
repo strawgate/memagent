@@ -4,6 +4,7 @@ import type { ChartConfig } from "./components/Chart";
 import { ChartGrid } from "./components/ChartGrid";
 import { ConfigView } from "./components/ConfigView";
 import { LogViewer } from "./components/LogViewer";
+import { MetricBadges } from "./components/MetricBadges";
 import { PipelineView } from "./components/PipelineView";
 import { StatusBar } from "./components/StatusBar";
 import { fmtBytesCompact, fmtCompact } from "./lib/format";
@@ -13,10 +14,16 @@ import { useTelemetryStore } from "./lib/useTelemetryStore";
 import { useTelemetryWebSocket } from "./lib/useTelemetryWebSocket";
 import type { StatsResponse, StatusResponse, TraceRecord } from "./types";
 
-// ── Chart configurations (pure data) ────────────────────────────────────────
+const POLL_OPTIONS = [
+  { label: "500ms", ms: 500 },
+  { label: "1s", ms: 1000 },
+  { label: "2s", ms: 2000 },
+  { label: "5s", ms: 5000 },
+];
 
-/** Always-visible primary charts. */
-const PRIMARY_CHARTS: ChartConfig[] = [
+// ── Chart configurations (pure data — no mutable state) ────────────────────
+
+const PIPELINE_CHARTS: ChartConfig[] = [
   {
     metricName: "logfwd.input_lines_per_sec",
     label: "Lines / sec",
@@ -44,10 +51,6 @@ const PRIMARY_CHARTS: ChartConfig[] = [
     yRange: [0, 102400],
     splitBy: "pipeline",
   },
-];
-
-/** Charts shown only when "Show More" is toggled or they have non-zero values. */
-const EXTRA_CHARTS: ChartConfig[] = [
   {
     metricName: "logfwd.output_errors_per_sec",
     label: "Errors / sec",
@@ -87,9 +90,9 @@ const SYSTEM_CHARTS: ChartConfig[] = [
     yRange: [0, 10],
   },
   {
-    metricName: "process.memory.rss",
-    label: "Memory (RSS)",
-    color: "#06b6d4",
+    metricName: "process.memory.allocated",
+    label: "Memory",
+    color: "#10b981",
     unit: "",
     fmtAxis: fmtBytesCompact,
     yRange: [0, 67108864],
@@ -104,30 +107,27 @@ const SYSTEM_CHARTS: ChartConfig[] = [
   },
 ];
 
-const POLL_MS = 1000;
-
 export function App() {
   const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [stats, setStats] = useState<StatsResponse | null>(null);
   const [traces, setTraces] = useState<TraceRecord[]>([]);
   const [totalErrors, setTotalErrors] = useState(0);
-  const [showMoreCharts, setShowMoreCharts] = useState(false);
+  const [pollMs, setPollMs] = useState(POLL_OPTIONS[2].ms); // default 2s
 
   // ── WebSocket telemetry → TelemetryStore ─────────────────────────────────
   const { store, tick, ingest } = useTelemetryStore();
 
   // Build stats from latest OTLP metrics in the store.
   const updateStats = useCallback(() => {
+    /** Get latest value for a metric (single series, no pipeline split). */
     const val = (name: string): number => {
       const frame = store.selectLatestValues({ metricName: name });
       return frame.rows[0]?.value ?? 0;
     };
+    /** Sum latest values across all pipeline series for a metric. */
     const sum = (name: string): number => {
-      const frame = store.selectLatestValues({
-        metricName: name,
-        splitBy: "pipeline",
-      });
+      const frame = store.selectLatestValues({ metricName: name, splitBy: "pipeline" });
       return frame.rows.reduce((acc, r) => acc + r.value, 0);
     };
 
@@ -154,13 +154,16 @@ export function App() {
     setTotalErrors(sum("logfwd.output_errors"));
   }, [store]);
 
+  // Max traces to retain in the dashboard (prevents unbounded growth).
   const MAX_TRACES = 1000;
 
+  // Process OTLP spans from WebSocket push (delta delivery).
   const processOtlpTraces = useCallback((doc: import("@otlpkit/otlpjson").OtlpTracesDocument) => {
     const incoming = extractTraceRecords(doc);
     setTraces((prev) => mergeTraces(prev, incoming, MAX_TRACES));
   }, []);
 
+  // Dispatch each WS frame synchronously — no frames are dropped.
   const handleMessage = useCallback(
     (msg: import("./lib/useTelemetryWebSocket").OtlpMessage) => {
       if (msg.signal === "metrics") {
@@ -169,17 +172,22 @@ export function App() {
       } else if (msg.signal === "traces") {
         processOtlpTraces(msg.data);
       }
+      // Logs are handled by LogViewer via REST polling.
     },
     [ingest, updateStats, processOtlpTraces]
   );
 
   const { wsConnected } = useTelemetryWebSocket(handleMessage);
 
-  // ── Status polling ──
+  // `connected` means the status API is reachable. `wsConnected` tracks the
+  // live WebSocket independently. The StatusBar shows a separate pill when
+  // the WS drops while the API is still up.
+
+  // ── Status polling (always runs — OTLP metrics don't carry pipeline topology) ──
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
-    let backoff = POLL_MS;
+    let backoff = pollMs;
 
     const loop = () => {
       api
@@ -189,7 +197,7 @@ export function App() {
             if (statusData) {
               setStatus(statusData);
               setConnected(true);
-              backoff = POLL_MS;
+              backoff = pollMs;
             } else {
               setConnected(false);
               setStatus(null);
@@ -210,32 +218,13 @@ export function App() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, []);
+  }, [pollMs]);
 
   const version = status?.system?.version ?? "?";
   const uptime = stats?.uptime_sec ?? status?.system?.uptime_seconds ?? 0;
   const componentHealth = status?.component_health.status ?? "failed";
   const ready = status?.ready.status ?? "not_ready";
   const statusReason = status?.ready.reason ?? status?.component_health.reason ?? "";
-
-  // Decide which extra charts to show: always show charts with non-zero data,
-  // or show all when user clicks "Show More".
-  const visibleExtras = showMoreCharts
-    ? EXTRA_CHARTS
-    : EXTRA_CHARTS.filter((cfg) => {
-        const frame = store.selectTimeSeries({
-          metricName: cfg.metricName,
-          intervalMs: 1000,
-          reduce: "last",
-          ...(cfg.splitBy ? { splitBy: cfg.splitBy } : {}),
-        });
-        return frame.series.some((s) => s.points.some((pt) => pt.value > 0));
-      });
-
-  const hasHiddenCharts = !showMoreCharts && visibleExtras.length < EXTRA_CHARTS.length;
-
-  const pipelineCount = status?.pipelines?.length ?? 0;
-  const defaultExpanded = pipelineCount <= 3;
 
   return (
     <>
@@ -250,47 +239,30 @@ export function App() {
         uptime={uptime}
       />
       <main>
-        {/* ── Pipeline charts ── */}
+        <MetricBadges stats={stats} />
+
         <div class="section">
           <div class="heading">Pipeline Metrics</div>
-          <ChartGrid store={store} charts={[...PRIMARY_CHARTS, ...visibleExtras]} tick={tick} />
-          {hasHiddenCharts && (
-            <button type="button" class="show-more-btn" onClick={() => setShowMoreCharts(true)}>
-              Show More Charts
-            </button>
-          )}
-          {showMoreCharts && visibleExtras.length === EXTRA_CHARTS.length && (
-            <button type="button" class="show-more-btn" onClick={() => setShowMoreCharts(false)}>
-              Show Less
-            </button>
-          )}
+          <ChartGrid store={store} charts={PIPELINE_CHARTS} tick={tick} />
         </div>
 
-        {/* ── System charts ── */}
         <div class="section">
           <div class="heading">System Metrics</div>
-          <ChartGrid
-            store={store}
-            charts={SYSTEM_CHARTS}
-            tick={tick}
-          />
+          <ChartGrid store={store} charts={SYSTEM_CHARTS} tick={tick} />
         </div>
 
-        {/* ── Pipelines — collapsible, expanded by default unless >3 ── */}
+        <LogViewer />
+
         {status?.pipelines.map((p, i) => (
           <PipelineView
             key={p.name}
             pipeline={p}
             traces={traces.filter((t) => t.pipeline === p.name || (t.pipeline === "" && i === 0))}
-            store={store}
-            tick={tick}
-            defaultExpanded={defaultExpanded}
-            pipelineCount={pipelineCount}
+            pollMs={pollMs}
+            setPollMs={setPollMs}
           />
         ))}
 
-        {/* ── Logs & Config — visible by default ── */}
-        <LogViewer />
         <ConfigView />
       </main>
     </>
