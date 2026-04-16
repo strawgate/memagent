@@ -4,6 +4,15 @@ import starlight from "@astrojs/starlight";
 export default defineConfig({
   site: 'https://strawgate.github.io',
   base: '/memagent',
+  redirects: {
+    '/how-it-works/':             '/learn/',
+    '/how-it-works/backpressure/': '/learn/backpressure/',
+    '/how-it-works/checkpoints/':  '/learn/checkpoints/',
+    '/how-it-works/columnar/':     '/learn/columnar/',
+    '/how-it-works/performance/':  '/learn/performance/',
+    '/how-it-works/scanner/':      '/learn/scanner/',
+    '/how-it-works/tailing/':      '/learn/tailing/',
+  },
   integrations: [
     starlight({
       title: "logfwd",
@@ -26,20 +35,22 @@ export default defineConfig({
           slug: "quick-start",
         },
         {
-          label: "How It Works",
+          label: "Learn",
           items: [
-            { label: "Pipeline Explorer", slug: "how-it-works" },
-            { label: "Scanner Deep Dive", slug: "how-it-works/scanner" },
-            { label: "Why Tailing Is Hard", slug: "how-it-works/tailing" },
-            { label: "Why Columnar Matters", slug: "how-it-works/columnar" },
-            { label: "Backpressure in Action", slug: "how-it-works/backpressure" },
-            { label: "Checkpoint Ordering", slug: "how-it-works/checkpoints" },
-            { label: "Performance", slug: "how-it-works/performance" },
+            { label: "Overview", slug: "learn" },
+            { label: "Inputs", slug: "learn/inputs" },
+            { label: "Tailing", slug: "learn/tailing" },
+            { label: "Scanner Deep Dive", slug: "learn/scanner" },
+            { label: "Columnar", slug: "learn/columnar" },
+            { label: "Backpressure in Action", slug: "learn/backpressure" },
+            { label: "Checkpoint Ordering", slug: "learn/checkpoints" },
+            { label: "Performance", slug: "learn/performance" },
           ],
         },
         {
           label: "Configuration",
           items: [
+            { label: "Config Builder", slug: "configuration/config-builder" },
             { label: "SQL Transforms", slug: "configuration/sql-transforms" },
             { label: "Input Types", slug: "configuration/inputs" },
             { label: "Output Types", slug: "configuration/outputs" },
