@@ -1153,8 +1153,9 @@ async fn fetch_parallel_stream(
             });
         };
 
-    // Pre-spawn the first batch (up to max_fetches).
-    while next_to_spawn < num_parts && next_to_spawn < max_fetches {
+    // Pre-spawn the first batch (up to max_fetches, but at least 1).
+    let effective_max_fetches = max_fetches.max(1);
+    while next_to_spawn < num_parts && next_to_spawn < effective_max_fetches {
         spawn_part(
             &mut join_set,
             &mut part_senders,
