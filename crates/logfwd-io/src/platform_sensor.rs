@@ -46,18 +46,6 @@ pub struct PlatformSensorConfig {
     pub max_events_per_poll: usize,
     /// Whether to filter out events from our own process.
     pub filter_self: bool,
-    /// Glob patterns for process names to include.
-    pub include_process_names: Option<Vec<String>>,
-    /// Glob patterns for process names to exclude.
-    pub exclude_process_names: Option<Vec<String>>,
-    /// Specific event types to enable.
-    pub include_event_types: Option<Vec<String>>,
-    /// Specific event types to disable.
-    pub exclude_event_types: Option<Vec<String>>,
-    /// Ring buffer size in kilobytes.
-    pub ring_buffer_size_kb: Option<usize>,
-    /// Poll interval in milliseconds.
-    pub poll_interval_ms: Option<u64>,
 }
 
 // ── Schema ─────────────────────────────────────────────────────────────
