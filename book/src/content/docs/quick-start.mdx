@@ -33,14 +33,14 @@ The product is **logfwd**. The GitHub repository is named `memagent` for histori
       ghcr.io/strawgate/memagent:latest run --config /etc/logfwd/config.yaml
     ```
 
-    Images are published to `ghcr.io/strawgate/memagent` for `linux/amd64` and `linux/arm64`. See [Docker deployment](/deployment/docker/) for compose files and volume configuration.
+    Images are published to `ghcr.io/strawgate/memagent` for `linux/amd64` and `linux/arm64`. See [Docker deployment](/memagent/deployment/docker/) for compose files and volume configuration.
   </TabItem>
   <TabItem label="Kubernetes" icon="cloud">
     ```bash
     kubectl apply -f deploy/daemonset.yml
     ```
 
-    See the [Kubernetes deployment guide](/deployment/kubernetes/) for resource sizing and collector integration.
+    See the [Kubernetes deployment guide](/memagent/deployment/kubernetes/) for resource sizing and collector integration.
   </TabItem>
 </Tabs>
 
@@ -131,7 +131,7 @@ logfwd run --config config.yaml
 
 Now you see only errors with slow durations. Only the columns from the `SELECT` appear — everything else was filtered before reaching the output. In production, this means you only ship the logs you care about.
 
-Full SQL works: `JOIN`, `GROUP BY`, `HAVING`, subqueries, window functions. Built-in UDFs: `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`, `geo_lookup()`. See [SQL Transforms](/configuration/sql-transforms/) for the complete reference.
+Full SQL works: `JOIN`, `GROUP BY`, `HAVING`, subqueries, window functions. Built-in UDFs: `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`, `geo_lookup()`. See [SQL Transforms](/memagent/configuration/sql-transforms/) for the complete reference.
 
 :::caution
 `ORDER BY` works within each batch but logfwd processes data in streaming batches, so ordering is per-batch, not global.
@@ -232,7 +232,7 @@ curl -s http://localhost:9090/ready         # readiness probe
 curl -s http://localhost:9090/admin/v1/status | jq .   # full status
 ```
 
-See [Monitoring & Diagnostics](/deployment/monitoring/) for the complete endpoint reference and alerting guidance.
+See [Monitoring & Diagnostics](/memagent/deployment/monitoring/) for the complete endpoint reference and alerting guidance.
 
 ### Multiple pipelines
 
@@ -274,8 +274,8 @@ The simple layout (`input`/`output` at top level) and advanced layout (`pipeline
 
 | Topic | Where to go |
 |-------|-------------|
-| Understand the pipeline internals | [Pipeline Explorer](/learn/) (interactive) |
-| Learn the full SQL transform syntax | [SQL Transforms](/configuration/sql-transforms/) |
-| See all YAML config options | [YAML Reference](/configuration/reference/) |
-| Deploy to Kubernetes | [Kubernetes DaemonSet](/deployment/kubernetes/) |
-| Debug a problem | [Troubleshooting](/troubleshooting/) |
+| Understand the pipeline internals | [Pipeline Explorer](/memagent/learn/) (interactive) |
+| Learn the full SQL transform syntax | [SQL Transforms](/memagent/configuration/sql-transforms/) |
+| See all YAML config options | [YAML Reference](/memagent/configuration/reference/) |
+| Deploy to Kubernetes | [Kubernetes DaemonSet](/memagent/deployment/kubernetes/) |
+| Debug a problem | [Troubleshooting](/memagent/troubleshooting/) |

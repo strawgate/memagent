@@ -11,9 +11,7 @@
 use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use logfwd_bench::make_metadata;
-use logfwd_io::generator::cri::gen_narrow_batch;
-use logfwd_io::generator::wide::gen_wide_batch;
+use logfwd_bench::generators;
 use logfwd_output::{BatchMetadata, StdoutFormat, StdoutSink, build_col_infos, write_row_json};
 use logfwd_types::diagnostics::ComponentStats;
 
@@ -21,21 +19,21 @@ fn bench_json_lines(c: &mut Criterion) {
     let mut group = c.benchmark_group("json_lines");
     group.sample_size(20);
 
-    let meta = make_metadata();
+    let meta = generators::make_metadata();
 
     let variants: Vec<(&str, Vec<(usize, arrow::record_batch::RecordBatch)>)> = vec![
         (
             "narrow",
             vec![
-                (1_000, gen_narrow_batch(1_000, 42)),
-                (10_000, gen_narrow_batch(10_000, 42)),
+                (1_000, generators::gen_narrow_batch(1_000, 42)),
+                (10_000, generators::gen_narrow_batch(10_000, 42)),
             ],
         ),
         (
             "wide",
             vec![
-                (1_000, gen_wide_batch(1_000, 42)),
-                (10_000, gen_wide_batch(10_000, 42)),
+                (1_000, generators::gen_wide_batch(1_000, 42)),
+                (10_000, generators::gen_wide_batch(10_000, 42)),
             ],
         ),
     ];

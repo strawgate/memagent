@@ -11,7 +11,6 @@
 //! See `dev-docs/research/columnar-batch-builder.md` for the design intent.
 
 pub mod accumulator;
-pub mod block_store;
 pub mod builder;
 pub mod plan;
 pub(crate) mod row_protocol;

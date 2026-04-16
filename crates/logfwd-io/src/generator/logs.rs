@@ -23,8 +23,6 @@ pub(super) fn write_logs_event(
     counter: u64,
     complexity: GeneratorComplexity,
     timestamp: &GeneratorTimestamp,
-    message_template: Option<&str>,
-    field_count: Option<usize>,
     done: &mut bool,
 ) {
     let seq = counter;
@@ -54,28 +52,11 @@ pub(super) fn write_logs_event(
     };
     let (year, month, day, hour, min, sec, msec) = super::epoch_ms_to_parts(event_ms);
 
-    let mut msg_buf = String::new();
-    let msg_str = if let Some(template) = message_template {
-        template
-    } else {
-        use std::fmt::Write;
-        let _ = write!(&mut msg_buf, "{method} {path}/{id} {status}");
-        &msg_buf
-    };
-
-    let mut synthetic_fields = String::new();
-    if let Some(count) = field_count {
-        use std::fmt::Write;
-        for i in 0..count {
-            let _ = write!(&mut synthetic_fields, r#","field_{}":"val_{}""#, i, i);
-        }
-    }
-
     match complexity {
         GeneratorComplexity::Simple => {
             let _ = write!(
                 buf,
-                r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{msg_str}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status}{synthetic_fields}}}"#,
+                r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status}}}"#,
             );
         }
         GeneratorComplexity::Complex => {
@@ -84,18 +65,18 @@ pub(super) fn write_logs_event(
             if seq.is_multiple_of(5) {
                 let _ = write!(
                     buf,
-                    r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{msg_str}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"headers":{{"content-type":"application/json","x-request-id":"{rid:016x}"}},"tags":["web","{service}","{level}"]{synthetic_fields}}}"#,
+                    r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"headers":{{"content-type":"application/json","x-request-id":"{rid:016x}"}},"tags":["web","{service}","{level}"]}}"#,
                 );
             } else if seq.is_multiple_of(7) {
                 let upstream_ms = 1 + seq.wrapping_mul(19) % 200;
                 let _ = write!(
                     buf,
-                    r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{msg_str}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"upstream":[{{"host":"10.0.0.1","latency_ms":{upstream_ms}}},{{"host":"10.0.0.2","latency_ms":{dur}}}]{synthetic_fields}}}"#,
+                    r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"upstream":[{{"host":"10.0.0.1","latency_ms":{upstream_ms}}},{{"host":"10.0.0.2","latency_ms":{dur}}}]}}"#,
                 );
             } else {
                 let _ = write!(
                     buf,
-                    r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{msg_str}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out}{synthetic_fields}}}"#,
+                    r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","message":"{method} {path}/{id} {status}","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out}}}"#,
                 );
             }
         }

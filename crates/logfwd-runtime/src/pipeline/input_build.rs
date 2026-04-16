@@ -212,19 +212,11 @@ pub(super) fn build_input_state(
             };
             let generator_cfg = g.generator.as_ref();
             let config = GeneratorConfig {
-                events_per_sec: generator_cfg
-                    .and_then(|c| c.events_per_second)
-                    .or_else(|| generator_cfg.and_then(|c| c.events_per_sec))
-                    .unwrap_or(0),
+                events_per_sec: generator_cfg.and_then(|c| c.events_per_sec).unwrap_or(0),
                 batch_size: generator_cfg
                     .and_then(|c| c.batch_size)
                     .unwrap_or(DEFAULT_GENERATOR_BATCH_SIZE),
-                total_events: generator_cfg
-                    .and_then(|c| c.num_lines)
-                    .or_else(|| generator_cfg.and_then(|c| c.total_events))
-                    .unwrap_or(0),
-                message_template: generator_cfg.and_then(|c| c.message_template.clone()),
-                field_count: generator_cfg.and_then(|c| c.field_count),
+                total_events: generator_cfg.and_then(|c| c.total_events).unwrap_or(0),
                 complexity: match generator_cfg.and_then(|c| c.complexity.clone()) {
                     Some(GeneratorComplexityConfig::Complex) => GeneratorComplexity::Complex,
                     Some(GeneratorComplexityConfig::Simple) | None => GeneratorComplexity::Simple,
@@ -323,39 +315,31 @@ pub(super) fn build_input_state(
             let resource_prefix = o
                 .resource_prefix
                 .as_deref()
-                .unwrap_or(logfwd_types::field_names::DEFAULT_RESOURCE_PREFIX)
-                .to_string();
+                .unwrap_or(logfwd_types::field_names::DEFAULT_RESOURCE_PREFIX);
             let protobuf_decode_mode =
                 resolve_otlp_protobuf_decode_mode(name, o.protobuf_decode_mode)?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Otlp, &format)?;
-
-            let tls = o.tls.as_ref().map(|t| logfwd_io::input::TlsInputConfig {
-                cert_file: t.cert_file.clone(),
-                key_file: t.key_file.clone(),
-                client_ca_file: t.client_ca_file.clone(),
-                require_client_auth: t.require_client_auth,
-            });
-
-            let options = logfwd_io::otlp_receiver::OtlpReceiverOptions {
-                resource_prefix,
-                protobuf_decode_mode,
-                max_recv_message_size_bytes: Some(
-                    o.max_recv_message_size_bytes.unwrap_or(4 * 1024 * 1024),
-                ),
-                tls,
-                grpc_keepalive_time_ms: o.grpc_keepalive_time_ms,
-                grpc_max_concurrent_streams: o.grpc_max_concurrent_streams,
-            };
-
-            let source = logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_options(
+            #[cfg(feature = "otlp-research")]
+            let source = logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_protobuf_decode_mode_experimental(
                 name,
                 addr,
                 Some(Arc::clone(&stats)),
-                options,
+                resource_prefix,
+                protobuf_decode_mode,
             )
             .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
-
+            #[cfg(not(feature = "otlp-research"))]
+            let source =
+                logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats_and_resource_prefix(
+                    name,
+                    addr,
+                    Arc::clone(&stats),
+                    resource_prefix,
+                )
+                .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
+            #[cfg(not(feature = "otlp-research"))]
+            let _ = protobuf_decode_mode;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
         InputTypeConfig::ArrowIpc(a) => {
@@ -559,68 +543,6 @@ pub(super) fn build_input_state(
                 stats,
             });
         }
-        InputTypeConfig::S3(s) => {
-            let s3_cfg = &s.s3;
-
-            #[cfg(not(feature = "s3"))]
-            {
-                let _ = s3_cfg;
-                return Err(format!(
-                    "input '{name}': S3 input requires the 's3' feature \
-                     (rebuild with --features s3)"
-                ));
-            }
-
-            #[cfg(feature = "s3")]
-            {
-                use logfwd_io::s3_input::decompress::Compression;
-                use logfwd_io::s3_input::{S3Input, S3InputSettings};
-
-                let compression_override: Option<Compression> = match s3_cfg.compression.as_deref()
-                {
-                    None => None,
-                    Some(s) if s.eq_ignore_ascii_case("auto") => None,
-                    Some(s) => match Compression::from_config_str(s) {
-                        Some(c) => Some(c),
-                        None => {
-                            return Err(format!(
-                                "input '{name}': unknown S3 compression value '{s}'"
-                            ));
-                        }
-                    },
-                };
-
-                let settings = S3InputSettings::from_fields(
-                    s3_cfg.bucket.clone(),
-                    s3_cfg.region.clone(),
-                    s3_cfg.endpoint.clone(),
-                    s3_cfg.prefix.clone(),
-                    s3_cfg.sqs_queue_url.clone(),
-                    s3_cfg.start_after.clone(),
-                    s3_cfg.access_key_id.clone(),
-                    s3_cfg.secret_access_key.clone(),
-                    s3_cfg.session_token.clone(),
-                    s3_cfg.part_size_bytes,
-                    s3_cfg.max_concurrent_fetches,
-                    s3_cfg.max_concurrent_objects,
-                    s3_cfg.visibility_timeout_secs,
-                    compression_override,
-                    s3_cfg.poll_interval_ms,
-                )
-                .map_err(|e| format!("input '{name}': {e}"))?;
-
-                let source = S3Input::new(name, settings)
-                    .map_err(|e| format!("input '{name}': failed to create S3 input: {e}"))?;
-                let format = cfg.format.clone().unwrap_or(Format::Auto);
-                let format_proc = make_format(name, InputType::S3, &format, &stats)?;
-                let framed = FramedInput::new(Box::new(source), format_proc, Arc::clone(&stats));
-                return Ok(InputState {
-                    source: Box::new(framed),
-                    buf: BytesMut::with_capacity(4 * 1024 * 1024),
-                    stats,
-                });
-            }
-        }
         InputTypeConfig::Journald(j) => {
             use logfwd_io::journald_input::{JournaldBackendPref, JournaldConfig, JournaldInput};
 
@@ -643,10 +565,6 @@ pub(super) fn build_input_state(
             let config = JournaldConfig {
                 include_units: jd_cfg.map(|c| c.include_units.clone()).unwrap_or_default(),
                 exclude_units: jd_cfg.map(|c| c.exclude_units.clone()).unwrap_or_default(),
-                identifiers: jd_cfg.map(|c| c.identifiers.clone()).unwrap_or_default(),
-                priorities: jd_cfg.map(|c| c.priorities.clone()).unwrap_or_default(),
-                cursor_path: jd_cfg.and_then(|c| c.cursor_path.clone()),
-                include_boot_id: jd_cfg.is_some_and(|c| c.include_boot_id),
                 current_boot_only: jd_cfg.is_none_or(|c| c.current_boot_only),
                 since_now: jd_cfg.is_some_and(|c| c.since_now),
                 journalctl_path: jd_cfg
@@ -951,10 +869,6 @@ mod tests {
                     listen: "   ".to_string(),
                     resource_prefix: None,
                     protobuf_decode_mode: None,
-                    max_recv_message_size_bytes: None,
-                    tls: None,
-                    grpc_keepalive_time_ms: None,
-                    grpc_max_concurrent_streams: None,
                 }),
             ),
             (

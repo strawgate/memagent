@@ -32,4 +32,4 @@ The result is a `RecordBatch` — Arrow's unit of columnar data. This batch flow
 
 Arrow's `StringViewArray` takes this further. String values aren't copied into the column — instead, 16-byte views point directly into the original input buffer. Five string columns sharing one buffer use 1x the memory, not 5x.
 
-See the [Scanner page](/learn/scanner/#zero-copy-mode) for an interactive visualization of how this works.
+See the [Scanner page](/memagent/learn/scanner/#zero-copy-mode) for an interactive visualization of how this works.

@@ -11,7 +11,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow::ipc::writer::{IpcWriteOptions, StreamWriter};
+use arrow::ipc::writer::StreamWriter;
 use arrow::record_batch::RecordBatch;
 
 use logfwd_types::diagnostics::ComponentStats;
@@ -49,21 +49,6 @@ pub(crate) struct ArrowIpcSinkConfig {
     endpoint: String,
     compression: Compression,
     headers: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
-    /// Write IPC streams using the legacy pre-1.0 Arrow IPC format.
-    pub write_legacy_ipc_format: bool,
-    /// IPC write buffer size in bytes.
-    pub buffer_size_bytes: Option<usize>,
-    /// Number of Arrow records per IPC batch.
-    ///
-    /// Reserved for a future TCP socket mode; not yet used by the HTTP sink.
-    #[expect(dead_code)]
-    pub batch_size: Option<usize>,
-    /// Write the Arrow schema message immediately upon connection.
-    ///
-    /// Reserved for a future TCP socket mode; not yet used by the HTTP sink
-    /// (the HTTP `StreamWriter` always writes the schema on init).
-    #[expect(dead_code)]
-    pub write_schema_on_connect: bool,
 }
 
 impl ArrowIpcSink {
@@ -73,12 +58,11 @@ impl ArrowIpcSink {
         client: reqwest::Client,
         stats: Arc<ComponentStats>,
     ) -> Self {
-        let buf_capacity = config.buffer_size_bytes.unwrap_or(64 * 1024);
         ArrowIpcSink {
             name,
             config,
             client,
-            ipc_buf: Vec::with_capacity(buf_capacity),
+            ipc_buf: Vec::with_capacity(64 * 1024),
             stats,
         }
     }
@@ -87,27 +71,14 @@ impl ArrowIpcSink {
     ///
     /// Writes the schema message followed by one batch message into
     /// `self.ipc_buf`. The stream is complete (includes EOS marker).
-    /// Uses the legacy IPC format if `write_legacy_ipc_format` is set.
     fn serialize_batch(&mut self, batch: &RecordBatch) -> io::Result<()> {
         self.ipc_buf.clear();
         if batch.num_rows() == 0 {
             return Ok(());
         }
 
-        let write_options = if self.config.write_legacy_ipc_format {
-            IpcWriteOptions::try_new(8, true, arrow::ipc::MetadataVersion::V4).map_err(|e| {
-                io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!("Arrow IPC write options failed: {e}"),
-                )
-            })?
-        } else {
-            IpcWriteOptions::default()
-        };
-
         let mut writer =
-            StreamWriter::try_new_with_options(&mut self.ipc_buf, &batch.schema(), write_options)
-                .map_err(|e| {
+            StreamWriter::try_new(&mut self.ipc_buf, &batch.schema()).map_err(|e| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("Arrow IPC writer init failed: {e}"),
@@ -138,11 +109,6 @@ impl ArrowIpcSink {
                 encoder.write_all(&self.ipc_buf)?;
                 encoder.finish()
             }
-            Compression::Lz4 => {
-                let mut encoder = lz4_flex::frame::FrameEncoder::new(Vec::new());
-                encoder.write_all(&self.ipc_buf)?;
-                encoder.finish().map_err(io::Error::other)
-            }
             Compression::None => Ok(self.ipc_buf.clone()),
         }
     }
@@ -154,7 +120,6 @@ impl ArrowIpcSink {
     async fn do_send(&self, payload: Vec<u8>) -> io::Result<SendResult> {
         let content_type = match self.config.compression {
             Compression::Zstd => CONTENT_TYPE_ARROW_ZSTD,
-            Compression::Lz4 => "application/vnd.apache.arrow.stream+lz4",
             _ => CONTENT_TYPE_ARROW,
         };
 
@@ -167,8 +132,6 @@ impl ArrowIpcSink {
             req = req.header("Content-Encoding", "zstd");
         } else if self.config.compression == Compression::Gzip {
             req = req.header("Content-Encoding", "gzip");
-        } else if self.config.compression == Compression::Lz4 {
-            req = req.header("Content-Encoding", "lz4");
         }
 
         for (k, v) in &self.config.headers {
@@ -270,20 +233,11 @@ impl ArrowIpcSinkFactory {
     /// - `endpoint`: Target HTTP URL
     /// - `compression`: Compression algorithm (Zstd or None)
     /// - `headers`: Authentication / custom headers as `(key, value)` pairs
-    /// - `write_legacy_ipc_format`: Use legacy pre-1.0 Arrow IPC format
-    /// - `buffer_size_bytes`: IPC write buffer size in bytes
-    /// - `batch_size`: Number of Arrow records per IPC batch
-    /// - `write_schema_on_connect`: Write Arrow schema immediately upon connection
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         endpoint: String,
         compression: Compression,
         headers: Vec<(String, String)>,
-        write_legacy_ipc_format: bool,
-        buffer_size_bytes: Option<usize>,
-        batch_size: Option<usize>,
-        write_schema_on_connect: bool,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
         let parsed_headers = headers
@@ -309,10 +263,6 @@ impl ArrowIpcSinkFactory {
                 endpoint,
                 compression,
                 headers: parsed_headers,
-                write_legacy_ipc_format,
-                buffer_size_bytes,
-                batch_size,
-                write_schema_on_connect,
             }),
             client,
             stats,
@@ -409,19 +359,11 @@ mod tests {
             endpoint: "http://localhost:9999".to_string(),
             compression: Compression::None,
             headers: Vec::new(),
-            write_legacy_ipc_format: false,
-            buffer_size_bytes: None,
-            batch_size: None,
-            write_schema_on_connect: false,
         });
         let config_gzip = Arc::new(ArrowIpcSinkConfig {
             endpoint: "http://localhost:9999".to_string(),
             compression: Compression::Gzip,
             headers: Vec::new(),
-            write_legacy_ipc_format: false,
-            buffer_size_bytes: None,
-            batch_size: None,
-            write_schema_on_connect: false,
         });
 
         let client = reqwest::Client::new();
@@ -518,8 +460,8 @@ mod tests {
         let ipc_bytes = serialize_ipc(&batch).expect("serialize should succeed");
 
         // Compress with gzip
-        let mut encoder = GzEncoder::new(Vec::new(), flate2::Compression::fast());
-        Write::write_all(&mut encoder, &ipc_bytes).unwrap();
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut encoder, &ipc_bytes).unwrap();
         let compressed = encoder.finish().unwrap();
 
         // Decompress with gzip
@@ -552,10 +494,6 @@ mod tests {
             endpoint: "http://localhost:9999".to_string(),
             compression: Compression::None,
             headers: Vec::new(),
-            write_legacy_ipc_format: false,
-            buffer_size_bytes: None,
-            batch_size: None,
-            write_schema_on_connect: false,
         });
         let stats = Arc::new(ComponentStats::new());
         let client = reqwest::Client::new();

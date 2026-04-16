@@ -14,7 +14,7 @@ mod server;
 mod tests;
 #[cfg(any(feature = "otlp-research", test))]
 use bytes::Bytes;
-#[cfg(any(test, kani))]
+#[cfg(test)]
 use convert::*;
 use decode::decode_otlp_logs_to_batch;
 #[cfg(any(feature = "otlp-research", test))]
@@ -74,17 +74,6 @@ pub enum OtlpProtobufDecodeMode {
 }
 
 /// OTLP receiver that listens for log exports via HTTP.
-#[derive(Clone, Debug, Default)]
-pub struct OtlpReceiverOptions {
-    pub resource_prefix: String,
-    pub protobuf_decode_mode: OtlpProtobufDecodeMode,
-    pub max_recv_message_size_bytes: Option<usize>,
-    pub tls: Option<crate::input::TlsInputConfig>,
-    pub grpc_keepalive_time_ms: Option<u64>,
-    pub grpc_max_concurrent_streams: Option<u32>,
-}
-
-/// OTLP receiver that listens for log exports via HTTP.
 pub struct OtlpReceiverInput {
     name: String,
     rx: Option<mpsc::Receiver<ReceiverPayload>>,
@@ -109,14 +98,6 @@ struct OtlpServerState {
     resource_prefix: String,
     protobuf_decode_mode: OtlpProtobufDecodeMode,
     stats: Option<Arc<ComponentStats>>,
-    #[allow(dead_code)]
-    pub max_recv_message_size_bytes: Option<usize>,
-    #[allow(dead_code)]
-    tls: Option<crate::input::TlsInputConfig>,
-    #[allow(dead_code)]
-    grpc_keepalive_time_ms: Option<u64>,
-    #[allow(dead_code)]
-    grpc_max_concurrent_streams: Option<u32>,
 }
 
 impl OtlpReceiverInput {
@@ -133,15 +114,12 @@ impl OtlpReceiverInput {
         addr: &str,
         resource_prefix: impl Into<String>,
     ) -> io::Result<Self> {
-        Self::new_with_capacity_stats_and_options(
+        Self::new_with_capacity_stats_and_prefix(
             name,
             addr,
             CHANNEL_BOUND,
             None,
-            OtlpReceiverOptions {
-                resource_prefix: resource_prefix.into(),
-                ..Default::default()
-            },
+            resource_prefix.into(),
         )
     }
 
@@ -168,30 +146,24 @@ impl OtlpReceiverInput {
         stats: Arc<ComponentStats>,
         resource_prefix: impl Into<String>,
     ) -> io::Result<Self> {
-        Self::new_with_capacity_stats_and_options(
+        Self::new_with_capacity_stats_and_prefix(
             name,
             addr,
             CHANNEL_BOUND,
             Some(stats),
-            OtlpReceiverOptions {
-                resource_prefix: resource_prefix.into(),
-                ..Default::default()
-            },
+            resource_prefix.into(),
         )
     }
 
     /// Like [`Self::new`] but with an explicit channel capacity. Useful for tests.
     #[cfg(test)]
     fn new_with_capacity(name: impl Into<String>, addr: &str, capacity: usize) -> io::Result<Self> {
-        Self::new_with_capacity_stats_and_options(
+        Self::new_with_capacity_stats_and_prefix(
             name,
             addr,
             capacity,
             None,
-            OtlpReceiverOptions {
-                resource_prefix: field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
-                ..Default::default()
-            },
+            field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
         )
     }
 
@@ -202,15 +174,29 @@ impl OtlpReceiverInput {
         capacity: usize,
         stats: Option<Arc<ComponentStats>>,
     ) -> io::Result<Self> {
-        Self::new_with_capacity_stats_and_options(
+        Self::new_with_capacity_stats_and_prefix(
             name,
             addr,
             capacity,
             stats,
-            OtlpReceiverOptions {
-                resource_prefix: field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
-                ..Default::default()
-            },
+            field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
+        )
+    }
+
+    fn new_with_capacity_stats_and_prefix(
+        name: impl Into<String>,
+        addr: &str,
+        capacity: usize,
+        stats: Option<Arc<ComponentStats>>,
+        resource_prefix: String,
+    ) -> io::Result<Self> {
+        Self::new_with_capacity_stats_prefix_and_decode_mode(
+            name,
+            addr,
+            capacity,
+            stats,
+            resource_prefix,
+            OtlpProtobufDecodeMode::Prost,
         )
     }
 
@@ -223,34 +209,23 @@ impl OtlpReceiverInput {
         resource_prefix: impl Into<String>,
         protobuf_decode_mode: OtlpProtobufDecodeMode,
     ) -> io::Result<Self> {
-        Self::new_with_capacity_stats_and_options(
+        Self::new_with_capacity_stats_prefix_and_decode_mode(
             name,
             addr,
             CHANNEL_BOUND,
             stats,
-            OtlpReceiverOptions {
-                resource_prefix: resource_prefix.into(),
-                protobuf_decode_mode,
-                ..Default::default()
-            },
+            resource_prefix.into(),
+            protobuf_decode_mode,
         )
     }
 
-    pub fn new_with_options(
-        name: impl Into<String>,
-        addr: &str,
-        stats: Option<Arc<ComponentStats>>,
-        options: OtlpReceiverOptions,
-    ) -> io::Result<Self> {
-        Self::new_with_capacity_stats_and_options(name, addr, CHANNEL_BOUND, stats, options)
-    }
-
-    fn new_with_capacity_stats_and_options(
+    fn new_with_capacity_stats_prefix_and_decode_mode(
         name: impl Into<String>,
         addr: &str,
         capacity: usize,
         stats: Option<Arc<ComponentStats>>,
-        options: OtlpReceiverOptions,
+        resource_prefix: String,
+        protobuf_decode_mode: OtlpProtobufDecodeMode,
     ) -> io::Result<Self> {
         let std_listener = std::net::TcpListener::bind(addr)
             .map_err(|e| io::Error::other(format!("OTLP receiver bind {addr}: {e}")))?;
@@ -266,13 +241,9 @@ impl OtlpReceiverInput {
             tx,
             is_running: Arc::clone(&is_running),
             health: Arc::clone(&health),
-            resource_prefix: options.resource_prefix,
-            protobuf_decode_mode: options.protobuf_decode_mode,
+            resource_prefix,
+            protobuf_decode_mode,
             stats,
-            max_recv_message_size_bytes: options.max_recv_message_size_bytes,
-            tls: options.tls,
-            grpc_keepalive_time_ms: options.grpc_keepalive_time_ms,
-            grpc_max_concurrent_streams: options.grpc_max_concurrent_streams,
         });
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let state_for_server = Arc::clone(&state);
@@ -567,64 +538,5 @@ mod poll_tests {
 
         let remainder = drain_receiver_payloads(&rx, 10, 250);
         assert_eq!(remainder.len(), 1, "one payload should remain queued");
-    }
-}
-
-#[cfg(kani)]
-mod verification {
-    use super::*;
-
-    #[kani::proof]
-    #[kani::unwind(21)] // max digits is ~20 for u64/i64
-    fn verify_write_i64_ascii_only() {
-        let mut buf = Vec::new();
-        let n: i64 = kani::any();
-        write_i64_to_buf(&mut buf, n);
-        for &b in &buf {
-            assert!(b.is_ascii());
-        }
-    }
-
-    #[kani::proof]
-    #[kani::unwind(1)]
-    fn verify_write_f64_ascii_only() {
-        let mut buf = Vec::new();
-        let n: f64 = kani::any();
-        write_f64_to_buf(&mut buf, n);
-        for &b in &buf {
-            assert!(b.is_ascii());
-        }
-    }
-
-    #[kani::proof]
-    #[kani::unwind(9)]
-    fn verify_hex_encode_valid() {
-        let mut buf = Vec::new();
-        let len: usize = kani::any();
-        kani::assume(len <= 8);
-        let bytes: [u8; 8] = kani::any();
-        write_hex_to_buf(&mut buf, &bytes[..len]);
-        assert_eq!(buf.len(), len * 2);
-        for &b in &buf {
-            assert!(b.is_ascii_hexdigit());
-        }
-    }
-
-    #[kani::proof]
-    #[kani::unwind(9)]
-    fn verify_json_escaping_ascii_only() {
-        let mut buf = Vec::new();
-        let len: usize = kani::any();
-        kani::assume(len <= 8);
-        let mut bytes = [0u8; 8];
-        for i in 0..len {
-            bytes[i] = kani::any();
-            kani::assume(bytes[i].is_ascii());
-        }
-        let s = std::str::from_utf8(&bytes[..len]).unwrap();
-        write_json_escaped_string_contents(&mut buf, s);
-        for &b in &buf {
-            assert!(b.is_ascii());
-        }
     }
 }

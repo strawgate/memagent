@@ -419,13 +419,6 @@ pub enum MaterializeError {
     InvalidUtf8 { offset: u32, len: u32 },
     /// Concatenated string bytes exceed `i32::MAX`, making Utf8 offsets invalid.
     OffsetOverflow,
-    /// A `StringRef` spans the original/generated boundary (start in original,
-    /// end past original_len). This is always a bug in the producer.
-    StringRefSpansBoundary {
-        offset: u32,
-        len: u32,
-        original_len: usize,
-    },
 }
 
 impl std::fmt::Display for MaterializeError {
@@ -448,14 +441,6 @@ impl std::fmt::Display for MaterializeError {
                     "string data exceeds i32::MAX bytes for Utf8 offset array"
                 )
             }
-            MaterializeError::StringRefSpansBoundary {
-                offset,
-                len,
-                original_len,
-            } => write!(
-                f,
-                "StringRef(offset={offset}, len={len}) spans original/generated boundary (original_len={original_len})"
-            ),
         }
     }
 }
@@ -469,8 +454,10 @@ impl std::error::Error for MaterializeError {}
 /// Controls how string columns are built at finalization.
 #[derive(Clone)]
 pub struct FinalizationMode {
-    /// Backing buffers for string references.
-    pub blocks: super::block_store::BlockStore,
+    /// Original input buffer (e.g., protobuf wire bytes, scanner input).
+    pub original_buf: Buffer,
+    /// Generated/decoded buffer (e.g., JSON-unescaped strings).
+    pub generated_buf: Buffer,
     /// When true, all string data is known to be valid UTF-8 (validated
     /// at the ingestion boundary — scanner, OTLP decoder, etc.). Enables
     /// zero-copy StringViewArray construction.  When false, copies bytes
@@ -613,9 +600,21 @@ fn build_string(
     dedup: bool,
 ) -> Result<(ArrayRef, DataType), MaterializeError> {
     if mode.utf8_trusted {
-        build_string_view_trusted(facts, num_rows, &mode.blocks, dedup)
+        build_string_view_trusted(
+            facts,
+            num_rows,
+            &mode.original_buf,
+            &mode.generated_buf,
+            dedup,
+        )
     } else {
-        build_string_array_validated(facts, num_rows, &mode.blocks, dedup)
+        build_string_array_validated(
+            facts,
+            num_rows,
+            &mode.original_buf,
+            &mode.generated_buf,
+            dedup,
+        )
     }
 }
 
@@ -633,13 +632,24 @@ fn build_string(
 fn build_string_view_trusted(
     facts: &[(u32, StringRef)],
     num_rows: usize,
-    blocks: &super::block_store::BlockStore,
+    original_buf: &Buffer,
+    generated_buf: &Buffer,
     dedup: bool,
 ) -> Result<(ArrayRef, DataType), MaterializeError> {
+    let original_len = original_buf.len();
     let dense = is_dense(facts, num_rows, dedup);
 
     // Register source buffers as StringViewArray blocks.
-    let (buffers, orig_block, gen_block) = blocks.register_blocks();
+    // block 0 = original, block 1 = generated (if non-empty).
+    let mut buffers: Vec<Buffer> = Vec::with_capacity(2);
+    let orig_block: u32 = 0;
+    buffers.push(original_buf.clone()); // O(1) Arc bump
+    let gen_block = if generated_buf.is_empty() {
+        None
+    } else {
+        buffers.push(generated_buf.clone()); // O(1) Arc bump
+        Some(1u32)
+    };
 
     // Pre-zero + indexed write is faster than collect() because memset_avx2
     // zeroes 16KB in ~200 instructions while the Result iterator adapter
@@ -654,7 +664,14 @@ fn build_string_view_trusted(
             "dense path requires consecutive rows starting at 0"
         );
         for (i, &(_, sref)) in facts.iter().enumerate() {
-            views[i] = blocks.make_string_view(sref, orig_block, gen_block)?;
+            views[i] = make_string_view(
+                sref,
+                original_buf,
+                generated_buf,
+                original_len,
+                orig_block,
+                gen_block,
+            )?;
         }
     } else {
         // Sparse: iterate all facts, assign by row index (last-write-wins for duplicates).
@@ -662,7 +679,14 @@ fn build_string_view_trusted(
         for &(row, sref) in facts {
             let r = row as usize;
             if r < num_rows {
-                views[r] = blocks.make_string_view(sref, orig_block, gen_block)?;
+                views[r] = make_string_view(
+                    sref,
+                    original_buf,
+                    generated_buf,
+                    original_len,
+                    orig_block,
+                    gen_block,
+                )?;
                 valid[r] = true;
             }
         }
@@ -674,7 +698,7 @@ fn build_string_view_trusted(
             // Validate UTF-8 for all referenced string bytes in debug builds.
             let mut ok = true;
             for &(_, sref) in facts {
-                if let Ok(bytes) = blocks.read_str_bytes(sref)
+                if let Ok(bytes) = read_str_bytes(original_buf, generated_buf, original_len, sref)
                     && std::str::from_utf8(bytes).is_err()
                 {
                     ok = false;
@@ -695,6 +719,82 @@ fn build_string_view_trusted(
     Ok((Arc::new(array), DataType::Utf8View))
 }
 
+/// Construct a u128 StringView for a given StringRef.
+///
+/// Strings ≤ 12 bytes are inlined. Longer strings reference a buffer block.
+#[inline(always)]
+fn make_string_view(
+    sref: StringRef,
+    original_buf: &[u8],
+    generated_buf: &[u8],
+    original_len: usize,
+    orig_block: u32,
+    gen_block: Option<u32>,
+) -> Result<u128, MaterializeError> {
+    let len = sref.len;
+    if len == 0 {
+        return Ok(0u128);
+    }
+
+    let start = sref.offset as usize;
+
+    // Resolve buffer, block index, and local offset.
+    let (buf, block_idx, local_offset) = if start < original_len {
+        (original_buf, orig_block, sref.offset)
+    } else {
+        let dec_start = (start - original_len) as u32;
+        match gen_block {
+            Some(gb) => (generated_buf, gb, dec_start),
+            None => {
+                return Err(MaterializeError::StringRefOutOfBounds {
+                    offset: sref.offset,
+                    len: sref.len,
+                    buffer_len: 0,
+                });
+            }
+        }
+    };
+
+    let local_start = local_offset as usize;
+    let local_end =
+        local_start
+            .checked_add(len as usize)
+            .ok_or(MaterializeError::StringRefOutOfBounds {
+                offset: sref.offset,
+                len: sref.len,
+                buffer_len: buf.len(),
+            })?;
+    if local_end > buf.len() {
+        return Err(MaterializeError::StringRefOutOfBounds {
+            offset: sref.offset,
+            len: sref.len,
+            buffer_len: buf.len(),
+        });
+    }
+
+    // Build the u128 view using arithmetic — avoids byte array + copy_from_slice.
+    Ok(if len <= 12 {
+        // Inline: [len:4][data:12] packed little-endian.
+        let mut view_bytes = [0u8; 16];
+        view_bytes[0..4].copy_from_slice(&len.to_le_bytes());
+        view_bytes[4..4 + len as usize].copy_from_slice(&buf[local_start..local_end]);
+        u128::from_le_bytes(view_bytes)
+    } else {
+        // Buffer ref: [len:4][prefix:4][block_idx:4][offset:4] packed little-endian.
+        // Use arithmetic to avoid array copies.
+        let prefix = u32::from_le_bytes([
+            buf[local_start],
+            buf[local_start + 1],
+            buf[local_start + 2],
+            buf[local_start + 3],
+        ]);
+        (len as u128)
+            | ((prefix as u128) << 32)
+            | ((block_idx as u128) << 64)
+            | ((local_offset as u128) << 96)
+    })
+}
+
 /// Build a `StringArray` with full UTF-8 validation (untrusted path).
 ///
 /// Copies string bytes into a contiguous values buffer. Used when the ingestion
@@ -702,9 +802,11 @@ fn build_string_view_trusted(
 fn build_string_array_validated(
     facts: &[(u32, StringRef)],
     num_rows: usize,
-    blocks: &super::block_store::BlockStore,
+    original_buf: &Buffer,
+    generated_buf: &Buffer,
     dedup: bool,
 ) -> Result<(ArrayRef, DataType), MaterializeError> {
+    let original_len = original_buf.len();
     let dense = is_dense(facts, num_rows, dedup);
     let mut offsets: Vec<i32> = Vec::with_capacity(num_rows + 1);
     let mut values: Vec<u8> =
@@ -720,7 +822,7 @@ fn build_string_array_validated(
         for &(_, sref) in facts {
             let off = i32::try_from(values.len()).map_err(|_| MaterializeError::OffsetOverflow)?;
             offsets.push(off);
-            let bytes = blocks.read_str_bytes(sref)?;
+            let bytes = read_str_bytes(original_buf, generated_buf, original_len, sref)?;
             values.extend_from_slice(bytes);
         }
     } else {
@@ -739,7 +841,7 @@ fn build_string_array_validated(
             offsets.push(off);
             if let Some(fi) = entry {
                 let sref = facts[*fi].1;
-                let bytes = blocks.read_str_bytes(sref)?;
+                let bytes = read_str_bytes(original_buf, generated_buf, original_len, sref)?;
                 values.extend_from_slice(bytes);
                 validity.push(true);
             } else {
@@ -751,8 +853,7 @@ fn build_string_array_validated(
     offsets.push(final_off);
 
     // Validate UTF-8 for external bytes.
-    let has_original = blocks.original_len() > 0;
-    if has_original && std::str::from_utf8(&values).is_err() {
+    if !original_buf.is_empty() && std::str::from_utf8(&values).is_err() {
         // Identify which row contains the invalid UTF-8.
         for row in 0..num_rows {
             let start = offsets[row] as usize;
@@ -774,14 +875,54 @@ fn build_string_array_validated(
     let offset_buf = OffsetBuffer::new(ScalarBuffer::from(offsets));
     let values_buf = Buffer::from_vec(values);
 
-    if has_original {
-        let array = StringArray::new(offset_buf, values_buf, nulls);
-        Ok((Arc::new(array), DataType::Utf8))
-    } else {
+    if original_buf.is_empty() {
         // All data from write_str(&str) — valid UTF-8 by Rust's type system.
         // SAFETY: offsets built sequentially, source is &str.
         let array = unsafe { StringArray::new_unchecked(offset_buf, values_buf, nulls) };
         Ok((Arc::new(array), DataType::Utf8))
+    } else {
+        let array = StringArray::new(offset_buf, values_buf, nulls);
+        Ok((Arc::new(array), DataType::Utf8))
+    }
+}
+
+/// Read string bytes from the 2-buffer system without UTF-8 validation.
+///
+/// Returns the raw bytes referenced by `sref`. Callers must validate UTF-8
+/// externally (e.g., once over the concatenated output).
+fn read_str_bytes<'a>(
+    original: &'a [u8],
+    generated: &'a [u8],
+    original_len: usize,
+    sref: StringRef,
+) -> Result<&'a [u8], MaterializeError> {
+    let start = sref.offset as usize;
+    let end =
+        start
+            .checked_add(sref.len as usize)
+            .ok_or(MaterializeError::StringRefOutOfBounds {
+                offset: sref.offset,
+                len: sref.len,
+                buffer_len: original.len() + generated.len(),
+            })?;
+    if start < original_len {
+        original
+            .get(start..end)
+            .ok_or(MaterializeError::StringRefOutOfBounds {
+                offset: sref.offset,
+                len: sref.len,
+                buffer_len: original.len(),
+            })
+    } else {
+        let dec_start = start - original_len;
+        let dec_end = end - original_len;
+        generated
+            .get(dec_start..dec_end)
+            .ok_or(MaterializeError::StringRefOutOfBounds {
+                offset: sref.offset,
+                len: sref.len,
+                buffer_len: generated.len(),
+            })
     }
 }
 
@@ -845,7 +986,6 @@ fn build_conflict_struct(
 mod tests {
     use std::mem::size_of_val;
 
-    use super::super::block_store::BlockStore;
     use super::*;
     use arrow::array::{Array, AsArray};
     use arrow::datatypes::Int64Type;
@@ -857,7 +997,8 @@ mod tests {
         acc.push_i64(2, 300);
 
         let mode = FinalizationMode {
-            blocks: BlockStore::new(Buffer::from(&[] as &[u8]), Buffer::from(&[] as &[u8])),
+            original_buf: Buffer::from(&[] as &[u8]),
+            generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
         let (field, arr) = acc.materialize("ts", 3, mode, true).unwrap().unwrap();
@@ -876,7 +1017,8 @@ mod tests {
         acc.push_str(1, StringRef { offset: 6, len: 5 }); // "world"
 
         let mode = FinalizationMode {
-            blocks: BlockStore::new(Buffer::from(&input[..]), Buffer::from(&[] as &[u8])),
+            original_buf: Buffer::from(&input[..]),
+            generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
         let (_, arr) = acc.materialize("msg", 2, mode, true).unwrap().unwrap();
@@ -893,7 +1035,8 @@ mod tests {
         acc.push_str(1, StringRef { offset: 6, len: 5 });
 
         let mode = FinalizationMode {
-            blocks: BlockStore::new(Buffer::from(&input[..]), Buffer::from(&[] as &[u8])),
+            original_buf: Buffer::from(&input[..]),
+            generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
         let (field, arr) = acc.materialize("msg", 2, mode, true).unwrap().unwrap();
@@ -921,7 +1064,8 @@ mod tests {
         );
 
         let mode = FinalizationMode {
-            blocks: BlockStore::new(Buffer::from(&input[..]), Buffer::from(&generated[..])),
+            original_buf: Buffer::from(&input[..]),
+            generated_buf: Buffer::from(&generated[..]),
             utf8_trusted: true,
         };
         let (_, arr) = acc.materialize("msg", 2, mode, true).unwrap().unwrap();
@@ -937,7 +1081,8 @@ mod tests {
         acc.push_i64(1, 99);
 
         let mode = FinalizationMode {
-            blocks: BlockStore::new(Buffer::from(&[] as &[u8]), Buffer::from(&[] as &[u8])),
+            original_buf: Buffer::from(&[] as &[u8]),
+            generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
         let (field, arr) = acc.materialize("x", 2, mode, true).unwrap().unwrap();
@@ -956,7 +1101,8 @@ mod tests {
         acc.push_str(1, StringRef { offset: 0, len: 2 });
 
         let mode = FinalizationMode {
-            blocks: BlockStore::new(Buffer::from(&input[..]), Buffer::from(&[] as &[u8])),
+            original_buf: Buffer::from(&input[..]),
+            generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
         let (field, arr) = acc.materialize("status", 2, mode, true).unwrap().unwrap();
@@ -972,7 +1118,8 @@ mod tests {
     fn empty_accumulator_returns_none() {
         let acc = ColumnAccumulator::for_planned(FieldKind::Int64);
         let mode = FinalizationMode {
-            blocks: BlockStore::new(Buffer::from(&[] as &[u8]), Buffer::from(&[] as &[u8])),
+            original_buf: Buffer::from(&[] as &[u8]),
+            generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
         assert!(acc.materialize("x", 3, mode, true).unwrap().is_none());
@@ -986,7 +1133,8 @@ mod tests {
         acc.push_bool(0, true); // no-op for Int64
 
         let mode = FinalizationMode {
-            blocks: BlockStore::new(Buffer::from(&[] as &[u8]), Buffer::from(&[] as &[u8])),
+            original_buf: Buffer::from(&[] as &[u8]),
+            generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
         assert!(acc.materialize("x", 1, mode, true).unwrap().is_none()); // no int facts → None
@@ -1000,7 +1148,8 @@ mod tests {
         acc.push_i64(0, 200);
 
         let mode = FinalizationMode {
-            blocks: BlockStore::new(Buffer::from(&[] as &[u8]), Buffer::from(&[] as &[u8])),
+            original_buf: Buffer::from(&[] as &[u8]),
+            generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
         let (_, arr) = acc.materialize("x", 1, mode, true).unwrap().unwrap();
@@ -1047,7 +1196,8 @@ mod tests {
         );
 
         let mode = FinalizationMode {
-            blocks: BlockStore::new(Buffer::from(b"short" as &[u8]), Buffer::from(&[] as &[u8])),
+            original_buf: Buffer::from(b"short" as &[u8]),
+            generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
         let result = acc.materialize("x", 1, mode, true);
@@ -1066,7 +1216,8 @@ mod tests {
         acc.push_str(0, StringRef { offset: 0, len: 4 });
 
         let mode = FinalizationMode {
-            blocks: BlockStore::new(Buffer::from(bad_bytes), Buffer::from(&[] as &[u8])),
+            original_buf: Buffer::from(bad_bytes),
+            generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: false,
         };
         let result = acc.materialize("x", 1, mode, true);
@@ -1092,7 +1243,8 @@ mod tests {
         );
 
         let mode = FinalizationMode {
-            blocks: BlockStore::new(Buffer::from(&input[..]), Buffer::from(&[] as &[u8])),
+            original_buf: Buffer::from(&input[..]),
+            generated_buf: Buffer::from(&[] as &[u8]),
             utf8_trusted: true,
         };
         let result = acc.materialize("x", 1, mode, true);
@@ -1114,7 +1266,6 @@ mod tests {
 // timeouts (>10 min for read_str_bytes on [u8; 16]).
 #[cfg(kani)]
 mod verification {
-    use super::super::block_store::{make_string_view_raw, read_str_bytes_raw};
     use super::*;
 
     // ── make_string_view ────────────────────────────────────────────────────
@@ -1136,7 +1287,7 @@ mod verification {
 
         let sref = StringRef { offset: 0, len };
         let view =
-            make_string_view_raw(sref, &buf[..len as usize], &[], len as usize, 0, None).unwrap();
+            make_string_view(sref, &buf[..len as usize], &[], len as usize, 0, None).unwrap();
 
         // Oracle: independently decode the u128 and verify every field.
         let view_bytes = view.to_le_bytes();
@@ -1166,7 +1317,7 @@ mod verification {
     #[kani::proof]
     fn verify_make_string_view_zero_length() {
         let sref = StringRef { offset: 0, len: 0 };
-        let view = make_string_view_raw(sref, &[], &[], 0, 0, None).unwrap();
+        let view = make_string_view(sref, &[], &[], 0, 0, None).unwrap();
         assert_eq!(view, 0u128, "zero-length string must be all-zero view");
     }
 
@@ -1199,8 +1350,7 @@ mod verification {
             offset: local_offset,
             len,
         };
-        let view =
-            make_string_view_raw(sref, &buf[..buf_len], &[], buf_len, block_idx, None).unwrap();
+        let view = make_string_view(sref, &buf[..buf_len], &[], buf_len, block_idx, None).unwrap();
 
         // Oracle: independently recompute expected u128 from the spec.
         let expected_prefix =
@@ -1235,7 +1385,7 @@ mod verification {
         // Fixed-size array avoids CBMC symbolic-allocation explosion.
         let buf = [0u8; 64];
         let sref = StringRef { offset, len };
-        let result = make_string_view_raw(sref, &buf[..buf_len], &[], buf_len, 0, None);
+        let result = make_string_view(sref, &buf[..buf_len], &[], buf_len, 0, None);
         assert!(result.is_err(), "OOB reference must return error");
 
         kani::cover!(offset == 0, "zero offset with large len");
@@ -1262,7 +1412,7 @@ mod verification {
             len,
         };
         let result_orig =
-            make_string_view_raw(sref_orig, &original, &generated, original_len, 0, Some(1));
+            make_string_view(sref_orig, &original, &generated, original_len, 0, Some(1));
         assert!(result_orig.is_ok(), "valid original ref must succeed");
 
         // Generated buffer path: offset >= original_len.
@@ -1273,7 +1423,7 @@ mod verification {
             len,
         };
         let result_gen =
-            make_string_view_raw(sref_gen, &original, &generated, original_len, 0, Some(1));
+            make_string_view(sref_gen, &original, &generated, original_len, 0, Some(1));
         assert!(result_gen.is_ok(), "valid generated ref must succeed");
 
         // No generated buffer + offset in generated range → error.
@@ -1281,8 +1431,7 @@ mod verification {
             offset: original_len as u32,
             len: 1,
         };
-        let result_no_gen =
-            make_string_view_raw(sref_no_gen, &original, &[], original_len, 0, None);
+        let result_no_gen = make_string_view(sref_no_gen, &original, &[], original_len, 0, None);
         assert!(
             result_no_gen.is_err(),
             "generated offset with no generated buffer must error"
@@ -1394,7 +1543,7 @@ mod verification {
         kani::assume((offset as usize) + (len as usize) <= orig_len);
 
         let sref = StringRef { offset, len };
-        let result = read_str_bytes_raw(&original, &generated, orig_len, sref);
+        let result = read_str_bytes(&original, &generated, orig_len, sref);
         assert!(result.is_ok(), "valid original ref must succeed");
         let bytes = result.unwrap();
         assert_eq!(bytes.len(), len as usize);
@@ -1421,7 +1570,7 @@ mod verification {
             offset: orig_len as u32 + gen_offset,
             len,
         };
-        let result = read_str_bytes_raw(&original, &generated, orig_len, sref);
+        let result = read_str_bytes(&original, &generated, orig_len, sref);
         assert!(result.is_ok(), "valid generated ref must succeed");
         let bytes = result.unwrap();
         assert_eq!(bytes.len(), len as usize);
@@ -1445,7 +1594,7 @@ mod verification {
         kani::assume((offset as usize) + (len as usize) > orig_len);
 
         let sref = StringRef { offset, len };
-        let result = read_str_bytes_raw(&original, &generated, orig_len, sref);
+        let result = read_str_bytes(&original, &generated, orig_len, sref);
         assert!(result.is_err(), "spanning reference must be rejected");
 
         kani::cover!(offset == 0, "span from start");
@@ -1504,7 +1653,6 @@ mod verification {
 // ---------------------------------------------------------------------------
 #[cfg(test)]
 mod proptests {
-    use super::super::block_store::read_str_bytes_raw;
     use super::*;
     use arrow::array::Array;
     use proptest::prelude::*;
@@ -1786,7 +1934,7 @@ mod proptests {
             let generated: Vec<u8> = vec![0xDDu8; 16];
 
             let sref = StringRef { offset, len };
-            let result = read_str_bytes_raw(&original, &generated, orig_len, sref);
+            let result = read_str_bytes(&original, &generated, orig_len, sref);
             prop_assert!(result.is_ok());
             let bytes = result.unwrap();
             prop_assert_eq!(bytes.len(), len as usize);
@@ -1811,7 +1959,7 @@ mod proptests {
                 offset: orig_len as u32 + gen_offset,
                 len,
             };
-            let result = read_str_bytes_raw(&original, &generated, orig_len, sref);
+            let result = read_str_bytes(&original, &generated, orig_len, sref);
             prop_assert!(result.is_ok());
             let bytes = result.unwrap();
             prop_assert_eq!(bytes.len(), len as usize);
@@ -1833,7 +1981,7 @@ mod proptests {
             let original = [0xCCu8; 8];
             let generated = [0xDDu8; 8];
             let sref = StringRef { offset, len };
-            let result = read_str_bytes_raw(&original, &generated, orig_len, sref);
+            let result = read_str_bytes(&original, &generated, orig_len, sref);
             prop_assert!(result.is_err(), "spanning strings must be rejected");
         }
 
@@ -1846,7 +1994,7 @@ mod proptests {
             let original = [0xCCu8; 8];
             let generated = [0xDDu8; 8];
             let sref = StringRef { offset, len };
-            let result = read_str_bytes_raw(&original, &generated, 8, sref);
+            let result = read_str_bytes(&original, &generated, 8, sref);
             prop_assert!(result.is_err());
         }
     }
