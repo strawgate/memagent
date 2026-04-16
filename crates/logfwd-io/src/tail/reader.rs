@@ -105,14 +105,7 @@ impl FileReader {
                 // from 0 to non-zero when data is first appended.
                 0
             } else {
-                tracing::warn!(path = %path.display(), evicted_identity = ?evicted.identity, current_identity = ?identity, "evicted offset identity mismatch — purging stale state and starting fresh");
-                // The path now points to a different file (e.g. rewritten after
-                // the old file was evicted). Purge any remaining evicted entries
-                // that share the old identity so they can never cause a false
-                // truncation on re-open.
-                let stale_identity = evicted.identity;
-                self.evicted_offsets
-                    .retain(|_, e| e.identity != stale_identity);
+                tracing::warn!(path = %path.display(), evicted_identity = ?evicted.identity, current_identity = ?identity, "evicted offset identity mismatch — ignoring saved offset");
                 if start_from_end {
                     file.seek(SeekFrom::End(0))?
                 } else {
@@ -1026,41 +1019,6 @@ mod tests {
         assert!(
             matches!(&events[0], TailEvent::Truncated { source_id, .. } if *source_id == pre_source),
             "truncated-only read should emit a single Truncated event"
-        );
-    }
-
-    #[test]
-    fn open_file_at_identity_mismatch_purges_stale_evicted_entries() {
-        // Simulate: file A is evicted at offset 5000, then the path is
-        // overwritten by a brand-new file B with a different identity.
-        // open_file_at should start from 0 AND purge the stale entry so
-        // that future lookups (e.g. by source_id) never resurrect it.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("recycled.log");
-        fs::write(&path, b"aaaaaaaaaa").unwrap(); // original file
-
-        let mut reader = test_reader();
-        reader.open_file_at(&path, false).unwrap();
-        reader.set_offset(&path, 5).unwrap();
-        reader.evict_lru(0);
-        assert_eq!(reader.evicted_offsets.len(), 1, "one entry evicted");
-
-        // Overwrite with a completely new file (different inode/fingerprint).
-        fs::remove_file(&path).unwrap();
-        fs::write(&path, b"new content").unwrap();
-
-        reader.open_file_at(&path, false).unwrap();
-
-        // New file should start at offset 0.
-        assert_eq!(
-            reader.get_offset(&path),
-            Some(0),
-            "identity mismatch should start from 0"
-        );
-        // Stale evicted entry must be purged.
-        assert!(
-            reader.evicted_offsets.is_empty(),
-            "stale evicted entry should be purged on identity mismatch"
         );
     }
 

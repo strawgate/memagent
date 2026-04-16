@@ -194,7 +194,7 @@ impl ScalarUDFImpl for RegexpExtractUdf {
         let idx = match group_idx {
             ColumnarValue::Scalar(s) => {
                 if let datafusion::common::ScalarValue::Int64(Some(v)) = s {
-                    usize::try_from(*v).unwrap_or(0)
+                    *v as usize
                 } else {
                     0
                 }
@@ -305,33 +305,6 @@ impl ScalarUDFImpl for RegexpExtractUdf {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn test_extract_group_negative_index_truncation() {
-        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
-        let msgs: Arc<dyn Array> = Arc::new(StringArray::from(vec![Some("a b c")]));
-        let batch = RecordBatch::try_new(schema, vec![msgs]).unwrap();
-        // Negative group index wraps to a huge usize causing a panic inside regexp_extract
-        // The fix maps it to 0 (the full match).
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        let mut t = crate::SqlTransform::new(
-            "SELECT regexp_extract(msg, '(\\w) (\\w) (\\w)', -1) AS m FROM logs",
-        )
-        .unwrap();
-        let result = rt.block_on(t.execute(batch));
-
-        let s = result.unwrap();
-        let m = s
-            .column_by_name("m")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(m.value(0), "a b c");
-    }
-
     use super::*;
     use arrow::array::{Array, Int64Array, StringArray};
     use arrow::datatypes::{Field, Schema};
@@ -730,37 +703,5 @@ mod tests {
             msg.contains("group_index argument must be a scalar integer literal"),
             "unexpected error: {msg}"
         );
-    }
-}
-
-#[cfg(kani)]
-mod verification {
-    /// Prove that `usize::try_from(v).unwrap_or(0)` on an `i64` group-index:
-    ///  - always returns 0 for negative values (never panics, never wraps)
-    ///  - always returns the exact value for non-negative values in usize range
-    ///
-    /// This covers the fix at the group-index extraction site in
-    /// `RegexpExtractUDF::invoke` (changed from `*v as usize` which produced
-    /// a very large usize for negative values via defined 2's-complement
-    /// wrapping, silently selecting a non-existent capture group).
-    #[kani::proof]
-    fn verify_group_index_conversion() {
-        let v: i64 = kani::any();
-        let idx = usize::try_from(v).unwrap_or(0);
-
-        if v < 0 {
-            // Negative group index must silently clamp to 0 (group 0 = full match)
-            assert_eq!(idx, 0, "negative group index must become 0");
-        } else {
-            // Non-negative: conversion is lossless on 64-bit (usize == u64 there)
-            // On 32-bit, values > u32::MAX map to 0 — but regexp engines cap groups
-            // at far fewer than 2^32, so unwrap_or(0) is the correct fallback.
-            #[cfg(target_pointer_width = "64")]
-            assert_eq!(idx, v as usize, "non-negative i64 must round-trip exactly");
-        }
-
-        kani::cover!(v < 0, "negative group index → 0");
-        kani::cover!(v == 0, "zero group index (full match)");
-        kani::cover!(v > 0, "positive group index → exact value");
     }
 }

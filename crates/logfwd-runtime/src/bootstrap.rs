@@ -106,18 +106,15 @@ pub async fn run_pipelines(
     let profiler = dhat::Profiler::new_heap();
 
     #[cfg(feature = "cpu-profiling")]
-    let pprof_guard: Option<pprof::ProfilerGuard<'static>> =
-        match pprof::ProfilerGuardBuilder::default()
-            .frequency(999)
-            .blocklist(&["libc", "libgcc", "pthread", "vdso"])
-            .build()
-        {
-            Ok(guard) => Some(guard),
-            Err(e) => {
-                eprintln!("warn: cpu profiling unavailable, continuing without it: {e}");
-                None
-            }
-        };
+    let pprof_guard = pprof::ProfilerGuardBuilder::default()
+        .frequency(999)
+        .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+        .build()
+        .map_err(|e| {
+            RuntimeError::Io(io::Error::other(format!(
+                "failed to initialize pprof profiler: {e}"
+            )))
+        })?;
 
     let shutdown_for_signal = shutdown.clone();
     let use_color = options.use_color;
@@ -151,30 +148,11 @@ pub async fn run_pipelines(
         }
 
         #[cfg(feature = "cpu-profiling")]
-        if let Some(guard) = _pprof_to_drop {
-            if let Ok(report) = guard.report().build() {
-                // Write flamegraph for local/quick inspection
-                if let Ok(file) = std::fs::File::create("flamegraph.svg") {
-                    if let Err(e) = report.flamegraph(file) {
-                        eprintln!("warn: failed to write flamegraph.svg: {e}");
-                    }
-                }
-                // Write pprof protobuf for use with `go tool pprof` / speedscope
-                if let Ok(profile) = report.pprof() {
-                    use pprof::protos::Message as _;
-                    use std::io::Write as _;
-                    let mut buf = Vec::new();
-                    if profile.encode(&mut buf).is_ok() {
-                        if let Ok(file) = std::fs::File::create("profile.pb.gz") {
-                            let mut gz =
-                                flate2::write::GzEncoder::new(file, flate2::Compression::default());
-                            if let Err(e) = gz.write_all(&buf).and_then(|_| gz.finish().map(|_| ()))
-                            {
-                                eprintln!("warn: failed to write profile.pb.gz: {e}");
-                            }
-                        }
-                    }
-                }
+        {
+            if let Ok(report) = _pprof_to_drop.report().build()
+                && let Ok(file) = std::fs::File::create("flamegraph.svg")
+            {
+                let _ = report.flamegraph(file);
             }
         }
 
@@ -221,11 +199,6 @@ pub async fn run_pipelines(
         .try_init();
     opentelemetry::global::set_tracer_provider(tracer_provider.clone());
 
-    let checkpoint_flush_interval = config
-        .storage
-        .checkpoint_flush_interval_ms
-        .map_or(Duration::from_secs(5), Duration::from_millis);
-
     let mut pipelines = Vec::new();
     for (name, pipe_cfg) in &config.pipelines {
         match Pipeline::from_config_with_data_dir(
@@ -235,10 +208,7 @@ pub async fn run_pipelines(
             base_path,
             configured_data_dir.as_deref(),
         ) {
-            Ok(mut pipeline) => {
-                pipeline.set_checkpoint_flush_interval(checkpoint_flush_interval);
-                pipelines.push(pipeline);
-            }
+            Ok(pipeline) => pipelines.push(pipeline),
             Err(e) => return Err(RuntimeError::Config(format!("pipeline '{name}': {e}"))),
         }
     }
@@ -456,7 +426,6 @@ fn input_label(i: &logfwd_config::InputConfig) -> String {
         InputTypeConfig::WindowsEbpfSensor(_) => "windows_ebpf_sensor".to_string(),
         InputTypeConfig::HostMetrics(_) => "host_metrics".to_string(),
         InputTypeConfig::Journald(_) => "journald".to_string(),
-        InputTypeConfig::S3(s) => format!("s3    {}", s.s3.bucket),
     }
 }
 

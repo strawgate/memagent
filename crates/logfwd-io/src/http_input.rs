@@ -80,8 +80,6 @@ pub struct HttpInputOptions {
     pub method: HttpInputMethod,
     /// Max request body size in bytes.
     pub max_request_body_size: usize,
-    /// Max bytes drained per poll call.
-    pub max_drained_bytes_per_poll: usize,
     /// HTTP response code for accepted requests.
     pub response_code: u16,
     /// Optional static response body for accepted requests.
@@ -95,7 +93,6 @@ impl Default for HttpInputOptions {
             strict_path: true,
             method: HttpInputMethod::Post,
             max_request_body_size: DEFAULT_MAX_REQUEST_BODY_SIZE,
-            max_drained_bytes_per_poll: 1024 * 1024 * 1024,
             response_code: 200,
             response_body: None,
         }
@@ -106,7 +103,6 @@ impl Default for HttpInputOptions {
 pub struct HttpInput {
     name: String,
     rx: Option<mpsc::Receiver<Vec<u8>>>,
-    max_drained_bytes_per_poll: usize,
     /// The address the HTTP server is bound to.
     addr: std::net::SocketAddr,
     /// Keep the server thread handle alive.
@@ -244,7 +240,6 @@ impl HttpInput {
         Ok(Self {
             name: name.into(),
             rx: Some(rx),
-            max_drained_bytes_per_poll: options.max_drained_bytes_per_poll,
             addr: bound_addr,
             handle: Some(handle),
             shutdown_tx: Some(shutdown_tx),
@@ -283,15 +278,8 @@ impl InputSource for HttpInput {
         };
 
         let mut all = Vec::new();
-        let mut drained_bytes = 0;
-
-        while drained_bytes < self.max_drained_bytes_per_poll {
-            if let Ok(bytes) = rx.try_recv() {
-                drained_bytes = drained_bytes.saturating_add(bytes.len());
-                all.extend_from_slice(&bytes);
-            } else {
-                break;
-            }
+        while let Ok(bytes) = rx.try_recv() {
+            all.extend_from_slice(&bytes);
         }
 
         if all.is_empty() {
@@ -452,9 +440,6 @@ fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusC
         return Ok(None);
     };
     let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?.trim();
-    if parsed.is_empty() {
-        return Err(StatusCode::BAD_REQUEST);
-    }
     Ok(Some(parsed.to_ascii_lowercase()))
 }
 
@@ -464,12 +449,6 @@ fn normalize_options(mut options: HttpInputOptions) -> io::Result<HttpInputOptio
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "http input max_request_body_size must be >= 1",
-        ));
-    }
-    if options.max_drained_bytes_per_poll == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "http input max_drained_bytes_per_poll must be >= 1",
         ));
     }
     if !is_valid_success_response_code(options.response_code) {
@@ -858,75 +837,6 @@ Connection: close\r\n\
     }
 
     #[test]
-    fn http_poll_respects_max_drained_bytes() {
-        let options = HttpInputOptions {
-            path: "/ingest".to_string(),
-            max_drained_bytes_per_poll: 40,
-            ..HttpInputOptions::default()
-        };
-        // Channel bound is large enough to hold all requests
-        let mut input = HttpInput::new_with_capacity("test", "127.0.0.1:0", 1000, options)
-            .expect("http input binds");
-        let url = format!("http://{}/ingest", input.local_addr());
-
-        let payload = b"{\"x\":1}\n"; // 8 bytes
-        let num_requests = 100; // 800 bytes total
-
-        let mut handles = Vec::with_capacity(num_requests);
-        for _ in 0..num_requests {
-            let url = url.clone();
-            handles.push(std::thread::spawn(move || {
-                let _ = ureq::post(&url).send(payload);
-            }));
-        }
-
-        for handle in handles {
-            handle.join().expect("POST worker should join");
-        }
-
-        let first_events = input.poll().expect("poll should succeed");
-        let first_drained_bytes = if let InputEvent::Data { bytes, .. } = &first_events[0] {
-            bytes.len()
-        } else {
-            0
-        };
-
-        // We set the limit to 40 bytes per poll. Each payload is 8 bytes.
-        // It will pull 5 payloads (40 bytes), and then stop.
-        assert_eq!(first_drained_bytes, 40);
-
-        let second_events = input.poll().expect("poll should succeed");
-        let second_drained_bytes = if let InputEvent::Data { bytes, .. } = &second_events[0] {
-            bytes.len()
-        } else {
-            0
-        };
-
-        assert_eq!(second_drained_bytes, 40);
-    }
-
-    #[test]
-    fn http_rejects_empty_content_encoding_header() {
-        let mut input =
-            HttpInput::new_with_options("test", "127.0.0.1:0", HttpInputOptions::default())
-                .expect("http input binds");
-        let url = format!("http://{}/ingest", input.local_addr());
-
-        let status = match ureq::post(&url)
-            .header("Content-Encoding", " ")
-            .send(b"{\"x\":1}\n")
-        {
-            Ok(resp) => resp.status().as_u16(),
-            Err(ureq::Error::StatusCode(code)) => code,
-            Err(err) => panic!("unexpected request failure: {err}"),
-        };
-
-        assert_eq!(status, StatusCode::BAD_REQUEST.as_u16());
-        let data = poll_until_data(&mut input, Duration::from_millis(100));
-        assert!(data.is_empty(), "bad requests must not enqueue data");
-    }
-
-    #[test]
     fn http_rejects_unsupported_content_encoding_before_enqueue() {
         let mut input =
             HttpInput::new_with_options("test", "127.0.0.1:0", HttpInputOptions::default())
@@ -964,75 +874,6 @@ Connection: close\r\n\
                 .as_deref(),
             Some("gzip")
         );
-    }
-
-    #[test]
-    fn http_rejects_empty_content_encoding_header() {
-        let mut input =
-            HttpInput::new_with_options("test", "127.0.0.1:0", HttpInputOptions::default())
-                .expect("http input binds");
-        let url = format!("http://{}/ingest", input.local_addr());
-
-        let status = match ureq::post(&url)
-            .header("Content-Encoding", " ")
-            .send(b"{\"x\":1}\n")
-        {
-            Ok(resp) => resp.status().as_u16(),
-            Err(ureq::Error::StatusCode(code)) => code,
-            Err(err) => panic!("unexpected request failure: {err}"),
-        };
-
-        assert_eq!(status, StatusCode::BAD_REQUEST.as_u16());
-        let data = poll_until_data(&mut input, Duration::from_millis(100));
-        assert!(data.is_empty(), "bad requests must not enqueue data");
-    }
-
-    #[test]
-    fn http_poll_respects_max_drained_bytes() {
-        let options = HttpInputOptions {
-            path: "/ingest".to_string(),
-            max_drained_bytes_per_poll: 40,
-            ..HttpInputOptions::default()
-        };
-        // Channel bound is large enough to hold all requests
-        let mut input = HttpInput::new_with_capacity("test", "127.0.0.1:0", 1000, options)
-            .expect("http input binds");
-        let url = format!("http://{}/ingest", input.local_addr());
-
-        let payload = b"{\"x\":1}\n"; // 8 bytes
-        let num_requests = 100; // 800 bytes total
-
-        let mut handles = Vec::with_capacity(num_requests);
-        for _ in 0..num_requests {
-            let url = url.clone();
-            handles.push(std::thread::spawn(move || {
-                let _ = ureq::post(&url).send(payload);
-            }));
-        }
-
-        for handle in handles {
-            handle.join().expect("POST worker should join");
-        }
-
-        let first_events = input.poll().expect("poll should succeed");
-        let first_drained_bytes = if let InputEvent::Data { bytes, .. } = &first_events[0] {
-            bytes.len()
-        } else {
-            0
-        };
-
-        // We set the limit to 40 bytes per poll. Each payload is 8 bytes.
-        // It will pull 5 payloads (40 bytes), and then stop.
-        assert_eq!(first_drained_bytes, 40);
-
-        let second_events = input.poll().expect("poll should succeed");
-        let second_drained_bytes = if let InputEvent::Data { bytes, .. } = &second_events[0] {
-            bytes.len()
-        } else {
-            0
-        };
-
-        assert_eq!(second_drained_bytes, 40);
     }
 
     fn decode_observed_seq(bytes: &[u8]) -> BTreeSet<u64> {
@@ -1184,99 +1025,5 @@ Connection: close\r\n\
                 );
             }
         }
-    }
-}
-
-#[cfg(kani)]
-mod verification {
-    /// Prove the per-poll drain-loop accumulator cannot overflow.
-    ///
-    /// The loop guard is `while drained_bytes < max_drained_bytes_per_poll`.
-    /// After the guard passes, `drained_bytes += chunk.len()` executes.  If
-    /// `chunk.len()` can be arbitrarily large this addition can overflow and
-    /// wrap (release builds) or panic (debug builds).
-    ///
-    /// This proof verifies the SAFE case: when `chunk_size <=
-    /// max_drained_bytes_per_poll` (a bound that is valid for HTTP chunks
-    /// because the sender cannot send a single chunk larger than the body, and
-    /// the body is bounded by Content-Length / request size limits).
-    ///
-    /// The UNSAFE case — where a single chunk is larger than the cap — is
-    /// handled by the production code using `saturating_add` (line 290),
-    /// which caps accumulation at `usize::MAX` so the loop exits cleanly.
-    #[kani::proof]
-    fn verify_drain_accumulator_safe_under_chunk_cap() {
-        let cap: usize = kani::any();
-        // Config validation rejects cap == 0 at startup; assume valid cap.
-        kani::assume(cap > 0);
-        // Realistic cap: ≤ 1 GiB to keep the proof space tractable and to
-        // reflect the validated range in HttpInputConfig.
-        kani::assume(cap <= 1024 * 1024 * 1024);
-
-        let drained: usize = kani::any();
-        kani::assume(drained < cap); // loop guard has passed
-
-        // Chunk size bounded by cap — valid HTTP chunk assumption.
-        let chunk_size: usize = kani::any();
-        kani::assume(chunk_size <= cap);
-
-        // With drained < cap ≤ 2^30 and chunk_size ≤ cap ≤ 2^30,
-        // drained + chunk_size ≤ 2^31 - 2 which is safely below usize::MAX
-        // on both 32-bit and 64-bit targets.
-        let new_drained = drained.checked_add(chunk_size);
-        assert!(
-            new_drained.is_some(),
-            "accumulator must not overflow when chunk_size <= cap"
-        );
-
-        kani::cover!(new_drained.unwrap() >= cap, "loop exits after this add");
-        kani::cover!(new_drained.unwrap() < cap, "loop continues after this add");
-    }
-
-    /// Prove that `saturating_add` correctly caps accumulation.
-    ///
-    /// With `drained_bytes = drained_bytes.saturating_add(bytes.len())`:
-    /// - When the addition would overflow, the result is `usize::MAX`, which is
-    ///   >= any valid cap, so the loop stops immediately.
-    /// - The result is always >= each operand (no wrapping).
-    /// - Specifically: once `drained >= cap`, the loop guard `drained < cap`
-    ///   is false, so the loop exits before the next accumulation.
-    ///
-    /// This replaces the earlier "overflow gap" proof now that the fix is in.
-    #[kani::proof]
-    fn verify_drain_accumulator_saturating_add_is_safe() {
-        let cap: usize = kani::any();
-        kani::assume(cap > 0);
-        // No upper bound needed — saturating_add is safe for any cap.
-
-        let drained: usize = kani::any();
-        kani::assume(drained < cap); // loop guard has passed
-
-        // Even an oversized chunk cannot wrap the accumulator.
-        let chunk_size: usize = kani::any();
-
-        let new_drained = drained.saturating_add(chunk_size);
-
-        // Key property: saturating_add never wraps — result >= each input.
-        assert!(new_drained >= drained, "saturating_add must be monotone");
-        assert!(new_drained >= chunk_size, "saturating_add must be monotone");
-
-        // If the addition would overflow, saturating_add returns usize::MAX,
-        // which is definitely >= any cap, so the loop will not re-enter.
-        if new_drained == usize::MAX {
-            // This means overflow was avoided — next loop guard fails.
-            assert!(new_drained >= cap);
-        }
-
-        kani::cover!(
-            chunk_size > usize::MAX - drained,
-            "would-overflow chunk safely capped"
-        );
-        kani::cover!(chunk_size <= usize::MAX - drained, "normal add case");
-        kani::cover!(new_drained >= cap, "loop exits after this chunk");
-        kani::cover!(
-            new_drained < cap,
-            "loop continues — chunk did not fill budget"
-        );
     }
 }

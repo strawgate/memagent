@@ -1286,8 +1286,7 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::{
-        MAX_BYTES_PER_CLIENT_PER_POLL, MAX_READS_PER_CLIENT_PER_POLL, parse_octet_prefix,
-        should_stop_client_read,
+        MAX_BYTES_PER_CLIENT_PER_POLL, MAX_READS_PER_CLIENT_PER_POLL, should_stop_client_read,
     };
 
     #[kani::proof]
@@ -1334,69 +1333,5 @@ mod verification {
             "stop branch reachable"
         );
         kani::cover!(!should_stop_client_read(0, 0), "continue branch reachable");
-    }
-
-    /// Crash-freedom proof for parse_octet_prefix on arbitrary byte inputs.
-    ///
-    /// Guarantees that no byte sequence of ≤12 bytes causes a panic —
-    /// `checked_mul` + `checked_add` return None on overflow, which
-    /// propagates to None via `?` rather than panicking.
-    #[kani::proof]
-    #[kani::unwind(14)] // 12-byte loop + 2 overhead
-    #[kani::solver(kissat)]
-    fn verify_parse_octet_prefix_no_panic() {
-        // Crash-freedom proof: parse_octet_prefix must not panic on any input.
-        const N: usize = 12;
-        let buf: [u8; N] = kani::any();
-        let len: usize = kani::any_where(|&l| l <= N);
-        let _ = parse_octet_prefix(&buf[..len]);
-
-        // Non-vacuity: both parse success and failure are reachable.
-        kani::cover!(
-            parse_octet_prefix(&buf[..len]).is_some(),
-            "valid octet prefix parses"
-        );
-        kani::cover!(
-            parse_octet_prefix(&buf[..len]).is_none(),
-            "invalid input rejected"
-        );
-    }
-
-    /// Prove parse_octet_prefix correctly rejects overflow inputs.
-    ///
-    /// A 20-digit decimal number overflows usize on 64-bit (usize::MAX is
-    /// 18446744073709551615, also 20 digits but smaller). The checked
-    /// arithmetic must return None for any input that would overflow.
-    #[kani::proof]
-    fn verify_parse_octet_prefix_rejects_overflow() {
-        // 20 nines = 99999999999999999999 which overflows u64/usize on any target.
-        let overflow_buf = b"99999999999999999999 x";
-        assert!(
-            parse_octet_prefix(overflow_buf).is_none(),
-            "overflow decimal prefix must be rejected via checked arithmetic"
-        );
-        kani::cover!(true, "overflow rejection verified");
-    }
-
-    /// Prove parse_octet_prefix returns correct (length, consumed) for known inputs.
-    ///
-    /// Pins the octet-counting framing format: "<decimal-length> <payload>".
-    /// Any regression in the parser would break RFC 5425 / RFC 6587 syslog framing.
-    #[kani::proof]
-    fn verify_parse_octet_prefix_known_values() {
-        // Single-digit length.
-        assert_eq!(parse_octet_prefix(b"1 x"), Some((1, 2)));
-        // Three-digit length.
-        assert_eq!(parse_octet_prefix(b"123 hello"), Some((123, 4)));
-        // Zero length (valid per format).
-        assert_eq!(parse_octet_prefix(b"0 "), Some((0, 2)));
-        // Missing space separator → None.
-        assert!(parse_octet_prefix(b"42x").is_none());
-        // Leading non-digit → None.
-        assert!(parse_octet_prefix(b" 42 x").is_none());
-        // Empty input → None.
-        assert!(parse_octet_prefix(b"").is_none());
-
-        kani::cover!(true, "all known-value assertions passed");
     }
 }

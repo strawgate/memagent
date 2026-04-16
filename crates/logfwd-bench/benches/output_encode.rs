@@ -15,11 +15,9 @@
 use arrow::array::Array;
 use arrow::record_batch::RecordBatch;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use logfwd_bench::{NullSink, make_metadata, make_otlp_sink};
+use logfwd_bench::{NullSink, generators, make_otlp_sink};
 use logfwd_core::otlp::{Severity, hex_decode, parse_severity, parse_timestamp_nanos};
 use logfwd_io::compress::ChunkCompressor;
-use logfwd_io::generator::cri::gen_narrow_batch;
-use logfwd_io::generator::wide::gen_wide_batch;
 use logfwd_output::{BatchMetadata, Compression};
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::any_value::Value;
@@ -377,22 +375,22 @@ fn bench_output_encode(c: &mut Criterion) {
     let mut group = c.benchmark_group("output_encode");
     group.sample_size(20);
 
-    let meta = make_metadata();
+    let meta = generators::make_metadata();
 
     #[allow(clippy::type_complexity)]
     let variants: Vec<(&str, Vec<(usize, RecordBatch)>)> = vec![
         (
             "narrow",
             vec![
-                (1_000, gen_narrow_batch(1_000, 42)),
-                (10_000, gen_narrow_batch(10_000, 42)),
+                (1_000, generators::gen_narrow_batch(1_000, 42)),
+                (10_000, generators::gen_narrow_batch(10_000, 42)),
             ],
         ),
         (
             "wide",
             vec![
-                (1_000, gen_wide_batch(1_000, 42)),
-                (10_000, gen_wide_batch(10_000, 42)),
+                (1_000, generators::gen_wide_batch(1_000, 42)),
+                (10_000, generators::gen_wide_batch(10_000, 42)),
             ],
         ),
     ];

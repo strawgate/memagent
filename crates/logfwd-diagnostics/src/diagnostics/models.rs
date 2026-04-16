@@ -197,7 +197,7 @@ pub struct BatchStatus {
     pub scan_errors_total: u64,
     pub parse_errors_total: u64,
     pub last_batch_time_ns: String,
-    pub batch_latency_avg_ns: Option<u64>,
+    pub batch_latency_avg_ns: u64,
     pub inflight: u64,
     pub rows_total: u64,
 }

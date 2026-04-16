@@ -396,7 +396,7 @@ fn skip_nested(buf: &[u8], mut pos: usize, end: usize, blocks: &StoredBitmasks<'
                 };
                 let expected = if opener == b'{' { b'}' } else { b']' };
                 if b != expected {
-                    return end; // mismatch — fail-closed to avoid emitting truncated values
+                    return pos; // mismatch — fail-closed to avoid emitting truncated values
                 }
                 pos += 1;
                 if depth == 0 {

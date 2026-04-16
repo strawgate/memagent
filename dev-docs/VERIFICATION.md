@@ -363,7 +363,6 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `logfwd-io/receiver_health.rs` | Standalone receiver health reducer (`noop`, backpressure, fatal, shutdown) | Kani exhaustive (6 proofs) + unit tests + proptest sequence checks |
 | `logfwd-io/format.rs` | CRI metadata injection, Auto-mode fallthrough to passthrough | Kani (4 proofs: inject_cri_metadata output structure, JSON vs plain-text path dispatch) |
 | `logfwd-io/framed.rs` | Per-source framing/remainder checkpoint boundary (`overflow_tainted`, EOF remainder flush, source-scoped EOF semantics) | Unit tests (remainder carry/overflow, per-source isolation, EOF flush + checkpoint advancement contracts) |
-| `logfwd-io/http_input.rs` | HTTP per-poll drain-loop accumulator overflow safety (`saturating_add` cap behaviour) | Kani (2 proofs: `verify_drain_accumulator_safe_under_chunk_cap`, `verify_drain_accumulator_saturating_add_is_safe`) |
 | `logfwd-io/tail/verification.rs` | File tailer pure reducers for EOF emission + error backoff (`eof_model_transition`, `backoff_transition`) | Kani (7 proofs: EOF at-most-once thresholding, reset semantics, two-poll/repeat cycle, backoff cap/reset/monotonicity) + proptest (state reducer invariants in `tail/state.rs`) + **TLA+** (`tla/TailLifecycle.tla`) |
 | `logfwd-io/segment.rs` | Checkpoint segment envelope read/write/recovery (`LCHK` header/footer, checksum, replay plan) | Unit tests for panic/OOM/silent-mask hardening (unsupported-version, permission-denied I/O surfacing, write/read size-bound parity, recovery error semantics) |
 | `logfwd-runtime/pipeline/checkpoint_policy.rs` | Typed delivery outcome -> checkpoint disposition mapping plus bounded ordered-commit seam model (`Ack`, `Reject`, `Hold`) | Kani exhaustive/bounded (6 proofs: outcome mapping, hold no-advance, ack/reject terminal equivalence, mixed-sequence monotonicity/no-gap jumps) + unit tests + proptest ordered sequence invariants |
@@ -375,7 +374,6 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `logfwd-arrow/streaming_builder.rs` | StructArray conflict column assembly (StringView) | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
 | `logfwd-arrow/conflict_schema.rs` | Conflict-struct detection + row-level precedence selection | Kani recommended (2 proofs) + unit tests |
 | `scanner_conformance.rs` (accumulation) | BytesMut accumulation → Bytes → Scanner equivalence | proptest (3 tests × 256 cases: random split, single chunk, per-line split; full value comparison) |
-| `logfwd-transform/src/udf/hash.rs` | FNV-1a hash spec constants and oracle correctness for deterministic sampling | Kani (2 proofs: `verify_fnv1a_spec_constants`, `verify_fnv1a_oracle_bounded`) |
 
 ### Verification tiers
 
