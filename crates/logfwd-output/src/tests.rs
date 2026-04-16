@@ -346,7 +346,9 @@ fn test_build_sink_factory_file_resolves_relative_path_against_base_path() {
     std::fs::create_dir_all(&base_dir).unwrap();
 
     let expected_path = base_dir.join(&filename);
-    let current_path = chrono::Utc::now().format(&expected_path.to_string_lossy().to_string()).to_string();
+    let current_path = chrono::Utc::now()
+        .format(&expected_path.to_string_lossy().to_string())
+        .to_string();
 
     // The file is lazily opened when create() is called.
     let mut sink = factory.create().unwrap();
@@ -356,8 +358,12 @@ fn test_build_sink_factory_file_resolves_relative_path_against_base_path() {
     let batch = RecordBatch::try_new(
         schema,
         vec![Arc::new(StringArray::from(vec![Some("test")]))],
-    ).unwrap();
-    let meta = BatchMetadata { resource_attrs: Arc::default(), observed_time_ns: 0 };
+    )
+    .unwrap();
+    let meta = BatchMetadata {
+        resource_attrs: Arc::default(),
+        observed_time_ns: 0,
+    };
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {

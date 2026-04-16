@@ -61,6 +61,13 @@ impl Config {
             }
         }
 
+        // Validate storage.checkpoint_flush_interval_ms is non-zero when set.
+        if self.storage.checkpoint_flush_interval_ms == Some(0) {
+            return Err(ConfigError::Validation(
+                "storage.checkpoint_flush_interval_ms must be greater than zero".into(),
+            ));
+        }
+
         if self.pipelines.is_empty() {
             return Err(ConfigError::Validation(
                 "at least one pipeline must be defined".into(),
@@ -155,6 +162,16 @@ impl Config {
                                     "pipeline '{name}' input '{label}': {msg}"
                                 )));
                             }
+                            if u.max_message_size_bytes == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': max_message_size_bytes cannot be 0"
+                                )));
+                            }
+                            if u.so_rcvbuf == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': so_rcvbuf cannot be 0"
+                                )));
+                            }
                         }
                         InputTypeConfig::Tcp(t) => {
                             if let Err(msg) = validate_bind_addr(&t.listen) {
@@ -166,6 +183,21 @@ impl Config {
                                 // TCP TLS is not yet implemented at runtime.
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': TLS is not yet supported for TCP inputs (runtime TLS termination is not implemented)"
+                                )));
+                            }
+                            if t.max_connections == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': max_connections cannot be 0"
+                                )));
+                            }
+                            if t.connection_timeout_ms == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': connection_timeout_ms cannot be 0"
+                                )));
+                            }
+                            if t.read_timeout_ms == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': read_timeout_ms cannot be 0"
                                 )));
                             }
                         }
@@ -407,6 +439,40 @@ impl Config {
                                         "pipeline '{name}' input '{label}': sensor.max_events_per_poll is not supported for host_metrics inputs"
                                     )));
                                 }
+                                if s.sensor.as_ref().and_then(|cfg| cfg.collection_interval_ms)
+                                    == Some(0)
+                                {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': sensor.collection_interval_ms must be at least 1"
+                                    )));
+                                }
+                                if let Some(scrapers) =
+                                    s.sensor.as_ref().and_then(|cfg| cfg.scrapers.as_ref())
+                                {
+                                    for scraper in scrapers {
+                                        let normalized = scraper.trim().to_lowercase();
+                                        if !matches!(
+                                            normalized.as_str(),
+                                            "cpu" | "memory" | "disk" | "network" | "filesystem"
+                                        ) {
+                                            return Err(ConfigError::Validation(format!(
+                                                "pipeline '{name}' input '{label}': unknown scraper '{}' (supported: cpu, memory, disk, network, filesystem)",
+                                                scraper.trim()
+                                            )));
+                                        }
+                                    }
+                                }
+                            }
+                            if s.sensor.as_ref().and_then(|cfg| cfg.ring_buffer_size_kb) == Some(0)
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': sensor.ring_buffer_size_kb must be at least 1"
+                                )));
+                            }
+                            if s.sensor.as_ref().and_then(|cfg| cfg.poll_interval_ms) == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': sensor.poll_interval_ms must be at least 1"
+                                )));
                             }
                         }
                         InputTypeConfig::ArrowIpc(a) => {
@@ -418,6 +484,16 @@ impl Config {
                             if input.format.is_some() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': 'format' is not supported for arrow_ipc inputs"
+                                )));
+                            }
+                            if a.max_connections == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': max_connections cannot be 0"
+                                )));
+                            }
+                            if a.max_message_size_bytes == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': max_message_size_bytes cannot be 0"
                                 )));
                             }
                         }
@@ -494,6 +570,53 @@ impl Config {
                             {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': journald input only supports format: json (got {fmt:?})"
+                                )));
+                            }
+                        }
+                        InputTypeConfig::S3(s) => {
+                            let s3_cfg = &s.s3;
+                            if let Some(interval) = s3_cfg.poll_interval_ms
+                                && interval == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.poll_interval_ms must be at least 1"
+                                )));
+                            }
+                            if let Some(ref comp) = s3_cfg.compression {
+                                let valid = ["auto", "gzip", "zstd", "snappy", "none"];
+                                if !valid.iter().any(|v| v.eq_ignore_ascii_case(comp)) {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': unknown s3.compression value '{comp}' \
+                                         (valid: auto, gzip, zstd, snappy, none)"
+                                    )));
+                                }
+                            }
+                            if let Some(ps) = s3_cfg.part_size_bytes
+                                && ps == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.part_size_bytes must be at least 1"
+                                )));
+                            }
+                            if let Some(f) = s3_cfg.max_concurrent_fetches
+                                && f == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.max_concurrent_fetches must be at least 1"
+                                )));
+                            }
+                            if let Some(o) = s3_cfg.max_concurrent_objects
+                                && o == 0
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.max_concurrent_objects must be at least 1"
+                                )));
+                            }
+                            if let Some(vt) = s3_cfg.visibility_timeout_secs
+                                && vt < 30
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': s3.visibility_timeout_secs must be at least 30"
                                 )));
                             }
                         }
@@ -664,12 +787,83 @@ impl Config {
                     }
                     if output.output_type == OutputType::ArrowIpc
                         && let Some(c) = output.compression.as_deref()
-                        && !matches!(c, "zstd" | "none")
+                        && !matches!(c, "lz4" | "zstd" | "none")
                     {
                         return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': arrow_ipc output only supports 'zstd' or 'none' compression, not '{c}'"
+                            "pipeline '{name}' output '{label}': arrow_ipc output only supports 'lz4', 'zstd', or 'none' compression, not '{c}'"
                         )));
                     }
+
+                    if output.output_type != OutputType::Otlp {
+                        if output.tls.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'tls' is only supported for otlp outputs"
+                            )));
+                        }
+                        if output.headers.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'headers' is only supported for otlp outputs"
+                            )));
+                        }
+                        if output.retry_attempts.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'retry_attempts' is only supported for otlp outputs"
+                            )));
+                        }
+                        if output.retry_initial_backoff_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'retry_initial_backoff_ms' is only supported for otlp outputs"
+                            )));
+                        }
+                        if output.retry_max_backoff_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'retry_max_backoff_ms' is only supported for otlp outputs"
+                            )));
+                        }
+                        if output.request_timeout_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'request_timeout_ms' is only supported for otlp outputs"
+                            )));
+                        }
+                        if output.batch_timeout_ms.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'batch_timeout_ms' is only supported for otlp outputs"
+                            )));
+                        }
+                    }
+
+                    // Validate OTLP-specific field values when set.
+                    if output.output_type == OutputType::Otlp {
+                        if output.request_timeout_ms == Some(0) {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'request_timeout_ms' must be at least 1"
+                            )));
+                        }
+                        if output.batch_timeout_ms == Some(0) {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'batch_timeout_ms' must be at least 1"
+                            )));
+                        }
+                        if output.retry_initial_backoff_ms == Some(0) {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'retry_initial_backoff_ms' must be at least 1"
+                            )));
+                        }
+                        if output.retry_max_backoff_ms == Some(0) {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'retry_max_backoff_ms' must be at least 1"
+                            )));
+                        }
+                        if let (Some(initial), Some(max)) =
+                            (output.retry_initial_backoff_ms, output.retry_max_backoff_ms)
+                            && initial > max
+                        {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'retry_initial_backoff_ms' must be <= 'retry_max_backoff_ms'"
+                            )));
+                        }
+                    }
+
                     if output.output_type != OutputType::Otlp && output.protocol.is_some() {
                         return Err(ConfigError::Validation(format!(
                             "pipeline '{name}' output '{label}': 'protocol' is only supported for otlp outputs"
@@ -773,6 +967,39 @@ impl Config {
                         if !matches!(comp_lower.as_str(), "gzip" | "zstd" | "none") {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': file output compression '{comp}' is not supported (use gzip, zstd, or none)"
+                            )));
+                        }
+                    }
+
+                    if output.output_type != OutputType::ArrowIpc {
+                        if output.host.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'host' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                        if output.port.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'port' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                        if output.write_legacy_ipc_format.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'write_legacy_ipc_format' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                        if output.buffer_size_bytes.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'buffer_size_bytes' is only supported for arrow_ipc outputs"
+                            )));
+                        }
+                        if output.batch_size.is_some() && output.output_type != OutputType::Otlp {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'batch_size' is only supported for otlp and arrow_ipc outputs"
+                            )));
+                        }
+                        if output.write_schema_on_connect.is_some() {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '{label}': 'write_schema_on_connect' is only supported for arrow_ipc outputs"
                             )));
                         }
                     }
@@ -2043,6 +2270,163 @@ mod validate_metrics_endpoint_tests {
         assert!(
             msg.contains("metrics_endpoint") && msg.contains("scheme"),
             "expected metrics_endpoint scheme rejection: {msg}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod validate_otlp_options_tests {
+    use crate::types::Config;
+
+    #[test]
+    fn otlp_accepts_new_options() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: otlp
+        endpoint: http://localhost:4317
+        retry_attempts: 3
+        retry_initial_backoff_ms: 100
+        retry_max_backoff_ms: 1000
+        request_timeout_ms: 5000
+        batch_size: 2048
+        batch_timeout_ms: 1000
+        headers:
+          X-Custom: value
+        tls:
+          insecure_skip_verify: true
+"#;
+        Config::load_str(yaml).expect("otlp options should be accepted");
+    }
+
+    #[test]
+    fn non_otlp_rejects_new_options() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+        retry_attempts: 3
+"#;
+        let err = Config::load_str(yaml).unwrap_err().to_string();
+        assert!(err.contains("'retry_attempts' is only supported for otlp outputs"));
+    }
+
+    #[test]
+    fn otlp_rejects_zero_request_timeout_ms() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: otlp
+        endpoint: http://localhost:4317
+        request_timeout_ms: 0
+"#;
+        let err = Config::load_str(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("request_timeout_ms") && err.contains("at least 1"),
+            "expected zero timeout rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn otlp_rejects_zero_batch_timeout_ms() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: otlp
+        endpoint: http://localhost:4317
+        batch_timeout_ms: 0
+"#;
+        let err = Config::load_str(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("batch_timeout_ms") && err.contains("at least 1"),
+            "expected zero batch_timeout_ms rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn otlp_rejects_initial_backoff_exceeding_max() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: otlp
+        endpoint: http://localhost:4317
+        retry_initial_backoff_ms: 5000
+        retry_max_backoff_ms: 1000
+"#;
+        let err = Config::load_str(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("retry_initial_backoff_ms") && err.contains("retry_max_backoff_ms"),
+            "expected backoff ordering rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn arrow_ipc_accepts_batch_size() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: arrow_ipc
+        endpoint: http://localhost:9000
+        batch_size: 512
+"#;
+        Config::load_str(yaml).expect("arrow_ipc should accept batch_size");
+    }
+}
+
+#[cfg(test)]
+mod validate_storage_checkpoint_flush_interval_tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_flush_interval_ms_zero_rejected() {
+        let yaml = "storage:\n  checkpoint_flush_interval_ms: 0\npipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("checkpoint_flush_interval_ms") && msg.contains("greater than zero"),
+            "expected zero interval rejection: {msg}"
+        );
+    }
+
+    #[test]
+    fn checkpoint_flush_interval_ms_nonzero_accepted() {
+        let yaml = "storage:\n  checkpoint_flush_interval_ms: 100\npipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n";
+        assert!(
+            Config::load_str(yaml).is_ok(),
+            "non-zero checkpoint_flush_interval_ms should be accepted"
+        );
+    }
+
+    #[test]
+    fn checkpoint_flush_interval_ms_absent_accepted() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n";
+        assert!(
+            Config::load_str(yaml).is_ok(),
+            "omitting checkpoint_flush_interval_ms should use default"
         );
     }
 }

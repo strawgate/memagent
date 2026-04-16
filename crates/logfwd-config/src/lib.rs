@@ -26,8 +26,8 @@ pub use types::{
     JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sClusterInfoConfig,
     K8sPathConfig, KvFileEnrichmentConfig, NetworkInfoConfig, OtlpProtobufDecodeModeConfig,
     OtlpTypeConfig, OutputConfig, OutputType, PipelineConfig, ProcessInfoConfig, RotationConfig,
-    SensorTypeConfig, ServerConfig, StaticEnrichmentConfig, StorageConfig, TcpTypeConfig,
-    TlsInputConfig, UdpTypeConfig,
+    S3InputConfig, S3TypeConfig, SensorTypeConfig, ServerConfig, StaticEnrichmentConfig,
+    StorageConfig, TcpTypeConfig, TlsClientConfig, TlsInputConfig, UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 
@@ -666,9 +666,11 @@ pipelines:
     }
 
     #[test]
-    fn file_output_accepts_compression_now() {
+    fn file_output_rejects_compression() {
         let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: file\n  path: /tmp/out.ndjson\n  compression: zstd\n";
-        let _ = Config::load_str(yaml).unwrap();
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("'compression' is not supported"));
     }
 
     #[test]
@@ -2038,7 +2040,7 @@ pipelines:
     inputs:
       - type: generator
         generator:
-          events_per_second: 25000
+          events_per_sec: 25000
           batch_size: 2048
           total_events: 123
           profile: record
@@ -2061,7 +2063,7 @@ pipelines:
             _ => panic!("expected Generator type_config"),
         };
         let generator = gen_type.generator.as_ref().expect("generator config");
-        assert_eq!(generator.events_per_second, Some(25000));
+        assert_eq!(generator.events_per_sec, Some(25000));
         assert_eq!(generator.batch_size, Some(2048));
         assert_eq!(generator.total_events, Some(123));
         assert_eq!(generator.profile, Some(GeneratorProfileConfig::Record));
@@ -2782,6 +2784,72 @@ pipelines:
     }
 
     #[test]
+    fn host_metrics_scrapers_and_intervals() {
+        let yaml = r#"
+input:
+  type: host_metrics
+  sensor:
+    scrapers: ["CPU", "Memory", "cpu", "memory"]
+    collection_interval_ms: 5000
+    disk_include_devices: ["sda1"]
+output:
+  type: stdout
+"#;
+        let cfg = Config::load_str(yaml).unwrap();
+
+        let host_metrics = match &cfg.pipelines["default"].inputs[0].type_config {
+            InputTypeConfig::HostMetrics(cfg) => cfg,
+            _ => panic!("Expected host_metrics input"),
+        };
+        let sensor = host_metrics.sensor.as_ref().unwrap();
+        assert_eq!(
+            sensor.scrapers,
+            Some(vec![
+                "CPU".to_string(),
+                "Memory".to_string(),
+                "cpu".to_string(),
+                "memory".to_string()
+            ])
+        );
+        assert_eq!(sensor.collection_interval_ms, Some(5000));
+        assert_eq!(sensor.disk_include_devices, Some(vec!["sda1".to_string()]));
+
+        // Invalid scraper test
+        let invalid_scraper_yaml = r#"
+input:
+  type: host_metrics
+  sensor:
+    scrapers: ["invalid_scraper"]
+output:
+  type: stdout
+"#;
+        let cfg_invalid = Config::load_str(invalid_scraper_yaml);
+        assert!(cfg_invalid.is_err());
+        let err = cfg_invalid.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown scraper 'invalid_scraper'")
+        );
+
+        // Invalid collection interval test
+        let invalid_interval_yaml = r#"
+input:
+  type: host_metrics
+  sensor:
+    collection_interval_ms: 0
+output:
+  type: stdout
+"#;
+        let cfg_invalid_interval = Config::load_str(invalid_interval_yaml);
+        assert!(cfg_invalid_interval.is_err());
+        let err = cfg_invalid_interval.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sensor.collection_interval_ms must be at least 1")
+        );
+    }
+
+    #[test]
     fn csv_enrichment_empty_path_rejected() {
         let yaml = r#"
 pipelines:
@@ -2854,7 +2922,7 @@ pipelines:
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("arrow_ipc output only supports 'zstd' or 'none'")
+            msg.contains("arrow_ipc output only supports 'lz4', 'zstd', or 'none'")
                 && msg.contains("'gzip'"),
             "expected arrow_ipc-specific gzip rejection, got: {msg}"
         );
@@ -2877,6 +2945,45 @@ pipelines:
     }
 
     #[test]
+    fn arrow_ipc_output_accepts_lz4_compression() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: arrow_ipc
+        endpoint: http://localhost:4317
+        compression: lz4
+"#;
+        Config::load_str(yaml).expect("arrow_ipc output should accept lz4 compression");
+    }
+
+    #[test]
+    fn non_arrow_ipc_output_rejects_arrow_ipc_fields() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+    outputs:
+      - type: stdout
+        host: localhost
+        batch_size: 100
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("'host' is only supported for arrow_ipc outputs")
+                || err
+                    .to_string()
+                    .contains("'batch_size' is only supported for arrow_ipc outputs"),
+            "expected arrow_ipc specific field rejection: {err}"
+        );
+    }
+
+    #[test]
     fn csv_enrichment_whitespace_path_rejected() {
         let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: csv\n        table_name: assets\n        path: \"   \"\n";
         let err = Config::load_str(yaml).unwrap_err();
@@ -2889,3 +2996,6 @@ pipelines:
 mod tests_generator_unsupported;
 mod tests_otlp_config;
 mod tests_static_labels;
+
+#[cfg(test)]
+mod tests_sensor;
