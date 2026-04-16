@@ -38,6 +38,23 @@ use crate::receiver_http::{MAX_REQUEST_BODY_SIZE, parse_content_length, read_lim
 /// Bounded channel capacity — limits memory when the pipeline falls behind.
 const CHANNEL_BOUND: usize = 256;
 
+#[derive(Debug, Clone)]
+pub struct ArrowIpcReceiverOptions {
+    /// Maximum concurrent connections processing requests. Defaults to `1024`.
+    pub max_connections: usize,
+    /// Maximum payload size in bytes. Defaults to `MAX_REQUEST_BODY_SIZE` (10 MiB).
+    pub max_message_size_bytes: usize,
+}
+
+impl Default for ArrowIpcReceiverOptions {
+    fn default() -> Self {
+        Self {
+            max_connections: 1024,
+            max_message_size_bytes: MAX_REQUEST_BODY_SIZE,
+        }
+    }
+}
+
 /// Arrow IPC receiver that listens for Arrow stream data via HTTP POST.
 ///
 /// Produces `RecordBatch` directly, bypassing the JSON scanner. Each POST
@@ -57,6 +74,19 @@ struct ArrowIpcServerState {
     tx: mpsc::SyncSender<DecodedBatch>,
     shutdown: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
+    active_connections: Arc<std::sync::atomic::AtomicUsize>,
+    max_connections: usize,
+    max_message_size_bytes: usize,
+}
+
+struct ConnectionGuard {
+    active_connections: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        self.active_connections.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 #[derive(Debug)]
@@ -68,14 +98,19 @@ struct DecodedBatch {
 impl ArrowIpcReceiver {
     /// Bind an HTTP server on `addr` (e.g. "0.0.0.0:4319").
     /// Spawns a background thread to handle requests.
-    pub fn new(name: impl Into<String>, addr: &str) -> io::Result<Self> {
-        Self::new_with_capacity(name, addr, CHANNEL_BOUND)
+    pub fn new(
+        name: impl Into<String>,
+        addr: &str,
+        options: ArrowIpcReceiverOptions,
+    ) -> io::Result<Self> {
+        Self::new_with_capacity(name, addr, options, CHANNEL_BOUND)
     }
 
     /// Like [`Self::new`] but with an explicit channel capacity. Useful for tests.
     pub fn new_with_capacity(
         name: impl Into<String>,
         addr: &str,
+        options: ArrowIpcReceiverOptions,
         capacity: usize,
     ) -> io::Result<Self> {
         let std_listener = std::net::TcpListener::bind(addr)
@@ -94,6 +129,9 @@ impl ArrowIpcReceiver {
             tx,
             shutdown: Arc::clone(&shutdown),
             health: Arc::clone(&health),
+            active_connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            max_connections: options.max_connections,
+            max_message_size_bytes: options.max_message_size_bytes,
         });
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let shutdown_for_server = Arc::clone(&shutdown);
@@ -212,16 +250,16 @@ impl ArrowIpcReceiver {
 }
 
 /// Decompress zstd body with size limit.
-fn decompress_zstd(body: &[u8]) -> Result<Vec<u8>, InputError> {
+fn decompress_zstd(body: &[u8], max_message_size_bytes: usize) -> Result<Vec<u8>, InputError> {
     let decoder = zstd::Decoder::new(body).map_err(|_| {
         InputError::Receiver("zstd decompression failed: invalid header".to_string())
     })?;
-    let mut decompressed = Vec::with_capacity(body.len().min(MAX_REQUEST_BODY_SIZE));
+    let mut decompressed = Vec::with_capacity(body.len().min(max_message_size_bytes));
     match decoder
-        .take(MAX_REQUEST_BODY_SIZE as u64 + 1)
+        .take(max_message_size_bytes as u64 + 1)
         .read_to_end(&mut decompressed)
     {
-        Ok(n) if n > MAX_REQUEST_BODY_SIZE => Err(InputError::Receiver(
+        Ok(n) if n > max_message_size_bytes => Err(InputError::Receiver(
             "decompressed payload too large".to_string(),
         )),
         Ok(_) => Ok(decompressed),
@@ -261,8 +299,20 @@ async fn handle_arrow_ipc_request(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
+    if state.active_connections.fetch_add(1, Ordering::Relaxed) >= state.max_connections {
+        state.active_connections.fetch_sub(1, Ordering::Relaxed);
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many concurrent connections",
+        )
+            .into_response();
+    }
+    let _guard = ConnectionGuard {
+        active_connections: Arc::clone(&state.active_connections),
+    };
+
     let content_length = parse_content_length(&headers);
-    if content_length.is_some_and(|body_len| body_len > MAX_REQUEST_BODY_SIZE as u64) {
+    if content_length.is_some_and(|body_len| body_len > state.max_message_size_bytes as u64) {
         return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
     }
 
@@ -275,7 +325,7 @@ async fn handle_arrow_ipc_request(
         Err(status) => return (status, "invalid content-type header").into_response(),
     };
 
-    let body = match read_limited_body(body, MAX_REQUEST_BODY_SIZE, content_length).await {
+    let body = match read_limited_body(body, state.max_message_size_bytes, content_length).await {
         Ok(body) => body,
         Err(status) => {
             let message = if status == StatusCode::PAYLOAD_TOO_LARGE {
@@ -297,7 +347,7 @@ async fn handle_arrow_ipc_request(
         });
 
     let body = if is_zstd {
-        match decompress_zstd(&body) {
+        match decompress_zstd(&body, state.max_message_size_bytes) {
             Ok(body) => body,
             Err(InputError::Receiver(msg)) => {
                 return (StatusCode::BAD_REQUEST, msg).into_response();
@@ -488,7 +538,8 @@ mod tests {
     #[test]
     fn clean_shutdown_releases_port() {
         let addr = "127.0.0.1:0";
-        let receiver = ArrowIpcReceiver::new("test", addr).unwrap();
+        let receiver =
+            ArrowIpcReceiver::new("test", addr, ArrowIpcReceiverOptions::default()).unwrap();
         let port = receiver.local_addr().port();
 
         // Wait briefly for thread to start blocking
@@ -558,9 +609,44 @@ mod tests {
     }
 
     #[test]
+    fn test_arrow_ipc_custom_options() {
+        let mut options = ArrowIpcReceiverOptions::default();
+        options.max_connections = 5;
+        options.max_message_size_bytes = 10;
+
+        let addr = "127.0.0.1:0";
+        let receiver = ArrowIpcReceiver::new("test_custom", addr, options).unwrap();
+        let local_addr = receiver.local_addr();
+
+        // Send a request exceeding max_message_size_bytes
+        let batch = make_test_batch();
+        let ipc_bytes = serialize_batch(&batch);
+        assert!(ipc_bytes.len() > 10);
+
+        let url = format!("http://{local_addr}/v1/arrow");
+        let result = ureq::post(&url)
+            .header("Content-Type", "application/vnd.apache.arrow.stream")
+            .send(ipc_bytes.as_slice());
+        let status = match result {
+            Ok(resp) => resp.status().as_u16(),
+            Err(ureq::Error::StatusCode(code)) => code,
+            Err(e) => panic!("unexpected error: {e}"),
+        };
+        assert_eq!(
+            status, 413,
+            "expected PAYLOAD_TOO_LARGE due to custom max_message_size_bytes"
+        );
+    }
+
+    #[test]
     fn receiver_accepts_arrow_ipc_post() {
-        let receiver = ArrowIpcReceiver::new_with_capacity("test", "127.0.0.1:0", 16)
-            .expect("bind should succeed");
+        let receiver = ArrowIpcReceiver::new_with_capacity(
+            "test",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            16,
+        )
+        .expect("bind should succeed");
         let addr = receiver.local_addr();
         assert_eq!(receiver.health(), ComponentHealth::Healthy);
 
@@ -587,8 +673,13 @@ mod tests {
 
     #[test]
     fn poll_emits_batch_event_with_accounted_bytes() {
-        let mut receiver = ArrowIpcReceiver::new_with_capacity("test-poll", "127.0.0.1:0", 16)
-            .expect("bind should succeed");
+        let mut receiver = ArrowIpcReceiver::new_with_capacity(
+            "test-poll",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            16,
+        )
+        .expect("bind should succeed");
         let addr = receiver.local_addr();
 
         let batch = make_test_batch();
@@ -618,8 +709,13 @@ mod tests {
 
     #[test]
     fn receiver_accepts_zstd_compressed_arrow_ipc() {
-        let receiver = ArrowIpcReceiver::new_with_capacity("test-zstd", "127.0.0.1:0", 16)
-            .expect("bind should succeed");
+        let receiver = ArrowIpcReceiver::new_with_capacity(
+            "test-zstd",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            16,
+        )
+        .expect("bind should succeed");
         let addr = receiver.local_addr();
 
         let batch = make_test_batch();
@@ -641,8 +737,13 @@ mod tests {
 
     #[test]
     fn receiver_accepts_zstd_content_type_with_parameters() {
-        let receiver = ArrowIpcReceiver::new_with_capacity("test-zstd-params", "127.0.0.1:0", 16)
-            .expect("bind should succeed");
+        let receiver = ArrowIpcReceiver::new_with_capacity(
+            "test-zstd-params",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            16,
+        )
+        .expect("bind should succeed");
         let addr = receiver.local_addr();
 
         let batch = make_test_batch();
@@ -667,9 +768,13 @@ mod tests {
 
     #[test]
     fn receiver_accepts_tokenized_content_encoding_with_zstd() {
-        let receiver =
-            ArrowIpcReceiver::new_with_capacity("test-zstd-tokenized", "127.0.0.1:0", 16)
-                .expect("bind should succeed");
+        let receiver = ArrowIpcReceiver::new_with_capacity(
+            "test-zstd-tokenized",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            16,
+        )
+        .expect("bind should succeed");
         let addr = receiver.local_addr();
 
         let batch = make_test_batch();
@@ -692,9 +797,13 @@ mod tests {
 
     #[test]
     fn receiver_rejects_unsupported_content_encoding() {
-        let receiver =
-            ArrowIpcReceiver::new_with_capacity("test-unsupported-encoding", "127.0.0.1:0", 16)
-                .expect("bind should succeed");
+        let receiver = ArrowIpcReceiver::new_with_capacity(
+            "test-unsupported-encoding",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            16,
+        )
+        .expect("bind should succeed");
         let addr = receiver.local_addr();
         let batch = make_test_batch();
         let ipc_bytes = serialize_batch(&batch);
@@ -714,9 +823,13 @@ mod tests {
 
     #[test]
     fn receiver_rejects_empty_content_encoding_token() {
-        let receiver =
-            ArrowIpcReceiver::new_with_capacity("test-empty-encoding-token", "127.0.0.1:0", 16)
-                .expect("bind should succeed");
+        let receiver = ArrowIpcReceiver::new_with_capacity(
+            "test-empty-encoding-token",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            16,
+        )
+        .expect("bind should succeed");
         let addr = receiver.local_addr();
         let batch = make_test_batch();
         let ipc_bytes = serialize_batch(&batch);
@@ -736,8 +849,13 @@ mod tests {
 
     #[test]
     fn receiver_rejects_wrong_path() {
-        let receiver = ArrowIpcReceiver::new_with_capacity("test-404", "127.0.0.1:0", 16)
-            .expect("bind should succeed");
+        let receiver = ArrowIpcReceiver::new_with_capacity(
+            "test-404",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            16,
+        )
+        .expect("bind should succeed");
         let addr = receiver.local_addr();
 
         let url = format!("http://{addr}/v1/logs");
@@ -750,8 +868,13 @@ mod tests {
 
     #[test]
     fn receiver_rejects_get_method() {
-        let receiver = ArrowIpcReceiver::new_with_capacity("test-405", "127.0.0.1:0", 16)
-            .expect("bind should succeed");
+        let receiver = ArrowIpcReceiver::new_with_capacity(
+            "test-405",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            16,
+        )
+        .expect("bind should succeed");
         let addr = receiver.local_addr();
 
         let url = format!("http://{addr}/v1/arrow");
@@ -764,8 +887,13 @@ mod tests {
 
     #[test]
     fn receiver_reports_degraded_on_backpressure_and_recovers() {
-        let receiver = ArrowIpcReceiver::new_with_capacity("test-429", "127.0.0.1:0", 1)
-            .expect("bind should succeed");
+        let receiver = ArrowIpcReceiver::new_with_capacity(
+            "test-429",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            1,
+        )
+        .expect("bind should succeed");
         let addr = receiver.local_addr();
 
         let batch = make_test_batch();
@@ -806,8 +934,13 @@ mod tests {
         // When the channel fills up mid-request (partial accept), we return 429 so the
         // client retries the full request. This avoids silent data loss from unretried
         // remainder batches that were never accepted.
-        let receiver = ArrowIpcReceiver::new_with_capacity("test-partial", "127.0.0.1:0", 1)
-            .expect("bind should succeed");
+        let receiver = ArrowIpcReceiver::new_with_capacity(
+            "test-partial",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            1,
+        )
+        .expect("bind should succeed");
         let addr = receiver.local_addr();
         let url = format!("http://{addr}/v1/arrow");
 
@@ -859,8 +992,13 @@ mod tests {
         // 1) first POST partially succeeds then returns 429
         // 2) retry of the same payload also partially accepts then returns 429
         // 3) downstream sees duplicated prefix rows from both partial accepts
-        let receiver = ArrowIpcReceiver::new_with_capacity("test-dup-risk", "127.0.0.1:0", 1)
-            .expect("bind should succeed");
+        let receiver = ArrowIpcReceiver::new_with_capacity(
+            "test-dup-risk",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            1,
+        )
+        .expect("bind should succeed");
         let addr = receiver.local_addr();
         let url = format!("http://{addr}/v1/arrow");
 
@@ -939,8 +1077,13 @@ mod tests {
 
     #[test]
     fn empty_request_does_not_clear_failed_health() {
-        let mut receiver = ArrowIpcReceiver::new_with_capacity("test-empty", "127.0.0.1:0", 16)
-            .expect("bind should succeed");
+        let mut receiver = ArrowIpcReceiver::new_with_capacity(
+            "test-empty",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            16,
+        )
+        .expect("bind should succeed");
         let addr = receiver.local_addr();
 
         // Drop the consumer side so the receiver reports pipeline disconnection.

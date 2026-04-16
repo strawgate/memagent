@@ -287,7 +287,7 @@ impl InputSource for HttpInput {
 
         while drained_bytes < self.max_drained_bytes_per_poll {
             if let Ok(bytes) = rx.try_recv() {
-                drained_bytes += bytes.len();
+                drained_bytes = drained_bytes.saturating_add(bytes.len());
                 all.extend_from_slice(&bytes);
             } else {
                 break;
@@ -1115,5 +1115,99 @@ Connection: close\r\n\
                 );
             }
         }
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    /// Prove the per-poll drain-loop accumulator cannot overflow.
+    ///
+    /// The loop guard is `while drained_bytes < max_drained_bytes_per_poll`.
+    /// After the guard passes, `drained_bytes += chunk.len()` executes.  If
+    /// `chunk.len()` can be arbitrarily large this addition can overflow and
+    /// wrap (release builds) or panic (debug builds).
+    ///
+    /// This proof verifies the SAFE case: when `chunk_size <=
+    /// max_drained_bytes_per_poll` (a bound that is valid for HTTP chunks
+    /// because the sender cannot send a single chunk larger than the body, and
+    /// the body is bounded by Content-Length / request size limits).
+    ///
+    /// The UNSAFE case — where a single chunk is larger than the cap — is
+    /// handled by the production code using `saturating_add` (line 290),
+    /// which caps accumulation at `usize::MAX` so the loop exits cleanly.
+    #[kani::proof]
+    fn verify_drain_accumulator_safe_under_chunk_cap() {
+        let cap: usize = kani::any();
+        // Config validation rejects cap == 0 at startup; assume valid cap.
+        kani::assume(cap > 0);
+        // Realistic cap: ≤ 1 GiB to keep the proof space tractable and to
+        // reflect the validated range in HttpInputConfig.
+        kani::assume(cap <= 1024 * 1024 * 1024);
+
+        let drained: usize = kani::any();
+        kani::assume(drained < cap); // loop guard has passed
+
+        // Chunk size bounded by cap — valid HTTP chunk assumption.
+        let chunk_size: usize = kani::any();
+        kani::assume(chunk_size <= cap);
+
+        // With drained < cap ≤ 2^30 and chunk_size ≤ cap ≤ 2^30,
+        // drained + chunk_size ≤ 2^31 - 2 which is safely below usize::MAX
+        // on both 32-bit and 64-bit targets.
+        let new_drained = drained.checked_add(chunk_size);
+        assert!(
+            new_drained.is_some(),
+            "accumulator must not overflow when chunk_size <= cap"
+        );
+
+        kani::cover!(new_drained.unwrap() >= cap, "loop exits after this add");
+        kani::cover!(new_drained.unwrap() < cap, "loop continues after this add");
+    }
+
+    /// Prove that `saturating_add` correctly caps accumulation.
+    ///
+    /// With `drained_bytes = drained_bytes.saturating_add(bytes.len())`:
+    /// - When the addition would overflow, the result is `usize::MAX`, which is
+    ///   >= any valid cap, so the loop stops immediately.
+    /// - The result is always >= each operand (no wrapping).
+    /// - Specifically: once `drained >= cap`, the loop guard `drained < cap`
+    ///   is false, so the loop exits before the next accumulation.
+    ///
+    /// This replaces the earlier "overflow gap" proof now that the fix is in.
+    #[kani::proof]
+    fn verify_drain_accumulator_saturating_add_is_safe() {
+        let cap: usize = kani::any();
+        kani::assume(cap > 0);
+        // No upper bound needed — saturating_add is safe for any cap.
+
+        let drained: usize = kani::any();
+        kani::assume(drained < cap); // loop guard has passed
+
+        // Even an oversized chunk cannot wrap the accumulator.
+        let chunk_size: usize = kani::any();
+
+        let new_drained = drained.saturating_add(chunk_size);
+
+        // Key property: saturating_add never wraps — result >= each input.
+        assert!(new_drained >= drained, "saturating_add must be monotone");
+        assert!(new_drained >= chunk_size, "saturating_add must be monotone");
+
+        // If the addition would overflow, saturating_add returns usize::MAX,
+        // which is definitely >= any cap, so the loop will not re-enter.
+        if new_drained == usize::MAX {
+            // This means overflow was avoided — next loop guard fails.
+            assert!(new_drained >= cap);
+        }
+
+        kani::cover!(
+            chunk_size > usize::MAX - drained,
+            "would-overflow chunk safely capped"
+        );
+        kani::cover!(chunk_size <= usize::MAX - drained, "normal add case");
+        kani::cover!(new_drained >= cap, "loop exits after this chunk");
+        kani::cover!(
+            new_drained < cap,
+            "loop continues — chunk did not fill budget"
+        );
     }
 }
