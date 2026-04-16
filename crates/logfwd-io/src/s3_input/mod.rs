@@ -460,11 +460,16 @@ impl InputSource for S3Input {
                 break;
             };
             drained += 1;
-            events.push(InputEvent::Data {
-                bytes: payload.bytes,
-                source_id: Some(payload.source_id),
-                accounted_bytes: payload.accounted_bytes,
-            });
+            // Only emit Data when there are actual bytes — EOF-only markers
+            // carry empty bytes and sending them would cause the checkpoint
+            // tracker to panic on `n_bytes == 0`.
+            if !payload.bytes.is_empty() {
+                events.push(InputEvent::Data {
+                    bytes: payload.bytes,
+                    source_id: Some(payload.source_id),
+                    accounted_bytes: payload.accounted_bytes,
+                });
+            }
             if payload.is_eof {
                 events.push(InputEvent::EndOfFile {
                     source_id: Some(payload.source_id),
@@ -1070,76 +1075,97 @@ async fn fetch_parallel_stream(
     }
 
     let source_id = source_id_from_key(key);
-    let fetch_sem = Arc::new(Semaphore::new(max_fetches));
 
     // Per-part bounded channels. 4 × 256 KiB = 1 MiB buffer per part.
     const PART_CHANNEL_BOUND: usize = 4;
+    let num_parts = ranges.len();
+    let mut part_senders: Vec<Option<tokio::sync::mpsc::Sender<io::Result<Vec<u8>>>>> =
+        Vec::with_capacity(num_parts);
     let mut part_receivers: Vec<tokio::sync::mpsc::Receiver<io::Result<Vec<u8>>>> =
-        Vec::with_capacity(ranges.len());
+        Vec::with_capacity(num_parts);
+    for _ in 0..num_parts {
+        let (tx, rx) = tokio::sync::mpsc::channel(PART_CHANNEL_BOUND);
+        part_senders.push(Some(tx));
+        part_receivers.push(rx);
+    }
+
     let mut join_set: JoinSet<()> = JoinSet::new();
 
-    // Spawn all part tasks immediately. Permit acquisition happens inside
-    // each task so the main loop can start reading from `part_receivers`
-    // without waiting. Without this, acquiring permits in the spawn loop
-    // deadlocks when `ranges.len() > max_fetches` because tasks fill their
-    // bounded channels before the main loop starts draining them.
-    for (part_idx, (start, end)) in ranges.iter().copied().enumerate() {
-        let (part_tx, part_rx) = tokio::sync::mpsc::channel(PART_CHANNEL_BOUND);
-        part_receivers.push(part_rx);
+    // Spawn a helper to launch part downloads. `spawn_part` is a local
+    // closure that takes ownership of the per-part sender and starts the
+    // range-GET task. We call it for the initial batch and again each time
+    // the delivery loop finishes draining a part — this ensures at most
+    // `max_fetches` concurrent HTTP connections and avoids the semaphore
+    // priority-inversion deadlock that occurs when all tasks race for
+    // permits in random order.
+    let mut next_to_spawn: usize = 0;
+    let spawn_part =
+        |join_set: &mut JoinSet<()>,
+         part_senders: &mut [Option<tokio::sync::mpsc::Sender<io::Result<Vec<u8>>>>],
+         idx: usize,
+         ranges: &[(u64, u64)],
+         s3: &Arc<S3Client>,
+         key: &str| {
+            let (start, end) = ranges[idx];
+            let part_tx = part_senders[idx].take().expect("part sender already taken");
+            let s3 = Arc::clone(s3);
+            let key_owned = key.to_string();
+            let part_idx = idx;
 
-        let fetch_sem = Arc::clone(&fetch_sem);
-        let s3 = Arc::clone(&s3);
-        let key_owned = key.to_string();
+            join_set.spawn(async move {
+                let resp = match s3.get_object_range_stream(&key_owned, start, end).await {
+                    Ok(r) => r,
+                    Err(e) => {
+                        let _ = part_tx.send(Err(e)).await;
+                        return;
+                    }
+                };
+                let async_read = decompress::response_to_async_read(resp);
+                tokio::pin!(async_read);
 
-        join_set.spawn(async move {
-            let _permit = match fetch_sem.acquire_owned().await {
-                Ok(p) => p,
-                Err(e) => {
-                    let _ = part_tx
-                        .send(Err(io::Error::other(format!("semaphore acquire: {e}"))))
-                        .await;
-                    return;
-                }
-            };
-
-            let resp = match s3.get_object_range_stream(&key_owned, start, end).await {
-                Ok(r) => r,
-                Err(e) => {
-                    let _ = part_tx.send(Err(e)).await;
-                    return;
-                }
-            };
-            let async_read = decompress::response_to_async_read(resp);
-            tokio::pin!(async_read);
-
-            let mut buf = vec![0u8; OUTPUT_CHUNK_SIZE];
-            loop {
-                let mut filled = 0;
-                while filled < buf.len() {
-                    match async_read.read(&mut buf[filled..]).await {
-                        Ok(0) => break,
-                        Ok(n) => filled += n,
-                        Err(e) => {
-                            let _ = part_tx
-                                .send(Err(io::Error::other(format!(
-                                    "range GET stream part {part_idx}: {e}"
-                                ))))
-                                .await;
-                            return;
+                let mut buf = vec![0u8; OUTPUT_CHUNK_SIZE];
+                loop {
+                    let mut filled = 0;
+                    while filled < buf.len() {
+                        match async_read.read(&mut buf[filled..]).await {
+                            Ok(0) => break,
+                            Ok(n) => filled += n,
+                            Err(e) => {
+                                let _ = part_tx
+                                    .send(Err(io::Error::other(format!(
+                                        "range GET stream part {part_idx}: {e}"
+                                    ))))
+                                    .await;
+                                return;
+                            }
                         }
                     }
+                    if filled == 0 {
+                        break;
+                    }
+                    if part_tx.send(Ok(buf[..filled].to_vec())).await.is_err() {
+                        return; // Consumer dropped — shutting down.
+                    }
                 }
-                if filled == 0 {
-                    break;
-                }
-                if part_tx.send(Ok(buf[..filled].to_vec())).await.is_err() {
-                    return; // Consumer dropped — shutting down.
-                }
-            }
-        });
+            });
+        };
+
+    // Pre-spawn the first batch (up to max_fetches).
+    while next_to_spawn < num_parts && next_to_spawn < max_fetches {
+        spawn_part(
+            &mut join_set,
+            &mut part_senders,
+            next_to_spawn,
+            &ranges,
+            &s3,
+            key,
+        );
+        next_to_spawn += 1;
     }
 
     // Deliver parts in order: drain part 0 fully, then part 1, etc.
+    // After each part completes delivery, spawn the next download task
+    // to keep the pipeline saturated.
     let mut first_chunk = true;
     for mut part_rx in part_receivers {
         while let Some(result) = part_rx.recv().await {
@@ -1182,6 +1208,18 @@ async fn fetch_parallel_stream(
                 join_set.abort_all();
                 return Err(io::Error::other("output channel closed"));
             }
+        }
+        // Spawn the next part now that this one is fully delivered.
+        if next_to_spawn < num_parts {
+            spawn_part(
+                &mut join_set,
+                &mut part_senders,
+                next_to_spawn,
+                &ranges,
+                &s3,
+                key,
+            );
+            next_to_spawn += 1;
         }
     }
 
