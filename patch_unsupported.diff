@@ -1,0 +1,20 @@
+<<<<<<< SEARCH
+pub enum GeneratorAttributeValueConfig {
+    Null,
+    String(String),
+    Integer(i64),
+    Float(f64),
+    Bool(bool),
+    Unsupported(serde_yaml_ng::Value),
+}
+=======
+pub enum GeneratorAttributeValueConfig {
+    Null,
+    String(String),
+    Integer(i64),
+    Float(f64),
+    Bool(bool),
+    #[serde(untagged)]
+    Unsupported(serde_yaml_ng::Value),
+}
+>>>>>>> REPLACE

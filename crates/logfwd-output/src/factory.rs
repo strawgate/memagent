@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use logfwd_config::{Format, OutputConfig, OutputType};
 use logfwd_types::diagnostics::ComponentStats;
-use logfwd_types::field_names;
 
 use crate::arrow_ipc_sink::ArrowIpcSinkFactory;
 use crate::build_auth_headers;
@@ -186,13 +185,71 @@ pub fn build_sink_factory(
                     )));
                 }
             };
+
+            let mut client_builder = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(
+                    cfg.request_timeout_ms.unwrap_or(30_000),
+                ))
+                .pool_max_idle_per_host(64);
+
+            #[allow(clippy::collapsible_if)]
+            if let Some(tls) = &cfg.tls {
+                if tls.insecure_skip_verify {
+                    client_builder = client_builder.danger_accept_invalid_certs(true);
+                }
+                if let Some(ca) = &tls.ca_file {
+                    if let Ok(ca_cert) = std::fs::read(ca) {
+                        if let Ok(cert) = reqwest::Certificate::from_pem(&ca_cert) {
+                            client_builder = client_builder.add_root_certificate(cert);
+                        }
+                    }
+                }
+                if let (Some(cert), Some(key)) = (&tls.cert_file, &tls.key_file) {
+                    if let (Ok(cert_data), Ok(key_data)) = (std::fs::read(cert), std::fs::read(key))
+                    {
+                        let mut pem = cert_data;
+                        pem.push(b'\n');
+                        pem.extend(key_data);
+                        if let Ok(identity) = reqwest::Identity::from_pem(&pem) {
+                            client_builder = client_builder.identity(identity);
+                        }
+                    }
+                }
+            }
+
+            let mut all_headers = auth_headers;
+            if let Some(cfg_headers) = &cfg.headers {
+                for (k, v) in cfg_headers {
+                    all_headers.push((k.clone(), v.clone()));
+                }
+            }
+
+            let client = client_builder.build().map_err(|e| {
+                OutputError::Construction(format!(
+                    "output '{name}': otlp client builder error: {e}"
+                ))
+            })?;
+
+            if cfg.retry_attempts.is_some()
+                || cfg.retry_initial_backoff_ms.is_some()
+                || cfg.retry_max_backoff_ms.is_some()
+                || cfg.batch_size.is_some()
+                || cfg.batch_timeout_ms.is_some()
+            {
+                tracing::warn!(
+                    "output '{}': retry and batching configuration options are currently handled by the pipeline runner and are not applied directly in the otlp sink yet.",
+                    name
+                );
+            }
+
             let factory = OtlpSinkFactory::new(
                 name.to_string(),
                 endpoint.clone(),
                 protocol,
                 compression,
-                auth_headers,
-                field_names::BODY.to_string(),
+                all_headers,
+                logfwd_types::field_names::BODY.to_string(),
+                client,
                 stats,
             )
             .map_err(|e| {

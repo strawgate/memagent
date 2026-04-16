@@ -325,6 +325,21 @@ pub struct HostMetricsInputConfig {
     pub ebpf_binary_path: Option<String>,
     /// Maximum events to drain per poll cycle (default: 4096).
     pub max_events_per_poll: Option<usize>,
+    /// Glob patterns for process names to include (e.g., `["nginx*", "python"]`).
+    #[serde(default)]
+    pub include_process_names: Option<Vec<String>>,
+    /// Glob patterns for process names to exclude.
+    #[serde(default)]
+    pub exclude_process_names: Option<Vec<String>>,
+    /// Specific event types to enable (e.g., `["process_exec", "tcp_connect"]`).
+    #[serde(default)]
+    pub include_event_types: Option<Vec<String>>,
+    /// Specific event types to disable.
+    #[serde(default)]
+    pub exclude_event_types: Option<Vec<String>>,
+    /// Ring buffer size in kilobytes.
+    #[serde(default)]
+    pub ring_buffer_size_kb: Option<usize>,
     /// Optional list of scrapers to run (e.g. `["cpu", "memory", "disk", "network", "filesystem"]`).
     #[serde(default)]
     pub scrapers: Option<Vec<String>>,
@@ -613,6 +628,10 @@ pub struct MultilineConfig {
 #[serde(deny_unknown_fields)]
 pub struct UdpTypeConfig {
     pub listen: String,
+    #[serde(default)]
+    pub max_message_size_bytes: Option<usize>,
+    #[serde(default)]
+    pub so_rcvbuf: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -621,6 +640,12 @@ pub struct TcpTypeConfig {
     pub listen: String,
     #[serde(default)]
     pub tls: Option<TlsInputConfig>,
+    #[serde(default)]
+    pub max_connections: Option<usize>,
+    #[serde(default)]
+    pub connection_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub read_timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -668,6 +693,10 @@ pub struct SensorTypeConfig {
 #[serde(deny_unknown_fields)]
 pub struct ArrowIpcTypeConfig {
     pub listen: String,
+    #[serde(default)]
+    pub max_connections: Option<usize>,
+    #[serde(default)]
+    pub max_message_size_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -701,6 +730,31 @@ pub struct OutputConfig {
     pub tenant_id: Option<String>,
     pub static_labels: Option<HashMap<String, String>>,
     pub label_columns: Option<Vec<String>>,
+
+    /// Client TLS configuration for outbound connections.
+    #[serde(default)]
+    pub tls: Option<TlsClientConfig>,
+    /// Custom HTTP headers to include in requests.
+    #[serde(default)]
+    pub headers: Option<HashMap<String, String>>,
+    /// Number of retry attempts for transient errors.
+    #[serde(default)]
+    pub retry_attempts: Option<u32>,
+    /// Initial backoff delay for retries.
+    #[serde(default)]
+    pub retry_initial_backoff_ms: Option<u64>,
+    /// Maximum backoff delay for retries.
+    #[serde(default)]
+    pub retry_max_backoff_ms: Option<u64>,
+    /// Timeout for each HTTP request.
+    #[serde(default)]
+    pub request_timeout_ms: Option<u64>,
+    /// Maximum number of log records to send per batch.
+    #[serde(default)]
+    pub batch_size: Option<usize>,
+    /// Maximum time to wait before sending a batch.
+    #[serde(default)]
+    pub batch_timeout_ms: Option<u64>,
     /// Host for socket-based IPC.
     #[serde(default)]
     pub host: Option<String>,
@@ -713,12 +767,20 @@ pub struct OutputConfig {
     /// Buffer size for the IPC writer in bytes.
     #[serde(default)]
     pub buffer_size_bytes: Option<usize>,
-    /// Number of records per IPC batch.
-    #[serde(default)]
-    pub batch_size: Option<usize>,
     /// Whether to write the schema immediately upon connection.
     #[serde(default)]
     pub write_schema_on_connect: Option<bool>,
+}
+
+/// Client TLS configuration for outbound connections.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct TlsClientConfig {
+    pub cert_file: Option<String>,
+    pub key_file: Option<String>,
+    pub ca_file: Option<String>,
+    #[serde(default)]
+    pub insecure_skip_verify: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
