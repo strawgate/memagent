@@ -472,7 +472,11 @@ impl OtlpSink {
 
 fn estimate_records_buf_capacity(num_rows: usize, columns: &BatchColumns<'_>) -> usize {
     const MIN_RECORD_BYTES: usize = 128;
-    const ATTR_BYTES_HINT: usize = 48;
+    // 64 bytes/attr covers typical string attribute values (~30 bytes) plus
+    // protobuf framing overhead (~27 bytes key+tag+varint) with some margin.
+    // Wide batches with 27 attrs need ~14.5 MB for 10K rows; at 48 bytes/attr
+    // the estimate was 13.9 MB — slightly short, causing one realloc per batch.
+    const ATTR_BYTES_HINT: usize = 64;
     const MAX_INITIAL_RECORDS_BUF: usize = 64 * 1024 * 1024;
 
     let hinted_attrs = columns.attribute_cols.len().min(64);
