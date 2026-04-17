@@ -385,7 +385,7 @@ pub fn decode_protobuf_to_batch_projected_detached_experimental(
     body: &[u8],
 ) -> Result<RecordBatch, InputError> {
     projection::decode_projected_otlp_logs(body, field_names::DEFAULT_RESOURCE_PREFIX)
-        .map_err(|err| InputError::Receiver(err.to_string()))
+        .map_err(|err| err.into_input_error())
 }
 
 /// Decode OTLP protobuf bytes through the prost reference path.

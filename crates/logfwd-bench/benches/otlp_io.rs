@@ -534,14 +534,14 @@ fn bench_multi_batch_reuse(c: &mut Criterion) {
                 let _ = decoder.decode_view_bytes(pa.clone()).unwrap();
                 bench.iter(|| {
                     for _ in 0..rounds {
-                        let ba = decoder
+                        let batch_a = decoder
                             .decode_view_bytes(pa.clone())
                             .expect("decode A should succeed");
-                        std::hint::black_box(ba.num_rows());
-                        let bb = decoder
+                        std::hint::black_box(batch_a.num_rows());
+                        let batch_b = decoder
                             .decode_view_bytes(pb.clone())
                             .expect("decode B should succeed");
-                        std::hint::black_box(bb.num_rows());
+                        std::hint::black_box(batch_b.num_rows());
                     }
                 });
             },

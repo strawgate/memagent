@@ -25,6 +25,17 @@ pub(super) enum ProjectionError {
     Batch(String),
 }
 
+impl ProjectionError {
+    /// Convert to `InputError`, preserving the `Unsupported` variant so
+    /// callers can fall back to the prost reference decoder.
+    pub(super) fn into_input_error(self) -> InputError {
+        match self {
+            ProjectionError::Unsupported(msg) => InputError::Unsupported(msg.to_string()),
+            other => InputError::Receiver(other.to_string()),
+        }
+    }
+}
+
 impl fmt::Display for ProjectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -235,7 +246,7 @@ impl ProjectedOtlpDecoder {
             // Reset builder to idle so the next begin_batch succeeds even
             // if we were mid-row when the error occurred.
             self.builder.discard_batch();
-            return Err(InputError::Receiver(e.to_string()));
+            return Err(e.into_input_error());
         }
 
         self.builder
