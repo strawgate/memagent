@@ -1147,7 +1147,14 @@ fn resolve_batch_columns<'a>(
         let kv_key_cost = bytes_field_size(otlp::KEY_VALUE_KEY, name.len());
         let short_kv_inner_base = kv_key_cost + 4;
         let has_nulls = batch.column(idx).null_count() > 0;
-        attribute_cols.push(ColAttr { name, key_encoding, kv_key_cost, short_kv_inner_base, has_nulls, array: attr });
+        attribute_cols.push(ColAttr {
+            name,
+            key_encoding,
+            kv_key_cost,
+            short_kv_inner_base,
+            has_nulls,
+            array: attr,
+        });
     }
 
     BatchColumns {

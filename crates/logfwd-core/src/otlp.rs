@@ -461,18 +461,8 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
         return None;
     }
 
-    let year = parse_4digits(ts, 0) as i64;
-    let month = parse_2digits(ts, 5) as u32;
-    let day = parse_2digits(ts, 8) as u32;
-    let hour = parse_2digits(ts, 11) as u64;
-    let min = parse_2digits(ts, 14) as u64;
-    let sec = parse_2digits(ts, 17) as u64;
-
-    if year == 0 || month == 0 || month > 12 || day == 0 || day > 31 {
-        return None;
-    }
-
-    // Validate separator characters: YYYY-MM-DDThh:mm:ss
+    // Validate separator characters first: YYYY-MM-DDThh:mm:ss
+    // Do this before digit parsing so invalid formats fail fast.
     if ts[4] != b'-'
         || ts[7] != b'-'
         || (ts[10] != b'T' && ts[10] != b't' && ts[10] != b' ')
@@ -482,20 +472,17 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
         return None;
     }
 
-    // Validate that date/time digit positions are actually ASCII digits.
-    // parse_2digits silently returns 0 for non-digits, which is valid for
-    // hour/min/sec and would let garbage through as 00:00:00. (#1875)
-    if !ts[5].is_ascii_digit()
-        || !ts[6].is_ascii_digit()
-        || !ts[8].is_ascii_digit()
-        || !ts[9].is_ascii_digit()
-        || !ts[11].is_ascii_digit()
-        || !ts[12].is_ascii_digit()
-        || !ts[14].is_ascii_digit()
-        || !ts[15].is_ascii_digit()
-        || !ts[17].is_ascii_digit()
-        || !ts[18].is_ascii_digit()
-    {
+    // Parse and validate all digit fields in one pass each.
+    // parse_Ndigits_checked uses wrapping_sub so each digit is validated and
+    // converted in a single subtract+compare — no double-checking.
+    let year = parse_4digits_checked(ts, 0)? as i64;
+    let month = parse_2digits_checked(ts, 5)? as u32;
+    let day = parse_2digits_checked(ts, 8)? as u32;
+    let hour = parse_2digits_checked(ts, 11)? as u64;
+    let min = parse_2digits_checked(ts, 14)? as u64;
+    let sec = parse_2digits_checked(ts, 17)? as u64;
+
+    if year == 0 || month == 0 || month > 12 || day == 0 || day > 31 {
         return None;
     }
 
@@ -556,18 +543,8 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
             if ts[tz_start + 3] != b':' {
                 return None;
             }
-            // Validate that timezone digits are actually ASCII digits before
-            // calling parse_2digits, which silently returns 0 for non-digits
-            // and would treat garbage as +00:00. (#1467)
-            if !ts[tz_start + 1].is_ascii_digit()
-                || !ts[tz_start + 2].is_ascii_digit()
-                || !ts[tz_start + 4].is_ascii_digit()
-                || !ts[tz_start + 5].is_ascii_digit()
-            {
-                return None;
-            }
-            let tz_h = parse_2digits(ts, tz_start + 1) as i64;
-            let tz_m = parse_2digits(ts, tz_start + 4) as i64;
+            let tz_h = parse_2digits_checked(ts, tz_start + 1)? as i64;
+            let tz_m = parse_2digits_checked(ts, tz_start + 4)? as i64;
             if tz_h >= 24 || tz_m >= 60 {
                 return None;
             }
@@ -594,6 +571,8 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
 }
 
 /// Parse 4 ASCII digits at offset. Returns 0 on non-digit.
+// Only used by Kani proof harnesses; production paths use parse_4digits_checked.
+#[allow(dead_code)]
 #[inline(always)]
 #[cfg_attr(kani, kani::ensures(|result: &u16| *result <= 9999))]
 fn parse_4digits(s: &[u8], off: usize) -> u16 {
@@ -607,7 +586,9 @@ fn parse_4digits(s: &[u8], off: usize) -> u16 {
     (a - b'0') as u16 * 1000 + (b - b'0') as u16 * 100 + (c - b'0') as u16 * 10 + (d - b'0') as u16
 }
 
-/// Parse 2 ASCII digits at offset.
+/// Parse 2 ASCII digits at offset. Returns 0 on non-digit.
+// Only used by Kani proof harnesses; production paths use parse_2digits_checked.
+#[allow(dead_code)]
 #[inline(always)]
 #[cfg_attr(kani, kani::ensures(|result: &u8| *result <= 99))]
 fn parse_2digits(s: &[u8], off: usize) -> u8 {
@@ -619,6 +600,37 @@ fn parse_2digits(s: &[u8], off: usize) -> u8 {
         return 0;
     }
     (a - b'0') * 10 + (b - b'0')
+}
+
+/// Parse 4 ASCII digits at `s[off..off+4]`, returning `None` if any byte is not
+/// a digit. Uses `wrapping_sub` to validate and convert in a single pass —
+/// avoids the double-check that `parse_4digits` + external `is_ascii_digit`
+/// calls would perform.
+#[inline(always)]
+fn parse_4digits_checked(s: &[u8], off: usize) -> Option<u16> {
+    let (a, b, c, d) = (
+        s[off].wrapping_sub(b'0'),
+        s[off + 1].wrapping_sub(b'0'),
+        s[off + 2].wrapping_sub(b'0'),
+        s[off + 3].wrapping_sub(b'0'),
+    );
+    if a > 9 || b > 9 || c > 9 || d > 9 {
+        return None;
+    }
+    Some(a as u16 * 1000 + b as u16 * 100 + c as u16 * 10 + d as u16)
+}
+
+/// Parse 2 ASCII digits at `s[off..off+2]`, returning `None` if either byte is
+/// not a digit. Single-pass: one `wrapping_sub` + compare per digit instead of
+/// a `is_ascii_digit` check followed by a separate subtraction.
+#[inline(always)]
+fn parse_2digits_checked(s: &[u8], off: usize) -> Option<u8> {
+    let a = s[off].wrapping_sub(b'0');
+    let b = s[off + 1].wrapping_sub(b'0');
+    if a > 9 || b > 9 {
+        return None;
+    }
+    Some(a * 10 + b)
 }
 
 /// Returns `true` if `year` is a leap year (Gregorian calendar).
@@ -834,6 +846,57 @@ mod tests {
                 our_days, chrono_days,
                 "mismatch for {y}-{m:02}-{d:02}: ours={our_days}, chrono={chrono_days}"
             );
+        }
+    }
+
+    proptest::proptest! {
+        /// `days_from_civil` (Hinnant algorithm) must agree with chrono for
+        /// all valid calendar dates in the range 1970–2099.
+        #[test]
+        fn proptest_days_from_civil_matches_chrono(
+            year in 1970i64..=2099,
+            month in 1u32..=12,
+            day in 1u32..=31,
+        ) {
+            use chrono::{NaiveDate, NaiveDateTime};
+            let max_day = days_in_month(year, month);
+            proptest::prop_assume!(day <= max_day);
+
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+            let date = NaiveDate::from_ymd_opt(year as i32, month, day);
+            if let Some(d) = date {
+                let our = days_from_civil(year, month, day);
+                let chrono_days = (d - epoch).num_days();
+                proptest::prop_assert_eq!(our, chrono_days,
+                    "days_from_civil mismatch");
+            }
+            let _ = NaiveDateTime::MAX; // suppress unused import warning
+        }
+
+        /// `parse_timestamp_nanos` must produce the same result as chrono for
+        /// valid UTC timestamps in the range 1970–2099.
+        #[test]
+        fn proptest_parse_timestamp_nanos_matches_chrono(
+            year in 1970u32..=2099,
+            month in 1u32..=12,
+            day in 1u32..=28, // cap at 28 to always be a valid day
+            hour in 0u32..=23,
+            min in 0u32..=59,
+            sec in 0u32..=59,
+        ) {
+            use chrono::NaiveDateTime;
+            let s = alloc::format!(
+                "{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z"
+            );
+            let our = parse_timestamp_nanos(s.as_bytes());
+            let chrono = NaiveDateTime::parse_from_str(
+                    s.trim_end_matches('Z'), "%Y-%m-%dT%H:%M:%S"
+                )
+                .ok()
+                .and_then(|dt| dt.and_utc().timestamp_nanos_opt())
+                .map(|n| n as u64);
+            proptest::prop_assert_eq!(our, chrono,
+                "mismatch for timestamp");
         }
     }
 
