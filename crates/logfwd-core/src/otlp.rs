@@ -850,6 +850,10 @@ mod tests {
     }
 
     proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
         /// `days_from_civil` (Hinnant algorithm) must agree with chrono for
         /// all valid calendar dates in the range 1970–2099.
         #[test]
@@ -1072,6 +1076,10 @@ mod tests {
     }
 
     proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
         /// LUT nibble lookup must agree with the branch-based oracle for every
         /// possible byte value (0x00–0xFF).
         #[test]
