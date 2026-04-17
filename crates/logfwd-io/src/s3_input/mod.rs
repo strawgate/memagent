@@ -1298,11 +1298,12 @@ async fn fetch_parallel_stream(
     Ok(())
 }
 
-/// Prefetch depth: number of parts to download ahead of the consumer.
+/// Default prefetch depth: number of parts to download ahead of the consumer.
 ///
-/// With 8 MiB parts, `PREFETCH_DEPTH = 3` means up to 24 MiB in flight —
+/// With 8 MiB parts, depth 3 means up to 24 MiB in flight —
 /// enough to keep the pipeline fed without buffering the entire object.
-const PREFETCH_DEPTH: usize = 3;
+#[allow(dead_code)]
+const DEFAULT_PREFETCH_DEPTH: usize = 3;
 
 /// Streaming parallel fetch with body prefetch.
 ///
@@ -1315,6 +1316,7 @@ async fn fetch_parallel_stream_prefetch(
     key: &str,
     size: u64,
     part_size: u64,
+    prefetch_depth: usize,
     out_tx: mpsc::SyncSender<ChunkPayload>,
 ) -> io::Result<()> {
     use futures_util::{StreamExt, stream};
@@ -1368,7 +1370,7 @@ async fn fetch_parallel_stream_prefetch(
                 Err(last_err.expect("last_err is Some when all attempts fail"))
             }
         })
-        .buffered(PREFETCH_DEPTH);
+        .buffered(prefetch_depth.max(1));
 
     // Deliver pre-loaded parts in order, chunking into OUTPUT_CHUNK_SIZE.
     let mut first_chunk = true;
@@ -1477,12 +1479,13 @@ pub async fn fetch_parallel_stream_prefetch_bench(
     key: &str,
     size: u64,
     part_size: u64,
+    prefetch_depth: usize,
 ) -> io::Result<usize> {
     let (tx, rx) = mpsc::sync_channel::<ChunkPayload>(16);
     let key_owned = key.to_string();
     let s3c = Arc::clone(&s3);
     let handle = tokio::spawn(async move {
-        fetch_parallel_stream_prefetch(s3c, &key_owned, size, part_size, tx).await
+        fetch_parallel_stream_prefetch(s3c, &key_owned, size, part_size, prefetch_depth, tx).await
     });
     let mut total = 0usize;
     while let Ok(chunk) = rx.recv() {

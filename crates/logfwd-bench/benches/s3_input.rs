@@ -206,9 +206,45 @@ fn bench_s3_download(c: &mut Criterion) {
                         key,
                         size,
                         part,
+                        3,
                     )
                     .await
                     .expect("prefetch streaming bench should succeed");
+                });
+            },
+        );
+    }
+
+    // Part-size sweep: test different part_size × prefetch_depth combos on 10 MB.
+    // Each config targets ~16 MiB peak memory.
+    let sweep_key = "bench/10mb.log";
+    let sweep_size = 10_000_000u64;
+    group.throughput(Throughput::Bytes(sweep_size));
+
+    for (part_label, part_size, depth) in &[
+        ("1m_x16", 1u64 * 1024 * 1024, 16usize), // 16 MiB memory
+        ("2m_x8", 2 * 1024 * 1024, 8),            // 16 MiB memory
+        ("4m_x4", 4 * 1024 * 1024, 4),            // 16 MiB memory
+        ("8m_x3", 8 * 1024 * 1024, 3),            // 24 MiB memory
+        ("8m_x8", 8 * 1024 * 1024, 8),            // 64 MiB memory (baseline)
+    ] {
+        group.bench_with_input(
+            BenchmarkId::new("prefetch_sweep", part_label),
+            part_label,
+            |b, _| {
+                let client = Arc::clone(&client);
+                let part_size = *part_size;
+                let depth = *depth;
+                b.to_async(&rt).iter(|| async {
+                    logfwd_io::s3_input::fetch_parallel_stream_prefetch_bench(
+                        Arc::clone(&client),
+                        sweep_key,
+                        sweep_size,
+                        part_size,
+                        depth,
+                    )
+                    .await
+                    .expect("prefetch sweep bench should succeed");
                 });
             },
         );
