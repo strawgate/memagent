@@ -368,6 +368,15 @@ impl InputSource for FramedInput {
                                 });
                             }
                         }
+                        // Reclaim per-source state after EOF. For S3/TCP
+                        // sources EOF is terminal — the SourceId is never
+                        // reused. For file-tail, EOF fires on idle; if the
+                        // file grows again, a fresh SourceState is created on
+                        // the next Data event. The remainder was already
+                        // flushed above, so checkpoint_data() correctly falls
+                        // back to the raw file offset (no remainder to
+                        // subtract).
+                        self.sources.remove(&key);
                     }
                 }
             }
@@ -1641,5 +1650,51 @@ mod tests {
 
         let out = collect_data(framed.poll().unwrap());
         assert_eq!(out, b"{\"msg\":\"hello\"}\n");
+    }
+
+    /// EndOfFile must reclaim per-source state so long-running inputs (S3)
+    /// don't accumulate dead entries in the `sources` HashMap.
+    #[test]
+    fn eof_removes_source_state() {
+        let stats = make_stats();
+        let sid = SourceId(42);
+        let source = MockSource::new(vec![
+            vec![InputEvent::Data {
+                bytes: b"hello\npartial".to_vec(),
+                source_id: Some(sid),
+                accounted_bytes: 13,
+            }],
+            vec![InputEvent::EndOfFile {
+                source_id: Some(sid),
+            }],
+            // New data for the same SourceId after EOF — must work.
+            vec![InputEvent::Data {
+                bytes: b"world\n".to_vec(),
+                source_id: Some(sid),
+                accounted_bytes: 6,
+            }],
+        ]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(stats.clone()),
+            stats,
+        );
+
+        // Poll 1: "hello\n" emitted, "partial" in remainder.
+        let events1 = framed.poll().unwrap();
+        assert_eq!(collect_data(events1), b"hello\n");
+        assert!(framed.sources.contains_key(&Some(sid)));
+
+        // Poll 2: EOF flushes "partial\n" and removes source state.
+        let events2 = framed.poll().unwrap();
+        assert_eq!(collect_data(events2), b"partial\n");
+        assert!(
+            !framed.sources.contains_key(&Some(sid)),
+            "source state should be removed after EOF"
+        );
+
+        // Poll 3: new data for the same SourceId creates fresh state.
+        let events3 = framed.poll().unwrap();
+        assert_eq!(collect_data(events3), b"world\n");
     }
 }

@@ -15,7 +15,6 @@ use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 
-#[cfg(feature = "s3")]
 use logfwd_io::s3_input::client::S3Client;
 
 // ── MinIO connection helpers ───────────────────────────────────────────────
@@ -35,7 +34,6 @@ fn minio_secret_key() -> String {
 const BENCH_BUCKET: &str = "logfwd-bench";
 
 /// Returns `None` if MinIO is unreachable.
-#[cfg(feature = "s3")]
 fn try_connect_minio() -> Option<Arc<S3Client>> {
     let client = S3Client::new(
         BENCH_BUCKET,
@@ -51,7 +49,6 @@ fn try_connect_minio() -> Option<Arc<S3Client>> {
 }
 
 /// Create a test bucket and upload objects for benchmarking.
-#[cfg(feature = "s3")]
 async fn setup_bench_objects() -> Option<()> {
     let endpoint = minio_endpoint();
     let access_key = minio_access_key();
@@ -106,7 +103,6 @@ fn generate_log_bytes(size: usize) -> Vec<u8> {
 
 // ── Benchmarks ────────────────────────────────────────────────────────────
 
-#[cfg(feature = "s3")]
 fn bench_s3_download(c: &mut Criterion) {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
@@ -182,14 +178,28 @@ fn bench_s3_download(c: &mut Criterion) {
                 });
             },
         );
+
+        // Streaming parallel range-GET (channels + JoinSet).
+        group.bench_with_input(BenchmarkId::new("stream_parallel", label), label, |b, _| {
+            let client = Arc::clone(&client);
+            let key = *key;
+            let size = *size;
+            b.to_async(&rt).iter(|| async {
+                let part = 2 * 1024 * 1024u64;
+                logfwd_io::s3_input::fetch_parallel_stream_bench(
+                    Arc::clone(&client),
+                    key,
+                    size,
+                    part,
+                    8,
+                )
+                .await
+                .expect("streaming bench should succeed");
+            });
+        });
     }
 
     group.finish();
-}
-
-#[cfg(not(feature = "s3"))]
-fn bench_s3_download(_c: &mut Criterion) {
-    eprintln!("s3_bench: compiled without 's3' feature — no S3 benchmarks");
 }
 
 criterion_group!(benches, bench_s3_download);

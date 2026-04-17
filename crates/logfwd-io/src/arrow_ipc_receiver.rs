@@ -373,11 +373,7 @@ async fn handle_arrow_ipc_request(
     let mut send_error: Option<StatusCode> = None;
     let mut sent_rows = false;
     let total_batch_count = batches.iter().filter(|batch| batch.num_rows() > 0).count() as u64;
-    let per_batch_accounted_bytes = if total_batch_count == 0 {
-        0
-    } else {
-        raw_body_len / total_batch_count
-    };
+    let per_batch_accounted_bytes = raw_body_len.checked_div(total_batch_count).unwrap_or(0);
     let mut emitted_count = 0_u64;
     for batch in batches {
         if batch.num_rows() == 0 {

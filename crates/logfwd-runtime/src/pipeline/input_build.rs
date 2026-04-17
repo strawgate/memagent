@@ -53,21 +53,19 @@ fn make_format(
 
 fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> Result<(), String> {
     match input_type {
-        InputType::Generator | InputType::Otlp | InputType::ArrowIpc => {
-            if !matches!(format, Format::Json) {
-                return Err(format!(
-                    "input '{name}': format {:?} is not supported for {:?} inputs (expected json)",
-                    format, input_type
-                ));
-            }
+        InputType::Generator | InputType::Otlp | InputType::ArrowIpc
+            if !matches!(format, Format::Json) =>
+        {
+            return Err(format!(
+                "input '{name}': format {:?} is not supported for {:?} inputs (expected json)",
+                format, input_type
+            ));
         }
-        InputType::Http => {
-            if !matches!(format, Format::Json | Format::Raw) {
-                return Err(format!(
-                    "input '{name}': format {:?} is not supported for {:?} inputs (expected json or raw)",
-                    format, input_type
-                ));
-            }
+        InputType::Http if !matches!(format, Format::Json | Format::Raw) => {
+            return Err(format!(
+                "input '{name}': format {:?} is not supported for {:?} inputs (expected json or raw)",
+                format, input_type
+            ));
         }
         _ => {}
     }

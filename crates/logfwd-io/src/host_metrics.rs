@@ -138,9 +138,9 @@ pub struct HostMetricsConfig {
 impl Default for HostMetricsConfig {
     fn default() -> Self {
         Self {
-            poll_interval: Duration::from_millis(10_000),
+            poll_interval: Duration::from_secs(10),
             control_path: None,
-            control_reload_interval: Duration::from_millis(1_000),
+            control_reload_interval: Duration::from_secs(1),
             enabled_families: None,
             emit_signal_rows: true,
             max_rows_per_poll: 256,
@@ -717,7 +717,7 @@ impl HostMetricsCommon {
         limit: usize,
     ) -> usize {
         let mut ifaces: Vec<_> = self.networks.iter().collect();
-        ifaces.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+        ifaces.sort_unstable_by_key(|(a, _)| *a);
 
         let mut emitted = 0usize;
         for (iface, data) in ifaces.into_iter().take(limit) {

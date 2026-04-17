@@ -556,7 +556,7 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
         _ => return None,
     };
 
-    let total_secs = (days as i64)
+    let total_secs = days
         .checked_mul(86_400)?
         .checked_add(hour as i64 * 3600)?
         .checked_add(min as i64 * 60)?

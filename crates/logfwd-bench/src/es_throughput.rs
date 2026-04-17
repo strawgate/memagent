@@ -283,7 +283,7 @@ fn run_scenario(
         "  raw payload : {raw_mb:>9.1} MB  ({:.1} MB/s)",
         raw_mb / elapsed
     );
-    println!("  wire bytes  : {wire_mb:>9.1} MB  (ratio {ratio:.1}x)",);
+    println!("  wire bytes  : {wire_mb:>9.1} MB  (ratio {ratio:.1}x)");
 }
 
 fn main() {
