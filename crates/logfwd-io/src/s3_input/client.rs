@@ -726,15 +726,13 @@ fn parse_list_objects_response(data: &[u8]) -> io::Result<(Vec<S3Object>, Option
                     capture = None;
                 }
             }
-            Ok(Event::End(e)) => {
-                if e.local_name().as_ref() == b"Contents" && in_contents {
-                    objects.push(S3Object {
-                        key: current_key.clone(),
-                        size: current_size,
-                    });
-                    in_contents = false;
-                    capture = None;
-                }
+            Ok(Event::End(e)) if e.local_name().as_ref() == b"Contents" && in_contents => {
+                objects.push(S3Object {
+                    key: current_key.clone(),
+                    size: current_size,
+                });
+                in_contents = false;
+                capture = None;
             }
             Ok(Event::Eof) => break,
             Err(e) => {
