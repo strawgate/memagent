@@ -28,7 +28,6 @@ fn build_date() -> String {
         .unwrap_or_else(|| {
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .ok()
                 .map_or(0, |d| d.as_secs())
         });
 

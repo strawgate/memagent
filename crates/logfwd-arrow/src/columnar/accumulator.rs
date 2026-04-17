@@ -235,9 +235,9 @@ impl ColumnAccumulator {
 
     /// Initial capacity for dynamic fact Vecs on first typed push.
     ///
-    /// Avoids the 0→1→2→4→…→256 doubling chain (~8 reallocations) by jumping
-    /// straight to 256 on the first push of each type. The `capacity() == 0`
-    /// guard is essentially free after the first push (branch-predicted false).
+    /// Starts small (16) to avoid over-allocating for sparse or
+    /// high-cardinality dynamic columns. Vec doubling reaches 256 in
+    /// 4 reallocations for dense columns that need it.
     const DYNAMIC_INITIAL_CAPACITY: usize = 16;
 
     /// Append an i64 fact.

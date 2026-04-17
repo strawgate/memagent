@@ -351,7 +351,6 @@ fn strip_ansi(s: &str) -> String {
                         }
                     }
                 }
-                // Single-char escape (alphabetic) — already consumed, skip.
                 Some(_) | None => {}
             }
         } else {

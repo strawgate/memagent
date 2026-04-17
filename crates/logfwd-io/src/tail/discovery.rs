@@ -122,8 +122,7 @@ impl FileDiscovery {
                 let is_previous_handle_deleted = tailed
                     .file
                     .metadata()
-                    .ok()
-                    .is_some_and(|meta| has_metadata_indicating_deletion(&meta));
+                    .is_ok_and(|meta| has_metadata_indicating_deletion(&meta));
                 should_rotate_file(
                     &tailed.identity,
                     &current_identity,

@@ -717,7 +717,7 @@ impl HostMetricsCommon {
         limit: usize,
     ) -> usize {
         let mut ifaces: Vec<_> = self.networks.iter().collect();
-        ifaces.sort_unstable_by_key(|(name, _)| *name);
+        ifaces.sort_unstable_by_key(|(a, _)| *a);
 
         let mut emitted = 0usize;
         for (iface, data) in ifaces.into_iter().take(limit) {

@@ -2933,6 +2933,7 @@ dependencies = [
  "logfwd-test-utils",
  "logfwd-types",
  "memchr",
+ "mockito",
  "notify",
  "opentelemetry-proto",
  "proptest",

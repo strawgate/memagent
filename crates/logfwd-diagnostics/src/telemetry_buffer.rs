@@ -42,7 +42,7 @@ pub struct RingBuffer<T> {
 
 impl<T: fmt::Debug> fmt::Debug for RingBuffer<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let len = self.inner.lock().ok().map_or(0, |b| b.len());
+        let len = self.inner.lock().map_or(0, |b| b.len());
         write!(f, "RingBuffer({len}/{})", self.capacity)
     }
 }
