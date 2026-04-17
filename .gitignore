@@ -1,6 +1,7 @@
 /target
 # Benchmark/profiling output
 dhat-heap.json
+dhat.out.*
 criterion-*.json
 build
 /actionlint
