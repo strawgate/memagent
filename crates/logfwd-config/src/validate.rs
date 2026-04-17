@@ -860,19 +860,15 @@ impl Config {
                     // Validate compression values per output type (#1876).
                     if let Some(c) = output.compression.as_deref() {
                         match output.output_type {
-                            OutputType::Otlp => {
-                                if !matches!(c, "zstd" | "gzip" | "none") {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' output '{label}': otlp compression must be 'zstd', 'gzip', or 'none', got '{c}'"
-                                    )));
-                                }
+                            OutputType::Otlp if !matches!(c, "zstd" | "gzip" | "none") => {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': otlp compression must be 'zstd', 'gzip', or 'none', got '{c}'"
+                                )));
                             }
-                            OutputType::Elasticsearch => {
-                                if !matches!(c, "gzip" | "none") {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' output '{label}': elasticsearch compression must be 'gzip' or 'none', got '{c}'"
-                                    )));
-                                }
+                            OutputType::Elasticsearch if !matches!(c, "gzip" | "none") => {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': elasticsearch compression must be 'gzip' or 'none', got '{c}'"
+                                )));
                             }
                             // ArrowIpc allows zstd/none and is validated above.
                             // Other types either reject compression entirely or accept any.
