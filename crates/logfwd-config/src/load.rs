@@ -5,7 +5,7 @@ use crate::types::{
 };
 use serde::Deserialize;
 use serde_yaml_ng::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::Path;
 
 #[derive(Debug, Deserialize)]
@@ -34,8 +34,8 @@ impl Config {
 
     /// Parse configuration from a YAML string.
     pub fn load_str(yaml: &str) -> Result<Self, ConfigError> {
-        let quoted_placeholders = collect_quoted_exact_env_placeholders(yaml);
-        let mut value: Value = serde_yaml_ng::from_str(yaml)?;
+        let (marked_yaml, quoted_placeholders) = mark_quoted_exact_env_placeholders(yaml);
+        let mut value: Value = serde_yaml_ng::from_str(&marked_yaml)?;
         expand_env_vars_in_yaml_value(&mut value, &quoted_placeholders)?;
         let raw: RawConfig = serde_yaml_ng::from_value(value)?;
         Self::from_raw(raw)
@@ -122,13 +122,18 @@ impl Config {
 
 fn expand_env_vars_in_yaml_value(
     value: &mut Value,
-    quoted_placeholders: &HashSet<String>,
+    quoted_placeholders: &HashMap<String, String>,
 ) -> Result<(), ConfigError> {
     match value {
         Value::String(text) => {
+            if let Some(original) = quoted_placeholders.get(text.as_str()) {
+                *text = expand_env_vars(original)?;
+                return Ok(());
+            }
+
             let original = text.clone();
             let expanded = expand_env_vars(&original)?;
-            if is_exact_env_placeholder(&original) && !quoted_placeholders.contains(&original) {
+            if is_exact_env_placeholder(&original) {
                 *value = coerce_expanded_yaml_scalar(&expanded);
             } else {
                 *text = expanded;
@@ -173,25 +178,30 @@ fn coerce_expanded_yaml_scalar(text: &str) -> Value {
     }
 }
 
-fn collect_quoted_exact_env_placeholders(yaml: &str) -> HashSet<String> {
-    let mut placeholders = HashSet::new();
+fn mark_quoted_exact_env_placeholders(yaml: &str) -> (String, HashMap<String, String>) {
+    let mut marked = String::with_capacity(yaml.len());
+    let mut placeholders = HashMap::new();
     let mut chars = yaml.chars().peekable();
 
     while let Some(ch) = chars.next() {
         if ch != '\'' && ch != '"' {
+            marked.push(ch);
             continue;
         }
 
         let quote = ch;
         let mut text = String::new();
+        let mut raw = String::new();
         let mut escaped = false;
         for c in chars.by_ref() {
             if quote == '"' && escaped {
                 text.push(c);
+                raw.push(c);
                 escaped = false;
                 continue;
             }
             if quote == '"' && c == '\\' {
+                raw.push(c);
                 escaped = true;
                 continue;
             }
@@ -199,12 +209,21 @@ fn collect_quoted_exact_env_placeholders(yaml: &str) -> HashSet<String> {
                 break;
             }
             text.push(c);
+            raw.push(c);
         }
 
         if is_exact_env_placeholder(&text) {
-            placeholders.insert(text);
+            let marker = format!("__LOGFWD_QUOTED_ENV_PLACEHOLDER_{}__", placeholders.len());
+            marked.push(quote);
+            marked.push_str(&marker);
+            marked.push(quote);
+            placeholders.insert(marker, text);
+        } else {
+            marked.push(quote);
+            marked.push_str(&raw);
+            marked.push(quote);
         }
     }
 
-    placeholders
+    (marked, placeholders)
 }

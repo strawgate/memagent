@@ -92,6 +92,32 @@ output:
 }
 
 #[test]
+fn issue_1855_mixed_quoted_and_unquoted_env_uses_node_context() {
+    let _env_lock = env_lock();
+    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_MIXED", "4");
+
+    let yaml = r#"
+pipelines:
+  test:
+    workers: ${LOGFWD_ISSUE_1855_MIXED}
+    resource_attrs:
+      note: "${LOGFWD_ISSUE_1855_MIXED}"
+    inputs:
+      - type: generator
+    outputs:
+      - type: stdout
+"#;
+
+    let config = Config::load_str(yaml).expect("mixed env-backed scalars should parse");
+
+    assert_eq!(config.pipelines["test"].workers, Some(4));
+    assert_eq!(
+        config.pipelines["test"].resource_attrs.get("note"),
+        Some(&"4".to_string())
+    );
+}
+
+#[test]
 fn issue_1855_env_expansion_applies_to_mapping_keys() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_PIPELINE", "from-env");
@@ -151,6 +177,31 @@ pipelines:
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("listen address '0.0.0.0:09000' duplicates"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn issue_1856_reject_duplicate_ipv6_listen_addresses_for_same_transport() {
+    let yaml = r#"
+pipelines:
+  p1:
+    inputs:
+      - type: tcp
+        listen: "[::1]:9000"
+    outputs:
+      - type: stdout
+  p2:
+    inputs:
+      - type: http
+        listen: "[0:0:0:0:0:0:0:1]:9000"
+    outputs:
+      - type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("listen address '[0:0:0:0:0:0:0:1]:9000' duplicates"),
         "unexpected error: {err}"
     );
 }

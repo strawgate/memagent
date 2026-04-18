@@ -4,6 +4,7 @@ use crate::types::{
     PIPELINE_WORKERS_MAX,
 };
 use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::path::Path;
 use url::Url;
 
@@ -1400,7 +1401,20 @@ fn canonical_listen_addr_key(transport: &str, listen: &str) -> Result<String, St
     let port = port_str
         .parse::<u16>()
         .map_err(|_| format!("'{listen}' has an invalid port '{port_str}'"))?;
-    Ok(format!("{transport}:{}:{port}", host.to_lowercase()))
+    Ok(format!(
+        "{transport}:{}:{port}",
+        canonical_listen_host_key(host)
+    ))
+}
+
+fn canonical_listen_host_key(host: &str) -> String {
+    let bare_host = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(host);
+    bare_host
+        .parse::<IpAddr>()
+        .map_or_else(|_| bare_host.to_lowercase(), |addr| addr.to_string())
 }
 
 fn sensor_supported_families(input_type: &InputType) -> &'static [&'static str] {
