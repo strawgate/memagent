@@ -1,4 +1,4 @@
-name: Nightly Benchmarks
+name: Criterion Nightly
 
 on:
   schedule:
@@ -514,7 +514,7 @@ jobs:
           See [development dashboard](https://strawgate.github.io/memagent/bench/development.html) for full results."
           fi
 
-          TITLE="Benchmark results ${DATE} (${COMMIT})"
+          TITLE="Criterion Nightly ${DATE} (${COMMIT})"
           BODY="$(cat <<HEREDOC
           ## Benchmark Results --- ${DATE}
 
