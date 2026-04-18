@@ -1,7 +1,9 @@
 use crate::types::{
     Config, ConfigError, EnrichmentConfig, Format, GeneratorAttributeValueConfig,
     GeneratorProfileConfig, InputType, InputTypeConfig, JournaldBackendConfig, OutputType,
+    PIPELINE_WORKERS_MAX,
 };
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use url::Url;
 
@@ -68,7 +70,13 @@ impl Config {
         }
 
         let mut all_errors: Vec<String> = Vec::new();
-        for (name, pipe) in &self.pipelines {
+        let mut seen_listen_addrs: HashMap<String, String> = HashMap::new();
+        let mut seen_file_output_paths: HashMap<std::path::PathBuf, String> = HashMap::new();
+
+        let mut pipeline_names: Vec<&str> = self.pipelines.keys().map(String::as_str).collect();
+        pipeline_names.sort_unstable();
+        for name in pipeline_names {
+            let pipe = &self.pipelines[name];
             let result = (|| -> Result<(), ConfigError> {
                 if pipe.batch_timeout_ms == Some(0) {
                     return Err(ConfigError::Validation(format!(
@@ -80,9 +88,11 @@ impl Config {
                         "pipeline '{name}': poll_interval_ms must be greater than 0"
                     )));
                 }
-                if pipe.workers == Some(0) {
+                if let Some(workers) = pipe.workers
+                    && !(1..=PIPELINE_WORKERS_MAX).contains(&workers)
+                {
                     return Err(ConfigError::Validation(format!(
-                        "pipeline '{name}': workers must be greater than 0"
+                        "pipeline '{name}': workers must be in range 1..={PIPELINE_WORKERS_MAX} (got {workers})"
                     )));
                 }
                 if pipe.batch_target_bytes == Some(0) {
@@ -106,6 +116,28 @@ impl Config {
                     return Err(ConfigError::Validation(format!(
                         "pipeline '{name}' has no outputs"
                     )));
+                }
+
+                let mut seen_input_names: HashSet<&str> = HashSet::new();
+                for (i, input) in pipe.inputs.iter().enumerate() {
+                    if let Some(input_name) = input.name.as_deref() {
+                        if !seen_input_names.insert(input_name) {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' input '#{i}': duplicate input name '{input_name}'"
+                            )));
+                        }
+                    }
+                }
+
+                let mut seen_output_names: HashSet<&str> = HashSet::new();
+                for (i, output) in pipe.outputs.iter().enumerate() {
+                    if let Some(output_name) = output.name.as_deref() {
+                        if !seen_output_names.insert(output_name) {
+                            return Err(ConfigError::Validation(format!(
+                                "pipeline '{name}' output '#{i}': duplicate output name '{output_name}'"
+                            )));
+                        }
+                    }
                 }
 
                 for (i, input) in pipe.inputs.iter().enumerate() {
@@ -165,6 +197,13 @@ impl Config {
                                     "pipeline '{name}' input '{label}': so_rcvbuf cannot be 0"
                                 )));
                             }
+
+                            track_listen_addr_uniqueness(
+                                &mut seen_listen_addrs,
+                                name,
+                                &label,
+                                &u.listen,
+                            )?;
                         }
                         InputTypeConfig::Tcp(t) => {
                             if let Err(msg) = validate_bind_addr(&t.listen) {
@@ -193,6 +232,13 @@ impl Config {
                                     "pipeline '{name}' input '{label}': read_timeout_ms cannot be 0"
                                 )));
                             }
+
+                            track_listen_addr_uniqueness(
+                                &mut seen_listen_addrs,
+                                name,
+                                &label,
+                                &t.listen,
+                            )?;
                         }
                         InputTypeConfig::Otlp(o) => {
                             if let Err(msg) = validate_bind_addr(&o.listen) {
@@ -212,6 +258,13 @@ impl Config {
                                     )));
                                 }
                             }
+
+                            track_listen_addr_uniqueness(
+                                &mut seen_listen_addrs,
+                                name,
+                                &label,
+                                &o.listen,
+                            )?;
                         }
                         InputTypeConfig::Http(h) => {
                             if let Err(msg) = validate_bind_addr(&h.listen) {
@@ -245,6 +298,13 @@ impl Config {
                                     )));
                                 }
                             }
+
+                            track_listen_addr_uniqueness(
+                                &mut seen_listen_addrs,
+                                name,
+                                &label,
+                                &h.listen,
+                            )?;
                         }
                         InputTypeConfig::Generator(g) => {
                             if g.generator.as_ref().and_then(|cfg| cfg.batch_size) == Some(0) {
@@ -462,6 +522,13 @@ impl Config {
                                     "pipeline '{name}' input '{label}': max_message_size_bytes cannot be 0"
                                 )));
                             }
+
+                            track_listen_addr_uniqueness(
+                                &mut seen_listen_addrs,
+                                name,
+                                &label,
+                                &a.listen,
+                            )?;
                         }
                         InputTypeConfig::Journald(j) => {
                             if let Some(jd) = &j.journald {
@@ -746,6 +813,12 @@ impl Config {
                                     "pipeline '{name}' output '{label}': {msg}",
                                 )));
                             }
+                            if output.format.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': {} output does not support 'format'; remove the field",
+                                    output.output_type,
+                                )));
+                            }
                         }
                         // Http and Parquet are not yet implemented — already
                         // rejected by the check above; these arms are unreachable
@@ -901,6 +974,19 @@ impl Config {
                                 )));
                             }
                         }
+                    }
+
+                    if output.output_type == OutputType::Loki
+                        && let (Some(static_labels), Some(label_columns)) =
+                            (&output.static_labels, &output.label_columns)
+                        && let Some(conflict) = label_columns
+                            .iter()
+                            .map(String::as_str)
+                            .find(|col| static_labels.contains_key(*col))
+                    {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': loki label '{conflict}' is defined in both 'label_columns' and 'static_labels'"
+                        )));
                     }
 
                     if !matches!(output.output_type, OutputType::File | OutputType::Parquet)
@@ -1143,6 +1229,16 @@ impl Config {
                     let out_pb = std::path::PathBuf::from(out_path);
                     let out_norm = normalize_path_for_compare(&out_pb);
 
+                    if let Some(prev) = seen_file_output_paths.get(&out_norm) {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{out_label}': file output path '{out_path}' duplicates {prev}"
+                        )));
+                    }
+                    seen_file_output_paths.insert(
+                        out_norm.clone(),
+                        format!("pipeline '{name}' output '{out_label}'"),
+                    );
+
                     // Check exact input path match.
                     for (in_pb, in_norm) in &exact_input_paths {
                         if out_norm == *in_norm {
@@ -1245,6 +1341,23 @@ fn normalize_unit_name(name: &str) -> String {
     } else {
         format!("{name}.service")
     }
+}
+
+fn track_listen_addr_uniqueness(
+    seen_listen_addrs: &mut HashMap<String, String>,
+    pipeline_name: &str,
+    input_label: &str,
+    listen: &str,
+) -> Result<(), ConfigError> {
+    let listen_key = listen.to_ascii_lowercase();
+    let current_ref = format!("pipeline '{pipeline_name}' input '{input_label}'");
+    if let Some(previous_ref) = seen_listen_addrs.get(&listen_key) {
+        return Err(ConfigError::Validation(format!(
+            "{current_ref}: listen address '{listen}' duplicates {previous_ref}"
+        )));
+    }
+    seen_listen_addrs.insert(listen_key, current_ref);
+    Ok(())
 }
 
 fn sensor_supported_families(input_type: &InputType) -> &'static [&'static str] {

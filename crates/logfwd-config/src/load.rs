@@ -4,6 +4,7 @@ use crate::types::{
     StorageConfig,
 };
 use serde::Deserialize;
+use serde_yaml_ng::Value;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -33,8 +34,9 @@ impl Config {
 
     /// Parse configuration from a YAML string.
     pub fn load_str(yaml: &str) -> Result<Self, ConfigError> {
-        let expanded = expand_env_vars(yaml)?;
-        let raw: RawConfig = serde_yaml_ng::from_str(&expanded)?;
+        let mut value: Value = serde_yaml_ng::from_str(yaml)?;
+        expand_env_vars_in_yaml_value(&mut value)?;
+        let raw: RawConfig = serde_yaml_ng::from_value(value)?;
         Self::from_raw(raw)
     }
 
@@ -115,4 +117,28 @@ impl Config {
         cfg.validate()?;
         Ok(cfg)
     }
+}
+
+fn expand_env_vars_in_yaml_value(value: &mut Value) -> Result<(), ConfigError> {
+    match value {
+        Value::String(text) => {
+            *text = expand_env_vars(text)?;
+        }
+        Value::Sequence(items) => {
+            for item in items {
+                expand_env_vars_in_yaml_value(item)?;
+            }
+        }
+        Value::Mapping(map) => {
+            for (_key, val) in map {
+                expand_env_vars_in_yaml_value(val)?;
+            }
+        }
+        Value::Tagged(tagged) => {
+            expand_env_vars_in_yaml_value(&mut tagged.value)?;
+        }
+        _ => {}
+    }
+
+    Ok(())
 }

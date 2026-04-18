@@ -5,6 +5,9 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt;
 
+/// Conservative upper bound for per-pipeline worker count.
+pub(crate) const PIPELINE_WORKERS_MAX: usize = 1024;
+
 /// Authentication configuration for output HTTP sinks.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
