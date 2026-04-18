@@ -1217,7 +1217,10 @@ mod tests {
 
         let exited_cleanly =
             read_export_entries(reader, &tx, &running, &["sshd.service".to_string()]);
-        assert!(!exited_cleanly, "cursor EOF should be treated as subprocess exit");
+        assert!(
+            !exited_cleanly,
+            "cursor EOF should be treated as subprocess exit"
+        );
 
         let entries: Vec<Vec<u8>> = rx.try_iter().collect();
         assert_eq!(entries.len(), 1, "excluded entry should be dropped");
@@ -1240,7 +1243,10 @@ mod tests {
 
         let exited_cleanly = read_export_entries(reader, &tx, &running, &[]);
         assert!(!exited_cleanly, "short stream should fail without panic");
-        assert!(rx.try_recv().is_err(), "oversized field should not emit data");
+        assert!(
+            rx.try_recv().is_err(),
+            "oversized field should not emit data"
+        );
     }
 
     #[test]
