@@ -42,7 +42,7 @@ jobs:
           mkdir -p /tmp/tla
           curl -sL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o /tmp/tla/tla2tools.jar
       - name: TLC PipelineMachine nightly thorough model
-        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.nightly.thorough.cfg -workers auto
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.thorough.cfg -workers auto
 
   turmoil-replay-equivalence:
     name: Turmoil replay-equivalence
@@ -92,8 +92,10 @@ jobs:
           mkdir -p "$FAIL_DIR"
           rm -f "$FAIL_SEEDS_FILE"
 
-          # Find the compiled test binary to avoid recompilation per seed
-          BIN=$(cargo test -p logfwd --features turmoil --test turmoil_sim --no-run --message-format=json 2>/dev/null | jq -r 'select(.executable != null) | .executable' | head -1)
+          # Find the compiled test binary (filter for test targets only)
+          BIN=$(cargo test -p logfwd --features turmoil --test turmoil_sim --no-run --message-format=json 2>/dev/null \
+            | jq -r 'select(.executable != null and (.target.kind // [] | index("test"))) | .executable' \
+            | head -1)
           if [ -z "$BIN" ]; then
             echo "ERROR: could not find turmoil test binary"
             exit 1
@@ -108,8 +110,11 @@ jobs:
               continue
             fi
             RUN=$((RUN + 1))
-            TURMOIL_SEED=$SEED "$BIN" --test-threads=1 > /tmp/test_out.txt 2>&1
-            result=$?
+            # Use if/else to avoid set -e killing the script on test failure
+            result=0
+            if ! TURMOIL_SEED=$SEED "$BIN" --test-threads=1 > /tmp/test_out.txt 2>&1; then
+              result=1
+            fi
             tail -1 /tmp/test_out.txt | grep -q "ok" || result=1
             if [ $result -ne 0 ]; then
               echo "FAILED on shard $SHARD_INDEX seed $SEED"
@@ -184,6 +189,14 @@ jobs:
             echo "- No shard artifacts captured." >>"$summary_file"
           fi
 
+          # Skip filing an issue when there are no genuine seed failures.
+          # If shards failed due to infra/compile errors, total_fail_count and
+          # failed_shards will both be zero.
+          if [ "$total_fail_count" -eq 0 ] && [ "$failed_shards" -eq 0 ]; then
+            echo "No seed failures to report (shards may have failed for infra/compile reasons — check the run URL for details)."
+            exit 0
+          fi
+
           body_file="$(mktemp)"
           cat >"$body_file" <<EOF
           Nightly turmoil seed sweep failed.
@@ -213,15 +226,15 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: dtolnay/rust-toolchain@nightly
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz
         env:
           RUSTC_WRAPPER: ""
       - name: Run fuzz targets
         run: |
           cd crates/logfwd-core
-          for target in $(cargo fuzz list 2>/dev/null); do
+          for target in $(cargo +nightly fuzz list 2>/dev/null); do
             echo "=== Fuzzing $target for 5 minutes ==="
-            cargo fuzz run "$target" -- -max_total_time=300
+            cargo +nightly fuzz run "$target" -- -max_total_time=300
           done
 
   fuzz-extended:
@@ -233,13 +246,13 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: dtolnay/rust-toolchain@nightly
       - name: Install cargo-fuzz
-        run: cargo install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz
         env:
           RUSTC_WRAPPER: ""
       - name: Run fuzz targets
         run: |
           cd crates/logfwd-core
-          for target in $(cargo fuzz list 2>/dev/null); do
+          for target in $(cargo +nightly fuzz list 2>/dev/null); do
             echo "=== Fuzzing $target for 30 minutes ==="
-            cargo fuzz run "$target" -- -max_total_time=1800
+            cargo +nightly fuzz run "$target" -- -max_total_time=1800
           done
