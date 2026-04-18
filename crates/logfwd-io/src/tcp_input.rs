@@ -80,6 +80,9 @@ struct Client {
     octet_counting_mode: bool,
     /// Remaining bytes to drop from an oversized octet-counted frame.
     discard_octet_bytes: usize,
+    /// After consuming an octet-counted payload, optionally consume exactly one
+    /// delimiter newline if it appears as the immediate next byte.
+    consume_octet_delimiter_newline: bool,
     /// Whether we are dropping newline-delimited bytes until a newline appears.
     discard_until_newline: bool,
     /// Raw bytes read from the socket that have not yet been charged to an
@@ -166,6 +169,14 @@ fn extract_complete_records(client: &mut Client, out: &mut Vec<u8>) {
             continue;
         }
 
+        if client.consume_octet_delimiter_newline {
+            if pending[0] == b'\n' {
+                consumed += 1;
+            }
+            client.consume_octet_delimiter_newline = false;
+            continue;
+        }
+
         if client.discard_until_newline {
             if let Some(pos) = memchr::memchr(b'\n', pending) {
                 consumed += pos + 1;
@@ -195,11 +206,13 @@ fn extract_complete_records(client: &mut Client, out: &mut Vec<u8>) {
                 if len > MAX_LINE_LENGTH {
                     client.discard_octet_bytes = len;
                     consumed += prefix_len;
+                    client.consume_octet_delimiter_newline = true;
                     continue;
                 }
                 out.extend_from_slice(&pending[prefix_len..needed]);
                 out.push(b'\n');
                 consumed += needed;
+                client.consume_octet_delimiter_newline = true;
                 continue;
             }
         }
@@ -395,6 +408,7 @@ impl InputSource for TcpInput {
                         pending: Vec::new(),
                         octet_counting_mode: false,
                         discard_octet_bytes: 0,
+                        consume_octet_delimiter_newline: false,
                         discard_until_newline: false,
                         unaccounted_bytes: 0,
                     });
@@ -965,6 +979,32 @@ mod tests {
             .flatten()
             .collect::<Vec<u8>>();
         assert_eq!(joined, b"hello\nworld\n");
+    }
+
+    #[test]
+    fn tcp_octet_counted_frame_consumes_single_delimiter_newline() {
+        let mut input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
+        let addr = input.local_addr().unwrap();
+        let mut client = StdTcpStream::connect(addr).unwrap();
+        client.write_all(b"5 hello\n").unwrap();
+        client.flush().unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+
+        let events = input.poll().unwrap();
+        let joined = events
+            .into_iter()
+            .filter_map(|e| match e {
+                InputEvent::Data { bytes, .. } => Some(bytes),
+                _ => None,
+            })
+            .flatten()
+            .collect::<Vec<u8>>();
+        assert_eq!(joined, b"hello\n");
     }
 
     #[test]
