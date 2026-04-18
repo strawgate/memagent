@@ -67,7 +67,7 @@ pub(super) async fn handle_otlp_request(
 
     let accounted_bytes = body.len() as u64;
     body = match content_encoding.as_deref() {
-        Some("zstd") => match decompress_zstd(&body) {
+        Some("zstd") => match decompress_zstd(&body, max_body) {
             Ok(body) => body,
             Err(InputError::Receiver(msg)) => {
                 record_error(state.stats.as_ref());
@@ -82,7 +82,7 @@ pub(super) async fn handle_otlp_request(
                 return (StatusCode::BAD_REQUEST, "zstd decompression failed").into_response();
             }
         },
-        Some("gzip") => match decompress_gzip(&body) {
+        Some("gzip") => match decompress_gzip(&body, max_body) {
             Ok(body) => body,
             Err(InputError::Receiver(msg)) => {
                 record_error(state.stats.as_ref());

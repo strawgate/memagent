@@ -13,7 +13,6 @@ use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use prost::Message;
 
 use crate::InputError;
-use crate::receiver_http::MAX_REQUEST_BODY_SIZE;
 
 use super::OtlpProtobufDecodeMode;
 use super::convert::{
@@ -24,28 +23,39 @@ use super::convert::{
 #[cfg(any(feature = "otlp-research", test))]
 use super::projection::ProjectionError;
 
-pub(super) fn decompress_zstd(body: &[u8]) -> Result<Vec<u8>, InputError> {
+pub(super) fn decompress_zstd(body: &[u8], max_body_size: usize) -> Result<Vec<u8>, InputError> {
     let decoder = zstd::Decoder::new(body)
         .map_err(|_| InputError::Receiver("zstd decompression failed".to_string()))?;
-    read_decompressed_body(decoder, body.len(), "zstd decompression failed")
+    read_decompressed_body(
+        decoder,
+        body.len(),
+        max_body_size,
+        "zstd decompression failed",
+    )
 }
 
-pub(super) fn decompress_gzip(body: &[u8]) -> Result<Vec<u8>, InputError> {
+pub(super) fn decompress_gzip(body: &[u8], max_body_size: usize) -> Result<Vec<u8>, InputError> {
     let decoder = GzDecoder::new(body);
-    read_decompressed_body(decoder, body.len(), "gzip decompression failed")
+    read_decompressed_body(
+        decoder,
+        body.len(),
+        max_body_size,
+        "gzip decompression failed",
+    )
 }
 
 pub(super) fn read_decompressed_body(
     reader: impl io::Read,
     compressed_len: usize,
+    max_body_size: usize,
     error_label: &str,
 ) -> Result<Vec<u8>, InputError> {
-    let mut decompressed = Vec::with_capacity(compressed_len.min(MAX_REQUEST_BODY_SIZE));
+    let mut decompressed = Vec::with_capacity(compressed_len.min(max_body_size));
     match reader
-        .take(MAX_REQUEST_BODY_SIZE as u64 + 1)
+        .take(max_body_size as u64 + 1)
         .read_to_end(&mut decompressed)
     {
-        Ok(n) if n > MAX_REQUEST_BODY_SIZE => Err(InputError::Io(io::Error::new(
+        Ok(n) if n > max_body_size => Err(InputError::Io(io::Error::new(
             io::ErrorKind::InvalidData,
             "payload too large",
         ))),

@@ -1142,6 +1142,52 @@ mod tests {
     }
 
     #[test]
+    fn message_template_with_special_chars_produces_valid_json() {
+        // Regression test: message_template with quotes, backslashes, newlines,
+        // and control chars must still produce valid JSON.
+        let templates = [
+            r#"quotes "here" and 'there'"#,
+            "backslash \\ and tab \t inside",
+            "newline\ninside template",
+            "carriage\r\nreturn",
+            "control\x01chars\x1f",
+            r#"mixed "all" \types\ of 'special' chars"#,
+        ];
+        for tmpl in &templates {
+            for complexity in [GeneratorComplexity::Simple, GeneratorComplexity::Complex] {
+                let mut generator = GeneratorInput::new(
+                    "test",
+                    GeneratorConfig {
+                        batch_size: 10,
+                        total_events: 10,
+                        complexity,
+                        message_template: Some(tmpl.to_string()),
+                        ..Default::default()
+                    },
+                );
+                let events = generator.poll().unwrap();
+                let InputEvent::Data { bytes, .. } = &events[0] else {
+                    panic!("expected Data event");
+                };
+                let text = String::from_utf8(bytes.clone()).unwrap();
+                for (i, line) in text.trim().lines().enumerate() {
+                    let parsed: serde_json::Value = serde_json::from_str(line).unwrap_or_else(
+                        |e| {
+                            panic!(
+                                "invalid JSON at event {i} with template {tmpl:?} ({complexity:?}): {e}\n{line}"
+                            )
+                        },
+                    );
+                    let msg = parsed["message"]
+                        .as_str()
+                        .expect("message field should be a string");
+                    assert_eq!(msg, *tmpl, "message content should match template");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn events_generated_counter() {
         let mut input = GeneratorInput::new(
             "test",
