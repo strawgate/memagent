@@ -232,6 +232,36 @@ pipelines:
 }
 
 #[test]
+fn issue_1857_reject_relative_and_absolute_file_output_aliases() {
+    let base = std::env::current_dir().expect("current dir should be available");
+    let absolute = base.join("logs/shared.log");
+    let yaml = format!(
+        r#"
+pipelines:
+  p1:
+    inputs:
+      - type: generator
+    outputs:
+      - type: file
+        path: logs/shared.log
+  p2:
+    inputs:
+      - type: generator
+    outputs:
+      - type: file
+        path: {}
+"#,
+        absolute.display()
+    );
+
+    let err = Config::load_str_with_base_path(&yaml, Some(&base))
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("file output path"), "unexpected error: {err}");
+    assert!(err.contains("duplicates"), "unexpected error: {err}");
+}
+
+#[test]
 fn issue_1858_reject_workers_above_max_bound() {
     let yaml = r#"
 pipelines:

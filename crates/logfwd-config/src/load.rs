@@ -28,17 +28,26 @@ struct RawConfig {
 impl Config {
     /// Load configuration from a YAML file path.
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
         let raw = std::fs::read_to_string(path)?;
-        Self::load_str(&raw)
+        Self::load_str_with_base_path(&raw, path.parent())
     }
 
     /// Parse configuration from a YAML string.
     pub fn load_str(yaml: &str) -> Result<Self, ConfigError> {
+        Self::load_str_with_base_path(yaml, None)
+    }
+
+    /// Parse configuration from YAML with a base path for relative-path validation.
+    pub fn load_str_with_base_path(
+        yaml: &str,
+        base_path: Option<&Path>,
+    ) -> Result<Self, ConfigError> {
         let (marked_yaml, quoted_placeholders) = mark_quoted_exact_env_placeholders(yaml);
         let mut value: Value = serde_yaml_ng::from_str(&marked_yaml)?;
         expand_env_vars_in_yaml_value(&mut value, &quoted_placeholders)?;
         let raw: RawConfig = serde_yaml_ng::from_value(value)?;
-        Self::from_raw(raw)
+        Self::from_raw(raw, base_path)
     }
 
     /// Expand `${VAR}` environment variables in raw YAML without parsing.
@@ -46,7 +55,7 @@ impl Config {
         expand_env_vars(yaml)
     }
 
-    fn from_raw(raw: RawConfig) -> Result<Self, ConfigError> {
+    fn from_raw(raw: RawConfig, base_path: Option<&Path>) -> Result<Self, ConfigError> {
         let pipelines = match (raw.pipelines, raw.input, raw.output) {
             (Some(p), None, None) => {
                 if !raw.enrichment.is_empty() {
@@ -115,7 +124,7 @@ impl Config {
             server: raw.server,
             storage: raw.storage,
         };
-        cfg.validate()?;
+        cfg.validate_with_base_path(base_path)?;
         Ok(cfg)
     }
 }

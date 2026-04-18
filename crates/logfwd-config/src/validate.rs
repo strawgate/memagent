@@ -11,8 +11,8 @@ use url::Url;
 const MAX_READ_BUF_SIZE: usize = 4_194_304;
 
 impl Config {
-    /// Validate the loaded configuration.
-    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
+    /// Validate the loaded configuration using a base path for relative paths.
+    pub fn validate_with_base_path(&self, base_path: Option<&Path>) -> Result<(), ConfigError> {
         if let Some(ep) = &self.server.traces_endpoint
             && let Err(msg) = validate_endpoint_url(ep)
         {
@@ -1213,7 +1213,7 @@ impl Config {
                         if p.contains('*') || p.contains('?') || p.contains('[') {
                             glob_input_patterns.push(p.clone());
                         } else {
-                            let pb = std::path::PathBuf::from(p);
+                            let pb = path_for_config_compare(p, base_path);
                             let norm = normalize_path_key_for_compare(&pb);
                             exact_input_paths.push((pb, norm));
                         }
@@ -1232,7 +1232,7 @@ impl Config {
                     let Some(out_path) = output.path.as_deref() else {
                         continue;
                     };
-                    let out_pb = std::path::PathBuf::from(out_path);
+                    let out_pb = path_for_config_compare(out_path, base_path);
                     let out_norm = normalize_path_key_for_compare(&out_pb);
 
                     if let Some(prev) = seen_file_output_paths.get(&out_norm) {
@@ -1316,6 +1316,16 @@ fn normalize_path_key_for_compare(path: &Path) -> std::path::PathBuf {
     {
         normalized
     }
+}
+
+fn path_for_config_compare(path: &str, base_path: Option<&Path>) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(path);
+    if path.is_relative()
+        && let Some(base) = base_path
+    {
+        return base.join(path);
+    }
+    path
 }
 
 fn normalize_path_lexically(path: &Path) -> std::path::PathBuf {
