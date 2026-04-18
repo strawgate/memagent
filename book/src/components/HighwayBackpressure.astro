@@ -5,6 +5,16 @@
 ---
 
 <div class="hw" id="highway-bp">
+  <div class="hw-slider-row">
+    <label class="hw-slider-label" for="hw-green">Collector Availability</label>
+    <div class="hw-slider-wrap">
+      <span class="hw-slider-end">&#x1F534; Mostly down</span>
+      <input type="range" id="hw-green" class="hw-slider" min="5" max="95" value="80" />
+      <span class="hw-slider-end">&#x1F7E2; Always up</span>
+    </div>
+    <div class="hw-slider-detail" id="hw-slider-detail">Green 80% &middot; Red 20%</div>
+  </div>
+
   <div class="hw-scene">
     <svg class="hw-svg" viewBox="0 0 800 210" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
       <defs>
@@ -78,14 +88,6 @@
     &#x1F7E2; Flowing &mdash; collector keeping up
   </div>
 
-  <div class="hw-slider-row">
-    <label class="hw-slider-label" for="hw-green">Collector Availability</label>
-    <div class="hw-slider-wrap">
-      <span class="hw-slider-end">&#x1F534; Mostly down</span>
-      <input type="range" id="hw-green" class="hw-slider" min="5" max="95" value="80" />
-      <span class="hw-slider-end">&#x1F7E2; Always up</span>
-    </div>
-    <div class="hw-slider-detail" id="hw-slider-detail">Green 80% &middot; Red 20%</div>
   </div>
 </div>
 
@@ -137,7 +139,7 @@
 
   .hw-slider-row {
     display: flex; flex-direction: column; align-items: center; gap: 0.2rem;
-    margin-top: 0.3rem;
+    margin-bottom: 0.5rem;
   }
   .hw-slider-label {
     font-size: 0.65rem; font-weight: 600; color: var(--hw-muted);
