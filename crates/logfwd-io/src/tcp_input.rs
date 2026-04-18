@@ -651,49 +651,61 @@ mod tests {
     use std::io::Write;
     use std::net::TcpStream as StdTcpStream;
 
-    fn client_with_pending(pending: Vec<u8>) -> (Client, StdTcpStream) {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
-        let peer =
-            StdTcpStream::connect(listener.local_addr().expect("listener addr")).expect("connect");
-        let (stream, _) = listener.accept().expect("accept test client");
-        let now = Instant::now();
-        (
-            Client {
-                stream,
-                source_id: SourceId(1),
-                last_data: now,
-                last_read: now,
-                pending,
-                octet_counting_mode: false,
-                discard_octet_bytes: 0,
-                should_consume_octet_delimiter_newline: false,
-                discard_until_newline: false,
-                unaccounted_bytes: 0,
-            },
-            peer,
+    fn tcp_input_with_client() -> (TcpInput, StdTcpStream) {
+        let input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
         )
+        .expect("test input should bind");
+        let addr = input.local_addr().expect("input should expose local addr");
+        let client = StdTcpStream::connect(addr).expect("client should connect");
+        (input, client)
+    }
+
+    fn poll_tcp_bytes_until(
+        input: &mut TcpInput,
+        mut is_complete: impl FnMut(&[u8]) -> bool,
+    ) -> Vec<u8> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut joined = Vec::new();
+        while Instant::now() < deadline {
+            for event in input.poll().expect("tcp poll should succeed") {
+                if let InputEvent::Data { bytes, .. } = event {
+                    joined.extend_from_slice(&bytes);
+                }
+            }
+            if is_complete(&joined) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        joined
     }
 
     #[test]
     fn octet_frame_consumes_observed_delimiter_only() {
-        let (mut client, _peer) = client_with_pending(b"5 hello\n".to_vec());
-        let mut out = Vec::new();
-        extract_complete_records(&mut client, &mut out);
-        assert_eq!(out, b"hello\n");
-        assert!(client.pending.is_empty());
+        let (mut input, mut client) = tcp_input_with_client();
+        client.write_all(b"5 hello\n").unwrap();
+        client.flush().unwrap();
+
+        let got = poll_tcp_bytes_until(&mut input, |bytes| bytes == b"hello\n");
+        assert_eq!(got, b"hello\n");
     }
 
     #[test]
     fn octet_frame_without_observed_delimiter_keeps_later_empty_line() {
-        let (mut client, _peer) = client_with_pending(b"5 hello".to_vec());
-        let mut out = Vec::new();
-        extract_complete_records(&mut client, &mut out);
-        assert_eq!(out, b"hello\n");
-        assert!(client.pending.is_empty());
+        let (mut input, mut client) = tcp_input_with_client();
+        client.write_all(b"5 hello").unwrap();
+        client.flush().unwrap();
 
-        client.pending.extend_from_slice(b"\n");
-        let mut next = Vec::new();
-        extract_complete_records(&mut client, &mut next);
+        let first = poll_tcp_bytes_until(&mut input, |bytes| bytes == b"hello\n");
+        assert_eq!(first, b"hello\n");
+
+        client.write_all(b"\n").unwrap();
+        client.flush().unwrap();
+
+        let next = poll_tcp_bytes_until(&mut input, |bytes| bytes == b"\n");
         assert_eq!(next, b"\n");
     }
 
