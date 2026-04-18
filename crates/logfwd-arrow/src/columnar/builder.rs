@@ -1,11 +1,12 @@
 // builder.rs — ColumnarBatchBuilder: shared column construction engine.
 //
 // Drives BatchPlan + FieldHandle → typed writes → Arrow materialization.
-// Uses ColumnAccumulator for per-field storage (typed enum, no dead vecs).
+// Uses ColumnAccumulator for per-field storage.
 //
 // Scope:
-//   - Planned fields: single-type columns, zero conflict overhead
-//   - Dynamic fields: multi-type, conflict detection at finalization
+//   - Planned fields: stable handles and typed write calls
+//   - Current storage: dynamic accumulators for planned and dynamic fields
+//   - Future optimization: planned fields can move to single-type accumulators
 //   - Detached string materialization via shared string buffer
 //   - Sparse padding with deferred (row, value) facts
 //   - StringViewArray zero-copy when given input buffer
@@ -97,9 +98,9 @@ impl From<MaterializeError> for BuilderError {
 ///
 /// # Design
 ///
-/// - Each field gets a `ColumnAccumulator` matched to its schema mode:
-///   planned Int64 → `ColumnAccumulator::Int64` (one vec, no conflict overhead),
-///   dynamic → `ColumnAccumulator::Dynamic` (all vecs, conflict detection).
+/// - Each field currently gets a dynamic `ColumnAccumulator`, regardless of
+///   schema mode. Planned fields still use stable handles and typed write calls;
+///   single-type planned accumulators are a future optimization.
 /// - Dedup uses the same bitmask approach as `RowLifecycle::written_bits`.
 /// - `finish_batch` iterates fields and calls `accumulator.materialize()`.
 pub struct ColumnarBatchBuilder {
