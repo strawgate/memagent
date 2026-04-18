@@ -53,8 +53,6 @@ jobs:
       - name: Build (cross)
         if: matrix.use_cross == true
         run: cross build --release -p logfwd --target ${{ matrix.target }}
-        env:
-          RUSTC_WRAPPER: ""
 
       - name: Build (cargo)
         if: matrix.use_cross != true

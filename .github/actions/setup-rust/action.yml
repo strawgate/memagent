@@ -1,11 +1,9 @@
 name: Setup Rust
-description: Install stable Rust toolchain with sccache, clippy, rustfmt, and cargo cache.
+description: Install stable Rust toolchain with clippy, rustfmt, and cargo cache.
 
 runs:
   using: composite
   steps:
-    - uses: mozilla-actions/sccache-action@v0.0.9
-
     - uses: dtolnay/rust-toolchain@stable
       with:
         components: clippy, rustfmt

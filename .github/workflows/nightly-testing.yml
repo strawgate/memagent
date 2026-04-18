@@ -231,8 +231,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
       - name: Install cargo-fuzz
         run: cargo +nightly install cargo-fuzz
-        env:
-          RUSTC_WRAPPER: ""
       - name: Run fuzz targets
         run: |
           cd crates/logfwd-core

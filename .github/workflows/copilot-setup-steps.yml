@@ -22,6 +22,4 @@ jobs:
       - name: Install Kani verifier
         run: |
           cargo install --locked kani-verifier
-          RUSTC_WRAPPER="" cargo kani setup
-        env:
-          RUSTC_WRAPPER: ""
+          cargo kani setup
