@@ -248,6 +248,7 @@
   function tick() {
     var now = Date.now();
     totalFrames++;
+    autoTick();
 
     // --- Traffic light cycle ---
     var elapsed = (now - cycleStart) % CYCLE_TOTAL;
@@ -406,13 +407,39 @@
     }
   }
 
-  // Slider
+  // Slider — switch to manual on any user interaction
+  var autoMode = true;
+  var autoDir = -1; // -1 = sweeping down, +1 = sweeping up
+  var AUTO_SPEED = 0.15; // pct per tick (~6 pct/sec)
+
+  function exitAuto() {
+    if (!autoMode) return;
+    autoMode = false;
+    sliderDetail.textContent = 'Green ' + greenPct + '% \u00B7 Red ' + (100 - greenPct) + '%';
+  }
+
   slider.addEventListener('input', function() {
+    exitAuto();
     greenPct = parseInt(this.value, 10);
     sliderDetail.textContent = 'Green ' + greenPct + '% \u00B7 Red ' + (100 - greenPct) + '%';
     stalledFrames = 0;
     totalFrames = 0;
   });
+  slider.addEventListener('pointerdown', exitAuto);
+  slider.addEventListener('mousedown', exitAuto);
+  slider.addEventListener('touchstart', exitAuto);
+
+  // Auto sweep runs inside tick so it's synchronized
+  var autoVal = 80;
+  function autoTick() {
+    if (!autoMode) return;
+    autoVal += AUTO_SPEED * autoDir;
+    if (autoVal <= 15) { autoVal = 15; autoDir = 1; }
+    if (autoVal >= 90) { autoVal = 90; autoDir = -1; }
+    greenPct = Math.round(autoVal);
+    slider.value = String(greenPct);
+    sliderDetail.textContent = 'Auto \u00B7 Green ' + greenPct + '% \u00B7 Red ' + (100 - greenPct) + '%';
+  }
 
   function seedCars(animated) {
     for (var s = 0; s < 4; s++) {
