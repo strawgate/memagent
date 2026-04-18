@@ -157,7 +157,7 @@ const SERVICES: [&str; 3] = ["myapp", "gateway", "auth-svc"];
 pub(crate) struct LogEventFields<'a> {
     pub timestamp: TimestampParts,
     pub level: &'static str,
-    pub message_template: &'a Option<Vec<u8>>,
+    pub message_template: Option<&'a [u8]>,
     pub method: &'static str,
     pub path: &'static str,
     pub id: u64,
@@ -240,7 +240,7 @@ pub(crate) fn compute_log_fields<'a>(
     counter: u64,
     timestamp_config: &GeneratorTimestamp,
     complexity: GeneratorComplexity,
-    message_template_escaped: &'a Option<Vec<u8>>,
+    message_template_escaped: Option<&'a [u8]>,
 ) -> Option<LogEventFields<'a>> {
     let seq = counter;
     let level = LEVELS[(seq % LEVELS.len() as u64) as usize];
@@ -311,10 +311,7 @@ pub(crate) fn compute_log_fields<'a>(
 /// Write the message field value (without key or quotes) into a buffer.
 ///
 /// Used by both JSON serialization and Arrow field extraction.
-pub(crate) fn write_message_value(
-    buf: &mut Vec<u8>,
-    fields: &LogEventFields<'_>,
-) {
+pub(crate) fn write_message_value(buf: &mut Vec<u8>, fields: &LogEventFields<'_>) {
     if let Some(escaped) = fields.message_template {
         buf.extend_from_slice(escaped);
     } else {
@@ -597,7 +594,7 @@ impl GeneratorInput {
             self.counter,
             &self.config.timestamp,
             self.config.complexity,
-            &self.message_template_escaped,
+            self.message_template_escaped.as_deref(),
         ) else {
             self.done = true;
             return;
@@ -839,7 +836,7 @@ pub fn generate_arrow_batch(
     n: usize,
     start_counter: u64,
     timestamp_config: &GeneratorTimestamp,
-    message_template_escaped: &Option<Vec<u8>>,
+    message_template_escaped: Option<&[u8]>,
 ) -> RecordBatch {
     let mut ts_builder = StringBuilder::with_capacity(n, n * 24);
     let mut level_builder = StringBuilder::with_capacity(n, n * 5);
@@ -934,7 +931,7 @@ mod tests {
 
             // Path 1: Arrow direct
             let arrow_batch =
-                generate_arrow_batch(n, start, &ts_config, &message_template);
+                generate_arrow_batch(n, start, &ts_config, message_template.as_deref());
 
             // Path 2: JSON → Scanner
             let mut json_buf = Vec::with_capacity(n * 256);
@@ -944,7 +941,7 @@ mod tests {
                     counter,
                     &ts_config,
                     GeneratorComplexity::Simple,
-                    &message_template,
+                    message_template.as_deref(),
                 )
                 .expect("valid counter");
                 write_log_fields_json(&mut json_buf, &fields);
@@ -2011,5 +2008,78 @@ mod tests {
                 );
             }
         });
+    }
+
+    /// Throughput comparison: Arrow-direct vs JSON→Scanner.
+    ///
+    /// Not a Criterion bench — just a quick sanity check that the Arrow path
+    /// is significantly faster. Run with `--release --nocapture` to see numbers.
+    #[test]
+    fn arrow_vs_json_throughput() {
+        use logfwd_arrow::Scanner;
+        use logfwd_core::scan_config::ScanConfig;
+        use std::time::Instant;
+
+        let ts_config = GeneratorTimestamp::default();
+        let message_template: Option<Vec<u8>> = None;
+        let n = 10_000;
+        let rounds = 5;
+
+        // Arrow-direct path
+        let start = Instant::now();
+        for r in 0..rounds {
+            let batch =
+                generate_arrow_batch(n, (r * n) as u64, &ts_config, message_template.as_deref());
+            std::hint::black_box(&batch);
+        }
+        let arrow_elapsed = start.elapsed();
+
+        // JSON→Scanner path
+        let config = ScanConfig {
+            extract_all: true,
+            ..Default::default()
+        };
+        let mut scanner = Scanner::new(config);
+        let start = Instant::now();
+        for r in 0..rounds {
+            let mut json_buf = Vec::with_capacity(n * 256);
+            for i in 0..n {
+                let counter = (r * n) as u64 + i as u64;
+                let fields = compute_log_fields(
+                    counter,
+                    &ts_config,
+                    GeneratorComplexity::Simple,
+                    message_template.as_deref(),
+                )
+                .expect("valid counter");
+                write_log_fields_json(&mut json_buf, &fields);
+                json_buf.push(b'\n');
+            }
+            let batch = scanner
+                .scan_detached(bytes::Bytes::from(json_buf))
+                .expect("valid JSON");
+            std::hint::black_box(&batch);
+        }
+        let json_elapsed = start.elapsed();
+
+        let total = (n * rounds) as f64;
+        let arrow_eps = total / arrow_elapsed.as_secs_f64();
+        let json_eps = total / json_elapsed.as_secs_f64();
+        let speedup = arrow_eps / json_eps;
+
+        eprintln!(
+            "\n  Arrow direct: {:.2}M EPS ({:.1}ms)\n  JSON→Scanner: {:.2}M EPS ({:.1}ms)\n  Speedup:      {:.1}x\n",
+            arrow_eps / 1e6,
+            arrow_elapsed.as_secs_f64() * 1000.0,
+            json_eps / 1e6,
+            json_elapsed.as_secs_f64() * 1000.0,
+            speedup,
+        );
+
+        // Arrow should be at least 2x faster in debug, much more in release
+        assert!(
+            speedup > 1.5,
+            "Arrow path should be significantly faster (got {speedup:.1}x)"
+        );
     }
 }
