@@ -472,7 +472,11 @@ impl OtlpSink {
 
 fn estimate_records_buf_capacity(num_rows: usize, columns: &BatchColumns<'_>) -> usize {
     const MIN_RECORD_BYTES: usize = 128;
-    const ATTR_BYTES_HINT: usize = 48;
+    // 64 bytes/attr covers typical string attribute values (~30 bytes) plus
+    // protobuf framing overhead (~27 bytes key+tag+varint) with some margin.
+    // Wide batches with 27 attrs need ~14.5 MB for 10K rows; at 48 bytes/attr
+    // the estimate was 13.9 MB — slightly short, causing one realloc per batch.
+    const ATTR_BYTES_HINT: usize = 64;
     const MAX_INITIAL_RECORDS_BUF: usize = 64 * 1024 * 1024;
 
     let hinted_attrs = columns.attribute_cols.len().min(64);
@@ -832,6 +836,16 @@ struct ColAttr<'a> {
     /// `bytes_field_size(KEY_VALUE_KEY, name.len())` — constant per column.
     /// Used directly when computing outer KV message size on each row.
     kv_key_cost: usize,
+    /// Pre-computed `kv_key_cost + 4` used by the short-string fast path.
+    ///
+    /// When `string_value.len() <= 125` all intermediate length varints fit in
+    /// one byte, so the outer KV length is simply `short_kv_inner_base +
+    /// value.len()` — two additions replace four `varint_len` calls.
+    short_kv_inner_base: usize,
+    /// True when `array.null_count() > 0`.  When false the per-row `is_null`
+    /// check is skipped entirely, eliminating a null-bitmap pointer fetch and
+    /// branch on every row for columns that never contain nulls.
+    has_nulls: bool,
     /// The downcast Arrow array.
     array: AttrArray<'a>,
 }
@@ -1133,10 +1147,14 @@ fn resolve_batch_columns<'a>(
         let mut key_encoding = Vec::with_capacity(2 + name.len());
         encode_bytes_field(&mut key_encoding, otlp::KEY_VALUE_KEY, name.as_bytes());
         let kv_key_cost = bytes_field_size(otlp::KEY_VALUE_KEY, name.len());
+        let short_kv_inner_base = kv_key_cost + 4;
+        let has_nulls = batch.column(idx).null_count() > 0;
         attribute_cols.push(ColAttr {
             name,
             key_encoding,
             kv_key_cost,
+            short_kv_inner_base,
+            has_nulls,
             array: attr,
         });
     }
@@ -1419,117 +1437,126 @@ fn encode_key_value_int(buf: &mut Vec<u8>, field_number: u32, key: &[u8], value:
 /// `col.kv_key_cost` which were computed once in `resolve_batch_columns`.
 #[inline(always)]
 fn encode_col_attr(buf: &mut Vec<u8>, field_number: u32, col: &ColAttr<'_>, row: usize) {
+    // Shared helper for string-value KV pairs.
+    //
+    // When `value.len() <= 125` every intermediate length fits in a single
+    // varint byte, so the outer KV byte-count reduces to two additions instead
+    // of four `varint_len`/`bytes_field_size` calls.
+    #[inline(always)]
+    fn encode_str_value(buf: &mut Vec<u8>, field_number: u32, col: &ColAttr<'_>, value: &[u8]) {
+        if value.len() <= 125 {
+            // anyvalue_inner = tag(1) + len_varint(1) + data
+            let anyvalue_inner = 2 + value.len();
+            let kv_inner = col.short_kv_inner_base + value.len();
+            encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, kv_inner as u64);
+            buf.extend_from_slice(&col.key_encoding);
+            encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, anyvalue_inner as u64);
+            encode_bytes_field(buf, otlp::ANY_VALUE_STRING_VALUE, value);
+        } else {
+            let anyvalue_inner = bytes_field_size(otlp::ANY_VALUE_STRING_VALUE, value.len());
+            let kv_inner =
+                col.kv_key_cost + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
+            encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, kv_inner as u64);
+            buf.extend_from_slice(&col.key_encoding);
+            encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, anyvalue_inner as u64);
+            encode_bytes_field(buf, otlp::ANY_VALUE_STRING_VALUE, value);
+        }
+    }
+
     match &col.array {
         AttrArray::Int(arr) => {
-            if !arr.is_null(row) {
-                let value = arr.value(row);
-                let anyvalue_inner = 1 + varint_len(value as u64);
-                let kv_inner =
-                    col.kv_key_cost + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
-                encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, kv_inner as u64);
-                buf.extend_from_slice(&col.key_encoding);
-                encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, anyvalue_inner as u64);
-                encode_varint_field(buf, otlp::ANY_VALUE_INT_VALUE, value as u64);
+            if col.has_nulls && arr.is_null(row) {
+                return;
             }
+            let value = arr.value(row);
+            let anyvalue_inner = 1 + varint_len(value as u64);
+            let kv_inner =
+                col.kv_key_cost + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
+            encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, kv_inner as u64);
+            buf.extend_from_slice(&col.key_encoding);
+            encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, anyvalue_inner as u64);
+            encode_varint_field(buf, otlp::ANY_VALUE_INT_VALUE, value as u64);
         }
         AttrArray::Float(arr) => {
-            if !arr.is_null(row) {
-                let value = arr.value(row);
-                let anyvalue_inner = 1 + 8; // tag(1) + fixed64(8)
-                let kv_inner =
-                    col.kv_key_cost + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
-                encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, kv_inner as u64);
-                buf.extend_from_slice(&col.key_encoding);
-                encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, anyvalue_inner as u64);
-                encode_fixed64(buf, otlp::ANY_VALUE_DOUBLE_VALUE, value.to_bits());
+            if col.has_nulls && arr.is_null(row) {
+                return;
             }
+            let value = arr.value(row);
+            let anyvalue_inner = 1 + 8; // tag(1) + fixed64(8)
+            let kv_inner =
+                col.kv_key_cost + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
+            encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, kv_inner as u64);
+            buf.extend_from_slice(&col.key_encoding);
+            encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, anyvalue_inner as u64);
+            encode_fixed64(buf, otlp::ANY_VALUE_DOUBLE_VALUE, value.to_bits());
         }
         AttrArray::Bool(arr) => {
-            if !arr.is_null(row) {
-                let value = arr.value(row);
-                let anyvalue_inner = 1 + 1; // tag(1) + varint(bool)
-                let kv_inner =
-                    col.kv_key_cost + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
-                encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, kv_inner as u64);
-                buf.extend_from_slice(&col.key_encoding);
-                encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, anyvalue_inner as u64);
-                encode_varint_field(buf, otlp::ANY_VALUE_BOOL_VALUE, u64::from(value));
+            if col.has_nulls && arr.is_null(row) {
+                return;
             }
+            let value = arr.value(row);
+            let anyvalue_inner = 1 + 1; // tag(1) + varint(bool)
+            let kv_inner =
+                col.kv_key_cost + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
+            encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, kv_inner as u64);
+            buf.extend_from_slice(&col.key_encoding);
+            encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, anyvalue_inner as u64);
+            encode_varint_field(buf, otlp::ANY_VALUE_BOOL_VALUE, u64::from(value));
         }
         AttrArray::Str(arr) => {
-            if !arr.is_null(row) {
-                let value = arr.value(row).as_bytes();
-                let anyvalue_inner = bytes_field_size(otlp::ANY_VALUE_STRING_VALUE, value.len());
-                let kv_inner =
-                    col.kv_key_cost + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
-                encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, kv_inner as u64);
-                buf.extend_from_slice(&col.key_encoding);
-                encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, anyvalue_inner as u64);
-                encode_bytes_field(buf, otlp::ANY_VALUE_STRING_VALUE, value);
+            if col.has_nulls && arr.is_null(row) {
+                return;
             }
+            encode_str_value(buf, field_number, col, arr.value(row).as_bytes());
         }
         AttrArray::PreformattedStr(values) => {
             if let Some(Some(value)) = values.get(row) {
-                let value = value.as_bytes();
-                let anyvalue_inner = bytes_field_size(otlp::ANY_VALUE_STRING_VALUE, value.len());
-                let kv_inner =
-                    col.kv_key_cost + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
-                encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, kv_inner as u64);
-                buf.extend_from_slice(&col.key_encoding);
-                encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, anyvalue_inner as u64);
-                encode_bytes_field(buf, otlp::ANY_VALUE_STRING_VALUE, value);
+                encode_str_value(buf, field_number, col, value.as_bytes());
             }
         }
         AttrArray::Bytes(arr) => {
-            if !arr.is_null(row) {
-                let value = arr.value(row);
-                let anyvalue_inner = bytes_field_size(otlp::ANY_VALUE_BYTES_VALUE, value.len());
-                let kv_inner =
-                    col.kv_key_cost + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
-                encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, kv_inner as u64);
-                buf.extend_from_slice(&col.key_encoding);
-                encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, anyvalue_inner as u64);
-                encode_bytes_field(buf, otlp::ANY_VALUE_BYTES_VALUE, value);
+            if col.has_nulls && arr.is_null(row) {
+                return;
             }
+            let value = arr.value(row);
+            let anyvalue_inner = bytes_field_size(otlp::ANY_VALUE_BYTES_VALUE, value.len());
+            let kv_inner =
+                col.kv_key_cost + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
+            encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, kv_inner as u64);
+            buf.extend_from_slice(&col.key_encoding);
+            encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, anyvalue_inner as u64);
+            encode_bytes_field(buf, otlp::ANY_VALUE_BYTES_VALUE, value);
         }
         AttrArray::LargeBytes(arr) => {
-            if !arr.is_null(row) {
-                let value = arr.value(row);
-                let anyvalue_inner = bytes_field_size(otlp::ANY_VALUE_BYTES_VALUE, value.len());
-                let kv_inner =
-                    col.kv_key_cost + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
-                encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, kv_inner as u64);
-                buf.extend_from_slice(&col.key_encoding);
-                encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, anyvalue_inner as u64);
-                encode_bytes_field(buf, otlp::ANY_VALUE_BYTES_VALUE, value);
+            if col.has_nulls && arr.is_null(row) {
+                return;
             }
+            let value = arr.value(row);
+            let anyvalue_inner = bytes_field_size(otlp::ANY_VALUE_BYTES_VALUE, value.len());
+            let kv_inner =
+                col.kv_key_cost + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
+            encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, kv_inner as u64);
+            buf.extend_from_slice(&col.key_encoding);
+            encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, anyvalue_inner as u64);
+            encode_bytes_field(buf, otlp::ANY_VALUE_BYTES_VALUE, value);
         }
         AttrArray::OtherStr(arr) => {
             if let Some(value) = format_non_string_attr_value(*arr, row, &col.name) {
-                let value = value.as_bytes();
-                let anyvalue_inner = bytes_field_size(otlp::ANY_VALUE_STRING_VALUE, value.len());
-                let kv_inner =
-                    col.kv_key_cost + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
-                encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, kv_inner as u64);
-                buf.extend_from_slice(&col.key_encoding);
-                encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
-                encode_varint(buf, anyvalue_inner as u64);
-                encode_bytes_field(buf, otlp::ANY_VALUE_STRING_VALUE, value);
+                encode_str_value(buf, field_number, col, value.as_bytes());
             }
         }
     }

@@ -393,6 +393,16 @@ fn bench_output_encode(c: &mut Criterion) {
                 (10_000, generators::gen_wide_batch(10_000, 42)),
             ],
         ),
+        (
+            // Same schema as `wide` but ~25% of optional columns are null.
+            // Exercises the `has_nulls = true` path in `encode_col_attr` and
+            // provides a stable baseline for nullable-data encoder performance.
+            "wide_sparse",
+            vec![
+                (1_000, generators::gen_wide_sparse_batch(1_000, 42)),
+                (10_000, generators::gen_wide_sparse_batch(10_000, 42)),
+            ],
+        ),
     ];
 
     for (schema_name, sizes) in &variants {

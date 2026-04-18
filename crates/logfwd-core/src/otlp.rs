@@ -274,26 +274,47 @@ pub fn hex_decode(hex_bytes: &[u8], out: &mut [u8]) -> bool {
     if hex_bytes.len() != out.len() * 2 {
         return false;
     }
+    // Validate all nibbles first: collect the bitwise OR of all LUT values.
+    // Invalid bytes produce 0xFF; valid nibbles produce 0x00–0x0F.  The high
+    // nibble of the OR will be set (≥ 0x10) iff any invalid byte was present.
+    // Doing validation as a single pass over the input lets the compiler
+    // vectorise the check without a per-pair early-return branch.
+    let mut any_invalid = 0u8;
+    for &b in hex_bytes {
+        any_invalid |= HEX_NIBBLE_LUT[b as usize];
+    }
+    if any_invalid & 0xF0 != 0 {
+        return false;
+    }
+    // All nibbles are valid; decode without any per-pair branch.
     for (i, byte) in out.iter_mut().enumerate() {
-        let hi = hex_nibble(hex_bytes[i * 2]);
-        let lo = hex_nibble(hex_bytes[i * 2 + 1]);
-        if hi > 0x0F || lo > 0x0F {
-            return false;
-        }
-        *byte = (hi << 4) | lo;
+        *byte = (HEX_NIBBLE_LUT[hex_bytes[i * 2] as usize] << 4)
+            | HEX_NIBBLE_LUT[hex_bytes[i * 2 + 1] as usize];
     }
     true
 }
 
-#[inline(always)]
-fn hex_nibble(c: u8) -> u8 {
-    match c {
-        b'0'..=b'9' => c - b'0',
-        b'a'..=b'f' => c - b'a' + 10,
-        b'A'..=b'F' => c - b'A' + 10,
-        _ => 0xFF,
+/// 256-entry lookup table for hex nibble decoding.
+///
+/// Valid ASCII hex digits map to their 0x00–0x0F value; everything else maps
+/// to the sentinel 0xFF used by callers to signal an invalid character.
+/// Using a LUT replaces the three-branch match with a single indexed load.
+/// The table is 256 bytes and stays hot in L1 cache during batch decode loops.
+const HEX_NIBBLE_LUT: [u8; 256] = {
+    let mut lut = [0xFF_u8; 256];
+    let mut i = 0u16;
+    while i < 256 {
+        let c = i as u8;
+        lut[c as usize] = match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            b'A'..=b'F' => c - b'A' + 10,
+            _ => 0xFF,
+        };
+        i += 1;
     }
-}
+    lut
+};
 
 // --- OTLP Severity mapping ---
 
@@ -440,18 +461,8 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
         return None;
     }
 
-    let year = parse_4digits(ts, 0) as i64;
-    let month = parse_2digits(ts, 5) as u32;
-    let day = parse_2digits(ts, 8) as u32;
-    let hour = parse_2digits(ts, 11) as u64;
-    let min = parse_2digits(ts, 14) as u64;
-    let sec = parse_2digits(ts, 17) as u64;
-
-    if year == 0 || month == 0 || month > 12 || day == 0 || day > 31 {
-        return None;
-    }
-
-    // Validate separator characters: YYYY-MM-DDThh:mm:ss
+    // Validate separator characters first: YYYY-MM-DDThh:mm:ss
+    // Do this before digit parsing so invalid formats fail fast.
     if ts[4] != b'-'
         || ts[7] != b'-'
         || (ts[10] != b'T' && ts[10] != b't' && ts[10] != b' ')
@@ -461,20 +472,17 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
         return None;
     }
 
-    // Validate that date/time digit positions are actually ASCII digits.
-    // parse_2digits silently returns 0 for non-digits, which is valid for
-    // hour/min/sec and would let garbage through as 00:00:00. (#1875)
-    if !ts[5].is_ascii_digit()
-        || !ts[6].is_ascii_digit()
-        || !ts[8].is_ascii_digit()
-        || !ts[9].is_ascii_digit()
-        || !ts[11].is_ascii_digit()
-        || !ts[12].is_ascii_digit()
-        || !ts[14].is_ascii_digit()
-        || !ts[15].is_ascii_digit()
-        || !ts[17].is_ascii_digit()
-        || !ts[18].is_ascii_digit()
-    {
+    // Parse and validate all digit fields in one pass each.
+    // parse_Ndigits_checked uses wrapping_sub so each digit is validated and
+    // converted in a single subtract+compare — no double-checking.
+    let year = parse_4digits_checked(ts, 0)? as i64;
+    let month = parse_2digits_checked(ts, 5)? as u32;
+    let day = parse_2digits_checked(ts, 8)? as u32;
+    let hour = parse_2digits_checked(ts, 11)? as u64;
+    let min = parse_2digits_checked(ts, 14)? as u64;
+    let sec = parse_2digits_checked(ts, 17)? as u64;
+
+    if year == 0 || month == 0 || month > 12 || day == 0 || day > 31 {
         return None;
     }
 
@@ -535,18 +543,8 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
             if ts[tz_start + 3] != b':' {
                 return None;
             }
-            // Validate that timezone digits are actually ASCII digits before
-            // calling parse_2digits, which silently returns 0 for non-digits
-            // and would treat garbage as +00:00. (#1467)
-            if !ts[tz_start + 1].is_ascii_digit()
-                || !ts[tz_start + 2].is_ascii_digit()
-                || !ts[tz_start + 4].is_ascii_digit()
-                || !ts[tz_start + 5].is_ascii_digit()
-            {
-                return None;
-            }
-            let tz_h = parse_2digits(ts, tz_start + 1) as i64;
-            let tz_m = parse_2digits(ts, tz_start + 4) as i64;
+            let tz_h = parse_2digits_checked(ts, tz_start + 1)? as i64;
+            let tz_m = parse_2digits_checked(ts, tz_start + 4)? as i64;
             if tz_h >= 24 || tz_m >= 60 {
                 return None;
             }
@@ -573,6 +571,8 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
 }
 
 /// Parse 4 ASCII digits at offset. Returns 0 on non-digit.
+// Only used by Kani proof harnesses; production paths use parse_4digits_checked.
+#[allow(dead_code)]
 #[inline(always)]
 #[cfg_attr(kani, kani::ensures(|result: &u16| *result <= 9999))]
 fn parse_4digits(s: &[u8], off: usize) -> u16 {
@@ -586,7 +586,9 @@ fn parse_4digits(s: &[u8], off: usize) -> u16 {
     (a - b'0') as u16 * 1000 + (b - b'0') as u16 * 100 + (c - b'0') as u16 * 10 + (d - b'0') as u16
 }
 
-/// Parse 2 ASCII digits at offset.
+/// Parse 2 ASCII digits at offset. Returns 0 on non-digit.
+// Only used by Kani proof harnesses; production paths use parse_2digits_checked.
+#[allow(dead_code)]
 #[inline(always)]
 #[cfg_attr(kani, kani::ensures(|result: &u8| *result <= 99))]
 fn parse_2digits(s: &[u8], off: usize) -> u8 {
@@ -598,6 +600,37 @@ fn parse_2digits(s: &[u8], off: usize) -> u8 {
         return 0;
     }
     (a - b'0') * 10 + (b - b'0')
+}
+
+/// Parse 4 ASCII digits at `s[off..off+4]`, returning `None` if any byte is not
+/// a digit. Uses `wrapping_sub` to validate and convert in a single pass —
+/// avoids the double-check that `parse_4digits` + external `is_ascii_digit`
+/// calls would perform.
+#[inline(always)]
+fn parse_4digits_checked(s: &[u8], off: usize) -> Option<u16> {
+    let (a, b, c, d) = (
+        s[off].wrapping_sub(b'0'),
+        s[off + 1].wrapping_sub(b'0'),
+        s[off + 2].wrapping_sub(b'0'),
+        s[off + 3].wrapping_sub(b'0'),
+    );
+    if a > 9 || b > 9 || c > 9 || d > 9 {
+        return None;
+    }
+    Some(a as u16 * 1000 + b as u16 * 100 + c as u16 * 10 + d as u16)
+}
+
+/// Parse 2 ASCII digits at `s[off..off+2]`, returning `None` if either byte is
+/// not a digit. Single-pass: one `wrapping_sub` + compare per digit instead of
+/// a `is_ascii_digit` check followed by a separate subtraction.
+#[inline(always)]
+fn parse_2digits_checked(s: &[u8], off: usize) -> Option<u8> {
+    let a = s[off].wrapping_sub(b'0');
+    let b = s[off + 1].wrapping_sub(b'0');
+    if a > 9 || b > 9 {
+        return None;
+    }
+    Some(a * 10 + b)
 }
 
 /// Returns `true` if `year` is a leap year (Gregorian calendar).
@@ -816,6 +849,61 @@ mod tests {
         }
     }
 
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+        /// `days_from_civil` (Hinnant algorithm) must agree with chrono for
+        /// all valid calendar dates in the range 1970–2099.
+        #[test]
+        fn proptest_days_from_civil_matches_chrono(
+            year in 1970i64..=2099,
+            month in 1u32..=12,
+            day in 1u32..=31,
+        ) {
+            use chrono::{NaiveDate, NaiveDateTime};
+            let max_day = days_in_month(year, month);
+            proptest::prop_assume!(day <= max_day);
+
+            let epoch = NaiveDate::from_ymd_opt(1970, 1, 1).unwrap();
+            let date = NaiveDate::from_ymd_opt(year as i32, month, day);
+            if let Some(d) = date {
+                let our = days_from_civil(year, month, day);
+                let chrono_days = (d - epoch).num_days();
+                proptest::prop_assert_eq!(our, chrono_days,
+                    "days_from_civil mismatch");
+            }
+            let _ = NaiveDateTime::MAX; // suppress unused import warning
+        }
+
+        /// `parse_timestamp_nanos` must produce the same result as chrono for
+        /// valid UTC timestamps in the range 1970–2099.
+        #[test]
+        fn proptest_parse_timestamp_nanos_matches_chrono(
+            year in 1970u32..=2099,
+            month in 1u32..=12,
+            day in 1u32..=28, // cap at 28 to always be a valid day
+            hour in 0u32..=23,
+            min in 0u32..=59,
+            sec in 0u32..=59,
+        ) {
+            use chrono::NaiveDateTime;
+            let s = alloc::format!(
+                "{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}Z"
+            );
+            let our = parse_timestamp_nanos(s.as_bytes());
+            let chrono = NaiveDateTime::parse_from_str(
+                    s.trim_end_matches('Z'), "%Y-%m-%dT%H:%M:%S"
+                )
+                .ok()
+                .and_then(|dt| dt.and_utc().timestamp_nanos_opt())
+                .map(|n| n as u64);
+            proptest::prop_assert_eq!(our, chrono,
+                "mismatch for timestamp");
+        }
+    }
+
     #[test]
     fn parse_timestamp_matches_chrono() {
         use chrono::NaiveDateTime;
@@ -958,6 +1046,80 @@ mod tests {
         let mut out = [0u8; 4];
         assert!(!hex_decode(b"0102030G", &mut out)); // 'G' is invalid
         assert!(!hex_decode(b"01 20304", &mut out)); // space is invalid
+    }
+
+    /// Oracle: the reference (branch-based) nibble decoder used to verify the
+    /// LUT implementation.  Kept private to this test module.
+    fn hex_nibble_oracle(c: u8) -> u8 {
+        match c {
+            b'0'..=b'9' => c - b'0',
+            b'a'..=b'f' => c - b'a' + 10,
+            b'A'..=b'F' => c - b'A' + 10,
+            _ => 0xFF,
+        }
+    }
+
+    /// Oracle: reference `hex_decode` implementation (original single-pass loop).
+    fn hex_decode_oracle(hex_bytes: &[u8], out: &mut [u8]) -> bool {
+        if hex_bytes.len() != out.len() * 2 {
+            return false;
+        }
+        for (i, byte) in out.iter_mut().enumerate() {
+            let hi = hex_nibble_oracle(hex_bytes[i * 2]);
+            let lo = hex_nibble_oracle(hex_bytes[i * 2 + 1]);
+            if hi > 0x0F || lo > 0x0F {
+                return false;
+            }
+            *byte = (hi << 4) | lo;
+        }
+        true
+    }
+
+    proptest::proptest! {
+        #![proptest_config(proptest::test_runner::Config {
+            failure_persistence: None,
+            ..proptest::test_runner::Config::default()
+        })]
+        /// LUT nibble lookup must agree with the branch-based oracle for every
+        /// possible byte value (0x00–0xFF).
+        #[test]
+        fn proptest_hex_nibble_lut_matches_oracle(b: u8) {
+            proptest::prop_assert_eq!(
+                HEX_NIBBLE_LUT[b as usize],
+                hex_nibble_oracle(b),
+                "LUT[{:#04x}] != oracle({:#04x})",
+                b, b,
+            );
+        }
+
+        /// LUT-based `hex_decode` must agree with the oracle on every possible
+        /// input byte sequence of lengths 0, 2, 4, 8, 16, and 32.
+        ///
+        /// Covers: valid hex, invalid chars, mixed case, and arbitrary garbage.
+        #[test]
+        fn proptest_hex_decode_lut_matches_oracle(
+            input in proptest::collection::vec(proptest::num::u8::ANY, 0..=64),
+        ) {
+            // Test all output sizes that are representable as hex strings of
+            // the given input length.
+            for out_len in [0usize, 1, 2, 4, 8, 16] {
+                let expected_input_len = out_len * 2;
+                if input.len() < expected_input_len {
+                    continue;
+                }
+                let hex = &input[..expected_input_len];
+                let mut got = alloc::vec![0u8; out_len];
+                let mut expected = alloc::vec![0u8; out_len];
+                let got_ok = hex_decode(hex, &mut got);
+                let expected_ok = hex_decode_oracle(hex, &mut expected);
+                proptest::prop_assert_eq!(got_ok, expected_ok,
+                    "return value mismatch for input {:?}", hex);
+                if got_ok {
+                    proptest::prop_assert_eq!(&got, &expected,
+                        "output mismatch for input {:?}", hex);
+                }
+            }
+        }
     }
 
     /// Spot-check protobuf field number constants against the OTLP proto spec.
@@ -1599,12 +1761,12 @@ mod verification {
         assert_eq!(original, decoded);
     }
 
-    /// Prove hex_nibble returns the correct value for all 256 byte inputs:
+    /// Prove HEX_NIBBLE_LUT returns the correct value for all 256 byte inputs:
     /// valid hex digits map to 0x00..=0x0F, everything else maps to 0xFF.
     #[kani::proof]
     fn verify_hex_nibble_valid_range() {
         let b: u8 = kani::any();
-        let result = hex_nibble(b);
+        let result = HEX_NIBBLE_LUT[b as usize];
         if result <= 0x0F {
             // Valid hex digit — verify correctness
             match b {
