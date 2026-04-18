@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build:wasm": "wasm-pack build ../crates/logfwd-config-wasm --target web --out-dir ../book/public/wasm/logfwd-config --release",
+    "build:wasm": "wasm-pack build ../crates/logfwd-config-wasm --target web --out-dir \"$PWD/public/wasm/logfwd-config\" --release",
     "prebuild": "npm run build:wasm",
     "predev": "npm run build:wasm",
     "dev": "astro dev",
