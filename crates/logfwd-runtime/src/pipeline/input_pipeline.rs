@@ -60,6 +60,45 @@ use super::{InputState, InputTransform};
 #[cfg(not(feature = "turmoil"))]
 const IO_CPU_CHANNEL_CAPACITY: usize = 4;
 
+/// Flush `buf` to the channel as an `IoWorkItem::Bytes` chunk.
+///
+/// Returns `false` if the channel is closed (caller should exit the I/O loop).
+/// On backpressure (channel full), logs a warning at most once per 5 s and
+/// blocks until the CPU worker drains.
+#[cfg(not(feature = "turmoil"))]
+fn flush_buf(
+    buf: &mut bytes::BytesMut,
+    source: &dyn logfwd_io::input::InputSource,
+    tx: &mpsc::Sender<IoWorkItem>,
+    metrics: &PipelineMetrics,
+    last_bp_warn: &mut Option<Instant>,
+    input_index: usize,
+) -> bool {
+    if buf.is_empty() {
+        return true;
+    }
+    let data = buf.split().freeze();
+    let checkpoints = source.checkpoint_data();
+    let chunk = IoWorkItem::Bytes(IoChunk {
+        bytes: data,
+        checkpoints,
+        queued_at: tokio::time::Instant::now(),
+        input_index,
+    });
+    match tx.try_send(chunk) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(chunk)) => {
+            if last_bp_warn.is_none_or(|t| t.elapsed() >= Duration::from_secs(5)) {
+                tracing::warn!(input = source.name(), "input.backpressure");
+                *last_bp_warn = Some(Instant::now());
+            }
+            metrics.inc_backpressure_stall();
+            tx.blocking_send(chunk).is_ok()
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // I/O worker — reads bytes from source, accumulates, sends to CPU worker
 // ---------------------------------------------------------------------------
@@ -105,6 +144,7 @@ fn io_worker_loop(
     let mut consecutive_poll_failures: u32 = 0;
     let mut adaptive_poll =
         AdaptivePollController::new(input.source.get_cadence().adaptive_fast_polls_max);
+    let safe_batch_target_bytes = batch_target_bytes.max(1);
 
     'io_loop: loop {
         if shutdown.is_cancelled() {
@@ -153,38 +193,36 @@ fn io_worker_loop(
                 match event {
                     InputEvent::Data { bytes, .. } => {
                         input.buf.extend_from_slice(&bytes);
-                    }
-                    InputEvent::Batch { batch, .. } => {
-                        if !input.buf.is_empty() {
-                            let data = input.buf.split().freeze();
-                            let checkpoints = input.source.checkpoint_data();
-                            let chunk = IoWorkItem::Bytes(IoChunk {
-                                bytes: data,
-                                checkpoints,
-                                queued_at: tokio::time::Instant::now(),
+                        // Flush eagerly when the buffer reaches the target so
+                        // that a single poll returning many Data events cannot
+                        // accumulate an unbounded buffer.
+                        if input.buf.len() >= safe_batch_target_bytes {
+                            metrics.inc_flush_by_size();
+                            if !flush_buf(
+                                &mut input.buf,
+                                &*input.source,
+                                &tx,
+                                &metrics,
+                                &mut last_bp_warn,
                                 input_index,
-                            });
-                            match tx.try_send(chunk) {
-                                Ok(()) => {}
-                                Err(mpsc::error::TrySendError::Full(chunk)) => {
-                                    if last_bp_warn
-                                        .is_none_or(|t| t.elapsed() >= Duration::from_secs(5))
-                                    {
-                                        tracing::warn!(
-                                            input = input.source.name(),
-                                            "input.backpressure"
-                                        );
-                                        last_bp_warn = Some(Instant::now());
-                                    }
-                                    metrics.inc_backpressure_stall();
-                                    if tx.blocking_send(chunk).is_err() {
-                                        break 'io_loop;
-                                    }
-                                }
-                                Err(mpsc::error::TrySendError::Closed(_)) => break 'io_loop,
+                            ) {
+                                break 'io_loop;
                             }
                             buffered_since = None;
                         }
+                    }
+                    InputEvent::Batch { batch, .. } => {
+                        if !flush_buf(
+                            &mut input.buf,
+                            &*input.source,
+                            &tx,
+                            &metrics,
+                            &mut last_bp_warn,
+                            input_index,
+                        ) {
+                            break 'io_loop;
+                        }
+                        buffered_since = None;
 
                         let item = IoWorkItem::Batch {
                             batch,
@@ -228,7 +266,6 @@ fn io_worker_loop(
             }
         }
 
-        let safe_batch_target_bytes = batch_target_bytes.max(1);
         let timeout_elapsed = buffered_since.is_some_and(|t| t.elapsed() >= batch_timeout);
         let flush_by_size = input.buf.len() >= safe_batch_target_bytes;
         let flush_by_timeout = !input.buf.is_empty() && timeout_elapsed;
@@ -240,31 +277,15 @@ fn io_worker_loop(
                 metrics.inc_flush_by_timeout();
             }
 
-            let data = input.buf.split().freeze();
-            let checkpoints = input.source.checkpoint_data();
-            let chunk = IoWorkItem::Bytes(IoChunk {
-                bytes: data,
-                checkpoints,
-                queued_at: tokio::time::Instant::now(),
+            if !flush_buf(
+                &mut input.buf,
+                &*input.source,
+                &tx,
+                &metrics,
+                &mut last_bp_warn,
                 input_index,
-            });
-
-            // Try non-blocking first; if full, log backpressure and block.
-            // Shutdown awareness comes from the channel-close cascade: when
-            // the CPU worker exits, it drops its rx, so blocking_send returns Err.
-            match tx.try_send(chunk) {
-                Ok(()) => {}
-                Err(mpsc::error::TrySendError::Full(chunk)) => {
-                    if last_bp_warn.is_none_or(|t| t.elapsed() >= Duration::from_secs(5)) {
-                        tracing::warn!(input = input.source.name(), "input.backpressure");
-                        last_bp_warn = Some(Instant::now());
-                    }
-                    metrics.inc_backpressure_stall();
-                    if tx.blocking_send(chunk).is_err() {
-                        break;
-                    }
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => break,
+            ) {
+                break;
             }
             buffered_since = None;
         }
