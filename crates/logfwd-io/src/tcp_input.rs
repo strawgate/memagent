@@ -204,7 +204,7 @@ fn extract_complete_records(client: &mut Client, out: &mut Vec<u8>) {
             if octet_frame_ready && octet_boundary_is_plausible {
                 client.octet_counting_mode = true;
                 let should_consume_octet_delimiter_newline =
-                    matches!(pending.get(needed), Some(b'\n'));
+                    pending.len() == needed || matches!(pending.get(needed), Some(b'\n'));
                 if len > MAX_LINE_LENGTH {
                     client.discard_octet_bytes = len;
                     consumed += prefix_len;
@@ -684,29 +684,44 @@ mod tests {
     }
 
     #[test]
-    fn octet_frame_consumes_observed_delimiter_only() {
-        let (mut input, mut client) = tcp_input_with_client();
-        client.write_all(b"5 hello\n").unwrap();
-        client.flush().unwrap();
-
-        let got = poll_tcp_bytes_until(&mut input, |bytes| bytes == b"hello\n");
-        assert_eq!(got, b"hello\n");
-    }
-
-    #[test]
-    fn octet_frame_without_observed_delimiter_keeps_later_empty_line() {
+    fn octet_frame_consumes_delimiter_split_across_reads() {
         let (mut input, mut client) = tcp_input_with_client();
         client.write_all(b"5 hello").unwrap();
         client.flush().unwrap();
 
         let first = poll_tcp_bytes_until(&mut input, |bytes| bytes == b"hello\n");
         assert_eq!(first, b"hello\n");
+        assert!(
+            input
+                .clients
+                .first()
+                .is_some_and(|client| client.should_consume_octet_delimiter_newline),
+            "frame ending at a read boundary should wait for an optional delimiter"
+        );
 
         client.write_all(b"\n").unwrap();
         client.flush().unwrap();
 
-        let next = poll_tcp_bytes_until(&mut input, |bytes| bytes == b"\n");
-        assert_eq!(next, b"\n");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut next = Vec::new();
+        let mut consumed_delimiter = false;
+        while Instant::now() < deadline {
+            for event in input.poll().expect("tcp poll should succeed") {
+                if let InputEvent::Data { bytes, .. } = event {
+                    next.extend_from_slice(&bytes);
+                }
+            }
+            if input.clients.first().is_some_and(|client| {
+                !client.should_consume_octet_delimiter_newline && client.pending.is_empty()
+            }) {
+                consumed_delimiter = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(consumed_delimiter, "split delimiter should be consumed");
+        assert!(next.is_empty(), "delimiter must not emit an empty record");
     }
 
     #[test]
@@ -1041,40 +1056,6 @@ mod tests {
             .flatten()
             .collect::<Vec<u8>>();
         assert_eq!(joined, b"hello\nworld\n");
-    }
-
-    #[test]
-    fn tcp_octet_counted_frame_consumes_single_delimiter_newline() {
-        let mut input = TcpInput::new(
-            "test",
-            "127.0.0.1:0",
-            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
-        )
-        .unwrap();
-        let addr = input.local_addr().unwrap();
-        let mut client = StdTcpStream::connect(addr).unwrap();
-        client.write_all(b"5 hello\n").unwrap();
-        client.flush().unwrap();
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let mut joined = Vec::new();
-        while Instant::now() < deadline {
-            let events = input.poll().unwrap();
-            joined.extend(
-                events
-                    .into_iter()
-                    .filter_map(|e| match e {
-                        InputEvent::Data { bytes, .. } => Some(bytes),
-                        _ => None,
-                    })
-                    .flatten(),
-            );
-            if !joined.is_empty() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        assert_eq!(joined, b"hello\n");
     }
 
     #[test]
