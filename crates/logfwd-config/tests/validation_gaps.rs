@@ -412,6 +412,34 @@ pipelines:
 }
 
 #[test]
+fn backslash_escaped_dollar_in_double_quoted_yaml_is_not_expanded() {
+    // `\$` is not a valid YAML escape sequence, so serde_yaml_ng will reject it.
+    // The important thing is that the env pre-scanner does NOT silently expand
+    // `\${VAR}` as if it were `${VAR}` — the user should get a YAML parse error,
+    // not a surprise env substitution.
+    let _env_lock = env_lock();
+    let _env = EnvVarGuard::set("HOME", "/Users/test");
+
+    let yaml = r#"
+pipelines:
+  test:
+    resource_attrs:
+      note: "\${HOME}"
+    inputs:
+      - type: generator
+    outputs:
+      - type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    // Must be a YAML scanner error, NOT an env-expansion error.
+    assert!(
+        err.contains("unknown escape character") || err.contains("SCANNER"),
+        "expected YAML parse error for invalid \\$ escape, got: {err}"
+    );
+}
+
+#[test]
 fn issue_1957_reject_loki_static_and_dynamic_label_collisions() {
     let yaml = r#"
 pipelines:
