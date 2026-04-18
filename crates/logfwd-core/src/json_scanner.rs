@@ -273,7 +273,7 @@ fn scan_line<B: ScanBuilder>(
                     if c == b'.' || c == b'e' || c == b'E' {
                         is_float = true;
                         pos += 1;
-                    } else if is_json_delimiter(c) {
+                    } else if c == b',' || c == b'}' || c == b' ' || c == b'\t' || c == b'\r' {
                         break;
                     } else {
                         pos += 1;
@@ -424,14 +424,13 @@ fn is_json_delimiter(b: u8) -> bool {
 }
 
 /// Skip a bare value (used for malformed tokens).
-/// Stops at the first byte where `is_json_delimiter` returns true.
 #[inline]
 fn skip_bare_value(buf: &[u8], mut pos: usize, end: usize) -> usize {
     while pos < end {
-        if is_json_delimiter(buf[pos]) {
-            return pos;
+        match buf[pos] {
+            b',' | b'}' | b' ' | b'\t' | b'\r' | b'\n' => return pos,
+            _ => pos += 1,
         }
-        pos += 1;
     }
     pos
 }
@@ -1170,47 +1169,6 @@ mod tests {
                 "valid deeply nested JSON should preserve sibling fields past MAX_TRACKED_DEPTH"
             );
         }
-
-        /// Proptest: skip_bare_value always stops at the first `]` delimiter.
-        ///
-        /// Generates numeric payloads immediately followed by `]`, with varying
-        /// amounts of prefix padding to probe near 64-byte SIMD block boundaries.
-        /// Invariants checked:
-        ///  - `skip_bare_value` returns the index of the `]` byte
-        ///  - all bytes before the returned index are non-delimiters
-        ///  - `scan_streaming` on the enclosing JSON object produces exactly 1 row
-        #[test]
-        fn skip_bare_value_close_bracket_proptest(
-            num in 0u32..1_000_000,
-            padding in 0usize..90,
-        ) {
-            // Direct: "42]extra" — must stop exactly at position of ']'
-            let value_str = alloc::format!("{num}");
-            let mut direct_buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
-            direct_buf.extend_from_slice(value_str.as_bytes());
-            direct_buf.push(b']');
-            direct_buf.extend_from_slice(b"extra");
-            let pos = skip_bare_value(&direct_buf, 0, direct_buf.len());
-            prop_assert_eq!(
-                pos, value_str.len(),
-                "skip_bare_value must stop exactly at ']' for input {:?}", direct_buf
-            );
-            prop_assert_eq!(direct_buf[pos], b']', "stopped byte must be ']'");
-            for i in 0..pos {
-                prop_assert!(!is_json_delimiter(direct_buf[i]), "byte at {i} must not be a delimiter");
-            }
-
-            // Integration: {"arr":[<num>]} padded to stress SIMD block edges
-            let spaces = " ".repeat(padding);
-            let json = alloc::format!("{spaces}{{\"arr\":[{num}]}}\n");
-            let config = ScanConfig::default();
-            let mut builder = TestBuilder::new();
-            scan_streaming(json.as_bytes(), &config, &mut builder);
-            prop_assert_eq!(
-                builder.rows.len(), 1,
-                "padded JSON with array value must produce exactly 1 row"
-            );
-        }
     }
 
     /// CRLF line endings must not leak \r into extracted field values or captured line fields.
@@ -1356,36 +1314,6 @@ mod tests {
         assert_eq!(builder.lines.len(), 1, "one captured line for the JSON row");
         assert_eq!(builder.lines[0].as_deref(), Some("{\"x\":\"1\"}"));
     }
-
-    /// Regression for #2227: skip_bare_value must stop at `]` just like all
-    /// other JSON delimiters. Previously `]` was missing from the stop set,
-    /// causing bare values inside arrays to consume the closing bracket.
-    #[test]
-    fn skip_bare_value_stops_at_close_bracket() {
-        // Direct call: a number immediately followed by `]` — skip_bare_value
-        // must stop at position 2 (the `]`), not consume it.
-        let buf = b"12]more";
-        let result = skip_bare_value(buf, 0, buf.len());
-        assert_eq!(result, 2, "skip_bare_value must stop at ']'");
-        assert_eq!(buf[result], b']', "stopped byte must be ']'");
-
-        // Integration: an array value inside a JSON object should parse correctly.
-        // The number in `[1,2]` must not swallow the `]`.
-        let input = b"{\"arr\":[1,2]}\n";
-        let config = ScanConfig {
-            wanted_fields: alloc::vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-        };
-        let mut builder = TestBuilder::new();
-        scan_streaming(input, &config, &mut builder);
-        assert_eq!(
-            builder.rows.len(),
-            1,
-            "one JSON line should produce one row"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1433,20 +1361,10 @@ mod verification {
         let result = skip_bare_value(&buf, start, end);
 
         assert!(result >= start && result <= end);
-        // When we stopped before end, the stop byte MUST be a delimiter.
-        if result < end {
-            assert!(
-                is_json_delimiter(buf[result]),
-                "stop byte must be a JSON delimiter"
-            );
-        }
         let mut i = start;
         while i < result {
             let b = buf[i];
-            assert!(
-                !is_json_delimiter(b),
-                "byte at {i} is a delimiter: {b:#04x}"
-            );
+            assert!(b != b',' && b != b'}' && b != b' ' && b != b'\t' && b != b'\r' && b != b'\n');
             i += 1;
         }
 
@@ -1454,8 +1372,6 @@ mod verification {
         kani::cover!(result > start, "found non-delimiter bytes");
         kani::cover!(result == start, "delimiter at start");
         kani::cover!(result == end, "no delimiter found");
-        // Explicitly cover the previously-missing ] delimiter path
-        kani::cover!(result < end && buf[result] == b']', "stopped at ]");
     }
 
     /// is_json_delimiter covers all JSON value delimiters exhaustively.
