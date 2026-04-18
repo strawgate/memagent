@@ -243,11 +243,11 @@ export function createSimulation(overrides, scaleFn) {
     // Status
     var status;
     if (rampBlocked) {
-      status = { level: 'blocked', emoji: '\uD83D\uDD34', msg: 'Backpressure reached the source \u2014 rate limited, zero data loss' };
+      status = { level: 'blocked', emoji: '\uD83D\uDD34', msg: 'Traffic backed up to the on-ramp \u2014 no new cars can enter' };
     } else if (stalledCount > cars.length * 0.4) {
-      status = { level: 'congested', emoji: '\uD83D\uDFE1', msg: 'Pipeline congested \u2014 batches queuing in bounded channels' };
+      status = { level: 'congested', emoji: '\uD83D\uDFE1', msg: 'Highway congested \u2014 cars queuing behind the light' };
     } else {
-      status = { level: 'flowing', emoji: '\uD83D\uDFE2', msg: 'Flowing \u2014 collector keeping up' };
+      status = { level: 'flowing', emoji: '\uD83D\uDFE2', msg: 'Flowing \u2014 traffic moving freely' };
     }
 
     return {
