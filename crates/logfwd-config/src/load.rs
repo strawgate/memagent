@@ -260,6 +260,7 @@ fn scan_yaml_quoted_scalar(yaml: &str, quote_start: usize, quote: char) -> Optio
         }
         if quote == '"' && ch == '\\' {
             if let Some((_, escaped)) = chars.next() {
+                text.push('\\');
                 text.push(escaped);
             }
             continue;
@@ -268,4 +269,31 @@ fn scan_yaml_quoted_scalar(yaml: &str, quote_start: usize, quote: char) -> Optio
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mark_quoted_exact_env_placeholders;
+
+    #[test]
+    fn quoted_exact_env_placeholder_is_marked() {
+        let (marked, placeholders) =
+            mark_quoted_exact_env_placeholders(r#"path: "${LOGFWD_TEST_PATH}""#);
+
+        assert_eq!(marked, r#"path: "__LOGFWD_QUOTED_ENV_PLACEHOLDER_0__""#);
+        assert_eq!(
+            placeholders.get("__LOGFWD_QUOTED_ENV_PLACEHOLDER_0__"),
+            Some(&"${LOGFWD_TEST_PATH}".to_owned())
+        );
+    }
+
+    #[test]
+    fn escaped_double_quoted_env_placeholder_is_not_marked() {
+        let yaml = r#"path: "\${LOGFWD_TEST_PATH}""#;
+
+        let (marked, placeholders) = mark_quoted_exact_env_placeholders(yaml);
+
+        assert_eq!(marked, yaml);
+        assert!(placeholders.is_empty());
+    }
 }
