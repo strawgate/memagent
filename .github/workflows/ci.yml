@@ -469,119 +469,10 @@ jobs:
         run: cargo test -p logfwd-runtime --lib --features loom-tests worker_pool::pool::tests::loom_worker_removal_vs_late_event_model_never_resurrects_slot -- --exact
 
   # -------------------------------------------------------------------------
-  # TLC: TLA+ model checking for all specs (parallelized via matrix)
+  # TLC: TLA+ model checking — all specs, coverage, and thorough in one job
   # -------------------------------------------------------------------------
   tlc:
-    name: "TLA+ ${{ matrix.spec }} (${{ matrix.property }})"
-    needs: [changes]
-    if: |
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
-      (github.event.pull_request.draft == false && needs.changes.outputs.tla == 'true')
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - spec: PipelineMachine
-            tla_file: tla/MCPipelineMachine.tla
-            config: tla/PipelineMachine.cfg
-            property: safety
-          - spec: PipelineMachine
-            tla_file: tla/MCPipelineMachine.tla
-            config: tla/PipelineMachine.liveness.cfg
-            property: liveness
-          - spec: ShutdownProtocol
-            tla_file: tla/MCShutdownProtocol.tla
-            config: tla/ShutdownProtocol.cfg
-            property: safety
-          - spec: ShutdownProtocol
-            tla_file: tla/MCShutdownProtocol.tla
-            config: tla/ShutdownProtocol.liveness.cfg
-            property: liveness
-          - spec: PipelineBatch
-            tla_file: tla/MCPipelineBatch.tla
-            config: tla/PipelineBatch.cfg
-            property: safety
-          - spec: PipelineBatch
-            tla_file: tla/MCPipelineBatch.tla
-            config: tla/PipelineBatch.liveness.cfg
-            property: liveness
-          - spec: TailLifecycle
-            tla_file: tla/MCTailLifecycle.tla
-            config: tla/TailLifecycle.cfg
-            property: safety
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Download tla2tools.jar
-        run: |
-          mkdir -p /tmp/tla
-          curl -sL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o /tmp/tla/tla2tools.jar
-
-      - name: "TLC: ${{ matrix.spec }} — ${{ matrix.property }}"
-        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC ${{ matrix.tla_file }} -config ${{ matrix.config }} -workers auto
-
-  # -------------------------------------------------------------------------
-  # TLC reachability / vacuity guards — coverage configs are expected to
-  # produce witness traces via invariant violations, so they need a dedicated
-  # harness rather than the normal "exit 0 means success" flow.
-  # -------------------------------------------------------------------------
-  tlc-coverage:
-    name: "TLA+ ${{ matrix.spec }} (coverage)"
-    needs: [changes]
-    if: |
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
-      (github.event.pull_request.draft == false && needs.changes.outputs.tla == 'true')
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - spec: PipelineMachine
-            tla_file: tla/MCPipelineMachine.tla
-            config: tla/PipelineMachine.coverage.cfg
-          - spec: ShutdownProtocol
-            tla_file: tla/MCShutdownProtocol.tla
-            config: tla/ShutdownProtocol.coverage.cfg
-          - spec: PipelineBatch
-            tla_file: tla/MCPipelineBatch.tla
-            config: tla/PipelineBatch.coverage.cfg
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Download tla2tools.jar
-        run: |
-          mkdir -p /tmp/tla
-          curl -sL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o /tmp/tla/tla2tools.jar
-
-      - name: "TLC coverage: ${{ matrix.spec }}"
-        run: |
-          python3 scripts/verify_tla_coverage.py \
-            --jar /tmp/tla/tla2tools.jar \
-            --tla-file ${{ matrix.tla_file }} \
-            --config ${{ matrix.config }}
-
-  # -------------------------------------------------------------------------
-  # Thorough TLC safety model — deeper pre-merge sweep for the main lifecycle spec.
-  # -------------------------------------------------------------------------
-  tlc-thorough:
-    name: "TLA+ PipelineMachine (thorough)"
+    name: "TLA+ model checking"
     needs: [changes]
     if: |
       github.event_name == 'push' ||
@@ -603,6 +494,31 @@ jobs:
           mkdir -p /tmp/tla
           curl -sL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o /tmp/tla/tla2tools.jar
 
+      # --- Safety & liveness ---
+      - name: "TLC: PipelineMachine — safety"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg -workers auto
+      - name: "TLC: PipelineMachine — liveness"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.liveness.cfg -workers auto
+      - name: "TLC: ShutdownProtocol — safety"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.cfg -workers auto
+      - name: "TLC: ShutdownProtocol — liveness"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.liveness.cfg -workers auto
+      - name: "TLC: PipelineBatch — safety"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.cfg -workers auto
+      - name: "TLC: PipelineBatch — liveness"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg -workers auto
+      - name: "TLC: TailLifecycle — safety"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCTailLifecycle.tla -config tla/TailLifecycle.cfg -workers auto
+
+      # --- Coverage (vacuity guards) ---
+      - name: "TLC coverage: PipelineMachine"
+        run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCPipelineMachine.tla --config tla/PipelineMachine.coverage.cfg
+      - name: "TLC coverage: ShutdownProtocol"
+        run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCShutdownProtocol.tla --config tla/ShutdownProtocol.coverage.cfg
+      - name: "TLC coverage: PipelineBatch"
+        run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCPipelineBatch.tla --config tla/PipelineBatch.coverage.cfg
+
+      # --- Thorough ---
       - name: "TLC: PipelineMachine — thorough"
         run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.thorough.cfg -workers auto
 
@@ -679,8 +595,6 @@ jobs:
       - turmoil
       - loom
       - tlc
-      - tlc-coverage
-      - tlc-thorough
     runs-on: ubuntu-latest
     steps:
       - run: |
