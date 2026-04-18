@@ -1293,6 +1293,74 @@ mod tests {
     }
 
     #[test]
+    fn projected_nested_unknown_field_interleavings_match_prost_conversion() {
+        let mut any_value = Vec::new();
+        encode_varint_field(&mut any_value, 98, 1);
+        encode_len_field(&mut any_value, otlp::ANY_VALUE_STRING_VALUE, b"body");
+        encode_fixed64_field(&mut any_value, 99, 0x0102_0304_0506_0708);
+
+        let mut attr = Vec::new();
+        encode_len_field(&mut attr, 77, b"ignored-kv-prefix");
+        encode_len_field(&mut attr, otlp::KEY_VALUE_KEY, b"attr");
+        encode_start_group(&mut attr, 78);
+        encode_varint_field(&mut attr, 79, 123);
+        encode_end_group(&mut attr, 78);
+        encode_len_field(&mut attr, otlp::KEY_VALUE_VALUE, &any_value);
+
+        let mut scope = Vec::new();
+        encode_varint_field(&mut scope, 77, 7);
+        encode_len_field(&mut scope, otlp::INSTRUMENTATION_SCOPE_NAME, b"scope");
+        encode_start_group(&mut scope, 78);
+        encode_len_field(&mut scope, 79, b"inside-scope-group");
+        encode_end_group(&mut scope, 78);
+        encode_len_field(&mut scope, otlp::INSTRUMENTATION_SCOPE_VERSION, b"1.0.0");
+
+        let mut log_record = Vec::new();
+        encode_fixed32_field(&mut log_record, 77, 0x0a0b_0c0d);
+        encode_fixed64_field(&mut log_record, otlp::LOG_RECORD_TIME_UNIX_NANO, 123);
+        encode_len_field(&mut log_record, otlp::LOG_RECORD_BODY, &any_value);
+        encode_start_group(&mut log_record, 78);
+        encode_varint_field(&mut log_record, 79, 456);
+        encode_end_group(&mut log_record, 78);
+        encode_len_field(&mut log_record, otlp::LOG_RECORD_ATTRIBUTES, &attr);
+
+        let mut scope_logs = Vec::new();
+        encode_len_field(&mut scope_logs, 77, b"ignored-scope-logs-prefix");
+        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_SCOPE, &scope);
+        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        encode_fixed32_field(&mut scope_logs, 78, 99);
+
+        let mut resource = Vec::new();
+        encode_varint_field(&mut resource, 77, 1);
+        encode_len_field(&mut resource, otlp::RESOURCE_ATTRIBUTES, &attr);
+        encode_start_group(&mut resource, 78);
+        encode_end_group(&mut resource, 78);
+
+        let mut resource_logs = Vec::new();
+        encode_len_field(&mut resource_logs, 77, b"ignored-resource-logs-prefix");
+        encode_len_field(&mut resource_logs, otlp::RESOURCE_LOGS_RESOURCE, &resource);
+        encode_len_field(
+            &mut resource_logs,
+            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            &scope_logs,
+        );
+        encode_fixed64_field(&mut resource_logs, 78, 0x1111_2222_3333_4444);
+
+        let mut payload = Vec::new();
+        encode_start_group(&mut payload, 99);
+        encode_varint_field(&mut payload, 100, 1);
+        encode_end_group(&mut payload, 99);
+        encode_len_field(
+            &mut payload,
+            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            &resource_logs,
+        );
+        encode_fixed32_field(&mut payload, 101, 0x0102_0304);
+
+        assert_projected_payload_matches_prost(&payload);
+    }
+
+    #[test]
     fn projected_oversized_field_number_is_invalid() {
         let mut payload = Vec::new();
         encode_varint(&mut payload, (u64::from(u32::MAX) + 1) << 3);
@@ -1998,6 +2066,80 @@ mod tests {
         assert_projected_payload_matches_prost(&[]);
     }
 
+    #[test]
+    fn projected_ignored_metadata_fields_match_prost_conversion() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![kv_string("service.name", "metadata-test")],
+                    dropped_attributes_count: 3,
+                    ..Default::default()
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: Some(InstrumentationScope {
+                        name: "scope-with-ignored-metadata".into(),
+                        version: "2.0.0".into(),
+                        attributes: vec![kv_string("scope.attr", "ignored")],
+                        dropped_attributes_count: 5,
+                    }),
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_700_000_000_000_000_001,
+                        observed_time_unix_nano: 1_700_000_000_000_000_002,
+                        severity_number: 9,
+                        severity_text: "INFO".into(),
+                        body: Some(any_string("metadata fields are ignored")),
+                        attributes: vec![kv_string("kept", "log-attr")],
+                        dropped_attributes_count: 7,
+                        event_name: "ignored.event".into(),
+                        ..Default::default()
+                    }],
+                    schema_url: "https://example.test/scope-schema/1.0.0".into(),
+                    ..Default::default()
+                }],
+                schema_url: "https://example.test/resource-schema/1.0.0".into(),
+                ..Default::default()
+            }],
+        };
+
+        assert_projected_matches_prost(&request);
+    }
+
+    #[test]
+    fn projected_high_cardinality_dynamic_attrs_match_prost_conversion() {
+        let attributes = (0..160)
+            .map(|idx| {
+                let key = format!("attr.high_cardinality.{idx}");
+                match idx % 5 {
+                    0 => kv_string(&key, &format!("value-{idx}")),
+                    1 => kv_i64(&key, idx as i64),
+                    2 => kv_f64(&key, idx as f64 + 0.25),
+                    3 => kv_bool(&key, idx % 2 == 0),
+                    _ => kv_bytes(&key, &[idx as u8, (idx >> 8) as u8]),
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![kv_string("service.name", "high-cardinality")],
+                    ..Default::default()
+                }),
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        body: Some(any_string("wide dynamic attrs")),
+                        attributes,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        assert_projected_matches_prost(&request);
+    }
+
     // ── Malformed wire data tests ─────────────────────────────────────
 
     #[test]
@@ -2497,7 +2639,86 @@ mod tests {
         );
     }
 
+    #[test]
+    fn projected_fallback_unsupported_plus_malformed_wire_remains_error() {
+        // Unsupported semantic cases may fall back to prost, but malformed wire
+        // must still fail after fallback instead of being treated as valid data.
+        let mut any_val = Vec::new();
+        encode_len_field(
+            &mut any_val,
+            otlp::ANY_VALUE_ARRAY_VALUE,
+            &ArrayValue::default().encode_to_vec(),
+        );
+
+        let mut log_record = Vec::new();
+        encode_len_field(&mut log_record, otlp::LOG_RECORD_BODY, &any_val);
+        encode_varint(&mut log_record, 0); // malformed field number zero
+
+        let mut scope_logs = Vec::new();
+        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        let mut resource_logs = Vec::new();
+        encode_len_field(
+            &mut resource_logs,
+            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            &scope_logs,
+        );
+        let mut payload = Vec::new();
+        encode_len_field(
+            &mut payload,
+            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            &resource_logs,
+        );
+
+        let projection_err =
+            decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+                .expect_err("projection should request fallback before prost sees malformed tail");
+        assert!(matches!(projection_err, ProjectionError::Unsupported(_)));
+
+        let fallback_err =
+            crate::otlp_receiver::decode_protobuf_bytes_to_batch_projected_experimental(
+                Bytes::from(payload),
+            );
+        assert!(
+            fallback_err.is_err(),
+            "unsupported projection fallback must preserve prost malformed-wire rejection"
+        );
+    }
+
     // ── Expanded proptest ─────────────────────────────────────────────
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+
+        #[test]
+        fn projected_fallback_arbitrary_bytes_matches_prost_classification(
+            data in proptest::collection::vec(any::<u8>(), 0..512),
+        ) {
+            let prost = crate::otlp_receiver::decode_protobuf_to_batch_prost_reference(&data);
+            let fallback = crate::otlp_receiver::decode_protobuf_bytes_to_batch_projected_experimental(
+                Bytes::from(data.clone()),
+            );
+
+            match (prost, fallback) {
+                (Ok(expected), Ok(actual)) => assert_batches_match(&expected, &actual),
+                (Err(_), Err(_)) => {}
+                (Ok(_), Err(err)) => {
+                    prop_assert!(
+                        false,
+                        "projected fallback rejected protobuf bytes accepted by prost: {err}"
+                    );
+                }
+                (Err(err), Ok(actual)) => {
+                    prop_assert!(
+                        false,
+                        "projected fallback accepted malformed bytes rejected by prost ({err}); \
+                         actual columns={:?}, rows={}",
+                        actual.schema().fields().iter().map(|f| f.name()).collect::<Vec<_>>(),
+                        actual.num_rows(),
+                    );
+                }
+            }
+        }
+    }
 
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
