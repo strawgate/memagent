@@ -504,11 +504,9 @@ fn status_payload(state: &DiagnosticsState) -> StatusSnapshotResponse {
             attempts += 1;
         }
 
-        let batch_latency_avg_ns = if latency_batches > 0 {
-            batch_latency_total / latency_batches
-        } else {
-            0
-        };
+        let batch_latency_avg_ns = batch_latency_total
+            .checked_div(latency_batches)
+            .unwrap_or(0);
         let inflight = pm.inflight_batches.load(Ordering::Relaxed);
         let backpressure = pm.backpressure_stalls.load(Ordering::Relaxed);
         let transform_health = policy::transform_health(pm);

@@ -197,7 +197,7 @@ async fn sqs_post(
     let body_bytes = body.as_bytes();
     let body_sha256 = sha256_hex(body_bytes);
 
-    let (date, datetime) = utc_datetime_now();
+    let (date, datetime) = utc_datetime_now()?;
     let credential_scope = format!("{date}/{region}/sqs/aws4_request");
 
     // Canonical headers for POST form submission.
@@ -263,9 +263,9 @@ async fn sqs_post(
         .map_err(|e| io::Error::other(format!("SQS read response: {e}")))?;
 
     if !status.is_success() {
+        let preview = String::from_utf8_lossy(&response_bytes[..response_bytes.len().min(1024)]);
         return Err(io::Error::other(format!(
-            "SQS POST HTTP {status}: {}",
-            String::from_utf8_lossy(&response_bytes)
+            "SQS POST HTTP {status}: {preview}"
         )));
     }
     Ok(response_bytes)
@@ -291,10 +291,10 @@ fn build_signing_key(secret: &str, date: &str, region: &str, service: &str) -> V
     hmac_sha256(&k_service, b"aws4_request")
 }
 
-fn utc_datetime_now() -> (String, String) {
+fn utc_datetime_now() -> io::Result<(String, String)> {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+        .map_err(|e| io::Error::other(format!("system clock before Unix epoch: {e}")))?
         .as_secs();
     // Reuse the same algorithm as client.rs — replicated to keep this module
     // self-contained without creating a shared internal dependency.
@@ -306,7 +306,7 @@ fn utc_datetime_now() -> (String, String) {
     let (y, mo, d) = civil_from_days(days);
     let date = format!("{y:04}{mo:02}{d:02}");
     let datetime = format!("{date}T{h:02}{m:02}{s:02}Z");
-    (date, datetime)
+    Ok((date, datetime))
 }
 
 fn civil_from_days(days: u64) -> (u64, u64, u64) {
@@ -406,26 +406,22 @@ fn parse_receive_messages_response(data: &Bytes) -> io::Result<Vec<SqsMessage>> 
                     capture = None;
                 }
             }
-            Ok(Event::CData(e)) => {
-                if capture == Some("body") {
-                    body = String::from_utf8_lossy(e.into_inner().as_ref()).into_owned();
-                    capture = None;
-                }
+            Ok(Event::CData(e)) if capture == Some("body") => {
+                body = String::from_utf8_lossy(e.into_inner().as_ref()).into_owned();
+                capture = None;
             }
-            Ok(Event::End(e)) => {
-                if e.local_name().as_ref() == b"Message" && in_message {
-                    in_message = false;
-                    let records = parse_s3_event_body(&body);
-                    // Always push the message even when records is empty.
-                    // The discovery loop deletes non-actionable messages
-                    // (test notifications, non-ObjectCreated events) by
-                    // checking `records.is_empty()`.
-                    messages.push(SqsMessage {
-                        receipt_handle: receipt_handle.clone(),
-                        records,
-                    });
-                    capture = None;
-                }
+            Ok(Event::End(e)) if e.local_name().as_ref() == b"Message" && in_message => {
+                in_message = false;
+                let records = parse_s3_event_body(&body);
+                // Always push the message even when records is empty.
+                // The discovery loop deletes non-actionable messages
+                // (test notifications, non-ObjectCreated events) by
+                // checking `records.is_empty()`.
+                messages.push(SqsMessage {
+                    receipt_handle: receipt_handle.clone(),
+                    records,
+                });
+                capture = None;
             }
             Ok(Event::Eof) => break,
             Err(e) => {

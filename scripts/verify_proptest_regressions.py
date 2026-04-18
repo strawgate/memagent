@@ -16,6 +16,7 @@ NO_PERSISTENCE_ALLOWLIST = {
     "crates/logfwd-core/src/structural.rs",
     "crates/logfwd-core/src/cri.rs",
     "crates/logfwd-core/src/json_scanner.rs",
+    "crates/logfwd-core/src/otlp.rs",
     "crates/logfwd-types/src/pipeline/lifecycle.rs",
     "crates/logfwd-io/tests/it/checkpoint_state_machine.rs",
 }

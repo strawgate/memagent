@@ -20,6 +20,7 @@ include!("generators/shared_profiles.rs");
 include!("generators/envoy_access.rs");
 include!("generators/cri_mixed_narrow.rs");
 include!("generators/wide_metadata.rs");
+include!("generators/wide_sparse.rs");
 
 #[cfg(test)]
 pub(crate) mod test_support;

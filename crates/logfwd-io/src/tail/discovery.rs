@@ -122,8 +122,7 @@ impl FileDiscovery {
                 let is_previous_handle_deleted = tailed
                     .file
                     .metadata()
-                    .map(|meta| has_metadata_indicating_deletion(&meta))
-                    .unwrap_or(false);
+                    .is_ok_and(|meta| has_metadata_indicating_deletion(&meta));
                 should_rotate_file(
                     &tailed.identity,
                     &current_identity,
@@ -168,8 +167,7 @@ impl FileDiscovery {
                 tailed
                     .file
                     .metadata()
-                    .map(|m| has_metadata_indicating_deletion(&m))
-                    .unwrap_or(true)
+                    .map_or(true, |m| has_metadata_indicating_deletion(&m))
             })
             .map(|(path, _)| path.clone())
             .collect();

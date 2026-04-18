@@ -28,8 +28,7 @@ fn build_date() -> String {
         .unwrap_or_else(|| {
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0)
+                .map_or(0, |d| d.as_secs())
         });
 
     // Days since Unix epoch -> calendar date (proleptic Gregorian)

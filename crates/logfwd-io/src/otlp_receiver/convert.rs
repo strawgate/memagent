@@ -177,10 +177,10 @@ fn append_attribute_value_by_idx(
         Some(Value::BoolValue(v)) => builder.append_bool_by_idx(idx, *v),
         Some(Value::StringValue(v)) => builder.append_prevalidated_str_by_idx(idx, v),
         Some(Value::BytesValue(v)) => append_hex_field(builder, idx, v, hex_buf),
-        Some(Value::ArrayValue(_)) | Some(Value::KvlistValue(_)) => {
-            if write_any_value_to_json_buf(value, json_buf) {
-                builder.append_decoded_str_by_idx(idx, json_buf);
-            }
+        Some(Value::ArrayValue(_)) | Some(Value::KvlistValue(_))
+            if write_any_value_to_json_buf(value, json_buf) =>
+        {
+            builder.append_decoded_str_by_idx(idx, json_buf);
         }
         _ => {}
     }
@@ -207,10 +207,10 @@ fn append_any_value_as_string(
             builder.append_decoded_str_by_idx(idx, if *v { b"true" } else { b"false" });
         }
         Some(Value::BytesValue(v)) => append_hex_field(builder, idx, v, hex_buf),
-        Some(Value::ArrayValue(_)) | Some(Value::KvlistValue(_)) => {
-            if write_any_value_to_json_buf(value, json_buf) {
-                builder.append_decoded_str_by_idx(idx, json_buf);
-            }
+        Some(Value::ArrayValue(_)) | Some(Value::KvlistValue(_))
+            if write_any_value_to_json_buf(value, json_buf) =>
+        {
+            builder.append_decoded_str_by_idx(idx, json_buf);
         }
         _ => {}
     }

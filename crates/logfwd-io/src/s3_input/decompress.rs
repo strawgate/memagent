@@ -118,8 +118,11 @@ impl AsyncRead for ErrorAwareReader {
         match Pin::new(&mut this.inner).poll_read(cx, buf) {
             Poll::Ready(Ok(())) if buf.filled().len() == before => {
                 // Zero-length read (EOF) — check if the producer stored an error.
-                if let Ok(mut guard) = this.error.lock()
-                    && let Some(err) = guard.take()
+                if let Some(err) = this
+                    .error
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
                 {
                     return Poll::Ready(Err(err));
                 }

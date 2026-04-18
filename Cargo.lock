@@ -2934,6 +2934,7 @@ dependencies = [
  "logfwd-types",
  "lz4_flex",
  "memchr",
+ "mockito",
  "notify",
  "opentelemetry-proto",
  "proptest",

@@ -255,7 +255,7 @@ fn write_at_rate(path: &Path, eps: u64, stop: &AtomicBool, written: &AtomicU64) 
         }
     } else {
         // Rate-limited mode.
-        let interval = Duration::from_nanos(1_000_000_000 / eps);
+        let interval = Duration::from_nanos(1_000_000_000u64.checked_div(eps).unwrap_or(0));
         let mut next = Instant::now();
         while !stop.load(Ordering::Relaxed) {
             let now = Instant::now();

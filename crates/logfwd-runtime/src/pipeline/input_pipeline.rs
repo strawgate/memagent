@@ -453,8 +453,7 @@ impl InputPipelineManager {
         let mut io_handles = Vec::with_capacity(inputs.len());
         let mut cpu_handles = Vec::with_capacity(inputs.len());
 
-        for (idx, (input, transform)) in inputs.into_iter().zip(transforms.into_iter()).enumerate()
-        {
+        for (idx, (input, transform)) in inputs.into_iter().zip(transforms).enumerate() {
             let (io_tx, io_rx) = mpsc::channel::<IoWorkItem>(IO_CPU_CHANNEL_CAPACITY);
 
             // Spawn I/O worker.

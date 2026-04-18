@@ -819,7 +819,7 @@ output:
                 CliError::Config(format!("cannot write {}: {e}", path.display()))
             }
         })?;
-    eprintln!("{}created{} {}", green(), reset(), path.display(),);
+    eprintln!("{}created{} {}", green(), reset(), path.display());
     eprintln!();
     eprintln!("{}Try it now:{}", bold(), reset());
     eprintln!(
@@ -863,7 +863,7 @@ fn cmd_wizard() -> Result<(), CliError> {
         let descs: Vec<&str> = USE_CASE_TEMPLATES.iter().map(|t| t.description).collect();
         let uc_idx = prompt_select_described("Pick a scenario:", &labels, &descs)?;
         let uc = &USE_CASE_TEMPLATES[uc_idx];
-        println!("{}selected{}: {}", green(), reset(), uc.title,);
+        println!("{}selected{}: {}", green(), reset(), uc.title);
         println!();
         // TODO: support multiline SQL input (currently single-line via read_line)
         let sql = prompt_text(
@@ -926,7 +926,7 @@ fn cmd_wizard() -> Result<(), CliError> {
             }
         })?;
 
-    eprintln!("{}created{} {}", green(), reset(), path.as_path().display(),);
+    eprintln!("{}created{} {}", green(), reset(), path.as_path().display());
     eprintln!(
         "{}next{}: run {}logfwd validate --config {}{}",
         dim(),
