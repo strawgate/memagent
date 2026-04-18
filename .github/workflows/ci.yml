@@ -444,6 +444,8 @@ jobs:
             -p logfwd-runtime
             -p logfwd-diagnostics
             -p logfwd
+        env:
+          RUSTC_WRAPPER: ""
 
   # -------------------------------------------------------------------------
   # Miri — UB-oriented execution, split into two parallel shards.
