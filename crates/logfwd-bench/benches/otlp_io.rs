@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use arrow::array::{Array, StructArray, make_array};
 use arrow::compute::cast;
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::datatypes::{DataType, Schema};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use logfwd_bench::generators::otlp::{self, OtlpFixtureProfile};
 use logfwd_bench::{generators, make_otlp_sink};
@@ -115,7 +115,11 @@ fn normalize_utf8view_array(arr: &dyn Array) -> Arc<dyn Array> {
                 .map(|(i, f)| {
                     let child = normalize_utf8view_array(struct_arr.column(i).as_ref());
                     let new_dt = child.data_type().clone();
-                    let new_field = Arc::new(Field::new(f.name(), new_dt, f.is_nullable()));
+                    let new_field = if &new_dt == f.data_type() {
+                        Arc::clone(f)
+                    } else {
+                        Arc::new(f.as_ref().clone().with_data_type(new_dt))
+                    };
                     (new_field, child)
                 })
                 .collect();
@@ -145,11 +149,13 @@ fn normalize_utf8view(
         let col = batch.column(i);
         let normalized = normalize_utf8view_array(col.as_ref());
         let new_dt = normalized.data_type().clone();
-        new_fields.push(Arc::new(Field::new(
-            field.name(),
-            new_dt,
-            field.is_nullable(),
-        )));
+        // Preserve field metadata — only change data_type when it differs.
+        let new_field = if &new_dt == field.data_type() {
+            Arc::clone(field)
+        } else {
+            Arc::new(field.as_ref().clone().with_data_type(new_dt))
+        };
+        new_fields.push(new_field);
         new_columns.push(normalized);
     }
     let new_schema = Arc::new(Schema::new(new_fields));

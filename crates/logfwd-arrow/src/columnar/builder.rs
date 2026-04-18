@@ -1122,14 +1122,19 @@ mod tests {
 
         b.begin_batch();
         b.begin_row();
-        b.write_str_bytes(msg, &[0xFF, 0xFE]).unwrap();
-        b.end_row();
+        // Accept error from either write_str_bytes or finish_batch — the
+        // invariant is that invalid bytes cannot materialize successfully.
+        let write_result = b.write_str_bytes(msg, &[0xFF, 0xFE]);
 
-        let result = b.finish_batch();
-        assert!(
-            result.is_err(),
-            "invalid UTF-8 via write_str_bytes must be caught when utf8_trusted=false"
-        );
+        if write_result.is_ok() {
+            b.end_row();
+
+            let result = b.finish_batch();
+            assert!(
+                result.is_err(),
+                "invalid UTF-8 via write_str_bytes must be caught when utf8_trusted=false"
+            );
+        }
     }
 
     #[test]
