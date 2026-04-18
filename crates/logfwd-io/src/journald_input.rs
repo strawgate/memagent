@@ -407,7 +407,9 @@ fn native_reader_loop(
         }
 
         // Wait for new entries (with periodic timeout to check running flag).
-        match journal.wait(NATIVE_WAIT_USEC) {
+        let wait_result = journal.wait(NATIVE_WAIT_USEC);
+        update_native_wait_health(&wait_result, health);
+        match wait_result {
             Ok(SD_JOURNAL_INVALIDATE) => {
                 // Journal files were rotated/added/removed. The internal file
                 // handle state may be stale, causing next() to return false
@@ -455,12 +457,18 @@ fn native_reader_loop(
             Ok(_) => {} // NOP or APPEND — next loop iteration will drain.
             Err(e) => {
                 tracing::warn!(error = %e, "sd_journal_wait error");
-                health.store(HEALTH_DEGRADED, Ordering::Release);
                 // Brief sleep to avoid spinning on persistent errors.
                 std::thread::sleep(Duration::from_millis(100));
-                health.store(HEALTH_OK, Ordering::Release);
             }
         }
+    }
+}
+
+fn update_native_wait_health(wait_result: &io::Result<i32>, health: &Arc<AtomicU8>) {
+    if wait_result.is_ok() {
+        health.store(HEALTH_OK, Ordering::Release);
+    } else {
+        health.store(HEALTH_DEGRADED, Ordering::Release);
     }
 }
 
@@ -879,8 +887,8 @@ fn subprocess_reader_loop(
 /// Read export-format entries from a `BufReader`, parse to JSON, and send
 /// over the channel. Returns `true` if we exited because the channel closed
 /// or the running flag was cleared.
-fn read_export_entries(
-    mut reader: BufReader<std::process::ChildStdout>,
+fn read_export_entries<R: Read>(
+    mut reader: BufReader<R>,
     tx: &crossbeam_channel::Sender<Vec<u8>>,
     running: &Arc<AtomicBool>,
     exclude_units: &[String],
@@ -970,9 +978,9 @@ fn read_export_entries(
                     data_len = data_len_u64,
                     "binary journal field exceeds maximum size, skipping field"
                 );
-                // Skip past the oversized field data + trailing newline.
+                // Skip past the oversized field data.
                 // Read in chunks to avoid huge allocations.
-                let mut remaining = data_len_u64 + 1; // +1 for trailing \n
+                let mut remaining = data_len_u64;
                 let mut discard = vec![0u8; 64 * 1024];
                 while remaining > 0 {
                     let chunk = remaining.min(discard.len() as u64) as usize;
@@ -980,6 +988,15 @@ fn read_export_entries(
                         return false;
                     }
                     remaining -= chunk as u64;
+                }
+                // Consume the trailing newline after the binary payload.
+                let mut trailing_newline = [0u8; 1];
+                if reader.read_exact(&mut trailing_newline).is_err() {
+                    return false;
+                }
+                if trailing_newline[0] != b'\n' {
+                    tracing::warn!("binary journal field missing trailing newline delimiter");
+                    return false;
                 }
                 // Skip this field but continue parsing the entry.
                 continue;
@@ -1118,6 +1135,7 @@ fn drain_stderr(stderr: std::process::ChildStderr) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Seek, SeekFrom, Write};
 
     // ── fixup_unit ────────────────────────────────────────────────────
 
@@ -1188,6 +1206,79 @@ mod tests {
             (b"_SYSTEMD_UNIT".to_vec(), b"sshd.service".to_vec()),
         ];
         assert!(should_emit_export_entry(&fields, &["docker".to_string()]));
+    }
+
+    #[test]
+    fn read_export_entries_applies_client_side_exclude_filter() {
+        let mut export = Vec::new();
+        export.extend_from_slice(b"MESSAGE=excluded\n");
+        export.extend_from_slice(b"_SYSTEMD_UNIT=sshd.service\n\n");
+        export.extend_from_slice(b"MESSAGE=allowed\n");
+        export.extend_from_slice(b"_SYSTEMD_UNIT=docker.service\n\n");
+
+        let mut tmp = tempfile::NamedTempFile::new().expect("temp export file should create");
+        tmp.write_all(&export).expect("export payload should write");
+        tmp.as_file_mut()
+            .seek(SeekFrom::Start(0))
+            .expect("export payload should rewind");
+        let reader = BufReader::new(tmp.reopen().expect("temp export file should reopen"));
+        let (tx, rx) = bounded(4);
+        let running = Arc::new(AtomicBool::new(true));
+
+        let exited_cleanly =
+            read_export_entries(reader, &tx, &running, &["sshd.service".to_string()]);
+        assert!(
+            !exited_cleanly,
+            "cursor EOF should be treated as subprocess exit"
+        );
+
+        let entries: Vec<Vec<u8>> = rx.try_iter().collect();
+        assert_eq!(entries.len(), 1, "excluded entry should be dropped");
+        let entry = String::from_utf8(entries[0].clone()).expect("json should be utf-8");
+        let parsed: serde_json::Value =
+            serde_json::from_str(entry.trim()).expect("entry should be valid json");
+        assert_eq!(parsed["message"], "allowed");
+        assert_eq!(parsed["_systemd_unit"], "docker.service");
+    }
+
+    #[test]
+    fn read_export_entries_oversized_binary_length_does_not_overflow() {
+        let mut export = Vec::new();
+        export.extend_from_slice(b"BINARY_FIELD\n");
+        export.extend_from_slice(&u64::MAX.to_le_bytes());
+
+        let mut tmp = tempfile::NamedTempFile::new().expect("temp export file should create");
+        tmp.write_all(&export).expect("export payload should write");
+        tmp.as_file_mut()
+            .seek(SeekFrom::Start(0))
+            .expect("export payload should rewind");
+        let reader = BufReader::new(tmp.reopen().expect("temp export file should reopen"));
+        let (tx, rx) = bounded(1);
+        let running = Arc::new(AtomicBool::new(true));
+
+        let exited_cleanly = read_export_entries(reader, &tx, &running, &[]);
+        assert!(!exited_cleanly, "short stream should fail without panic");
+        assert!(
+            rx.try_recv().is_err(),
+            "oversized field should not emit data"
+        );
+    }
+
+    #[test]
+    fn wait_error_health_stays_degraded_until_wait_recovers() {
+        let health = Arc::new(AtomicU8::new(HEALTH_OK));
+
+        let first_error = Err(io::Error::other("first wait failure"));
+        update_native_wait_health(&first_error, &health);
+        assert_eq!(health.load(Ordering::Acquire), HEALTH_DEGRADED);
+
+        let second_error = Err(io::Error::other("second wait failure"));
+        update_native_wait_health(&second_error, &health);
+        assert_eq!(health.load(Ordering::Acquire), HEALTH_DEGRADED);
+
+        let recovered = Ok(journal_ffi::SD_JOURNAL_APPEND);
+        update_native_wait_health(&recovered, &health);
+        assert_eq!(health.load(Ordering::Acquire), HEALTH_OK);
     }
 
     // ── build_command (subprocess) ────────────────────────────────────
