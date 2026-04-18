@@ -31,10 +31,10 @@
       <g id="hw-cars"></g>
     </svg>
   </div>
-  <div class="hw-status" id="hw-status">Flowing smoothly — collector keeping up</div>
+  <div class="hw-status" id="hw-status" role="status" aria-live="polite" aria-atomic="true">Flowing smoothly — collector keeping up</div>
   <div class="hw-controls">
-    <button class="hw-btn hw-btn-slow" id="hw-btn-slow">🚧 Slow the exit</button>
-    <button class="hw-btn hw-btn-clear" id="hw-btn-clear" disabled>✅ Clear the exit</button>
+    <button type="button" class="hw-btn hw-btn-slow" id="hw-btn-slow">🚧 Slow the exit</button>
+    <button type="button" class="hw-btn hw-btn-clear" id="hw-btn-clear" disabled>✅ Clear the exit</button>
   </div>
 </div>
 
@@ -124,6 +124,7 @@
   var SPAWN_NORMAL = 600;  // ms between spawns (flowing)
   var SPAWN_SLOW = 400;    // ms between spawns (still arriving while backed up)
   var lastSpawn = 0;
+  var lastStatus = '';
   var timer = null;
 
   // Road geometry
@@ -222,18 +223,17 @@
 
       // On-ramp movement
       if (car.onRamp) {
-        car.rampT += 0.025;
-        if (car.rampT >= 1) {
-          car.onRamp = false;
-          car.x = RAMP_JOIN_X;
-          car.y = car.targetY;
+        // Check if ramp exit is blocked BEFORE advancing position.
+        var rampExit = closestAhead({ x: RAMP_JOIN_X - MIN_GAP, lane: car.lane, id: car.id, onRamp: false });
+        if (rampExit.dist < MIN_GAP + CAR_W) {
+          rampBlocked = true;
+          car.el.querySelector('.hw-car-body').setAttribute('fill', 'var(--hw-car-block)');
         } else {
-          // Check if ramp exit is blocked
-          var rampExit = closestAhead({ x: RAMP_JOIN_X - MIN_GAP, lane: car.lane, id: car.id, onRamp: false });
-          if (rampExit.dist < MIN_GAP + CAR_W) {
-            rampBlocked = true;
-            // Stall on ramp
-            car.el.querySelector('.hw-car-body').setAttribute('fill', 'var(--hw-car-block)');
+          car.rampT = Math.min(1, car.rampT + 0.025);
+          if (car.rampT >= 1) {
+            car.onRamp = false;
+            car.x = RAMP_JOIN_X;
+            car.y = car.targetY;
           } else {
             var pos = rampPos(car.rampT);
             car.x = pos.x;
@@ -281,18 +281,25 @@
       }
     }
 
-    // Update status
+    // Update status only when message changes to avoid DOM churn.
+    var newStatus;
+    var newColor;
     if (SLOW) {
       if (rampBlocked) {
-        status.textContent = '🔴 On-ramp blocked — source feels backpressure, no data lost';
-        status.style.color = 'var(--hw-car-block)';
+        newStatus = '🔴 On-ramp blocked — source feels backpressure, no data lost';
+        newColor = 'var(--hw-car-block)';
       } else {
-        status.textContent = '🟡 Exit slow — traffic backing up through the pipeline';
-        status.style.color = 'var(--hw-car-wait)';
+        newStatus = '🟡 Exit slow — traffic backing up through the pipeline';
+        newColor = 'var(--hw-car-wait)';
       }
     } else {
-      status.textContent = '🟢 Flowing smoothly — collector keeping up';
-      status.style.color = '';
+      newStatus = '🟢 Flowing smoothly — collector keeping up';
+      newColor = '';
+    }
+    if (newStatus !== lastStatus) {
+      status.textContent = newStatus;
+      status.style.color = newColor;
+      lastStatus = newStatus;
     }
   }
 
@@ -332,6 +339,28 @@
       c.el = makeCar(c.x, c.y);
       cars.push(c);
     }
+  } else {
+    // Reduced motion: show a static snapshot of traffic, disable controls.
+    for (var s = 0; s < 6; s++) {
+      var lane = s % 2;
+      var c = {
+        el: null,
+        x: 180 + s * 85,
+        y: laneY(lane),
+        targetY: laneY(lane),
+        lane: lane,
+        speed: 0,
+        waiting: false,
+        onRamp: false,
+        rampT: 1,
+        id: nextId++
+      };
+      c.el = makeCar(c.x, c.y);
+      cars.push(c);
+    }
+    btnSlow.disabled = true;
+    btnClear.disabled = true;
+    status.textContent = 'Animation paused (reduced motion)';
   }
 
   // Cleanup on Starlight SPA nav
