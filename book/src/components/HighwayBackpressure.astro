@@ -52,6 +52,28 @@
       <text x="760" y="190" text-anchor="middle" fill="var(--hw-muted)" font-size="10" font-weight="600">DESTINATION</text>
 
       <g id="hw-cars"></g>
+
+      <!-- Stats overlaid in the road endpoint zone -->
+      <foreignObject x="200" y="150" width="400" height="45">
+        <div xmlns="http://www.w3.org/1999/xhtml" class="hw-stats" id="hw-stats">
+          <div class="hw-stat">
+            <span class="hw-stat-val" id="hw-s-tput">—</span>
+            <span class="hw-stat-lbl">Throughput</span>
+          </div>
+          <div class="hw-stat">
+            <span class="hw-stat-val" id="hw-s-queue">0</span>
+            <span class="hw-stat-lbl">Queued</span>
+          </div>
+          <div class="hw-stat">
+            <span class="hw-stat-val" id="hw-s-stall">0%</span>
+            <span class="hw-stat-lbl">Stalled</span>
+          </div>
+          <div class="hw-stat">
+            <span class="hw-stat-val hw-stat-light" id="hw-s-light">🟢</span>
+            <span class="hw-stat-lbl" id="hw-s-light-lbl">GREEN</span>
+          </div>
+        </div>
+      </foreignObject>
     </svg>
 
     <!-- Compact slider positioned above the traffic light -->
@@ -59,27 +81,6 @@
       <label class="hw-light-ctrl-label" for="hw-green" id="hw-slider-detail">Collector Availability</label>
       <input type="range" id="hw-green" class="hw-light-slider" min="5" max="95" value="80" />
     </div>
-  </div>
-
-  <!-- Stats dashboard — positioned inside scene for overlap -->
-  <div class="hw-stats" id="hw-stats">
-    <div class="hw-stat">
-      <span class="hw-stat-val" id="hw-s-tput">&mdash;</span>
-      <span class="hw-stat-lbl">Throughput</span>
-    </div>
-    <div class="hw-stat">
-      <span class="hw-stat-val" id="hw-s-queue">0</span>
-      <span class="hw-stat-lbl">Queued</span>
-    </div>
-    <div class="hw-stat">
-      <span class="hw-stat-val" id="hw-s-stall">0%</span>
-      <span class="hw-stat-lbl">Stalled</span>
-    </div>
-    <div class="hw-stat">
-      <span class="hw-stat-val hw-stat-light" id="hw-s-light">&#x1F7E2;</span>
-      <span class="hw-stat-lbl" id="hw-s-light-lbl">GREEN</span>
-    </div>
-  </div>
   </div>
 
   <div class="hw-status" id="hw-status" role="status" aria-live="polite" aria-atomic="true" style="display:none">
@@ -126,11 +127,10 @@
     margin: 0; padding: 0;
   }
 
-  /* Stats bar — positioned at bottom of scene, overlapping road endpoints */
+  /* Stats bar — inside SVG foreignObject */
   .hw-stats {
-    position: absolute; bottom: 2%; left: 0; right: 0;
-    display: flex; justify-content: center; gap: 1.5rem;
-    flex-wrap: wrap; z-index: 1;
+    display: flex; justify-content: center; gap: 20px;
+    flex-wrap: nowrap;
   }
   .hw-stat {
     display: flex; flex-direction: column; align-items: center; gap: 0.05rem;
