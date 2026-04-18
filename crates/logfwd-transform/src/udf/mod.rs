@@ -2,6 +2,8 @@
 //!
 //! These are registered in `SqlTransform::execute()` and available in user SQL.
 
+mod bounded_lru;
+
 /// CSV-backed IP-range geo database implementation and helpers.
 pub mod csv_range_geo;
 pub mod geo_lookup;
