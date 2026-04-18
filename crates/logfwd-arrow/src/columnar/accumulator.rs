@@ -505,13 +505,14 @@ fn is_dense<T>(facts: &[(u32, T)], num_rows: usize, dedup: bool) -> bool {
 // Pure scatter / bitmap — Arrow-free, Kani-provable
 // ---------------------------------------------------------------------------
 
-/// Scatter fact values into a pre-zeroed vec indexed by row.
+/// Scatter fact values into a default-initialized vec indexed by row.
 ///
 /// Dense path: facts\[i\] → values\[i\] (sequential, no bounds check needed).
 /// Sparse path: facts\[i\].0 → row index (last-write-wins for duplicates).
+/// Rows without a fact retain `T::default()`.
 ///
-/// Returns `(values, dense)`. Callers use `dense` to decide whether a null
-/// bitmap is needed.
+/// Returns `(values, dense)`. Callers use `dense` to decide whether a
+/// validity bitmap is needed.
 fn scatter_values<T: Default + Copy>(
     facts: &[(u32, T)],
     num_rows: usize,
@@ -538,11 +539,12 @@ fn scatter_values<T: Default + Copy>(
     (values, dense)
 }
 
-/// Build a bit-packed null bitmap from sparse fact row indices.
+/// Build a bit-packed validity bitmap from sparse fact row indices.
 ///
-/// Returns raw bytes where bit `i` is set iff row `i` has at least one fact.
+/// Returns raw bytes where bit `i` is **set** (1) iff row `i` is valid
+/// (has at least one fact). This follows Arrow convention: 1 = valid, 0 = null.
 /// Arrow-free — just a `Vec<u8>` that callers wrap in `NullBuffer`.
-fn null_bitmap_bits<T>(facts: &[(u32, T)], num_rows: usize) -> Vec<u8> {
+fn validity_bitmap_bits<T>(facts: &[(u32, T)], num_rows: usize) -> Vec<u8> {
     let byte_len = num_rows.div_ceil(8);
     let mut bits = vec![0u8; byte_len];
     for &(row, _) in facts {
@@ -560,7 +562,7 @@ fn null_bitmap_bits<T>(facts: &[(u32, T)], num_rows: usize) -> Vec<u8> {
 
 /// Build a `NullBuffer` from sparse row indices.
 fn sparse_null_buffer<T>(facts: &[(u32, T)], num_rows: usize) -> NullBuffer {
-    let bits = null_bitmap_bits(facts, num_rows);
+    let bits = validity_bitmap_bits(facts, num_rows);
     let buf = Buffer::from_vec(bits);
     NullBuffer::new(arrow::buffer::BooleanBuffer::new(buf, 0, num_rows))
 }
@@ -1640,12 +1642,12 @@ mod verification {
         assert_eq!(values[0], second, "last write must win");
     }
 
-    // ── null_bitmap_bits — bit-packed correctness ──────────────────────────
+    // ── validity_bitmap_bits — bit-packed correctness ──────────────────────
 
-    /// Every fact row has its bit set, every gap row has bit clear.
+    /// Every fact row has its bit set (valid), every gap row has bit clear (null).
     #[kani::proof]
     #[kani::unwind(10)]
-    fn verify_null_bitmap_bits_correctness() {
+    fn verify_validity_bitmap_bits_correctness() {
         let num_rows: usize = kani::any();
         kani::assume(num_rows > 0 && num_rows <= 8);
 
@@ -1658,7 +1660,7 @@ mod verification {
         }
         kani::assume(!facts.is_empty());
 
-        let bits = null_bitmap_bits(&facts, num_rows);
+        let bits = validity_bitmap_bits(&facts, num_rows);
         assert_eq!(bits.len(), num_rows.div_ceil(8));
 
         for row in 0..num_rows {
@@ -1674,13 +1676,13 @@ mod verification {
 
     /// Out-of-bounds row indices are silently ignored.
     #[kani::proof]
-    fn verify_null_bitmap_bits_oob_ignored() {
+    fn verify_validity_bitmap_bits_oob_ignored() {
         let num_rows: usize = 4;
         let oob_row: u32 = kani::any();
         kani::assume(oob_row >= num_rows as u32 && oob_row <= 255);
 
         let facts = vec![(0u32, 0i64), (oob_row, 0i64)];
-        let bits = null_bitmap_bits(&facts, num_rows);
+        let bits = validity_bitmap_bits(&facts, num_rows);
 
         assert!(bits[0] & 1 != 0, "row 0 must be set");
         for row in 1..num_rows {
