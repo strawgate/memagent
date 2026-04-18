@@ -5,7 +5,7 @@ use crate::types::{
 };
 use serde::Deserialize;
 use serde_yaml_ng::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 #[derive(Debug, Deserialize)]
@@ -34,8 +34,9 @@ impl Config {
 
     /// Parse configuration from a YAML string.
     pub fn load_str(yaml: &str) -> Result<Self, ConfigError> {
+        let quoted_placeholders = collect_quoted_exact_env_placeholders(yaml);
         let mut value: Value = serde_yaml_ng::from_str(yaml)?;
-        expand_env_vars_in_yaml_value(&mut value)?;
+        expand_env_vars_in_yaml_value(&mut value, &quoted_placeholders)?;
         let raw: RawConfig = serde_yaml_ng::from_value(value)?;
         Self::from_raw(raw)
     }
@@ -119,12 +120,15 @@ impl Config {
     }
 }
 
-fn expand_env_vars_in_yaml_value(value: &mut Value) -> Result<(), ConfigError> {
+fn expand_env_vars_in_yaml_value(
+    value: &mut Value,
+    quoted_placeholders: &HashSet<String>,
+) -> Result<(), ConfigError> {
     match value {
         Value::String(text) => {
             let original = text.clone();
             let expanded = expand_env_vars(&original)?;
-            if is_exact_env_placeholder(&original) {
+            if is_exact_env_placeholder(&original) && !quoted_placeholders.contains(&original) {
                 *value = coerce_expanded_yaml_scalar(&expanded);
             } else {
                 *text = expanded;
@@ -132,19 +136,19 @@ fn expand_env_vars_in_yaml_value(value: &mut Value) -> Result<(), ConfigError> {
         }
         Value::Sequence(items) => {
             for item in items {
-                expand_env_vars_in_yaml_value(item)?;
+                expand_env_vars_in_yaml_value(item, quoted_placeholders)?;
             }
         }
         Value::Mapping(map) => {
             let old = std::mem::take(map);
             for (mut key, mut val) in old {
-                expand_env_vars_in_yaml_value(&mut key)?;
-                expand_env_vars_in_yaml_value(&mut val)?;
+                expand_env_vars_in_yaml_value(&mut key, quoted_placeholders)?;
+                expand_env_vars_in_yaml_value(&mut val, quoted_placeholders)?;
                 map.insert(key, val);
             }
         }
         Value::Tagged(tagged) => {
-            expand_env_vars_in_yaml_value(&mut tagged.value)?;
+            expand_env_vars_in_yaml_value(&mut tagged.value, quoted_placeholders)?;
         }
         _ => {}
     }
@@ -167,4 +171,40 @@ fn coerce_expanded_yaml_scalar(text: &str) -> Value {
         Ok(value @ (Value::Null | Value::Bool(_) | Value::Number(_))) => value,
         _ => Value::String(text.to_owned()),
     }
+}
+
+fn collect_quoted_exact_env_placeholders(yaml: &str) -> HashSet<String> {
+    let mut placeholders = HashSet::new();
+    let mut chars = yaml.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch != '\'' && ch != '"' {
+            continue;
+        }
+
+        let quote = ch;
+        let mut text = String::new();
+        let mut escaped = false;
+        for c in chars.by_ref() {
+            if quote == '"' && escaped {
+                text.push(c);
+                escaped = false;
+                continue;
+            }
+            if quote == '"' && c == '\\' {
+                escaped = true;
+                continue;
+            }
+            if c == quote {
+                break;
+            }
+            text.push(c);
+        }
+
+        if is_exact_env_placeholder(&text) {
+            placeholders.insert(text);
+        }
+    }
+
+    placeholders
 }

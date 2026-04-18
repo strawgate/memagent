@@ -1309,7 +1309,7 @@ fn normalize_path_key_for_compare(path: &Path) -> std::path::PathBuf {
     let normalized = normalize_path_for_compare(path);
     #[cfg(windows)]
     {
-        std::path::PathBuf::from(normalized.to_string_lossy().to_ascii_lowercase())
+        std::path::PathBuf::from(normalized.to_string_lossy().to_lowercase())
     }
     #[cfg(not(windows))]
     {
@@ -1368,7 +1368,11 @@ fn track_listen_addr_uniqueness(
     input_label: &str,
     listen: &str,
 ) -> Result<(), ConfigError> {
-    let listen_key = format!("{transport}:{}", listen.to_ascii_lowercase());
+    let listen_key = canonical_listen_addr_key(transport, listen).map_err(|msg| {
+        ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' input '{input_label}': {msg}"
+        ))
+    })?;
     let current_ref = format!("pipeline '{pipeline_name}' input '{input_label}'");
     if let Some(previous_ref) = seen_listen_addrs.get(&listen_key) {
         return Err(ConfigError::Validation(format!(
@@ -1377,6 +1381,26 @@ fn track_listen_addr_uniqueness(
     }
     seen_listen_addrs.insert(listen_key, current_ref);
     Ok(())
+}
+
+fn canonical_listen_addr_key(transport: &str, listen: &str) -> Result<String, String> {
+    let (host, port_str) = if listen.starts_with('[') {
+        let close_bracket = listen
+            .find(']')
+            .ok_or_else(|| format!("'{listen}' has mismatched brackets"))?;
+        if !listen[close_bracket..].starts_with("]:") {
+            return Err(format!("'{listen}' is missing a port after IPv6 brackets"));
+        }
+        (&listen[..=close_bracket], &listen[close_bracket + 2..])
+    } else {
+        listen
+            .rsplit_once(':')
+            .ok_or_else(|| format!("'{listen}' is missing a port (expected format host:port)"))?
+    };
+    let port = port_str
+        .parse::<u16>()
+        .map_err(|_| format!("'{listen}' has an invalid port '{port_str}'"))?;
+    Ok(format!("{transport}:{}:{port}", host.to_lowercase()))
 }
 
 fn sensor_supported_families(input_type: &InputType) -> &'static [&'static str] {

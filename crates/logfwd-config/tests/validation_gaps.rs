@@ -69,6 +69,29 @@ pipelines:
 }
 
 #[test]
+fn issue_1855_quoted_env_expansion_preserves_string_scalars() {
+    let _env_lock = env_lock();
+    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_QUOTED_PATH", "1234");
+
+    let yaml = r#"
+input:
+  type: file
+  path: "${LOGFWD_ISSUE_1855_QUOTED_PATH}"
+output:
+  type: stdout
+"#;
+
+    let config = Config::load_str(yaml).expect("quoted env-backed string should parse");
+    let input = &config.pipelines["default"].inputs[0];
+    let path = match &input.type_config {
+        logfwd_config::InputTypeConfig::File(file) => file.path.as_str(),
+        _ => panic!("expected file input"),
+    };
+
+    assert_eq!(path, "1234");
+}
+
+#[test]
 fn issue_1855_env_expansion_applies_to_mapping_keys() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_PIPELINE", "from-env");
@@ -120,14 +143,14 @@ pipelines:
   p2:
     inputs:
       - type: http
-        listen: 0.0.0.0:9000
+        listen: 0.0.0.0:09000
     outputs:
       - type: stdout
 "#;
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
-        err.contains("listen address '0.0.0.0:9000' duplicates"),
+        err.contains("listen address '0.0.0.0:09000' duplicates"),
         "unexpected error: {err}"
     );
 }
