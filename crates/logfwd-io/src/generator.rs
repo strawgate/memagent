@@ -146,6 +146,239 @@ const PATHS: [&str; 5] = [
 ];
 const METHODS: [&str; 4] = ["GET", "POST", "PUT", "DELETE"];
 const SERVICES: [&str; 3] = ["myapp", "gateway", "auth-svc"];
+
+// ---------------------------------------------------------------------------
+// Shared event field computation
+// ---------------------------------------------------------------------------
+
+/// Computed field values for a single `logs` profile event.
+///
+/// Pure function of counter + config — shared between JSON and Arrow generators.
+pub(crate) struct LogEventFields<'a> {
+    pub timestamp: TimestampParts,
+    pub level: &'static str,
+    pub message_template: &'a Option<Vec<u8>>,
+    pub method: &'static str,
+    pub path: &'static str,
+    pub id: u64,
+    pub duration_ms: u64,
+    pub request_id: u64,
+    pub service: &'static str,
+    pub status: u32,
+    pub complexity: ComplexityFields,
+}
+
+/// Pre-decomposed timestamp for both JSON formatting and Arrow string building.
+pub(crate) struct TimestampParts {
+    pub year: i32,
+    pub month: u32,
+    pub day: u32,
+    pub hour: u32,
+    pub min: u32,
+    pub sec: u32,
+    pub ms: u32,
+}
+
+impl TimestampParts {
+    /// Format as `YYYY-MM-DDTHH:MM:SS.mmmZ` into a stack buffer.
+    pub fn write_iso8601(&self, out: &mut [u8; 24]) {
+        // "2024-01-15T00:00:00.000Z"
+        let y = self.year as u32;
+        out[0] = b'0' + (y / 1000 % 10) as u8;
+        out[1] = b'0' + (y / 100 % 10) as u8;
+        out[2] = b'0' + (y / 10 % 10) as u8;
+        out[3] = b'0' + (y % 10) as u8;
+        out[4] = b'-';
+        out[5] = b'0' + (self.month / 10) as u8;
+        out[6] = b'0' + (self.month % 10) as u8;
+        out[7] = b'-';
+        out[8] = b'0' + (self.day / 10) as u8;
+        out[9] = b'0' + (self.day % 10) as u8;
+        out[10] = b'T';
+        out[11] = b'0' + (self.hour / 10) as u8;
+        out[12] = b'0' + (self.hour % 10) as u8;
+        out[13] = b':';
+        out[14] = b'0' + (self.min / 10) as u8;
+        out[15] = b'0' + (self.min % 10) as u8;
+        out[16] = b':';
+        out[17] = b'0' + (self.sec / 10) as u8;
+        out[18] = b'0' + (self.sec % 10) as u8;
+        out[19] = b'.';
+        out[20] = b'0' + (self.ms / 100) as u8;
+        out[21] = b'0' + (self.ms / 10 % 10) as u8;
+        out[22] = b'0' + (self.ms % 10) as u8;
+        out[23] = b'Z';
+    }
+}
+
+/// Extra fields present only in `Complex` events.
+pub(crate) enum ComplexityFields {
+    /// `Simple` profile — no extra fields.
+    Simple,
+    /// `Complex` profile with varying extra fields per event.
+    Complex {
+        bytes_in: u64,
+        bytes_out: u64,
+        variant: ComplexVariant,
+    },
+}
+
+/// Which structural variant a complex event takes.
+pub(crate) enum ComplexVariant {
+    /// Includes `headers` map and `tags` array.
+    WithHeadersAndTags,
+    /// Includes `upstream` array with nested objects.
+    WithUpstream { upstream_ms: u64 },
+    /// Only `bytes_in`/`bytes_out` extras.
+    Basic,
+}
+
+/// Compute the field values for one `logs` event from the counter and config.
+///
+/// Returns `None` if the counter overflows timestamp arithmetic (signals done).
+pub(crate) fn compute_log_fields<'a>(
+    counter: u64,
+    timestamp_config: &GeneratorTimestamp,
+    complexity: GeneratorComplexity,
+    message_template_escaped: &'a Option<Vec<u8>>,
+) -> Option<LogEventFields<'a>> {
+    let seq = counter;
+    let level = LEVELS[(seq % LEVELS.len() as u64) as usize];
+    let path = PATHS[(seq % PATHS.len() as u64) as usize];
+    let method = METHODS[(seq % METHODS.len() as u64) as usize];
+    let service = SERVICES[(seq % SERVICES.len() as u64) as usize];
+    let id = 10000 + seq.wrapping_mul(7) % 90000;
+    let dur = 1 + seq.wrapping_mul(13) % 500;
+    let rid = seq.wrapping_mul(0x517c_c1b7_2722_0a95);
+    let status = match seq % 20 {
+        0 => 500,
+        1 | 2 => 404,
+        3 => 429,
+        _ => 200,
+    };
+
+    let counter_i64 = i64::try_from(counter).ok()?;
+    let event_ms = counter_i64
+        .checked_mul(timestamp_config.step_ms)
+        .and_then(|offset| timestamp_config.start_epoch_ms.checked_add(offset))?;
+    let (year, month, day, hour, min, sec, ms) = epoch_ms_to_parts(event_ms);
+
+    let complexity_fields = match complexity {
+        GeneratorComplexity::Simple => ComplexityFields::Simple,
+        GeneratorComplexity::Complex => {
+            let bytes_in = 128 + seq.wrapping_mul(17) % 8192;
+            let bytes_out = 64 + seq.wrapping_mul(31) % 4096;
+            let variant = if seq.is_multiple_of(5) {
+                ComplexVariant::WithHeadersAndTags
+            } else if seq.is_multiple_of(7) {
+                ComplexVariant::WithUpstream {
+                    upstream_ms: 1 + seq.wrapping_mul(19) % 200,
+                }
+            } else {
+                ComplexVariant::Basic
+            };
+            ComplexityFields::Complex {
+                bytes_in,
+                bytes_out,
+                variant,
+            }
+        }
+    };
+
+    Some(LogEventFields {
+        timestamp: TimestampParts {
+            year,
+            month,
+            day,
+            hour,
+            min,
+            sec,
+            ms,
+        },
+        level,
+        message_template: message_template_escaped,
+        method,
+        path,
+        id,
+        duration_ms: dur,
+        request_id: rid,
+        service,
+        status,
+        complexity: complexity_fields,
+    })
+}
+
+/// Write the message field value (without key or quotes) into a buffer.
+///
+/// Used by both JSON serialization and Arrow field extraction.
+pub(crate) fn write_message_value(
+    buf: &mut Vec<u8>,
+    fields: &LogEventFields<'_>,
+) {
+    if let Some(escaped) = fields.message_template {
+        buf.extend_from_slice(escaped);
+    } else {
+        let _ = write!(
+            buf,
+            "{} {}/{} {}",
+            fields.method, fields.path, fields.id, fields.status
+        );
+    }
+}
+
+/// Serialize a `LogEventFields` as a single JSON object into `buf`.
+fn write_log_fields_json(buf: &mut Vec<u8>, fields: &LogEventFields<'_>) {
+    let ts = &fields.timestamp;
+    let level = fields.level;
+    let dur = fields.duration_ms;
+    let rid = fields.request_id;
+    let service = fields.service;
+    let status = fields.status;
+
+    // Common prefix: timestamp, level, message
+    let _ = write!(
+        buf,
+        r#"{{"timestamp":"{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z","level":"{level}","#,
+        ts.year, ts.month, ts.day, ts.hour, ts.min, ts.sec, ts.ms,
+    );
+    buf.extend_from_slice(b"\"message\":\"");
+    write_message_value(buf, fields);
+    buf.push(b'"');
+
+    match &fields.complexity {
+        ComplexityFields::Simple => {
+            let _ = write!(
+                buf,
+                r#","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status}}}"#,
+            );
+        }
+        ComplexityFields::Complex {
+            bytes_in,
+            bytes_out,
+            variant,
+        } => match variant {
+            ComplexVariant::WithHeadersAndTags => {
+                let _ = write!(
+                    buf,
+                    r#","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"headers":{{"content-type":"application/json","x-request-id":"{rid:016x}"}},"tags":["web","{service}","{level}"]}}"#,
+                );
+            }
+            ComplexVariant::WithUpstream { upstream_ms } => {
+                let _ = write!(
+                    buf,
+                    r#","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"upstream":[{{"host":"10.0.0.1","latency_ms":{upstream_ms}}},{{"host":"10.0.0.2","latency_ms":{dur}}}]}}"#,
+                );
+            }
+            ComplexVariant::Basic => {
+                let _ = write!(
+                    buf,
+                    r#","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out}}}"#,
+                );
+            }
+        },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Date math helpers (Howard Hinnant algorithms)
 // ---------------------------------------------------------------------------
@@ -360,127 +593,16 @@ impl GeneratorInput {
     }
 
     fn write_logs_event(&mut self) {
-        let seq = self.counter;
-        let level = LEVELS[(seq % LEVELS.len() as u64) as usize];
-        let path = PATHS[(seq % PATHS.len() as u64) as usize];
-        let method = METHODS[(seq % METHODS.len() as u64) as usize];
-        let service = SERVICES[(seq % SERVICES.len() as u64) as usize];
-        let id = 10000 + seq.wrapping_mul(7) % 90000;
-        let dur = 1 + seq.wrapping_mul(13) % 500;
-        let rid = seq.wrapping_mul(0x517c_c1b7_2722_0a95);
-        let status = match seq % 20 {
-            0 => 500,
-            1 | 2 => 404,
-            3 => 429,
-            _ => 200,
-        };
-        let Ok(counter_i64) = i64::try_from(self.counter) else {
+        let Some(fields) = compute_log_fields(
+            self.counter,
+            &self.config.timestamp,
+            self.config.complexity,
+            &self.message_template_escaped,
+        ) else {
             self.done = true;
             return;
         };
-        let Some(event_ms) = counter_i64
-            .checked_mul(self.config.timestamp.step_ms)
-            .and_then(|offset| self.config.timestamp.start_epoch_ms.checked_add(offset))
-        else {
-            self.done = true;
-            return;
-        };
-        let (year, month, day, hour, min, sec, msec) = epoch_ms_to_parts(event_ms);
-
-        // Write the "message" JSON field value: either the pre-escaped template
-        // or the default computed message string.
-        let write_message = |buf: &mut Vec<u8>,
-                             method: &str,
-                             path: &str,
-                             id: u64,
-                             status: u32,
-                             tmpl: &Option<Vec<u8>>| {
-            buf.extend_from_slice(b"\"message\":\"");
-            if let Some(escaped) = tmpl {
-                buf.extend_from_slice(escaped);
-            } else {
-                let _ = write!(buf, "{method} {path}/{id} {status}");
-            }
-            buf.push(b'"');
-        };
-
-        match self.config.complexity {
-            GeneratorComplexity::Simple => {
-                let _ = write!(
-                    self.buf,
-                    r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","#,
-                );
-                write_message(
-                    &mut self.buf,
-                    method,
-                    path,
-                    id,
-                    status,
-                    &self.message_template_escaped,
-                );
-                let _ = write!(
-                    self.buf,
-                    r#","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status}}}"#,
-                );
-            }
-            GeneratorComplexity::Complex => {
-                let bytes_in = 128 + seq.wrapping_mul(17) % 8192;
-                let bytes_out = 64 + seq.wrapping_mul(31) % 4096;
-                if seq.is_multiple_of(5) {
-                    let _ = write!(
-                        self.buf,
-                        r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","#,
-                    );
-                    write_message(
-                        &mut self.buf,
-                        method,
-                        path,
-                        id,
-                        status,
-                        &self.message_template_escaped,
-                    );
-                    let _ = write!(
-                        self.buf,
-                        r#","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"headers":{{"content-type":"application/json","x-request-id":"{rid:016x}"}},"tags":["web","{service}","{level}"]}}"#,
-                    );
-                } else if seq.is_multiple_of(7) {
-                    let upstream_ms = 1 + seq.wrapping_mul(19) % 200;
-                    let _ = write!(
-                        self.buf,
-                        r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","#,
-                    );
-                    write_message(
-                        &mut self.buf,
-                        method,
-                        path,
-                        id,
-                        status,
-                        &self.message_template_escaped,
-                    );
-                    let _ = write!(
-                        self.buf,
-                        r#","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out},"upstream":[{{"host":"10.0.0.1","latency_ms":{upstream_ms}}},{{"host":"10.0.0.2","latency_ms":{dur}}}]}}"#,
-                    );
-                } else {
-                    let _ = write!(
-                        self.buf,
-                        r#"{{"timestamp":"{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}.{msec:03}Z","level":"{level}","#,
-                    );
-                    write_message(
-                        &mut self.buf,
-                        method,
-                        path,
-                        id,
-                        status,
-                        &self.message_template_escaped,
-                    );
-                    let _ = write!(
-                        self.buf,
-                        r#","duration_ms":{dur},"request_id":"{rid:016x}","service":"{service}","status":{status},"bytes_in":{bytes_in},"bytes_out":{bytes_out}}}"#,
-                    );
-                }
-            }
-        }
+        write_log_fields_json(&mut self.buf, &fields);
     }
 
     fn write_record_event(&mut self, event_created_unix_nano: Option<u128>) {
@@ -692,6 +814,99 @@ fn encode_static_field(key: &str, value: &GeneratorAttributeValue) -> Vec<u8> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Arrow-direct batch generation
+// ---------------------------------------------------------------------------
+
+use arrow::array::{Int64Builder, RecordBatch, StringBuilder};
+use arrow::datatypes::{DataType, Field, Schema};
+use std::sync::Arc;
+
+/// Build a `RecordBatch` directly from computed field values, bypassing JSON
+/// serialization and scanning entirely.
+///
+/// Produces the exact same column names, types, and values as
+/// `GeneratorInput` → `FramedInput` → `Scanner` would for the `logs` profile
+/// with `Simple` complexity. This is verified by the `arrow_matches_json_path`
+/// equivalence test.
+///
+/// # Arguments
+/// * `n` — number of rows to generate
+/// * `start_counter` — first event counter value (rows use `start_counter..start_counter+n`)
+/// * `timestamp_config` — timestamp base and step
+/// * `message_template_escaped` — pre-escaped template or `None` for default
+pub fn generate_arrow_batch(
+    n: usize,
+    start_counter: u64,
+    timestamp_config: &GeneratorTimestamp,
+    message_template_escaped: &Option<Vec<u8>>,
+) -> RecordBatch {
+    let mut ts_builder = StringBuilder::with_capacity(n, n * 24);
+    let mut level_builder = StringBuilder::with_capacity(n, n * 5);
+    let mut message_builder = StringBuilder::with_capacity(n, n * 40);
+    let mut duration_builder = Int64Builder::with_capacity(n);
+    let mut rid_builder = StringBuilder::with_capacity(n, n * 16);
+    let mut service_builder = StringBuilder::with_capacity(n, n * 8);
+    let mut status_builder = Int64Builder::with_capacity(n);
+
+    let mut ts_buf = [0u8; 24];
+    let mut msg_buf = Vec::with_capacity(64);
+
+    for i in 0..n {
+        let counter = start_counter + i as u64;
+        let Some(fields) = compute_log_fields(
+            counter,
+            timestamp_config,
+            GeneratorComplexity::Simple,
+            message_template_escaped,
+        ) else {
+            break;
+        };
+
+        // Timestamp as ISO 8601 string
+        fields.timestamp.write_iso8601(&mut ts_buf);
+        // SAFETY: write_iso8601 produces valid ASCII
+        ts_builder.append_value(std::str::from_utf8(&ts_buf).expect("valid ASCII"));
+
+        level_builder.append_value(fields.level);
+
+        // Message — reuse buffer
+        msg_buf.clear();
+        write_message_value(&mut msg_buf, &fields);
+        message_builder.append_value(std::str::from_utf8(&msg_buf).expect("valid UTF-8"));
+
+        // Integer fields as Int64 (matching scanner's append_int_by_idx → Int64Array)
+        duration_builder.append_value(fields.duration_ms as i64);
+        rid_builder.append_value(format!("{:016x}", fields.request_id));
+        service_builder.append_value(fields.service);
+        status_builder.append_value(fields.status as i64);
+    }
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("timestamp", DataType::Utf8, true),
+        Field::new("level", DataType::Utf8, true),
+        Field::new("message", DataType::Utf8, true),
+        Field::new("duration_ms", DataType::Int64, true),
+        Field::new("request_id", DataType::Utf8, true),
+        Field::new("service", DataType::Utf8, true),
+        Field::new("status", DataType::Int64, true),
+    ]));
+
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(ts_builder.finish()),
+            Arc::new(level_builder.finish()),
+            Arc::new(message_builder.finish()),
+            Arc::new(duration_builder.finish()),
+            Arc::new(rid_builder.finish()),
+            Arc::new(service_builder.finish()),
+            Arc::new(status_builder.finish()),
+        ],
+    )
+    .expect("schema matches builders")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -700,6 +915,113 @@ mod tests {
     fn generator_health_is_explicitly_healthy() {
         let input = GeneratorInput::new("test", GeneratorConfig::default());
         assert_eq!(input.health(), ComponentHealth::Healthy);
+    }
+
+    /// Prove that the Arrow-direct generator produces identical data to the
+    /// JSON → Scanner path for 1000 events across varying counter offsets.
+    #[test]
+    fn arrow_matches_json_path() {
+        use arrow::array::AsArray;
+        use logfwd_arrow::Scanner;
+        use logfwd_core::scan_config::ScanConfig;
+
+        let ts_config = GeneratorTimestamp::default();
+        let message_template: Option<Vec<u8>> = None;
+
+        // Test multiple counter offsets to cover all LEVEL/PATH/METHOD/SERVICE rotations
+        for start in [0, 1, 5, 20, 100, 999] {
+            let n = 100;
+
+            // Path 1: Arrow direct
+            let arrow_batch =
+                generate_arrow_batch(n, start, &ts_config, &message_template);
+
+            // Path 2: JSON → Scanner
+            let mut json_buf = Vec::with_capacity(n * 256);
+            for i in 0..n {
+                let counter = start + i as u64;
+                let fields = compute_log_fields(
+                    counter,
+                    &ts_config,
+                    GeneratorComplexity::Simple,
+                    &message_template,
+                )
+                .expect("valid counter");
+                write_log_fields_json(&mut json_buf, &fields);
+                json_buf.push(b'\n');
+            }
+
+            let config = ScanConfig {
+                extract_all: true,
+                ..Default::default()
+            };
+            let mut scanner = Scanner::new(config);
+            let json_batch = scanner
+                .scan_detached(bytes::Bytes::from(json_buf))
+                .expect("valid JSON");
+
+            assert_eq!(
+                arrow_batch.num_rows(),
+                json_batch.num_rows(),
+                "row count mismatch at start={start}"
+            );
+
+            // Compare each column by name. The scanner discovers columns in
+            // JSON field order; the arrow generator uses a fixed schema.
+            // We look up by name to be order-independent.
+            let string_cols = ["timestamp", "level", "message", "request_id", "service"];
+            let int_cols = ["duration_ms", "status"];
+
+            for col_name in &string_cols {
+                let arrow_col = arrow_batch
+                    .column_by_name(col_name)
+                    .unwrap_or_else(|| panic!("arrow batch missing column {col_name}"));
+                let json_col = json_batch
+                    .column_by_name(col_name)
+                    .unwrap_or_else(|| panic!("json batch missing column {col_name}"));
+
+                let arrow_strs = arrow_col.as_string::<i32>();
+                // scan_detached produces StringArray for string columns
+                let json_strs = json_col
+                    .as_any()
+                    .downcast_ref::<arrow::array::StringArray>()
+                    .unwrap_or_else(|| panic!("{col_name}: expected StringArray"));
+
+                for row in 0..n {
+                    assert_eq!(
+                        arrow_strs.value(row),
+                        json_strs.value(row),
+                        "mismatch at start={start} row={row} col={col_name}"
+                    );
+                }
+            }
+
+            for col_name in &int_cols {
+                let arrow_col = arrow_batch
+                    .column_by_name(col_name)
+                    .unwrap_or_else(|| panic!("arrow batch missing column {col_name}"));
+                let json_col = json_batch
+                    .column_by_name(col_name)
+                    .unwrap_or_else(|| panic!("json batch missing column {col_name}"));
+
+                let arrow_ints = arrow_col
+                    .as_any()
+                    .downcast_ref::<arrow::array::Int64Array>()
+                    .unwrap_or_else(|| panic!("{col_name}: expected Int64Array in arrow"));
+                let json_ints = json_col
+                    .as_any()
+                    .downcast_ref::<arrow::array::Int64Array>()
+                    .unwrap_or_else(|| panic!("{col_name}: expected Int64Array in json"));
+
+                for row in 0..n {
+                    assert_eq!(
+                        arrow_ints.value(row),
+                        json_ints.value(row),
+                        "mismatch at start={start} row={row} col={col_name}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
