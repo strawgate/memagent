@@ -1,61 +1,70 @@
 ---
 // Highway backpressure animation.
-// Single-lane road: on-ramp → highway → exit ramp with gate.
-// Slowing the gate backs traffic up through the highway to the on-ramp.
-// Pure SVG + vanilla JS. No framework deps.
+// Straight road: on-ramp → highway → off-ramp with traffic light.
+// Slider controls collector speed. Slowing creates visible backpressure cascade.
 ---
 
 <div class="hw" id="highway-bp">
-  <div class="hw-label">Why backpressure?</div>
   <div class="hw-scene">
-    <svg class="hw-svg" viewBox="0 0 800 240" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+    <svg class="hw-svg" viewBox="0 0 800 210" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
       <defs>
-        <!-- On-ramp path (cars follow this) -->
-        <path id="hw-ramp-path" d="M 60,210 C 60,160 100,120 160,110" fill="none" />
-        <!-- Highway path -->
-        <path id="hw-highway-path" d="M 160,110 L 620,110" fill="none" />
-        <!-- Exit ramp path -->
-        <path id="hw-exit-path" d="M 620,110 C 680,110 720,140 740,190" fill="none" />
+        <path id="hw-path-in" d="M 40,180 C 40,125 115,90 155,90" fill="none" />
+        <path id="hw-path-hwy" d="M 155,90 L 645,90" fill="none" />
+        <path id="hw-path-out" d="M 645,90 C 685,90 760,125 760,180" fill="none" />
       </defs>
 
-      <!-- Road surfaces -->
-      <!-- On-ramp road -->
-      <path d="M 60,210 C 60,160 100,120 160,110" fill="none" stroke="var(--hw-road)" stroke-width="36" stroke-linecap="round" />
-      <path d="M 60,210 C 60,160 100,120 160,110" fill="none" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="6,8" />
+      <!-- On-ramp -->
+      <path d="M 40,180 C 40,125 115,90 155,90" fill="none" stroke="var(--hw-road)" stroke-width="32" stroke-linecap="round" />
+      <path d="M 40,180 C 40,125 115,90 155,90" fill="none" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="6,8" />
 
-      <!-- Main highway -->
-      <rect x="150" y="92" width="480" height="36" rx="0" fill="var(--hw-road)" />
-      <!-- Road edges -->
-      <line x1="150" y1="92" x2="630" y2="92" stroke="var(--hw-edge)" stroke-width="2" />
-      <line x1="150" y1="128" x2="630" y2="128" stroke="var(--hw-edge)" stroke-width="2" />
-      <!-- Center dashes -->
-      <line x1="160" y1="110" x2="620" y2="110" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="16,12" />
+      <!-- Highway -->
+      <rect x="150" y="74" width="500" height="32" fill="var(--hw-road)" />
+      <line x1="150" y1="74" x2="650" y2="74" stroke="var(--hw-edge)" stroke-width="1.5" />
+      <line x1="150" y1="106" x2="650" y2="106" stroke="var(--hw-edge)" stroke-width="1.5" />
+      <line x1="165" y1="90" x2="635" y2="90" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="14,10" />
 
-      <!-- Exit ramp road -->
-      <path d="M 620,110 C 680,110 720,140 740,190" fill="none" stroke="var(--hw-road)" stroke-width="36" stroke-linecap="round" />
-      <path d="M 620,110 C 680,110 720,140 740,190" fill="none" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="6,8" />
+      <!-- Direction chevrons -->
+      <g opacity="0.3" stroke="var(--hw-dash)" stroke-width="1.5" fill="none">
+        <path d="M 268,84 L 274,90 L 268,96" />
+        <path d="M 368,84 L 374,90 L 368,96" />
+        <path d="M 468,84 L 474,90 L 468,96" />
+        <path d="M 568,84 L 574,90 L 568,96" />
+      </g>
 
-      <!-- Gate bar at exit -->
-      <g id="hw-gate" transform="translate(660,95)">
-        <rect x="0" y="0" width="6" height="30" rx="2" fill="var(--hw-gate-open)" class="hw-gate-bar" />
-        <circle cx="3" cy="3" r="4" fill="var(--hw-gate-open)" class="hw-gate-light" />
+      <!-- Off-ramp -->
+      <path d="M 645,90 C 685,90 760,125 760,180" fill="none" stroke="var(--hw-road)" stroke-width="32" stroke-linecap="round" />
+      <path d="M 645,90 C 685,90 760,125 760,180" fill="none" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="6,8" />
+
+      <!-- Traffic light -->
+      <g id="hw-light" transform="translate(638,22)">
+        <rect x="-8" y="0" width="16" height="38" rx="4" fill="#1e1e1e" stroke="#444" stroke-width="0.5" />
+        <circle cx="0" cy="9" r="5" fill="#3a1111" id="hw-l-red" />
+        <circle cx="0" cy="21" r="5" fill="#3a3311" id="hw-l-yellow" />
+        <circle cx="0" cy="33" r="5" fill="#22c55e" id="hw-l-green" />
+        <rect x="-1.5" y="38" width="3" height="14" fill="#444" />
       </g>
 
       <!-- Labels -->
-      <text x="60" y="236" text-anchor="middle" fill="var(--hw-muted)" font-size="10" font-weight="600">LOG SOURCE</text>
-      <text x="390" y="82" text-anchor="middle" fill="var(--hw-muted)" font-size="10" font-weight="600">BOUNDED PIPELINE</text>
-      <text x="740" y="218" text-anchor="middle" fill="var(--hw-muted)" font-size="10" font-weight="600">COLLECTOR</text>
+      <text x="40" y="202" text-anchor="middle" fill="var(--hw-muted)" font-size="10" font-weight="600">LOG SOURCE</text>
+      <text x="400" y="66" text-anchor="middle" fill="var(--hw-muted)" font-size="10" font-weight="600">BOUNDED PIPELINE</text>
+      <text x="760" y="202" text-anchor="middle" fill="var(--hw-muted)" font-size="10" font-weight="600">COLLECTOR</text>
 
-      <!-- Car container -->
+      <!-- Cars render here -->
       <g id="hw-cars"></g>
     </svg>
   </div>
+
   <div class="hw-status" id="hw-status" role="status" aria-live="polite" aria-atomic="true">
-    🟢 Flowing smoothly — collector keeping up
+    🟢 Flowing — collector keeping up
   </div>
-  <div class="hw-controls">
-    <button type="button" class="hw-btn hw-btn-slow" id="hw-btn-slow">🚧 Slow the collector</button>
-    <button type="button" class="hw-btn hw-btn-clear" id="hw-btn-clear" disabled>✅ Clear the collector</button>
+
+  <div class="hw-slider-row">
+    <label class="hw-slider-label" for="hw-speed">Collector Speed: <span id="hw-speed-val">100%</span></label>
+    <div class="hw-slider-wrap">
+      <span class="hw-slider-end">Stopped</span>
+      <input type="range" id="hw-speed" class="hw-slider" min="0" max="100" value="100" />
+      <span class="hw-slider-end">Fast</span>
+    </div>
   </div>
 </div>
 
@@ -68,8 +77,6 @@
     --hw-car-flow: #60a5fa;
     --hw-car-slow: #f59e0b;
     --hw-car-stop: #ef4444;
-    --hw-gate-open: #22c55e;
-    --hw-gate-shut: #ef4444;
     --hw-accent: var(--sl-color-accent);
     margin: 1rem 0 1.5rem;
     padding: 1rem;
@@ -79,269 +86,254 @@
     overflow: hidden;
   }
   .hw * { margin-top: 0 !important; }
-  .hw-label {
-    font-size: 0.65rem; font-weight: 600; color: var(--hw-muted);
-    text-transform: uppercase; letter-spacing: 0.04em;
-    margin-bottom: 0.5rem; text-align: center;
-  }
   .hw-scene { width: 100%; overflow: hidden; }
   .hw-svg { width: 100%; height: auto; display: block; }
   .hw-status {
     text-align: center; font-size: 0.78rem; font-weight: 500;
-    color: var(--sl-color-text); margin: 0.6rem 0 0.5rem;
+    color: var(--sl-color-text); margin: 0.6rem 0 0.4rem;
     min-height: 1.4em; transition: color 0.3s;
   }
-  .hw-controls { display: flex; justify-content: center; gap: 0.6rem; }
-  .hw-btn {
-    padding: 0.35rem 0.85rem; border: 1px solid var(--sl-color-hairline);
-    border-radius: 6px; background: var(--sl-color-bg-sidebar);
-    color: var(--sl-color-text); font-size: 0.75rem; font-weight: 500;
-    cursor: pointer; transition: all 0.2s;
+  .hw-slider-row {
+    display: flex; flex-direction: column; align-items: center; gap: 0.25rem;
   }
-  .hw-btn:hover:not(:disabled) {
-    border-color: var(--hw-accent);
-    background: color-mix(in srgb, var(--hw-accent) 10%, var(--sl-color-bg-sidebar));
+  .hw-slider-label {
+    font-size: 0.65rem; font-weight: 600; color: var(--hw-muted);
+    text-transform: uppercase; letter-spacing: 0.04em;
   }
-  .hw-btn:disabled { opacity: 0.4; cursor: default; }
-  .hw-gate-bar, .hw-gate-light { transition: fill 0.4s; }
+  .hw-slider-wrap {
+    display: flex; align-items: center; gap: 0.5rem;
+  }
+  .hw-slider-end {
+    font-size: 0.65rem; color: var(--hw-muted); white-space: nowrap;
+  }
+  .hw-slider {
+    width: 200px; accent-color: var(--hw-accent); cursor: pointer;
+  }
 </style>
 
 <script>
 (function() {
-  var svg = document.querySelector('#highway-bp .hw-svg');
   var carsG = document.getElementById('hw-cars');
-  var status = document.getElementById('hw-status');
-  var btnSlow = document.getElementById('hw-btn-slow');
-  var btnClear = document.getElementById('hw-btn-clear');
-  var gateBar = document.querySelector('#hw-gate .hw-gate-bar');
-  var gateLight = document.querySelector('#hw-gate .hw-gate-light');
-  if (!svg || !carsG) return;
+  var statusEl = document.getElementById('hw-status');
+  var slider = document.getElementById('hw-speed');
+  var speedVal = document.getElementById('hw-speed-val');
+  var lRed = document.getElementById('hw-l-red');
+  var lYellow = document.getElementById('hw-l-yellow');
+  var lGreen = document.getElementById('hw-l-green');
+  if (!carsG || !slider) return;
 
-  // --- Paths ---
-  // Sample points along each SVG path for car positioning.
-  var rampPath = document.getElementById('hw-ramp-path');
-  var highwayPath = document.getElementById('hw-highway-path');
-  var exitPath = document.getElementById('hw-exit-path');
+  // Measure SVG paths for car positioning
+  var pathIn = document.getElementById('hw-path-in');
+  var pathHwy = document.getElementById('hw-path-hwy');
+  var pathOut = document.getElementById('hw-path-out');
+  var lenIn = pathIn.getTotalLength();
+  var lenHwy = pathHwy.getTotalLength();
+  var lenOut = pathOut.getTotalLength();
+  var lenTotal = lenIn + lenHwy + lenOut;
 
-  var rampLen = rampPath.getTotalLength();
-  var hwLen = highwayPath.getTotalLength();
-  var exitLen = exitPath.getTotalLength();
-  var totalLen = rampLen + hwLen + exitLen;
-
-  // Convert a global distance (0..totalLen) to an SVG point.
   function posAt(d) {
-    var p;
-    if (d <= rampLen) {
-      p = rampPath.getPointAtLength(d);
-    } else if (d <= rampLen + hwLen) {
-      p = highwayPath.getPointAtLength(d - rampLen);
-    } else {
-      p = exitPath.getPointAtLength(d - rampLen - hwLen);
-    }
-    return p;
+    if (d <= lenIn) return pathIn.getPointAtLength(d);
+    if (d <= lenIn + lenHwy) return pathHwy.getPointAtLength(d - lenIn);
+    return pathOut.getPointAtLength(Math.min(d - lenIn - lenHwy, lenOut));
   }
 
-  // Distance where highway starts / exit gate sits / exit ends.
-  var RAMP_END = rampLen;
-  var GATE_D = rampLen + hwLen + exitLen * 0.35;
-  var EXIT_END = totalLen;
+  function angleAt(d) {
+    var p1 = posAt(d);
+    var p2 = posAt(Math.min(d + 2, lenTotal));
+    return Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI;
+  }
 
-  // --- State ---
-  var SLOW = false;
+  // Simulation constants
+  var GATE_D = lenIn + lenHwy - 15;
+  var CAR_W = 20;
+  var CAR_H = 10;
+  var MIN_FOLLOW = CAR_W + 8;
+  var SPEED_MAX = 3.5;
+  var TICK_MS = 25;
+  var SPAWN_MS = 300;
+
+  // State
+  var collectorSpeed = 100;
   var cars = [];
   var nextId = 0;
-  var TICK = 25;
-  var SPAWN_INTERVAL = 500;
   var lastSpawn = 0;
   var lastStatus = '';
   var timer = null;
 
-  var CAR_W = 22;
-  var CAR_H = 12;
-  var MIN_GAP = 32;
-  var SPEED_FAST = 3.5;
-  var SPEED_GATE_SLOW = 0.25;
-
-  function makeCar(pt) {
+  function makeCar(pt, a) {
     var g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     var body = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
     body.setAttribute('x', String(-CAR_W / 2));
     body.setAttribute('y', String(-CAR_H / 2));
     body.setAttribute('width', String(CAR_W));
     body.setAttribute('height', String(CAR_H));
-    body.setAttribute('rx', '4');
+    body.setAttribute('rx', '3');
     body.setAttribute('fill', 'var(--hw-car-flow)');
-    body.classList.add('hw-car-body');
+    body.classList.add('hw-cb');
     g.appendChild(body);
-    // Windshield
     var ws = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    ws.setAttribute('x', String(CAR_W / 2 - 6));
+    ws.setAttribute('x', String(CAR_W / 2 - 5));
     ws.setAttribute('y', String(-CAR_H / 2 + 2));
-    ws.setAttribute('width', '4');
+    ws.setAttribute('width', '3');
     ws.setAttribute('height', String(CAR_H - 4));
     ws.setAttribute('rx', '1');
-    ws.setAttribute('fill', 'rgba(255,255,255,0.35)');
+    ws.setAttribute('fill', 'rgba(255,255,255,0.3)');
     g.appendChild(ws);
-    g.setAttribute('transform', 'translate(' + pt.x.toFixed(1) + ',' + pt.y.toFixed(1) + ')');
+    g.setAttribute('transform', 'translate(' + pt.x.toFixed(1) + ',' + pt.y.toFixed(1) + ') rotate(' + (a || 0).toFixed(1) + ')');
     carsG.appendChild(g);
     return g;
   }
 
-  function spawnCar() {
-    var pt = posAt(0);
-    var car = { el: makeCar(pt), d: 0, speed: SPEED_FAST, id: nextId++ };
-    cars.push(car);
-  }
-
-  // Find nearest car ahead on the path.
-  function gapAhead(car) {
-    var best = Infinity;
-    for (var i = 0; i < cars.length; i++) {
-      var c = cars[i];
-      if (c.id === car.id) continue;
-      var diff = c.d - car.d;
-      if (diff > 0 && diff < best) best = diff;
-    }
-    return best;
-  }
-
   function tick() {
     var now = Date.now();
+    var gateSpeed = SPEED_MAX * collectorSpeed / 100;
 
-    // Spawn new car
-    if (now - lastSpawn > SPAWN_INTERVAL && cars.length < 30) {
-      // Only spawn if there's room at the start
-      var clearToSpawn = true;
+    // Spawn
+    if (now - lastSpawn > SPAWN_MS && cars.length < 28) {
+      var clear = true;
       for (var j = 0; j < cars.length; j++) {
-        if (cars[j].d < MIN_GAP + CAR_W) { clearToSpawn = false; break; }
+        if (cars[j].d < MIN_FOLLOW) { clear = false; break; }
       }
-      if (clearToSpawn) {
-        spawnCar();
+      if (clear) {
+        var pt = posAt(0);
+        cars.push({ el: makeCar(pt, angleAt(0)), d: 0, speed: SPEED_MAX, id: nextId++ });
         lastSpawn = now;
       }
     }
 
+    // Sort front-to-back (highest d first) for gap enforcement
+    cars.sort(function(a, b) { return b.d - a.d; });
+
     var rampBlocked = false;
 
-    for (var i = cars.length - 1; i >= 0; i--) {
+    for (var i = 0; i < cars.length; i++) {
       var car = cars[i];
 
       // Target speed
-      var target = SPEED_FAST;
+      var target = SPEED_MAX;
 
-      // Slow near gate when SLOW
-      if (SLOW && car.d > GATE_D - 40) {
-        target = SPEED_GATE_SLOW;
+      // Gate zone: limit speed at the traffic light
+      if (car.d > GATE_D - 5 && car.d < GATE_D + 5) {
+        target = Math.min(target, gateSpeed);
       }
 
-      // Don't rear-end car ahead
-      var gap = gapAhead(car);
-      if (gap < MIN_GAP + CAR_W) {
-        target = Math.min(target, Math.max(0, (gap - CAR_W) * 0.08));
+      // Following distance to car ahead
+      if (i > 0) {
+        var ahead = cars[i - 1];
+        var gap = ahead.d - car.d;
+        if (gap < MIN_FOLLOW + 15) {
+          var brake = Math.max(0, (gap - MIN_FOLLOW) * 0.3);
+          target = Math.min(target, brake);
+        }
       }
 
-      // Smooth acceleration/deceleration
-      car.speed += (target - car.speed) * 0.12;
-      if (car.speed < 0.01) car.speed = 0;
-
-      // Check ramp blocked: car is on ramp and nearly stopped
-      if (car.d < RAMP_END && car.speed < 0.3) {
-        rampBlocked = true;
-      }
+      // Smooth speed change
+      car.speed += (target - car.speed) * 0.25;
+      if (car.speed < 0.02) car.speed = 0;
 
       // Advance
       car.d += car.speed;
 
+      // Hard gap constraint
+      if (i > 0) {
+        var maxD = cars[i - 1].d - MIN_FOLLOW;
+        if (car.d > maxD) {
+          car.d = maxD;
+          car.speed = Math.min(car.speed, cars[i - 1].speed);
+        }
+      }
+
+      // Ramp blocked detection
+      if (car.d < lenIn && car.speed < 0.2) rampBlocked = true;
+
       // Color
       var fill;
       if (car.speed < 0.3) {
-        fill = car.d < RAMP_END ? 'var(--hw-car-stop)' : 'var(--hw-car-slow)';
+        fill = car.d < lenIn ? 'var(--hw-car-stop)' : 'var(--hw-car-slow)';
       } else if (car.speed < 1.5) {
         fill = 'var(--hw-car-slow)';
       } else {
         fill = 'var(--hw-car-flow)';
       }
-      car.el.querySelector('.hw-car-body').setAttribute('fill', fill);
+      car.el.querySelector('.hw-cb').setAttribute('fill', fill);
 
-      // Position on path
-      if (car.d >= EXIT_END + 30) {
+      // Remove past end
+      if (car.d > lenTotal + 30) {
         carsG.removeChild(car.el);
         cars.splice(i, 1);
+        i--;
         continue;
       }
-      var pt = posAt(Math.min(car.d, totalLen));
-      // Compute angle for rotation
-      var pt2 = posAt(Math.min(car.d + 2, totalLen));
-      var angle = Math.atan2(pt2.y - pt.y, pt2.x - pt.x) * 180 / Math.PI;
-      car.el.setAttribute('transform',
-        'translate(' + pt.x.toFixed(1) + ',' + pt.y.toFixed(1) + ') rotate(' + angle.toFixed(1) + ')');
+
+      // Position and rotate along path
+      var p = posAt(Math.min(car.d, lenTotal));
+      var a = angleAt(Math.min(car.d, lenTotal - 3));
+      car.el.setAttribute('transform', 'translate(' + p.x.toFixed(1) + ',' + p.y.toFixed(1) + ') rotate(' + a.toFixed(1) + ')');
     }
 
-    // Status
-    var newStatus, newColor;
-    if (SLOW) {
-      if (rampBlocked) {
-        newStatus = '\uD83D\uDD34 On-ramp blocked \u2014 source feels backpressure, no data lost';
-        newColor = 'var(--hw-car-stop)';
-      } else {
-        newStatus = '\uD83D\uDFE1 Collector slow \u2014 traffic backing up through the pipeline';
-        newColor = 'var(--hw-car-slow)';
-      }
+    // Traffic light color
+    if (collectorSpeed >= 70) {
+      lRed.setAttribute('fill', '#3a1111');
+      lYellow.setAttribute('fill', '#3a3311');
+      lGreen.setAttribute('fill', '#22c55e');
+    } else if (collectorSpeed >= 30) {
+      lRed.setAttribute('fill', '#3a1111');
+      lYellow.setAttribute('fill', '#eab308');
+      lGreen.setAttribute('fill', '#113a16');
     } else {
-      newStatus = '\uD83D\uDFE2 Flowing smoothly \u2014 collector keeping up';
-      newColor = '';
+      lRed.setAttribute('fill', '#ef4444');
+      lYellow.setAttribute('fill', '#3a3311');
+      lGreen.setAttribute('fill', '#113a16');
     }
-    if (newStatus !== lastStatus) {
-      status.textContent = newStatus;
-      status.style.color = newColor;
-      lastStatus = newStatus;
+
+    // Status message
+    var msg, color;
+    if (rampBlocked) {
+      msg = '\uD83D\uDD34 Backpressure active \u2014 source rate-limited, zero data loss';
+      color = 'var(--hw-car-stop)';
+    } else if (collectorSpeed < 30) {
+      msg = '\uD83D\uDD34 Collector slow \u2014 pipeline backing up';
+      color = 'var(--hw-car-stop)';
+    } else if (collectorSpeed < 80) {
+      msg = '\uD83D\uDFE1 Pipeline filling \u2014 collector falling behind';
+      color = 'var(--hw-car-slow)';
+    } else {
+      msg = '\uD83D\uDFE2 Flowing \u2014 collector keeping up';
+      color = '';
+    }
+    if (msg !== lastStatus) {
+      statusEl.textContent = msg;
+      statusEl.style.color = color;
+      lastStatus = msg;
     }
   }
 
-  // Controls
-  btnSlow.addEventListener('click', function() {
-    SLOW = true;
-    gateBar.setAttribute('fill', 'var(--hw-gate-shut)');
-    gateLight.setAttribute('fill', 'var(--hw-gate-shut)');
-    btnSlow.disabled = true;
-    btnClear.disabled = false;
-  });
-
-  btnClear.addEventListener('click', function() {
-    SLOW = false;
-    gateBar.setAttribute('fill', 'var(--hw-gate-open)');
-    gateLight.setAttribute('fill', 'var(--hw-gate-open)');
-    btnSlow.disabled = false;
-    btnClear.disabled = true;
+  // Slider control
+  slider.addEventListener('input', function() {
+    collectorSpeed = parseInt(this.value, 10);
+    speedVal.textContent = collectorSpeed + '%';
   });
 
   function seedCars(animated) {
-    for (var s = 0; s < 5; s++) {
-      var d = RAMP_END + 60 + s * 90;
+    for (var s = 0; s < 7; s++) {
+      var d = lenIn + 20 + s * 65;
       var pt = posAt(d);
-      var car = { el: makeCar(pt), d: d, speed: animated ? SPEED_FAST : 0, id: nextId++ };
-      // Set initial rotation
-      var pt2 = posAt(d + 2);
-      var angle = Math.atan2(pt2.y - pt.y, pt2.x - pt.x) * 180 / Math.PI;
-      car.el.setAttribute('transform',
-        'translate(' + pt.x.toFixed(1) + ',' + pt.y.toFixed(1) + ') rotate(' + angle.toFixed(1) + ')');
-      cars.push(car);
+      var a = angleAt(d);
+      cars.push({ el: makeCar(pt, a), d: d, speed: animated ? SPEED_MAX : 0, id: nextId++ });
     }
   }
 
-  // Start
+  // Init
   if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
     seedCars(true);
     lastSpawn = Date.now();
-    timer = setInterval(tick, TICK);
+    timer = setInterval(tick, TICK_MS);
   } else {
     seedCars(false);
-    btnSlow.disabled = true;
-    btnClear.disabled = true;
-    status.textContent = 'Animation paused (reduced motion)';
+    slider.disabled = true;
+    statusEl.textContent = 'Animation paused (reduced motion)';
   }
 
-  // Cleanup on Starlight SPA nav
   document.addEventListener('astro:before-swap', function() {
     clearInterval(timer);
   }, { once: true });

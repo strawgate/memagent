@@ -8,7 +8,7 @@ import BackpressureSim from '../../../components/BackpressureSim.astro';
 import InputBackpressure from '../../../components/InputBackpressure.astro';
 
 Think of a log pipeline like a highway. When traffic flows freely, cars cruise
-from the on-ramp through to the exit. But when the exit backs up — a slow
+from the on-ramp through to the exit. But when the exit slows — a sluggish
 collector, a network blip — cars start queuing on the highway itself. Eventually
 the backup reaches the on-ramp and new cars can't even enter.
 
@@ -16,7 +16,7 @@ That's backpressure. And it's **exactly what you want**. The alternative —
 letting cars pile onto the highway with no limit — is how you get a 40-car pileup
 and an OOM kill.
 
-Press **"Slow the exit"** and watch what happens:
+Drag the **Collector Speed** slider to the left and watch traffic back up:
 
 <HighwayBackpressure />
 
