@@ -380,11 +380,14 @@ jobs:
         run: cargo build -p logfwd-core --target thumbv6m-none-eabi
 
   # -------------------------------------------------------------------------
-  # Kani formal verification — single job running all proofs.
-  # kissat solver annotations on slow proofs keep total runtime within budget.
+  # Kani formal verification — split into three parallel shards.
+  #   kani-core:      logfwd-core (97 proofs, heaviest — structural/otlp unwinds)
+  #   kani-arrow:     logfwd-arrow (27 proofs, needs --lib flag)
+  #   kani-periphery: remaining 6 crates (107 proofs, lightweight)
+  # Each shard uses kissat solver and --jobs 2 for intra-crate parallelism.
   # -------------------------------------------------------------------------
-  kani:
-    name: Kani proofs
+  kani-core:
+    name: Kani proofs (core)
     needs: [changes]
     if: |
       github.event_name == 'push' ||
@@ -398,16 +401,80 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          key: kani
+          key: kani-core
 
-      - name: Run Kani verification (all packages except logfwd-arrow)
+      - name: Run Kani verification (logfwd-core)
         uses: model-checking/kani-github-action@v1
         with:
           args: >-
+            --solver kissat
+            --jobs 2
             -Z function-contracts
             -Z mem-predicates
             -Z stubbing
             -p logfwd-core
+        env:
+          RUSTC_WRAPPER: ""
+
+  kani-arrow:
+    name: Kani proofs (arrow)
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: kani-arrow
+
+      - name: Run Kani verification (logfwd-arrow --lib)
+        # logfwd-arrow has a binary with required-features that cargo-kani
+        # cannot skip, so verify only the library target.
+        uses: model-checking/kani-github-action@v1
+        with:
+          args: >-
+            --solver kissat
+            --jobs 2
+            -Z function-contracts
+            -Z mem-predicates
+            -Z stubbing
+            -p logfwd-arrow
+            --lib
+        env:
+          RUSTC_WRAPPER: ""
+
+  kani-periphery:
+    name: Kani proofs (periphery)
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: kani-periphery
+
+      - name: Run Kani verification (periphery crates)
+        uses: model-checking/kani-github-action@v1
+        with:
+          args: >-
+            --solver kissat
+            --jobs 2
+            -Z function-contracts
+            -Z mem-predicates
+            -Z stubbing
             -p logfwd-types
             -p logfwd-io
             -p logfwd-output
@@ -417,18 +484,13 @@ jobs:
         env:
           RUSTC_WRAPPER: ""
 
-      - name: Run Kani verification (logfwd-arrow --lib)
-        # logfwd-arrow has a binary with required-features that cargo-kani
-        # cannot skip, so verify only the library target.
-        run: cargo kani -p logfwd-arrow --lib -Z function-contracts -Z mem-predicates -Z stubbing
-        env:
-          RUSTC_WRAPPER: ""
-
   # -------------------------------------------------------------------------
-  # Miri — UB-oriented execution for proof-heavy pure crates.
+  # Miri — UB-oriented execution, split into two parallel shards.
+  # PROPTEST_CASES=1: Miri validates UB per execution — 256 random cases
+  # adds no UB coverage and wastes ~30 min.
   # -------------------------------------------------------------------------
-  miri:
-    name: Miri
+  miri-core:
+    name: Miri (core)
     needs: [changes]
     if: |
       github.event_name == 'push' ||
@@ -446,21 +508,54 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          key: miri
+          key: miri-core
 
       - name: Set up Miri
         run: cargo +nightly miri setup
         env:
           RUSTC_WRAPPER: ""
 
-      - name: Run Miri test suite
-        run: |
-          cargo +nightly miri test -p logfwd-core --lib
-          cargo +nightly miri test -p logfwd-types --lib
+      - name: Run Miri test suite (logfwd-core)
+        run: cargo +nightly miri test -p logfwd-core --lib
         env:
           RUSTC_WRAPPER: ""
           MIRIFLAGS: "-Zmiri-strict-provenance"
           PROPTEST_DISABLE_FAILURE_PERSISTENCE: "1"
+          PROPTEST_CASES: "1"
+
+  miri-types:
+    name: Miri (types)
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.miri == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: miri-types
+
+      - name: Set up Miri
+        run: cargo +nightly miri setup
+        env:
+          RUSTC_WRAPPER: ""
+
+      - name: Run Miri test suite (logfwd-types)
+        run: cargo +nightly miri test -p logfwd-types --lib
+        env:
+          RUSTC_WRAPPER: ""
+          MIRIFLAGS: "-Zmiri-strict-provenance"
+          PROPTEST_DISABLE_FAILURE_PERSISTENCE: "1"
+          PROPTEST_CASES: "1"
 
   # -------------------------------------------------------------------------
   # Turmoil deterministic simulation
@@ -717,8 +812,11 @@ jobs:
       - test-network
       - build-check
       - core-no-std
-      - kani
-      - miri
+      - kani-core
+      - kani-arrow
+      - kani-periphery
+      - miri-core
+      - miri-types
       - turmoil
       - loom
       - tlc
