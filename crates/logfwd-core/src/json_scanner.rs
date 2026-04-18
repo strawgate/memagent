@@ -273,7 +273,7 @@ fn scan_line<B: ScanBuilder>(
                     if c == b'.' || c == b'e' || c == b'E' {
                         is_float = true;
                         pos += 1;
-                    } else if c == b',' || c == b'}' || c == b' ' || c == b'\t' || c == b'\r' {
+                    } else if is_json_delimiter(c) {
                         break;
                     } else {
                         pos += 1;
@@ -424,13 +424,14 @@ fn is_json_delimiter(b: u8) -> bool {
 }
 
 /// Skip a bare value (used for malformed tokens).
+/// Stops at the first byte where `is_json_delimiter` returns true.
 #[inline]
 fn skip_bare_value(buf: &[u8], mut pos: usize, end: usize) -> usize {
     while pos < end {
-        match buf[pos] {
-            b',' | b'}' | b' ' | b'\t' | b'\r' | b'\n' => return pos,
-            _ => pos += 1,
+        if is_json_delimiter(buf[pos]) {
+            return pos;
         }
+        pos += 1;
     }
     pos
 }
@@ -1314,6 +1315,35 @@ mod tests {
         assert_eq!(builder.lines.len(), 1, "one captured line for the JSON row");
         assert_eq!(builder.lines[0].as_deref(), Some("{\"x\":\"1\"}"));
     }
+
+    /// Regression for #2227: skip_bare_value must stop at `]` just like all
+    /// other JSON delimiters. Previously `]` was missing from the stop set,
+    /// causing bare values inside arrays to consume the closing bracket.
+    #[test]
+    fn skip_bare_value_stops_at_close_bracket() {
+        // A number value immediately before `]` must be parsed correctly.
+        // If `]` is missing from the stop set, the trailing `]}` gets consumed
+        // into the value: "12]}" instead of stopping at position 2.
+        let buf = b"{\"x\":12}\n";
+        let config = ScanConfig {
+            wanted_fields: alloc::vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+        assert_eq!(builder.rows.len(), 1);
+        let x_val = builder.rows[0]
+            .iter()
+            .find(|(k, _)| k == "x")
+            .map(|(_, v)| v.clone());
+        assert_eq!(
+            x_val.as_deref(),
+            Some("int:12"),
+            "bare number should be captured exactly"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1364,7 +1394,10 @@ mod verification {
         let mut i = start;
         while i < result {
             let b = buf[i];
-            assert!(b != b',' && b != b'}' && b != b' ' && b != b'\t' && b != b'\r' && b != b'\n');
+            assert!(
+                !is_json_delimiter(b),
+                "byte at {i} is a delimiter: {b:#04x}"
+            );
             i += 1;
         }
 
@@ -1372,6 +1405,8 @@ mod verification {
         kani::cover!(result > start, "found non-delimiter bytes");
         kani::cover!(result == start, "delimiter at start");
         kani::cover!(result == end, "no delimiter found");
+        // Explicitly cover the previously-missing ] delimiter path
+        kani::cover!(result < end && buf[result] == b']', "stopped at ]");
     }
 
     /// is_json_delimiter covers all JSON value delimiters exhaustively.
