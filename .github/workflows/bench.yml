@@ -6,20 +6,8 @@ on:
   workflow_dispatch:
     inputs:
       lines:
-        description: "Log lines per competitive benchmark"
+        description: "Log lines for rate/profile benchmarks"
         default: "20000000"
-        type: string
-      iterations:
-        description: "Iterations per agent/scenario cell"
-        default: "3"
-        type: string
-      scenarios:
-        description: "Comma-separated scenarios"
-        default: "passthrough,json_parse,filter"
-        type: string
-      agents:
-        description: "Comma-separated agents (blank = all)"
-        default: ""
         type: string
 
 concurrency:
@@ -29,14 +17,9 @@ concurrency:
 permissions:
   issues: write
   contents: write
-  pages: write
-  id-token: write
 
 env:
   LINES: ${{ inputs.lines || '20000000' }}
-  ITERATIONS: ${{ inputs.iterations || '3' }}
-  SCENARIOS: ${{ inputs.scenarios || 'passthrough,json_parse,filter' }}
-  AGENTS_INPUT: ${{ inputs.agents || '' }}
 
 jobs:
   # -------------------------------------------------------------------
@@ -119,70 +102,13 @@ jobs:
 
           LOGFWD=./target/release/logfwd ./target/release/logfwd-competitive-bench \
             --lines ${{ env.LINES }} --agents logfwd \
-            --scenarios ${{ env.SCENARIOS }} --iterations ${{ env.ITERATIONS }} \
+            --scenarios passthrough --iterations 3 \
             --results-file pgo-results.jsonl --no-download
 
       - uses: actions/upload-artifact@v7
         with:
           name: pgo-results
           path: pgo-results.jsonl
-          retention-days: 7
-
-  # -------------------------------------------------------------------
-  # Generate matrix from inputs
-  # -------------------------------------------------------------------
-  matrix-setup:
-    runs-on: ubuntu-latest
-    outputs:
-      matrix: ${{ steps.gen.outputs.matrix }}
-    steps:
-      - id: gen
-        run: |
-          SCENARIOS="${{ env.SCENARIOS }}"
-          SCENARIO_JSON=$(echo "$SCENARIOS" | tr ',' '\n' | jq -R . | jq -sc .)
-          AGENTS="${{ env.AGENTS_INPUT }}"
-          if [ -z "$AGENTS" ]; then
-            AGENTS="logfwd,vector,fluent-bit,filebeat,otelcol,vlagent"
-          fi
-          AGENT_JSON=$(echo "$AGENTS" | tr ',' '\n' | jq -R . | jq -sc .)
-          MATRIX=$(jq -nc --argjson s "$SCENARIO_JSON" --argjson a "$AGENT_JSON" '{scenario: $s, agent: $a}')
-          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-
-  # -------------------------------------------------------------------
-  # Competitive benchmarks (parallel matrix: agent x scenario)
-  # -------------------------------------------------------------------
-  bench:
-    runs-on: ubuntu-latest
-    needs: [build, matrix-setup]
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJson(needs.matrix-setup.outputs.matrix) }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v8
-        with:
-          name: bench-binaries
-          path: bin
-      - run: chmod +x bin/*
-
-      - name: Run benchmark cell
-        continue-on-error: true
-        run: |
-          bin/logfwd-competitive-bench \
-            --lines ${{ env.LINES }} \
-            --iterations ${{ env.ITERATIONS }} \
-            --scenarios ${{ matrix.scenario }} \
-            --agents ${{ matrix.agent }} \
-            --mode binary \
-            --results-file results.jsonl
-        env:
-          LOGFWD: ./bin/logfwd
-
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: results-${{ matrix.agent }}-${{ matrix.scenario }}
-          path: results.jsonl
           retention-days: 7
 
   # -------------------------------------------------------------------
@@ -349,16 +275,11 @@ jobs:
   # -------------------------------------------------------------------
   summarize:
     runs-on: ubuntu-latest
-    needs: [build, bench, rate-bench, micro, pgo]
-    if: always() && needs.build.result == 'success' && needs.bench.result != 'cancelled'
+    needs: [build, rate-bench, micro, pgo]
+    if: always() && needs.build.result == 'success'
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: results-*
-          path: all-results
-          merge-multiple: false
       - uses: actions/download-artifact@v8
         with:
           name: bench-binaries
@@ -376,28 +297,15 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: pgo-results
-          path: all-results/pgo
+          path: pgo-results
         continue-on-error: true
 
       - run: chmod +x bin/*
 
-      # Summarize competitive results (includes PGO if available).
-      - name: Summarize competitive results
-        run: |
-          bin/logfwd-competitive-bench summarize \
-            --results-dir all-results \
-            --markdown \
-            --gh-bench-file gh-bench.json \
-            --dashboard-file dashboard-data.json \
-            > competitive_body.md
-        env:
-          GITHUB_RUN_ID: ${{ github.run_id }}
-          GITHUB_SHA: ${{ github.sha }}
-
       # Commit bench data to the bench-data branch so the dashboard can fetch
       # it live via raw.githubusercontent.com — no Pages redeploy needed.
       - name: Commit results to bench-data branch
-        if: github.ref == 'refs/heads/master'
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_ID: ${{ github.run_id }}
@@ -413,11 +321,9 @@ jobs:
           git worktree add /tmp/bench-data origin/bench-data -b bench-data-push
 
           cd /tmp/bench-data
-          mkdir -p runs rate-runs criterion-runs
+          mkdir -p rate-runs criterion-runs
 
           # Copy run data files.
-          [ -f "$GITHUB_WORKSPACE/dashboard-data.json" ] && \
-            cp "$GITHUB_WORKSPACE/dashboard-data.json" "runs/${RUN_ID}.json"
           [ -f "$GITHUB_WORKSPACE/rate-results/rate-bench-result.json" ] && \
             cp "$GITHUB_WORKSPACE/rate-results/rate-bench-result.json" "rate-runs/${RUN_ID}.json"
           [ -f "$GITHUB_WORKSPACE/micro/criterion-data.json" ] && \
@@ -434,24 +340,10 @@ jobs:
               with open(index_path) as f:
                   index = json.load(f)
           except (FileNotFoundError, json.JSONDecodeError):
-              index = {"runs": [], "rate_runs": [], "criterion_runs": []}
+              index = {"rate_runs": [], "criterion_runs": []}
 
-          # Ensure all three lists exist.
-          for key in ("runs", "rate_runs", "criterion_runs"):
+          for key in ("rate_runs", "criterion_runs"):
               index.setdefault(key, [])
-
-          workspace = os.environ.get("GITHUB_WORKSPACE", "")
-
-          # Add competitive run entry from index-entry file.
-          entry_path = f"{workspace}/dashboard-index-entry.json"
-          if os.path.exists(entry_path):
-              with open(entry_path) as f:
-                  entry = json.load(f)
-              entry_id = entry.get("id", "")
-              if entry_id:
-                  index["runs"] = [r for r in index["runs"] if (r.get("id") if isinstance(r, dict) else r) != entry_id]
-                  index["runs"].insert(0, entry_id)
-                  index["runs"] = index["runs"][:90]
 
           # Record rate-run id.
           if os.path.exists(f"rate-runs/{run_id}.json"):
@@ -468,8 +360,8 @@ jobs:
           with open(index_path, "w") as f:
               json.dump(index, f, indent=2)
 
-          print(f"Index updated: {len(index['runs'])} competitive, "
-                f"{len(index['rate_runs'])} rate, {len(index['criterion_runs'])} criterion runs")
+          print(f"Index updated: {len(index['rate_runs'])} rate, "
+                f"{len(index['criterion_runs'])} criterion runs")
           PYEOF
 
           git add -A
@@ -478,72 +370,13 @@ jobs:
           git commit -m "bench: add run ${RUN_ID} (${COMMIT})"
           git push origin HEAD:bench-data
 
-      # The bench dashboard is served as /bench/ within the docs site deployment
-      # (docs.yml). Do not deploy Pages from here — it would overwrite the docs.
-
       # Upload summary for retention.
       - uses: actions/upload-artifact@v7
         with:
           name: bench-summary-${{ github.run_number }}
           path: |
-            competitive_body.md
-            gh-bench.json
-            dashboard-data.json
+            micro/micro_body.md
+            micro/criterion-data.json
+            rate-results/
+            pgo-results/
           retention-days: 90
-
-      # Post results as GitHub issue.
-      - name: Post issue
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          DATE=$(date -u +%Y-%m-%d)
-          COMMIT=$(git rev-parse --short HEAD)
-
-          MICRO=""
-          if [ -f micro/micro_body.md ]; then
-            MICRO="---
-
-          $(cat micro/micro_body.md)"
-          fi
-
-          RATE=""
-          if [ -f rate-results/rate-bench-result.json ]; then
-            RATE="---
-
-          ### Rate-Ingest Benchmark
-          See [development dashboard](https://strawgate.github.io/memagent/bench/development.html) for full results."
-          fi
-
-          TITLE="Benchmark results ${DATE} (${COMMIT})"
-          BODY="$(cat <<HEREDOC
-          ## Benchmark Results --- ${DATE}
-
-          **Commit:** \`${COMMIT}\` on \`master\`
-          **Runner:** \`ubuntu-latest\` (matrix: agent x scenario)
-          **Iterations:** ${{ env.ITERATIONS }} per cell
-          **Dashboard:** https://strawgate.github.io/memagent/bench/
-
-          ---
-
-          $(cat competitive_body.md)
-
-          ${MICRO}
-
-          ${RATE}
-
-          ---
-
-          CPU flamegraph and dhat-heap profile uploaded as workflow artifacts.
-
-          <sub>Generated by [nightly bench workflow](.github/workflows/bench.yml)</sub>
-          HEREDOC
-          )"
-
-          gh issue list --label benchmark --state open --json number -q '.[].number' | while read -r num; do
-            gh issue close "$num" --comment "Superseded by new benchmark run." 2>/dev/null || true
-          done
-
-          gh issue create \
-            --title "$TITLE" \
-            --body "$BODY" \
-            --label benchmark

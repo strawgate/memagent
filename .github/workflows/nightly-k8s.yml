@@ -1,4 +1,4 @@
-name: E2E
+name: Nightly K8s
 
 on:
   schedule:

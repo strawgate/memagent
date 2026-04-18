@@ -53,7 +53,6 @@ taskset -c 1 logfwd run --config sender.yaml &
 The `Nightly Benchmarks` workflow also normalizes benchmark outputs with
 `strawgate/o11ykit/actions/parse-results` and publishes OTLP JSON artifacts:
 
-- `competitive-otlp.json`
 - `rate-otlp.json`
 - `criterion-otlp.json`
 

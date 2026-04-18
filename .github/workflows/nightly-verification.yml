@@ -1,4 +1,4 @@
-name: Nightly extended testing
+name: Nightly Verification
 on:
   schedule:
     - cron: '0 4 * * *'  # 4am UTC daily
