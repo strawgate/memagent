@@ -11,7 +11,6 @@
 //! ```
 
 use std::any::Any;
-use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use arrow::array::{Array, AsArray, StringBuilder};
@@ -22,58 +21,12 @@ use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 
+use crate::udf::bounded_lru::BoundedLruCache;
 use regex::Regex;
 
 const REGEXP_CACHE_CAPACITY: usize = 128;
 
-#[derive(Debug)]
-struct BoundedRegexCache {
-    entries: HashMap<String, Arc<Regex>>,
-    lru: VecDeque<String>,
-    capacity: usize,
-}
-
-impl BoundedRegexCache {
-    fn new(capacity: usize) -> Self {
-        Self {
-            entries: HashMap::new(),
-            lru: VecDeque::new(),
-            capacity,
-        }
-    }
-
-    fn get_cloned(&mut self, pattern: &str) -> Option<Arc<Regex>> {
-        let value = self.entries.get(pattern).cloned()?;
-        self.touch(pattern);
-        Some(value)
-    }
-
-    fn insert(&mut self, pattern: String, regex: Arc<Regex>) {
-        if self.entries.contains_key(&pattern) {
-            self.entries.insert(pattern.clone(), regex);
-            self.touch(&pattern);
-            return;
-        }
-
-        self.entries.insert(pattern.clone(), regex);
-        self.lru.push_back(pattern);
-
-        while self.entries.len() > self.capacity {
-            if let Some(evicted) = self.lru.pop_front() {
-                self.entries.remove(&evicted);
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn touch(&mut self, pattern: &str) {
-        if let Some(idx) = self.lru.iter().position(|key| key == pattern) {
-            let key = self.lru.remove(idx).expect("lru index must be valid");
-            self.lru.push_back(key);
-        }
-    }
-}
+type BoundedRegexCache = BoundedLruCache<String, Arc<Regex>>;
 
 /// UDF: regexp_extract(string, pattern, group_index) -> Utf8
 ///

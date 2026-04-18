@@ -23,7 +23,6 @@
 //! URI, TIMESTAMP_ISO8601, DATE, TIME, LOGLEVEL, HOSTNAME, EMAILADDRESS.
 
 use std::any::Any;
-use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use arrow::array::{Array, ArrayRef, AsArray, StringBuilder, StructArray};
@@ -33,6 +32,8 @@ use datafusion::common::Result as DfResult;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
+
+use crate::udf::bounded_lru::BoundedLruCache;
 
 // ---------------------------------------------------------------------------
 // Grok pattern compilation (via grok crate)
@@ -48,54 +49,7 @@ struct CompiledGrok {
 
 const GROK_CACHE_CAPACITY: usize = 128;
 
-#[derive(Debug)]
-struct BoundedGrokCache {
-    entries: HashMap<String, Arc<CompiledGrok>>,
-    lru: VecDeque<String>,
-    capacity: usize,
-}
-
-impl BoundedGrokCache {
-    fn new(capacity: usize) -> Self {
-        Self {
-            entries: HashMap::new(),
-            lru: VecDeque::new(),
-            capacity,
-        }
-    }
-
-    fn get_cloned(&mut self, pattern: &str) -> Option<Arc<CompiledGrok>> {
-        let value = self.entries.get(pattern).cloned()?;
-        self.touch(pattern);
-        Some(value)
-    }
-
-    fn insert(&mut self, pattern: String, compiled: Arc<CompiledGrok>) {
-        if self.entries.contains_key(&pattern) {
-            self.entries.insert(pattern.clone(), compiled);
-            self.touch(&pattern);
-            return;
-        }
-
-        self.entries.insert(pattern.clone(), compiled);
-        self.lru.push_back(pattern);
-
-        while self.entries.len() > self.capacity {
-            if let Some(evicted) = self.lru.pop_front() {
-                self.entries.remove(&evicted);
-            } else {
-                break;
-            }
-        }
-    }
-
-    fn touch(&mut self, pattern: &str) {
-        if let Some(idx) = self.lru.iter().position(|key| key == pattern) {
-            let key = self.lru.remove(idx).expect("lru index must be valid");
-            self.lru.push_back(key);
-        }
-    }
-}
+type BoundedGrokCache = BoundedLruCache<String, Arc<CompiledGrok>>;
 
 /// Compile a grok pattern using the `grok` crate's built-in pattern library.
 fn compile_grok(pattern: &str) -> Result<CompiledGrok, crate::TransformError> {
@@ -841,24 +795,44 @@ mod tests {
     fn test_grok_pathological_regex_returns_null_quickly() {
         use std::time::{Duration, Instant};
 
-        let udf = GrokUdf::new();
-        let compiled = udf
-            .get_or_compile_grok("(?<cat>(a+)+)b")
-            .expect("pattern should compile");
-
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "message",
+            DataType::Utf8,
+            true,
+        )]));
         let input = "a".repeat(4096);
+        let messages: ArrayRef = Arc::new(StringArray::from(vec![Some(input)]));
+        let batch = RecordBatch::try_new(schema, vec![messages]).expect("batch should build");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         let started = Instant::now();
-        let matched = compiled.pattern.match_against(&input);
+        let result = rt.block_on(run_sql(
+            batch,
+            "SELECT grok(message, '(?<cat>(a+)+)b') AS captures FROM logs",
+        ));
         let elapsed = started.elapsed();
 
-        // Current contract: catastrophic/backtrack-limit paths are treated as no-match.
-        assert!(
-            matched.is_none(),
-            "pathological regex should not produce captures on non-matching input"
-        );
         assert!(
             elapsed < Duration::from_secs(2),
             "pathological regex match took too long: {elapsed:?}"
+        );
+        assert_eq!(result.num_rows(), 1, "query should return one row");
+
+        let captures = result
+            .column_by_name("captures")
+            .expect("query should produce captures column")
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("grok(...) should return a struct array");
+        let cat = captures
+            .column_by_name("cat")
+            .expect("struct should contain cat capture");
+        assert!(
+            cat.is_null(0),
+            "pathological regex should surface as a NULL capture"
         );
     }
 }
