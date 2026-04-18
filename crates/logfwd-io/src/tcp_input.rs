@@ -204,7 +204,7 @@ fn extract_complete_records(client: &mut Client, out: &mut Vec<u8>) {
             if octet_frame_ready && octet_boundary_is_plausible {
                 client.octet_counting_mode = true;
                 let should_consume_octet_delimiter_newline =
-                    pending.len() == needed || matches!(pending.get(needed), Some(b'\n'));
+                    matches!(pending.get(needed), Some(b'\n'));
                 if len > MAX_LINE_LENGTH {
                     client.discard_octet_bytes = len;
                     consumed += prefix_len;
@@ -650,6 +650,52 @@ mod tests {
     use proptest::prelude::*;
     use std::io::Write;
     use std::net::TcpStream as StdTcpStream;
+
+    fn client_with_pending(pending: Vec<u8>) -> (Client, StdTcpStream) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
+        let peer =
+            StdTcpStream::connect(listener.local_addr().expect("listener addr")).expect("connect");
+        let (stream, _) = listener.accept().expect("accept test client");
+        let now = Instant::now();
+        (
+            Client {
+                stream,
+                source_id: SourceId(1),
+                last_data: now,
+                last_read: now,
+                pending,
+                octet_counting_mode: false,
+                discard_octet_bytes: 0,
+                should_consume_octet_delimiter_newline: false,
+                discard_until_newline: false,
+                unaccounted_bytes: 0,
+            },
+            peer,
+        )
+    }
+
+    #[test]
+    fn octet_frame_consumes_observed_delimiter_only() {
+        let (mut client, _peer) = client_with_pending(b"5 hello\n".to_vec());
+        let mut out = Vec::new();
+        extract_complete_records(&mut client, &mut out);
+        assert_eq!(out, b"hello\n");
+        assert!(client.pending.is_empty());
+    }
+
+    #[test]
+    fn octet_frame_without_observed_delimiter_keeps_later_empty_line() {
+        let (mut client, _peer) = client_with_pending(b"5 hello".to_vec());
+        let mut out = Vec::new();
+        extract_complete_records(&mut client, &mut out);
+        assert_eq!(out, b"hello\n");
+        assert!(client.pending.is_empty());
+
+        client.pending.extend_from_slice(b"\n");
+        let mut next = Vec::new();
+        extract_complete_records(&mut client, &mut next);
+        assert_eq!(next, b"\n");
+    }
 
     #[test]
     fn receives_tcp_data() {
