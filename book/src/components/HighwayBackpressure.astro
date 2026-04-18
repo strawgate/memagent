@@ -1,0 +1,371 @@
+---
+// Animated highway metaphor for backpressure.
+// Cars flow from an on-ramp through a highway to an exit.
+// A "slow collector" tollbooth causes traffic to back up through the highway
+// and eventually block the on-ramp. When it clears, traffic flows again.
+// Pure CSS + vanilla JS — no framework deps.
+---
+
+<div class="hw" id="highway-bp">
+  <div class="hw-label">Why backpressure?</div>
+  <div class="hw-scene">
+    <svg class="hw-svg" viewBox="0 0 800 200" preserveAspectRatio="xMidYMid meet">
+      <!-- Road surface -->
+      <rect x="0" y="75" width="800" height="50" rx="4" fill="var(--hw-road)" />
+      <!-- Lane dashes -->
+      <line x1="0" y1="100" x2="800" y2="100" stroke="var(--hw-dash)" stroke-width="2" stroke-dasharray="20,14" />
+      <!-- On-ramp -->
+      <path d="M 80,170 C 80,130 120,110 160,105" fill="none" stroke="var(--hw-road)" stroke-width="40" stroke-linecap="round" />
+      <path d="M 80,170 C 80,130 120,110 160,105" fill="none" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="8,8" />
+      <!-- Exit / tollbooth -->
+      <rect x="680" y="78" width="14" height="44" rx="3" fill="var(--hw-toll)" class="hw-toll" />
+      <text x="687" y="72" text-anchor="middle" fill="var(--hw-muted)" font-size="9" font-weight="600">EXIT</text>
+      <!-- Labels -->
+      <text x="80" y="195" text-anchor="middle" fill="var(--hw-muted)" font-size="9" font-weight="600">ON-RAMP</text>
+      <text x="80" y="205" text-anchor="middle" fill="var(--hw-muted)" font-size="8">(log source)</text>
+      <text x="400" y="68" text-anchor="middle" fill="var(--hw-muted)" font-size="9" font-weight="600">PIPELINE</text>
+      <text x="400" y="58" text-anchor="middle" fill="var(--hw-muted)" font-size="8">(bounded channels)</text>
+      <text x="750" y="95" text-anchor="middle" fill="var(--hw-muted)" font-size="9" font-weight="600">COLLECTOR</text>
+      <text x="750" y="107" text-anchor="middle" fill="var(--hw-muted)" font-size="8">(output)</text>
+      <!-- Car container -->
+      <g id="hw-cars"></g>
+    </svg>
+  </div>
+  <div class="hw-status" id="hw-status" role="status" aria-live="polite" aria-atomic="true">Flowing smoothly — collector keeping up</div>
+  <div class="hw-controls">
+    <button type="button" class="hw-btn hw-btn-slow" id="hw-btn-slow">🚧 Slow the exit</button>
+    <button type="button" class="hw-btn hw-btn-clear" id="hw-btn-clear" disabled>✅ Clear the exit</button>
+  </div>
+</div>
+
+<style is:global>
+  .hw {
+    --hw-road: color-mix(in srgb, var(--sl-color-gray-5) 60%, var(--sl-color-bg-sidebar));
+    --hw-dash: var(--sl-color-gray-4);
+    --hw-muted: var(--sl-color-gray-3);
+    --hw-car: #60a5fa;
+    --hw-car-wait: #f59e0b;
+    --hw-car-block: #ef4444;
+    --hw-toll: #22c55e;
+    --hw-toll-slow: #ef4444;
+    --hw-accent: var(--sl-color-accent);
+    margin: 1rem 0 1.5rem;
+    padding: 1rem;
+    border: 1px solid var(--sl-color-hairline);
+    border-radius: 10px;
+    background: var(--sl-color-bg-sidebar);
+    overflow: hidden;
+  }
+  .hw * { margin-top: 0 !important; }
+
+  .hw-label {
+    font-size: 0.65rem;
+    font-weight: 600;
+    color: var(--hw-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 0.5rem;
+    text-align: center;
+  }
+
+  .hw-scene { width: 100%; overflow: hidden; }
+  .hw-svg { width: 100%; height: auto; display: block; }
+
+  .hw-status {
+    text-align: center;
+    font-size: 0.78rem;
+    font-weight: 500;
+    color: var(--sl-color-text);
+    margin: 0.6rem 0 0.5rem;
+    min-height: 1.4em;
+    transition: color 0.3s;
+  }
+
+  .hw-controls {
+    display: flex;
+    justify-content: center;
+    gap: 0.6rem;
+  }
+  .hw-btn {
+    padding: 0.35rem 0.85rem;
+    border: 1px solid var(--sl-color-hairline);
+    border-radius: 6px;
+    background: var(--sl-color-bg-sidebar);
+    color: var(--sl-color-text);
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .hw-btn:hover:not(:disabled) {
+    border-color: var(--hw-accent);
+    background: color-mix(in srgb, var(--hw-accent) 10%, var(--sl-color-bg-sidebar));
+  }
+  .hw-btn:disabled { opacity: 0.4; cursor: default; }
+
+  .hw-toll { transition: fill 0.4s; }
+</style>
+
+<script>
+(function() {
+  var svg = document.querySelector('#highway-bp .hw-svg');
+  var carsG = document.getElementById('hw-cars');
+  var status = document.getElementById('hw-status');
+  var btnSlow = document.getElementById('hw-btn-slow');
+  var btnClear = document.getElementById('hw-btn-clear');
+  var toll = document.querySelector('#highway-bp .hw-toll');
+  if (!svg || !carsG) return;
+
+  // --- State ---
+  var SLOW = false;
+  var cars = [];         // { el, x, y, lane, speed, waiting }
+  var nextId = 0;
+  var TICK = 30;         // ms per frame
+  var SPAWN_NORMAL = 600;  // ms between spawns (flowing)
+  var SPAWN_SLOW = 400;    // ms between spawns (still arriving while backed up)
+  var lastSpawn = 0;
+  var lastStatus = '';
+  var timer = null;
+
+  // Road geometry
+  var ROAD_Y_TOP = 83;
+  var ROAD_Y_BOT = 109;
+  var RAMP_START_X = 80;
+  var RAMP_JOIN_X = 170;
+  var EXIT_X = 672;
+  var DESPAWN_X = 790;
+  var CAR_W = 24;
+  var CAR_H = 10;
+  var SPEED_NORMAL = 3.0;
+  var SPEED_SLOW = 0.3;
+  var MIN_GAP = 30;
+
+  function laneY(lane) { return lane === 0 ? ROAD_Y_TOP + 3 : ROAD_Y_BOT - CAR_H - 3; }
+
+  function makeCar(x, y) {
+    var g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    // Body
+    var body = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    body.setAttribute('width', CAR_W);
+    body.setAttribute('height', CAR_H);
+    body.setAttribute('rx', '3');
+    body.setAttribute('fill', 'var(--hw-car)');
+    body.classList.add('hw-car-body');
+    g.appendChild(body);
+    // Windshield
+    var ws = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    ws.setAttribute('x', CAR_W - 7);
+    ws.setAttribute('y', '2');
+    ws.setAttribute('width', '4');
+    ws.setAttribute('height', CAR_H - 4);
+    ws.setAttribute('rx', '1');
+    ws.setAttribute('fill', 'rgba(255,255,255,0.3)');
+    g.appendChild(ws);
+    g.setAttribute('transform', 'translate(' + x + ',' + y + ')');
+    carsG.appendChild(g);
+    return g;
+  }
+
+  function spawnCar() {
+    var lane = Math.random() < 0.5 ? 0 : 1;
+    // Cars start on the ramp curve
+    var car = {
+      el: null,
+      x: RAMP_START_X,
+      y: 155,
+      targetY: laneY(lane),
+      lane: lane,
+      speed: SPEED_NORMAL,
+      waiting: false,
+      onRamp: true,
+      rampT: 0,
+      id: nextId++
+    };
+    car.el = makeCar(car.x, car.y);
+    cars.push(car);
+  }
+
+  function rampPos(t) {
+    // Cubic bezier approximation of the on-ramp curve
+    var t2 = Math.min(t, 1);
+    var x = RAMP_START_X + (RAMP_JOIN_X - RAMP_START_X) * t2;
+    var y = 155 + (laneY(0) - 155) * (t2 * t2 * (3 - 2 * t2)); // smoothstep
+    return { x: x, y: y };
+  }
+
+  function closestAhead(car) {
+    var closest = null;
+    var dist = Infinity;
+    for (var i = 0; i < cars.length; i++) {
+      var c = cars[i];
+      if (c.id === car.id || c.onRamp) continue;
+      if (c.lane !== car.lane) continue;
+      var d = c.x - car.x;
+      if (d > 0 && d < dist) { dist = d; closest = c; }
+    }
+    return { car: closest, dist: dist };
+  }
+
+  function tick() {
+    var now = Date.now();
+
+    // Spawn
+    var interval = SLOW ? SPAWN_SLOW : SPAWN_NORMAL;
+    if (now - lastSpawn > interval && cars.length < 40) {
+      spawnCar();
+      lastSpawn = now;
+    }
+
+    var rampBlocked = false;
+
+    for (var i = cars.length - 1; i >= 0; i--) {
+      var car = cars[i];
+
+      // On-ramp movement
+      if (car.onRamp) {
+        // Check if ramp exit is blocked BEFORE advancing position.
+        var rampExit = closestAhead({ x: RAMP_JOIN_X - MIN_GAP, lane: car.lane, id: car.id, onRamp: false });
+        if (rampExit.dist < MIN_GAP + CAR_W) {
+          rampBlocked = true;
+          car.el.querySelector('.hw-car-body').setAttribute('fill', 'var(--hw-car-block)');
+        } else {
+          car.rampT = Math.min(1, car.rampT + 0.025);
+          if (car.rampT >= 1) {
+            car.onRamp = false;
+            car.x = RAMP_JOIN_X;
+            car.y = car.targetY;
+          } else {
+            var pos = rampPos(car.rampT);
+            car.x = pos.x;
+            car.y = pos.y + (car.targetY - laneY(0)) * car.rampT;
+            car.el.querySelector('.hw-car-body').setAttribute('fill', 'var(--hw-car)');
+          }
+        }
+        car.el.setAttribute('transform', 'translate(' + car.x.toFixed(1) + ',' + car.y.toFixed(1) + ')');
+        continue;
+      }
+
+      // Highway movement
+      var maxSpeed = SPEED_NORMAL;
+
+      // Slow near exit when SLOW mode
+      if (SLOW && car.x > EXIT_X - 20) {
+        maxSpeed = SPEED_SLOW;
+      }
+
+      // Don't rear-end the car ahead
+      var ahead = closestAhead(car);
+      if (ahead.dist < MIN_GAP + CAR_W) {
+        maxSpeed = Math.min(maxSpeed, Math.max(0, (ahead.dist - CAR_W - 4) * 0.1));
+        car.waiting = true;
+      } else {
+        car.waiting = false;
+      }
+
+      car.speed += (maxSpeed - car.speed) * 0.15;
+      car.x += car.speed;
+
+      // Color: flowing / waiting / blocked
+      var fill = 'var(--hw-car)';
+      if (car.speed < 0.5 && car.waiting) {
+        fill = car.x < RAMP_JOIN_X + 60 ? 'var(--hw-car-block)' : 'var(--hw-car-wait)';
+      }
+      car.el.querySelector('.hw-car-body').setAttribute('fill', fill);
+
+      car.el.setAttribute('transform', 'translate(' + car.x.toFixed(1) + ',' + car.y.toFixed(1) + ')');
+
+      // Despawn past exit
+      if (car.x > DESPAWN_X) {
+        carsG.removeChild(car.el);
+        cars.splice(i, 1);
+      }
+    }
+
+    // Update status only when message changes to avoid DOM churn.
+    var newStatus;
+    var newColor;
+    if (SLOW) {
+      if (rampBlocked) {
+        newStatus = '🔴 On-ramp blocked — source feels backpressure, no data lost';
+        newColor = 'var(--hw-car-block)';
+      } else {
+        newStatus = '🟡 Exit slow — traffic backing up through the pipeline';
+        newColor = 'var(--hw-car-wait)';
+      }
+    } else {
+      newStatus = '🟢 Flowing smoothly — collector keeping up';
+      newColor = '';
+    }
+    if (newStatus !== lastStatus) {
+      status.textContent = newStatus;
+      status.style.color = newColor;
+      lastStatus = newStatus;
+    }
+  }
+
+  btnSlow.addEventListener('click', function() {
+    SLOW = true;
+    toll.setAttribute('fill', 'var(--hw-toll-slow)');
+    btnSlow.disabled = true;
+    btnClear.disabled = false;
+  });
+
+  btnClear.addEventListener('click', function() {
+    SLOW = false;
+    toll.setAttribute('fill', 'var(--hw-toll)');
+    btnSlow.disabled = false;
+    btnClear.disabled = true;
+  });
+
+  // Start
+  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    timer = setInterval(tick, TICK);
+    lastSpawn = Date.now();
+    // Seed a few cars
+    for (var s = 0; s < 6; s++) {
+      var lane = s % 2;
+      var c = {
+        el: null,
+        x: 180 + s * 85,
+        y: laneY(lane),
+        targetY: laneY(lane),
+        lane: lane,
+        speed: SPEED_NORMAL,
+        waiting: false,
+        onRamp: false,
+        rampT: 1,
+        id: nextId++
+      };
+      c.el = makeCar(c.x, c.y);
+      cars.push(c);
+    }
+  } else {
+    // Reduced motion: show a static snapshot of traffic, disable controls.
+    for (var s = 0; s < 6; s++) {
+      var lane = s % 2;
+      var c = {
+        el: null,
+        x: 180 + s * 85,
+        y: laneY(lane),
+        targetY: laneY(lane),
+        lane: lane,
+        speed: 0,
+        waiting: false,
+        onRamp: false,
+        rampT: 1,
+        id: nextId++
+      };
+      c.el = makeCar(c.x, c.y);
+      cars.push(c);
+    }
+    btnSlow.disabled = true;
+    btnClear.disabled = true;
+    status.textContent = 'Animation paused (reduced motion)';
+  }
+
+  // Cleanup on Starlight SPA nav
+  document.addEventListener('astro:before-swap', function() {
+    clearInterval(timer);
+  }, { once: true });
+})();
+</script>

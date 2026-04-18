@@ -80,6 +80,9 @@ struct Client {
     octet_counting_mode: bool,
     /// Remaining bytes to drop from an oversized octet-counted frame.
     discard_octet_bytes: usize,
+    /// After consuming an octet-counted payload, optionally consume exactly one
+    /// delimiter newline if it appears as the immediate next byte.
+    should_consume_octet_delimiter_newline: bool,
     /// Whether we are dropping newline-delimited bytes until a newline appears.
     discard_until_newline: bool,
     /// Raw bytes read from the socket that have not yet been charged to an
@@ -166,6 +169,14 @@ fn extract_complete_records(client: &mut Client, out: &mut Vec<u8>) {
             continue;
         }
 
+        if client.should_consume_octet_delimiter_newline {
+            if pending[0] == b'\n' {
+                consumed += 1;
+            }
+            client.should_consume_octet_delimiter_newline = false;
+            continue;
+        }
+
         if client.discard_until_newline {
             if let Some(pos) = memchr::memchr(b'\n', pending) {
                 consumed += pos + 1;
@@ -192,14 +203,20 @@ fn extract_complete_records(client: &mut Client, out: &mut Vec<u8>) {
 
             if octet_frame_ready && octet_boundary_is_plausible {
                 client.octet_counting_mode = true;
+                let should_consume_octet_delimiter_newline =
+                    pending.len() == needed || matches!(pending.get(needed), Some(b'\n'));
                 if len > MAX_LINE_LENGTH {
                     client.discard_octet_bytes = len;
                     consumed += prefix_len;
+                    client.should_consume_octet_delimiter_newline =
+                        should_consume_octet_delimiter_newline;
                     continue;
                 }
                 out.extend_from_slice(&pending[prefix_len..needed]);
                 out.push(b'\n');
                 consumed += needed;
+                client.should_consume_octet_delimiter_newline =
+                    should_consume_octet_delimiter_newline;
                 continue;
             }
         }
@@ -395,6 +412,7 @@ impl InputSource for TcpInput {
                         pending: Vec::new(),
                         octet_counting_mode: false,
                         discard_octet_bytes: 0,
+                        should_consume_octet_delimiter_newline: false,
                         discard_until_newline: false,
                         unaccounted_bytes: 0,
                     });
@@ -632,6 +650,79 @@ mod tests {
     use proptest::prelude::*;
     use std::io::Write;
     use std::net::TcpStream as StdTcpStream;
+
+    fn tcp_input_with_client() -> (TcpInput, StdTcpStream) {
+        let input = TcpInput::new(
+            "test",
+            "127.0.0.1:0",
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .expect("test input should bind");
+        let addr = input.local_addr().expect("input should expose local addr");
+        let client = StdTcpStream::connect(addr).expect("client should connect");
+        (input, client)
+    }
+
+    fn poll_tcp_bytes_until(
+        input: &mut TcpInput,
+        mut is_complete: impl FnMut(&[u8]) -> bool,
+    ) -> Vec<u8> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut joined = Vec::new();
+        while Instant::now() < deadline {
+            for event in input.poll().expect("tcp poll should succeed") {
+                if let InputEvent::Data { bytes, .. } = event {
+                    joined.extend_from_slice(&bytes);
+                }
+            }
+            if is_complete(&joined) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        joined
+    }
+
+    #[test]
+    fn octet_frame_consumes_delimiter_split_across_reads() {
+        let (mut input, mut client) = tcp_input_with_client();
+        client.write_all(b"5 hello").unwrap();
+        client.flush().unwrap();
+
+        let first = poll_tcp_bytes_until(&mut input, |bytes| bytes == b"hello\n");
+        assert_eq!(first, b"hello\n");
+        assert!(
+            input
+                .clients
+                .first()
+                .is_some_and(|client| client.should_consume_octet_delimiter_newline),
+            "frame ending at a read boundary should wait for an optional delimiter"
+        );
+
+        client.write_all(b"\n").unwrap();
+        client.flush().unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut next = Vec::new();
+        let mut consumed_delimiter = false;
+        while Instant::now() < deadline {
+            for event in input.poll().expect("tcp poll should succeed") {
+                if let InputEvent::Data { bytes, .. } = event {
+                    next.extend_from_slice(&bytes);
+                }
+            }
+            if input.clients.first().is_some_and(|client| {
+                !client.should_consume_octet_delimiter_newline && client.pending.is_empty()
+            }) {
+                consumed_delimiter = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(consumed_delimiter, "split delimiter should be consumed");
+        assert!(next.is_empty(), "delimiter must not emit an empty record");
+    }
 
     #[test]
     fn receives_tcp_data() {

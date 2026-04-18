@@ -16,5 +16,11 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 js-sys = { workspace = true }
 
+[package.metadata.wasm-pack.profile.release]
+# Disable wasm-opt to avoid downloading binaryen at build time.
+# The config-validator WASM module is small and does not benefit
+# meaningfully from wasm-opt, and the download is a flaky CI dep.
+wasm-opt = false
+
 [lints]
 workspace = true

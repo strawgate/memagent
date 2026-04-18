@@ -3,12 +3,31 @@ title: "Backpressure in Action"
 description: "Interactive simulation of how logfwd propagates backpressure from slow outputs back through the pipeline"
 ---
 
+import HighwayBackpressure from '../../../components/HighwayBackpressure.astro';
 import BackpressureSim from '../../../components/BackpressureSim.astro';
 import InputBackpressure from '../../../components/InputBackpressure.astro';
 
-When a collector goes slow or drops offline, logfwd doesn't buffer infinitely or drop data.
-Instead, **bounded channels** turn slow outputs into backpressure that cascades all the way
-back to the file reader — by design.
+Think of a log pipeline like a highway. When traffic flows freely, cars cruise
+from the on-ramp through to the exit. But when the exit backs up — a slow
+collector, a network blip — cars start queuing on the highway itself. Eventually
+the backup reaches the on-ramp and new cars can't even enter.
+
+That's backpressure. And it's **exactly what you want**. The alternative —
+letting cars pile onto the highway with no limit — is how you get a 40-car pileup
+and an OOM kill.
+
+Press **"Slow the exit"** and watch what happens:
+
+<HighwayBackpressure />
+
+logfwd works the same way. Every stage is connected by **bounded channels** — fixed-capacity
+lanes that can only hold so many batches. When a collector goes slow, pressure cascades back
+through the pipeline to the source. Files pause on disk (where they're safe), UDP drops
+packets (because UDP has no brakes), and OTLP senders get 429s and back off.
+
+No unbounded queues. No OOM. No silent data loss.
+
+## See it in the real pipeline
 
 Use the source selector to pick your input type and watch what it *feels* as pressure builds:
 a file falls behind and catches up on recovery, UDP drops packets permanently, OTLP senders

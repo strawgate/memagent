@@ -90,6 +90,7 @@ Streaming mode is experimental and currently requires `compression: none`. Use `
 | `index` | string | No | `logs` | Target index name |
 | `compression` | string | No | none | `gzip` or `none` |
 | `request_mode` | string | No | `buffered` | `buffered` or experimental `streaming` (streaming currently requires `compression: none`) |
+| `auth` | object | No | — | Bearer token or custom headers |
 
 </TabItem>
 <TabItem label="Loki">
@@ -100,6 +101,11 @@ Push logs to Grafana Loki with automatic label grouping.
 output:
   type: loki
   endpoint: http://loki:3100
+  tenant_id: team-a
+  static_labels:
+    app: logfwd
+    env: prod
+  label_columns: [service, level]
 ```
 
 When `label_columns` or `static_labels` are used, logfwd sanitizes label keys
@@ -109,7 +115,13 @@ would collapse to the same sanitized Loki label key.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `endpoint` | string | Yes | Loki push URL |
+| `endpoint` | string | Yes | Loki base URL |
+| `tenant_id` | string | No | Optional `X-Scope-OrgID` value for multi-tenant Loki |
+| `static_labels` | map[string,string] | No | Static labels attached to every stream |
+| `label_columns` | array[string] | No | Log columns to include as labels |
+| `auth` | object | No | Bearer token or custom headers |
+
+`compression` is not supported for Loki outputs.
 
 </TabItem>
 <TabItem label="Multiple outputs">
