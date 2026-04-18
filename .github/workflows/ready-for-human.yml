@@ -4,7 +4,7 @@ on:
   workflow_dispatch: {}  # disabled — re-enable triggers when needed
 
 concurrency:
-  group: ready-for-human-${{ github.event.pull_request.number || github.event.workflow_run.id || 'schedule' }}
+  group: ready-for-human-${{ github.run_id }}
   cancel-in-progress: true
 
 permissions:
