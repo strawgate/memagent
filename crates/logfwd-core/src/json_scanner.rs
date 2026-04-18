@@ -1217,7 +1217,7 @@ mod tests {
         /// Padding `[0, 90)` bytes of whitespace before the JSON object probes
         /// positions near 64-byte SIMD block edges. Invariants checked:
         ///  - Exactly 1 row is produced
-        ///  - The `val` field is present and its decoded value equals the
+        ///  - The `v` field is present and its decoded value equals the
         ///    original (unescaped) ASCII character
         #[test]
         fn escape_sequences_survive_simd_boundaries(
@@ -1297,11 +1297,12 @@ mod tests {
             );
         }
 
-        /// Duplicate keys: scanner produces the first writer's value (first-writer-wins).
+        /// Duplicate keys: scanner emits values in source order (first-writer-wins).
         ///
         /// When a JSON object contains the same key twice, the scanner must
-        /// produce exactly 1 row and that row must contain field "k" with one
-        /// of the two values (we don't over-specify which — first or last write).
+        /// produce exactly 1 row. The first emitted value for "k" must be v1
+        /// (first-writer-wins), matching the dedup behavior of production
+        /// builders like `StreamingBuilder::check_dup_bits`.
         #[test]
         fn duplicate_keys_produce_consistent_row(
             v1 in "[a-z]{1,10}",
@@ -1313,12 +1314,17 @@ mod tests {
             scan_streaming(json.as_bytes(), &config, &mut builder);
             prop_assert_eq!(builder.rows.len(), 1, "duplicate-key JSON must produce 1 row");
             let row = &builder.rows[0];
-            let val = row.iter().find(|(k, _)| k == "k").map(|(_, v)| v.as_str());
-            prop_assert!(val.is_some(), "duplicate-key JSON must have field 'k'");
-            // The stored value must be one of the two original values.
+            let k_entries: Vec<&str> = row.iter()
+                .filter(|(k, _)| k == "k")
+                .map(|(_, v)| v.as_str())
+                .collect();
             prop_assert!(
-                val.unwrap() == v1.as_str() || val.unwrap() == v2.as_str(),
-                "duplicate-key value must be one of the originals, got {:?}", val
+                !k_entries.is_empty(),
+                "duplicate-key JSON must have at least one 'k' entry"
+            );
+            prop_assert_eq!(
+                k_entries[0], v1.as_str(),
+                "first-writer-wins: first emitted value must be v1 {:?}, got {:?}", v1, k_entries[0]
             );
         }
     }
@@ -1737,7 +1743,7 @@ mod verification {
         ));
 
         let input = [b'\\', escape_char];
-        let mut out = alloc::vec::Vec::new();
+        let mut out = alloc::vec::Vec::with_capacity(2);
         decode_json_escapes(&input, &mut out);
 
         let expected: u8 = match escape_char {
@@ -1761,6 +1767,9 @@ mod verification {
             out[0], expected,
             "standard escape must decode to correct byte"
         );
+
+        kani::cover!(escape_char == b'"', "double-quote escape");
+        kani::cover!(escape_char == b'n', "newline escape");
     }
 
     /// `decode_json_escapes` passes through unknown escapes unchanged.
@@ -1778,7 +1787,7 @@ mod verification {
         ));
 
         let input = [b'\\', escape_char];
-        let mut out = alloc::vec::Vec::new();
+        let mut out = alloc::vec::Vec::with_capacity(2);
         decode_json_escapes(&input, &mut out);
 
         // Unknown escape: pass through the backslash, then continue.
@@ -1790,6 +1799,9 @@ mod verification {
             out[1], escape_char,
             "second byte must be the original escape char"
         );
+
+        kani::cover!(escape_char == b'x', "non-standard \\x passthrough");
+        kani::cover!(escape_char == b' ', "whitespace passthrough");
     }
 
     /// `decode_json_escapes` never panics on arbitrary short inputs.
@@ -1800,11 +1812,11 @@ mod verification {
     #[kani::unwind(16)]
     fn verify_decode_json_escapes_no_panic() {
         let input: [u8; 8] = kani::any();
-        let mut out = alloc::vec::Vec::new();
+        let mut out = alloc::vec::Vec::with_capacity(36);
         decode_json_escapes(&input, &mut out);
-        // The function must not panic. Output length ≤ input length × 3
-        // (worst case: all bytes are literal, each emitted once; \uXXXX can
-        // expand to at most 4 UTF-8 bytes from 6 input bytes).
+        // The function must not panic. Output length ≤ input length × 4 + 4
+        // (worst case: \uXXXX can expand to 4 UTF-8 bytes from 6 input bytes,
+        // plus trailing partial escapes can add a few extra bytes).
         assert!(out.len() <= input.len() * 4 + 4);
     }
 
@@ -1819,7 +1831,7 @@ mod verification {
         let input: [u8; 14] = kani::any();
         let pos: usize = kani::any_where(|&p: &usize| p < 14);
 
-        let mut out = alloc::vec::Vec::new();
+        let mut out = alloc::vec::Vec::with_capacity(14);
         let new_pos = decode_unicode_escape(&input, pos, &mut out);
 
         // Must always advance (never return pos itself)
