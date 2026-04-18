@@ -26,6 +26,12 @@ node runs one logfwd pod that reads container logs from `/var/log` on the host.
 
 A ready-to-use manifest is provided at `deploy/daemonset.yml`.
 
+:::note[CRI field requirement]
+The `_timestamp` and `_stream` columns used in the SQL example below are only
+present when the input is parsed as CRI (`format: cri`). If you switch to a
+different input format, remove those columns or update the query accordingly.
+:::
+
 ### Minimal DaemonSet
 
 ```yaml
