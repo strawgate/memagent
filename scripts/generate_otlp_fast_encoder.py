@@ -7,7 +7,10 @@ projection code and relies on handwritten/shared envelope + wire helpers.
 
 from __future__ import annotations
 
+import argparse
+import difflib
 import json
+import sys
 from pathlib import Path
 
 
@@ -28,9 +31,8 @@ def render(spec: dict) -> str:
 // column order: {order}
 
 use arrow::array::Array;
-use super::{{AttrArray, BatchColumns, BatchMetadata, encode_fixed32, encode_key_value_bool,
-    encode_key_value_double, encode_key_value_int, encode_key_value_string, encode_tag,
-    encode_varint, numeric_timestamp_ns, str_value}};
+use super::{{BatchColumns, BatchMetadata, encode_col_attr, encode_fixed32, encode_tag,
+    encode_varint, numeric_timestamp_ns}};
 use logfwd_core::otlp::{{self, Severity, bytes_field_size, encode_bytes_field, encode_fixed64,
     encode_varint_field, hex_decode, parse_severity, parse_timestamp_nanos}};
 
@@ -41,16 +43,22 @@ pub(super) fn encode_row_as_log_record_fast_v1(
     metadata: &BatchMetadata,
     buf: &mut Vec<u8>,
 ) {{
-    let timestamp_ns: u64 = if let Some((_, arr)) = columns.timestamp_num_col.as_ref() {{
+    let timestamp_ns: Option<u64> = if let Some((_, arr)) = columns.timestamp_num_col.as_ref() {{
         numeric_timestamp_ns(*arr, row)
     }} else if let Some((_, arr)) = columns.timestamp_col.as_ref() {{
         if arr.is_null(row) {{
-            0
+            None
         }} else {{
-            parse_timestamp_nanos(arr.value(row).as_bytes()).unwrap_or(0)
+            match parse_timestamp_nanos(arr.value(row).as_bytes()) {{
+                Some(ts) => Some(ts),
+                None => {{
+                    tracing::debug!("timestamp parse fallback: event_time omitted for unparsable value");
+                    None
+                }}
+            }}
         }}
     }} else {{
-        0
+        None
     }};
 
     let (severity_num, severity_text): (Severity, &[u8]) =
@@ -63,20 +71,28 @@ pub(super) fn encode_row_as_log_record_fast_v1(
         }} else {{
             (Severity::Unspecified, b"")
         }};
+    let severity_number = if let Some((_, arr)) = columns.severity_num_col.as_ref() {{
+        if arr.is_null(row) {{
+            severity_num as u64
+        }} else {{
+            u64::try_from(arr.value(row)).unwrap_or(severity_num as u64)
+        }}
+    }} else {{
+        severity_num as u64
+    }};
 
-    let body: &str = match (columns.body_col.as_ref(), columns.raw_col.as_ref()) {{
-        (Some((_, body)), _) if !body.is_null(row) => body.value(row),
-        (_, Some((_, raw))) if !raw.is_null(row) => raw.value(row),
+    let body: &str = match columns.body_col.as_ref() {{
+        Some((_, body)) if !body.is_null(row) => body.value(row),
         _ => "",
     }};
     let body_bytes = body.as_bytes();
 
-    if timestamp_ns > 0 {{
+    if let Some(timestamp_ns) = timestamp_ns {{
         encode_fixed64(buf, otlp::LOG_RECORD_TIME_UNIX_NANO, timestamp_ns);
     }}
 
-    if severity_num as u8 > 0 {{
-        encode_varint_field(buf, otlp::LOG_RECORD_SEVERITY_NUMBER, severity_num as u64);
+    if severity_number > 0 {{
+        encode_varint_field(buf, otlp::LOG_RECORD_SEVERITY_NUMBER, severity_number);
     }}
 
     if !severity_text.is_empty() {{
@@ -90,104 +106,85 @@ pub(super) fn encode_row_as_log_record_fast_v1(
         encode_bytes_field(buf, otlp::ANY_VALUE_STRING_VALUE, body_bytes);
     }}
 
-    for (field_name, attr) in &columns.attribute_cols {{
-        match attr {{
-            AttrArray::Int(arr) => {{
-                if !arr.is_null(row) {{
-                    encode_key_value_int(
-                        buf,
-                        otlp::LOG_RECORD_ATTRIBUTES,
-                        field_name.as_bytes(),
-                        arr.value(row),
-                    );
-                }}
-            }}
-            AttrArray::Float(arr) => {{
-                if !arr.is_null(row) {{
-                    encode_key_value_double(
-                        buf,
-                        otlp::LOG_RECORD_ATTRIBUTES,
-                        field_name.as_bytes(),
-                        arr.value(row),
-                    );
-                }}
-            }}
-            AttrArray::Bool(arr) => {{
-                if !arr.is_null(row) {{
-                    encode_key_value_bool(
-                        buf,
-                        otlp::LOG_RECORD_ATTRIBUTES,
-                        field_name.as_bytes(),
-                        arr.value(row),
-                    );
-                }}
-            }}
-            AttrArray::Str(arr) => {{
-                if !arr.is_null(row) {{
-                    encode_key_value_string(
-                        buf,
-                        otlp::LOG_RECORD_ATTRIBUTES,
-                        field_name.as_bytes(),
-                        arr.value(row).as_bytes(),
-                    );
-                }}
-            }}
-            AttrArray::OtherStr(arr) => {{
-                if !arr.is_null(row) {{
-                    encode_key_value_string(
-                        buf,
-                        otlp::LOG_RECORD_ATTRIBUTES,
-                        field_name.as_bytes(),
-                        str_value(*arr, row).as_bytes(),
-                    );
-                }}
-            }}
-        }}
+    for col in &columns.attribute_cols {{
+        encode_col_attr(buf, otlp::LOG_RECORD_ATTRIBUTES, col, row);
     }}
 
-    if let Some((_, arr)) = columns.flags_col {{
-        if !arr.is_null(row) {{
+    if let Some((_, arr)) = columns.flags_col
+        && !arr.is_null(row) {{
             let raw = arr.value(row);
             if let Ok(flags) = u32::try_from(raw) {{
                 encode_fixed32(buf, otlp::LOG_RECORD_FLAGS, flags);
             }}
         }}
-    }}
 
-    if let Some((_, arr)) = columns.trace_id_col.as_ref() {{
-        if !arr.is_null(row) {{
+    if let Some((_, arr)) = columns.trace_id_col.as_ref()
+        && !arr.is_null(row) {{
             let hex = arr.value(row);
             let mut decoded = [0u8; 16];
             if hex_decode(hex.as_bytes(), &mut decoded) {{
                 encode_bytes_field(buf, otlp::LOG_RECORD_TRACE_ID, &decoded);
             }}
         }}
-    }}
 
-    if let Some((_, arr)) = columns.span_id_col.as_ref() {{
-        if !arr.is_null(row) {{
+    if let Some((_, arr)) = columns.span_id_col.as_ref()
+        && !arr.is_null(row) {{
             let hex = arr.value(row);
             let mut decoded = [0u8; 8];
             if hex_decode(hex.as_bytes(), &mut decoded) {{
                 encode_bytes_field(buf, otlp::LOG_RECORD_SPAN_ID, &decoded);
             }}
         }}
-    }}
 
-    encode_fixed64(
-        buf,
-        otlp::LOG_RECORD_OBSERVED_TIME_UNIX_NANO,
-        metadata.observed_time_ns,
-    );
+    let observed_ns = columns
+        .observed_ts_col
+        .as_ref()
+        .and_then(|(_, arr)| numeric_timestamp_ns(*arr, row))
+        .unwrap_or(metadata.observed_time_ns);
+    encode_fixed64(buf, otlp::LOG_RECORD_OBSERVED_TIME_UNIX_NANO, observed_ns);
 }}
 """
 
 
-def main() -> None:
-    spec = load_spec()
+def check_output(rendered: str) -> int:
+    current = OUT.read_text() if OUT.exists() else ""
+    if current == rendered:
+        return 0
+
+    diff = difflib.unified_diff(
+        current.splitlines(keepends=True),
+        rendered.splitlines(keepends=True),
+        fromfile=str(OUT),
+        tofile=f"{OUT} (generated)",
+    )
+    sys.stderr.writelines(diff)
+    sys.stderr.write(
+        "\nGenerated OTLP fast encoder is out of date. "
+        "Run `python3 scripts/generate_otlp_fast_encoder.py`.\n"
+    )
+    return 1
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="verify the checked-in generated file matches the generator output",
+    )
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    rendered = render(load_spec())
+    if args.check:
+        return check_output(rendered)
+
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(render(spec))
+    OUT.write_text(rendered)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
