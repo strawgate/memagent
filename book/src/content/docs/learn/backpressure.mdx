@@ -5,6 +5,7 @@ description: "Interactive simulation of how logfwd propagates backpressure from 
 
 import HighwayBackpressure from '../../../components/HighwayBackpressure.astro';
 import UnboundedQueue from '../../../components/UnboundedQueue.astro';
+import BackpressureSim from '../../../components/BackpressureSim.astro';
 
 Think of a log pipeline like a highway. When traffic flows freely, data cruises
 from the source through to the destination. But when the exit slows — a network blip,
@@ -34,7 +35,11 @@ you get a controlled slowdown — and data that can be retried survives intact.
 
 When traffic backs up all the way to the on-ramp, new cars can't enter the highway.
 In a log pipeline, this is the moment backpressure reaches the source — and what happens
-next depends entirely on the source type:
+next depends entirely on the source type.
+
+Pick your input type and watch what it *feels* as pressure builds:
+
+<BackpressureSim />
 
 | Input | Under pressure | Data lost? |
 |-------|---------------|------------|
