@@ -3314,6 +3314,70 @@ mod tests {
         );
     }
 
+    fn assert_optional_logs_column_type_error(field: Field, column: ArrayRef, expected: &str) {
+        let field_name = field.name().clone();
+        let logs_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt32, false),
+            Field::new("resource_id", DataType::UInt32, false),
+            Field::new("scope_id", DataType::UInt32, false),
+            field,
+        ]));
+        let logs = RecordBatch::try_new(
+            logs_schema,
+            vec![
+                Arc::new(UInt32Array::from(vec![0u32])),
+                Arc::new(UInt32Array::from(vec![0u32])),
+                Arc::new(UInt32Array::from(vec![0u32])),
+                column,
+            ],
+        )
+        .expect("valid malformed logs batch");
+        let star = StarSchema {
+            logs,
+            log_attrs: RecordBatch::new_empty(Arc::new(attrs_schema())),
+            resource_attrs: RecordBatch::new_empty(Arc::new(attrs_schema())),
+            scope_attrs: RecordBatch::new_empty(Arc::new(attrs_schema())),
+        };
+
+        let err = star_to_flat(&star).expect_err("invalid optional LOGS column type must fail");
+        let message = err.to_string();
+        assert!(
+            message.contains(&field_name),
+            "expected error to mention {field_name}, got: {message}"
+        );
+        assert!(
+            message.contains(expected),
+            "expected error to mention {expected}, got: {message}"
+        );
+    }
+
+    #[test]
+    fn star_to_flat_returns_error_for_unsupported_trace_id_type() {
+        assert_optional_logs_column_type_error(
+            Field::new("trace_id", DataType::Utf8, true),
+            Arc::new(StringArray::from(vec![Some("not-binary")])) as ArrayRef,
+            "FixedSizeBinary(16)",
+        );
+    }
+
+    #[test]
+    fn star_to_flat_returns_error_for_unsupported_span_id_type() {
+        assert_optional_logs_column_type_error(
+            Field::new("span_id", DataType::Utf8, true),
+            Arc::new(StringArray::from(vec![Some("not-binary")])) as ArrayRef,
+            "FixedSizeBinary(8)",
+        );
+    }
+
+    #[test]
+    fn star_to_flat_returns_error_for_unsupported_flags_type() {
+        assert_optional_logs_column_type_error(
+            Field::new("flags", DataType::Int64, true),
+            Arc::new(Int64Array::from(vec![Some(1i64)])) as ArrayRef,
+            "UInt32",
+        );
+    }
+
     #[test]
     fn empty_string_log_attr_survives_star_roundtrip() {
         let schema = Arc::new(Schema::new(vec![
