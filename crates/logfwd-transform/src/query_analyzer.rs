@@ -26,6 +26,7 @@ struct SourceMetadataScope {
     logs_aliases: HashSet<String>,
     outer_logs_aliases: HashSet<String>,
     cte_names: HashSet<String>,
+    logs_backed_cte_names: HashSet<String>,
     visible_relations: usize,
     logs_relations: usize,
 }
@@ -1110,6 +1111,7 @@ fn collect_logs_source_metadata_from_query(query: &sqlast::Query, usage: &mut So
         query,
         usage,
         &HashSet::new(),
+        &HashSet::new(),
         &SourceMetadataScope::default(),
     );
 }
@@ -1118,27 +1120,39 @@ fn collect_logs_source_metadata_from_query_scoped(
     query: &sqlast::Query,
     usage: &mut SourceMetadataUsage,
     inherited_cte_names: &HashSet<String>,
+    inherited_logs_backed_cte_names: &HashSet<String>,
     outer_scope: &SourceMetadataScope,
 ) {
     let cte_names = cte_names_for_query(query);
-    let active_cte_names = combined_cte_names(inherited_cte_names, &cte_names);
+    let mut accumulated_cte_names = inherited_cte_names.clone();
+    let mut accumulated_logs_backed_cte_names = inherited_logs_backed_cte_names.clone();
     if let Some(ref with) = query.with {
-        let mut accumulated_cte_names = inherited_cte_names.clone();
         for cte in &with.cte_tables {
             collect_logs_source_metadata_from_query_scoped(
                 &cte.query,
                 usage,
                 &accumulated_cte_names,
+                &accumulated_logs_backed_cte_names,
                 outer_scope,
             );
+            if query_exposes_logs_relation(
+                &cte.query,
+                &accumulated_cte_names,
+                &accumulated_logs_backed_cte_names,
+            ) {
+                accumulated_logs_backed_cte_names.insert(cte.alias.name.value.clone());
+            }
             accumulated_cte_names.insert(cte.alias.name.value.clone());
         }
     }
+    let active_cte_names = combined_cte_names(inherited_cte_names, &cte_names);
+    let active_logs_backed_cte_names = accumulated_logs_backed_cte_names;
 
     collect_logs_source_metadata_from_set_expr(
         query.body.as_ref(),
         usage,
         &active_cte_names,
+        &active_logs_backed_cte_names,
         outer_scope,
     );
 
@@ -1149,6 +1163,7 @@ fn collect_logs_source_metadata_from_query_scoped(
             query.body.as_ref(),
             usage,
             &active_cte_names,
+            &active_logs_backed_cte_names,
             outer_scope,
         );
         for ob in exprs {
@@ -1161,18 +1176,43 @@ fn collect_logs_source_metadata_from_set_expr(
     set_expr: &SetExpr,
     usage: &mut SourceMetadataUsage,
     cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
     outer_scope: &SourceMetadataScope,
 ) {
     match set_expr {
         SetExpr::Select(select) => {
-            collect_logs_source_metadata_from_select(select, usage, cte_names, outer_scope);
+            collect_logs_source_metadata_from_select(
+                select,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                outer_scope,
+            );
         }
         SetExpr::SetOperation { left, right, .. } => {
-            collect_logs_source_metadata_from_set_expr(left, usage, cte_names, outer_scope);
-            collect_logs_source_metadata_from_set_expr(right, usage, cte_names, outer_scope);
+            collect_logs_source_metadata_from_set_expr(
+                left,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                outer_scope,
+            );
+            collect_logs_source_metadata_from_set_expr(
+                right,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                outer_scope,
+            );
         }
         SetExpr::Query(query) => {
-            collect_logs_source_metadata_from_query_scoped(query, usage, cte_names, outer_scope);
+            collect_logs_source_metadata_from_query_scoped(
+                query,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                outer_scope,
+            );
         }
         _ => {}
     }
@@ -1182,19 +1222,42 @@ fn source_metadata_scope_for_set_expr(
     set_expr: &SetExpr,
     usage: &mut SourceMetadataUsage,
     cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
     outer_scope: &SourceMetadataScope,
 ) -> SourceMetadataScope {
     match set_expr {
-        SetExpr::Select(select) => {
-            source_metadata_scope_for_select(select, usage, cte_names, outer_scope)
-        }
+        SetExpr::Select(select) => source_metadata_scope_for_select(
+            select,
+            usage,
+            cte_names,
+            logs_backed_cte_names,
+            outer_scope,
+        ),
         SetExpr::Query(query) => {
-            collect_logs_source_metadata_from_query_scoped(query, usage, cte_names, outer_scope);
+            collect_logs_source_metadata_from_query_scoped(
+                query,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                outer_scope,
+            );
             SourceMetadataScope::default()
         }
         SetExpr::SetOperation { left, right, .. } => {
-            collect_logs_source_metadata_from_set_expr(left, usage, cte_names, outer_scope);
-            collect_logs_source_metadata_from_set_expr(right, usage, cte_names, outer_scope);
+            collect_logs_source_metadata_from_set_expr(
+                left,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                outer_scope,
+            );
+            collect_logs_source_metadata_from_set_expr(
+                right,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                outer_scope,
+            );
             SourceMetadataScope::default()
         }
         _ => SourceMetadataScope::default(),
@@ -1205,9 +1268,16 @@ fn collect_logs_source_metadata_from_select(
     select: &sqlast::Select,
     usage: &mut SourceMetadataUsage,
     cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
     outer_scope: &SourceMetadataScope,
 ) {
-    let scope = source_metadata_scope_for_select(select, usage, cte_names, outer_scope);
+    let scope = source_metadata_scope_for_select(
+        select,
+        usage,
+        cte_names,
+        logs_backed_cte_names,
+        outer_scope,
+    );
 
     for item in &select.projection {
         match item {
@@ -1257,6 +1327,7 @@ fn collect_logs_source_metadata_from_select(
             &scope,
             usage,
             cte_names,
+            logs_backed_cte_names,
         );
     }
 
@@ -1276,12 +1347,20 @@ fn source_metadata_scope_for_select(
     select: &sqlast::Select,
     usage: &mut SourceMetadataUsage,
     cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
     outer_scope: &SourceMetadataScope,
 ) -> SourceMetadataScope {
     let mut scope = SourceMetadataScope::with_outer(outer_scope);
     scope.cte_names = cte_names.clone();
+    scope.logs_backed_cte_names = logs_backed_cte_names.clone();
     for table_with_joins in &select.from {
-        collect_logs_aliases_from_table_with_joins(table_with_joins, usage, &mut scope, cte_names);
+        collect_logs_aliases_from_table_with_joins(
+            table_with_joins,
+            usage,
+            &mut scope,
+            cte_names,
+            logs_backed_cte_names,
+        );
     }
     scope
 }
@@ -1291,10 +1370,23 @@ fn collect_logs_aliases_from_table_with_joins(
     usage: &mut SourceMetadataUsage,
     scope: &mut SourceMetadataScope,
     cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
 ) {
-    collect_logs_aliases_from_table_factor(&table_with_joins.relation, usage, scope, cte_names);
+    collect_logs_aliases_from_table_factor(
+        &table_with_joins.relation,
+        usage,
+        scope,
+        cte_names,
+        logs_backed_cte_names,
+    );
     for join in &table_with_joins.joins {
-        collect_logs_aliases_from_table_factor(&join.relation, usage, scope, cte_names);
+        collect_logs_aliases_from_table_factor(
+            &join.relation,
+            usage,
+            scope,
+            cte_names,
+            logs_backed_cte_names,
+        );
     }
 }
 
@@ -1303,13 +1395,16 @@ fn collect_logs_aliases_from_table_factor(
     usage: &mut SourceMetadataUsage,
     scope: &mut SourceMetadataScope,
     cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
 ) {
     match factor {
         sqlast::TableFactor::Table { name, alias, .. } => {
             scope.visible_relations = scope.visible_relations.saturating_add(1);
-            if object_name_last_eq(name, "logs") && !object_name_is_shadowed_cte(name, cte_names) {
+            if table_name_exposes_logs_relation(name, cte_names, logs_backed_cte_names) {
                 scope.logs_relations = scope.logs_relations.saturating_add(1);
-                scope.logs_aliases.insert("logs".to_string());
+                if let Some(relation_name) = object_name_last_ident(name) {
+                    scope.logs_aliases.insert(relation_name.to_string());
+                }
                 if let Some(alias) = alias {
                     scope.logs_aliases.insert(alias.name.value.clone());
                 }
@@ -1319,8 +1414,14 @@ fn collect_logs_aliases_from_table_factor(
             subquery, alias, ..
         } => {
             scope.visible_relations = scope.visible_relations.saturating_add(1);
-            collect_logs_source_metadata_from_query_scoped(subquery, usage, cte_names, scope);
-            if query_exposes_logs_relation(subquery, cte_names) {
+            collect_logs_source_metadata_from_query_scoped(
+                subquery,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                scope,
+            );
+            if query_exposes_logs_relation(subquery, cte_names, logs_backed_cte_names) {
                 scope.logs_relations = scope.logs_relations.saturating_add(1);
                 if let Some(alias) = alias {
                     scope.logs_aliases.insert(alias.name.value.clone());
@@ -1330,12 +1431,24 @@ fn collect_logs_aliases_from_table_factor(
         sqlast::TableFactor::NestedJoin {
             table_with_joins, ..
         } => {
-            collect_logs_aliases_from_table_with_joins(table_with_joins, usage, scope, cte_names);
+            collect_logs_aliases_from_table_with_joins(
+                table_with_joins,
+                usage,
+                scope,
+                cte_names,
+                logs_backed_cte_names,
+            );
         }
         sqlast::TableFactor::Pivot { table, .. }
         | sqlast::TableFactor::Unpivot { table, .. }
         | sqlast::TableFactor::MatchRecognize { table, .. } => {
-            collect_logs_aliases_from_table_factor(table, usage, scope, cte_names);
+            collect_logs_aliases_from_table_factor(
+                table,
+                usage,
+                scope,
+                cte_names,
+                logs_backed_cte_names,
+            );
         }
         _ => {
             scope.visible_relations = scope.visible_relations.saturating_add(1);
@@ -1346,21 +1459,50 @@ fn collect_logs_aliases_from_table_factor(
 fn query_exposes_logs_relation(
     query: &sqlast::Query,
     inherited_cte_names: &HashSet<String>,
+    inherited_logs_backed_cte_names: &HashSet<String>,
 ) -> bool {
     let cte_names = cte_names_for_query(query);
+    let mut accumulated_cte_names = inherited_cte_names.clone();
+    let mut accumulated_logs_backed_cte_names = inherited_logs_backed_cte_names.clone();
+    if let Some(ref with) = query.with {
+        for cte in &with.cte_tables {
+            if query_exposes_logs_relation(
+                &cte.query,
+                &accumulated_cte_names,
+                &accumulated_logs_backed_cte_names,
+            ) {
+                accumulated_logs_backed_cte_names.insert(cte.alias.name.value.clone());
+            }
+            accumulated_cte_names.insert(cte.alias.name.value.clone());
+        }
+    }
     let active_cte_names = combined_cte_names(inherited_cte_names, &cte_names);
-    set_expr_exposes_logs_relation(query.body.as_ref(), &active_cte_names)
+    set_expr_exposes_logs_relation(
+        query.body.as_ref(),
+        &active_cte_names,
+        &accumulated_logs_backed_cte_names,
+    )
 }
 
-fn set_expr_exposes_logs_relation(set_expr: &SetExpr, cte_names: &HashSet<String>) -> bool {
+fn set_expr_exposes_logs_relation(
+    set_expr: &SetExpr,
+    cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
+) -> bool {
     match set_expr {
         SetExpr::Select(select) => select.from.iter().any(|table_with_joins| {
-            table_with_joins_exposes_logs_relation(table_with_joins, cte_names)
+            table_with_joins_exposes_logs_relation(
+                table_with_joins,
+                cte_names,
+                logs_backed_cte_names,
+            )
         }),
-        SetExpr::Query(query) => query_exposes_logs_relation(query, cte_names),
+        SetExpr::Query(query) => {
+            query_exposes_logs_relation(query, cte_names, logs_backed_cte_names)
+        }
         SetExpr::SetOperation { left, right, .. } => {
-            set_expr_exposes_logs_relation(left, cte_names)
-                || set_expr_exposes_logs_relation(right, cte_names)
+            set_expr_exposes_logs_relation(left, cte_names, logs_backed_cte_names)
+                || set_expr_exposes_logs_relation(right, cte_names, logs_backed_cte_names)
         }
         _ => false,
     }
@@ -1369,32 +1511,37 @@ fn set_expr_exposes_logs_relation(set_expr: &SetExpr, cte_names: &HashSet<String
 fn table_with_joins_exposes_logs_relation(
     table_with_joins: &sqlast::TableWithJoins,
     cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
 ) -> bool {
-    table_factor_exposes_logs_relation(&table_with_joins.relation, cte_names)
-        || table_with_joins
-            .joins
-            .iter()
-            .any(|join| table_factor_exposes_logs_relation(&join.relation, cte_names))
+    table_factor_exposes_logs_relation(&table_with_joins.relation, cte_names, logs_backed_cte_names)
+        || table_with_joins.joins.iter().any(|join| {
+            table_factor_exposes_logs_relation(&join.relation, cte_names, logs_backed_cte_names)
+        })
 }
 
 fn table_factor_exposes_logs_relation(
     factor: &sqlast::TableFactor,
     cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
 ) -> bool {
     match factor {
         sqlast::TableFactor::Table { name, .. } => {
-            object_name_last_eq(name, "logs") && !object_name_is_shadowed_cte(name, cte_names)
+            table_name_exposes_logs_relation(name, cte_names, logs_backed_cte_names)
         }
         sqlast::TableFactor::Derived { subquery, .. } => {
-            query_exposes_logs_relation(subquery, cte_names)
+            query_exposes_logs_relation(subquery, cte_names, logs_backed_cte_names)
         }
         sqlast::TableFactor::NestedJoin {
             table_with_joins, ..
-        } => table_with_joins_exposes_logs_relation(table_with_joins, cte_names),
+        } => table_with_joins_exposes_logs_relation(
+            table_with_joins,
+            cte_names,
+            logs_backed_cte_names,
+        ),
         sqlast::TableFactor::Pivot { table, .. }
         | sqlast::TableFactor::Unpivot { table, .. }
         | sqlast::TableFactor::MatchRecognize { table, .. } => {
-            table_factor_exposes_logs_relation(table, cte_names)
+            table_factor_exposes_logs_relation(table, cte_names, logs_backed_cte_names)
         }
         _ => false,
     }
@@ -1405,18 +1552,30 @@ fn collect_logs_source_metadata_from_table_with_joins(
     scope: &SourceMetadataScope,
     usage: &mut SourceMetadataUsage,
     cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
 ) {
     collect_logs_source_metadata_from_table_factor(
         &table_with_joins.relation,
         scope,
         usage,
         cte_names,
+        logs_backed_cte_names,
     );
-    let mut accumulated_has_logs =
-        table_factor_exposes_logs_relation(&table_with_joins.relation, cte_names);
+    let mut accumulated_has_logs = table_factor_exposes_logs_relation(
+        &table_with_joins.relation,
+        cte_names,
+        logs_backed_cte_names,
+    );
     for join in &table_with_joins.joins {
-        collect_logs_source_metadata_from_table_factor(&join.relation, scope, usage, cte_names);
-        let right_has_logs = table_factor_exposes_logs_relation(&join.relation, cte_names);
+        collect_logs_source_metadata_from_table_factor(
+            &join.relation,
+            scope,
+            usage,
+            cte_names,
+            logs_backed_cte_names,
+        );
+        let right_has_logs =
+            table_factor_exposes_logs_relation(&join.relation, cte_names, logs_backed_cte_names);
         if let sqlast::JoinOperator::AsOf {
             match_condition, ..
         } = &join.join_operator
@@ -1440,10 +1599,17 @@ fn collect_logs_source_metadata_from_table_factor(
     scope: &SourceMetadataScope,
     usage: &mut SourceMetadataUsage,
     cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
 ) {
     match factor {
         sqlast::TableFactor::Derived { subquery, .. } => {
-            collect_logs_source_metadata_from_query_scoped(subquery, usage, cte_names, scope);
+            collect_logs_source_metadata_from_query_scoped(
+                subquery,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                scope,
+            );
         }
         sqlast::TableFactor::NestedJoin {
             table_with_joins, ..
@@ -1453,6 +1619,7 @@ fn collect_logs_source_metadata_from_table_factor(
                 scope,
                 usage,
                 cte_names,
+                logs_backed_cte_names,
             );
         }
         sqlast::TableFactor::Pivot {
@@ -1460,14 +1627,32 @@ fn collect_logs_source_metadata_from_table_factor(
             value_source,
             ..
         } => {
-            collect_logs_source_metadata_from_table_factor(table, scope, usage, cte_names);
+            collect_logs_source_metadata_from_table_factor(
+                table,
+                scope,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+            );
             if let sqlast::PivotValueSource::Subquery(query) = value_source {
-                collect_logs_source_metadata_from_query_scoped(query, usage, cte_names, scope);
+                collect_logs_source_metadata_from_query_scoped(
+                    query,
+                    usage,
+                    cte_names,
+                    logs_backed_cte_names,
+                    scope,
+                );
             }
         }
         sqlast::TableFactor::Unpivot { table, .. }
         | sqlast::TableFactor::MatchRecognize { table, .. } => {
-            collect_logs_source_metadata_from_table_factor(table, scope, usage, cte_names);
+            collect_logs_source_metadata_from_table_factor(
+                table,
+                scope,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+            );
         }
         _ => {}
     }
@@ -1554,6 +1739,7 @@ fn collect_logs_source_metadata_from_expr(
                     subquery,
                     usage,
                     &scope.cte_names,
+                    &scope.logs_backed_cte_names,
                     scope,
                 );
             }
@@ -1654,6 +1840,7 @@ fn collect_logs_source_metadata_from_expr(
                 subquery,
                 usage,
                 &scope.cte_names,
+                &scope.logs_backed_cte_names,
                 scope,
             );
         }
@@ -1668,6 +1855,7 @@ fn collect_logs_source_metadata_from_expr(
                 subquery,
                 usage,
                 &scope.cte_names,
+                &scope.logs_backed_cte_names,
                 scope,
             );
         }
@@ -1715,24 +1903,37 @@ fn object_name_matches_logs_scope(name: &sqlast::ObjectName, scope: &SourceMetad
         .is_some_and(|ident| scope.matches_logs_qualifier(&ident.value))
 }
 
-fn object_name_last_eq(name: &sqlast::ObjectName, expected: &str) -> bool {
+fn table_name_exposes_logs_relation(
+    name: &sqlast::ObjectName,
+    cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
+) -> bool {
+    object_name_matches_cte_name(name, logs_backed_cte_names)
+        || (object_name_last_eq(name, "logs") && !object_name_is_shadowed_cte(name, cte_names))
+}
+
+fn object_name_matches_cte_name(name: &sqlast::ObjectName, cte_names: &HashSet<String>) -> bool {
+    name.0.len() == 1
+        && object_name_last_ident(name).is_some_and(|ident| {
+            cte_names
+                .iter()
+                .any(|cte_name| cte_name.eq_ignore_ascii_case(ident))
+        })
+}
+
+fn object_name_last_ident(name: &sqlast::ObjectName) -> Option<&str> {
     name.0
         .last()
         .and_then(|part| part.as_ident())
-        .is_some_and(|ident| ident.value.eq_ignore_ascii_case(expected))
+        .map(|ident| ident.value.as_str())
+}
+
+fn object_name_last_eq(name: &sqlast::ObjectName, expected: &str) -> bool {
+    object_name_last_ident(name).is_some_and(|ident| ident.eq_ignore_ascii_case(expected))
 }
 
 fn object_name_is_shadowed_cte(name: &sqlast::ObjectName, cte_names: &HashSet<String>) -> bool {
-    name.0.len() == 1
-        && name
-            .0
-            .last()
-            .and_then(|part| part.as_ident())
-            .is_some_and(|ident| {
-                cte_names
-                    .iter()
-                    .any(|cte_name| cte_name.eq_ignore_ascii_case(&ident.value))
-            })
+    object_name_matches_cte_name(name, cte_names)
 }
 
 fn cte_names_for_query(query: &sqlast::Query) -> HashSet<String> {
@@ -2114,6 +2315,33 @@ mod tests {
             analyzer.source_metadata_plan(),
             SourceMetadataPlan::default()
         );
+    }
+
+    #[test]
+    fn explicit_source_metadata_plan_tracks_logs_backed_cte_alias() {
+        let analyzer =
+            QueryAnalyzer::new("WITH c AS (SELECT * FROM logs) SELECT c._source_id FROM c")
+                .unwrap();
+        assert!(analyzer.explicit_source_metadata_plan().has_source_id);
+
+        let analyzer =
+            QueryAnalyzer::new("WITH c AS (SELECT * FROM alerts) SELECT c._source_id FROM c")
+                .unwrap();
+        assert_eq!(
+            analyzer.explicit_source_metadata_plan(),
+            SourceMetadataPlan::default()
+        );
+    }
+
+    #[test]
+    fn explicit_source_metadata_plan_tracks_chained_logs_backed_cte_alias() {
+        let analyzer = QueryAnalyzer::new(
+            "WITH c AS (SELECT * FROM logs), \
+             d AS (SELECT c._source_path FROM c) \
+             SELECT _source_path FROM d",
+        )
+        .unwrap();
+        assert!(analyzer.explicit_source_metadata_plan().has_source_path);
     }
 
     #[test]
