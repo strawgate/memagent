@@ -1069,10 +1069,16 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, message_field: &str) -> Bat
             }
         }
 
-        let resource_key = field_name
-            .strip_prefix(field_names::DEFAULT_RESOURCE_PREFIX)
-            .map(str::to_string);
-        if let Some(resource_key) = resource_key {
+        let stripped_resource_key = field_name.strip_prefix(field_names::DEFAULT_RESOURCE_PREFIX);
+        if matches!(stripped_resource_key, Some("")) {
+            tracing::warn!(
+                column = field_name,
+                resource_prefix = field_names::DEFAULT_RESOURCE_PREFIX,
+                "dropping resource column with empty OTLP key after prefix stripping"
+            );
+            continue;
+        }
+        if let Some(resource_key) = stripped_resource_key.map(str::to_string) {
             let resource_attr = match field.data_type() {
                 DataType::Int64 => AttrArray::Int(batch.column(idx).as_primitive::<Int64Type>()),
                 DataType::UInt64 => AttrArray::UInt(batch.column(idx).as_primitive::<UInt64Type>()),
@@ -3094,6 +3100,44 @@ mod tests {
                 .iter()
                 .all(|kv| kv.key != "resource.attributes.service.name"),
             "resource columns must not be log record attrs"
+        );
+    }
+
+    #[test]
+    fn empty_resource_attribute_key_is_dropped() {
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("resource.attributes.", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("hello")])),
+                Arc::new(StringArray::from(vec![Some("bad-empty-key")])),
+            ],
+        )
+        .expect("valid batch");
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        let request =
+            ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice()).expect("decode request");
+        if let Some(resource) = request.resource_logs[0].resource.as_ref() {
+            assert!(
+                resource.attributes.iter().all(|kv| !kv.key.is_empty()),
+                "empty resource keys must not be emitted"
+            );
+        }
+        let lr = &request.resource_logs[0].scope_logs[0].log_records[0];
+        assert!(
+            lr.attributes
+                .iter()
+                .all(|kv| kv.key != "resource.attributes."),
+            "malformed resource prefix column should not fall through to log attributes"
         );
     }
 
