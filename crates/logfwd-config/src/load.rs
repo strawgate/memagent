@@ -57,13 +57,22 @@ impl Config {
         let (marked_yaml, quoted_placeholders) = mark_quoted_exact_env_placeholders(yaml);
         let mut value: Value = serde_yaml_ng::from_str(&marked_yaml)?;
         expand_env_vars_in_yaml_value(&mut value, &quoted_placeholders)?;
-        let raw: RawConfig = serde_yaml_ng::from_value(value)?;
+        let raw = deserialize_raw_config_with_path(value)?;
         Self::from_raw(raw, base_path)
     }
 
     /// Expand `${VAR}` environment variables in raw YAML without parsing.
     pub fn expand_env_str(yaml: &str) -> Result<String, ConfigError> {
         expand_env_vars(yaml)
+    }
+
+    /// Expand `${VAR}` environment variables using the same YAML-aware scalar
+    /// rules as [`Config::load_str`], then serialize the expanded YAML tree.
+    pub fn expand_env_yaml_str(yaml: &str) -> Result<String, ConfigError> {
+        let (marked_yaml, quoted_placeholders) = mark_quoted_exact_env_placeholders(yaml);
+        let mut value: Value = serde_yaml_ng::from_str(&marked_yaml)?;
+        expand_env_vars_in_yaml_value(&mut value, &quoted_placeholders)?;
+        serde_yaml_ng::to_string(&value).map_err(ConfigError::from)
     }
 
     fn from_raw(raw: RawConfig, base_path: Option<&Path>) -> Result<Self, ConfigError> {
@@ -138,6 +147,18 @@ impl Config {
         cfg.validate_with_base_path(base_path)?;
         Ok(cfg)
     }
+}
+
+fn deserialize_raw_config_with_path(value: Value) -> Result<RawConfig, ConfigError> {
+    serde_path_to_error::deserialize(value).map_err(|err| {
+        let path = err.path().to_string();
+        let inner = err.into_inner();
+        if path == "." {
+            ConfigError::Validation(format!("config deserialization error: {inner}"))
+        } else {
+            ConfigError::Validation(format!("config deserialization error at '{path}': {inner}"))
+        }
+    })
 }
 
 fn expand_env_vars_in_yaml_value(

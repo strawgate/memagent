@@ -266,8 +266,12 @@ impl SqlTransform {
         use arrow::array::{ArrayRef, StringArray};
         use arrow::datatypes::{Field, Schema};
 
-        // Build a schema from referenced columns (or a fallback for SELECT *).
-        let fields: Vec<Field> = if self.analyzer.referenced_columns.is_empty() {
+        // Build a schema from the scanner-facing field names, not raw SQL
+        // identifier spelling. DataFusion normalizes unquoted identifiers
+        // during planning, and the scanner pushdown config mirrors that.
+        let scan_config = self.analyzer.scan_config();
+        let fields: Vec<Field> = if scan_config.extract_all || scan_config.wanted_fields.is_empty()
+        {
             // SELECT * — provide a minimal representative schema.
             vec![
                 Field::new(field_names::BODY, DataType::Utf8, true),
@@ -275,10 +279,10 @@ impl SqlTransform {
                 Field::new("msg", DataType::Utf8, true),
             ]
         } else {
-            self.analyzer
-                .referenced_columns
+            scan_config
+                .wanted_fields
                 .iter()
-                .map(|name| Field::new(name, DataType::Utf8, true))
+                .map(|field| Field::new(field.name.as_str(), DataType::Utf8, true))
                 .collect()
         };
 

@@ -38,7 +38,7 @@ jobs:
           name: e2e-logs-${{ github.run_id }}
           path: |
             tests/e2e/logs/
-            /tmp/logfwd-e2e*/
+            /tmp/ff-e2e*/
           retention-days: 7
 
       - name: Create issue on failure

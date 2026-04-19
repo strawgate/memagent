@@ -261,6 +261,11 @@ impl Config {
                                     )));
                                 }
                             }
+                            if o.max_recv_message_size_bytes == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': otlp.max_recv_message_size_bytes must be at least 1"
+                                )));
+                            }
 
                             track_listen_addr_uniqueness(
                                 &mut seen_listen_addrs,
@@ -451,6 +456,11 @@ impl Config {
                             {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': sensor.control_path must not be empty"
+                                )));
+                            }
+                            if s.sensor.as_ref().and_then(|cfg| cfg.max_rows_per_poll) == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': sensor.max_rows_per_poll must be at least 1"
                                 )));
                             }
                             if let Some(families) = s
@@ -1219,6 +1229,7 @@ impl Config {
                             // Resolve globs against base_path so relative glob
                             // patterns compare correctly with resolved output paths.
                             let resolved = path_for_config_compare(p, base_path);
+                            let resolved = normalize_path_key_for_compare(&resolved);
                             glob_input_patterns.push(resolved.to_string_lossy().into_owned());
                         } else {
                             let pb = path_for_config_compare(p, base_path);
@@ -1266,7 +1277,7 @@ impl Config {
                     }
 
                     // Check if the output path could match any glob input pattern.
-                    let resolved_out_path = out_pb.to_string_lossy();
+                    let resolved_out_path = out_norm.to_string_lossy();
                     for glob_pattern in &glob_input_patterns {
                         if is_glob_match_possible(glob_pattern, &resolved_out_path) {
                             return Err(ConfigError::Validation(format!(
@@ -1567,6 +1578,9 @@ pub fn validate_host_port(addr: &str) -> Result<(), String> {
     if !addr.starts_with('[') && host.contains(']') {
         return Err(format!("'{addr}' has an unmatched ']' in the host"));
     }
+    if !addr.starts_with('[') && host.contains('[') {
+        return Err(format!("'{addr}' has an unmatched '[' in the host"));
+    }
 
     if !addr.starts_with('[') && host.contains(':') {
         return Err(format!(
@@ -1731,6 +1745,12 @@ mod validate_host_port_tests {
         );
         // Unmatched closing bracket rejected (#1461)
         assert!(validate_host_port("foo]:4317").unwrap_err().contains("]"));
+        // Unmatched opening bracket rejected (#2060)
+        assert!(
+            validate_host_port("foo[bar:4317")
+                .unwrap_err()
+                .contains("[")
+        );
     }
 
     #[test]

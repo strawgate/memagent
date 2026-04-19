@@ -1,60 +1,72 @@
 ---
-// Highway backpressure animation.
+// Highway backpressure animation — multi-route layout.
+// Two sources feed a highway; all cars exit via a ramp with a traffic light.
+// When the exit backs up, it cascades: exit → highway → on-ramp.
 // Logic lives in highway-sim.mjs; this file is UI/rendering only.
-// Straight road: on-ramp → highway → off-ramp with cycling traffic light.
-// User controls green/red ratio via a compact slider above the light.
 ---
 
 <div class="hw" id="highway-bp">
   <div class="hw-scene">
-    <svg class="hw-svg" viewBox="0 0 800 195" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+    <svg class="hw-svg" viewBox="0 0 800 300" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
       <defs>
-        <path id="hw-path-in" d="M 40,170 C 40,118 115,85 155,85" fill="none" />
-        <path id="hw-path-hwy" d="M 155,85 L 645,85" fill="none" />
-        <path id="hw-path-out" d="M 645,85 C 685,85 760,118 760,170" fill="none" />
+        <path id="hw-path-ramp" d="M 30,255 C 30,185 115,100 200,100" fill="none" />
+        <path id="hw-path-hwy" d="M 30,100 L 560,100" fill="none" />
+        <path id="hw-path-exit" d="M 560,100 C 600,100 730,175 730,255" fill="none" />
+        <path id="hw-path-cont" d="M 560,100 L 775,100" fill="none" />
       </defs>
 
-      <!-- On-ramp -->
-      <path d="M 40,170 C 40,118 115,85 155,85" fill="none" stroke="var(--hw-road)" stroke-width="32" stroke-linecap="round" />
-      <path d="M 40,170 C 40,118 115,85 155,85" fill="none" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="6,8" />
+      <!-- Highway road surface (full width including continuation) -->
+      <rect x="25" y="84" width="750" height="32" fill="var(--hw-road)" />
+      <line x1="25" y1="84" x2="775" y2="84" stroke="var(--hw-edge)" stroke-width="1.5" />
+      <line x1="25" y1="116" x2="775" y2="116" stroke="var(--hw-edge)" stroke-width="1.5" />
+      <line x1="40" y1="100" x2="770" y2="100" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="14,10" />
 
-      <!-- Highway -->
-      <rect x="150" y="69" width="500" height="32" fill="var(--hw-road)" />
-      <line x1="150" y1="69" x2="650" y2="69" stroke="var(--hw-edge)" stroke-width="1.5" />
-      <line x1="150" y1="101" x2="650" y2="101" stroke="var(--hw-edge)" stroke-width="1.5" />
-      <line x1="165" y1="85" x2="635" y2="85" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="14,10" />
-
-      <!-- Direction chevrons -->
-      <g opacity="0.3" stroke="var(--hw-dash)" stroke-width="1.5" fill="none">
-        <path d="M 268,79 L 274,85 L 268,91" />
-        <path d="M 368,79 L 374,85 L 368,91" />
-        <path d="M 468,79 L 474,85 L 468,91" />
+      <!-- Direction chevrons on highway -->
+      <g opacity="0.25" stroke="var(--hw-dash)" stroke-width="1.5" fill="none">
+        <path d="M 100,94 L 106,100 L 100,106" />
+        <path d="M 280,94 L 286,100 L 280,106" />
+        <path d="M 460,94 L 466,100 L 460,106" />
       </g>
 
-      <!-- Off-ramp -->
-      <path d="M 645,85 C 685,85 760,118 760,170" fill="none" stroke="var(--hw-road)" stroke-width="32" stroke-linecap="round" />
-      <path d="M 645,85 C 685,85 760,118 760,170" fill="none" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="6,8" />
+      <!-- On-ramp road surface -->
+      <path d="M 30,255 C 30,185 115,100 200,100" fill="none" stroke="var(--hw-road)" stroke-width="28" stroke-linecap="round" />
+      <path d="M 30,255 C 30,185 115,100 200,100" fill="none" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="6,8" />
 
-      <!-- Stop line at traffic light -->
-      <line x1="630" y1="69" x2="630" y2="101" stroke="var(--hw-edge)" stroke-width="2.5" stroke-dasharray="4,3" opacity="0.6" />
+      <!-- Exit ramp road surface -->
+      <path d="M 560,100 C 600,100 730,175 730,255" fill="none" stroke="var(--hw-road)" stroke-width="28" stroke-linecap="round" />
+      <path d="M 560,100 C 600,100 730,175 730,255" fill="none" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="6,8" />
 
-      <!-- Traffic light -->
-      <g id="hw-light" transform="translate(638,23)">
-        <rect x="-7" y="0" width="14" height="30" rx="4" fill="#1e1e1e" stroke="#444" stroke-width="0.5" />
-        <circle cx="0" cy="9" r="4.5" fill="#3a1111" id="hw-l-red" />
-        <circle cx="0" cy="21" r="4.5" fill="#22c55e" id="hw-l-green" />
-        <rect x="-1.5" y="30" width="3" height="14" fill="#444" />
+      <!-- Fork marker -->
+      <line x1="560" y1="84" x2="560" y2="116" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.35" />
+
+      <!-- Merge zone marker -->
+      <line x1="200" y1="84" x2="200" y2="116" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.35" />
+
+      <!-- Traffic light — positioned dynamically by JS on exit ramp -->
+      <g id="hw-light" style="display:none">
+        <line id="hw-stop-line" stroke="var(--hw-edge)" stroke-width="2.5" stroke-dasharray="4,3" opacity="0.6" />
+        <g id="hw-light-housing">
+          <rect x="-7" y="-15" width="14" height="30" rx="4" fill="#1e1e1e" stroke="#444" stroke-width="0.5" />
+          <circle cx="0" cy="-6" r="4.5" fill="#3a1111" id="hw-l-red" />
+          <circle cx="0" cy="6" r="4.5" fill="#22c55e" id="hw-l-green" />
+          <rect x="-1.5" y="15" width="3" height="10" fill="#444" />
+        </g>
       </g>
 
       <!-- Labels -->
-      <text x="40" y="190" text-anchor="middle" fill="var(--hw-muted)" font-size="10" font-weight="600">LOG SOURCE</text>
-      <text x="400" y="62" text-anchor="middle" fill="var(--hw-muted)" font-size="10" font-weight="600" id="hw-pipeline-label">FLOWING — COLLECTOR KEEPING UP</text>
-      <text x="760" y="190" text-anchor="middle" fill="var(--hw-muted)" font-size="10" font-weight="600">DESTINATION</text>
+      <text x="30" y="78" text-anchor="start" fill="var(--hw-muted)" font-size="9" font-weight="600">LOG SOURCE</text>
+      <text x="30" y="275" text-anchor="start" fill="var(--hw-muted)" font-size="9" font-weight="600">LOG SOURCE</text>
+      <text x="730" y="275" text-anchor="middle" fill="var(--hw-muted)" font-size="9" font-weight="600">DESTINATION</text>
+      <text x="200" y="130" text-anchor="middle" fill="var(--hw-muted)" font-size="8" opacity="0.45">MERGE</text>
+      <text x="560" y="130" text-anchor="middle" fill="var(--hw-muted)" font-size="8" opacity="0.45">EXIT</text>
+
+      <!-- Status label along highway -->
+      <text x="380" y="72" text-anchor="middle" fill="var(--hw-muted)" font-size="10" font-weight="600" id="hw-pipeline-label">FLOWING — TRAFFIC MOVING FREELY</text>
 
       <g id="hw-cars"></g>
 
-      <!-- Stats overlaid in the road endpoint zone -->
-      <foreignObject x="200" y="150" width="400" height="45">
+      <!-- Stats below the highway -->
+      <foreignObject x="200" y="140" width="360" height="45">
         <div xmlns="http://www.w3.org/1999/xhtml" class="hw-stats" id="hw-stats">
           <div class="hw-stat">
             <span class="hw-stat-val" id="hw-s-tput">—</span>
@@ -62,21 +74,17 @@
           </div>
           <div class="hw-stat">
             <span class="hw-stat-val" id="hw-s-queue">0</span>
-            <span class="hw-stat-lbl">Queued</span>
+            <span class="hw-stat-lbl">On Road</span>
           </div>
           <div class="hw-stat">
             <span class="hw-stat-val" id="hw-s-stall">0%</span>
             <span class="hw-stat-lbl">Stalled</span>
           </div>
-          <div class="hw-stat">
-            <span class="hw-stat-val hw-stat-light" id="hw-s-light">🟢</span>
-            <span class="hw-stat-lbl" id="hw-s-light-lbl">GREEN</span>
-          </div>
         </div>
       </foreignObject>
     </svg>
 
-    <!-- Compact slider positioned above the traffic light -->
+    <!-- Slider control -->
     <div class="hw-light-ctrl" id="hw-light-ctrl">
       <label class="hw-light-ctrl-label" for="hw-green" id="hw-slider-detail">Light Timing</label>
       <input type="range" id="hw-green" class="hw-light-slider" min="5" max="100" value="80" />
@@ -109,10 +117,10 @@
   .hw-scene { position: relative; width: 100%; overflow: visible; }
   .hw-svg { width: 100%; height: auto; display: block; }
 
-  /* Compact slider to the left of the traffic light */
+  /* Slider near top-right, close to exit ramp area */
   .hw-light-ctrl {
     position: absolute;
-    right: 22%; top: 6%;
+    right: 5%; top: 4%;
     display: flex; flex-direction: column; align-items: center; gap: 1px;
     pointer-events: auto;
   }
@@ -144,7 +152,6 @@
     font-size: 0.55rem; font-weight: 600; text-transform: uppercase;
     letter-spacing: 0.05em; color: var(--hw-muted);
   }
-  .hw-stat-light { font-size: 1.2rem; }
 
   .hw-status {
     position: absolute; width: 1px; height: 1px; overflow: hidden;
@@ -163,49 +170,87 @@ import { createSimulation } from './highway-sim.mjs';
   var sliderDetail = document.getElementById('hw-slider-detail');
   var lRed = document.getElementById('hw-l-red');
   var lGreen = document.getElementById('hw-l-green');
+  var lightG = document.getElementById('hw-light');
+  var lightHousing = document.getElementById('hw-light-housing');
+  var stopLine = document.getElementById('hw-stop-line');
   var sTput = document.getElementById('hw-s-tput');
   var sQueue = document.getElementById('hw-s-queue');
   var sStall = document.getElementById('hw-s-stall');
-  var sLight = document.getElementById('hw-s-light');
-  var sLightLbl = document.getElementById('hw-s-light-lbl');
 
   // Measure SVG paths
-  var pathIn = document.getElementById('hw-path-in');
+  var pathRamp = document.getElementById('hw-path-ramp');
   var pathHwy = document.getElementById('hw-path-hwy');
-  var pathOut = document.getElementById('hw-path-out');
-  if (!carsG || !slider || !pathIn || !pathHwy || !pathOut) return;
-  var lenIn = pathIn.getTotalLength();
+  var pathExit = document.getElementById('hw-path-exit');
+  var pathCont = document.getElementById('hw-path-cont');
+  if (!carsG || !slider || !pathRamp || !pathHwy || !pathExit || !pathCont) return;
+
+  var lenRamp = pathRamp.getTotalLength();
   var lenHwy = pathHwy.getTotalLength();
-  var lenOut = pathOut.getTotalLength();
-  var lenTotal = lenIn + lenHwy + lenOut;
+  var lenExit = pathExit.getTotalLength();
+  var lenCont = pathCont.getTotalLength();
 
-  function posAt(d) {
-    if (d <= lenIn) return pathIn.getPointAtLength(d);
-    if (d <= lenIn + lenHwy) return pathHwy.getPointAtLength(d - lenIn);
-    return pathOut.getPointAtLength(Math.min(d - lenIn - lenHwy, lenOut));
-  }
-  function angleAt(d) {
-    var p1 = posAt(d);
-    var p2 = posAt(Math.min(d + 2, lenTotal));
-    return Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI;
-  }
+  // mergeD: where x=200 on the straight highway from x=30 to x=560
+  var mergeD = Math.round(lenHwy * 170 / 530);
+  var gateD = Math.round(lenExit * 0.62);
 
-  var GATE_D = lenIn + lenHwy - 15;
+  // ---- Position traffic light on exit ramp ----
+  (function() {
+    var p = pathExit.getPointAtLength(gateD);
+    var p2 = pathExit.getPointAtLength(Math.min(gateD + 3, lenExit));
+    var angle = Math.atan2(p2.y - p.y, p2.x - p.x);
+    var perpAngle = angle - Math.PI / 2;
+    var cosP = Math.cos(perpAngle);
+    var sinP = Math.sin(perpAngle);
+
+    // Stop line across the road (±14px from center)
+    stopLine.setAttribute('x1', String((p.x + cosP * 14).toFixed(1)));
+    stopLine.setAttribute('y1', String((p.y + sinP * 14).toFixed(1)));
+    stopLine.setAttribute('x2', String((p.x - cosP * 14).toFixed(1)));
+    stopLine.setAttribute('y2', String((p.y - sinP * 14).toFixed(1)));
+
+    // Light housing offset to the outside of the curve
+    var ox = p.x + cosP * 30;
+    var oy = p.y + sinP * 30;
+    lightHousing.setAttribute('transform', 'translate(' + ox.toFixed(1) + ',' + oy.toFixed(1) + ')');
+
+    lightG.style.display = '';
+  })();
+
   var CAR_W = 20, CAR_H = 10;
   var TICK_MS = 25;
 
   // Create simulation with measured path lengths
   var sim = createSimulation({
-    roadLength: lenTotal,
-    rampEnd: lenIn,
-    gateD: GATE_D,
+    lenRamp: lenRamp,
+    lenHwy: lenHwy,
+    lenExit: lenExit,
+    lenCont: lenCont,
+    mergeD: mergeD,
+    gateD: gateD,
     carW: CAR_W,
     greenPct: 80,
   });
   sim.setCycleStart(Date.now());
 
+  // Segment → SVG path mapping
+  var pathMap = { ramp: pathRamp, highway: pathHwy, exit: pathExit, cont: pathCont };
+  var lenMap = { ramp: lenRamp, highway: lenHwy, exit: lenExit, cont: lenCont };
+
+  function posAt(segment, d) {
+    var path = pathMap[segment];
+    var len = lenMap[segment];
+    return path.getPointAtLength(Math.min(Math.max(0, d), len));
+  }
+  function angleAt(segment, d) {
+    var len = lenMap[segment];
+    var p1 = posAt(segment, d);
+    var p2 = posAt(segment, Math.min(d + 2, len));
+    if (Math.abs(p2.x - p1.x) < 0.01 && Math.abs(p2.y - p1.y) < 0.01) return 0;
+    return Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI;
+  }
+
   // ---- DOM car management ----
-  var carEls = {}; // id → { g, body }
+  var carEls = {};
 
   function createCarEl(car) {
     var w = CAR_W * car.scale;
@@ -214,9 +259,7 @@ import { createSimulation } from './highway-sim.mjs';
     var g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
     var body = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
 
-    // All shapes share a body rect, but differ in proportions and detail
     if (car.shape === 'truck') {
-      // Wider truck — a big batch
       w = CAR_W * s * 1.3;
       body.setAttribute('x', String(-w / 2));
       body.setAttribute('y', String(-h / 2));
@@ -224,7 +267,6 @@ import { createSimulation } from './highway-sim.mjs';
       body.setAttribute('height', String(h));
       body.setAttribute('rx', String(2 * s));
     } else if (car.shape === 'compact') {
-      // Smaller, rounder — a small batch
       w = CAR_W * s * 0.8;
       h = CAR_H * s * 0.85;
       body.setAttribute('x', String(-w / 2));
@@ -233,7 +275,6 @@ import { createSimulation } from './highway-sim.mjs';
       body.setAttribute('height', String(h));
       body.setAttribute('rx', String(3.5 * s));
     } else if (car.shape === 'van') {
-      // Taller, boxy — a batch with metadata
       h = CAR_H * s * 1.15;
       body.setAttribute('x', String(-w / 2));
       body.setAttribute('y', String(-h / 2));
@@ -241,7 +282,6 @@ import { createSimulation } from './highway-sim.mjs';
       body.setAttribute('height', String(h));
       body.setAttribute('rx', String(2.5 * s));
     } else {
-      // Sedan — default shape
       body.setAttribute('x', String(-w / 2));
       body.setAttribute('y', String(-h / 2));
       body.setAttribute('width', String(w));
@@ -252,7 +292,7 @@ import { createSimulation } from './highway-sim.mjs';
     body.setAttribute('fill', 'var(--hw-car-flow)');
     g.appendChild(body);
 
-    // Accent stripe — gives each car a "data" feel
+    // Accent stripe
     var stripe = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
     var stripeW = car.shape === 'truck' ? 3 * s : 2.5 * s;
     stripe.setAttribute('x', String(w / 2 - stripeW - 1.5 * s));
@@ -263,7 +303,6 @@ import { createSimulation } from './highway-sim.mjs';
     stripe.setAttribute('fill', 'rgba(255,255,255,0.25)');
     g.appendChild(stripe);
 
-    // Second accent for trucks and vans
     if (car.shape === 'truck' || car.shape === 'van') {
       var s2 = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
       s2.setAttribute('x', String(-w / 2 + 2 * s));
@@ -281,8 +320,8 @@ import { createSimulation } from './highway-sim.mjs';
 
   function removeCarEl(id) {
     var el = carEls[id];
-    if (el) {
-      carsG.removeChild(el.g);
+    if (el && el.g.parentNode) {
+      el.g.parentNode.removeChild(el.g);
       delete carEls[id];
     }
   }
@@ -290,14 +329,20 @@ import { createSimulation } from './highway-sim.mjs';
   function updateCarEl(car) {
     var el = carEls[car.id];
     if (!el) return;
-    var p = posAt(Math.min(car.d, lenTotal));
-    var a = angleAt(Math.min(car.d, lenTotal - 3));
+    var seg = car.segment;
+    var len = lenMap[seg];
+    var d = Math.min(Math.max(0, car.d), len);
+    var p = posAt(seg, d);
+    var a = angleAt(seg, d);
     el.g.setAttribute('transform', 'translate(' + p.x.toFixed(1) + ',' + p.y.toFixed(1) + ') rotate(' + a.toFixed(1) + ')');
+
     var fill;
     if (car.color === 'stop') fill = 'var(--hw-car-stop)';
     else if (car.color === 'slow') fill = 'var(--hw-car-slow)';
     else fill = 'var(--hw-car-flow)';
     el.body.setAttribute('fill', fill);
+
+    el.g.setAttribute('opacity', String(car.opacity != null ? car.opacity.toFixed(2) : '1'));
   }
 
   // ---- Main render loop ----
@@ -310,56 +355,53 @@ import { createSimulation } from './highway-sim.mjs';
     var frame = sim.tick(now);
     frameCount++;
 
-    // Create DOM elements for new cars
     var allCars = frame.cars;
     for (var c = 0; c < allCars.length; c++) {
       if (!carEls[allCars[c].id]) createCarEl(allCars[c]);
     }
-
-    // Remove delivered cars
     for (var r = 0; r < frame.removedIds.length; r++) {
       removeCarEl(frame.removedIds[r]);
     }
-
-    // Update positions and colors
     for (var u = 0; u < allCars.length; u++) {
       updateCarEl(allCars[u]);
     }
 
     // Traffic light visuals
-    if (frame.lightIsGreen) {
-      lRed.setAttribute('fill', '#3a1111');
-      lGreen.setAttribute('fill', '#22c55e');
-      sLight.textContent = '\uD83D\uDFE2';
-      sLightLbl.textContent = 'GREEN';
-    } else {
-      lRed.setAttribute('fill', '#ef4444');
-      lGreen.setAttribute('fill', '#113a16');
-      sLight.textContent = '\uD83D\uDD34';
-      sLightLbl.textContent = 'RED';
+    if (lRed && lGreen) {
+      if (frame.lightIsGreen) {
+        lRed.setAttribute('fill', '#3a1111');
+        lGreen.setAttribute('fill', '#22c55e');
+      } else {
+        lRed.setAttribute('fill', '#ef4444');
+        lGreen.setAttribute('fill', '#113a16');
+      }
     }
 
     // Sync slider in auto mode
-    if (frame.autoMode) {
+    if (frame.autoMode && slider) {
       slider.value = String(frame.greenPct);
-      sliderDetail.textContent = 'Auto \u00B7 Green ' + frame.greenPct + '%';
+      if (sliderDetail) sliderDetail.textContent = 'Auto \u00B7 Green ' + frame.greenPct + '%';
     }
 
-    // Stats (every ~8 frames)
+    // Stats
     if (frameCount % 8 === 0) {
-      sTput.textContent = frame.stats.throughput + '/min';
-      sQueue.textContent = String(frame.stats.queued);
-      sStall.textContent = frame.stats.stallPct + '%';
-      sStall.style.color = frame.stats.stallPct > 50 ? 'var(--hw-car-stop)' : frame.stats.stallPct > 20 ? 'var(--hw-car-slow)' : '';
+      if (sTput) sTput.textContent = frame.stats.throughput + '/min';
+      if (sQueue) sQueue.textContent = String(frame.stats.queued);
+      if (sStall) {
+        sStall.textContent = frame.stats.stallPct + '%';
+        sStall.style.color = frame.stats.stallPct > 50 ? 'var(--hw-car-stop)' : frame.stats.stallPct > 20 ? 'var(--hw-car-slow)' : '';
+      }
     }
 
-    // Status — update SVG pipeline label (no emoji)
+    // Status label
     var msg = frame.status.msg;
     if (msg !== lastStatus) {
-      statusEl.textContent = msg;
-      pipelineLabel.textContent = msg.toUpperCase();
-      var fill = frame.status.level === 'blocked' ? 'var(--hw-car-stop)' : frame.status.level === 'congested' ? 'var(--hw-car-slow)' : 'var(--hw-muted)';
-      pipelineLabel.setAttribute('fill', fill);
+      if (statusEl) statusEl.textContent = msg;
+      if (pipelineLabel) {
+        pipelineLabel.textContent = msg.toUpperCase();
+        var fill = frame.status.level === 'blocked' ? 'var(--hw-car-stop)' : frame.status.level === 'congested' ? 'var(--hw-car-slow)' : 'var(--hw-muted)';
+        pipelineLabel.setAttribute('fill', fill);
+      }
       lastStatus = msg;
     }
   }
@@ -368,7 +410,7 @@ import { createSimulation } from './highway-sim.mjs';
   function onSliderInput() {
     var v = parseInt(slider.value, 10);
     sim.setGreenPct(v);
-    sliderDetail.textContent = 'Green ' + v + '% \u00B7 Red ' + (100 - v) + '%';
+    if (sliderDetail) sliderDetail.textContent = 'Green ' + v + '% \u00B7 Red ' + (100 - v) + '%';
   }
   function exitAuto() { sim.exitAuto(); }
 
@@ -379,16 +421,16 @@ import { createSimulation } from './highway-sim.mjs';
 
   // ---- Seed initial cars ----
   function seedCars() {
-    for (var s = 0; s < 4; s++) {
-      sim.addCar(lenIn + 30 + s * 100);
-    }
+    sim.addCar('highway', 80, 3.5);
+    sim.addCar('highway', 200, 3.5);
+    sim.addCar('highway', 350, 3.5);
+    sim.addCar('ramp', 60, 3.5);
   }
 
   // ---- Init ----
   if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
     sim.setLastSpawn(Date.now());
     seedCars();
-    // Create initial car DOM elements
     var initial = sim.getCars();
     for (var i = 0; i < initial.length; i++) {
       createCarEl(initial[i]);
@@ -403,7 +445,7 @@ import { createSimulation } from './highway-sim.mjs';
       updateCarEl(staticCars[j]);
     }
     slider.disabled = true;
-    statusEl.textContent = 'Animation paused (reduced motion)';
+    if (statusEl) statusEl.textContent = 'Animation paused (reduced motion)';
   }
 
   // Pause when tab is hidden, resume when visible

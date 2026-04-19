@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: blackhole
-          image: logfwd:e2e
+          image: ff:e2e
           imagePullPolicy: IfNotPresent
           args: ["blackhole", "0.0.0.0:4318"]
           ports:

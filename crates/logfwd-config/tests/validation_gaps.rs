@@ -33,6 +33,57 @@ fn env_lock() -> MutexGuard<'static, ()> {
 }
 
 #[test]
+fn config_deserialization_error_includes_simple_layout_field_path() {
+    let yaml = r#"
+input:
+  type: generator
+output:
+  type: stdout
+  batch_size: not-a-number
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("config deserialization error at"),
+        "error should include a deserialization path: {err}"
+    );
+    assert!(err.contains("output"), "error should name output: {err}");
+    assert!(
+        err.contains("batch_size"),
+        "error should name batch_size: {err}"
+    );
+}
+
+#[test]
+fn config_deserialization_error_includes_pipeline_field_path() {
+    let yaml = r#"
+pipelines:
+  app:
+    workers: not-a-number
+    inputs:
+      - type: generator
+    outputs:
+      - type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("config deserialization error at"),
+        "error should include a deserialization path: {err}"
+    );
+    assert!(
+        err.contains("pipelines"),
+        "error should name pipelines: {err}"
+    );
+    assert!(err.contains("app"), "error should name pipeline key: {err}");
+    assert!(err.contains("workers"), "error should name workers: {err}");
+    assert!(
+        !err.contains("outputs"),
+        "error should point at the direct pipeline field, not outputs: {err}"
+    );
+}
+
+#[test]
 fn issue_1855_env_expansion_preserves_yaml_hash_content() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855", "/var/log/my app #1.log");
@@ -46,6 +97,36 @@ output:
 "#;
 
     let config = Config::load_str(yaml).expect("config should parse after env expansion");
+    let input = &config.pipelines["default"].inputs[0];
+    let path = match &input.type_config {
+        logfwd_config::InputTypeConfig::File(file) => file.path.as_str(),
+        _ => panic!("expected file input"),
+    };
+
+    assert_eq!(path, "/var/log/my app #1.log");
+}
+
+#[test]
+fn issue_1855_effective_yaml_preserves_yaml_hash_content() {
+    let _env_lock = env_lock();
+    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_EFFECTIVE", "/var/log/my app #1.log");
+
+    let yaml = r#"
+input:
+  type: file
+  path: ${LOGFWD_ISSUE_1855_EFFECTIVE}
+output:
+  type: stdout
+"#;
+
+    let expanded =
+        Config::expand_env_yaml_str(yaml).expect("YAML-aware env expansion should succeed");
+    assert!(
+        expanded.contains("#1.log"),
+        "expanded YAML should preserve hash content: {expanded}"
+    );
+
+    let config = Config::load_str(&expanded).expect("expanded YAML should remain parseable");
     let input = &config.pipelines["default"].inputs[0];
     let path = match &input.type_config {
         logfwd_config::InputTypeConfig::File(file) => file.path.as_str(),
@@ -616,6 +697,72 @@ pipelines:
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("is defined in both 'label_columns' and 'static_labels'"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn issue_1958_generator_record_profile_preserves_null_attribute_values() {
+    let yaml = r#"
+input:
+  type: generator
+  generator:
+    profile: record
+    attributes:
+      deleted_at: null
+output:
+  type: stdout
+"#;
+
+    Config::load_str(yaml).expect("generator null attributes should remain supported");
+}
+
+#[test]
+fn issue_2060_reject_unmatched_opening_bracket_in_host_port() {
+    let yaml = r#"
+input:
+  type: udp
+  listen: foo[bar:4317
+output:
+  type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(err.contains("unmatched '['"), "unexpected error: {err}");
+}
+
+#[test]
+fn issue_2062_reject_sensor_max_rows_per_poll_zero() {
+    let yaml = r#"
+input:
+  type: host_metrics
+  sensor:
+    max_rows_per_poll: 0
+output:
+  type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("sensor.max_rows_per_poll") && err.contains("at least 1"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn issue_2178_reject_otlp_max_recv_message_size_bytes_zero() {
+    let yaml = r#"
+input:
+  type: otlp
+  listen: 127.0.0.1:4318
+  max_recv_message_size_bytes: 0
+output:
+  type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("otlp.max_recv_message_size_bytes") && err.contains("at least 1"),
         "unexpected error: {err}"
     );
 }

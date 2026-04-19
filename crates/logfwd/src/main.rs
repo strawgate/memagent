@@ -31,16 +31,16 @@ const LONG_VERSION: &str = concat!(
     ")"
 );
 const CLI_AFTER_HELP: &str = r"Examples:
-  logfwd run --config config.yaml
-  logfwd validate --config config.yaml
-  logfwd dry-run --config config.yaml
-  logfwd effective-config --config config.yaml
-  logfwd blackhole
-  logfwd blast --destination otlp --endpoint http://127.0.0.1:4318/v1/logs
-  logfwd devour --mode otlp --listen 127.0.0.1:4318
-  logfwd generate-json 10000 test.json
-  logfwd wizard
-  logfwd completions bash
+  ff run --config config.yaml
+  ff validate --config config.yaml
+  ff dry-run --config config.yaml
+  ff effective-config --config config.yaml
+  ff blackhole
+  ff blast --destination otlp --endpoint http://127.0.0.1:4318/v1/logs
+  ff devour --mode otlp --listen 127.0.0.1:4318
+  ff generate-json 10000 test.json
+  ff wizard
+  ff completions bash
 
 Environment:
   LOGFWD_CONFIG    Config file path (auto-discovered if not set)
@@ -316,7 +316,7 @@ struct DevourArgs {
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "logfwd",
+    name = "ff",
     about = "Fast log forwarder with SQL transforms",
     long_about = "Fast log forwarder with SQL transforms",
     version = VERSION,
@@ -442,7 +442,7 @@ async fn main_inner() -> i32 {
                 reset(),
             );
             eprintln!(
-                "{}      run {}logfwd run --config {}{}",
+                "{}      run {}ff run --config {}{}",
                 dim(),
                 bold(),
                 path.display(),
@@ -451,7 +451,7 @@ async fn main_inner() -> i32 {
             eprintln!();
         } else {
             eprintln!(
-                "{}hint{}: no config found — try {}logfwd init{} or {}logfwd wizard{} to get started",
+                "{}hint{}: no config found — try {}ff init{} or {}ff wizard{} to get started",
                 dim(),
                 reset(),
                 bold(),
@@ -745,7 +745,7 @@ fn cmd_effective_config(config_path: Option<&str>) -> Result<(), CliError> {
 
     let config_yaml = std::fs::read_to_string(&config_path)
         .map_err(|e| CliError::Config(format!("cannot read {config_path}: {e}")))?;
-    let effective_yaml = logfwd_config::Config::expand_env_str(&config_yaml)
+    let effective_yaml = logfwd_config::Config::expand_env_yaml_str(&config_yaml)
         .map_err(|e| CliError::Config(e.to_string()))?;
 
     // Read-only validation for inspection flows: reject configs that would
@@ -770,17 +770,17 @@ fn cmd_effective_config(config_path: Option<&str>) -> Result<(), CliError> {
 fn cmd_init() -> Result<(), CliError> {
     let path = std::path::Path::new("logfwd.yaml");
 
-    let template = r#"# logfwd configuration
+    let template = r#"# ff configuration
 # Docs: https://github.com/strawgate/memagent
 
 # ── Quick start ─────────────────────────────────────────────
-# 1. Generate sample data:  logfwd generate-json 10000 sample.json
-# 2. Validate this config:  logfwd validate --config logfwd.yaml
-# 3. Run the pipeline:      logfwd run --config logfwd.yaml
+# 1. Generate sample data:  ff generate-json 10000 sample.json
+# 2. Validate this config:  ff validate --config logfwd.yaml
+# 3. Run the pipeline:      ff run --config logfwd.yaml
 #
 # For production, change the input path and output to your real
 # source/destination — see the examples at https://github.com/strawgate/memagent/tree/main/examples/use-cases/
-# Or run `logfwd wizard` for an interactive setup.
+# Or run `ff wizard` for an interactive setup.
 
 # Tail a JSON log file and stream new lines as they appear.
 input:
@@ -822,12 +822,12 @@ output:
     eprintln!();
     eprintln!("{}Try it now:{}", bold(), reset());
     eprintln!(
-        "  logfwd generate-json 10000 sample.json   {}# create sample data{}",
+        "  ff generate-json 10000 sample.json   {}# create sample data{}",
         dim(),
         reset()
     );
     eprintln!(
-        "  logfwd run --config logfwd.yaml           {}# run the pipeline{}",
+        "  ff run --config logfwd.yaml           {}# run the pipeline{}",
         dim(),
         reset()
     );
@@ -844,7 +844,7 @@ fn cmd_wizard() -> Result<(), CliError> {
             "wizard requires an interactive terminal on stdin and stdout".to_owned(),
         ));
     }
-    println!("{}logfwd config wizard{}", bold(), reset());
+    println!("{}ff config wizard{}", bold(), reset());
     println!();
 
     // Step 1: Choose between a use-case preset or custom input/output.
@@ -927,7 +927,7 @@ fn cmd_wizard() -> Result<(), CliError> {
 
     eprintln!("{}created{} {}", green(), reset(), path.as_path().display());
     eprintln!(
-        "{}next{}: run {}logfwd validate --config {}{}",
+        "{}next{}: run {}ff validate --config {}{}",
         dim(),
         reset(),
         bold(),
@@ -1067,37 +1067,27 @@ fn cmd_completions(shell: CompletionShell) {
 
     match shell {
         CompletionShell::Bash => {
-            clap_complete::generate(clap_complete::Shell::Bash, &mut cmd, "logfwd", &mut stdout);
+            clap_complete::generate(clap_complete::Shell::Bash, &mut cmd, "ff", &mut stdout);
         }
         CompletionShell::Elvish => {
-            clap_complete::generate(
-                clap_complete::Shell::Elvish,
-                &mut cmd,
-                "logfwd",
-                &mut stdout,
-            );
+            clap_complete::generate(clap_complete::Shell::Elvish, &mut cmd, "ff", &mut stdout);
         }
         CompletionShell::Fish => {
-            clap_complete::generate(clap_complete::Shell::Fish, &mut cmd, "logfwd", &mut stdout);
+            clap_complete::generate(clap_complete::Shell::Fish, &mut cmd, "ff", &mut stdout);
         }
         CompletionShell::PowerShell => {
             clap_complete::generate(
                 clap_complete::Shell::PowerShell,
                 &mut cmd,
-                "logfwd",
+                "ff",
                 &mut stdout,
             );
         }
         CompletionShell::Zsh => {
-            clap_complete::generate(clap_complete::Shell::Zsh, &mut cmd, "logfwd", &mut stdout);
+            clap_complete::generate(clap_complete::Shell::Zsh, &mut cmd, "ff", &mut stdout);
         }
         CompletionShell::Nushell => {
-            clap_complete::generate(
-                clap_complete_nushell::Nushell,
-                &mut cmd,
-                "logfwd",
-                &mut stdout,
-            );
+            clap_complete::generate(clap_complete_nushell::Nushell, &mut cmd, "ff", &mut stdout);
         }
     }
 }
@@ -1189,6 +1179,12 @@ where
 
     let mut errors = 0;
     for (name, pipe_cfg) in &config.pipelines {
+        if let Err(err) = validate_pipeline_read_only(pipe_cfg, base_path) {
+            on_error(format!("pipeline '{name}': {err}"));
+            errors += 1;
+            continue;
+        }
+
         match Pipeline::from_config(name, pipe_cfg, &meter, base_path) {
             Ok(mut pipeline) => {
                 // Execute a probe batch through the SQL plan to catch planning
@@ -1254,18 +1250,18 @@ fn validate_transform_probe_read_only(
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
 
-    let fields: Vec<Field> = if transform.analyzer().referenced_columns.is_empty() {
+    let scan_config = transform.scan_config();
+    let fields: Vec<Field> = if scan_config.extract_all || scan_config.wanted_fields.is_empty() {
         vec![
             Field::new("body", DataType::Utf8, true),
             Field::new("level", DataType::Utf8, true),
             Field::new("msg", DataType::Utf8, true),
         ]
     } else {
-        transform
-            .analyzer()
-            .referenced_columns
+        scan_config
+            .wanted_fields
             .iter()
-            .map(|name| Field::new(name, DataType::Utf8, true))
+            .map(|field| Field::new(field.name.as_str(), DataType::Utf8, true))
             .collect()
     };
 
@@ -1280,6 +1276,98 @@ fn validate_transform_probe_read_only(
         .execute_blocking(batch)
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+const GENERATOR_LOGS_SIMPLE_COLUMNS: &[&str] = &[
+    "timestamp",
+    "level",
+    "message",
+    "duration_ms",
+    "request_id",
+    "service",
+    "status",
+];
+
+fn known_input_columns_read_only(
+    input_cfg: &logfwd_config::InputConfig,
+) -> Option<&'static [&'static str]> {
+    use logfwd_config::{GeneratorComplexityConfig, GeneratorProfileConfig, InputTypeConfig};
+
+    match &input_cfg.type_config {
+        // Generator logs/simple has a stable built-in schema. Other profiles
+        // or complexities are broader or user-defined, so skip strict checks.
+        InputTypeConfig::Generator(generator_cfg) => {
+            let is_logs_profile = generator_cfg
+                .generator
+                .as_ref()
+                .and_then(|cfg| cfg.profile.as_ref())
+                .is_none_or(|profile| matches!(profile, GeneratorProfileConfig::Logs));
+            let is_simple_complexity = generator_cfg
+                .generator
+                .as_ref()
+                .and_then(|cfg| cfg.complexity.as_ref())
+                .is_none_or(|complexity| matches!(complexity, GeneratorComplexityConfig::Simple));
+            if !is_logs_profile || !is_simple_complexity {
+                None
+            } else {
+                Some(GENERATOR_LOGS_SIMPLE_COLUMNS)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn validate_known_columns_read_only(
+    input_name: &str,
+    transform: &logfwd::transform::SqlTransform,
+    known_columns: Option<&'static [&'static str]>,
+) -> Result<(), String> {
+    let Some(known_columns) = known_columns else {
+        return Ok(());
+    };
+
+    // SELECT * expands to whatever the engine provides — skip validation.
+    let analyzer = transform.analyzer();
+    if analyzer.uses_select_star {
+        return Ok(());
+    }
+
+    let scan_config = transform.scan_config();
+    if scan_config.extract_all {
+        return Ok(());
+    }
+
+    let known: std::collections::HashSet<&str> = known_columns.iter().copied().collect();
+
+    let mut unknown: Vec<String> = scan_config
+        .wanted_fields
+        .iter()
+        .map(|field| field.name.as_str())
+        .filter(|column| {
+            // Strip table qualifier (e.g. "logs.level" -> "level").
+            let bare = match column.rfind('.') {
+                Some(pos) => &column[pos + 1..],
+                None => column,
+            };
+            // Lowercase before lookup — known_columns is all-lowercase.
+            !known.contains(bare.to_lowercase().as_str())
+        })
+        .map(str::to_owned)
+        .collect();
+    unknown.sort_unstable();
+    unknown.dedup();
+
+    if unknown.is_empty() {
+        return Ok(());
+    }
+
+    let mut supported: Vec<&str> = known_columns.to_vec();
+    supported.sort_unstable();
+    Err(format!(
+        "input '{input_name}': SQL references unknown column(s) {} for this input schema (known: {})",
+        unknown.join(", "),
+        supported.join(", ")
+    ))
 }
 
 fn validate_pipeline_read_only(
@@ -1495,6 +1583,12 @@ fn validate_pipeline_read_only(
 
         let input_sql = input_cfg.sql.as_deref().unwrap_or(pipeline_sql);
         let mut transform = SqlTransform::new(input_sql).map_err(|e| e.to_string())?;
+        let known_columns = if config.enrichment.is_empty() {
+            known_input_columns_read_only(input_cfg)
+        } else {
+            None
+        };
+        validate_known_columns_read_only(&input_name, &transform, known_columns)?;
         #[cfg(feature = "datafusion")]
         {
             if let Some(ref db) = geo_database {
@@ -1825,7 +1919,7 @@ mod cli_tests {
 
     #[test]
     fn clap_parses_validate_subcommand() {
-        let cli = Cli::try_parse_from(["logfwd", "validate", "--config", "foo.yaml"])
+        let cli = Cli::try_parse_from(["ff", "validate", "--config", "foo.yaml"])
             .expect("parser should accept validate subcommand");
         match cli.command.expect("command") {
             Commands::Validate { config } => assert_eq!(config.as_deref(), Some("foo.yaml")),
@@ -1835,14 +1929,14 @@ mod cli_tests {
 
     #[test]
     fn clap_parses_effective_config_with_optional_config_flag() {
-        let with_path = Cli::try_parse_from(["logfwd", "effective-config", "--config", "foo.yaml"])
+        let with_path = Cli::try_parse_from(["ff", "effective-config", "--config", "foo.yaml"])
             .expect("parser should accept effective-config with path");
         match with_path.command.expect("command") {
             Commands::EffectiveConfig { config } => assert_eq!(config.as_deref(), Some("foo.yaml")),
             other => panic!("expected effective-config command, got {other:?}"),
         }
 
-        let without_path = Cli::try_parse_from(["logfwd", "effective-config"])
+        let without_path = Cli::try_parse_from(["ff", "effective-config"])
             .expect("parser should accept effective-config without path");
         match without_path.command.expect("command") {
             Commands::EffectiveConfig { config } => assert!(config.is_none()),
@@ -1852,7 +1946,7 @@ mod cli_tests {
 
     #[test]
     fn clap_parses_blackhole_default_form() {
-        let cli = Cli::try_parse_from(["logfwd", "blackhole"])
+        let cli = Cli::try_parse_from(["ff", "blackhole"])
             .expect("parser should accept blackhole without addr");
         match cli.command.expect("command") {
             Commands::Blackhole { bind_addr } => assert!(bind_addr.is_none()),
@@ -1862,15 +1956,15 @@ mod cli_tests {
 
     #[test]
     fn clap_completions_supports_nushell_and_powershell_alias() {
-        let nu = Cli::try_parse_from(["logfwd", "completions", "nushell"])
-            .expect("nushell should parse");
+        let nu =
+            Cli::try_parse_from(["ff", "completions", "nushell"]).expect("nushell should parse");
         match nu.command.expect("command") {
             Commands::Completions { shell } => assert!(matches!(shell, CompletionShell::Nushell)),
             other => panic!("expected completions command, got {other:?}"),
         }
 
-        let pwsh = Cli::try_parse_from(["logfwd", "completions", "pwsh"])
-            .expect("pwsh alias should parse");
+        let pwsh =
+            Cli::try_parse_from(["ff", "completions", "pwsh"]).expect("pwsh alias should parse");
         match pwsh.command.expect("command") {
             Commands::Completions { shell } => {
                 assert!(matches!(shell, CompletionShell::PowerShell))
@@ -1881,7 +1975,7 @@ mod cli_tests {
 
     #[test]
     fn clap_parses_generate_json_subcommand() {
-        let cli = Cli::try_parse_from(["logfwd", "generate-json", "5", "out.json"])
+        let cli = Cli::try_parse_from(["ff", "generate-json", "5", "out.json"])
             .expect("generate-json should parse");
         match cli.command.expect("command") {
             Commands::GenerateJson {
@@ -1897,7 +1991,7 @@ mod cli_tests {
 
     #[test]
     fn clap_supports_help_subcommand() {
-        let err = Cli::try_parse_from(["logfwd", "help"])
+        let err = Cli::try_parse_from(["ff", "help"])
             .expect_err("help subcommand should trigger help display");
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
     }
@@ -1905,7 +1999,7 @@ mod cli_tests {
     #[test]
     fn clap_parses_blast_and_devour_aliases() {
         let blast = Cli::try_parse_from([
-            "logfwd",
+            "ff",
             "blast",
             "--destination",
             "elasticsearch_otlp",
@@ -1921,7 +2015,7 @@ mod cli_tests {
         }
 
         let blast_arrow = Cli::try_parse_from([
-            "logfwd",
+            "ff",
             "blast",
             "--destination",
             "arrow_ipc",
@@ -1936,7 +2030,7 @@ mod cli_tests {
             other => panic!("expected blast command, got {other:?}"),
         }
 
-        let devour = Cli::try_parse_from(["logfwd", "devour", "--mode", "elasticsearch"])
+        let devour = Cli::try_parse_from(["ff", "devour", "--mode", "elasticsearch"])
             .expect("devour elasticsearch alias should parse");
         match devour.command.expect("command") {
             Commands::Devour(args) => assert!(matches!(args.mode, DevourMode::ElasticsearchBulk)),
@@ -1946,7 +2040,7 @@ mod cli_tests {
 
     #[test]
     fn clap_parses_devour_defaults() {
-        let cli = Cli::try_parse_from(["logfwd", "devour"]).expect("devour should parse");
+        let cli = Cli::try_parse_from(["ff", "devour"]).expect("devour should parse");
         match cli.command.expect("command") {
             Commands::Devour(args) => {
                 assert!(matches!(args.mode, DevourMode::Otlp));
@@ -2006,7 +2100,7 @@ mod cli_tests {
     #[test]
     fn blast_destination_http_is_rejected_by_cli_parser() {
         let err = Cli::try_parse_from([
-            "logfwd",
+            "ff",
             "blast",
             "--destination",
             "http",
@@ -2020,7 +2114,7 @@ mod cli_tests {
     #[test]
     fn blast_duration_defaults_to_none() {
         let cli = Cli::try_parse_from([
-            "logfwd",
+            "ff",
             "blast",
             "--destination",
             "otlp",
@@ -2345,6 +2439,123 @@ transform: |
         assert!(
             read_only.is_err(),
             "effective-config validation should reject duplicate aliases"
+        );
+    }
+
+    #[test]
+    fn issue_1955_dry_run_rejects_unknown_generator_logs_column() {
+        let yaml = r#"
+input:
+  type: generator
+output:
+  type: null
+transform: |
+  SELECT missing_column FROM logs
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let runtime = validate_pipelines(&config, true, None);
+        let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
+        assert!(
+            runtime.is_err(),
+            "dry-run validation should reject unknown columns"
+        );
+        assert!(
+            read_only.is_err(),
+            "read-only validation should reject unknown columns"
+        );
+    }
+
+    #[test]
+    fn issue_1955_dry_run_accepts_mixed_case_generator_logs_columns() {
+        let yaml = r#"
+input:
+  type: generator
+output:
+  type: null
+transform: |
+  SELECT Level FROM logs
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let runtime = validate_pipelines(&config, true, None);
+        let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
+        assert!(
+            runtime.is_ok(),
+            "dry-run validation should accept case-insensitive column references"
+        );
+        assert!(
+            read_only.is_ok(),
+            "read-only validation should accept case-insensitive column references"
+        );
+    }
+
+    #[test]
+    fn issue_1955_dry_run_rejects_generator_message_source_parts() {
+        let yaml = r#"
+input:
+  type: generator
+output:
+  type: null
+transform: |
+  SELECT method FROM logs
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let runtime = validate_pipelines(&config, true, None);
+        let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
+        assert!(
+            runtime.is_err(),
+            "dry-run validation should reject fields embedded only inside message"
+        );
+        assert!(
+            read_only.is_err(),
+            "read-only validation should reject fields embedded only inside message"
+        );
+    }
+
+    #[test]
+    fn issue_1955_dry_run_skips_strict_check_when_enrichment_tables_are_present() {
+        let yaml = r#"
+input:
+  type: generator
+output:
+  type: null
+enrichment:
+  - type: static
+    table_name: labels
+    labels:
+      environment: production
+transform: |
+  SELECT labels.environment FROM logs CROSS JOIN labels
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let runtime = validate_pipelines(&config, true, None);
+        let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
+        assert!(
+            runtime.is_ok(),
+            "dry-run validation should not reject enrichment-only columns"
+        );
+        assert!(
+            read_only.is_ok(),
+            "read-only validation should not reject enrichment-only columns"
+        );
+    }
+
+    #[test]
+    fn issue_1955_dry_run_skips_strict_check_for_complex_generator_logs() {
+        let yaml = r#"
+input:
+  type: generator
+  generator:
+    complexity: complex
+output:
+  type: null
+transform: |
+  SELECT bytes_in FROM logs
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
+        assert!(
+            read_only.is_ok(),
+            "complex generator profile has additional fields and should not use simple schema checks"
         );
     }
 

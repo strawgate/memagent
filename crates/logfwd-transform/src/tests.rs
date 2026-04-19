@@ -1183,6 +1183,14 @@ fn validate_plan_accepts_filter_query() {
 }
 
 #[test]
+fn validate_plan_accepts_mixed_case_unquoted_identifier() {
+    let mut transform = SqlTransform::new("SELECT Level FROM logs").unwrap();
+    transform
+        .validate_plan()
+        .expect("unquoted identifiers should validate against scanner-normalized fields");
+}
+
+#[test]
 fn validate_plan_uses_null_probe_values_for_cast_paths() {
     let mut transform =
         SqlTransform::new("SELECT int(status) FROM logs WHERE int(status) <= 4").unwrap();
