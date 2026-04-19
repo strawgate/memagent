@@ -104,9 +104,12 @@ fn parse_usize_flag(args: &[String], flag: &str, default: usize) -> usize {
 
 fn fmt_throughput(total_rows: u64, total_bytes: u64, elapsed: Duration) -> String {
     let secs = elapsed.as_secs_f64();
+    if secs == 0.0 {
+        return "N/A".to_owned();
+    }
     let lines_per_sec = total_rows as f64 / secs;
     let mb_per_sec = total_bytes as f64 / 1_048_576.0 / secs;
-    format!("{:.0} lines/sec ({:.1} MB/sec)", lines_per_sec, mb_per_sec)
+    format!("{lines_per_sec:.0} lines/sec ({mb_per_sec:.1} MB/sec)")
 }
 
 fn fmt_bytes(bytes: u64) -> String {
@@ -288,7 +291,7 @@ fn run_breakdown(
     println!("  RSS at end:        {:.1} MB", rss_mb());
     println!(
         "  Output file size:  {}",
-        fmt_bytes(std::fs::metadata(tmp.path()).map(|m| m.len()).unwrap_or(0))
+        fmt_bytes(std::fs::metadata(tmp.path()).map_or(0, |m| m.len()))
     );
 }
 
@@ -503,7 +506,7 @@ fn run_cpu(
         println!(
             "\n  Flamegraph:  {} ({})",
             svg_path,
-            fmt_bytes(std::fs::metadata(&svg_path).map(|m| m.len()).unwrap_or(0))
+            fmt_bytes(std::fs::metadata(&svg_path).map_or(0, |m| m.len()))
         );
     }
 }
