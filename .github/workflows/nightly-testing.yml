@@ -238,3 +238,5 @@ jobs:
             echo "=== Fuzzing $target for ${{ matrix.duration }}s ==="
             cargo +nightly fuzz run "$target" -- -max_total_time=${{ matrix.duration }}
           done
+        env:
+          RUSTUP_TOOLCHAIN: nightly

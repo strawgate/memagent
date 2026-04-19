@@ -155,7 +155,10 @@ jobs:
   # -------------------------------------------------------------------------
   lint:
     name: Lint
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    if: |
+      github.event_name == 'push' ||
+      github.event.pull_request.draft == false ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -264,6 +267,7 @@ jobs:
         run: cargo nextest run --workspace --profile ci
 
   # macOS: push + ci:full only (expensive runner, no path filter or draft check).
+  # Exclude Linux-only eBPF crates (aya does not compile on macOS).
   test-macos:
     name: Test (macOS)
     if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci:full')
@@ -277,7 +281,10 @@ jobs:
       - uses: taiki-e/install-action@nextest
 
       - name: Tests
-        run: cargo nextest run --workspace --profile ci
+        run: >-
+          cargo nextest run --workspace --profile ci
+          --exclude sensor-ebpf
+          --exclude sensor-ebpf-common
 
   # -------------------------------------------------------------------------
   # Network integration tests — #[ignore] tests that bind ports / make
@@ -348,7 +355,7 @@ jobs:
   # -------------------------------------------------------------------------
   kani-core:
     name: Kani proofs (core)
-    needs: [changes]
+    needs: [changes, lint]
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -374,12 +381,10 @@ jobs:
             -Z mem-predicates
             -Z stubbing
             -p logfwd-core
-        env:
-          RUSTC_WRAPPER: ""
 
   kani-arrow:
     name: Kani proofs (arrow)
-    needs: [changes]
+    needs: [changes, lint]
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -408,12 +413,10 @@ jobs:
             -Z stubbing
             -p logfwd-arrow
             --lib
-        env:
-          RUSTC_WRAPPER: ""
 
   kani-periphery:
     name: Kani proofs (periphery)
-    needs: [changes]
+    needs: [changes, lint]
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -444,8 +447,6 @@ jobs:
             -p logfwd-runtime
             -p logfwd-diagnostics
             -p logfwd
-        env:
-          RUSTC_WRAPPER: ""
 
   # -------------------------------------------------------------------------
   # Miri — UB-oriented execution, split into two parallel shards.
@@ -454,7 +455,7 @@ jobs:
   # -------------------------------------------------------------------------
   miri-core:
     name: Miri (core)
-    needs: [changes]
+    needs: [changes, lint]
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -481,7 +482,7 @@ jobs:
 
   miri-types:
     name: Miri (types)
-    needs: [changes]
+    needs: [changes, lint]
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -532,7 +533,7 @@ jobs:
   # -------------------------------------------------------------------------
   tlc:
     name: "TLA+ model checking"
-    needs: [changes]
+    needs: [changes, lint]
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
