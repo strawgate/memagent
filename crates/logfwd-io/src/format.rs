@@ -199,13 +199,15 @@ impl FormatDecoder {
         }
     }
 
-    /// Whether this decoder can produce JSON-object rows that should receive
-    /// `_source_path` metadata injection for file-backed input.
-    pub fn supports_source_path_injection(&self) -> bool {
-        matches!(
-            self,
-            Self::PassthroughJson { .. } | Self::Cri { .. } | Self::Auto { .. }
-        )
+    /// Return true when the decoder carries state that must survive to a
+    /// later chunk from the same source.
+    pub fn has_pending_state(&self) -> bool {
+        match self {
+            Self::Passthrough { .. } | Self::PassthroughJson { .. } => false,
+            Self::Cri { aggregators, .. } | Self::Auto { aggregators, .. } => {
+                aggregators.iter().any(CriReassembler::has_buffered_state)
+            }
+        }
     }
 }
 

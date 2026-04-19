@@ -99,6 +99,7 @@ YAML sequence for multiple inputs.
 | `type` | string | Yes | Input type. See [Input types](#input-types). |
 | `name` | string | No | Friendly name shown in diagnostics. |
 | `format` | string | No | Log format. See [Formats](#formats). Defaults to `auto`. |
+| `source_metadata` | boolean | No | Attach source metadata columns (`_source_id`, `_input`, `_source_path`) when SQL requests them. Defaults to `false`; set `true` before referencing those columns or using `k8s_path` joins. |
 
 ### `file` input
 
@@ -594,14 +595,22 @@ When a field contains mixed types across rows, the scanner emits a single
 type (e.g., a `status` Struct with `int` and `str` children). Legacy
 single-underscore suffixed columns (`status_int`, `level_str`) are not emitted.
 
-Special columns added by the scanner / input format layer:
+Special columns attached by the runtime after scan, plus format-derived columns:
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `body` | string | Original input line (when input line capture is enabled, e.g. `line_field: body`, or when a non-JSON CRI line is wrapped for scanner safety). |
-| `_source_path` | string | Absolute path of the source file (file-backed inputs only). Used as a join key for `k8s_path` enrichment. |
+| `_source_id` | uint64 | Stable row-level source identity when an input can identify a sender/source. File inputs use file identity; UDP uses sender address identity. |
+| `_input` | string | Configured input name for the row source. |
+| `_source_path` | string | Source file path (file-backed inputs only). Used as a join key for `k8s_path` enrichment. |
 | `_timestamp` | string | Timestamp from the CRI header as an RFC 3339 string (CRI inputs only). |
 | `_stream` | string | CRI stream name (`stdout` / `stderr`). |
+
+Source metadata is never written into raw input bytes. It is carried beside
+scanner-ready chunks and, when `source_metadata: true` is set on the input,
+materialized as table columns before SQL runs. For compatibility, `SELECT *`
+includes `_source_path` for opted-in inputs. New metadata columns such as
+`_source_id` and `_input` are included only when SQL references them explicitly.
 
 ### Built-in UDFs
 
@@ -766,8 +775,9 @@ FROM logs l CROSS JOIN k8s_cluster_info k
 
 Parses Kubernetes pod log paths (e.g.
 `/var/log/pods/<namespace>_<pod>_<uid>/<container>/`) to extract metadata.
-The source-path metadata is automatically injected into the `logs` table as
-`_source_path` for file-backed inputs.
+Queries that join `logs._source_path` to this table must set
+`source_metadata: true` on the file input. Source paths are never written into
+raw log bytes.
 
 Columns exposed by the enrichment table (named `k8s_pods` by default; set `table_name: k8s` in config to use the `k8s` alias shown in the examples below):
 

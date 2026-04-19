@@ -247,9 +247,6 @@ pub fn flat_to_star(batch: &RecordBatch) -> Result<StarSchema, ArrowError> {
                 Some(_) => {}
             }
         }
-        if name == field_names::RAW {
-            continue;
-        }
         if trace_id_col.is_none() && is_well_known_trace_id(name) {
             trace_id_col = Some(idx);
             continue;
@@ -2595,33 +2592,6 @@ mod tests {
             body_arr.value(0),
             "canonical-value",
             "canonical body should win over alias columns"
-        );
-    }
-
-    #[test]
-    fn flat_to_star_excludes_internal_raw_attribute() {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("body", DataType::Utf8, true),
-            Field::new(field_names::RAW, DataType::Utf8, true),
-        ]));
-        let columns: Vec<ArrayRef> = vec![
-            Arc::new(StringArray::from(vec!["canonical-value"])),
-            Arc::new(StringArray::from(vec!["wire-only"])),
-        ];
-        let batch = RecordBatch::try_new(schema, columns).expect("valid");
-
-        let star = flat_to_star(&batch).expect("flat_to_star");
-        let key_idx = star.log_attrs.schema().index_of("key").expect("key");
-        let keys = star
-            .log_attrs
-            .column(key_idx)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("key should be Utf8");
-
-        assert!(
-            !keys.iter().flatten().any(|key| key == field_names::RAW),
-            "_raw should remain internal-only"
         );
     }
 

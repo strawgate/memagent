@@ -22,6 +22,7 @@ mod passthrough {
 
     use arrow::record_batch::RecordBatch;
     use logfwd_core::scan_config::ScanConfig;
+    use logfwd_types::source_metadata::SourceMetadataPlan;
 
     /// Error returned when passthrough transform construction or execution fails.
     #[derive(Debug, Clone)]
@@ -98,6 +99,24 @@ mod passthrough {
 
         pub fn validate_plan(&mut self) -> Result<(), TransformError> {
             Ok(())
+        }
+    }
+
+    impl QueryAnalyzer {
+        pub fn source_metadata_plan(&self) -> SourceMetadataPlan {
+            SourceMetadataPlan {
+                source_id: false,
+                input: false,
+                source_path: true,
+            }
+        }
+
+        pub fn explicit_source_metadata_plan(&self) -> SourceMetadataPlan {
+            SourceMetadataPlan::default()
+        }
+
+        pub fn source_path_required(&self) -> bool {
+            self.source_metadata_plan().source_path
         }
     }
 

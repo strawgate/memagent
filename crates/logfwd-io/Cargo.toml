@@ -68,7 +68,7 @@ socket2 = { version = "0.6", features = ["all"] }
 tiny_http = { workspace = true }
 lz4_flex = "0.13"
 zstd = "0.13"
-xxhash-rust = { version = "0.8.15", features = ["xxh32", "xxh64"] }
+xxhash-rust = { workspace = true }
 sysinfo = { workspace = true }
 walkdir = { workspace = true }
 simdutf8 = "0.1.5"

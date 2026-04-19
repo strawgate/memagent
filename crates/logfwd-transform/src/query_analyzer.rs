@@ -9,6 +9,8 @@ use datafusion::sql::sqlparser::dialect::GenericDialect;
 use datafusion::sql::sqlparser::parser::Parser;
 
 use logfwd_core::scan_config::ScanConfig;
+use logfwd_types::field_names;
+use logfwd_types::source_metadata::SourceMetadataPlan;
 
 use crate::TransformError;
 
@@ -104,6 +106,51 @@ impl QueryAnalyzer {
                 validate_utf8: false,
             }
         }
+    }
+
+    /// Source metadata columns that must be attached post-scan before SQL.
+    ///
+    /// Explicit references need their columns for projection/filter/join
+    /// evaluation. Wildcard projections preserve legacy `_source_path`
+    /// compatibility without implicitly widening results with new metadata
+    /// columns such as `_source_id` or `_input`.
+    pub fn source_metadata_plan(&self) -> SourceMetadataPlan {
+        let explicit = self.explicit_source_metadata_plan();
+        SourceMetadataPlan {
+            source_id: explicit.source_id,
+            input: explicit.input,
+            source_path: self.uses_select_star || explicit.source_path,
+        }
+    }
+
+    /// Source metadata columns explicitly referenced by SQL expressions.
+    ///
+    /// This excludes wildcard projection so callers can reject explicit source
+    /// metadata dependencies when source metadata is disabled by config while
+    /// still allowing `SELECT *` to remain narrow.
+    pub fn explicit_source_metadata_plan(&self) -> SourceMetadataPlan {
+        let references = |target: &str| {
+            self.referenced_columns
+                .iter()
+                .map(|name| strip_type_suffix(name))
+                .chain(
+                    self.except_fields
+                        .iter()
+                        .map(|name| strip_type_suffix(name)),
+                )
+                .any(|name| name.eq_ignore_ascii_case(target))
+        };
+
+        SourceMetadataPlan {
+            source_id: references(field_names::SOURCE_ID),
+            input: references(field_names::INPUT),
+            source_path: references(field_names::SOURCE_PATH),
+        }
+    }
+
+    /// Whether the input layer must expose the file `_source_path` column.
+    pub fn source_path_required(&self) -> bool {
+        self.source_metadata_plan().source_path
     }
 
     /// Extract filter hints from the SQL for predicate pushdown.
@@ -1115,5 +1162,98 @@ mod tests {
             analyzer.uses_select_star,
             "SELECT * in scalar subquery must mark extract_all"
         );
+    }
+
+    #[test]
+    fn source_path_not_required_for_unrelated_projection() {
+        let analyzer = QueryAnalyzer::new("SELECT level FROM logs WHERE status = '500'").unwrap();
+        assert!(!analyzer.source_path_required());
+        assert_eq!(
+            analyzer.source_metadata_plan(),
+            SourceMetadataPlan::default()
+        );
+    }
+
+    #[test]
+    fn source_path_required_for_explicit_projection() {
+        let analyzer = QueryAnalyzer::new("SELECT _source_path FROM logs").unwrap();
+        assert!(analyzer.source_path_required());
+        assert!(analyzer.source_metadata_plan().source_path);
+        assert!(!analyzer.source_metadata_plan().source_id);
+        assert!(!analyzer.source_metadata_plan().input);
+    }
+
+    #[test]
+    fn source_path_required_for_qualified_join_reference() {
+        let analyzer = QueryAnalyzer::new(
+            "SELECT l.msg, k.namespace FROM logs l \
+             LEFT JOIN k8s k ON l._source_path = k.log_path_prefix",
+        )
+        .unwrap();
+        assert!(analyzer.source_path_required());
+    }
+
+    #[test]
+    fn source_path_required_for_wildcard_projection() {
+        let analyzer = QueryAnalyzer::new("SELECT * FROM logs").unwrap();
+        assert!(analyzer.source_path_required());
+    }
+
+    #[test]
+    fn source_path_required_for_wildcard_except_projection() {
+        let analyzer = QueryAnalyzer::new("SELECT * EXCEPT (_source_path) FROM logs").unwrap();
+        assert!(analyzer.source_path_required());
+    }
+
+    #[test]
+    fn source_id_required_for_explicit_projection() {
+        let analyzer = QueryAnalyzer::new("SELECT _source_id FROM logs").unwrap();
+        let plan = analyzer.source_metadata_plan();
+        assert!(plan.source_id);
+        assert!(!plan.input);
+        assert!(!plan.source_path);
+    }
+
+    #[test]
+    fn input_required_for_explicit_projection() {
+        let analyzer = QueryAnalyzer::new("SELECT _input FROM logs").unwrap();
+        let plan = analyzer.source_metadata_plan();
+        assert!(!plan.source_id);
+        assert!(plan.input);
+        assert!(!plan.source_path);
+    }
+
+    #[test]
+    fn explicit_source_metadata_plan_excludes_wildcard_projection() {
+        let analyzer = QueryAnalyzer::new("SELECT * FROM logs").unwrap();
+        assert_eq!(
+            analyzer.explicit_source_metadata_plan(),
+            SourceMetadataPlan::default()
+        );
+    }
+
+    #[test]
+    fn explicit_source_metadata_plan_includes_join_reference() {
+        let analyzer = QueryAnalyzer::new(
+            "SELECT l.msg FROM logs l \
+             LEFT JOIN k8s k ON l._source_path = k.log_path_prefix",
+        )
+        .unwrap();
+        assert!(analyzer.explicit_source_metadata_plan().source_path);
+    }
+
+    #[test]
+    fn explicit_source_metadata_plan_includes_wildcard_except_reference() {
+        let analyzer = QueryAnalyzer::new("SELECT * EXCEPT (_source_path) FROM logs").unwrap();
+        assert!(analyzer.explicit_source_metadata_plan().source_path);
+    }
+
+    #[test]
+    fn wildcard_projection_attaches_legacy_source_path_only() {
+        let analyzer = QueryAnalyzer::new("SELECT * FROM logs").unwrap();
+        let plan = analyzer.source_metadata_plan();
+        assert!(!plan.source_id);
+        assert!(!plan.input);
+        assert!(plan.source_path);
     }
 }

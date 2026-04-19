@@ -165,6 +165,46 @@ ingested by `OtlpReceiverInput` must preserve the same semantics.
 
 This is the cross-crate compatibility rule that catches sink/receiver drift.
 
+## Input Source Metadata Contract
+
+Source metadata belongs to the table assembly boundary, not to transport bytes.
+
+### Source identity rules
+
+- Inputs that can distinguish logical row sources must carry `SourceId` beside
+  the data, not by writing identity fields into the payload.
+- UDP inputs derive a stable sender-scoped `SourceId` from the `recv_from()`
+  sender address and attach it to `InputEvent::Data.source_id`. They must not
+  inject cleartext peer-address fields into the payload.
+- `FramedInput` may reclaim per-source state once newline remainder and
+  stateful format decoders are idle. It must retain state while a source has
+  a pending partial line or CRI partial record.
+
+### Source metadata rules
+
+- Source metadata (`_source_path`, `_source_id`, future fields) must be
+  attached as Arrow columns **post-scan**, not injected into raw bytes pre-scan.
+- There is no legacy exception. File `_source_path`, row `_source_id`, UDP
+  sender identity, and future source descriptors must travel as sidecar/source
+  metadata and be materialized only when assembling the `RecordBatch` presented
+  to SQL.
+- Canonical pattern for row-native metadata: carry source-origin spans beside
+  scanner-ready chunks, then attach `_source_id`, `_input`, `_source_path`, or
+  future fields after scan and before SQL. Rich descriptors belong in cold-path
+  enrichment tables such as `sources`.
+- Runtime should not pay this cost by default. Config-driven inputs must opt in
+  with `source_metadata: true`; otherwise `SELECT *` remains narrow and
+  explicit source-metadata references are rejected at pipeline construction.
+- For opted-in inputs, `SELECT *` preserves legacy `_source_path`
+  compatibility. Newer source metadata columns such as `_source_id` and
+  `_input` must be referenced explicitly.
+- Resource attributes are separate output semantics. Use
+  `resource.attributes.*` for explicit OTLP resource columns, not as the only
+  source metadata contract.
+- Rationale: raw injection mutates user data, causes format-specific edge
+  cases (invalid JSON for empty objects), and is 30x slower than post-scan
+  column attachment (PR #1370 prototype measurements).
+
 ## File Input Contract
 
 The file path is:
@@ -184,24 +224,6 @@ The file path is:
 - Buffered remainder bytes are not checkpointable yet.
 - When EOF flushes a remainder, or a remainder is explicitly discarded after a
   documented lifecycle event, the checkpoint may then advance.
-
-### Source metadata rules
-
-- Source metadata (`_source_path`, `_source_id`, future fields) must be
-  attached as Arrow columns **post-scan**, not injected into raw bytes pre-scan.
-- The existing `inject_source_path_metadata` in `framed.rs` is **deprecated**
-  (#1615). It must not be extended or used as a pattern for new metadata.
-- Legacy exception: `_source_path` raw-byte insertion still exists in
-  `inject_source_path_metadata` for compatibility with current file JSON/CRI
-  paths. Treat this as transitional technical debt until #1615 lands; do not
-  add new `_source_*` raw injection helpers.
-- Canonical pattern for new metadata: scanner-attached `_resource_*` columns
-  (the same resource-column model used by OTLP/OTAP paths), attached at
-  scan/build time in the RecordBatch schema and accessible via SQL without raw
-  payload mutation.
-- Rationale: raw injection mutates user data, causes format-specific edge
-  cases (invalid JSON for empty objects), and is 30x slower than post-scan
-  column attachment (PR #1370 prototype measurements).
 
 ### Lifecycle rules
 

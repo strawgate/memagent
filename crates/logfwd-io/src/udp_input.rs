@@ -2,11 +2,12 @@
 //! per received datagram (or batch of datagrams).
 
 use std::io;
-use std::net::UdpSocket;
+use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use logfwd_types::diagnostics::ComponentHealth;
+use logfwd_types::pipeline::SourceId;
 use socket2::{Domain, Protocol, Socket, Type};
 
 use crate::input::{InputEvent, InputSource};
@@ -34,6 +35,42 @@ const MAX_EMIT_BYTES_PER_POLL: usize = 1024 * 1024;
 #[inline]
 const fn should_stop_udp_drain(datagrams_read: usize, emitted_bytes: usize) -> bool {
     datagrams_read >= MAX_DATAGRAMS_PER_POLL || emitted_bytes >= MAX_EMIT_BYTES_PER_POLL
+}
+
+/// Derive a stable source id for a UDP sender address.
+fn source_id_for_sender(addr: SocketAddr) -> SourceId {
+    let mut h = xxhash_rust::xxh64::Xxh64::new(0);
+    h.update(b"udp:");
+    match addr {
+        SocketAddr::V4(v4) => {
+            h.update(&[4u8]);
+            h.update(&v4.ip().octets());
+            h.update(&v4.port().to_le_bytes());
+        }
+        SocketAddr::V6(v6) => {
+            h.update(&[6u8]);
+            h.update(&v6.ip().octets());
+            h.update(&v6.port().to_le_bytes());
+            h.update(&v6.scope_id().to_le_bytes());
+        }
+    }
+    let digest = h.digest();
+    SourceId(if digest == 0 { 1 } else { digest })
+}
+
+fn flush_current_sender(
+    events: &mut Vec<InputEvent>,
+    current: &mut Option<(SourceId, Vec<u8>, u64)>,
+) {
+    if let Some((source_id, bytes, accounted_bytes)) = current.take()
+        && !bytes.is_empty()
+    {
+        events.push(InputEvent::Data {
+            bytes,
+            source_id: Some(source_id),
+            accounted_bytes,
+        });
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -76,7 +113,7 @@ impl UdpInput {
         options: UdpInputOptions,
         stats: Arc<logfwd_types::diagnostics::ComponentStats>,
     ) -> io::Result<Self> {
-        let parsed_addr: std::net::SocketAddr = addr.parse().map_err(io::Error::other)?;
+        let parsed_addr: SocketAddr = addr.parse().map_err(io::Error::other)?;
         let domain = if parsed_addr.is_ipv4() {
             Domain::IPV4
         } else {
@@ -123,7 +160,7 @@ impl UdpInput {
     }
 
     /// Returns the local address this socket is bound to.
-    pub fn local_addr(&self) -> io::Result<std::net::SocketAddr> {
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.socket.local_addr()
     }
 
@@ -152,30 +189,38 @@ impl InputSource for UdpInput {
         let mut under_pressure = false;
         let mut datagrams_read = 0usize;
 
-        // Accumulate into a single byte buffer; avoid per-datagram Vec alloc.
-        // We re-use `self.buf` for recv and build the output in a separate vec
-        // only when data actually arrives.
-        let mut total: Option<Vec<u8>> = None;
-        let mut source_bytes: u64 = 0;
+        let mut events = Vec::with_capacity(MAX_DATAGRAMS_PER_POLL);
+        let mut current: Option<(SourceId, Vec<u8>, u64)> = None;
+        let mut emitted_bytes = 0usize;
 
         // Drain all available datagrams in one poll cycle.
         loop {
-            // `recv` is cheaper than `recv_from` — we don't need the source addr.
-            match self.socket.recv(&mut self.buf) {
-                Ok(n) => {
+            match self.socket.recv_from(&mut self.buf) {
+                Ok((n, sender)) => {
                     datagrams_read = datagrams_read.saturating_add(1);
                     if n > 0 {
-                        source_bytes = source_bytes.saturating_add(n as u64);
+                        let source_id = source_id_for_sender(sender);
                         let data = &self.buf[..n];
-                        let out = total.get_or_insert_with(|| Vec::with_capacity(4096));
+                        let needs_newline = !data.ends_with(b"\n");
+                        if current
+                            .as_ref()
+                            .is_none_or(|(current_source_id, _, _)| *current_source_id != source_id)
+                        {
+                            flush_current_sender(&mut events, &mut current);
+                            current = Some((source_id, Vec::with_capacity(4096), 0));
+                        }
+                        let (_, out, accounted_bytes) =
+                            current.as_mut().expect("current sender just initialized");
                         out.extend_from_slice(data);
                         // Ensure newline termination so the scanner always sees
                         // complete lines, even if the sender omitted a trailing LF.
-                        if !data.ends_with(b"\n") {
+                        if needs_newline {
                             out.push(b'\n');
                         }
+                        *accounted_bytes = accounted_bytes.saturating_add(n as u64);
+                        emitted_bytes =
+                            emitted_bytes.saturating_add(n + usize::from(needs_newline));
                     }
-                    let emitted_bytes = total.as_ref().map_or(0, Vec::len);
                     if should_stop_udp_drain(datagrams_read, emitted_bytes) {
                         under_pressure = true;
                         break;
@@ -214,17 +259,8 @@ impl InputSource for UdpInput {
             },
         );
 
-        match total {
-            Some(bytes) => {
-                let accounted_bytes = source_bytes;
-                Ok(vec![InputEvent::Data {
-                    bytes,
-                    source_id: None,
-                    accounted_bytes,
-                }])
-            }
-            None => Ok(Vec::new()),
-        }
+        flush_current_sender(&mut events, &mut current);
+        Ok(events)
     }
 
     fn name(&self) -> &str {
@@ -320,6 +356,69 @@ mod tests {
         } else {
             panic!("expected InputEvent::Data variant");
         }
+    }
+
+    #[test]
+    fn sender_addresses_produce_distinct_source_ids() {
+        let mut input = UdpInput::new(
+            "test",
+            "127.0.0.1:0",
+            Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
+        let addr = input.local_addr().unwrap();
+
+        let sender_a = StdSocket::bind("127.0.0.1:0").unwrap();
+        let sender_b = StdSocket::bind("127.0.0.1:0").unwrap();
+        sender_a.send_to(b"from-a\n", addr).unwrap();
+        sender_b.send_to(b"from-b\n", addr).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let events = input.poll().unwrap();
+        let source_ids = events
+            .iter()
+            .filter_map(|event| match event {
+                InputEvent::Data { source_id, .. } => *source_id,
+                _ => None,
+            })
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(source_ids.len(), 2, "expected one source id per sender");
+        assert!(source_ids.contains(&source_id_for_sender(sender_a.local_addr().unwrap())));
+        assert!(source_ids.contains(&source_id_for_sender(sender_b.local_addr().unwrap())));
+    }
+
+    #[test]
+    fn ipv6_sender_source_id_ignores_flowinfo_and_distinguishes_ports() {
+        let base = SocketAddr::V6(std::net::SocketAddrV6::new(
+            std::net::Ipv6Addr::LOCALHOST,
+            12_345,
+            0,
+            0,
+        ));
+        let different_flowinfo = SocketAddr::V6(std::net::SocketAddrV6::new(
+            std::net::Ipv6Addr::LOCALHOST,
+            12_345,
+            0x000f_ffff,
+            0,
+        ));
+        let different_port = SocketAddr::V6(std::net::SocketAddrV6::new(
+            std::net::Ipv6Addr::LOCALHOST,
+            54_321,
+            0,
+            0,
+        ));
+
+        assert_eq!(
+            source_id_for_sender(base),
+            source_id_for_sender(different_flowinfo),
+            "IPv6 flowinfo is packet/flow metadata, not sender identity"
+        );
+        assert_ne!(
+            source_id_for_sender(base),
+            source_id_for_sender(different_port),
+            "sender port remains part of UDP source identity"
+        );
     }
 
     #[test]

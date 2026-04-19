@@ -69,6 +69,7 @@ input:
   type: file
   path: /var/log/pods/**/*.log
   format: cri
+  source_metadata: true
 
 transform: |
   SELECT
@@ -151,6 +152,7 @@ input:
   type: file
   path: /var/log/pods/**/*.log
   format: cri
+  source_metadata: true
 
 transform: |
   SELECT

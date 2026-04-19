@@ -19,5 +19,8 @@ pub mod filter_hints;
 /// Canonical OTLP log field names — single source of truth for receiver ↔ sink column names.
 pub mod field_names;
 
+/// Source metadata attachment policy shared by runtime and transform crates.
+pub mod source_metadata;
+
 /// Unified I/O action classification — retry, reject, or fatal.
 pub mod io_action;

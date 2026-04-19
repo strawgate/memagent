@@ -14,6 +14,7 @@ use logfwd_io::checkpoint::{
 use logfwd_output::{AsyncFanoutFactory, SinkFactory, build_sink_factory};
 use logfwd_types::field_names;
 use logfwd_types::pipeline::{PipelineMachine, SourceId};
+use logfwd_types::source_metadata::SourceMetadataPlan;
 
 use super::input_build::build_input_state;
 use super::{InputTransform, Pipeline};
@@ -513,11 +514,27 @@ impl Pipeline {
                 scan_config.line_field_name = Some(field_names::BODY.to_string());
             }
             let scanner = logfwd_arrow::scanner::Scanner::new(scan_config);
+            let requested_source_metadata_plan = transform.analyzer().source_metadata_plan();
+            let explicit_source_metadata_plan =
+                transform.analyzer().explicit_source_metadata_plan();
+            if explicit_source_metadata_plan.any() && !input_cfg.source_metadata {
+                return Err(format!(
+                    "pipeline '{name}' input '{input_name}': SQL references source metadata \
+                     columns (_source_id, _input, or _source_path), but source_metadata is disabled; \
+                     set source_metadata: true on this input"
+                ));
+            }
+            let source_metadata_plan = if input_cfg.source_metadata {
+                requested_source_metadata_plan
+            } else {
+                SourceMetadataPlan::default()
+            };
 
             input_transforms.push(InputTransform {
                 scanner,
                 transform,
                 input_name: input_name.clone(),
+                source_metadata_plan,
             });
 
             inputs.push(build_input_state(&input_name, &resolved_cfg, input_stats)?);
@@ -654,6 +671,7 @@ mod tests {
             name: Some("input".to_string()),
             format: Some(Format::Json),
             sql: None,
+            source_metadata: false,
             type_config: InputTypeConfig::File(logfwd_config::FileTypeConfig {
                 path,
                 poll_interval_ms: None,
@@ -766,6 +784,84 @@ mod tests {
         assert!(
             err.contains("workers must be >= 1"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn source_metadata_disabled_rejects_explicit_source_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        std::fs::write(&log_path, b"{\"msg\":\"hello\"}\n").unwrap();
+
+        let mut config = minimal_config(log_path.display().to_string());
+        config.transform = Some("SELECT _source_path FROM logs".to_string());
+
+        let err = Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
+            .err()
+            .expect("explicit source metadata should require opt-in");
+        assert!(
+            err.contains("source_metadata is disabled"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn source_metadata_enabled_allows_explicit_source_column() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        std::fs::write(&log_path, b"{\"msg\":\"hello\"}\n").unwrap();
+
+        let mut config = minimal_config(log_path.display().to_string());
+        config.inputs[0].source_metadata = true;
+        config.transform = Some("SELECT _source_path FROM logs".to_string());
+
+        let pipeline =
+            Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
+                .expect("source metadata opt-in should allow source columns");
+        assert!(
+            pipeline.input_transforms[0]
+                .source_metadata_plan
+                .source_path
+        );
+    }
+
+    #[test]
+    fn source_metadata_enabled_select_star_preserves_legacy_source_path_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        std::fs::write(&log_path, b"{\"msg\":\"hello\"}\n").unwrap();
+
+        let mut config = minimal_config(log_path.display().to_string());
+        config.inputs[0].source_metadata = true;
+
+        let pipeline =
+            Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
+                .expect("SELECT * should preserve legacy source path compatibility");
+
+        assert_eq!(
+            pipeline.input_transforms[0].source_metadata_plan,
+            SourceMetadataPlan {
+                source_id: false,
+                input: false,
+                source_path: true,
+            }
+        );
+    }
+
+    #[test]
+    fn source_metadata_disabled_keeps_select_star_narrow() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        std::fs::write(&log_path, b"{\"msg\":\"hello\"}\n").unwrap();
+
+        let config = minimal_config(log_path.display().to_string());
+        let pipeline =
+            Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
+                .expect("SELECT * should build without source metadata");
+
+        assert_eq!(
+            pipeline.input_transforms[0].source_metadata_plan,
+            SourceMetadataPlan::default()
         );
     }
 }

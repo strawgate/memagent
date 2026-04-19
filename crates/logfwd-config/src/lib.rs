@@ -87,6 +87,36 @@ storage:
     }
 
     #[test]
+    fn input_source_metadata_flag_defaults_false_and_parses_true() {
+        let default_yaml = r"
+input:
+  type: file
+  path: /var/log/pods/**/*.log
+  format: cri
+
+output:
+  type: null
+";
+        let cfg = Config::load_str(default_yaml).expect("default source_metadata should parse");
+        let pipe = &cfg.pipelines["default"];
+        assert!(!pipe.inputs[0].source_metadata);
+
+        let enabled_yaml = r"
+input:
+  type: file
+  path: /var/log/pods/**/*.log
+  format: cri
+  source_metadata: true
+
+output:
+  type: null
+";
+        let cfg = Config::load_str(enabled_yaml).expect("source_metadata true should parse");
+        let pipe = &cfg.pipelines["default"];
+        assert!(pipe.inputs[0].source_metadata);
+    }
+
+    #[test]
     fn advanced_config() {
         let yaml = r"
 pipelines:

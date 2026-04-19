@@ -498,6 +498,12 @@ pub struct InputConfig {
     pub format: Option<Format>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub sql: Option<String>,
+    /// Attach source metadata columns (`_source_id`, `_input`, `_source_path`) when SQL requests them.
+    ///
+    /// Disabled by default because source metadata requires per-row origin
+    /// tracking and may materialize high-cardinality strings such as paths.
+    #[serde(default)]
+    pub source_metadata: bool,
     #[serde(flatten)]
     pub type_config: InputTypeConfig,
 }

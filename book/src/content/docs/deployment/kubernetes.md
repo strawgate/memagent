@@ -179,6 +179,12 @@ Use the `k8s_path` enrichment table to attach namespace, pod, and container labe
 every log record:
 
 ```yaml
+input:
+  type: file
+  path: /var/log/pods/**/*.log
+  format: cri
+  source_metadata: true
+
 enrichment:
   - type: k8s_path
     table_name: k8s
@@ -199,6 +205,12 @@ transform: |
 To collect logs only from specific namespaces, filter in the transform:
 
 ```yaml
+input:
+  type: file
+  path: /var/log/pods/**/*.log
+  format: cri
+  source_metadata: true
+
 transform: |
   SELECT l.*, k.namespace, k.pod_name, k.container_name
   FROM logs l

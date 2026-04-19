@@ -1016,9 +1016,6 @@ fn resolve_batch_columns<'a>(
                     }
                 }
             }
-            field_names::RAW => {
-                excluded[idx] = true;
-            }
             _ => {}
         }
     }
@@ -2918,36 +2915,6 @@ mod tests {
 
         assert_eq!(handwritten_bodies, vec!["raw-first", "raw-fallback"]);
         assert_eq!(generated_bodies, vec!["raw-first", "raw-fallback"]);
-    }
-
-    #[test]
-    fn otlp_encoder_excludes_internal_raw_attribute() {
-        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
-        use prost::Message;
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("body", DataType::Utf8, true),
-            Field::new(field_names::RAW, DataType::Utf8, true),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(StringArray::from(vec![Some("hello")])),
-                Arc::new(StringArray::from(vec![Some("wire-only")])),
-            ],
-        )
-        .expect("valid batch");
-
-        let mut sink = make_sink();
-        sink.encode_batch(&batch, &make_metadata());
-        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
-            .expect("prost must decode output");
-        let attrs = &request.resource_logs[0].scope_logs[0].log_records[0].attributes;
-
-        assert!(
-            attrs.iter().all(|kv| kv.key != field_names::RAW),
-            "_raw should remain internal-only"
-        );
     }
 
     /// Roundtrip with multiple rows to verify repeated LogRecord encoding.

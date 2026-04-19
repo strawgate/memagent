@@ -24,12 +24,24 @@
 #[cfg(not(feature = "turmoil"))]
 use std::collections::HashMap;
 #[cfg(not(feature = "turmoil"))]
+use std::path::PathBuf;
+#[cfg(not(feature = "turmoil"))]
 use std::sync::Arc;
 #[cfg(not(feature = "turmoil"))]
 use std::time::{Duration, Instant};
 
 #[cfg(not(feature = "turmoil"))]
+use arrow::array::{Array, ArrayRef, StringViewBuilder, UInt64Builder};
+#[cfg(not(feature = "turmoil"))]
+use arrow::buffer::Buffer;
+#[cfg(not(feature = "turmoil"))]
+use arrow::datatypes::{DataType, Field, Schema};
+#[cfg(not(feature = "turmoil"))]
+use arrow::error::ArrowError;
+#[cfg(not(feature = "turmoil"))]
 use arrow::record_batch::RecordBatch;
+#[cfg(not(feature = "turmoil"))]
+use arrow::record_batch::RecordBatchOptions;
 #[cfg(not(feature = "turmoil"))]
 use bytes::Bytes;
 #[cfg(not(feature = "turmoil"))]
@@ -44,7 +56,11 @@ use logfwd_io::input::InputEvent;
 #[cfg(not(feature = "turmoil"))]
 use logfwd_io::poll_cadence::AdaptivePollController;
 #[cfg(not(feature = "turmoil"))]
+use logfwd_types::field_names;
+#[cfg(not(feature = "turmoil"))]
 use logfwd_types::pipeline::SourceId;
+#[cfg(not(feature = "turmoil"))]
+use logfwd_types::source_metadata::SourceMetadataPlan;
 
 #[cfg(not(feature = "turmoil"))]
 use logfwd_io::tail::ByteOffset;
@@ -54,7 +70,7 @@ use super::health::{
     HealthTransitionEvent, reduce_component_health, reduce_component_health_after_poll_failure,
 };
 #[cfg(not(feature = "turmoil"))]
-use super::{InputState, InputTransform};
+use super::{InputState, InputTransform, RowOriginSpan};
 
 /// Capacity of the bounded channel between I/O worker and CPU worker.
 #[cfg(not(feature = "turmoil"))]
@@ -66,22 +82,33 @@ const IO_CPU_CHANNEL_CAPACITY: usize = 4;
 /// On backpressure (channel full), logs a warning at most once per 5 s and
 /// blocks until the CPU worker drains.
 #[cfg(not(feature = "turmoil"))]
+#[allow(clippy::too_many_arguments)]
 fn flush_buf(
     buf: &mut bytes::BytesMut,
+    row_origins: &mut Vec<RowOriginSpan>,
     source: &dyn logfwd_io::input::InputSource,
     tx: &mpsc::Sender<IoWorkItem>,
     metrics: &PipelineMetrics,
     last_bp_warn: &mut Option<Instant>,
     input_index: usize,
+    source_metadata_plan: SourceMetadataPlan,
 ) -> bool {
     if buf.is_empty() {
+        row_origins.clear();
         return true;
     }
     let data = buf.split().freeze();
     let checkpoints = source.checkpoint_data();
+    let source_paths = if source_metadata_plan.source_path {
+        source_paths_by_id(source.source_paths())
+    } else {
+        HashMap::new()
+    };
     let chunk = IoWorkItem::Bytes(IoChunk {
         bytes: data,
         checkpoints,
+        row_origins: std::mem::take(row_origins),
+        source_paths,
         queued_at: tokio::time::Instant::now(),
         input_index,
     });
@@ -108,6 +135,8 @@ fn flush_buf(
 pub(crate) struct IoChunk {
     pub bytes: Bytes,
     pub checkpoints: Vec<(SourceId, ByteOffset)>,
+    pub row_origins: Vec<RowOriginSpan>,
+    pub source_paths: HashMap<SourceId, String>,
     pub queued_at: tokio::time::Instant,
     pub input_index: usize,
 }
@@ -118,9 +147,214 @@ pub(crate) enum IoWorkItem {
     Batch {
         batch: RecordBatch,
         checkpoints: Vec<(SourceId, ByteOffset)>,
+        row_origins: Vec<RowOriginSpan>,
+        source_paths: HashMap<SourceId, String>,
         queued_at: tokio::time::Instant,
         input_index: usize,
     },
+}
+
+#[cfg(not(feature = "turmoil"))]
+fn source_paths_by_id(paths: Vec<(SourceId, PathBuf)>) -> HashMap<SourceId, String> {
+    paths
+        .into_iter()
+        .map(|(sid, path)| (sid, path.to_string_lossy().into_owned()))
+        .collect()
+}
+
+#[cfg(not(feature = "turmoil"))]
+fn scanner_ready_row_count(bytes: &[u8]) -> usize {
+    let mut rows = 0usize;
+    let mut line_start = 0usize;
+    for newline in memchr::memchr_iter(b'\n', bytes) {
+        let line_end = if newline > line_start && bytes.get(newline - 1).copied() == Some(b'\r') {
+            newline - 1
+        } else {
+            newline
+        };
+        if line_end > line_start {
+            rows += 1;
+        }
+        line_start = newline + 1;
+    }
+
+    if line_start < bytes.len() {
+        let line_end = if bytes.last().copied() == Some(b'\r') {
+            bytes.len() - 1
+        } else {
+            bytes.len()
+        };
+        if line_end > line_start {
+            rows += 1;
+        }
+    }
+
+    rows
+}
+
+#[cfg(not(feature = "turmoil"))]
+fn append_row_origin(
+    row_origins: &mut Vec<RowOriginSpan>,
+    source_id: Option<SourceId>,
+    input_name: &Arc<str>,
+    rows: usize,
+) {
+    if rows == 0 {
+        return;
+    }
+    if let Some(last) = row_origins.last_mut()
+        && last.source_id == source_id
+        && Arc::ptr_eq(&last.input_name, input_name)
+    {
+        last.rows += rows;
+        return;
+    }
+    row_origins.push(RowOriginSpan {
+        source_id,
+        input_name: Arc::clone(input_name),
+        rows,
+    });
+}
+
+#[cfg(not(feature = "turmoil"))]
+fn source_metadata_for_batch(
+    batch: RecordBatch,
+    row_origins: &[RowOriginSpan],
+    source_paths: &HashMap<SourceId, String>,
+    plan: SourceMetadataPlan,
+) -> Result<RecordBatch, ArrowError> {
+    if !plan.any() {
+        return Ok(batch);
+    }
+
+    let rows_from_origins: usize = row_origins.iter().map(|span| span.rows).sum();
+    if rows_from_origins != batch.num_rows() {
+        return Err(ArrowError::InvalidArgumentError(format!(
+            "source metadata sidecar row count mismatch: spans={rows_from_origins}, batch={}",
+            batch.num_rows()
+        )));
+    }
+
+    let mut batch = batch;
+    if plan.source_id {
+        let mut builder = UInt64Builder::with_capacity(batch.num_rows());
+        for span in row_origins {
+            for _ in 0..span.rows {
+                match span.source_id {
+                    Some(sid) => builder.append_value(sid.0),
+                    None => builder.append_null(),
+                }
+            }
+        }
+        batch = replace_or_append_column(
+            batch,
+            field_names::SOURCE_ID,
+            DataType::UInt64,
+            Arc::new(builder.finish()) as ArrayRef,
+        )?;
+    }
+
+    if plan.input {
+        let array = string_metadata_array(batch.num_rows(), row_origins, |span| {
+            Some(span.input_name.to_string())
+        })?;
+        batch = replace_or_append_column(batch, field_names::INPUT, DataType::Utf8View, array)?;
+    }
+
+    if plan.source_path {
+        let array = string_metadata_array(batch.num_rows(), row_origins, |span| {
+            span.source_id
+                .and_then(|sid| source_paths.get(&sid).cloned())
+        })?;
+        batch =
+            replace_or_append_column(batch, field_names::SOURCE_PATH, DataType::Utf8View, array)?;
+    }
+
+    Ok(batch)
+}
+
+#[cfg(not(feature = "turmoil"))]
+fn string_metadata_array<F>(
+    num_rows: usize,
+    row_origins: &[RowOriginSpan],
+    value_for_span: F,
+) -> Result<ArrayRef, ArrowError>
+where
+    F: Fn(&RowOriginSpan) -> Option<String>,
+{
+    let mut builder = StringViewBuilder::new();
+    let mut blocks: HashMap<String, (u32, u32)> = HashMap::new();
+    for span in row_origins {
+        match value_for_span(span) {
+            Some(value) => {
+                let (block, len) = if let Some(&(block, len)) = blocks.get(value.as_str()) {
+                    (block, len)
+                } else {
+                    let len = u32::try_from(value.len()).map_err(|_| {
+                        ArrowError::InvalidArgumentError(
+                            "source metadata string is too large for Utf8View".to_string(),
+                        )
+                    })?;
+                    let block = builder.append_block(Buffer::from(value.as_bytes().to_vec()));
+                    blocks.insert(value, (block, len));
+                    (block, len)
+                };
+                for _ in 0..span.rows {
+                    builder.try_append_view(block, 0, len)?;
+                }
+            }
+            None => {
+                for _ in 0..span.rows {
+                    builder.append_null();
+                }
+            }
+        }
+    }
+
+    let array = builder.finish();
+    if array.len() != num_rows {
+        return Err(ArrowError::InvalidArgumentError(format!(
+            "source metadata string column length mismatch: column={}, batch={num_rows}",
+            array.len()
+        )));
+    }
+    Ok(Arc::new(array) as ArrayRef)
+}
+
+#[cfg(not(feature = "turmoil"))]
+fn replace_or_append_column(
+    batch: RecordBatch,
+    name: &str,
+    data_type: DataType,
+    array: ArrayRef,
+) -> Result<RecordBatch, ArrowError> {
+    let schema = batch.schema();
+    let mut fields = Vec::with_capacity(schema.fields().len() + 1);
+    let mut arrays = Vec::with_capacity(batch.num_columns() + 1);
+    let mut replaced = false;
+
+    for (idx, field) in schema.fields().iter().enumerate() {
+        if field.name() == name {
+            fields.push(Field::new(name, data_type.clone(), true));
+            arrays.push(Arc::clone(&array));
+            replaced = true;
+        } else {
+            fields.push((**field).clone());
+            arrays.push(Arc::clone(batch.column(idx)));
+        }
+    }
+
+    if !replaced {
+        fields.push(Field::new(name, data_type, true));
+        arrays.push(array);
+    }
+
+    let new_schema = Arc::new(Schema::new_with_metadata(fields, schema.metadata().clone()));
+    RecordBatch::try_new_with_options(
+        new_schema,
+        arrays,
+        &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+    )
 }
 
 /// Run the I/O worker loop for one input.
@@ -138,6 +372,7 @@ fn io_worker_loop(
     batch_timeout: Duration,
     poll_interval: Duration,
     input_index: usize,
+    source_metadata_plan: SourceMetadataPlan,
 ) {
     let mut buffered_since: Option<Instant> = None;
     let mut last_bp_warn: Option<Instant> = None;
@@ -145,6 +380,7 @@ fn io_worker_loop(
     let mut adaptive_poll =
         AdaptivePollController::new(input.source.get_cadence().adaptive_fast_polls_max);
     let safe_batch_target_bytes = batch_target_bytes.max(1);
+    let input_name: Arc<str> = Arc::from(input.source.name().to_string());
 
     'io_loop: loop {
         if shutdown.is_cancelled() {
@@ -191,7 +427,17 @@ fn io_worker_loop(
         } else {
             for event in events {
                 match event {
-                    InputEvent::Data { bytes, .. } => {
+                    InputEvent::Data {
+                        bytes, source_id, ..
+                    } => {
+                        if source_metadata_plan.any() {
+                            append_row_origin(
+                                &mut input.row_origins,
+                                source_id,
+                                &input_name,
+                                scanner_ready_row_count(&bytes),
+                            );
+                        }
                         input.buf.extend_from_slice(&bytes);
                         // Flush eagerly when the buffer reaches the target so
                         // that a single poll returning many Data events cannot
@@ -200,33 +446,55 @@ fn io_worker_loop(
                             metrics.inc_flush_by_size();
                             if !flush_buf(
                                 &mut input.buf,
+                                &mut input.row_origins,
                                 &*input.source,
                                 &tx,
                                 &metrics,
                                 &mut last_bp_warn,
                                 input_index,
+                                source_metadata_plan,
                             ) {
                                 break 'io_loop;
                             }
                             buffered_since = None;
                         }
                     }
-                    InputEvent::Batch { batch, .. } => {
+                    InputEvent::Batch {
+                        batch, source_id, ..
+                    } => {
                         if !flush_buf(
                             &mut input.buf,
+                            &mut input.row_origins,
                             &*input.source,
                             &tx,
                             &metrics,
                             &mut last_bp_warn,
                             input_index,
+                            source_metadata_plan,
                         ) {
                             break 'io_loop;
                         }
                         buffered_since = None;
 
+                        let row_origins = if source_metadata_plan.any() {
+                            vec![RowOriginSpan {
+                                source_id,
+                                input_name: Arc::clone(&input_name),
+                                rows: batch.num_rows(),
+                            }]
+                        } else {
+                            Vec::new()
+                        };
+                        let source_paths = if source_metadata_plan.source_path {
+                            source_paths_by_id(input.source.source_paths())
+                        } else {
+                            HashMap::new()
+                        };
                         let item = IoWorkItem::Batch {
                             batch,
                             checkpoints: input.source.checkpoint_data(),
+                            row_origins,
+                            source_paths,
                             queued_at: tokio::time::Instant::now(),
                             input_index,
                         };
@@ -279,11 +547,13 @@ fn io_worker_loop(
 
             if !flush_buf(
                 &mut input.buf,
+                &mut input.row_origins,
                 &*input.source,
                 &tx,
                 &metrics,
                 &mut last_bp_warn,
                 input_index,
+                source_metadata_plan,
             ) {
                 break;
             }
@@ -297,9 +567,16 @@ fn io_worker_loop(
     if !input.buf.is_empty() {
         let data = input.buf.split().freeze();
         let checkpoints = input.source.checkpoint_data();
+        let source_paths = if source_metadata_plan.source_path {
+            source_paths_by_id(input.source.source_paths())
+        } else {
+            HashMap::new()
+        };
         let chunk = IoWorkItem::Bytes(IoChunk {
             bytes: data,
             checkpoints,
+            row_origins: std::mem::take(&mut input.row_origins),
+            source_paths,
             queued_at: tokio::time::Instant::now(),
             input_index,
         });
@@ -370,6 +647,24 @@ fn cpu_worker_loop(
                         continue;
                     }
                 };
+                let batch = match source_metadata_for_batch(
+                    batch,
+                    &chunk.row_origins,
+                    &chunk.source_paths,
+                    transform.source_metadata_plan,
+                ) {
+                    Ok(batch) => batch,
+                    Err(e) => {
+                        metrics.inc_transform_error();
+                        metrics.inc_dropped_batch();
+                        tracing::warn!(
+                            input = transform.input_name.as_str(),
+                            error = %e,
+                            "cpu_worker: source metadata attach error (batch dropped)"
+                        );
+                        continue;
+                    }
+                };
                 (
                     batch,
                     chunk.checkpoints,
@@ -381,9 +676,31 @@ fn cpu_worker_loop(
             IoWorkItem::Batch {
                 batch,
                 checkpoints,
+                row_origins,
+                source_paths,
                 queued_at,
                 input_index,
-            } => (batch, checkpoints, queued_at, input_index, 0),
+            } => {
+                let batch = match source_metadata_for_batch(
+                    batch,
+                    &row_origins,
+                    &source_paths,
+                    transform.source_metadata_plan,
+                ) {
+                    Ok(batch) => batch,
+                    Err(e) => {
+                        metrics.inc_transform_error();
+                        metrics.inc_dropped_batch();
+                        tracing::warn!(
+                            input = transform.input_name.as_str(),
+                            error = %e,
+                            "cpu_worker: source metadata attach error (batch dropped)"
+                        );
+                        continue;
+                    }
+                };
+                (batch, checkpoints, queued_at, input_index, 0)
+            }
         };
 
         let num_rows = batch.num_rows();
@@ -476,6 +793,7 @@ impl InputPipelineManager {
 
         for (idx, (input, transform)) in inputs.into_iter().zip(transforms).enumerate() {
             let (io_tx, io_rx) = mpsc::channel::<IoWorkItem>(IO_CPU_CHANNEL_CAPACITY);
+            let source_metadata_plan = transform.source_metadata_plan;
 
             // Spawn I/O worker.
             let shutdown_io = shutdown.clone();
@@ -490,6 +808,7 @@ impl InputPipelineManager {
                     batch_timeout,
                     poll_interval,
                     idx,
+                    source_metadata_plan,
                 );
             }));
 
@@ -532,10 +851,284 @@ impl InputPipelineManager {
 #[cfg(all(test, not(feature = "turmoil")))]
 mod tests {
     use super::*;
+    use arrow::array::{Array, StringArray, StringViewArray, UInt64Array};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use bytes::Bytes;
+    use logfwd_arrow::Scanner;
+    use logfwd_types::source_metadata::SourceMetadataPlan;
 
     // --- InputPipelineManager integration tests ---
     // These test the full split pipeline via from_config + run, so they
     // don't need direct access to private types.
+
+    #[test]
+    fn source_metadata_attach_adds_row_columns_after_scan() {
+        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec!["a", "b", "c"]))],
+        )
+        .expect("batch");
+        let input_name: Arc<str> = Arc::from("pods");
+        let row_origins = vec![
+            RowOriginSpan {
+                source_id: Some(SourceId(10)),
+                input_name: Arc::clone(&input_name),
+                rows: 2,
+            },
+            RowOriginSpan {
+                source_id: Some(SourceId(11)),
+                input_name,
+                rows: 1,
+            },
+        ];
+        let source_paths = HashMap::from([
+            (SourceId(10), "/var/log/pods/ns_pod_uid/c/0.log".to_string()),
+            (SourceId(11), "/var/log/pods/ns_pod_uid/c/1.log".to_string()),
+        ]);
+
+        let out = source_metadata_for_batch(
+            batch,
+            &row_origins,
+            &source_paths,
+            SourceMetadataPlan {
+                source_id: true,
+                input: true,
+                source_path: true,
+            },
+        )
+        .expect("metadata attach should succeed");
+
+        let source_id = out
+            .column_by_name(field_names::SOURCE_ID)
+            .expect("source id column")
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .expect("source id type");
+        assert_eq!(source_id.value(0), 10);
+        assert_eq!(source_id.value(1), 10);
+        assert_eq!(source_id.value(2), 11);
+
+        let input = out
+            .column_by_name(field_names::INPUT)
+            .expect("input column")
+            .as_any()
+            .downcast_ref::<StringViewArray>()
+            .expect("input type");
+        assert_eq!(input.value(0), "pods");
+        assert_eq!(input.value(2), "pods");
+
+        let source_path = out
+            .column_by_name(field_names::SOURCE_PATH)
+            .expect("source path column")
+            .as_any()
+            .downcast_ref::<StringViewArray>()
+            .expect("source path type");
+        assert_eq!(source_path.value(0), "/var/log/pods/ns_pod_uid/c/0.log");
+        assert_eq!(source_path.value(1), "/var/log/pods/ns_pod_uid/c/0.log");
+        assert_eq!(source_path.value(2), "/var/log/pods/ns_pod_uid/c/1.log");
+    }
+
+    #[test]
+    fn scanner_ready_row_count_skips_empty_lines_like_scanner() {
+        assert_eq!(
+            scanner_ready_row_count(b"\n\r\n{\"msg\":\"x\"}\nplain\nlast"),
+            3
+        );
+        assert_eq!(scanner_ready_row_count(b"   \n\t\r\n"), 2);
+    }
+
+    #[test]
+    fn source_metadata_attach_replaces_payload_reserved_column() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            field_names::SOURCE_PATH,
+            DataType::Utf8,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec!["payload-value"]))],
+        )
+        .expect("batch");
+        let row_origins = vec![RowOriginSpan {
+            source_id: Some(SourceId(5)),
+            input_name: Arc::from("file"),
+            rows: 1,
+        }];
+        let source_paths = HashMap::from([(SourceId(5), "/actual/path.log".to_string())]);
+
+        let out = source_metadata_for_batch(
+            batch,
+            &row_origins,
+            &source_paths,
+            SourceMetadataPlan {
+                source_path: true,
+                ..SourceMetadataPlan::default()
+            },
+        )
+        .expect("metadata attach should succeed");
+
+        assert_eq!(out.num_columns(), 1);
+        let source_path = out
+            .column_by_name(field_names::SOURCE_PATH)
+            .expect("source path column")
+            .as_any()
+            .downcast_ref::<StringViewArray>()
+            .expect("source path type");
+        assert_eq!(source_path.value(0), "/actual/path.log");
+    }
+
+    #[test]
+    fn source_metadata_attach_rejects_row_count_mismatch() {
+        let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["a", "b"]))])
+            .expect("batch");
+        let row_origins = vec![RowOriginSpan {
+            source_id: Some(SourceId(1)),
+            input_name: Arc::from("file"),
+            rows: 1,
+        }];
+
+        let err = source_metadata_for_batch(
+            batch,
+            &row_origins,
+            &HashMap::new(),
+            SourceMetadataPlan {
+                source_id: true,
+                ..SourceMetadataPlan::default()
+            },
+        )
+        .expect_err("row count mismatch should fail");
+        assert!(err.to_string().contains("row count mismatch"));
+    }
+
+    #[test]
+    fn source_path_attached_before_sql_is_queryable() {
+        let mut transform =
+            crate::transform::SqlTransform::new("SELECT _source_path, msg FROM logs").expect("sql");
+        let mut scanner = Scanner::new(transform.scan_config());
+        let scanned = scanner
+            .scan(Bytes::from_static(b"{\"msg\":\"hello\"}\n"))
+            .expect("scan");
+        let row_origins = vec![RowOriginSpan {
+            source_id: Some(SourceId(99)),
+            input_name: Arc::from("pods"),
+            rows: 1,
+        }];
+        let source_paths =
+            HashMap::from([(SourceId(99), "/var/log/pods/ns_pod_uid/c/0.log".to_string())]);
+        let attached = source_metadata_for_batch(
+            scanned,
+            &row_origins,
+            &source_paths,
+            transform.analyzer().source_metadata_plan(),
+        )
+        .expect("attach");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let result = rt
+            .block_on(transform.execute(attached))
+            .expect("transform should see source path");
+        let source_path = result
+            .column_by_name(field_names::SOURCE_PATH)
+            .expect("source path column")
+            .as_any()
+            .downcast_ref::<StringViewArray>()
+            .expect("source path type");
+        assert_eq!(source_path.value(0), "/var/log/pods/ns_pod_uid/c/0.log");
+    }
+
+    #[test]
+    fn select_star_preserves_legacy_source_path_without_new_metadata() {
+        let mut transform = crate::transform::SqlTransform::new("SELECT * FROM logs").expect("sql");
+        let mut scanner = Scanner::new(transform.scan_config());
+        let scanned = scanner
+            .scan(Bytes::from_static(b"{\"msg\":\"hello\"}\n"))
+            .expect("scan");
+        let row_origins = vec![RowOriginSpan {
+            source_id: Some(SourceId(99)),
+            input_name: Arc::from("pods"),
+            rows: 1,
+        }];
+        let source_paths =
+            HashMap::from([(SourceId(99), "/var/log/pods/ns_pod_uid/c/0.log".to_string())]);
+        let attached = source_metadata_for_batch(
+            scanned,
+            &row_origins,
+            &source_paths,
+            transform.analyzer().source_metadata_plan(),
+        )
+        .expect("attach");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let result = rt
+            .block_on(transform.execute(attached))
+            .expect("transform should preserve legacy source metadata");
+
+        let source_path = result
+            .column_by_name(field_names::SOURCE_PATH)
+            .expect("source path column")
+            .as_any()
+            .downcast_ref::<StringViewArray>()
+            .expect("source path type");
+
+        assert!(result.column_by_name(field_names::SOURCE_ID).is_none());
+        assert!(result.column_by_name(field_names::INPUT).is_none());
+        assert_eq!(source_path.value(0), "/var/log/pods/ns_pod_uid/c/0.log");
+    }
+
+    #[test]
+    fn explicit_projection_preserves_new_source_metadata_columns() {
+        let mut transform =
+            crate::transform::SqlTransform::new("SELECT msg, _source_id, _input FROM logs")
+                .expect("sql");
+        let mut scanner = Scanner::new(transform.scan_config());
+        let scanned = scanner
+            .scan(Bytes::from_static(b"{\"msg\":\"hello\"}\n"))
+            .expect("scan");
+        let row_origins = vec![RowOriginSpan {
+            source_id: Some(SourceId(99)),
+            input_name: Arc::from("pods"),
+            rows: 1,
+        }];
+        let attached = source_metadata_for_batch(
+            scanned,
+            &row_origins,
+            &HashMap::new(),
+            transform.analyzer().source_metadata_plan(),
+        )
+        .expect("attach");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let result = rt
+            .block_on(transform.execute(attached))
+            .expect("transform should preserve explicit source metadata");
+
+        let source_id = result
+            .column_by_name(field_names::SOURCE_ID)
+            .expect("source id column")
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .expect("source id type");
+        let input = result
+            .column_by_name(field_names::INPUT)
+            .expect("input column")
+            .as_any()
+            .downcast_ref::<StringViewArray>()
+            .expect("input type");
+
+        assert_eq!(source_id.value(0), 99);
+        assert_eq!(input.value(0), "pods");
+    }
 
     #[cfg(not(feature = "turmoil"))]
     #[test]
