@@ -200,6 +200,7 @@ import { createSimulation } from './highway-sim.mjs';
     lenCont: lenCont,
     carW: CAR_W,
     greenPct: 80,
+    slotsExit: 9, // more slots = smoother fade after gate (4 fade slots vs 1)
     autoSpeed: 0.15 * SIM_FRAMES, // compensate for slower sim tick rate
   });
   sim.setCycleStart(Date.now());
@@ -248,18 +249,19 @@ import { createSimulation } from './highway-sim.mjs';
   }
 
   // ---- Per-car visual state ----
-  // Screen-space spring-damper: each car tracks (x, y, vx, vy, angle)
-  // and springs toward the sim's target position. This gives natural
-  // acceleration, deceleration, and seamless segment transitions.
+  // Velocity chase: each car tracks screen-space (x, y, vx, vy, angle)
+  // and accelerates toward the sim's target position. Velocity always
+  // points at the target, so cars can never move backward.
   const carEls = {};
   const carVis = {}; // { x, y, vx, vy, angle, fadeAge }
 
-  const SPRING = 0.08;      // stiffness: how fast cars accelerate toward target
-  const DAMP = 0.7;         // damping: prevents overshoot (< 1 = no oscillation)
-  const SNAP_DIST = 0.5;    // snap to target when this close (pixels)
-  const SNAP_VEL = 0.1;     // snap when velocity below this
-  const ANGLE_RATE = 0.15;  // angle follow speed
-  const FADE_IN_FRAMES = 12;
+  const MAX_SPEED = 4;        // max visual speed (px/frame)
+  const ACCEL = 0.5;          // acceleration per frame
+  const DECEL_DIST = 30;      // start decelerating within this distance
+  const SNAP_DIST = 0.5;      // snap to target when this close
+  const ANGLE_RATE = 0.2;     // angle follow speed
+  const FADE_IN_FRAMES = 12;  // ~300ms fade-in at 40fps
+  const JUNCTION_PAD = 8;     // visual padding at segment endpoints (path px)
 
   function createCarEl(car) {
     let w = CAR_W * car.scale;
@@ -327,7 +329,13 @@ import { createSimulation } from './highway-sim.mjs';
     carEls[car.id] = { g: g, body: body };
     const ip = posAt(car.segment, car.targetD);
     const ia = angleAt(car.segment, car.targetD);
-    carVis[car.id] = { x: ip.x, y: ip.y, vx: 0, vy: 0, angle: ia, fadeAge: 0 };
+    // Spawn with forward velocity so cars appear already in motion
+    const fp = posAt(car.segment, Math.min(car.targetD + 5, lenMap[car.segment]));
+    const dvx = fp.x - ip.x;
+    const dvy = fp.y - ip.y;
+    const dlen = Math.sqrt(dvx * dvx + dvy * dvy) || 1;
+    const initSpeed = 2;
+    carVis[car.id] = { x: ip.x, y: ip.y, vx: dvx / dlen * initSpeed, vy: dvy / dlen * initSpeed, angle: ia, fadeAge: 0 };
   }
 
   function removeCarEl(id) {
@@ -345,19 +353,43 @@ import { createSimulation } from './highway-sim.mjs';
     const vis = carVis[car.id];
     if (!vis) return;
 
-    // Target position from sim's segment + targetD
+    // Target position with visual padding at segment endpoints
     const seg = car.segment;
-    const d = Math.min(Math.max(0, car.targetD), lenMap[seg]);
-    const tp = posAt(seg, d);
-    const ta = angleAt(seg, d);
+    const segLen = lenMap[seg];
+    const rawD = Math.min(Math.max(0, car.targetD), segLen);
+    const paddedD = segLen > 0
+      ? JUNCTION_PAD + (rawD / segLen) * Math.max(0, segLen - 2 * JUNCTION_PAD)
+      : rawD;
+    const tp = posAt(seg, paddedD);
+    const ta = angleAt(seg, paddedD);
 
-    // Spring-damper: stiffness pulls toward target, damping prevents overshoot
+    // Velocity chase: always accelerate toward target, never away
     const dx = tp.x - vis.x;
     const dy = tp.y - vis.y;
-    vis.vx = (vis.vx + dx * SPRING) * DAMP;
-    vis.vy = (vis.vy + dy * SPRING) * DAMP;
-    vis.x += vis.vx;
-    vis.y += vis.vy;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist < SNAP_DIST) {
+      vis.x = tp.x; vis.y = tp.y; vis.vx = 0; vis.vy = 0;
+    } else {
+      const dirX = dx / dist;
+      const dirY = dy / dist;
+      // Decelerate when close, full speed when far
+      const desired = Math.min(MAX_SPEED, (dist / DECEL_DIST) * MAX_SPEED);
+      const curSpeed = Math.sqrt(vis.vx * vis.vx + vis.vy * vis.vy);
+      let newSpeed;
+      if (curSpeed < desired) {
+        newSpeed = Math.min(curSpeed + ACCEL, desired);
+      } else {
+        newSpeed = Math.max(curSpeed - ACCEL * 2, desired);
+      }
+      vis.vx = dirX * newSpeed;
+      vis.vy = dirY * newSpeed;
+      vis.x += vis.vx;
+      vis.y += vis.vy;
+      // Anti-overshoot: if we passed the target, snap
+      const nd = Math.sqrt((tp.x - vis.x) * (tp.x - vis.x) + (tp.y - vis.y) * (tp.y - vis.y));
+      if (nd > dist) { vis.x = tp.x; vis.y = tp.y; vis.vx = 0; vis.vy = 0; }
+    }
 
     // Smooth angle follow (with wraparound)
     let da = ta - vis.angle;
@@ -365,22 +397,23 @@ import { createSimulation } from './highway-sim.mjs';
     while (da < -180) da += 360;
     vis.angle += da * ANGLE_RATE;
 
-    // Snap when very close and nearly stopped
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < SNAP_DIST && Math.abs(vis.vx) < SNAP_VEL && Math.abs(vis.vy) < SNAP_VEL) {
-      vis.x = tp.x; vis.y = tp.y; vis.vx = 0; vis.vy = 0; vis.angle = ta;
-    }
-
     el.g.setAttribute('transform', 'translate(' + vis.x.toFixed(1) + ',' + vis.y.toFixed(1) + ') rotate(' + vis.angle.toFixed(1) + ')');
 
+    // Fade-in: during fade, always show flow color (car appears already moving)
+    vis.fadeAge = Math.min(1, (vis.fadeAge || 0) + 1 / FADE_IN_FRAMES);
     let fill;
-    if (car.color === 'stop') fill = 'var(--hw-car-stop)';
-    else if (car.color === 'slow') fill = 'var(--hw-car-slow)';
-    else fill = 'var(--hw-car-flow)';
+    if (vis.fadeAge < 1) {
+      fill = 'var(--hw-car-flow)';
+    } else if (car.color === 'stop') {
+      fill = 'var(--hw-car-stop)';
+    } else if (car.color === 'slow') {
+      fill = 'var(--hw-car-slow)';
+    } else {
+      fill = 'var(--hw-car-flow)';
+    }
     el.body.setAttribute('fill', fill);
 
-    // Fade-in then sim opacity (fade-out)
-    vis.fadeAge = Math.min(1, (vis.fadeAge || 0) + 1 / FADE_IN_FRAMES);
+    // Opacity: fade-in × sim opacity (fade-out)
     const opacity = (car.opacity != null ? car.opacity : 1) * vis.fadeAge;
     el.g.setAttribute('opacity', opacity.toFixed(2));
   }
@@ -448,7 +481,7 @@ import { createSimulation } from './highway-sim.mjs';
       }
     }
 
-    // Every frame: spring-damper updates all car positions in screen space
+    // Every frame: velocity chase moves all car visuals toward sim targets
     if (lastFrame) {
       for (let u = 0; u < lastFrame.cars.length; u++) {
         updateCarEl(lastFrame.cars[u]);
