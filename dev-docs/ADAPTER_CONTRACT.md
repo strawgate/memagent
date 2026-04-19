@@ -177,6 +177,10 @@ The file path is:
 - Remainders, CRI aggregation state, and checkpoint math are keyed by source.
 - Bytes from one source must never complete or corrupt a partial line from a
   different source.
+- UDP datagrams must preserve sender-scoped source identity at the input-event
+  boundary (`recv_from` sender -> `InputEvent::Data.source_id`) so framing
+  state is isolated by sender instead of co-mingling all datagrams under
+  `None`.
 
 ### Newline-boundary checkpoint rules
 
