@@ -20,24 +20,25 @@ export var DEFAULTS = {
   mergeD: 170,
   gateD: 130,
   carW: 20,
-  minFollowPad: 14,
+  minFollowPad: 26,
   speedMax: 3.5,
-  spawnMs: 420,
+  spawnMs: 500,
   cycleTotal: 3000,
   greenPct: 80,
-  maxCars: 25,
+  maxCars: 16,
   lerpRate: 0.25,
   brakeRate: 0.3,
   followZone: 18,
   autoSpeed: 0.15,
   autoMin: 5,
   autoMax: 100,
-  scaleMin: 0.7,
-  scaleMax: 1.3,
+  scaleMin: 0.8,
+  scaleMax: 1.15,
   spawnBlockedThreshold: 8,
-  exitEntryD: 12,
+  exitEntryD: 22,
+  contEntryD: 18,
   hwyForkThreshold: 5,
-  hwyBlockedOffset: 4,
+  hwyBlockedOffset: 10,
   rampMergeThreshold: 3,
 };
 
@@ -197,9 +198,9 @@ export function createSimulation(overrides, scaleFn) {
 
       // End-of-segment blocking — wide braking zone for smooth deceleration
       if (opts.endBlocked) {
-        if (car.d >= segLen - 30) {
+        if (car.d >= segLen - 50) {
           var distToEnd = segLen - car.d;
-          target = Math.min(target, Math.max(0, distToEnd * 0.15));
+          target = Math.min(target, Math.max(0, distToEnd * 0.12));
         }
         if (car.d > segLen) { car.d = segLen; car.speed = 0; }
       }
@@ -273,7 +274,7 @@ export function createSimulation(overrides, scaleFn) {
       if (!lead || carsCont[j].d < lead.d) lead = carsCont[j];
     }
     if (!lead) return true;
-    return lead.d > (w + lead.w) / 2 + cfg.minFollowPad;
+    return (lead.d - cfg.contEntryD) > (w + lead.w) / 2 + cfg.minFollowPad;
   }
 
   function tryHwyToExit() {
@@ -293,7 +294,7 @@ export function createSimulation(overrides, scaleFn) {
         // Exit full — continue east
         carsHwy.splice(0, 1);
         front.segment = 'cont';
-        front.d = 0;
+        front.d = cfg.contEntryD;
         front.speed = Math.min(front.speed, cfg.speedMax);
         carsCont.push(front);
       } else {

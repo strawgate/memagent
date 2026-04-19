@@ -15,11 +15,11 @@
         <path id="hw-path-cont" d="M 560,100 L 775,100" fill="none" />
       </defs>
 
-      <!-- Highway road surface -->
-      <rect x="25" y="84" width="540" height="32" fill="var(--hw-road)" />
-      <line x1="25" y1="84" x2="565" y2="84" stroke="var(--hw-edge)" stroke-width="1.5" />
-      <line x1="25" y1="116" x2="565" y2="116" stroke="var(--hw-edge)" stroke-width="1.5" />
-      <line x1="40" y1="100" x2="550" y2="100" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="14,10" />
+      <!-- Highway road surface (full width including continuation) -->
+      <rect x="25" y="84" width="750" height="32" fill="var(--hw-road)" />
+      <line x1="25" y1="84" x2="775" y2="84" stroke="var(--hw-edge)" stroke-width="1.5" />
+      <line x1="25" y1="116" x2="775" y2="116" stroke="var(--hw-edge)" stroke-width="1.5" />
+      <line x1="40" y1="100" x2="770" y2="100" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="14,10" />
 
       <!-- Direction chevrons on highway -->
       <g opacity="0.25" stroke="var(--hw-dash)" stroke-width="1.5" fill="none">
@@ -36,11 +36,8 @@
       <path d="M 560,100 C 600,100 730,175 730,255" fill="none" stroke="var(--hw-road)" stroke-width="28" stroke-linecap="round" />
       <path d="M 560,100 C 600,100 730,175 730,255" fill="none" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="6,8" />
 
-      <!-- Highway continuation past fork (through traffic) -->
-      <rect x="555" y="84" width="220" height="32" fill="var(--hw-road)" opacity="0.35" />
-      <line x1="555" y1="84" x2="775" y2="84" stroke="var(--hw-edge)" stroke-width="1" opacity="0.25" />
-      <line x1="555" y1="116" x2="775" y2="116" stroke="var(--hw-edge)" stroke-width="1" opacity="0.25" />
-      <line x1="560" y1="100" x2="770" y2="100" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="14,10" opacity="0.15" />
+      <!-- Fork marker -->
+      <line x1="560" y1="84" x2="560" y2="116" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.35" />
 
       <!-- Merge zone marker -->
       <line x1="200" y1="84" x2="200" y2="116" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.35" />
