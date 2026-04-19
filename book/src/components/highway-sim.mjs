@@ -1,45 +1,40 @@
 /**
  * Highway backpressure simulation — pure logic, no DOM.
  *
- * Multi-route model:
- *   highway: cars enter from left, travel right to the fork
- *   ramp:    cars enter from bottom-left, merge into highway at mergeD
- *   exit:    cars leave highway via exit ramp (has traffic light)
- *   cont:    cars continue east past the fork (fade out, always flowing)
+ * Slot-based model: each road segment has a fixed number of slots.
+ * Each slot holds at most one car. Cars advance one slot per tick
+ * when the next slot is empty.
  *
- * At the fork, cars prefer the exit ramp. When the exit backs up,
- * cars that can't exit continue east. Eventually the backup cascades
- * to block the highway and on-ramp entrances.
+ * Multi-route layout:
+ *   highway: cars enter from left, travel right to the fork
+ *   ramp:    cars enter from bottom-left, merge into highway at mergeSlot
+ *   exit:    cars leave highway via exit ramp (has traffic light at gateSlot)
+ *   cont:    cars continue east past the fork (always flowing, fade out)
  */
 
 export var DEFAULTS = {
-  lenRamp: 180,
-  lenHwy: 530,
-  lenExit: 210,
-  lenCont: 215,
-  mergeD: 170,
-  gateD: 130,
+  slotsHwy: 15,
+  slotsRamp: 5,
+  slotsExit: 6,
+  slotsCont: 6,
+  mergeSlot: 5,       // highway slot where ramp merges in
+  gateSlot: 4,        // exit slot where traffic light is
   carW: 20,
-  minFollowPad: 14,
-  speedMax: 3.5,
   spawnMs: 420,
   cycleTotal: 3000,
   greenPct: 80,
   maxCars: 22,
-  lerpRate: 0.25,
-  brakeRate: 0.3,
-  followZone: 18,
   autoSpeed: 0.15,
   autoMin: 5,
   autoMax: 100,
   scaleMin: 0.8,
   scaleMax: 1.15,
   spawnBlockedThreshold: 8,
-  exitEntryD: 0,
-  contEntryD: 0,
-  hwyForkThreshold: 5,
-  hwyBlockedOffset: 2,
-  rampMergeThreshold: 3,
+  // Segment d-lengths for rendering (used to compute slot positions)
+  lenHwy: 530,
+  lenRamp: 180,
+  lenExit: 210,
+  lenCont: 215,
 };
 
 var SHAPES = ['sedan', 'truck', 'compact', 'van'];
@@ -59,17 +54,33 @@ export function createSimulation(overrides, scaleFn) {
     return cfg.scaleMin + Math.random() * (cfg.scaleMax - cfg.scaleMin);
   };
 
-  var nextId = 0;
-  var carsRamp = [];
-  var carsHwy = [];
-  var carsExit = [];
-  var carsCont = [];
+  // Compute slot d-positions for each segment
+  function slotPositions(count, segLen) {
+    var positions = [];
+    var spacing = count > 1 ? segLen / (count - 1) : 0;
+    for (var i = 0; i < count; i++) {
+      positions.push(i * spacing);
+    }
+    return positions;
+  }
 
+  var hwySlotD = slotPositions(cfg.slotsHwy, cfg.lenHwy);
+  var rampSlotD = slotPositions(cfg.slotsRamp, cfg.lenRamp);
+  var exitSlotD = slotPositions(cfg.slotsExit, cfg.lenExit);
+  var contSlotD = slotPositions(cfg.slotsCont, cfg.lenCont);
+
+  // Slot arrays — null means empty, otherwise holds a car object
+  var hwySlots = new Array(cfg.slotsHwy).fill(null);
+  var rampSlots = new Array(cfg.slotsRamp).fill(null);
+  var exitSlots = new Array(cfg.slotsExit).fill(null);
+  var contSlots = new Array(cfg.slotsCont).fill(null);
+
+  var nextId = 0;
   var lightIsGreen = true;
   var greenPct = cfg.greenPct;
   var cycleStart = 0;
   var lastSpawn = -Infinity;
-  var spawnSrc = 0; // alternates 0=hwy, 1=ramp
+  var spawnSrc = 0;
 
   var autoMode = true;
   var autoVal = greenPct;
@@ -82,52 +93,84 @@ export function createSimulation(overrides, scaleFn) {
 
   // ---- helpers ----
 
-  function makeCar(segment, d, speed, scale) {
+  function makeCar(segment, slotIdx, scale) {
     var s = scale != null ? scale : getScale();
     var shape = SHAPES[nextId % SHAPES.length];
     var shapeMul = SHAPE_W[shape] || 1;
-    var car = {
+    var slotD = getSlotD(segment, slotIdx);
+    return {
       id: nextId++,
       segment: segment,
-      d: d != null ? d : 0,
-      speed: speed != null ? speed : cfg.speedMax,
+      slot: slotIdx,
+      d: slotD,
+      targetD: slotD,
+      speed: 0,
       scale: s,
       w: cfg.carW * s * shapeMul,
       shape: shape,
-      color: 'flow',
+      color: 'stop',
       opacity: 1,
+      pastGate: false,
     };
-    car.color = carColor(car);
-    return car;
   }
 
-  function nextCarWidth(scale) {
-    var shape = SHAPES[nextId % SHAPES.length];
-    return cfg.carW * scale * (SHAPE_W[shape] || 1);
+  function getSlotD(segment, slotIdx) {
+    if (segment === 'highway') return hwySlotD[slotIdx] || 0;
+    if (segment === 'ramp') return rampSlotD[slotIdx] || 0;
+    if (segment === 'exit') return exitSlotD[slotIdx] || 0;
+    if (segment === 'cont') return contSlotD[slotIdx] || 0;
+    return 0;
+  }
+
+  function getSlots(segment) {
+    if (segment === 'highway') return hwySlots;
+    if (segment === 'ramp') return rampSlots;
+    if (segment === 'exit') return exitSlots;
+    if (segment === 'cont') return contSlots;
+    return null;
+  }
+
+  function getSegLen(segment) {
+    if (segment === 'highway') return cfg.lenHwy;
+    if (segment === 'ramp') return cfg.lenRamp;
+    if (segment === 'exit') return cfg.lenExit;
+    if (segment === 'cont') return cfg.lenCont;
+    return 0;
+  }
+
+  function allCars() {
+    var result = [];
+    var segments = [hwySlots, rampSlots, exitSlots, contSlots];
+    for (var s = 0; s < segments.length; s++) {
+      for (var i = 0; i < segments[s].length; i++) {
+        if (segments[s][i]) result.push(segments[s][i]);
+      }
+    }
+    return result;
+  }
+
+  function totalCars() {
+    var count = 0;
+    var segments = [hwySlots, rampSlots, exitSlots, contSlots];
+    for (var s = 0; s < segments.length; s++) {
+      for (var i = 0; i < segments[s].length; i++) {
+        if (segments[s][i]) count++;
+      }
+    }
+    return count;
   }
 
   function carColor(car) {
     if (car.speed < 0.15) return 'stop';
-    if (car.speed < cfg.speedMax * 0.35) return 'slow';
+    if (car.speed < 1.5) return 'slow';
     return 'flow';
-  }
-
-  function minGap(a, b) {
-    return (a.w + b.w) / 2 + cfg.minFollowPad;
-  }
-
-  function allCars() {
-    return carsRamp.concat(carsHwy, carsExit, carsCont);
-  }
-
-  function totalCars() {
-    return carsRamp.length + carsHwy.length + carsExit.length + carsCont.length;
   }
 
   // ---- light ----
 
   function tickLight(now) {
     if (greenPct >= 100) { lightIsGreen = true; return; }
+    if (greenPct <= 0) { lightIsGreen = false; return; }
     var elapsed = (now - cycleStart) % cfg.cycleTotal;
     lightIsGreen = elapsed < cfg.cycleTotal * greenPct / 100;
   }
@@ -140,262 +183,189 @@ export function createSimulation(overrides, scaleFn) {
     greenPct = Math.round(autoVal);
   }
 
-  // ---- spawning ----
+  // ---- segment advancement ----
 
-  function hasSpawnSpace(cars, entrantW) {
-    for (var j = 0; j < cars.length; j++) {
-      if (cars[j].d < (entrantW + cars[j].w) / 2 + cfg.minFollowPad) return false;
+  function advanceSegment(slots, slotDArr, segLen, opts) {
+    opts = opts || {};
+    // Process from the end (highest slot) to start, so each car
+    // sees the already-advanced state of the car ahead.
+    for (var i = slots.length - 1; i >= 0; i--) {
+      var car = slots[i];
+      if (!car) continue;
+
+      // Gate check — exit segment only
+      if (opts.hasGate && !lightIsGreen && !car.pastGate) {
+        if (i >= cfg.gateSlot) {
+          // Car is at or past the gate slot but hasn't been marked past gate
+          // (placed here manually or reached gate during red) — stop
+          car.speed = 0;
+          car.targetD = slotDArr[i];
+          car.color = carColor(car);
+          continue;
+        }
+      }
+
+      // Try to advance to next slot
+      var nextSlot = i + 1;
+      if (nextSlot < slots.length && slots[nextSlot] === null) {
+        // Gate blocking: can't advance past gateSlot if light is red
+        if (opts.hasGate && !lightIsGreen && !car.pastGate && nextSlot > cfg.gateSlot) {
+          car.speed = 0;
+          car.targetD = slotDArr[i];
+          car.color = carColor(car);
+          continue;
+        }
+
+        // Move forward
+        slots[i] = null;
+        slots[nextSlot] = car;
+        car.slot = nextSlot;
+        car.targetD = slotDArr[nextSlot];
+        car.speed = 3.5;
+
+        // Mark as past gate when crossing the gate slot
+        if (opts.hasGate && nextSlot > cfg.gateSlot) {
+          car.pastGate = true;
+        }
+      } else {
+        // Can't advance — stopped
+        car.speed = 0;
+        car.targetD = slotDArr[i];
+      }
+
+      // Fade for exit (past gate) and cont (full length)
+      if (opts.fadePastGate && car.pastGate) {
+        var gatePos = slotDArr[cfg.gateSlot] || 0;
+        var fadeLen = segLen - gatePos;
+        car.opacity = fadeLen > 0 ? Math.max(0, 1 - (car.targetD - gatePos) / fadeLen) : 0;
+      } else if (opts.fadeFullLen) {
+        car.opacity = segLen > 0 ? Math.max(0, 1 - car.targetD / segLen) : 0;
+      } else {
+        car.opacity = 1;
+      }
+
+      car.d = car.targetD;
+      car.color = carColor(car);
     }
-    return true;
   }
 
-  function trySpawnAt(segment, cars) {
-    var scale = getScale();
-    if (!hasSpawnSpace(cars, nextCarWidth(scale))) return null;
-    var car = makeCar(segment, 0, null, scale);
-    cars.push(car);
-    return car;
+  // ---- transitions ----
+
+  function tryHwyToExit() {
+    var lastHwy = cfg.slotsHwy - 1;
+    var car = hwySlots[lastHwy];
+    if (!car) return;
+
+    // Prefer exit ramp
+    if (exitSlots[0] === null) {
+      hwySlots[lastHwy] = null;
+      car.segment = 'exit';
+      car.slot = 0;
+      car.targetD = exitSlotD[0];
+      car.pastGate = false;
+      exitSlots[0] = car;
+      return;
+    }
+
+    // Continuation (only when light is green — prevents bypass during red)
+    if (lightIsGreen && contSlots[0] === null) {
+      hwySlots[lastHwy] = null;
+      car.segment = 'cont';
+      car.slot = 0;
+      car.targetD = contSlotD[0];
+      contSlots[0] = car;
+      return;
+    }
+
+    // Both full — car stays; mark as stopped
+    car.speed = 0;
   }
+
+  function tryRampMerge() {
+    var lastRamp = cfg.slotsRamp - 1;
+    var car = rampSlots[lastRamp];
+    if (!car) return;
+
+    // Merge into highway at mergeSlot if empty
+    if (hwySlots[cfg.mergeSlot] === null) {
+      rampSlots[lastRamp] = null;
+      car.segment = 'highway';
+      car.slot = cfg.mergeSlot;
+      car.targetD = hwySlotD[cfg.mergeSlot];
+      hwySlots[cfg.mergeSlot] = car;
+    } else {
+      car.speed = 0;
+    }
+  }
+
+  // ---- spawning ----
 
   function trySpawn(now) {
     if (totalCars() >= cfg.maxCars) return { kind: 'capped' };
     if (now - lastSpawn < cfg.spawnMs) return { kind: 'cooldown' };
 
+    var spawned = false;
+
+    // Alternate preferred source
     var src = spawnSrc;
     spawnSrc = 1 - spawnSrc;
-    var car = null;
 
     if (src === 0) {
-      car = trySpawnAt('highway', carsHwy) || trySpawnAt('ramp', carsRamp);
+      if (hwySlots[0] === null) {
+        hwySlots[0] = makeCar('highway', 0);
+        spawned = true;
+      } else if (rampSlots[0] === null) {
+        rampSlots[0] = makeCar('ramp', 0);
+        spawned = true;
+      }
     } else {
-      car = trySpawnAt('ramp', carsRamp) || trySpawnAt('highway', carsHwy);
+      if (rampSlots[0] === null) {
+        rampSlots[0] = makeCar('ramp', 0);
+        spawned = true;
+      } else if (hwySlots[0] === null) {
+        hwySlots[0] = makeCar('highway', 0);
+        spawned = true;
+      }
     }
 
-    if (car) {
+    if (spawned) {
       lastSpawn = now;
-      return { kind: 'spawned', car: car };
+      return { kind: 'spawned' };
     }
+
+    // Both entrances physically blocked
     return { kind: 'blocked' };
   }
 
-  // ---- movement within a segment ----
+  // ---- removal ----
 
-  function moveSegment(cars, segLen, opts) {
-    cars.sort(function (a, b) { return b.d - a.d; });
-    var phantoms = opts.phantoms || [];
+  function removeDelivered(now) {
+    var removedIds = [];
 
-    // Merge phantoms into a sorted list of obstacles (d descending)
-    // so they integrate with the following-distance logic.
-    var obstacles = cars.slice();
-    for (var p = 0; p < phantoms.length; p++) {
-      obstacles.push(phantoms[p]);
-    }
-    obstacles.sort(function (a, b) { return b.d - a.d; });
-
-    for (var i = 0; i < cars.length; i++) {
-      var car = cars[i];
-      var target = cfg.speedMax;
-
-      // Gate (light) — only on exit. Hard stop at traffic light.
-      if (opts.hasGate && !lightIsGreen && car.d < cfg.gateD + 1) {
-        var gateGap = cfg.gateD - car.d;
-        if (gateGap < cfg.followZone + car.w / 2) {
-          target = Math.min(target, Math.max(0, gateGap * cfg.brakeRate));
-        }
-      }
-
-      // End-of-segment blocking — smooth braking zone
-      if (opts.endBlocked) {
-        if (car.d >= segLen - 50) {
-          var distToEnd = segLen - car.d;
-          target = Math.min(target, Math.max(0, distToEnd * 0.12));
-        }
-        if (car.d > segLen) {
-          car.d -= (car.d - segLen) * 0.5;
-          car.speed *= 0.3;
-        }
-      }
-
-      // Following distance — find nearest obstacle ahead (real or phantom)
-      var nearestAhead = null;
-      for (var oi = 0; oi < obstacles.length; oi++) {
-        var ob = obstacles[oi];
-        if (ob === car) continue;
-        if (ob.d > car.d && (!nearestAhead || ob.d < nearestAhead.d)) {
-          nearestAhead = ob;
-        }
-      }
-      if (nearestAhead) {
-        var gap = nearestAhead.d - car.d;
-        var mg = (car.w + (nearestAhead.w || cfg.carW)) / 2 + cfg.minFollowPad;
-        if (gap < mg + cfg.followZone) {
-          target = Math.min(target, Math.max(0, (gap - mg) * cfg.brakeRate));
-        }
-      }
-
-      // Smooth speed
-      car.speed += (target - car.speed) * cfg.lerpRate;
-      if (car.speed < 0.03) car.speed = 0;
-      car.d += car.speed;
-
-      // Hard gate clamp — car must not overshoot the traffic light
-      if (opts.hasGate && !lightIsGreen && car.d > cfg.gateD) {
-        car.d = cfg.gateD;
-        car.speed = 0;
-      }
-
-      // Hard gap enforcement — prevent overlap, match speed of car ahead
-      if (nearestAhead) {
-        var mg2 = (car.w + (nearestAhead.w || cfg.carW)) / 2 + cfg.minFollowPad;
-        if (nearestAhead.d - car.d < mg2) {
-          car.d = nearestAhead.d - mg2;
-          car.speed = Math.min(car.speed, nearestAhead.speed != null ? nearestAhead.speed : 0);
-        }
-      }
-
-      if (car.d < 0) car.d = 0;
-
-      // Fade past gate on exit, or full-length fade on continuation
-      if (opts.fade && opts.fadeLen) {
-        var fadeStart = opts.fadeStart || 0;
-        car.opacity = Math.max(0, 1 - (car.d - fadeStart) / opts.fadeLen);
-      } else if (opts.fade && car.d > cfg.gateD) {
-        car.opacity = Math.max(0, 1 - (car.d - cfg.gateD) / (segLen - cfg.gateD));
-      } else {
-        car.opacity = 1;
-      }
-
-      car.color = carColor(car);
-    }
-
-    // Post-loop gap enforcement pass — cars sorted by d descending (leader first)
-    // Push each follower back if it overlaps the car ahead
-    for (var gi = 1; gi < cars.length; gi++) {
-      var ahead2 = cars[gi - 1];
-      var behind = cars[gi];
-      var reqGap = (ahead2.w + behind.w) / 2 + cfg.minFollowPad;
-      if (ahead2.d - behind.d < reqGap) {
-        behind.d = ahead2.d - reqGap;
-        behind.speed = Math.min(behind.speed, ahead2.speed);
+    // Exit: remove cars at last slot (delivered) or fully faded
+    var lastExit = cfg.slotsExit - 1;
+    for (var i = lastExit; i >= 0; i--) {
+      var ec = exitSlots[i];
+      if (!ec) continue;
+      if (i === lastExit || ec.opacity <= 0.01) {
+        removedIds.push(ec.id);
+        deliveries.push(now);
+        exitSlots[i] = null;
       }
     }
-  }
 
-  // ---- phantom obstacle builders ----
-  // Project cars from adjacent segments into this segment's coordinate
-  // space so the smooth following/braking physics prevents visual overlap
-  // at merge and fork junctions.
-
-  function hwyPhantoms() {
-    var ph = [];
-    // Exit cars near entry → appear at highway d = lenHwy + exitCar.d
-    for (var e = 0; e < carsExit.length; e++) {
-      if (carsExit[e].d < cfg.exitEntryD + 40) {
-        ph.push({ d: cfg.lenHwy + carsExit[e].d, w: carsExit[e].w, speed: carsExit[e].speed });
+    // Cont: remove cars at last slot or fully faded
+    var lastCont = cfg.slotsCont - 1;
+    for (var j = lastCont; j >= 0; j--) {
+      var cc = contSlots[j];
+      if (!cc) continue;
+      if (j === lastCont || cc.opacity <= 0.01) {
+        removedIds.push(cc.id);
+        contSlots[j] = null;
       }
     }
-    // Cont cars near entry → appear at highway d = lenHwy + contCar.d
-    for (var c = 0; c < carsCont.length; c++) {
-      if (carsCont[c].d < cfg.contEntryD + 40) {
-        ph.push({ d: cfg.lenHwy + carsCont[c].d, w: carsCont[c].w, speed: carsCont[c].speed });
-      }
-    }
-    return ph;
-  }
 
-  function rampPhantoms() {
-    var ph = [];
-    // Highway cars near mergeD → appear at ramp d = lenRamp + (hwyCar.d - mergeD)
-    for (var h = 0; h < carsHwy.length; h++) {
-      var dist = carsHwy[h].d - cfg.mergeD;
-      if (Math.abs(dist) < 50) {
-        ph.push({ d: cfg.lenRamp + dist, w: carsHwy[h].w, speed: carsHwy[h].speed });
-      }
-    }
-    return ph;
-  }
-
-  // ---- transitions ----
-
-  function canEnterExit(enterW) {
-    var w = enterW || cfg.carW;
-    var lead = null;
-    for (var j = 0; j < carsExit.length; j++) {
-      if (!lead || carsExit[j].d < lead.d) lead = carsExit[j];
-    }
-    if (!lead) return true;
-    return (lead.d - cfg.exitEntryD) > (w + lead.w) / 2 + cfg.minFollowPad;
-  }
-
-  function canMergeAt(d, w) {
-    for (var i = 0; i < carsHwy.length; i++) {
-      var hw = carsHwy[i];
-      var needed = (hw.w + w) / 2 + cfg.minFollowPad;
-      if (Math.abs(hw.d - d) < needed) return false;
-    }
-    return true;
-  }
-
-  function canEnterCont(enterW) {
-    var w = enterW || cfg.carW;
-    var lead = null;
-    for (var j = 0; j < carsCont.length; j++) {
-      if (!lead || carsCont[j].d < lead.d) lead = carsCont[j];
-    }
-    if (!lead) return true;
-    return (lead.d - cfg.contEntryD) > (w + lead.w) / 2 + cfg.minFollowPad;
-  }
-
-  function leadNearEnd(cars, segLen, threshold) {
-    var lead = null;
-    for (var i = 0; i < cars.length; i++) {
-      if (!lead || cars[i].d > lead.d) lead = cars[i];
-    }
-    if (!lead || lead.d < segLen - threshold) return null;
-    return lead;
-  }
-
-  function tryHwyToExit() {
-    if (carsHwy.length === 0) return;
-    carsHwy.sort(function (a, b) { return b.d - a.d; });
-    while (carsHwy.length > 0) {
-      var front = carsHwy[0];
-      if (front.d < cfg.lenHwy - cfg.hwyForkThreshold) break;
-      if (canEnterExit(front.w)) {
-        carsHwy.splice(0, 1);
-        front.segment = 'exit';
-        front.d = cfg.exitEntryD;
-        front.speed = Math.min(front.speed, cfg.speedMax * 0.8);
-        carsExit.push(front);
-      } else if (lightIsGreen && canEnterCont(front.w)) {
-        carsHwy.splice(0, 1);
-        front.segment = 'cont';
-        front.d = cfg.contEntryD;
-        front.speed = Math.min(front.speed, cfg.speedMax);
-        carsCont.push(front);
-      } else {
-        // Both paths full — block at the fork
-        front.d = cfg.lenHwy - cfg.hwyBlockedOffset;
-        front.speed = 0;
-        break;
-      }
-    }
-  }
-
-  function tryRampMerge() {
-    if (carsRamp.length === 0) return;
-    carsRamp.sort(function (a, b) { return b.d - a.d; });
-    var front = carsRamp[0];
-    if (front.d < cfg.lenRamp - cfg.rampMergeThreshold) return;
-    if (canMergeAt(cfg.mergeD, front.w)) {
-      carsRamp.splice(0, 1);
-      front.segment = 'highway';
-      front.d = cfg.mergeD;
-      carsHwy.push(front);
-    } else {
-      front.d = cfg.lenRamp;
-      front.speed = 0;
-    }
+    return removedIds;
   }
 
   // ---- main tick ----
@@ -405,48 +375,30 @@ export function createSimulation(overrides, scaleFn) {
     tickAuto();
     tickLight(now);
 
-    var removedIds = [];
+    // 1. Remove delivered
+    var removedIds = removeDelivered(now);
 
-    // 1. Remove delivered (exit faded, cont off-screen)
-    for (var i = carsExit.length - 1; i >= 0; i--) {
-      if (carsExit[i].d >= cfg.lenExit || carsExit[i].opacity <= 0.01) {
-        removedIds.push(carsExit[i].id);
-        deliveries.push(now);
-        carsExit.splice(i, 1);
-      }
-    }
-    for (var ic = carsCont.length - 1; ic >= 0; ic--) {
-      if (carsCont[ic].d >= cfg.lenCont || carsCont[ic].opacity <= 0.01) {
-        removedIds.push(carsCont[ic].id);
-        carsCont.splice(ic, 1);
-      }
-    }
+    // 2. Advance continuation (downstream first — frees slots)
+    advanceSegment(contSlots, contSlotD, cfg.lenCont, { fadeFullLen: true });
 
-    // 2. Move continuation (always free-flowing, fade out)
-    moveSegment(carsCont, cfg.lenCont, { fade: true, fadeStart: 0, fadeLen: cfg.lenCont });
-
-    // 3. Move exit (downstream first — frees space)
-    moveSegment(carsExit, cfg.lenExit, { hasGate: true, fade: true });
-
-    // 4. Highway → exit or continuation
+    // 3. Highway → exit/cont transition (before exit advancement,
+    //    so a full exit causes overflow to cont)
     tryHwyToExit();
 
-    // 5. Move highway — block when the lead car has no permitted fork path.
-    var hwyLead = leadNearEnd(carsHwy, cfg.lenHwy, cfg.hwyForkThreshold);
-    var forkFull = !!hwyLead && !canEnterExit(hwyLead.w)
-      && (!lightIsGreen || !canEnterCont(hwyLead.w));
-    moveSegment(carsHwy, cfg.lenHwy, { endBlocked: forkFull, phantoms: hwyPhantoms() });
+    // 4. Advance exit
+    advanceSegment(exitSlots, exitSlotD, cfg.lenExit, { hasGate: true, fadePastGate: true });
 
-    // 6. Try transition again (car may have moved to end this tick)
+    // 5. Advance highway
+    advanceSegment(hwySlots, hwySlotD, cfg.lenHwy);
+
+    // 6. Try transition again (after highway advancement freed the lead car)
     tryHwyToExit();
 
-    // 7. Ramp → highway
+    // 7. Ramp → highway merge (before ramp advancement)
     tryRampMerge();
 
-    // 8. Move ramp (with highway phantoms at merge zone)
-    var rampLead = leadNearEnd(carsRamp, cfg.lenRamp, cfg.rampMergeThreshold);
-    var mergeFull = !!rampLead && !canMergeAt(cfg.mergeD, rampLead.w);
-    moveSegment(carsRamp, cfg.lenRamp, { endBlocked: mergeFull, phantoms: rampPhantoms() });
+    // 8. Advance ramp
+    advanceSegment(rampSlots, rampSlotD, cfg.lenRamp);
 
     // 9. Try merge again
     tryRampMerge();
@@ -456,10 +408,6 @@ export function createSimulation(overrides, scaleFn) {
     if (spawn.kind === 'blocked') {
       spawnBlockedTicks++;
     } else if (spawn.kind !== 'cooldown') {
-      // Reset on 'spawned' (car entered) and 'capped' (at capacity but
-      // entrances not physically blocked).  Only 'cooldown' preserves
-      // the counter — the spawn timer hasn't elapsed so we can't tell
-      // whether the entrance is clear.
       spawnBlockedTicks = 0;
     }
 
@@ -477,7 +425,6 @@ export function createSimulation(overrides, scaleFn) {
 
     var stallPct = totalFrames > 0 ? Math.round(stalledFrames / totalFrames * 100) : 0;
 
-    // Status — only "blocked" when spawn entrance is actually blocked
     var status;
     if (spawnBlockedTicks >= cfg.spawnBlockedThreshold) {
       status = { level: 'blocked', msg: 'Traffic backed up to the on-ramp \u2014 no new cars can enter' };
@@ -511,17 +458,28 @@ export function createSimulation(overrides, scaleFn) {
     isAuto: function () { return autoMode; },
     setCycleStart: function (t) { cycleStart = t; },
     setLastSpawn: function (t) { lastSpawn = t; },
-    addCar: function (segment, d, speed, scale) {
-      if (segment !== 'ramp' && segment !== 'highway' && segment !== 'exit' && segment !== 'cont') {
-        throw new Error('unknown highway simulation segment: ' + segment);
+    addCar: function (segment, slotIdx, speed, scale) {
+      var slots = getSlots(segment);
+      if (!slots) {
+        throw new Error('unknown segment ' + segment);
       }
-      var car = makeCar(segment, d, speed, scale);
-      if (segment === 'ramp') carsRamp.push(car);
-      else if (segment === 'highway') carsHwy.push(car);
-      else if (segment === 'exit') carsExit.push(car);
-      else if (segment === 'cont') carsCont.push(car);
+      if (slotIdx < 0 || slotIdx >= slots.length) {
+        throw new Error('invalid slot ' + slotIdx + ' for segment ' + segment);
+      }
+      if (slots[slotIdx] !== null) {
+        throw new Error('slot ' + slotIdx + ' on ' + segment + ' is occupied');
+      }
+      var car = makeCar(segment, slotIdx, scale);
+      if (speed != null) car.speed = speed;
+      slots[slotIdx] = car;
       return car;
     },
+    getSlots: function (segment) {
+      var slots = getSlots(segment);
+      if (!slots) throw new Error('unknown segment ' + segment);
+      return slots.slice();
+    },
+    getSlotD: getSlotD,
     cfg: cfg,
   };
 }
