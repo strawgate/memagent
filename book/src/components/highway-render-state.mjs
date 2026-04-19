@@ -7,6 +7,9 @@
  * sampled from SVG paths and stitched together in screen space — there are no
  * coordinate-system jumps.
  *
+ * Spacing is enforced by the sim's slot model (no two cars share a slot).
+ * This module does NOT do collision detection — it trusts the sim.
+ *
  * Usage:
  *   const rs = createRenderState({ fadeInFrames: 12, maxSpeed: 4, ... });
  *   rs.addCar(id, x, y, angle, initSpeed);
@@ -24,7 +27,6 @@ export const RENDER_DEFAULTS = {
   decelDist: 30,
   snapDist: 0.5,
   angleRate: 0.25,
-  minSep: 18, // minimum screen-space distance between car centers
 };
 
 export function createRenderState(overrides) {
@@ -62,56 +64,27 @@ export function createRenderState(overrides) {
     });
   }
 
-  // Compute how far `car` can move toward its first waypoint before
-  // colliding with another car that's roughly ahead of it.
-  // Returns the max movement distance (pixels this frame).
-  function clearanceAhead(car, id) {
-    if (car.waypoints.length === 0) return Infinity;
-    const wp = car.waypoints[0];
-    const dx = wp.x - car.x;
-    const dy = wp.y - car.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < 0.01) return Infinity;
-
-    const dirX = dx / dist;
-    const dirY = dy / dist;
-
-    let minAhead = Infinity;
-    for (const otherId in cars) {
-      if (otherId === id) continue;
-      const other = cars[otherId];
-      const odx = other.x - car.x;
-      const ody = other.y - car.y;
-      // Project onto our movement direction
-      const ahead = odx * dirX + ody * dirY;
-      if (ahead <= 0) continue; // behind us — ignore
-      // Perpendicular distance — only care if roughly in our lane
-      const perpSq = (odx * odx + ody * ody) - ahead * ahead;
-      if (perpSq > cfg.minSep * cfg.minSep) continue; // different lane
-      if (ahead < minAhead) minAhead = ahead;
-    }
-    // Usable gap = distance to nearest car ahead minus the separation buffer
-    return Math.max(0, minAhead - cfg.minSep);
-  }
-
-  function stepCar(car, maxMove) {
+  function stepCar(car) {
     if (car.waypoints.length === 0) {
+      // No target — decelerate to stop
       car.speed = Math.max(0, car.speed - cfg.accel * 2);
       return;
     }
 
+    // Current target is the first unconsumed waypoint
     const wp = car.waypoints[0];
     const dx = wp.x - car.x;
     const dy = wp.y - car.y;
     const dist = Math.sqrt(dx * dx + dy * dy);
 
     if (dist < cfg.snapDist) {
+      // Snap to waypoint and consume it
       car.x = wp.x;
       car.y = wp.y;
       car.color = wp.color;
       car.opacity = wp.opacity;
       car.waypoints.shift();
-      if (car.waypoints.length > 0) return;
+      if (car.waypoints.length > 0) return; // next frame picks up next wp
       car.speed = 0;
       return;
     }
@@ -128,17 +101,13 @@ export function createRenderState(overrides) {
       prevY = nxt.y;
     }
 
-    // Desired speed — decelerate for both path end AND clearance
-    const pathDesired = Math.min(
+    // Desired speed: decelerate when approaching end of waypoints
+    const desired = Math.min(
       cfg.maxSpeed,
       (totalDist / cfg.decelDist) * cfg.maxSpeed,
     );
-    // Also decelerate to respect clearance ahead
-    const clearDesired = maxMove < Infinity
-      ? Math.min(cfg.maxSpeed, (maxMove / cfg.decelDist) * cfg.maxSpeed)
-      : cfg.maxSpeed;
-    const desired = Math.min(pathDesired, clearDesired);
 
+    // Accelerate or brake
     if (car.speed < desired) {
       car.speed = Math.min(car.speed + cfg.accel, desired);
     } else {
@@ -146,12 +115,11 @@ export function createRenderState(overrides) {
     }
     car.speed = Math.max(0, car.speed);
 
-    // Hard cap: never move more than available clearance
-    let moveD = Math.min(car.speed, maxMove);
-
     const dirX = dx / dist;
     const dirY = dy / dist;
+    const moveD = car.speed;
 
+    // Don't overshoot current waypoint — consume and carry leftover
     if (moveD >= dist) {
       car.x = wp.x;
       car.y = wp.y;
@@ -186,12 +154,9 @@ export function createRenderState(overrides) {
   }
 
   function step() {
-    const ids = Object.keys(cars);
-    for (let i = 0; i < ids.length; i++) {
-      const id = ids[i];
+    for (const id in cars) {
       const car = cars[id];
-      const maxMove = clearanceAhead(car, id);
-      stepCar(car, maxMove);
+      stepCar(car);
       car.fadeAge = Math.min(1, car.fadeAge + 1 / cfg.fadeInFrames);
     }
   }
