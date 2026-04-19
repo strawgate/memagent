@@ -197,6 +197,27 @@ output:
 }
 
 #[test]
+fn top_level_dotted_yaml_key_is_rejected_as_unknown_field() {
+    let yaml = r#"
+server.log_level: debug
+input:
+  type: generator
+output:
+  type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("unknown field"),
+        "dotted YAML key should remain literal and be rejected: {err}"
+    );
+    assert!(
+        err.contains("server.log_level"),
+        "error should name the literal dotted key: {err}"
+    );
+}
+
+#[test]
 fn generator_attribute_scalar_types_are_preserved() {
     let yaml = r#"
 input:

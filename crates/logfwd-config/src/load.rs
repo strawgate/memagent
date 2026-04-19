@@ -143,30 +143,12 @@ impl Config {
 }
 
 fn deserialize_raw_config_with_path(value: Value) -> Result<RawConfig, ConfigError> {
-    let config = config_rs::Config::builder()
-        .add_source(YamlValueSource {
-            root: yaml_value_to_config_root(value)?,
-        })
-        .build()
-        .map_err(config_deserialization_error)?;
-    config
-        .try_deserialize()
-        .map_err(config_deserialization_error)
-}
-
-#[derive(Clone, Debug)]
-struct YamlValueSource {
-    root: config_rs::Map<String, config_rs::Value>,
-}
-
-impl config_rs::Source for YamlValueSource {
-    fn clone_into_box(&self) -> Box<dyn config_rs::Source + Send + Sync> {
-        Box::new(self.clone())
-    }
-
-    fn collect(&self) -> Result<config_rs::Map<String, config_rs::Value>, config_rs::ConfigError> {
-        Ok(self.root.clone())
-    }
+    config_rs::Value::new(
+        None,
+        config_rs::ValueKind::Table(yaml_value_to_config_root(value)?),
+    )
+    .try_deserialize()
+    .map_err(config_deserialization_error)
 }
 
 fn config_deserialization_error(err: config_rs::ConfigError) -> ConfigError {
