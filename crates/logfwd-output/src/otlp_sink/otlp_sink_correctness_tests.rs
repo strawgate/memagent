@@ -81,3 +81,23 @@ fn encode_unsigned_flags_as_field_8() {
         "UInt64",
     );
 }
+
+#[test]
+fn encode_flags_uint64_out_of_range_silently_dropped() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "flags",
+        DataType::UInt64,
+        true,
+    )]));
+    let arr = UInt64Array::from(vec![u64::from(u32::MAX) + 1]);
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).expect("flags batch");
+
+    let mut sink = make_sink();
+    sink.encode_batch(&batch, &make_metadata());
+
+    // field 8, wire type 5 tag = 0x45 — must NOT appear when value > u32::MAX
+    assert!(
+        !contains_bytes(&sink.encoder_buf, &[0x45u8]),
+        "flags field 8 must not be encoded for out-of-range UInt64 value"
+    );
+}

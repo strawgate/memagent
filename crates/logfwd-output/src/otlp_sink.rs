@@ -1368,7 +1368,7 @@ fn encode_row_as_log_record(
     }
 
     // LogRecord.flags (fixed32) — W3C trace flags.
-    // Clamp to u32 range: negative or >u32::MAX values are invalid per the
+    // Filter to u32 range: negative or >u32::MAX values are invalid per the
     // W3C Trace Context spec (only 8 bits are defined). (#1121)
     if let Some((_, arr)) = columns.flags_col
         && let Some(flags) = arr.value_u32(row)
