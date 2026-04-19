@@ -1,22 +1,30 @@
-<p align="center">
-  <img src="assets/brand/readme-header.svg" alt="FastForward" width="600" />
-</p>
+<div align="center">
 
-# FastForward
+<!-- omit in toc -->
 
-<p align="center">
-  <em>a blazing-fast log, metric & trace forwarder — built with rust</em>
-</p>
+<picture>
+  <source width="400" media="(prefers-color-scheme: dark)" srcset="assets/brand/lockup-dark.svg">
+  <source width="400" media="(prefers-color-scheme: light)" srcset="assets/brand/lockup-light.svg">
+  <img width="400" alt="FastForward" src="assets/brand/lockup-dark.svg">
+</picture>
 
-> **Note:** The CLI binary is currently named `logfwd` and will be renamed to `ff` in a future release.
+<strong>a blazing-fast log, metric & trace forwarder — built with rust</strong>
 
-A Rust log forwarder that tails files, parses JSON and Kubernetes CRI logs with portable SIMD, transforms with SQL, and ships to any OTLP-compatible collector — at 1.7 million lines/second on a single ARM64 core.
+[![Docs](https://img.shields.io/badge/docs-fastforward-D85A30)](https://strawgate.github.io/memagent/)
+[![CI](https://github.com/strawgate/memagent/actions/workflows/ci.yml/badge.svg)](https://github.com/strawgate/memagent/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/strawgate/memagent)](https://github.com/strawgate/memagent/blob/main/LICENSE)
+
+</div>
+
+---
+
+FastForward tails files, parses JSON and Kubernetes CRI logs with portable SIMD, transforms with SQL, and ships to any OTLP-compatible collector — at **1.7 million lines/second** on a single ARM64 core.
 
 ```
 log files → SIMD parse → Arrow RecordBatch → DataFusion SQL → OTLP → your collector
 ```
 
----
+> **Note:** The CLI binary is currently named `logfwd` and will be renamed to `ff` in a future release.
 
 ## Quick Start
 
