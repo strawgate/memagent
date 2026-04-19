@@ -90,6 +90,13 @@ pub(super) fn decode_otlp_protobuf_bytes_with_mode(
         OtlpProtobufDecodeMode::Prost => decode_otlp_protobuf_with_prost(&body, resource_prefix),
         #[cfg(any(feature = "otlp-research", test))]
         OtlpProtobufDecodeMode::ProjectedFallback => {
+            match super::projection::classify_projected_fallback_support(&body) {
+                Ok(()) => {}
+                Err(ProjectionError::Unsupported(_)) => {
+                    return decode_otlp_protobuf_with_prost(&body, resource_prefix);
+                }
+                Err(err) => return Err(InputError::Receiver(err.to_string())),
+            }
             match super::projection::decode_projected_otlp_logs_view_bytes(
                 body.clone(),
                 resource_prefix,

@@ -1,0 +1,189 @@
+{
+  "name": "otlp_projection",
+  "version": 1,
+  "messages": [
+    {
+      "name": "ExportLogsServiceRequest",
+      "fields": [
+        {
+          "name": "resource_logs",
+          "number": 1,
+          "wire": "len",
+          "action": "descend",
+          "message": "ResourceLogs"
+        }
+      ]
+    },
+    {
+      "name": "ResourceLogs",
+      "fields": [
+        {
+          "name": "resource",
+          "number": 1,
+          "wire": "len",
+          "action": "descend",
+          "message": "Resource"
+        },
+        {
+          "name": "scope_logs",
+          "number": 2,
+          "wire": "len",
+          "action": "descend",
+          "message": "ScopeLogs"
+        }
+      ]
+    },
+    {
+      "name": "Resource",
+      "fields": [
+        {
+          "name": "attributes",
+          "number": 1,
+          "wire": "len",
+          "action": "descend",
+          "message": "KeyValue"
+        }
+      ]
+    },
+    {
+      "name": "ScopeLogs",
+      "fields": [
+        {
+          "name": "scope",
+          "number": 1,
+          "wire": "len",
+          "action": "descend",
+          "message": "InstrumentationScope"
+        },
+        {
+          "name": "log_records",
+          "number": 2,
+          "wire": "len",
+          "action": "descend",
+          "message": "LogRecord"
+        }
+      ]
+    },
+    {
+      "name": "InstrumentationScope",
+      "fields": [
+        { "name": "name", "number": 1, "wire": "len", "action": "project" },
+        { "name": "version", "number": 2, "wire": "len", "action": "project" }
+      ]
+    },
+    {
+      "name": "LogRecord",
+      "fields": [
+        {
+          "name": "time_unix_nano",
+          "number": 1,
+          "wire": "fixed64",
+          "action": "project"
+        },
+        {
+          "name": "severity_number",
+          "number": 2,
+          "wire": "varint",
+          "action": "project"
+        },
+        {
+          "name": "severity_text",
+          "number": 3,
+          "wire": "len",
+          "action": "project"
+        },
+        {
+          "name": "body",
+          "number": 5,
+          "wire": "len",
+          "action": "descend",
+          "message": "AnyValue"
+        },
+        {
+          "name": "attributes",
+          "number": 6,
+          "wire": "len",
+          "action": "descend",
+          "message": "KeyValue"
+        },
+        { "name": "flags", "number": 8, "wire": "fixed32", "action": "project" },
+        { "name": "trace_id", "number": 9, "wire": "len", "action": "project" },
+        { "name": "span_id", "number": 10, "wire": "len", "action": "project" },
+        {
+          "name": "observed_time_unix_nano",
+          "number": 11,
+          "wire": "fixed64",
+          "action": "project"
+        }
+      ]
+    },
+    {
+      "name": "KeyValue",
+      "fields": [
+        { "name": "key", "number": 1, "wire": "len", "action": "project" },
+        {
+          "name": "value",
+          "number": 2,
+          "wire": "len",
+          "action": "descend",
+          "message": "AnyValue"
+        }
+      ]
+    },
+    {
+      "name": "AnyValue",
+      "oneof": "value",
+      "fields": [
+        {
+          "name": "string_value",
+          "number": 1,
+          "wire": "len",
+          "action": "project",
+          "kind": "string"
+        },
+        {
+          "name": "bool_value",
+          "number": 2,
+          "wire": "varint",
+          "action": "project",
+          "kind": "bool"
+        },
+        {
+          "name": "int_value",
+          "number": 3,
+          "wire": "varint",
+          "action": "project",
+          "kind": "int"
+        },
+        {
+          "name": "double_value",
+          "number": 4,
+          "wire": "fixed64",
+          "action": "project",
+          "kind": "double"
+        },
+        {
+          "name": "array_value",
+          "number": 5,
+          "wire": "len",
+          "action": "unsupported",
+          "kind": "array"
+        },
+        {
+          "name": "kvlist_value",
+          "number": 6,
+          "wire": "len",
+          "action": "unsupported",
+          "kind": "kvlist"
+        },
+        {
+          "name": "bytes_value",
+          "number": 7,
+          "wire": "len",
+          "action": "project",
+          "kind": "bytes"
+        }
+      ]
+    }
+  ]
+}
