@@ -288,6 +288,15 @@ fn append_data_row_origins(
     let mut line_start = 0usize;
     for newline in memchr::memchr_iter(b'\n', bytes) {
         let segment_has_content = scanner_line_has_content(&bytes[line_start..newline]);
+        if let Some(pending) = pending_row_origin
+            && pending.source_id != source_id
+        {
+            tracing::debug!(
+                pending_source_id = ?pending.source_id,
+                current_source_id = ?source_id,
+                "split line crosses source boundary; attributing to first fragment"
+            );
+        }
         let origin = pending_row_origin
             .take()
             .unwrap_or_else(|| PendingRowOrigin {
