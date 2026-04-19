@@ -1378,6 +1378,7 @@ mod verification {
         kani::assume(len > 12 && len <= 20); // bounded for solver tractability
 
         let block_idx: u32 = kani::any();
+        kani::assume(block_idx <= 4); // bounded for solver tractability
         let local_offset: u32 = kani::any();
         kani::assume(local_offset <= 8); // keep buffer small
         kani::assume((local_offset as usize) + (len as usize) <= 32);
