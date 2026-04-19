@@ -110,9 +110,9 @@ mod passthrough {
         /// explicit opt-ins in the DataFusion-backed analyzer.
         pub fn source_metadata_plan(&self) -> SourceMetadataPlan {
             SourceMetadataPlan {
-                source_id: false,
-                input: false,
-                source_path: true,
+                has_source_id: false,
+                has_input: false,
+                has_source_path: true,
             }
         }
 
@@ -126,7 +126,7 @@ mod passthrough {
 
         /// Return whether the transform needs source paths attached.
         pub fn source_path_required(&self) -> bool {
-            self.source_metadata_plan().source_path
+            self.source_metadata_plan().has_source_path
         }
     }
 

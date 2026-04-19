@@ -518,7 +518,7 @@ impl Pipeline {
             let requested_source_metadata_plan = transform.analyzer().source_metadata_plan();
             let explicit_source_metadata_plan =
                 transform.analyzer().explicit_source_metadata_plan();
-            if explicit_source_metadata_plan.any() && !input_cfg.source_metadata {
+            if explicit_source_metadata_plan.has_any() && !input_cfg.source_metadata {
                 return Err(format!(
                     "pipeline '{name}' input '{input_name}': SQL references source metadata \
                      columns (_source_id, _input, or _source_path), but source_metadata is disabled; \
@@ -833,7 +833,7 @@ mod tests {
         assert!(
             pipeline.input_transforms[0]
                 .source_metadata_plan
-                .source_path
+                .has_source_path
         );
     }
 
@@ -853,9 +853,9 @@ mod tests {
         assert_eq!(
             pipeline.input_transforms[0].source_metadata_plan,
             SourceMetadataPlan {
-                source_id: false,
-                input: false,
-                source_path: true,
+                has_source_id: false,
+                has_input: false,
+                has_source_path: true,
             }
         );
     }

@@ -350,15 +350,17 @@ impl InputSource for FramedInput {
                                 });
                             }
                         }
-                        // Reclaim per-source state after EOF. For S3/TCP
-                        // sources EOF is terminal — the SourceId is never
-                        // reused. For file-tail, EOF fires on idle; if the
-                        // file grows again, a fresh SourceState is created on
-                        // the next Data event. The remainder was already
-                        // flushed above, so checkpoint_data() correctly falls
-                        // back to the raw file offset (no remainder to
-                        // subtract).
-                        self.sources.remove(&key);
+                        // Reclaim only completed EOF state. CRI P/F assembly
+                        // can hold pending data even when the line remainder
+                        // is empty, and file-tail EOF can be an idle signal
+                        // rather than a terminal source event.
+                        if self
+                            .sources
+                            .get(&key)
+                            .is_some_and(SourceState::is_reclaimable)
+                        {
+                            self.sources.remove(&key);
+                        }
                     }
                 }
             }
@@ -1712,6 +1714,51 @@ mod tests {
         assert!(
             framed.sources.is_empty(),
             "CRI source state should be reclaimed after the full record completes"
+        );
+    }
+
+    #[test]
+    fn eof_does_not_reclaim_pending_cri_fragment() {
+        let stats = make_stats();
+        let sid = SourceId(43);
+        let source = MockSource::new(vec![
+            vec![InputEvent::Data {
+                bytes: b"2024-01-01T00:00:00.000000000Z stdout P {\"msg\":\"part\n".to_vec(),
+                source_id: Some(sid),
+                accounted_bytes: 58,
+            }],
+            vec![InputEvent::EndOfFile {
+                source_id: Some(sid),
+            }],
+            vec![InputEvent::Data {
+                bytes: b"2024-01-01T00:00:00.000000000Z stdout F ial\"}\n".to_vec(),
+                source_id: Some(sid),
+                accounted_bytes: 53,
+            }],
+        ]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::cri(1024, stats.clone()),
+            stats,
+        );
+
+        assert!(framed.poll().unwrap().is_empty());
+        assert!(
+            framed.sources.contains_key(&Some(sid)),
+            "CRI P fragment should leave pending format state"
+        );
+
+        assert!(framed.poll().unwrap().is_empty());
+        assert!(
+            framed.sources.contains_key(&Some(sid)),
+            "EOF must not remove pending CRI state"
+        );
+
+        let output = collect_data(framed.poll().unwrap());
+        assert!(
+            output.ends_with(b"\"msg\":\"partial\"}\n"),
+            "unexpected CRI output after EOF: {}",
+            String::from_utf8_lossy(&output)
         );
     }
 }

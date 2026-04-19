@@ -101,7 +101,7 @@ fn flush_buf(
     }
     let data = buf.split().freeze();
     let checkpoints = source.checkpoint_data();
-    let source_paths = if source_metadata_plan.source_path {
+    let source_paths = if source_metadata_plan.has_source_path {
         std::mem::take(buffered_source_paths)
     } else {
         buffered_source_paths.clear();
@@ -255,7 +255,7 @@ fn source_metadata_for_batch(
     source_paths: &HashMap<SourceId, String>,
     plan: SourceMetadataPlan,
 ) -> Result<RecordBatch, ArrowError> {
-    if !plan.any() {
+    if !plan.has_any() {
         return Ok(batch);
     }
 
@@ -268,7 +268,7 @@ fn source_metadata_for_batch(
     }
 
     let mut columns = Vec::with_capacity(3);
-    if plan.source_id {
+    if plan.has_source_id {
         let mut builder = UInt64Builder::with_capacity(batch.num_rows());
         for span in row_origins {
             for _ in 0..span.rows {
@@ -285,7 +285,7 @@ fn source_metadata_for_batch(
         });
     }
 
-    if plan.input {
+    if plan.has_input {
         let array = input_metadata_array(batch.num_rows(), row_origins)?;
         columns.push(MetadataColumn {
             name: field_names::INPUT,
@@ -294,7 +294,7 @@ fn source_metadata_for_batch(
         });
     }
 
-    if plan.source_path {
+    if plan.has_source_path {
         let array = source_path_metadata_array(batch.num_rows(), row_origins, source_paths)?;
         columns.push(MetadataColumn {
             name: field_names::SOURCE_PATH,
@@ -508,7 +508,7 @@ fn io_worker_loop(
                 std::thread::sleep(poll_interval);
             }
         } else {
-            let source_path_snapshot = if source_metadata_plan.source_path {
+            let source_path_snapshot = if source_metadata_plan.has_source_path {
                 input.source.source_paths()
             } else {
                 Vec::new()
@@ -518,8 +518,8 @@ fn io_worker_loop(
                     InputEvent::Data {
                         bytes, source_id, ..
                     } => {
-                        if source_metadata_plan.any() {
-                            if source_metadata_plan.source_path {
+                        if source_metadata_plan.has_any() {
+                            if source_metadata_plan.has_source_path {
                                 capture_source_path(
                                     &mut input.source_paths,
                                     &source_path_snapshot,
@@ -573,7 +573,7 @@ fn io_worker_loop(
                         }
                         buffered_since = None;
 
-                        let row_origins = if source_metadata_plan.any() {
+                        let row_origins = if source_metadata_plan.has_any() {
                             vec![RowOriginSpan {
                                 source_id,
                                 input_name: Arc::clone(&input_name),
@@ -582,7 +582,7 @@ fn io_worker_loop(
                         } else {
                             Vec::new()
                         };
-                        let source_paths = if source_metadata_plan.source_path {
+                        let source_paths = if source_metadata_plan.has_source_path {
                             source_paths_by_id(&source_path_snapshot, &row_origins)
                         } else {
                             HashMap::new()
@@ -665,7 +665,7 @@ fn io_worker_loop(
     if !input.buf.is_empty() {
         let data = input.buf.split().freeze();
         let checkpoints = input.source.checkpoint_data();
-        let source_paths = if source_metadata_plan.source_path {
+        let source_paths = if source_metadata_plan.has_source_path {
             std::mem::take(&mut input.source_paths)
         } else {
             input.source_paths.clear();
@@ -993,9 +993,9 @@ mod tests {
             &row_origins,
             &source_paths,
             SourceMetadataPlan {
-                source_id: true,
-                input: true,
-                source_path: true,
+                has_source_id: true,
+                has_input: true,
+                has_source_path: true,
             },
         )
         .expect("metadata attach should succeed");
@@ -1138,9 +1138,9 @@ mod tests {
                 Duration::from_millis(1),
                 0,
                 SourceMetadataPlan {
-                    source_id: true,
-                    input: true,
-                    source_path: true,
+                    has_source_id: true,
+                    has_input: true,
+                    has_source_path: true,
                 },
             );
         });
@@ -1188,7 +1188,7 @@ mod tests {
             &row_origins,
             &source_paths,
             SourceMetadataPlan {
-                source_path: true,
+                has_source_path: true,
                 ..SourceMetadataPlan::default()
             },
         )
@@ -1220,7 +1220,7 @@ mod tests {
             &row_origins,
             &HashMap::new(),
             SourceMetadataPlan {
-                source_id: true,
+                has_source_id: true,
                 ..SourceMetadataPlan::default()
             },
         )
