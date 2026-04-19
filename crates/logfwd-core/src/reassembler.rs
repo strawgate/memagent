@@ -33,10 +33,12 @@ use alloc::vec::Vec;
 /// CRI partial line aggregator. Merges P/F lines into complete messages.
 pub struct CriReassembler {
     pending: Vec<u8>,
+    line_fragment: Vec<u8>,
     max_message_size: usize,
     /// Set to `true` when any chunk in the current P/F sequence was truncated
     /// due to `max_message_size`. Reset in `reset()`.
     truncated: bool,
+    line_fragment_truncated: bool,
 }
 
 /// Result of feeding a line to the aggregator.
@@ -62,8 +64,10 @@ impl CriReassembler {
     pub fn new(max_message_size: usize) -> Self {
         CriReassembler {
             pending: Vec::new(),
+            line_fragment: Vec::new(),
             max_message_size,
             truncated: false,
+            line_fragment_truncated: false,
         }
     }
 
@@ -123,7 +127,9 @@ impl CriReassembler {
     /// internal buffer and truncation flag but preserves allocated capacity.
     pub fn reset(&mut self) {
         self.pending.clear();
+        self.line_fragment.clear();
         self.truncated = false;
+        self.line_fragment_truncated = false;
     }
 
     /// Returns true if there are pending partial lines.
@@ -134,6 +140,43 @@ impl CriReassembler {
     /// Returns the configured maximum message size.
     pub fn max_message_size(&self) -> usize {
         self.max_message_size
+    }
+
+    /// Append raw bytes for an unterminated CRI line split across chunk boundaries.
+    ///
+    /// The buffered bytes are bounded by `max_message_size` to prevent unbounded
+    /// growth if a stream never emits a newline.
+    pub(crate) fn push_line_fragment(&mut self, bytes: &[u8]) {
+        let remaining = self
+            .max_message_size
+            .saturating_sub(self.line_fragment.len());
+        let to_add = bytes.len().min(remaining);
+        if to_add < bytes.len() {
+            self.line_fragment_truncated = true;
+        }
+        self.line_fragment.extend_from_slice(&bytes[..to_add]);
+    }
+
+    /// Returns true if raw CRI bytes are buffered for the next chunk.
+    pub(crate) fn has_line_fragment(&self) -> bool {
+        !self.line_fragment.is_empty()
+    }
+
+    /// Returns true if the buffered raw CRI line fragment was truncated.
+    pub(crate) fn line_fragment_truncated(&self) -> bool {
+        self.line_fragment_truncated
+    }
+
+    /// Clear any buffered raw CRI line fragment and truncation state.
+    pub(crate) fn clear_line_fragment(&mut self) {
+        self.line_fragment.clear();
+        self.line_fragment_truncated = false;
+    }
+
+    /// Move out the buffered raw CRI line fragment and clear truncation state.
+    pub(crate) fn take_line_fragment(&mut self) -> Vec<u8> {
+        self.line_fragment_truncated = false;
+        core::mem::take(&mut self.line_fragment)
     }
 }
 
@@ -219,10 +262,13 @@ mod tests {
         let mut agg = CriReassembler::new(1024);
         agg.feed(b"some data", false);
         let cap_before = agg.pending.capacity();
+        agg.push_line_fragment(b"partial-cri-line");
         agg.reset();
         assert_eq!(agg.pending.capacity(), cap_before);
         assert!(agg.pending.is_empty());
+        assert!(!agg.has_line_fragment());
         assert!(!agg.truncated);
+        assert!(!agg.line_fragment_truncated);
     }
 
     #[test]
