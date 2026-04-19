@@ -24,6 +24,8 @@ struct SourceMetadataUsage {
 #[derive(Default)]
 struct SourceMetadataScope {
     logs_aliases: HashSet<String>,
+    visible_relations: usize,
+    logs_relations: usize,
 }
 
 impl SourceMetadataScope {
@@ -35,6 +37,10 @@ impl SourceMetadataScope {
         self.logs_aliases
             .iter()
             .any(|alias| alias.eq_ignore_ascii_case(qualifier))
+    }
+
+    fn bare_identifiers_resolve_to_logs(&self) -> bool {
+        self.logs_relations == 1 && self.visible_relations == 1
     }
 }
 
@@ -1230,7 +1236,9 @@ fn collect_logs_aliases_from_table_factor(
 ) {
     match factor {
         sqlast::TableFactor::Table { name, alias, .. } => {
+            scope.visible_relations = scope.visible_relations.saturating_add(1);
             if object_name_last_eq(name, "logs") {
+                scope.logs_relations = scope.logs_relations.saturating_add(1);
                 scope.logs_aliases.insert("logs".to_string());
                 if let Some(alias) = alias {
                     scope.logs_aliases.insert(alias.name.value.clone());
@@ -1238,6 +1246,7 @@ fn collect_logs_aliases_from_table_factor(
             }
         }
         sqlast::TableFactor::Derived { subquery, .. } => {
+            scope.visible_relations = scope.visible_relations.saturating_add(1);
             collect_logs_source_metadata_from_query(subquery, usage);
         }
         sqlast::TableFactor::NestedJoin {
@@ -1250,7 +1259,9 @@ fn collect_logs_aliases_from_table_factor(
         | sqlast::TableFactor::MatchRecognize { table, .. } => {
             collect_logs_aliases_from_table_factor(table, usage, scope);
         }
-        _ => {}
+        _ => {
+            scope.visible_relations = scope.visible_relations.saturating_add(1);
+        }
     }
 }
 
@@ -1337,7 +1348,7 @@ fn collect_logs_source_metadata_from_expr(
 ) {
     match expr {
         SqlExpr::Identifier(ident) => {
-            if scope.has_logs() {
+            if scope.bare_identifiers_resolve_to_logs() {
                 collect_source_metadata_name(&ident.value, usage);
             }
         }
@@ -1781,6 +1792,26 @@ mod tests {
         let analyzer = QueryAnalyzer::new(
             "SELECT l.msg FROM logs l \
              LEFT JOIN k8s k ON l._source_path = k.log_path_prefix",
+        )
+        .unwrap();
+        assert!(analyzer.explicit_source_metadata_plan().has_source_path);
+    }
+
+    #[test]
+    fn explicit_source_metadata_plan_ignores_ambiguous_bare_join_reference() {
+        let analyzer = QueryAnalyzer::new(
+            "SELECT _source_path FROM logs \
+             LEFT JOIN k8s k ON logs.path = k.log_path_prefix",
+        )
+        .unwrap();
+        assert_eq!(
+            analyzer.explicit_source_metadata_plan(),
+            SourceMetadataPlan::default()
+        );
+
+        let analyzer = QueryAnalyzer::new(
+            "SELECT logs._source_path FROM logs \
+             LEFT JOIN k8s k ON logs.path = k.log_path_prefix",
         )
         .unwrap();
         assert!(analyzer.explicit_source_metadata_plan().has_source_path);

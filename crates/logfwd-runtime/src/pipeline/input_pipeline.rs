@@ -1050,6 +1050,7 @@ mod tests {
     use bytes::Bytes;
     use logfwd_arrow::Scanner;
     use logfwd_types::source_metadata::SourceMetadataPlan;
+    use proptest::prelude::*;
 
     // --- InputPipelineManager integration tests ---
     // These test the full split pipeline via from_config + run, so they
@@ -1145,6 +1146,22 @@ mod tests {
             .scan(Bytes::from_static(b"\r\n"))
             .expect("scan raw");
         assert_eq!(raw_batch.num_rows(), scanner_ready_row_count(b"\r\n"));
+    }
+
+    proptest! {
+        #[test]
+        fn scanner_ready_row_count_matches_scanner_for_generated_bytes(
+            bytes in prop::collection::vec(any::<u8>(), 0..256),
+            line_field in any::<bool>(),
+        ) {
+            let mut config = logfwd_core::scan_config::ScanConfig::default();
+            if line_field {
+                config.line_field_name = Some(field_names::BODY.to_string());
+            }
+            let mut scanner = Scanner::new(config);
+            let batch = scanner.scan(Bytes::from(bytes.clone())).expect("scan");
+            prop_assert_eq!(batch.num_rows(), scanner_ready_row_count(&bytes));
+        }
     }
 
     #[test]
@@ -1303,6 +1320,70 @@ mod tests {
         }
     }
 
+    struct BatchSource {
+        emitted: bool,
+    }
+
+    impl logfwd_io::input::InputSource for BatchSource {
+        fn poll(&mut self) -> std::io::Result<Vec<InputEvent>> {
+            if self.emitted {
+                return Ok(Vec::new());
+            }
+            self.emitted = true;
+            let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
+            let batch =
+                RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["a", "b"]))])
+                    .expect("batch");
+            Ok(vec![InputEvent::Batch {
+                batch,
+                source_id: Some(SourceId(12)),
+                accounted_bytes: 2,
+            }])
+        }
+
+        fn name(&self) -> &'static str {
+            "batch-source"
+        }
+
+        fn health(&self) -> logfwd_types::diagnostics::ComponentHealth {
+            logfwd_types::diagnostics::ComponentHealth::Healthy
+        }
+
+        fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
+            vec![(SourceId(12), PathBuf::from("/var/log/batch.log"))]
+        }
+    }
+
+    struct ShutdownDrainSource {
+        emitted: bool,
+    }
+
+    impl logfwd_io::input::InputSource for ShutdownDrainSource {
+        fn poll(&mut self) -> std::io::Result<Vec<InputEvent>> {
+            if self.emitted {
+                return Ok(Vec::new());
+            }
+            self.emitted = true;
+            Ok(vec![InputEvent::Data {
+                bytes: b"{\"msg\":\"drain\"}\n".to_vec(),
+                source_id: Some(SourceId(13)),
+                accounted_bytes: 16,
+            }])
+        }
+
+        fn name(&self) -> &'static str {
+            "shutdown-drain-source"
+        }
+
+        fn health(&self) -> logfwd_types::diagnostics::ComponentHealth {
+            logfwd_types::diagnostics::ComponentHealth::Healthy
+        }
+
+        fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
+            vec![(SourceId(13), PathBuf::from("/var/log/drain.log"))]
+        }
+    }
+
     #[test]
     fn io_worker_uses_configured_input_name_for_source_metadata() {
         let (tx, mut rx) = mpsc::channel(IO_CPU_CHANNEL_CAPACITY);
@@ -1414,6 +1495,123 @@ mod tests {
         assert_eq!(
             chunk.source_paths.get(&SourceId(7)).map(String::as_str),
             Some("/var/log/split.log")
+        );
+    }
+
+    #[test]
+    fn io_worker_attaches_source_metadata_to_batch_event() {
+        let (tx, mut rx) = mpsc::channel(IO_CPU_CHANNEL_CAPACITY);
+        let shutdown = CancellationToken::new();
+        let stats = Arc::new(logfwd_types::diagnostics::ComponentStats::new_with_health(
+            logfwd_types::diagnostics::ComponentHealth::Starting,
+        ));
+        let input = InputState {
+            source: Box::new(BatchSource { emitted: false }),
+            buf: bytes::BytesMut::new(),
+            row_origins: Vec::new(),
+            source_paths: HashMap::new(),
+            stats,
+        };
+        let meter = opentelemetry::global::meter("io_worker_batch_source_metadata");
+        let metrics = Arc::new(PipelineMetrics::new("test", "SELECT * FROM logs", &meter));
+        let worker_shutdown = shutdown.clone();
+
+        let handle = std::thread::spawn(move || {
+            io_worker_loop(
+                input,
+                Arc::from("configured-input"),
+                tx,
+                metrics,
+                worker_shutdown,
+                usize::MAX,
+                Duration::from_secs(60),
+                Duration::from_millis(1),
+                0,
+                SourceMetadataPlan {
+                    has_source_id: true,
+                    has_input: true,
+                    has_source_path: true,
+                },
+            );
+        });
+
+        let item = rx.blocking_recv().expect("io worker item");
+        shutdown.cancel();
+        drop(rx);
+        handle.join().expect("io worker exits");
+
+        let IoWorkItem::Batch {
+            batch,
+            row_origins,
+            source_paths,
+            ..
+        } = item
+        else {
+            panic!("expected batch item");
+        };
+        assert_eq!(batch.num_rows(), 2);
+        assert_eq!(row_origins.len(), 1);
+        assert_eq!(row_origins[0].source_id, Some(SourceId(12)));
+        assert_eq!(row_origins[0].rows, 2);
+        assert_eq!(
+            source_paths.get(&SourceId(12)).map(String::as_str),
+            Some("/var/log/batch.log")
+        );
+    }
+
+    #[test]
+    fn io_worker_shutdown_drains_buffered_source_metadata() {
+        let (tx, mut rx) = mpsc::channel(IO_CPU_CHANNEL_CAPACITY);
+        let shutdown = CancellationToken::new();
+        let stats = Arc::new(logfwd_types::diagnostics::ComponentStats::new_with_health(
+            logfwd_types::diagnostics::ComponentHealth::Starting,
+        ));
+        let input = InputState {
+            source: Box::new(ShutdownDrainSource { emitted: false }),
+            buf: bytes::BytesMut::new(),
+            row_origins: Vec::new(),
+            source_paths: HashMap::new(),
+            stats,
+        };
+        let meter = opentelemetry::global::meter("io_worker_shutdown_drain");
+        let metrics = Arc::new(PipelineMetrics::new("test", "SELECT * FROM logs", &meter));
+        let worker_shutdown = shutdown.clone();
+
+        let handle = std::thread::spawn(move || {
+            io_worker_loop(
+                input,
+                Arc::from("configured-input"),
+                tx,
+                metrics,
+                worker_shutdown,
+                usize::MAX,
+                Duration::from_secs(60),
+                Duration::from_millis(1),
+                0,
+                SourceMetadataPlan {
+                    has_source_id: true,
+                    has_input: true,
+                    has_source_path: true,
+                },
+            );
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        shutdown.cancel();
+        let item = rx.blocking_recv().expect("shutdown drain item");
+        drop(rx);
+        handle.join().expect("io worker exits");
+
+        let IoWorkItem::Bytes(chunk) = item else {
+            panic!("expected byte chunk");
+        };
+        assert_eq!(chunk.bytes.as_ref(), b"{\"msg\":\"drain\"}\n");
+        assert_eq!(chunk.row_origins.len(), 1);
+        assert_eq!(chunk.row_origins[0].source_id, Some(SourceId(13)));
+        assert_eq!(chunk.row_origins[0].rows, 1);
+        assert_eq!(
+            chunk.source_paths.get(&SourceId(13)).map(String::as_str),
+            Some("/var/log/drain.log")
         );
     }
 
