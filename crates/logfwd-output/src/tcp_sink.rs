@@ -102,6 +102,7 @@ where
             match write_remaining_bytes(active_stream, buf, &mut written).await {
                 Ok(()) => return Ok(()),
                 Err(e) => {
+                    written = retry_record_boundary(buf, written);
                     *stream = None;
                     last_error = Some(e);
                     if attempt == 1 {
@@ -139,6 +140,13 @@ where
         }
     }
     Ok(())
+}
+
+fn retry_record_boundary(buf: &[u8], written: usize) -> usize {
+    buf[..written.min(buf.len())]
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index + 1)
 }
 
 impl Sink for TcpSink {
@@ -300,7 +308,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_with_retry_does_not_duplicate_after_partial_write_error() {
+    async fn write_with_retry_restarts_interrupted_record_after_partial_write_error() {
         let payload = b"abcdef";
         let first_seen = Arc::new(Mutex::new(Vec::new()));
         let second_seen = Arc::new(Mutex::new(Vec::new()));
@@ -313,7 +321,10 @@ mod tests {
                 ],
                 Arc::clone(&first_seen),
             ),
-            ScriptedWriter::new(vec![ScriptStep::Write(4)], Arc::clone(&second_seen)),
+            ScriptedWriter::new(
+                vec![ScriptStep::Write(payload.len())],
+                Arc::clone(&second_seen),
+            ),
         ]);
         let mut current = Some(writers.pop_front().expect("first writer missing"));
 
@@ -328,7 +339,48 @@ mod tests {
         .expect("write_with_retry should succeed");
 
         assert_eq!(&*first_seen.lock().expect("first lock poisoned"), b"ab");
-        assert_eq!(&*second_seen.lock().expect("second lock poisoned"), b"cdef");
+        assert_eq!(
+            &*second_seen.lock().expect("second lock poisoned"),
+            b"abcdef"
+        );
+    }
+
+    #[tokio::test]
+    async fn write_with_retry_does_not_replay_completed_records() {
+        let payload = b"first\nsecond\n";
+        let first_seen = Arc::new(Mutex::new(Vec::new()));
+        let second_seen = Arc::new(Mutex::new(Vec::new()));
+
+        let mut writers = VecDeque::from([
+            ScriptedWriter::new(
+                vec![
+                    ScriptStep::Write(9),
+                    ScriptStep::Error(io::ErrorKind::BrokenPipe),
+                ],
+                Arc::clone(&first_seen),
+            ),
+            ScriptedWriter::new(vec![ScriptStep::Write(7)], Arc::clone(&second_seen)),
+        ]);
+        let mut current = Some(writers.pop_front().expect("first writer missing"));
+
+        write_with_retry_generic(payload, &mut current, move || {
+            std::future::ready(
+                writers
+                    .pop_front()
+                    .ok_or_else(|| io::Error::other("no reconnect writer available")),
+            )
+        })
+        .await
+        .expect("write_with_retry should succeed");
+
+        assert_eq!(
+            &*first_seen.lock().expect("first lock poisoned"),
+            b"first\nsec"
+        );
+        assert_eq!(
+            &*second_seen.lock().expect("second lock poisoned"),
+            b"second\n"
+        );
     }
 
     #[tokio::test]
