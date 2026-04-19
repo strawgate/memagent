@@ -158,8 +158,8 @@ export function createSimulation(overrides, scaleFn) {
   }
 
   function trySpawn(now) {
-    if (totalCars() >= cfg.maxCars) return null;
-    if (now - lastSpawn < cfg.spawnMs) return null;
+    if (totalCars() >= cfg.maxCars) return { kind: 'capped' };
+    if (now - lastSpawn < cfg.spawnMs) return { kind: 'cooldown' };
 
     var src = spawnSrc;
     spawnSrc = 1 - spawnSrc;
@@ -171,8 +171,11 @@ export function createSimulation(overrides, scaleFn) {
       car = trySpawnAt('ramp', carsRamp) || trySpawnAt('highway', carsHwy);
     }
 
-    if (car) lastSpawn = now;
-    return car;
+    if (car) {
+      lastSpawn = now;
+      return { kind: 'spawned', car: car };
+    }
+    return { kind: 'blocked' };
   }
 
   // ---- movement within a segment ----
@@ -326,6 +329,15 @@ export function createSimulation(overrides, scaleFn) {
     return (lead.d - cfg.contEntryD) > (w + lead.w) / 2 + cfg.minFollowPad;
   }
 
+  function leadNearEnd(cars, segLen, threshold) {
+    var lead = null;
+    for (var i = 0; i < cars.length; i++) {
+      if (!lead || cars[i].d > lead.d) lead = cars[i];
+    }
+    if (!lead || lead.d < segLen - threshold) return null;
+    return lead;
+  }
+
   function tryHwyToExit() {
     if (carsHwy.length === 0) return;
     carsHwy.sort(function (a, b) { return b.d - a.d; });
@@ -339,8 +351,8 @@ export function createSimulation(overrides, scaleFn) {
         front.d = cfg.exitEntryD;
         front.speed = Math.min(front.speed, cfg.speedMax * 0.8);
         carsExit.push(front);
-      } else if (canEnterCont(front.w)) {
-        // Exit full — continue east
+      } else if (lightIsGreen && canEnterCont(front.w)) {
+        // Exit spacing is temporarily full while traffic is flowing — continue east.
         carsHwy.splice(0, 1);
         front.segment = 'cont';
         front.d = cfg.contEntryD;
@@ -404,8 +416,10 @@ export function createSimulation(overrides, scaleFn) {
     // 4. Highway → exit or continuation
     tryHwyToExit();
 
-    // 5. Move highway — block only if BOTH exit and cont are full
-    var forkFull = !canEnterExit(cfg.carW) && !canEnterCont(cfg.carW);
+    // 5. Move highway — block when the lead car has no permitted fork path.
+    var hwyLead = leadNearEnd(carsHwy, cfg.lenHwy, cfg.hwyForkThreshold);
+    var forkFull = !!hwyLead && !canEnterExit(hwyLead.w)
+      && (!lightIsGreen || !canEnterCont(hwyLead.w));
     moveSegment(carsHwy, cfg.lenHwy, { endBlocked: forkFull, phantoms: hwyPhantoms() });
 
     // 6. Try transition again (car may have moved to end this tick)
@@ -415,17 +429,18 @@ export function createSimulation(overrides, scaleFn) {
     tryRampMerge();
 
     // 8. Move ramp (with highway phantoms at merge zone)
-    var mergeFull = !canMergeAt(cfg.mergeD, cfg.carW);
+    var rampLead = leadNearEnd(carsRamp, cfg.lenRamp, cfg.rampMergeThreshold);
+    var mergeFull = !!rampLead && !canMergeAt(cfg.mergeD, rampLead.w);
     moveSegment(carsRamp, cfg.lenRamp, { endBlocked: mergeFull, phantoms: rampPhantoms() });
 
     // 9. Try merge again
     tryRampMerge();
 
     // 10. Spawn
-    var spawned = trySpawn(now);
-    if (!spawned && now - lastSpawn >= cfg.spawnMs) {
+    var spawn = trySpawn(now);
+    if (spawn.kind === 'blocked') {
       spawnBlockedTicks++;
-    } else if (spawned) {
+    } else if (spawn.kind === 'spawned') {
       spawnBlockedTicks = 0;
     }
 

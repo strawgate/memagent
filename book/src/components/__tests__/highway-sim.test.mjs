@@ -23,6 +23,12 @@ function runTicks(sim, n, start, dt) {
   return last;
 }
 
+function newestCar(cars) {
+  return cars.reduce(function (newest, car) {
+    return !newest || car.id > newest.id ? car : newest;
+  }, null);
+}
+
 // ---------------------------------------------------------------------------
 // Traffic light cycling
 // ---------------------------------------------------------------------------
@@ -97,15 +103,23 @@ describe('car spawning', function () {
     var sim = createSimulation({ spawnMs: 10, maxCars: 10 }, fixedScale(1));
     sim.exitAuto();
     sim.tick(100);
-    sim.tick(200);
     var cars = sim.getCars();
-    var segments = new Set(cars.map(function (c) { return c.segment; }));
-    assert.ok(segments.has('highway') || segments.has('ramp'), 'should spawn on highway or ramp');
-    // With more ticks, should get both
-    for (var t = 3; t <= 8; t++) sim.tick(t * 100);
+    assert.equal(cars.length, 1);
+    assert.equal(newestCar(cars).segment, 'highway');
+
+    sim.tick(200);
     cars = sim.getCars();
-    segments = new Set(cars.map(function (c) { return c.segment; }));
-    assert.ok(segments.size >= 2, 'should spawn on both segments');
+    assert.equal(cars.length, 2);
+    assert.equal(newestCar(cars).segment, 'ramp');
+
+    for (var t = 3; t <= 6; t++) {
+      sim.tick(t * 100);
+      cars = sim.getCars();
+      cars.sort(function (a, b) { return a.id - b.id; });
+      var newest = cars[cars.length - 1];
+      var previous = cars[cars.length - 2];
+      assert.notEqual(newest.segment, previous.segment, 'spawn source should alternate');
+    }
   });
 
   it('respects maxCars', function () {
@@ -272,6 +286,27 @@ describe('red light on exit', function () {
     assert.ok(hwyCars.length > 0, 'car should still be on highway');
     assert.ok(hwyCars[0].speed < 1, 'highway car should be blocked by full exit+cont');
   });
+
+  it('red exit saturation blocks instead of bypassing through continuation', function () {
+    var sim = createSimulation({
+      greenPct: 0, cycleTotal: 100,
+      lenExit: 210, lenHwy: 530, lenCont: 215,
+      gateD: 130, spawnMs: 99999,
+    }, fixedScale(1));
+    sim.setCycleStart(0);
+    sim.exitAuto();
+    sim.setLastSpawn(99999);
+    sim.addCar('exit', 12, 0);
+    sim.addCar('highway', 528, 3.5);
+
+    var frame = sim.tick(100);
+    var hwyCars = frame.cars.filter(function (c) { return c.segment === 'highway'; });
+    var contCars = frame.cars.filter(function (c) { return c.segment === 'cont'; });
+
+    assert.equal(contCars.length, 0, 'red exit saturation should not route into continuation');
+    assert.equal(hwyCars.length, 1, 'car should remain on highway');
+    assert.ok(hwyCars[0].speed < 1, 'car should brake at the fork');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -424,7 +459,7 @@ describe('status', function () {
       greenPct: 0, cycleTotal: 100,
       lenHwy: 530, lenRamp: 180, lenExit: 210, lenCont: 215,
       mergeD: 170, gateD: 130, spawnMs: 10,
-      spawnBlockedThreshold: 5,
+      spawnBlockedThreshold: 5, maxCars: 60,
     }, fixedScale(1));
     sim.setCycleStart(0);
     sim.exitAuto();
@@ -448,6 +483,21 @@ describe('status', function () {
       frame = sim.tick(t * 25);
     }
     assert.equal(frame.status.level, 'blocked');
+  });
+
+  it('does not report blocked only because maxCars is reached', function () {
+    var sim = createSimulation({
+      maxCars: 1, spawnMs: 10, spawnBlockedThreshold: 2,
+      greenPct: 100, cycleTotal: 100,
+    }, fixedScale(1));
+    sim.exitAuto();
+    sim.addCar('highway', 200, 3.5);
+
+    var frame;
+    for (var t = 0; t < 10; t++) {
+      frame = sim.tick(t * 25);
+    }
+    assert.notEqual(frame.status.level, 'blocked');
   });
 });
 
