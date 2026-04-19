@@ -9,7 +9,7 @@ use arrow::record_batch::RecordBatch;
 use arrow::util::display::array_value_to_string;
 use memchr::memchr2;
 
-use crate::conflict_columns::{ColInfo, ResolvedCol, get_array, is_null};
+use crate::conflict_columns::{ColInfo, ResolvedCol, TypedArrayRef, get_array, is_null};
 
 /// Coalesce a conflict field to a `String` using `str_variants` ordering
 /// (Utf8 wins, then Boolean, Int64, Float64).  Returns `None` if all variants
@@ -305,13 +305,116 @@ pub(crate) fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) -
     Ok(())
 }
 
-/// Write a single row as a JSON object using pre-resolved column references.
+/// Write a single pre-typed Arrow value as JSON.
 ///
-/// This is the fast-path variant of [`write_row_json`] that avoids per-row
-/// `batch.columns().get()` + `Arc::deref` + `downcast_ref` overhead by using
-/// [`ResolvedCol`] slices built once per batch. For single-variant flat columns
-/// (the common case), the hot loop does a single `is_null` + `write_json_value`
-/// with no iterator or Vec indirection.
+/// Like [`write_json_value`] but dispatches on a [`TypedArrayRef`] enum
+/// discriminant instead of calling virtual `data_type()` + `downcast_ref()`
+/// per row.  The caller guarantees the row is not null, eliminating the
+/// redundant `is_null()` check at the top of `write_json_value`.
+pub(crate) fn write_typed_json_value(
+    typed: &TypedArrayRef,
+    row: usize,
+    out: &mut Vec<u8>,
+) -> io::Result<()> {
+    match typed {
+        TypedArrayRef::Null => {
+            out.extend_from_slice(b"null");
+        }
+        TypedArrayRef::Int8(a) => {
+            out.extend_from_slice(itoa::Buffer::new().format(a.value(row)).as_bytes());
+        }
+        TypedArrayRef::Int16(a) => {
+            out.extend_from_slice(itoa::Buffer::new().format(a.value(row)).as_bytes());
+        }
+        TypedArrayRef::Int32(a) => {
+            out.extend_from_slice(itoa::Buffer::new().format(a.value(row)).as_bytes());
+        }
+        TypedArrayRef::Int64(a) => {
+            out.extend_from_slice(itoa::Buffer::new().format(a.value(row)).as_bytes());
+        }
+        TypedArrayRef::UInt8(a) => {
+            out.extend_from_slice(itoa::Buffer::new().format(a.value(row)).as_bytes());
+        }
+        TypedArrayRef::UInt16(a) => {
+            out.extend_from_slice(itoa::Buffer::new().format(a.value(row)).as_bytes());
+        }
+        TypedArrayRef::UInt32(a) => {
+            out.extend_from_slice(itoa::Buffer::new().format(a.value(row)).as_bytes());
+        }
+        TypedArrayRef::UInt64(a) => {
+            out.extend_from_slice(itoa::Buffer::new().format(a.value(row)).as_bytes());
+        }
+        TypedArrayRef::Float32(a) => {
+            let v = a.value(row);
+            if v.is_finite() {
+                out.extend_from_slice(ryu::Buffer::new().format_finite(v).as_bytes());
+            } else {
+                out.extend_from_slice(b"null");
+            }
+        }
+        TypedArrayRef::Float64(a) => {
+            let v = a.value(row);
+            if v.is_finite() {
+                out.extend_from_slice(ryu::Buffer::new().format_finite(v).as_bytes());
+            } else {
+                out.extend_from_slice(b"null");
+            }
+        }
+        TypedArrayRef::Boolean(a) => {
+            out.extend_from_slice(if a.value(row) { b"true" } else { b"false" });
+        }
+        TypedArrayRef::Utf8(a) => {
+            write_json_string(out, a.value(row))?;
+        }
+        TypedArrayRef::LargeUtf8(a) => {
+            write_json_string(out, a.value(row))?;
+        }
+        TypedArrayRef::Utf8View(a) => {
+            write_json_string(out, a.value(row))?;
+        }
+        TypedArrayRef::Struct(a) => {
+            out.push(b'{');
+            let fields = a.fields();
+            let mut first = true;
+            for field_idx in 0..a.num_columns() {
+                if !first {
+                    out.push(b',');
+                }
+                first = false;
+                write_json_string(out, fields[field_idx].name())?;
+                out.push(b':');
+                let child = a.column(field_idx);
+                if child.is_null(row) {
+                    out.extend_from_slice(b"null");
+                } else {
+                    write_json_value(child.as_ref(), row, out)?;
+                }
+            }
+            out.push(b'}');
+        }
+        TypedArrayRef::Binary(a) => {
+            write_json_hex_bytes(out, a.value(row));
+        }
+        TypedArrayRef::LargeBinary(a) => {
+            write_json_hex_bytes(out, a.value(row));
+        }
+        TypedArrayRef::FixedSizeBinary(a) => {
+            write_json_hex_bytes(out, a.value(row));
+        }
+        TypedArrayRef::Other(arr) => {
+            // Fallback: use the dyn Array path (includes is_null check).
+            write_json_value(*arr, row, out)?;
+        }
+    }
+    Ok(())
+}
+
+/// Write a single row as a JSON object using pre-resolved typed column references.
+///
+/// This is the fast-path variant of [`write_row_json`] that eliminates per-row:
+/// - virtual `is_null()` dispatch → direct `NullBuffer` bitmap check
+/// - `data_type()` + `downcast_ref` → pre-resolved `TypedArrayRef` enum
+/// - `batch.columns().get()` + `Arc::deref` → cached references
 pub fn write_row_json_resolved(
     row: usize,
     cols: &[ResolvedCol],
@@ -320,7 +423,7 @@ pub fn write_row_json_resolved(
     out.push(b'{');
     let mut first = true;
     for col in cols {
-        let Some((key_json, array)) = col.resolve(row) else {
+        let Some((key_json, typed)) = col.resolve(row) else {
             continue;
         };
 
@@ -330,7 +433,7 @@ pub fn write_row_json_resolved(
         first = false;
 
         out.extend_from_slice(key_json);
-        write_json_value(array, row, out)?;
+        write_typed_json_value(typed, row, out)?;
     }
     out.push(b'}');
     Ok(())

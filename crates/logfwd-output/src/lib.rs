@@ -47,7 +47,9 @@ pub use stdout::{StdoutFormat, StdoutSink, StdoutSinkFactory};
 pub use tcp_sink::{TcpSink, TcpSinkFactory};
 pub use udp_sink::{UdpSink, UdpSinkFactory};
 
-pub use conflict_columns::{ColInfo, ColVariant, ResolvedCol, build_col_infos, resolve_col_infos};
+pub use conflict_columns::{
+    ColInfo, ColVariant, ResolvedCol, TypedArrayRef, build_col_infos, resolve_col_infos,
+};
 pub(crate) use conflict_columns::{get_array, is_null};
 #[cfg(any(test, kani))]
 #[allow(unused_imports)]
