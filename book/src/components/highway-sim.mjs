@@ -168,8 +168,8 @@ export function createSimulation(overrides, scaleFn) {
       var car = cars[i];
       var target = cfg.speedMax;
 
-      // Red light — only the lead car at the line stops.
-      if (!lightIsGreen && car.d < cfg.gateD && car.d > cfg.gateD - 30) {
+      // Red light — lead car at the line stops; cars already at gate stay stopped.
+      if (!lightIsGreen && car.d <= cfg.gateD && car.d > cfg.gateD - 30) {
         var someoneCloser = (i > 0 && cars[i - 1].d <= cfg.gateD && cars[i - 1].d > car.d);
         if (!someoneCloser) {
           target = 0;
