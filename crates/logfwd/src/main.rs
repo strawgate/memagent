@@ -1070,12 +1070,7 @@ fn cmd_completions(shell: CompletionShell) {
             clap_complete::generate(clap_complete::Shell::Bash, &mut cmd, "ff", &mut stdout);
         }
         CompletionShell::Elvish => {
-            clap_complete::generate(
-                clap_complete::Shell::Elvish,
-                &mut cmd,
-                "ff",
-                &mut stdout,
-            );
+            clap_complete::generate(clap_complete::Shell::Elvish, &mut cmd, "ff", &mut stdout);
         }
         CompletionShell::Fish => {
             clap_complete::generate(clap_complete::Shell::Fish, &mut cmd, "ff", &mut stdout);
@@ -1092,12 +1087,7 @@ fn cmd_completions(shell: CompletionShell) {
             clap_complete::generate(clap_complete::Shell::Zsh, &mut cmd, "ff", &mut stdout);
         }
         CompletionShell::Nushell => {
-            clap_complete::generate(
-                clap_complete_nushell::Nushell,
-                &mut cmd,
-                "ff",
-                &mut stdout,
-            );
+            clap_complete::generate(clap_complete_nushell::Nushell, &mut cmd, "ff", &mut stdout);
         }
     }
 }
@@ -1862,15 +1852,15 @@ mod cli_tests {
 
     #[test]
     fn clap_completions_supports_nushell_and_powershell_alias() {
-        let nu = Cli::try_parse_from(["ff", "completions", "nushell"])
-            .expect("nushell should parse");
+        let nu =
+            Cli::try_parse_from(["ff", "completions", "nushell"]).expect("nushell should parse");
         match nu.command.expect("command") {
             Commands::Completions { shell } => assert!(matches!(shell, CompletionShell::Nushell)),
             other => panic!("expected completions command, got {other:?}"),
         }
 
-        let pwsh = Cli::try_parse_from(["ff", "completions", "pwsh"])
-            .expect("pwsh alias should parse");
+        let pwsh =
+            Cli::try_parse_from(["ff", "completions", "pwsh"]).expect("pwsh alias should parse");
         match pwsh.command.expect("command") {
             Commands::Completions { shell } => {
                 assert!(matches!(shell, CompletionShell::PowerShell))
