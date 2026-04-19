@@ -1,6 +1,6 @@
 # Elasticsearch Retry Contract Notes
 
-> **Status:** Research note (not a final delivery contract)
+> **Status:** Active
 > **Date:** 2026-04-18
 > **Context:** #2025 - Elasticsearch retry and duplication fixes
 
