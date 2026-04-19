@@ -43,7 +43,7 @@ All tool versions are declared in `mise.toml`. If you have [mise](https://mise.j
 ## Setup
 
 ```bash
-git clone https://github.com/strawgate/memagent.git && cd memagent
+git clone https://github.com/strawgate/fastforward.git && cd fastforward
 just setup     # install tools, fetch deps, set up git hooks
 just doctor    # verify everything is installed
 just ci        # fast lint + test (~30s)

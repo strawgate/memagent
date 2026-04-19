@@ -30,4 +30,4 @@ Maintainer-level triage checklist for merge readiness.
 
 - `dev-docs/PR_PROCESS.md`
 - `dev-docs/CHANGE_MAP.md`
-- Roadmap: https://github.com/strawgate/memagent/issues/889
+- Roadmap: https://github.com/strawgate/fastforward/issues/889

@@ -1,6 +1,6 @@
 ---
 title: "Quick Start"
-description: "Install FastForward, run your first pipeline, and ship logs in about 15 minutes"
+description: "Get FastForward running and ship your first logs in about 15 minutes"
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
@@ -8,19 +8,21 @@ import DataFlowAnimation from '../../components/DataFlowAnimation.astro';
 
 <DataFlowAnimation />
 
+FastForward is a research project exploring how to build a fast log forwarder with Rust. This guide gets you from zero to a working pipeline in about 15 minutes.
+
 :::note
-The product is **FastForward**. The GitHub repository is named `memagent` for historical reasons. Docker images, URLs, and `git clone` commands reference `memagent`; the binary is currently named `logfwd` and will be renamed to `ff` in a future release.
+The binary is currently named `logfwd` and will be renamed to `ff` in a future release. Docker images and `git clone` commands reference `memagent` (the original repo name).
 :::
 
 ## Install
 
 <Tabs>
   <TabItem label="From Source" icon="seti:rust">
-    Requires the Rust stable toolchain (1.85+).
+    Requires the Rust stable toolchain (1.89+).
 
     ```bash
-    git clone https://github.com/strawgate/memagent.git
-    cd memagent
+    git clone https://github.com/strawgate/fastforward.git
+    cd fastforward
     cargo build --release -p logfwd
     sudo cp target/release/logfwd /usr/local/bin/
     ```

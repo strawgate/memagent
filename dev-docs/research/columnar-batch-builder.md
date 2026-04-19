@@ -129,14 +129,14 @@ The durable architecture is:
 
 ## Current follow-up work units
 
-- [#1838](https://github.com/strawgate/memagent/issues/1838) architecture: shared ColumnarBatchBuilder for structured inputs
-- [#1847](https://github.com/strawgate/memagent/issues/1847) work-unit: otlp codegen - generated projection metadata
-- [#2249](https://github.com/strawgate/memagent/issues/2249) work-unit: otlp projection - harden protobuf group skipping
-- [#2254](https://github.com/strawgate/memagent/issues/2254) work-unit: columnar builder - align docs and comments with landed architecture
-- [#1846](https://github.com/strawgate/memagent/issues/1846) work-unit: csv input - prove non-OTLP ColumnarBatchBuilder producer
+- [#1838](https://github.com/strawgate/fastforward/issues/1838) architecture: shared ColumnarBatchBuilder for structured inputs
+- [#1847](https://github.com/strawgate/fastforward/issues/1847) work-unit: otlp codegen - generated projection metadata
+- [#2249](https://github.com/strawgate/fastforward/issues/2249) work-unit: otlp projection - harden protobuf group skipping
+- [#2254](https://github.com/strawgate/fastforward/issues/2254) work-unit: columnar builder - align docs and comments with landed architecture
+- [#1846](https://github.com/strawgate/fastforward/issues/1846) work-unit: csv input - prove non-OTLP ColumnarBatchBuilder producer
 
 ## References
 
 - [DEVELOPING.md](../../DEVELOPING.md) for the deferred builder rationale that recovered this design
 - [SCANNER_CONTRACT.md](../SCANNER_CONTRACT.md) for row count, conflict, nullability, and builder contract expectations
-- [PR #1837](https://github.com/strawgate/memagent/pull/1837) for the OTLP projection evidence that informed this note
+- [PR #1837](https://github.com/strawgate/fastforward/pull/1837) for the OTLP projection evidence that informed this note

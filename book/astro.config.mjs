@@ -3,7 +3,7 @@ import starlight from "@astrojs/starlight";
 
 export default defineConfig({
   site: 'https://strawgate.github.io',
-  base: '/memagent',
+  base: '/fastforward',
   redirects: {
     '/how-it-works/':             '/learn/',
     '/how-it-works/backpressure/': '/learn/backpressure/',
@@ -16,16 +16,16 @@ export default defineConfig({
   integrations: [
     starlight({
       title: "FastForward",
-      description: "a blazing-fast log, metric & trace forwarder — built with rust",
+      description: "a learning-oriented log forwarder built with Rust",
       social: [
         {
           icon: "github",
           label: "GitHub",
-          href: "https://github.com/strawgate/memagent",
+          href: "https://github.com/strawgate/fastforward",
         },
       ],
       editLink: {
-        baseUrl: "https://github.com/strawgate/memagent/edit/main/book/",
+        baseUrl: "https://github.com/strawgate/fastforward/edit/main/book/",
       },
       lastUpdated: true,
       customCss: ["./src/styles/custom.css"],
