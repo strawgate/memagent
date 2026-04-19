@@ -2686,8 +2686,8 @@ pipelines:
             "expected 'workers' in error: {msg}"
         );
         assert!(
-            msg.contains("must be greater than 0"),
-            "expected 'must be greater than 0' in error: {msg}"
+            msg.contains("must be in range 1..=1024"),
+            "expected range-bounded workers message in error: {msg}"
         );
     }
 

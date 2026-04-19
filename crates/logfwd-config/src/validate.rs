@@ -1,15 +1,18 @@
 use crate::types::{
     Config, ConfigError, EnrichmentConfig, Format, GeneratorAttributeValueConfig,
     GeneratorProfileConfig, InputType, InputTypeConfig, JournaldBackendConfig, OutputType,
+    PIPELINE_WORKERS_MAX,
 };
+use std::collections::{HashMap, HashSet};
+use std::net::IpAddr;
 use std::path::Path;
 use url::Url;
 
 const MAX_READ_BUF_SIZE: usize = 4_194_304;
 
 impl Config {
-    /// Validate the loaded configuration.
-    pub(crate) fn validate(&self) -> Result<(), ConfigError> {
+    /// Validate the loaded configuration using a base path for relative paths.
+    pub fn validate_with_base_path(&self, base_path: Option<&Path>) -> Result<(), ConfigError> {
         if let Some(ep) = &self.server.traces_endpoint
             && let Err(msg) = validate_endpoint_url(ep)
         {
@@ -68,7 +71,13 @@ impl Config {
         }
 
         let mut all_errors: Vec<String> = Vec::new();
-        for (name, pipe) in &self.pipelines {
+        let mut seen_listen_addrs: HashMap<String, String> = HashMap::new();
+        let mut seen_file_output_paths: HashMap<std::path::PathBuf, String> = HashMap::new();
+
+        let mut pipeline_names: Vec<&str> = self.pipelines.keys().map(String::as_str).collect();
+        pipeline_names.sort_unstable();
+        for name in pipeline_names {
+            let pipe = &self.pipelines[name];
             let result = (|| -> Result<(), ConfigError> {
                 if pipe.batch_timeout_ms == Some(0) {
                     return Err(ConfigError::Validation(format!(
@@ -80,9 +89,11 @@ impl Config {
                         "pipeline '{name}': poll_interval_ms must be greater than 0"
                     )));
                 }
-                if pipe.workers == Some(0) {
+                if let Some(workers) = pipe.workers
+                    && !(1..=PIPELINE_WORKERS_MAX).contains(&workers)
+                {
                     return Err(ConfigError::Validation(format!(
-                        "pipeline '{name}': workers must be greater than 0"
+                        "pipeline '{name}': workers must be in range 1..={PIPELINE_WORKERS_MAX} (got {workers})"
                     )));
                 }
                 if pipe.batch_target_bytes == Some(0) {
@@ -106,6 +117,28 @@ impl Config {
                     return Err(ConfigError::Validation(format!(
                         "pipeline '{name}' has no outputs"
                     )));
+                }
+
+                let mut seen_input_names: HashSet<&str> = HashSet::new();
+                for (i, input) in pipe.inputs.iter().enumerate() {
+                    if let Some(input_name) = input.name.as_deref()
+                        && !seen_input_names.insert(input_name)
+                    {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' input '#{i}': duplicate input name '{input_name}'"
+                        )));
+                    }
+                }
+
+                let mut seen_output_names: HashSet<&str> = HashSet::new();
+                for (i, output) in pipe.outputs.iter().enumerate() {
+                    if let Some(output_name) = output.name.as_deref()
+                        && !seen_output_names.insert(output_name)
+                    {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '#{i}': duplicate output name '{output_name}'"
+                        )));
+                    }
                 }
 
                 for (i, input) in pipe.inputs.iter().enumerate() {
@@ -165,6 +198,14 @@ impl Config {
                                     "pipeline '{name}' input '{label}': so_rcvbuf cannot be 0"
                                 )));
                             }
+
+                            track_listen_addr_uniqueness(
+                                &mut seen_listen_addrs,
+                                "udp",
+                                name,
+                                &label,
+                                &u.listen,
+                            )?;
                         }
                         InputTypeConfig::Tcp(t) => {
                             if let Err(msg) = validate_bind_addr(&t.listen) {
@@ -193,6 +234,14 @@ impl Config {
                                     "pipeline '{name}' input '{label}': read_timeout_ms cannot be 0"
                                 )));
                             }
+
+                            track_listen_addr_uniqueness(
+                                &mut seen_listen_addrs,
+                                "tcp",
+                                name,
+                                &label,
+                                &t.listen,
+                            )?;
                         }
                         InputTypeConfig::Otlp(o) => {
                             if let Err(msg) = validate_bind_addr(&o.listen) {
@@ -212,6 +261,14 @@ impl Config {
                                     )));
                                 }
                             }
+
+                            track_listen_addr_uniqueness(
+                                &mut seen_listen_addrs,
+                                "tcp",
+                                name,
+                                &label,
+                                &o.listen,
+                            )?;
                         }
                         InputTypeConfig::Http(h) => {
                             if let Err(msg) = validate_bind_addr(&h.listen) {
@@ -245,6 +302,14 @@ impl Config {
                                     )));
                                 }
                             }
+
+                            track_listen_addr_uniqueness(
+                                &mut seen_listen_addrs,
+                                "tcp",
+                                name,
+                                &label,
+                                &h.listen,
+                            )?;
                         }
                         InputTypeConfig::Generator(g) => {
                             if g.generator.as_ref().and_then(|cfg| cfg.batch_size) == Some(0) {
@@ -462,6 +527,14 @@ impl Config {
                                     "pipeline '{name}' input '{label}': max_message_size_bytes cannot be 0"
                                 )));
                             }
+
+                            track_listen_addr_uniqueness(
+                                &mut seen_listen_addrs,
+                                "tcp",
+                                name,
+                                &label,
+                                &a.listen,
+                            )?;
                         }
                         InputTypeConfig::Journald(j) => {
                             if let Some(jd) = &j.journald {
@@ -746,6 +819,12 @@ impl Config {
                                     "pipeline '{name}' output '{label}': {msg}",
                                 )));
                             }
+                            if output.format.is_some() {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': {} output does not support 'format'; remove the field",
+                                    output.output_type,
+                                )));
+                            }
                         }
                         // Http and Parquet are not yet implemented — already
                         // rejected by the check above; these arms are unreachable
@@ -901,6 +980,19 @@ impl Config {
                                 )));
                             }
                         }
+                    }
+
+                    if output.output_type == OutputType::Loki
+                        && let (Some(static_labels), Some(label_columns)) =
+                            (&output.static_labels, &output.label_columns)
+                        && let Some(conflict) = label_columns
+                            .iter()
+                            .map(String::as_str)
+                            .find(|col| static_labels.contains_key(*col))
+                    {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': loki label '{conflict}' is defined in both 'label_columns' and 'static_labels'"
+                        )));
                     }
 
                     if !matches!(output.output_type, OutputType::File | OutputType::Parquet)
@@ -1119,10 +1211,13 @@ impl Config {
                     if let InputTypeConfig::File(f) = &input.type_config {
                         let p = &f.path;
                         if p.contains('*') || p.contains('?') || p.contains('[') {
-                            glob_input_patterns.push(p.clone());
+                            // Resolve globs against base_path so relative glob
+                            // patterns compare correctly with resolved output paths.
+                            let resolved = path_for_config_compare(p, base_path);
+                            glob_input_patterns.push(resolved.to_string_lossy().into_owned());
                         } else {
-                            let pb = std::path::PathBuf::from(p);
-                            let norm = normalize_path_for_compare(&pb);
+                            let pb = path_for_config_compare(p, base_path);
+                            let norm = normalize_path_key_for_compare(&pb);
                             exact_input_paths.push((pb, norm));
                         }
                     }
@@ -1140,8 +1235,18 @@ impl Config {
                     let Some(out_path) = output.path.as_deref() else {
                         continue;
                     };
-                    let out_pb = std::path::PathBuf::from(out_path);
-                    let out_norm = normalize_path_for_compare(&out_pb);
+                    let out_pb = path_for_config_compare(out_path, base_path);
+                    let out_norm = normalize_path_key_for_compare(&out_pb);
+
+                    if let Some(prev) = seen_file_output_paths.get(&out_norm) {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{out_label}': file output path '{out_path}' duplicates {prev}"
+                        )));
+                    }
+                    seen_file_output_paths.insert(
+                        out_norm.clone(),
+                        format!("pipeline '{name}' output '{out_label}'"),
+                    );
 
                     // Check exact input path match.
                     for (in_pb, in_norm) in &exact_input_paths {
@@ -1156,8 +1261,9 @@ impl Config {
                     }
 
                     // Check if the output path could match any glob input pattern.
+                    let resolved_out_path = out_pb.to_string_lossy();
                     for glob_pattern in &glob_input_patterns {
-                        if is_glob_match_possible(glob_pattern, out_path) {
+                        if is_glob_match_possible(glob_pattern, &resolved_out_path) {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{out_label}': output path '{out_path}' \
                              could match file input glob '{glob_pattern}' — this creates an \
@@ -1204,6 +1310,35 @@ fn normalize_path_for_compare(path: &Path) -> std::path::PathBuf {
         .unwrap_or_else(|_| normalize_path_lexically(path))
 }
 
+fn normalize_path_key_for_compare(path: &Path) -> std::path::PathBuf {
+    let normalized = normalize_path_for_compare(path);
+    #[cfg(windows)]
+    {
+        std::path::PathBuf::from(normalized.to_string_lossy().to_lowercase())
+    }
+    #[cfg(not(windows))]
+    {
+        normalized
+    }
+}
+
+fn path_for_config_compare(path: &str, base_path: Option<&Path>) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(path);
+    if path.is_relative()
+        && let Some(base) = base_path
+    {
+        // Resolve base to absolute so lexical normalization produces
+        // comparable paths even when the base itself is relative.
+        let abs_base = if base.is_relative() {
+            std::env::current_dir().map_or_else(|_| base.to_path_buf(), |cwd| cwd.join(base))
+        } else {
+            base.to_path_buf()
+        };
+        return abs_base.join(path);
+    }
+    path
+}
+
 fn normalize_path_lexically(path: &Path) -> std::path::PathBuf {
     use std::path::Component;
 
@@ -1245,6 +1380,68 @@ fn normalize_unit_name(name: &str) -> String {
     } else {
         format!("{name}.service")
     }
+}
+
+/// Track listen address uniqueness across all pipelines for one transport.
+fn track_listen_addr_uniqueness(
+    seen_listen_addrs: &mut HashMap<String, String>,
+    transport: &str,
+    pipeline_name: &str,
+    input_label: &str,
+    listen: &str,
+) -> Result<(), ConfigError> {
+    let Some(listen_key) = canonical_listen_addr_key(transport, listen).map_err(|msg| {
+        ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' input '{input_label}': {msg}"
+        ))
+    })?
+    else {
+        return Ok(());
+    };
+    let current_ref = format!("pipeline '{pipeline_name}' input '{input_label}'");
+    if let Some(previous_ref) = seen_listen_addrs.get(&listen_key) {
+        return Err(ConfigError::Validation(format!(
+            "{current_ref}: listen address '{listen}' duplicates {previous_ref}"
+        )));
+    }
+    seen_listen_addrs.insert(listen_key, current_ref);
+    Ok(())
+}
+
+fn canonical_listen_addr_key(transport: &str, listen: &str) -> Result<Option<String>, String> {
+    let (host, port_str) = if listen.starts_with('[') {
+        let close_bracket = listen
+            .find(']')
+            .ok_or_else(|| format!("'{listen}' has mismatched brackets"))?;
+        if !listen[close_bracket..].starts_with("]:") {
+            return Err(format!("'{listen}' is missing a port after IPv6 brackets"));
+        }
+        (&listen[..=close_bracket], &listen[close_bracket + 2..])
+    } else {
+        listen
+            .rsplit_once(':')
+            .ok_or_else(|| format!("'{listen}' is missing a port (expected format host:port)"))?
+    };
+    let port = port_str
+        .parse::<u16>()
+        .map_err(|_| format!("'{listen}' has an invalid port '{port_str}'"))?;
+    if port == 0 {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "{transport}:{}:{port}",
+        canonical_listen_host_key(host)
+    )))
+}
+
+fn canonical_listen_host_key(host: &str) -> String {
+    let bare_host = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(host);
+    bare_host
+        .parse::<IpAddr>()
+        .map_or_else(|_| bare_host.to_lowercase(), |addr| addr.to_string())
 }
 
 fn sensor_supported_families(input_type: &InputType) -> &'static [&'static str] {

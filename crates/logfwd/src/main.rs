@@ -514,14 +514,13 @@ async fn run_command(command: Commands) -> Result<(), CliError> {
 async fn cmd_run(config_path: &str, validate_only: bool, dry_run: bool) -> Result<(), CliError> {
     let config_yaml = std::fs::read_to_string(config_path)
         .map_err(|e| CliError::Config(format!("cannot read {config_path}: {e}")))?;
-    let config = match logfwd_config::Config::load_str(&config_yaml) {
+    let base_path = std::path::Path::new(config_path).parent();
+    let config = match logfwd_config::Config::load_str_with_base_path(&config_yaml, base_path) {
         Ok(c) => c,
         Err(e) => {
             return Err(CliError::Config(e.to_string()));
         }
     };
-
-    let base_path = std::path::Path::new(config_path).parent();
 
     if validate_only || dry_run {
         // Both `validate` and `dry-run` build pipelines to catch SQL/wiring errors.
@@ -752,9 +751,9 @@ fn cmd_effective_config(config_path: Option<&str>) -> Result<(), CliError> {
     // Read-only validation for inspection flows: reject configs that would
     // fail format or SQL-plan checks without constructing runtime inputs that
     // bind sockets or touch long-lived resources.
-    let config = logfwd_config::Config::load_str(&config_yaml)
-        .map_err(|e| CliError::Config(e.to_string()))?;
     let base_path = std::path::Path::new(&config_path).parent();
+    let config = logfwd_config::Config::load_str_with_base_path(&config_yaml, base_path)
+        .map_err(|e| CliError::Config(e.to_string()))?;
     validate_pipelines_read_only(
         &config,
         base_path,
@@ -942,9 +941,9 @@ fn validate_generated_config_read_only(
     config_yaml: &str,
     output_path: &std::path::Path,
 ) -> Result<(), CliError> {
-    let config = logfwd_config::Config::load_str(config_yaml)
-        .map_err(|e| CliError::Config(e.to_string()))?;
     let base_path = output_path.parent();
+    let config = logfwd_config::Config::load_str_with_base_path(config_yaml, base_path)
+        .map_err(|e| CliError::Config(e.to_string()))?;
     let mut validation_errors = Vec::new();
     let result = validate_pipelines_read_only(
         &config,
