@@ -459,13 +459,13 @@ impl ElasticsearchSink {
                 super::sink::SendResult::RetryAfter(left),
                 super::sink::SendResult::RetryAfter(right),
             ) => super::sink::SendResult::RetryAfter(left.max(right)),
-            (super::sink::SendResult::RetryAfter(delay), _)
-            | (_, super::sink::SendResult::RetryAfter(delay)) => {
-                super::sink::SendResult::RetryAfter(delay)
-            }
             (super::sink::SendResult::IoError(error), _)
             | (_, super::sink::SendResult::IoError(error)) => {
                 super::sink::SendResult::IoError(error)
+            }
+            (super::sink::SendResult::RetryAfter(delay), _)
+            | (_, super::sink::SendResult::RetryAfter(delay)) => {
+                super::sink::SendResult::RetryAfter(delay)
             }
         }
     }
@@ -1913,6 +1913,19 @@ mod tests {
             crate::sink::SendResult::RetryAfter(actual) => assert_eq!(actual, delay),
             other => panic!("expected retryable split result, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn split_result_io_error_takes_precedence_over_retry() {
+        let result = ElasticsearchSink::merge_split_send_results(
+            crate::sink::SendResult::IoError(io::Error::other("network")),
+            crate::sink::SendResult::RetryAfter(std::time::Duration::from_secs(3)),
+        );
+
+        assert!(
+            matches!(result, crate::sink::SendResult::IoError(_)),
+            "expected io error to take precedence, got {result:?}"
+        );
     }
 
     #[tokio::test]
