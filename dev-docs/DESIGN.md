@@ -26,6 +26,8 @@ logfwd-io           Produces RecordBatch from external sources.
 
 logfwd-transform    RecordBatch → RecordBatch via DataFusion SQL.
                     UDFs, enrichment tables, JOINs.
+                    CSV enrichment tables produce Utf8View columns via the
+                    shared columnar builder.
 
 logfwd-output       Consumes RecordBatch, sends externally.
                     OTLP, Arrow IPC, JSON lines. Parquet/ClickHouse are planned.
@@ -177,8 +179,9 @@ field has multiple types within a batch.
 **Core requirement — round-trip type fidelity.** A field that enters as `int 200` must
 exit as `int 200`. No type promotion across documents.  
 **Core requirement — clean schemas stay clean.** OTLP, Arrow IPC, CSV, and consistent JSON
-produce bare column names with native types. The suffix machinery only activates when there
-is an actual per-row type conflict.
+produce bare column names with native types. CSV enrichment columns are bare nullable
+`Utf8View` string columns. The suffix machinery only activates when there is an actual
+per-row type conflict.
 
 Output always serializes with the bare JSON key, dispatching on DataType. A view layer
 provides bare-name access for suffixed columns.

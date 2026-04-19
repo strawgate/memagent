@@ -312,7 +312,7 @@ fn build_k8s_batch(entries: &[K8sPodEntry]) -> RecordBatch {
 // File-based lookup table (CSV)
 // ---------------------------------------------------------------------------
 
-/// A lookup table loaded from a CSV file. All columns are Utf8View.
+/// A lookup table loaded from a CSV file. All columns are nullable Utf8View.
 /// Supports periodic refresh via `reload()`.
 ///
 /// ```yaml
@@ -340,6 +340,9 @@ impl CsvFileTable {
     }
 
     /// Load the file from a reader (useful for testing).
+    ///
+    /// The stored batch preserves CSV header order as nullable `Utf8View`
+    /// columns. Empty cells are empty strings; missing trailing cells are nulls.
     pub fn load_from_reader<R: io::Read>(&self, reader: R) -> Result<usize, TransformError> {
         let batch = read_csv_to_batch(reader)?;
         let num_rows = batch.num_rows();
@@ -380,7 +383,8 @@ impl EnrichmentTable for CsvFileTable {
 ///
 /// CSV parsing semantics stay here: delimiter/quote/header handling and row
 /// alignment are owned by the CSV reader. `ColumnarBatchBuilder` owns string
-/// storage, sparse padding, and Arrow finalization.
+/// storage, sparse padding, and Arrow finalization into nullable Utf8View
+/// columns.
 fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, TransformError> {
     let mut csv_reader = csv::ReaderBuilder::new().flexible(true).from_reader(reader);
 
