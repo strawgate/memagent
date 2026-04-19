@@ -155,6 +155,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut stdout = std::io::stdout().lock();
     let start = Instant::now();
     let deadline = Duration::from_secs(duration_secs);
+    let monotonic_to_wall_offset_ns =
+        monotonic_now_ns().map(|mono_now_ns| wall_clock_ns().saturating_sub(mono_now_ns));
 
     let mut counts = EventCounts::default();
 
@@ -176,7 +178,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
 
-            let now_wall = wall_clock_ns();
+            let event_wall = match monotonic_to_wall_offset_ns {
+                Some(offset_ns) => event_wall_clock_ns(header.timestamp_ns, offset_ns),
+                None => wall_clock_ns(),
+            };
             let comm = comm_str(&header.comm);
             let comm_esc = if json_mode {
                 json_escape(comm)
@@ -195,7 +200,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"exec","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","filename":"{}"}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -222,7 +227,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"exit","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","exit_code":{}}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -253,7 +258,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"file_open","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","flags":{},"filename":"{}"}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -282,7 +287,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"file_delete","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","flags":{},"pathname":"{}"}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -312,7 +317,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"file_rename","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","oldname":"{}","newname":"{}"}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -340,7 +345,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"setuid","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","target_uid":{}}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -367,7 +372,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"setgid","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","target_gid":{}}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -395,7 +400,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"module_load","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","taints":{},"module":"{}"}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -424,7 +429,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"ptrace","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","request":{},"request_name":"{}","target_pid":{}}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -454,7 +459,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"memfd_create","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","flags":{},"name":"{}"}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -478,13 +483,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // SAFETY: length checked >= size_of::<TcpConnectEvent>(); ring buffer is 8-byte aligned.
                     let ev = unsafe { &*(ptr.cast::<TcpConnectEvent>()) };
                     counts.tcp_connect += 1;
-                    let src = Ipv4Addr::from(ev.saddr.to_ne_bytes());
-                    let dst = Ipv4Addr::from(ev.daddr.to_ne_bytes());
+                    let src = format_addr(ev.saddr);
+                    let dst = format_addr(ev.daddr);
                     if json_mode {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"tcp_connect","tgid":{},"comm":"{}","src":"{}:{}","dst":"{}:{}"}}"#,
-                            now_wall, header.tgid, comm_esc, src, ev.sport, dst, ev.dport
+                            event_wall, header.tgid, comm_esc, src, ev.sport, dst, ev.dport
                         )?;
                     } else {
                         writeln!(
@@ -500,13 +505,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // SAFETY: length checked >= size_of::<TcpAcceptEvent>(); ring buffer is 8-byte aligned.
                     let ev = unsafe { &*(ptr.cast::<TcpAcceptEvent>()) };
                     counts.tcp_accept += 1;
-                    let src = Ipv4Addr::from(ev.saddr.to_ne_bytes());
-                    let dst = Ipv4Addr::from(ev.daddr.to_ne_bytes());
+                    let src = format_addr(ev.saddr);
+                    let dst = format_addr(ev.daddr);
                     if json_mode {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"tcp_accept","tgid":{},"comm":"{}","src":"{}:{}","dst":"{}:{}"}}"#,
-                            now_wall, header.tgid, comm_esc, src, ev.sport, dst, ev.dport
+                            event_wall, header.tgid, comm_esc, src, ev.sport, dst, ev.dport
                         )?;
                     } else {
                         writeln!(
@@ -530,7 +535,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Some(qt) => format!("{qt}"),
                         None => "?".to_string(),
                     };
-                    let dst = Ipv4Addr::from(ev.dst_addr.to_ne_bytes());
+                    let dst = format_addr(ev.dst_addr);
                     if json_mode {
                         // Emit null JSON values for undecoded fields.
                         let qname_json = match qname_opt.as_deref() {
@@ -544,7 +549,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"dns_query","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","qname":{},"qtype":{},"tx_id":{},"dst":"{}:{}"}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -603,6 +608,30 @@ fn wall_clock_ns() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos() as u64
+}
+
+fn event_wall_clock_ns(mono_event_ns: u64, mono_to_wall_offset_ns: u64) -> u64 {
+    mono_event_ns.saturating_add(mono_to_wall_offset_ns)
+}
+
+fn monotonic_now_ns() -> Option<u64> {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid, writable pointer to a stack-allocated timespec.
+    let ret = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut ts) };
+    if ret == 0 {
+        let secs = u64::try_from(ts.tv_sec).ok()?;
+        let nanos = u64::try_from(ts.tv_nsec).ok()?;
+        Some(secs.saturating_mul(1_000_000_000).saturating_add(nanos))
+    } else {
+        None
+    }
+}
+
+fn format_addr(addr: u32) -> Ipv4Addr {
+    Ipv4Addr::from(addr.to_ne_bytes())
 }
 
 fn comm_str(comm: &[u8; COMM_SIZE]) -> &str {
