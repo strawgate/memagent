@@ -1,5 +1,9 @@
 # Nightly E2E / Ingest Gap Failure-Class Matrix (2026-04-19)
 
+> **Status:** Completed
+> **Date:** 2026-04-19
+> **Context:** Nightly E2E ingest gap analysis
+
 ## Scope and guardrails
 
 - Parent issue: #1500 (`work-unit: nightly e2e stability — durable tracker + ingest gap`).
