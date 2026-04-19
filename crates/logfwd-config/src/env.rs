@@ -97,26 +97,25 @@ fn char_position_to_byte_index(text: &str, position: usize) -> usize {
         .map_or(text.len(), |(index, _)| index)
 }
 
-fn braced_placeholder_names(text: &str) -> Vec<&str> {
-    let mut names = Vec::new();
+fn braced_placeholder_names(text: &str) -> impl Iterator<Item = &str> {
     let mut offset = 0;
 
-    while let Some(start_rel) = text[offset..].find("${") {
+    std::iter::from_fn(move || {
+        let start_rel = text[offset..].find("${")?;
         let name_start = offset + start_rel + 2;
         if let Some(end_rel) = text[name_start..].find('}') {
             let name_end = name_start + end_rel;
-            names.push(&text[name_start..name_end]);
             offset = name_end + 1;
+            Some(&text[name_start..name_end])
         } else {
-            break;
+            offset = text.len();
+            None
         }
-    }
-
-    names
+    })
 }
 
 fn first_braced_placeholder(text: &str) -> Option<&str> {
-    braced_placeholder_names(text).into_iter().next()
+    braced_placeholder_names(text).next()
 }
 
 #[cfg(test)]

@@ -346,6 +346,28 @@ output:
 }
 
 #[test]
+fn env_bool_string_is_parsed_by_shared_tls_schema() {
+    let _env_lock = env_lock();
+    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_TLS_SKIP_VERIFY", "true");
+
+    let yaml = r#"
+input:
+  type: generator
+output:
+  type: otlp
+  endpoint: http://127.0.0.1:4318
+  tls:
+    insecure_skip_verify: ${LOGFWD_ISSUE_1855_TLS_SKIP_VERIFY}
+"#;
+
+    let config = Config::load_str(yaml).expect("config should parse env-backed TLS bool");
+    let output = &config.pipelines["default"].outputs[0];
+    let tls = output.tls.as_ref().expect("TLS config should be present");
+
+    assert!(tls.insecure_skip_verify);
+}
+
+#[test]
 fn quoted_env_expansion_preserves_string_scalars() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_QUOTED_PATH", "1234");
