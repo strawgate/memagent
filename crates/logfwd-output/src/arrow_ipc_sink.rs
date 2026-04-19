@@ -144,9 +144,11 @@ impl ArrowIpcSink {
             .post(&self.config.endpoint)
             .header("Content-Type", content_type);
 
-        if self.config.compression == Compression::Zstd {
-            req = req.header("Content-Encoding", "zstd");
-        }
+        req = match self.config.compression {
+            Compression::Zstd => req.header("Content-Encoding", "zstd"),
+            Compression::Gzip => req.header("Content-Encoding", "gzip"),
+            Compression::None => req,
+        };
 
         for (k, v) in &self.config.headers {
             req = req.header(k.clone(), v.clone());
@@ -202,8 +204,8 @@ impl Sink for ArrowIpcSink {
             let payload_len = payload.len() as u64;
             let row_count = batch.num_rows() as u64;
 
-            let send_result = self.do_send(payload).await;
             self.restore_uncompressed_buffer_capacity(prior_capacity);
+            let send_result = self.do_send(payload).await;
             let result = match send_result {
                 Ok(r) => r,
                 Err(e) => return SendResult::IoError(e),
@@ -511,6 +513,7 @@ mod tests {
         });
         let stats = Arc::new(ComponentStats::new());
         let client = reqwest::Client::builder()
+            .no_proxy()
             .timeout(Duration::from_millis(200))
             .build()
             .expect("test client should build");
