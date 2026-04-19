@@ -3,16 +3,18 @@
 <!-- omit in toc -->
 
 <picture>
-  <source width="400" media="(prefers-color-scheme: dark)" srcset="assets/brand/lockup-dark.svg">
-  <source width="400" media="(prefers-color-scheme: light)" srcset="assets/brand/lockup-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="assets/brand/lockup-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/brand/lockup-light.svg">
   <img width="400" alt="FastForward" src="assets/brand/lockup-dark.svg">
 </picture>
 
+# FastForward
+
 **a learning-oriented log forwarder built with Rust**
 
-[![Docs](https://img.shields.io/badge/docs-fastforward-D85A30)](https://strawgate.github.io/memagent/)
-[![CI](https://github.com/strawgate/memagent/actions/workflows/ci.yml/badge.svg)](https://github.com/strawgate/memagent/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/strawgate/memagent)](https://github.com/strawgate/memagent/blob/main/LICENSE)
+[![Docs](https://img.shields.io/badge/docs-fastforward-D85A30)](https://strawgate.github.io/fastforward/)
+[![CI](https://github.com/strawgate/fastforward/actions/workflows/ci.yml/badge.svg)](https://github.com/strawgate/fastforward/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/strawgate/fastforward)](https://github.com/strawgate/fastforward/blob/main/LICENSE)
 
 </div>
 
@@ -20,7 +22,7 @@
 
 FastForward is a research and learning project exploring how far you can push a log forwarding pipeline with modern Rust tooling. It tails files, parses JSON and CRI logs with portable SIMD, transforms with SQL, and ships to OTLP collectors.
 
-The [documentation site](https://strawgate.github.io/memagent/) has interactive guides that explain how each piece works — from SIMD parsing to backpressure to checkpoint ordering — with live simulations you can play with.
+The [documentation site](https://strawgate.github.io/fastforward/) has interactive guides that explain how each piece works — from SIMD parsing to backpressure to checkpoint ordering — with live simulations you can play with.
 
 > **Note:** The CLI is currently named `logfwd` and will be renamed to `ff` in a future release.
 
@@ -28,7 +30,7 @@ The [documentation site](https://strawgate.github.io/memagent/) has interactive 
 
 ```bash
 # Build from source (Rust 1.85+)
-git clone https://github.com/strawgate/memagent.git && cd memagent
+git clone https://github.com/strawgate/fastforward.git && cd fastforward
 cargo build --release -p logfwd
 
 # Generate some test data and filter it with SQL
@@ -57,7 +59,7 @@ Only error records with slow durations make it through — everything else is fi
 
 ## What makes it interesting
 
-```
+```text
 log files → SIMD parse → Arrow RecordBatch → DataFusion SQL → OTLP → your collector
 ```
 
@@ -71,17 +73,17 @@ log files → SIMD parse → Arrow RecordBatch → DataFusion SQL → OTLP → y
 
 The docs are the best way to understand FastForward:
 
-- **[Quick Start](https://strawgate.github.io/memagent/quick-start/)** — install, run your first pipeline, ship logs
-- **[SQL Transforms](https://strawgate.github.io/memagent/configuration/sql-transforms/)** — filter, reshape, extract, join
-- **[Configuration Reference](https://strawgate.github.io/memagent/configuration/reference/)** — every YAML field, input/output type, UDF
+- **[Quick Start](https://strawgate.github.io/fastforward/quick-start/)** — install, run your first pipeline, ship logs
+- **[SQL Transforms](https://strawgate.github.io/fastforward/configuration/sql-transforms/)** — filter, reshape, extract, join
+- **[Configuration Reference](https://strawgate.github.io/fastforward/configuration/reference/)** — every YAML field, input/output type, UDF
 
 The "Understand It" section of the docs has interactive guides with live simulations:
 
-- **[Tailing](https://strawgate.github.io/memagent/learn/tailing/)** — watch file rotation and truncation handling live
-- **[SIMD Scanner](https://strawgate.github.io/memagent/learn/scanner/)** — step through JSON parsing, toggle field pushdown
-- **[Backpressure](https://strawgate.github.io/memagent/learn/backpressure/)** — slow the output and watch pressure cascade back
-- **[Columnar Storage](https://strawgate.github.io/memagent/learn/columnar/)** — row vs column layout, why Arrow makes SQL fast
-- **[Checkpoint Ordering](https://strawgate.github.io/memagent/learn/checkpoints/)** — out-of-order ACKs and the committed watermark
+- **[Tailing](https://strawgate.github.io/fastforward/learn/tailing/)** — watch file rotation and truncation handling live
+- **[SIMD Scanner](https://strawgate.github.io/fastforward/learn/scanner/)** — step through JSON parsing, toggle field pushdown
+- **[Backpressure](https://strawgate.github.io/fastforward/learn/backpressure/)** — slow the output and watch pressure cascade back
+- **[Columnar Storage](https://strawgate.github.io/fastforward/learn/columnar/)** — row vs column layout, why Arrow makes SQL fast
+- **[Checkpoint Ordering](https://strawgate.github.io/fastforward/learn/checkpoints/)** — out-of-order ACKs and the committed watermark
 
 ## Contributing
 

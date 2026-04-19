@@ -39,9 +39,9 @@ cargo run -p logfwd-bench --release --bin rss
 ## Nightly benchmarks
 
 Nightly benchmark automation now lives in
-[`strawgate/memagent-e2e`](https://github.com/strawgate/memagent-e2e):
+[`strawgate/memagent-e2e`](https://github.com/strawgate/fastforward-e2e):
 
 - Kubernetes EPS competitive suite:
-  [bench-kind-smoke workflow](https://github.com/strawgate/memagent-e2e/actions/workflows/bench-kind-smoke.yml)
+  [bench-kind-smoke workflow](https://github.com/strawgate/fastforward-e2e/actions/workflows/bench-kind-smoke.yml)
 - Open nightly benchmark report issues:
-  [open `report:bench-nightly-eps` issues](https://github.com/strawgate/memagent-e2e/issues?q=is%3Aopen+label%3Areport%3Abench-nightly-eps)
+  [open `report:bench-nightly-eps` issues](https://github.com/strawgate/fastforward-e2e/issues?q=is%3Aopen+label%3Areport%3Abench-nightly-eps)
