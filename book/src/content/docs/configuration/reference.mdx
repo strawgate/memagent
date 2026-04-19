@@ -289,6 +289,7 @@ the build target.
 | `sensor.enabled_families` | array[string] | No | Optional enabled signal families. Omit to use defaults; set `[]` to disable all families. |
 | `sensor.emit_signal_rows` | boolean | No | Emit periodic per-family sample rows. Defaults to `true`. |
 | `sensor.max_rows_per_poll` | integer | No | Upper bound on data rows returned per collection cycle. Defaults to `256`. Set to `0` or omit for the default. |
+| `sensor.max_process_rows_per_poll` | integer | No | Upper bound on process snapshot rows returned per collection cycle. Defaults to `1024`. Set to `0` or omit for the default. |
 | `sensor.scrapers` | array[string] | No | List of scrapers to run. Supported values are: `cpu`, `memory`, `disk`, `network`, `filesystem`. |
 | `sensor.collection_interval_ms` | integer | No | Metrics collection cadence in milliseconds. Defaults to `10000`. |
 | `sensor.disk_include_devices` | array[string] | No | Optional list of disk devices to include in scraping. |
