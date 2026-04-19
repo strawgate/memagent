@@ -271,6 +271,38 @@ mod tests {
         assert!(batch.column_by_name("a").is_some());
         assert!(batch.column_by_name("b").is_none());
     }
+
+    #[test]
+    fn test_pushdown_case_insensitive_wanted_field() {
+        let config = ScanConfig {
+            wanted_fields: vec![FieldSpec {
+                // Mirrors SQL analyzer output when a query references `Level`.
+                name: "Level".into(),
+                aliases: vec![],
+            }],
+            extract_all: false,
+            line_field_name: None,
+            validate_utf8: false,
+        };
+        let batch = Scanner::new(config)
+            .scan_detached(Bytes::from(
+                br#"{"level":"info","msg":"ok"}
+"#
+                .to_vec(),
+            ))
+            .expect("scan should succeed");
+
+        // Regression (#2044): case mismatch must not silently drop the field.
+        let level = batch
+            .column_by_name("level")
+            .expect("level column should be extracted");
+        let level = level
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("level must be string");
+        assert_eq!(level.value(0), "info");
+        assert!(batch.column_by_name("msg").is_none());
+    }
     #[test]
     fn test_line_capture() {
         let config = ScanConfig {
