@@ -458,11 +458,6 @@ impl Config {
                                     "pipeline '{name}' input '{label}': sensor.control_path must not be empty"
                                 )));
                             }
-                            if s.sensor.as_ref().and_then(|cfg| cfg.max_rows_per_poll) == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': sensor.max_rows_per_poll must be at least 1"
-                                )));
-                            }
                             if let Some(families) = s
                                 .sensor
                                 .as_ref()

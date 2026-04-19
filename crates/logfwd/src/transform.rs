@@ -92,6 +92,10 @@ mod passthrough {
             &self.analyzer
         }
 
+        pub fn probe_field_names(&self) -> Vec<String> {
+            vec!["body".to_string(), "level".to_string(), "msg".to_string()]
+        }
+
         pub fn validate_plan(&mut self) -> Result<(), TransformError> {
             Ok(())
         }

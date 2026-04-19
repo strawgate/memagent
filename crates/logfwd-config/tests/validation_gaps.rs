@@ -1,4 +1,4 @@
-use logfwd_config::Config;
+use logfwd_config::{Config, GeneratorAttributeValueConfig};
 use std::ffi::OsString;
 use std::sync::{Mutex, MutexGuard};
 
@@ -633,7 +633,19 @@ output:
   type: stdout
 "#;
 
-    Config::load_str(yaml).expect("generator null attributes should remain supported");
+    let config = Config::load_str(yaml).expect("generator null attributes should remain supported");
+    let input = &config.pipelines["default"].inputs[0];
+    let generator = match &input.type_config {
+        logfwd_config::InputTypeConfig::Generator(generator) => generator
+            .generator
+            .as_ref()
+            .expect("generator config should be present"),
+        _ => panic!("expected generator input"),
+    };
+    assert_eq!(
+        generator.attributes.get("deleted_at"),
+        Some(&GeneratorAttributeValueConfig::Null)
+    );
 }
 
 #[test]
@@ -651,7 +663,7 @@ output:
 }
 
 #[test]
-fn issue_2062_reject_sensor_max_rows_per_poll_zero() {
+fn issue_2062_accept_sensor_max_rows_per_poll_zero_for_default_compatibility() {
     let yaml = r#"
 input:
   type: host_metrics
@@ -661,11 +673,7 @@ output:
   type: stdout
 "#;
 
-    let err = Config::load_str(yaml).unwrap_err().to_string();
-    assert!(
-        err.contains("sensor.max_rows_per_poll") && err.contains("at least 1"),
-        "unexpected error: {err}"
-    );
+    Config::load_str(yaml).expect("max_rows_per_poll=0 should continue to select the default");
 }
 
 #[test]

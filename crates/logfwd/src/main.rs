@@ -1260,20 +1260,11 @@ fn validate_transform_probe_read_only(
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
 
-    let scan_config = transform.scan_config();
-    let fields: Vec<Field> = if scan_config.extract_all || scan_config.wanted_fields.is_empty() {
-        vec![
-            Field::new("body", DataType::Utf8, true),
-            Field::new("level", DataType::Utf8, true),
-            Field::new("msg", DataType::Utf8, true),
-        ]
-    } else {
-        scan_config
-            .wanted_fields
-            .iter()
-            .map(|field| Field::new(field.name.as_str(), DataType::Utf8, true))
-            .collect()
-    };
+    let fields: Vec<Field> = transform
+        .probe_field_names()
+        .into_iter()
+        .map(|name| Field::new(name, DataType::Utf8, true))
+        .collect();
 
     let schema = Arc::new(Schema::new(fields.clone()));
     let arrays: Vec<ArrayRef> = fields
@@ -2483,6 +2474,29 @@ transform: |
         assert!(
             read_only.is_ok(),
             "read-only validation should accept case-insensitive column references"
+        );
+    }
+
+    #[test]
+    fn issue_1955_dry_run_accepts_wildcard_with_explicit_generator_logs_column() {
+        let yaml = r#"
+input:
+  type: generator
+output:
+  type: null
+transform: |
+  SELECT *, int(status) AS status_int FROM logs
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let runtime = validate_pipelines(&config, true, None);
+        let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
+        assert!(
+            runtime.is_ok(),
+            "dry-run validation should accept wildcard queries with explicit columns"
+        );
+        assert!(
+            read_only.is_ok(),
+            "read-only validation should accept wildcard queries with explicit columns"
         );
     }
 

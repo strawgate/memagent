@@ -12,7 +12,6 @@ use datafusion::logical_expr::ScalarUDF;
 use datafusion::prelude::*;
 
 use logfwd_core::scan_config::ScanConfig;
-use logfwd_types::field_names;
 
 use crate::cast_udf::{FloatCastUdf, IntCastUdf};
 use crate::{QueryAnalyzer, TransformError, conflict_schema, enrichment, udf};
@@ -257,6 +256,11 @@ impl SqlTransform {
         &self.analyzer
     }
 
+    /// Field names to use when probing a SQL plan without a real input batch.
+    pub fn probe_field_names(&self) -> Vec<String> {
+        self.analyzer.probe_field_names()
+    }
+
     /// Validate the SQL plan by executing it against a dummy single-row batch.
     ///
     /// This forces DataFusion to plan the query (resolve columns, check for
@@ -269,22 +273,11 @@ impl SqlTransform {
         // Build a schema from the scanner-facing field names, not raw SQL
         // identifier spelling. DataFusion normalizes unquoted identifiers
         // during planning, and the scanner pushdown config mirrors that.
-        let scan_config = self.analyzer.scan_config();
-        let fields: Vec<Field> = if scan_config.extract_all || scan_config.wanted_fields.is_empty()
-        {
-            // SELECT * — provide a minimal representative schema.
-            vec![
-                Field::new(field_names::BODY, DataType::Utf8, true),
-                Field::new("level", DataType::Utf8, true),
-                Field::new("msg", DataType::Utf8, true),
-            ]
-        } else {
-            scan_config
-                .wanted_fields
-                .iter()
-                .map(|field| Field::new(field.name.as_str(), DataType::Utf8, true))
-                .collect()
-        };
+        let fields: Vec<Field> = self
+            .probe_field_names()
+            .into_iter()
+            .map(|name| Field::new(name, DataType::Utf8, true))
+            .collect();
 
         let schema = Arc::new(Schema::new(fields.clone()));
         let arrays: Vec<ArrayRef> = fields

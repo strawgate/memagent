@@ -1199,6 +1199,14 @@ fn validate_plan_uses_null_probe_values_for_cast_paths() {
         .expect("cast-heavy query should validate with null probe values");
 }
 
+#[test]
+fn validate_plan_accepts_wildcard_with_explicit_cast_column() {
+    let mut transform = SqlTransform::new("SELECT *, int(status) AS status_int FROM logs").unwrap();
+    transform
+        .validate_plan()
+        .expect("wildcard probe should include explicitly referenced columns");
+}
+
 /// When a WHERE clause filters out every row, execute should return an
 /// empty RecordBatch with the correct output schema — without calling
 /// `ctx.sql()` a second time (the original bug).

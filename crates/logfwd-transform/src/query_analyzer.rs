@@ -9,6 +9,7 @@ use datafusion::sql::sqlparser::dialect::GenericDialect;
 use datafusion::sql::sqlparser::parser::Parser;
 
 use logfwd_core::scan_config::ScanConfig;
+use logfwd_types::field_names;
 
 use crate::TransformError;
 
@@ -104,6 +105,37 @@ impl QueryAnalyzer {
                 validate_utf8: false,
             }
         }
+    }
+
+    /// Field names to use when probing a SQL plan without a real input batch.
+    ///
+    /// Wildcard queries still need explicitly referenced columns to exist in
+    /// the probe schema so expressions such as `SELECT *, int(status)` plan the
+    /// same way they do against runtime batches.
+    pub fn probe_field_names(&self) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut fields = Vec::new();
+
+        let mut push_field = |name: String| {
+            let normalized = strip_type_suffix(&name).to_ascii_lowercase();
+            if seen.insert(normalized.clone()) {
+                fields.push(normalized);
+            }
+        };
+
+        if self.uses_select_star || self.referenced_columns.is_empty() {
+            for name in [field_names::BODY, "level", "msg"] {
+                push_field(name.to_string());
+            }
+        }
+
+        let mut referenced: Vec<&String> = self.referenced_columns.iter().collect();
+        referenced.sort();
+        for name in referenced {
+            push_field(name.clone());
+        }
+
+        fields
     }
 
     /// Extract filter hints from the SQL for predicate pushdown.
