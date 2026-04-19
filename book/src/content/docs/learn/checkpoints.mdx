@@ -1,11 +1,11 @@
 ---
 title: "Checkpoint Ordering"
-description: "Interactive visualization of how logfwd tracks out-of-order ACKs and advances checkpoints safely"
+description: "Interactive visualization of how FastForward tracks out-of-order ACKs and advances checkpoints safely"
 ---
 
 import CheckpointSim from '../../../components/CheckpointSim.astro';
 
-When logfwd ships a batch to your collector, the collector might ACK batch #3 before batch #1.
+When FastForward ships a batch to your collector, the collector might ACK batch #3 before batch #1.
 **The checkpoint must not advance past unresolved batches** — or a crash would skip unsent data.
 
 This is the core correctness invariant, proven in TLA+.

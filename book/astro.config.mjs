@@ -15,8 +15,8 @@ export default defineConfig({
   },
   integrations: [
     starlight({
-      title: "logfwd",
-      description: "Tail log files. Transform with SQL. Ship anywhere.",
+      title: "FastForward",
+      description: "a blazing-fast log, metric & trace forwarder — built with rust",
       social: [
         {
           icon: "github",

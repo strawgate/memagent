@@ -1,13 +1,13 @@
 ---
 title: "Columnar"
-description: "Row vs column layout — and why it makes logfwd's SQL transforms fast"
+description: "Row vs column layout — and why it makes FastForward's SQL transforms fast"
 ---
 
 import ColumnarDiagram from '../../../components/ColumnarDiagram.astro';
 
-Most log agents process data row by row — each log line is one record, stored with all its fields together. logfwd does something different: it stores data in **Apache Arrow columnar format**, where each field is a contiguous array.
+Most log agents process data row by row — each log line is one record, stored with all its fields together. FastForward does something different: it stores data in **Apache Arrow columnar format**, where each field is a contiguous array.
 
-This one change is why logfwd can run full SQL queries at 2.8 million lines per second.
+This one change is why FastForward can run full SQL queries at 2.8 million lines per second.
 
 <ColumnarDiagram />
 
@@ -17,7 +17,7 @@ When you write `SELECT level, status FROM logs WHERE status >= 500`, you only ne
 
 With columnar storage, DataFusion reads **only** the `level` and `status` arrays. On a 20-field log line, that's a 90% reduction in data touched. The CPU cache stays hot with useful data instead of being polluted with irrelevant fields.
 
-## How logfwd builds columns
+## How FastForward builds columns
 
 The scanner doesn't build rows and then transpose them. It builds columns **directly** during the scan:
 
