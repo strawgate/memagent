@@ -5,6 +5,7 @@
 //!
 //! - **write_row_json/narrow/10k** — tight loop over 10K narrow rows (5 fields)
 //! - **write_row_json/wide/10k**   — tight loop over 10K wide rows (20 fields)
+//! - **write_row_json_resolved/narrow/10k** — pre-resolved columns, 10K narrow
 //! - **write_batch_to/narrow/10k** — `StdoutSink::write_batch_to` JSON, 10K narrow rows
 //! - **write_batch_to/wide/10k**   — `StdoutSink::write_batch_to` JSON, 10K wide rows
 
@@ -12,7 +13,10 @@ use std::sync::Arc;
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use logfwd_bench::generators;
-use logfwd_output::{BatchMetadata, StdoutFormat, StdoutSink, build_col_infos, write_row_json};
+use logfwd_output::{
+    BatchMetadata, StdoutFormat, StdoutSink, build_col_infos, resolve_col_infos, write_row_json,
+    write_row_json_resolved,
+};
 use logfwd_types::diagnostics::ComponentStats;
 
 fn bench_json_lines(c: &mut Criterion) {
@@ -44,7 +48,7 @@ fn bench_json_lines(c: &mut Criterion) {
 
             group.throughput(Throughput::Elements(*n as u64));
 
-            // ── write_row_json tight loop ────────────────────────────────
+            // ── write_row_json tight loop (baseline) ─────────────────────
             group.bench_with_input(
                 BenchmarkId::new("write_row_json", &label),
                 batch,
@@ -63,7 +67,27 @@ fn bench_json_lines(c: &mut Criterion) {
                 },
             );
 
-            // ── StdoutSink::write_batch_to (JSON) ────────────────────────
+            // ── write_row_json_resolved tight loop (pre-resolved arrays) ─
+            group.bench_with_input(
+                BenchmarkId::new("write_row_json_resolved", &label),
+                batch,
+                |b, batch| {
+                    let cols = build_col_infos(batch);
+                    let resolved = resolve_col_infos(batch, &cols);
+                    let mut buf = Vec::with_capacity(*n * 300);
+                    b.iter(|| {
+                        buf.clear();
+                        for row in 0..batch.num_rows() {
+                            write_row_json_resolved(row, &resolved, &mut buf)
+                                .expect("JSON serialization should not fail");
+                            buf.push(b'\n');
+                        }
+                        std::hint::black_box(&buf);
+                    });
+                },
+            );
+
+            // ── StdoutSink::write_batch_to (JSON — uses resolved path) ───
             group.bench_with_input(
                 BenchmarkId::new("write_batch_to", &label),
                 batch,

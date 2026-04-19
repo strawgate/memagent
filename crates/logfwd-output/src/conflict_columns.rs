@@ -148,6 +148,117 @@ pub(crate) fn get_array<'b>(batch: &'b RecordBatch, variant: &ColVariant) -> Opt
     }
 }
 
+// ---------------------------------------------------------------------------
+// Pre-resolved column references (hot-loop optimization)
+// ---------------------------------------------------------------------------
+
+/// A column variant with a direct `&dyn Array` reference, avoiding per-row
+/// `batch.columns().get()` → `Arc::deref` → `downcast_ref` overhead.
+pub struct ResolvedVariant<'a> {
+    pub(crate) array: &'a dyn Array,
+    /// For struct children the parent's null bitmap must also be checked.
+    pub(crate) parent: Option<&'a dyn Array>,
+}
+
+impl ResolvedVariant<'_> {
+    #[inline]
+    pub(crate) fn is_null(&self, row: usize) -> bool {
+        self.parent.is_some_and(|p| p.is_null(row)) || self.array.is_null(row)
+    }
+}
+
+/// Pre-resolved column info for the hot loop.
+///
+/// Most columns are flat with exactly one variant (`Single`), which avoids
+/// Vec allocation and iterator overhead. Multi-variant conflict columns use
+/// `Multi`.
+pub enum ResolvedCol<'a> {
+    /// Flat column with a single type — the 90%+ common case.
+    Single {
+        key_json: &'a [u8],
+        array: &'a dyn Array,
+    },
+    /// Struct conflict column or multiple flat typed variants.
+    Multi {
+        key_json: &'a [u8],
+        variants: Vec<ResolvedVariant<'a>>,
+    },
+}
+
+impl ResolvedCol<'_> {
+    /// Find the first non-null array at `row`, or `None` if all are null.
+    #[inline]
+    pub fn resolve(&self, row: usize) -> Option<(&[u8], &dyn Array)> {
+        match self {
+            ResolvedCol::Single { key_json, array } => {
+                if array.is_null(row) {
+                    None
+                } else {
+                    Some((key_json, *array))
+                }
+            }
+            ResolvedCol::Multi { key_json, variants } => {
+                let v = variants.iter().find(|v| !v.is_null(row))?;
+                Some((key_json, v.array))
+            }
+        }
+    }
+}
+
+/// Pre-resolve all `ColInfo` variants to direct `&dyn Array` references.
+///
+/// Called once per batch. The returned `ResolvedCol` slices avoid per-row
+/// `batch.columns().get()` + `Arc::deref` + `downcast_ref::<StructArray>()`
+/// overhead inside `write_row_json_resolved`.
+pub fn resolve_col_infos<'a>(batch: &'a RecordBatch, cols: &'a [ColInfo]) -> Vec<ResolvedCol<'a>> {
+    cols.iter()
+        .filter_map(|col| {
+            let key_json: &'a [u8] = &col.key_json;
+
+            // Fast path: single flat variant (no Vec, no iterator in hot loop)
+            if col.json_variants.len() == 1
+                && let ColVariant::Flat { col_idx, .. } = &col.json_variants[0]
+            {
+                let array = batch.columns().get(*col_idx)?.as_ref();
+                return Some(ResolvedCol::Single { key_json, array });
+            }
+
+            let variants: Vec<ResolvedVariant<'a>> = col
+                .json_variants
+                .iter()
+                .filter_map(|v| match v {
+                    ColVariant::Flat { col_idx, .. } => {
+                        let array = batch.columns().get(*col_idx)?.as_ref();
+                        Some(ResolvedVariant {
+                            array,
+                            parent: None,
+                        })
+                    }
+                    ColVariant::StructField {
+                        struct_col_idx,
+                        field_idx,
+                        ..
+                    } => {
+                        let parent_col = batch.columns().get(*struct_col_idx)?;
+                        let sa = parent_col.as_any().downcast_ref::<StructArray>()?;
+                        let child = sa.columns().get(*field_idx)?;
+                        Some(ResolvedVariant {
+                            array: child.as_ref(),
+                            parent: Some(parent_col.as_ref()),
+                        })
+                    }
+                })
+                .collect();
+
+            if variants.is_empty() {
+                None
+            } else {
+                Some(ResolvedCol::Multi { key_json, variants })
+            }
+        })
+        .collect()
+}
+
 fn sort_variants(info: &mut ColInfo) {
     info.json_variants
         .sort_by_key(|v| std::cmp::Reverse(json_priority(variant_dt(v))));

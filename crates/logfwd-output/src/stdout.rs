@@ -18,8 +18,8 @@ use super::sink::{SendResult, Sink, SinkFactory};
 use arrow::util::display::array_value_to_string;
 
 use super::{
-    BatchMetadata, ColVariant, build_col_infos, get_array, is_null, write_json_value,
-    write_row_json,
+    BatchMetadata, ColVariant, build_col_infos, get_array, is_null, resolve_col_infos,
+    write_json_value, write_row_json_resolved,
 };
 
 // ---------------------------------------------------------------------------
@@ -116,8 +116,9 @@ impl StdoutSink {
                         );
                     }
                     let cols = build_col_infos(batch);
+                    let resolved = resolve_col_infos(batch, &cols);
                     for row in 0..num_rows {
-                        write_row_json(batch, row, &cols, dest)?;
+                        write_row_json_resolved(row, &resolved, dest)?;
                         dest.push(b'\n');
                     }
                 } else {
@@ -137,9 +138,9 @@ impl StdoutSink {
             }
             StdoutFormat::Json => {
                 let cols = build_col_infos(batch);
+                let resolved = resolve_col_infos(batch, &cols);
                 for row in 0..num_rows {
-                    // Write directly into dest — no intermediate scratch copy.
-                    write_row_json(batch, row, &cols, dest)?;
+                    write_row_json_resolved(row, &resolved, dest)?;
                     dest.push(b'\n');
                 }
             }

@@ -9,7 +9,7 @@ use arrow::record_batch::RecordBatch;
 use arrow::util::display::array_value_to_string;
 use memchr::memchr2;
 
-use crate::conflict_columns::{ColInfo, get_array, is_null};
+use crate::conflict_columns::{ColInfo, ResolvedCol, get_array, is_null};
 
 /// Coalesce a conflict field to a `String` using `str_variants` ordering
 /// (Utf8 wins, then Boolean, Int64, Float64).  Returns `None` if all variants
@@ -302,6 +302,37 @@ pub(crate) fn write_json_value(arr: &dyn Array, row: usize, out: &mut Vec<u8>) -
             write_json_string(out, &fallback)?;
         }
     }
+    Ok(())
+}
+
+/// Write a single row as a JSON object using pre-resolved column references.
+///
+/// This is the fast-path variant of [`write_row_json`] that avoids per-row
+/// `batch.columns().get()` + `Arc::deref` + `downcast_ref` overhead by using
+/// [`ResolvedCol`] slices built once per batch. For single-variant flat columns
+/// (the common case), the hot loop does a single `is_null` + `write_json_value`
+/// with no iterator or Vec indirection.
+pub fn write_row_json_resolved(
+    row: usize,
+    cols: &[ResolvedCol],
+    out: &mut Vec<u8>,
+) -> io::Result<()> {
+    out.push(b'{');
+    let mut first = true;
+    for col in cols {
+        let Some((key_json, array)) = col.resolve(row) else {
+            continue;
+        };
+
+        if !first {
+            out.push(b',');
+        }
+        first = false;
+
+        out.extend_from_slice(key_json);
+        write_json_value(array, row, out)?;
+    }
+    out.push(b'}');
     Ok(())
 }
 
