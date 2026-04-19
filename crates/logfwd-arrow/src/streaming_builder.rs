@@ -171,7 +171,7 @@ pub struct StreamingBuilder {
     /// Line views: (offset_in_buf, len) per row, in row order.
     /// Populated only when `line_field_name` is set.
     line_views: Vec<(u32, u32)>,
-    /// Constant per-row resource attributes emitted as `_resource_*` columns.
+    /// Constant per-row resource attributes emitted as resource attribute columns.
     resource_attrs: Vec<(String, String)>,
 }
 
@@ -916,10 +916,7 @@ impl StreamingBuilder {
                         .expect("resource attr constant view must be valid");
                 }
             }
-            let mut metadata = HashMap::new();
-            metadata.insert(field_names::METADATA_RESOURCE_KEY.to_string(), key.clone());
-            schema_fields
-                .push(Field::new(col_name, DataType::Utf8View, true).with_metadata(metadata));
+            schema_fields.push(Field::new(col_name, DataType::Utf8View, true));
             arrays.push(Arc::new(builder.finish()) as ArrayRef);
         }
 
@@ -1183,9 +1180,7 @@ impl StreamingBuilder {
             for _ in 0..num_rows {
                 builder.append_value(value);
             }
-            let mut metadata = HashMap::new();
-            metadata.insert(field_names::METADATA_RESOURCE_KEY.to_string(), key.clone());
-            schema_fields.push(Field::new(col_name, DataType::Utf8, true).with_metadata(metadata));
+            schema_fields.push(Field::new(col_name, DataType::Utf8, true));
             arrays.push(Arc::new(builder.finish()) as ArrayRef);
         }
 
@@ -2566,7 +2561,7 @@ mod tests {
     }
 
     #[test]
-    fn test_resource_columns_injected_with_metadata_in_finish_batch() {
+    fn test_resource_columns_injected_in_finish_batch() {
         let buf = bytes::Bytes::from_static(b"unused");
         let mut b = StreamingBuilder::new(None);
         b.set_resource_attributes(&[
@@ -2601,25 +2596,19 @@ mod tests {
         assert_eq!(namespace.value(0), "prod");
 
         let schema = batch.schema();
-        let service_field = schema
-            .field_with_name("resource.attributes.service.name")
-            .expect("service field");
-        let namespace_field = schema
-            .field_with_name("resource.attributes.k8s.namespace")
-            .expect("namespace field");
-        assert_eq!(
-            service_field
+        assert!(
+            schema
+                .field_with_name("resource.attributes.service.name")
+                .expect("service field")
                 .metadata()
-                .get(field_names::METADATA_RESOURCE_KEY)
-                .map(String::as_str),
-            Some("service.name")
+                .is_empty()
         );
-        assert_eq!(
-            namespace_field
+        assert!(
+            schema
+                .field_with_name("resource.attributes.k8s.namespace")
+                .expect("namespace field")
                 .metadata()
-                .get(field_names::METADATA_RESOURCE_KEY)
-                .map(String::as_str),
-            Some("k8s.namespace")
+                .is_empty()
         );
     }
 

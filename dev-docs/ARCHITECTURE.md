@@ -95,51 +95,49 @@ reassembly. Kani-proven.
 **Target:** Replace the copy-based framing with a layered zero-copy model (#303):
 
 ```
-Bytes → StructuralIndex::new(buf)     [ONE SIMD pass, all characters]
-      → NewlineFramer                  [consumes \n bitmask → line ranges]
+Bytes → streaming structural classifier [per-block SIMD bitmasks]
+      → NewlineFramer                  [consumes \n positions → line ranges]
       → CriReassembler (if CRI format) [merges P/F partials]
-      → Scanner                        [consumes remaining bitmasks]
+      → Scanner                        [consumes per-line structural bitmasks]
 ```
 
 ### 3. Structural classification: SIMD pre-pass
 
-```
-&[u8] → ChunkIndex::new(buf) → bitmasks for O(1) lookups
+```text
+&[u8] → find_structural_chars(block) → StreamingClassifier → processed bitmasks
 ```
 
-**ChunkIndex** (`logfwd-core/src/chunk_classify.rs`) is the simdjson
-stage-1 algorithm. It processes the entire buffer in 64-byte blocks,
-producing bitmasks for quote and backslash positions. From these it
-computes:
+**StreamingClassifier** (`logfwd-core/src/structural.rs`) is the
+simdjson-inspired stage-1 algorithm. It processes 64-byte blocks,
+producing bitmasks for structural character positions. From quote and
+backslash positions it computes:
 
 - **real_quotes**: unescaped quote positions (escaped quotes filtered out)
 - **in_string**: which bytes are inside JSON strings vs structural
 
-The scanner uses these for O(1) lookups instead of byte-by-byte
-scanning: `scan_string()` jumps from opening quote to closing quote,
-`skip_nested()` skips objects/arrays using the string mask.
+The scanner consumes these per-block masks directly. It stores only the
+quote and delimiter masks needed for bounded per-line string extraction
+and nested object/array skipping.
 
 Platform-specific SIMD:
 - **aarch64**: NEON (4 × 16-byte loads, vpaddl reduction)
 - **x86_64**: AVX2 preferred (2 × 32-byte loads), SSE2 fallback
 - **other**: scalar loop (LLVM auto-vectorizes)
 
-**Target:** Extend to **StructuralIndex** detecting 9 characters in
-one pass (#313): `\n`, space, `"`, `\`, `,`, `:`, `{`, `}`, `[`.
-Benchmark shows linear scaling at ~28µs per character (NEON). At 9
-characters: 256µs for 760KB buffer (3 GiB/s), 11x headroom over
-target throughput. This eliminates separate newline scanning and
-enables bitmask-based CRI field extraction and future CSV support.
+The classifier detects `\n`, space, `"`, `\`, `,`, `:`, `{`, `}`, `[`,
+and `]` in one pass. This eliminates separate newline scanning and
+enables bitmask-based JSON field extraction.
 
 ### 4. Scanning: JSON → typed fields
 
-```
-&[u8] + ChunkIndex → ScanBuilder callbacks → typed column values
+```text
+&[u8] + streaming structural bitmasks → ScanBuilder callbacks → typed column values
 ```
 
-**scan_into** (`logfwd-core/src/scanner.rs`) walks each line
-left-to-right, extracting key-value pairs. It uses ChunkIndex for
-string boundary detection and the **ScanBuilder** trait for output:
+**scan_streaming** (`logfwd-core/src/json_scanner.rs`) walks each line
+left-to-right, extracting key-value pairs. It uses streaming structural
+bitmasks for string boundary detection and the **ScanBuilder** trait for
+output:
 
 ```rust
 pub trait ScanBuilder {
@@ -155,8 +153,8 @@ pub trait ScanBuilder {
 ```
 
 This is the **key abstraction boundary**. The scanner lives in
-logfwd-core (proven, no_std). It doesn't know about Arrow — it
-calls trait methods that logfwd-arrow implements.
+logfwd-core (proven, no_std). It doesn't know about Arrow: it calls trait
+methods from `logfwd-core/src/scanner.rs` that logfwd-arrow implements.
 
 **ScanConfig** controls which fields to extract (field pushdown from
 SQL analysis) and type detection. Fields are typed per-value: when a

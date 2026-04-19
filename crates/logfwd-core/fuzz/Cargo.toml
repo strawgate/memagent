@@ -41,8 +41,8 @@ path = "fuzz_targets/scanner_consistency.rs"
 doc = false
 
 [[bin]]
-name = "fuzz_structural_index"
-path = "fuzz_targets/structural_index.rs"
+name = "fuzz_structural_streaming"
+path = "fuzz_targets/structural_streaming.rs"
 doc = false
 
 [[bin]]

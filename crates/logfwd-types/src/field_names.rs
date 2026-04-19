@@ -124,29 +124,12 @@ pub const SCOPE_VERSION: &str = "scope.version";
 /// Example: OTLP `service.name` → column `resource.attributes.service.name`.
 pub const DEFAULT_RESOURCE_PREFIX: &str = "resource.attributes.";
 
-/// Legacy resource attribute prefix used before the `resource.attributes.`
-/// convention. Sinks check this as a fallback for backwards compatibility
-/// with older batches and config-level `resource_attrs`.
-pub const LEGACY_RESOURCE_PREFIX: &str = "_resource_";
-
 // ---------------------------------------------------------------------------
 // Internal columns
 // ---------------------------------------------------------------------------
 
 /// Internal raw-line column — excluded from OTLP attributes and star-schema.
 pub const RAW: &str = "_raw";
-
-// ---------------------------------------------------------------------------
-// Arrow field / schema metadata keys
-// ---------------------------------------------------------------------------
-
-/// Arrow field metadata key: stores the original resource attribute key
-/// when using the legacy `_resource_*` prefix, enabling round-trip conversion.
-pub const METADATA_RESOURCE_KEY: &str = "logfwd.resource_key";
-
-/// Arrow schema metadata key: overrides the default resource prefix
-/// detection on a per-batch basis.
-pub const METADATA_RESOURCE_PREFIX: &str = "logfwd.resource_prefix";
 
 // ---------------------------------------------------------------------------
 // Type-conflict struct children (Arrow schema)

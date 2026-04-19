@@ -620,10 +620,6 @@ pub struct TcpTypeConfig {
 pub struct OtlpTypeConfig {
     #[serde(deserialize_with = "deserialize_strict_string")]
     pub listen: String,
-    /// Prefix applied to OTLP resource attributes when flattening into columns.
-    /// Defaults to `resource.attributes.` when omitted.
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub resource_prefix: Option<String>,
     /// Experimental OTLP protobuf decode strategy. Defaults to `prost`.
     pub protobuf_decode_mode: Option<OtlpProtobufDecodeModeConfig>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]

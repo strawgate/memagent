@@ -22,6 +22,11 @@ struct StoredBitmasks<'a> {
     close_bracket: &'a [u64],
 }
 
+struct DecodeScratch {
+    key: alloc::vec::Vec<u8>,
+    value: alloc::vec::Vec<u8>,
+}
+
 /// Scan an NDJSON buffer using streaming structural iteration.
 ///
 /// Zero heap allocation for bitmask storage. Line boundaries and
@@ -50,7 +55,7 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
     let num_blocks = len.div_ceil(64);
 
     // Stored per-block: only what scan_line needs for random-access lookups.
-    // 5 u64s per block (40 bytes) vs old StructuralIndex's 2 u64s (16 bytes).
+    // 5 u64s per block (40 bytes) for fields that need random-access lookups.
     let mut real_quotes = alloc::vec::Vec::with_capacity(num_blocks);
     let mut open_brace = alloc::vec::Vec::with_capacity(num_blocks);
     let mut close_brace = alloc::vec::Vec::with_capacity(num_blocks);
@@ -124,9 +129,12 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
         close_bracket: &close_bracket,
     };
 
-    // Scratch buffer for decoding JSON escape sequences in string values.
-    // Allocated once, reused across lines via clear() — no per-line allocation.
-    let mut scratch = alloc::vec::Vec::new();
+    // Scratch buffers for decoding JSON escape sequences. Allocated once and
+    // reused across lines via clear() so escaped strings avoid per-line allocs.
+    let mut scratch = DecodeScratch {
+        key: alloc::vec::Vec::new(),
+        value: alloc::vec::Vec::new(),
+    };
 
     // Phase 2: Scan each line using stored bitmasks for quote/nested lookups.
     for (start, end) in line_ranges {
@@ -142,7 +150,7 @@ fn scan_line<B: ScanBuilder>(
     blocks: &StoredBitmasks<'_>,
     config: &ScanConfig,
     builder: &mut B,
-    scratch: &mut alloc::vec::Vec<u8>,
+    scratch: &mut DecodeScratch,
 ) {
     builder.begin_row();
     if config.captures_line() {
@@ -173,7 +181,13 @@ fn scan_line<B: ScanBuilder>(
             Some(p) => p,
             None => break,
         };
-        let key = &buf[key_start..key_end];
+        let raw_key = &buf[key_start..key_end];
+        let key = if memchr::memchr(b'\\', raw_key).is_some() {
+            decode_json_escapes(raw_key, &mut scratch.key);
+            scratch.key.as_slice()
+        } else {
+            raw_key
+        };
         pos = key_end + 1;
 
         // Expect colon
@@ -202,8 +216,8 @@ fn scan_line<B: ScanBuilder>(
                     let idx = builder.resolve_field(key);
                     let raw = &buf[val_start..val_end];
                     if memchr::memchr(b'\\', raw).is_some() {
-                        decode_json_escapes(raw, scratch);
-                        builder.append_decoded_str_by_idx(idx, scratch);
+                        decode_json_escapes(raw, &mut scratch.value);
+                        builder.append_decoded_str_by_idx(idx, &scratch.value);
                     } else {
                         builder.append_str_by_idx(idx, raw);
                     }
@@ -589,9 +603,9 @@ fn parse_hex4(bytes: &[u8]) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scan_config::ScanConfig;
+    use crate::scan_config::{FieldSpec, ScanConfig};
     use alloc::string::String;
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
     use proptest::prelude::*;
     use proptest::test_runner::Config as ProptestConfig;
 
@@ -677,6 +691,59 @@ mod tests {
         let row = &builder.rows[0];
         assert!(row.iter().any(|(k, v)| k == "name" && v == "alice"));
         assert!(row.iter().any(|(k, v)| k == "age" && v == "int:30"));
+    }
+
+    #[test]
+    fn escaped_key_is_decoded_before_field_filtering() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(br#"{"pad":""#);
+        buf.extend(core::iter::repeat_n(b'x', 51));
+        buf.extend_from_slice(br#"","a"#);
+        assert_eq!(buf.len() % 64, 63);
+        buf.extend_from_slice(br#"\u002eb":"hit","other":"skip"}"#);
+        let config = ScanConfig {
+            wanted_fields: vec![FieldSpec {
+                name: "a.b".to_string(),
+                aliases: vec![],
+            }],
+            extract_all: false,
+            line_field_name: None,
+            validate_utf8: false,
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(&buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        assert!(row.iter().any(|(k, v)| k == "a.b" && v == "hit"));
+        assert!(!row.iter().any(|(k, v)| k == "other" && v == "skip"));
+    }
+
+    #[test]
+    fn escaped_key_decode_across_simd_boundary() {
+        // Pad so the \u002e escape straddles the 64-byte SIMD block boundary.
+        // With 58 spaces: {"a starts at offset 58, so \ is at 61 and `e` at 66,
+        // meaning the escape spans both block 0 (bytes 0..63) and block 1 (64..).
+        let padding = " ".repeat(58);
+        let input = alloc::format!("{}{{\"a\\u002eb\":1}}\n", padding);
+        let config = ScanConfig {
+            wanted_fields: vec![FieldSpec {
+                name: "a.b".to_string(),
+                aliases: vec![],
+            }],
+            extract_all: false,
+            line_field_name: None,
+            validate_utf8: false,
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input.as_bytes(), &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        assert!(
+            row.iter().any(|(k, v)| k == "a.b" && v == "int:1"),
+            "escaped key \\u002e must decode to '.' across SIMD boundary"
+        );
     }
 
     #[test]
@@ -1186,7 +1253,7 @@ mod tests {
         ) {
             // Direct: "42]extra" — must stop exactly at position of ']'
             let value_str = alloc::format!("{num}");
-            let mut direct_buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+            let mut direct_buf: Vec<u8> = Vec::new();
             direct_buf.extend_from_slice(value_str.as_bytes());
             direct_buf.push(b']');
             direct_buf.extend_from_slice(b"extra");

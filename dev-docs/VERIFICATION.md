@@ -331,13 +331,13 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 
 | Module | What it does | Verification |
 |--------|-------------|-------------|
-| `structural.rs` | Escape detection, quote classification, SIMD structural detection | Kani exhaustive (12 proofs) + proptest (SIMD ≡ scalar) |
-| `structural_iter.rs` | Streaming structural position iterator | Kani exhaustive (3 proofs) |
+| `structural.rs` | Escape detection, quote classification, SIMD structural detection | Kani exhaustive (9 proofs) + proptest (SIMD ≡ scalar) |
+| `structural_iter.rs` | Streaming structural position iterator, including space-only `next_non_space` semantics where tab/CR remain non-space | Kani exhaustive (3 proofs) |
 | `framer.rs` | Newline framing, line boundary detection | Kani exhaustive + oracle (4 proofs) |
 | `reassembler.rs` | CRI partial line reassembly (P/F merging) | Kani exhaustive (8 proofs) |
 | `byte_search.rs` | Proven byte search (find_byte, rfind_byte) | Kani exhaustive + oracle (3 proofs) |
-| `scanner.rs` | JSON field extraction (ScanBuilder trait) | Kani bounded (1 proof) + proptest oracle |
-| `json_scanner.rs` | Streaming JSON field scanner via bitmask iteration | Kani bounded (5 proofs) + proptest oracle |
+| `scanner.rs` | Scanner-to-builder protocol (`ScanBuilder`, `BuilderState`) | Kani bounded (4 proofs) + property-based protocol coverage |
+| `json_scanner.rs` | Streaming JSON field scanner via bitmask iteration, including escaped key/value decoding, CRLF normalization, and JSON whitespace boundary regressions | Kani bounded (5 proofs) + proptest oracle + compliance regressions |
 | `scan_config.rs` | `parse_int_fast`, `parse_float_fast`, `ScanConfig` | Kani exhaustive (2 proofs) |
 | `cri.rs` | CRI log parsing + partial line reassembly | Kani exhaustive (8 proofs) |
 | `otlp.rs` | Protobuf wire format + OTLP encoding + timestamp parsing | Kani mixed exhaustive + bounded (30 proofs incl. 3 contract verifications) |

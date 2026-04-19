@@ -23,9 +23,10 @@ pub struct ScanConfig {
     /// When `Some(name)`, the scanner appends the original line bytes into
     /// column `name` for every row.
     pub line_field_name: Option<String>,
-    /// When true, validates that the input buffer is valid UTF-8 before scanning
-    /// and panics with a descriptive message if it is not. Disabled by default
-    /// for maximum throughput; enable when input provenance is untrusted.
+    /// When true, validates that the input buffer is valid UTF-8 before scanning.
+    /// Invalid bytes are reported as a descriptive scanner error before internal
+    /// builder paths can reach `finish_batch()` UTF-8 assumptions. Disabled by
+    /// default for maximum throughput; enable when input provenance is untrusted.
     pub validate_utf8: bool,
 }
 

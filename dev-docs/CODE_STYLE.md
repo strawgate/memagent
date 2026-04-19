@@ -89,7 +89,7 @@ The hot path is: reader → framer → scanner → builders → OTLP encoder →
 
 ## Module Organization
 
-- **One concept per file.** `scanner.rs` does scanning, `structural.rs` does structural detection.
+- **One concept per file.** `json_scanner.rs` does scanning, `scanner.rs` defines the builder protocol, and `structural.rs` does structural detection.
 - **Tests at bottom of file** in `#[cfg(test)] mod tests {}`.
 - **Kani proofs** in `#[cfg(kani)] mod verification {}`.
 - **Platform-specific code:** use `wide` crate for portable SIMD, not `#[cfg(target_arch)]`.

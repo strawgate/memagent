@@ -274,10 +274,6 @@ pub(super) fn build_input_state(
         }
         InputTypeConfig::Otlp(o) => {
             let addr = require_non_empty(name, "otlp", "listen", Some(&o.listen))?;
-            let resource_prefix = o
-                .resource_prefix
-                .as_deref()
-                .unwrap_or(logfwd_types::field_names::DEFAULT_RESOURCE_PREFIX);
             let protobuf_decode_mode =
                 resolve_otlp_protobuf_decode_mode(name, o.protobuf_decode_mode)?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
@@ -287,21 +283,18 @@ pub(super) fn build_input_state(
                 name,
                 addr,
                 Some(Arc::clone(&stats)),
-                resource_prefix,
                 protobuf_decode_mode,
                 o.max_recv_message_size_bytes,
             )
             .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             #[cfg(not(feature = "otlp-research"))]
-            let source =
-                logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats_resource_prefix_and_max_size(
-                    name,
-                    addr,
-                    Arc::clone(&stats),
-                    resource_prefix,
-                    o.max_recv_message_size_bytes,
-                )
-                .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
+            let source = logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats_and_max_size(
+                name,
+                addr,
+                Arc::clone(&stats),
+                o.max_recv_message_size_bytes,
+            )
+            .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             #[cfg(not(feature = "otlp-research"))]
             let _ = protobuf_decode_mode;
             (Box::new(source), format, 4 * 1024 * 1024)
@@ -709,7 +702,8 @@ fn build_host_metrics_config(
 /// Returns whether OTLP input should use structured ingress mode.
 ///
 /// Structured ingress preserves typed OTLP fields but bypasses the scanner.
-/// If scanner line capture is required, use legacy scanner ingress.
+/// If scanner line capture is required, route OTLP payloads through scanner
+/// ingress so the configured line field is populated.
 #[cfg(test)]
 pub(super) fn otlp_uses_structured_ingress(
     scan_config: &logfwd_core::scan_config::ScanConfig,
@@ -981,7 +975,6 @@ mod tests {
                 InputType::Otlp,
                 InputTypeConfig::Otlp(logfwd_config::OtlpTypeConfig {
                     listen: "   ".to_string(),
-                    resource_prefix: None,
                     protobuf_decode_mode: None,
                     max_recv_message_size_bytes: None,
                     tls: None,
@@ -1082,7 +1075,7 @@ mod tests {
         scan.line_field_name = Some(logfwd_types::field_names::BODY.to_string());
         assert!(
             !otlp_uses_structured_ingress(&scan),
-            "line capture enabled should force legacy scanner ingress"
+            "line capture enabled should force scanner ingress"
         );
     }
 }
