@@ -4,7 +4,7 @@ use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 
 use super::*;
-use arrow::array::{Array, ArrayRef, Float64Array, Int64Array, StringArray};
+use arrow::array::{Array, ArrayRef, Float64Array, Int64Array, StringArray, StringViewArray};
 use arrow::datatypes::{Field, Schema};
 
 /// Helper: build a simple test RecordBatch with bare-name columns matching
@@ -223,6 +223,110 @@ fn test_float_udf() {
     assert!((col.value(0) - 3.25).abs() < 1e-10);
     assert!(col.is_null(1));
     assert!((col.value(2) - 2.125).abs() < 1e-10);
+}
+
+#[test]
+fn test_int_udf_accepts_utf8view_and_preserves_invalid_and_null() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "status",
+        DataType::Utf8View,
+        true,
+    )]));
+    let status: ArrayRef = Arc::new(StringViewArray::from(vec![
+        Some("200"),
+        Some("not_a_number"),
+        None,
+        Some("503"),
+    ]));
+    let batch = RecordBatch::try_new(schema, vec![status]).unwrap();
+
+    let mut transform = SqlTransform::new("SELECT int(status) AS status_int FROM logs").unwrap();
+    let result = transform.execute_blocking(batch).unwrap();
+    let status_int = result
+        .column_by_name("status_int")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(status_int.value(0), 200);
+    assert!(status_int.is_null(1));
+    assert!(status_int.is_null(2));
+    assert_eq!(status_int.value(3), 503);
+}
+
+#[test]
+fn test_int_udf_accepts_int64_without_string_coercion() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "status",
+        DataType::Int64,
+        true,
+    )]));
+    let status: ArrayRef = Arc::new(Int64Array::from(vec![Some(200), Some(500), None]));
+    let batch = RecordBatch::try_new(schema, vec![status]).unwrap();
+
+    let mut transform = SqlTransform::new("SELECT int(status) AS status_int FROM logs").unwrap();
+    let result = transform.execute_blocking(batch).unwrap();
+    let status_int = result
+        .column_by_name("status_int")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(status_int.value(0), 200);
+    assert_eq!(status_int.value(1), 500);
+    assert!(status_int.is_null(2));
+}
+
+#[test]
+fn test_float_udf_accepts_utf8view_and_preserves_invalid_and_null() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "val",
+        DataType::Utf8View,
+        true,
+    )]));
+    let val: ArrayRef = Arc::new(StringViewArray::from(vec![
+        Some("3.25"),
+        Some("not_float"),
+        None,
+        Some("2.125"),
+    ]));
+    let batch = RecordBatch::try_new(schema, vec![val]).unwrap();
+
+    let mut transform = SqlTransform::new("SELECT float(val) AS val_f FROM logs").unwrap();
+    let result = transform.execute_blocking(batch).unwrap();
+    let val_f = result
+        .column_by_name("val_f")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    assert!((val_f.value(0) - 3.25).abs() < 1e-10);
+    assert!(val_f.is_null(1));
+    assert!(val_f.is_null(2));
+    assert!((val_f.value(3) - 2.125).abs() < 1e-10);
+}
+
+#[test]
+fn test_float_udf_accepts_float64_without_string_coercion() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "val",
+        DataType::Float64,
+        true,
+    )]));
+    let val: ArrayRef = Arc::new(Float64Array::from(vec![Some(3.25), Some(2.125), None]));
+    let batch = RecordBatch::try_new(schema, vec![val]).unwrap();
+
+    let mut transform = SqlTransform::new("SELECT float(val) AS val_f FROM logs").unwrap();
+    let result = transform.execute_blocking(batch).unwrap();
+    let val_f = result
+        .column_by_name("val_f")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    assert!((val_f.value(0) - 3.25).abs() < 1e-10);
+    assert!((val_f.value(1) - 2.125).abs() < 1e-10);
+    assert!(val_f.is_null(2));
 }
 
 #[test]
