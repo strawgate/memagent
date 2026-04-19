@@ -202,9 +202,9 @@ describe('following distance', function () {
     }, fixedScale(1));
     sim.setCycleStart(0);
     sim.exitAuto();
-    // Pack cars on the exit segment with proper spacing
+    // Pack cars on the exit segment before the gate
     for (var i = 0; i < 5; i++) {
-      sim.addCar('exit', 30 + i * 40, 3.5);
+      sim.addCar('exit', 10 + i * 25, 3.5);
     }
     for (var t = 0; t < 200; t++) {
       sim.tick(t * 25);

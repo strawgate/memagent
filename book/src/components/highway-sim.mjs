@@ -35,10 +35,10 @@ export var DEFAULTS = {
   scaleMin: 0.8,
   scaleMax: 1.15,
   spawnBlockedThreshold: 8,
-  exitEntryD: 22,
-  contEntryD: 18,
+  exitEntryD: 0,
+  contEntryD: 0,
   hwyForkThreshold: 5,
-  hwyBlockedOffset: 10,
+  hwyBlockedOffset: 2,
   rampMergeThreshold: 3,
 };
 
@@ -196,25 +196,24 @@ export function createSimulation(overrides, scaleFn) {
       var car = cars[i];
       var target = cfg.speedMax;
 
-      // Gate (light) — only on exit
-      if (opts.hasGate && !lightIsGreen && car.d <= cfg.gateD && car.d > cfg.gateD - 35) {
-        var someoneCloser = (i > 0 && cars[i - 1].d <= cfg.gateD && cars[i - 1].d > car.d);
-        if (!someoneCloser) {
-          target = 0;
-          if (car.d + car.speed > cfg.gateD) {
-            car.d = cfg.gateD;
-            car.speed = 0;
-          }
+      // Gate (light) — only on exit. Hard stop at traffic light.
+      if (opts.hasGate && !lightIsGreen && car.d < cfg.gateD + 1) {
+        var gateGap = cfg.gateD - car.d;
+        if (gateGap < cfg.followZone + car.w / 2) {
+          target = Math.min(target, Math.max(0, gateGap * cfg.brakeRate));
         }
       }
 
-      // End-of-segment blocking — wide braking zone for smooth deceleration
+      // End-of-segment blocking — smooth braking zone
       if (opts.endBlocked) {
         if (car.d >= segLen - 50) {
           var distToEnd = segLen - car.d;
           target = Math.min(target, Math.max(0, distToEnd * 0.12));
         }
-        if (car.d > segLen) { car.d = segLen; car.speed = 0; }
+        if (car.d > segLen) {
+          car.d -= (car.d - segLen) * 0.5;
+          car.speed *= 0.3;
+        }
       }
 
       // Following distance — find nearest obstacle ahead (real or phantom)
@@ -239,7 +238,13 @@ export function createSimulation(overrides, scaleFn) {
       if (car.speed < 0.03) car.speed = 0;
       car.d += car.speed;
 
-      // Hard gap — enforce against nearest real or phantom obstacle ahead
+      // Hard gate clamp — car must not overshoot the traffic light
+      if (opts.hasGate && !lightIsGreen && car.d > cfg.gateD) {
+        car.d = cfg.gateD;
+        car.speed = 0;
+      }
+
+      // Hard gap enforcement — prevent overlap, match speed of car ahead
       if (nearestAhead) {
         var mg2 = (car.w + (nearestAhead.w || cfg.carW)) / 2 + cfg.minFollowPad;
         if (nearestAhead.d - car.d < mg2) {
@@ -261,6 +266,18 @@ export function createSimulation(overrides, scaleFn) {
       }
 
       car.color = carColor(car);
+    }
+
+    // Post-loop gap enforcement pass — cars sorted by d descending (leader first)
+    // Push each follower back if it overlaps the car ahead
+    for (var gi = 1; gi < cars.length; gi++) {
+      var ahead2 = cars[gi - 1];
+      var behind = cars[gi];
+      var reqGap = (ahead2.w + behind.w) / 2 + cfg.minFollowPad;
+      if (ahead2.d - behind.d < reqGap) {
+        behind.d = ahead2.d - reqGap;
+        behind.speed = Math.min(behind.speed, ahead2.speed);
+      }
     }
   }
 
@@ -345,14 +362,12 @@ export function createSimulation(overrides, scaleFn) {
       var front = carsHwy[0];
       if (front.d < cfg.lenHwy - cfg.hwyForkThreshold) break;
       if (canEnterExit(front.w)) {
-        // Take the exit ramp
         carsHwy.splice(0, 1);
         front.segment = 'exit';
         front.d = cfg.exitEntryD;
         front.speed = Math.min(front.speed, cfg.speedMax * 0.8);
         carsExit.push(front);
       } else if (lightIsGreen && canEnterCont(front.w)) {
-        // Exit spacing is temporarily full while traffic is flowing — continue east.
         carsHwy.splice(0, 1);
         front.segment = 'cont';
         front.d = cfg.contEntryD;
