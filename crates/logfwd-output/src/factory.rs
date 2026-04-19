@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use logfwd_config::{Format, OutputConfig, OutputType};
 use logfwd_types::diagnostics::ComponentStats;
@@ -18,6 +19,68 @@ use crate::sink::SinkFactory;
 use crate::stdout::{StdoutFormat, StdoutSinkFactory};
 use crate::tcp_sink::TcpSinkFactory;
 use crate::udp_sink::UdpSinkFactory;
+
+fn build_http_client_builder(
+    name: &str,
+    cfg: &OutputConfig,
+) -> Result<reqwest::ClientBuilder, OutputError> {
+    let mut client_builder = reqwest::Client::builder()
+        .timeout(Duration::from_millis(
+            cfg.request_timeout_ms.unwrap_or(30_000),
+        ))
+        .pool_max_idle_per_host(64);
+
+    if let Some(tls) = &cfg.tls {
+        if tls.insecure_skip_verify {
+            client_builder = client_builder.danger_accept_invalid_certs(true);
+        }
+        if let Some(ca) = &tls.ca_file {
+            let ca_cert = read_tls_file(name, "ca_file", ca)?;
+            let cert = reqwest::Certificate::from_pem(&ca_cert).map_err(|e| {
+                OutputError::Construction(format!(
+                    "output '{name}': invalid tls ca_file '{ca}': {e}"
+                ))
+            })?;
+            client_builder = client_builder.add_root_certificate(cert);
+        }
+        match (&tls.cert_file, &tls.key_file) {
+            (Some(cert), Some(key)) => {
+                let cert_data = read_tls_file(name, "cert_file", cert)?;
+                let key_data = read_tls_file(name, "key_file", key)?;
+                let mut pem = cert_data;
+                pem.push(b'\n');
+                pem.extend(key_data);
+                let identity = reqwest::Identity::from_pem(&pem).map_err(|e| {
+                    OutputError::Construction(format!(
+                        "output '{name}': invalid tls cert_file/key_file '{cert}'/'{key}': {e}"
+                    ))
+                })?;
+                client_builder = client_builder.identity(identity);
+            }
+            (Some(_), None) => {
+                return Err(OutputError::Construction(format!(
+                    "output '{name}': tls cert_file requires tls key_file"
+                )));
+            }
+            (None, Some(_)) => {
+                return Err(OutputError::Construction(format!(
+                    "output '{name}': tls key_file requires tls cert_file"
+                )));
+            }
+            (None, None) => {}
+        }
+    }
+
+    Ok(client_builder)
+}
+
+fn read_tls_file(name: &str, field: &str, path: &str) -> Result<Vec<u8>, OutputError> {
+    std::fs::read(path).map_err(|e| {
+        OutputError::Construction(format!(
+            "output '{name}': failed to read tls {field} '{path}': {e}"
+        ))
+    })
+}
 
 /// Build an `Arc<dyn SinkFactory>` from an output configuration.
 ///
@@ -57,13 +120,14 @@ pub fn build_sink_factory(
                 Some("streaming") => ElasticsearchRequestMode::Streaming,
                 _ => ElasticsearchRequestMode::Buffered,
             };
-            let factory = ElasticsearchSinkFactory::new(
+            let factory = ElasticsearchSinkFactory::new_with_client(
                 name.to_string(),
                 endpoint.clone(),
                 index,
                 auth_headers,
                 compress,
                 request_mode,
+                build_http_client_builder(name, cfg)?,
                 stats,
             )
             .map_err(|e| {
@@ -75,7 +139,7 @@ pub fn build_sink_factory(
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!("output '{name}': loki requires 'endpoint'"))
             })?;
-            let factory = LokiSinkFactory::new(
+            let factory = LokiSinkFactory::new_with_client(
                 name.to_string(),
                 endpoint.clone(),
                 cfg.tenant_id.clone(),
@@ -86,6 +150,7 @@ pub fn build_sink_factory(
                     .collect(),
                 cfg.label_columns.clone().unwrap_or_default(),
                 auth_headers,
+                build_http_client_builder(name, cfg)?,
                 stats,
             )
             .map_err(|e| {
@@ -176,36 +241,7 @@ pub fn build_sink_factory(
                 }
             };
 
-            let mut client_builder = reqwest::Client::builder()
-                .timeout(std::time::Duration::from_millis(
-                    cfg.request_timeout_ms.unwrap_or(30_000),
-                ))
-                .pool_max_idle_per_host(64);
-
-            #[allow(clippy::collapsible_if)]
-            if let Some(tls) = &cfg.tls {
-                if tls.insecure_skip_verify {
-                    client_builder = client_builder.danger_accept_invalid_certs(true);
-                }
-                if let Some(ca) = &tls.ca_file {
-                    if let Ok(ca_cert) = std::fs::read(ca) {
-                        if let Ok(cert) = reqwest::Certificate::from_pem(&ca_cert) {
-                            client_builder = client_builder.add_root_certificate(cert);
-                        }
-                    }
-                }
-                if let (Some(cert), Some(key)) = (&tls.cert_file, &tls.key_file) {
-                    if let (Ok(cert_data), Ok(key_data)) = (std::fs::read(cert), std::fs::read(key))
-                    {
-                        let mut pem = cert_data;
-                        pem.push(b'\n');
-                        pem.extend(key_data);
-                        if let Ok(identity) = reqwest::Identity::from_pem(&pem) {
-                            client_builder = client_builder.identity(identity);
-                        }
-                    }
-                }
-            }
+            let client_builder = build_http_client_builder(name, cfg)?;
 
             let mut all_headers = auth_headers;
             if let Some(cfg_headers) = &cfg.headers {
@@ -322,6 +358,8 @@ pub fn build_sink_factory(
 #[cfg(test)]
 mod tests {
     use super::build_sink_factory;
+    use std::collections::HashMap;
+    use std::fs;
     use std::sync::Arc;
 
     use logfwd_config::{OutputConfig, OutputType};
@@ -341,5 +379,142 @@ mod tests {
             result.is_ok(),
             "arrow_ipc should accept explicit 'none' compression"
         );
+    }
+
+    #[test]
+    fn build_sink_factory_elasticsearch_accepts_tls_and_request_timeout() {
+        let cfg = OutputConfig {
+            output_type: OutputType::Elasticsearch,
+            endpoint: Some("https://localhost:9200".to_string()),
+            request_timeout_ms: Some(5_000),
+            tls: Some(logfwd_config::TlsClientConfig {
+                insecure_skip_verify: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let result = build_sink_factory("es", &cfg, None, Arc::new(ComponentStats::new()));
+        assert!(
+            result.is_ok(),
+            "elasticsearch should accept tls/request_timeout config"
+        );
+    }
+
+    #[test]
+    fn build_sink_factory_loki_accepts_tls_and_request_timeout() {
+        let cfg = OutputConfig {
+            output_type: OutputType::Loki,
+            endpoint: Some("https://localhost:3100".to_string()),
+            request_timeout_ms: Some(5_000),
+            tls: Some(logfwd_config::TlsClientConfig {
+                insecure_skip_verify: true,
+                ..Default::default()
+            }),
+            static_labels: Some(HashMap::from([("app".to_string(), "logfwd".to_string())])),
+            ..Default::default()
+        };
+
+        let result = build_sink_factory("loki", &cfg, None, Arc::new(ComponentStats::new()));
+        assert!(
+            result.is_ok(),
+            "loki should accept tls/request_timeout config"
+        );
+    }
+
+    #[test]
+    fn build_sink_factory_elasticsearch_rejects_unreadable_tls_ca_file() {
+        let cfg = OutputConfig {
+            output_type: OutputType::Elasticsearch,
+            endpoint: Some("https://localhost:9200".to_string()),
+            tls: Some(logfwd_config::TlsClientConfig {
+                ca_file: Some("/path/that/does/not/exist/ca.pem".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let result = build_sink_factory("es", &cfg, None, Arc::new(ComponentStats::new()));
+        let err = match result {
+            Ok(_) => panic!("missing tls ca_file should reject sink construction"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("failed to read tls ca_file"));
+    }
+
+    #[test]
+    fn build_sink_factory_loki_rejects_malformed_tls_ca_file() {
+        let path = std::env::temp_dir().join(format!(
+            "logfwd-output-invalid-ca-{}.pem",
+            std::process::id()
+        ));
+        fs::write(
+            &path,
+            b"-----BEGIN CERTIFICATE-----\nnot-valid-base64\n-----END CERTIFICATE-----\n",
+        )
+        .expect("write invalid ca file");
+        let path = path.to_string_lossy().into_owned();
+        let cfg = OutputConfig {
+            output_type: OutputType::Loki,
+            endpoint: Some("https://localhost:3100".to_string()),
+            tls: Some(logfwd_config::TlsClientConfig {
+                ca_file: Some(path.clone()),
+                ..Default::default()
+            }),
+            static_labels: Some(HashMap::from([("app".to_string(), "logfwd".to_string())])),
+            ..Default::default()
+        };
+
+        let result = build_sink_factory("loki", &cfg, None, Arc::new(ComponentStats::new()));
+        let _ = fs::remove_file(path);
+        let err = match result {
+            Ok(_) => panic!("malformed tls ca_file should reject sink construction"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string().contains("builder error"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_sink_factory_rejects_tls_cert_without_key() {
+        let cfg = OutputConfig {
+            output_type: OutputType::Elasticsearch,
+            endpoint: Some("https://localhost:9200".to_string()),
+            tls: Some(logfwd_config::TlsClientConfig {
+                cert_file: Some("/tmp/client.pem".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let result = build_sink_factory("es", &cfg, None, Arc::new(ComponentStats::new()));
+        let err = match result {
+            Ok(_) => panic!("half-configured mTLS identity should reject sink construction"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("cert_file requires tls key_file"));
+    }
+
+    #[test]
+    fn build_sink_factory_rejects_tls_key_without_cert() {
+        let cfg = OutputConfig {
+            output_type: OutputType::Loki,
+            endpoint: Some("https://localhost:3100".to_string()),
+            tls: Some(logfwd_config::TlsClientConfig {
+                key_file: Some("/tmp/client.key".to_string()),
+                ..Default::default()
+            }),
+            static_labels: Some(HashMap::from([("app".to_string(), "logfwd".to_string())])),
+            ..Default::default()
+        };
+
+        let result = build_sink_factory("loki", &cfg, None, Arc::new(ComponentStats::new()));
+        let err = match result {
+            Ok(_) => panic!("half-configured mTLS identity should reject sink construction"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("key_file requires tls cert_file"));
     }
 }

@@ -38,6 +38,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow::array::AsArray;
 use arrow::datatypes::DataType;
@@ -504,10 +505,36 @@ impl LokiSinkFactory {
         headers: Vec<(String, String)>,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(io::Error::other)?;
+        Self::new_with_client(
+            name,
+            endpoint,
+            tenant_id,
+            static_labels,
+            label_columns,
+            headers,
+            reqwest::Client::builder().timeout(Duration::from_secs(30)),
+            stats,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    /// Creates a Loki sink factory with a caller-provided HTTP client builder.
+    ///
+    /// The caller owns all cross-cutting HTTP client policy on `client_builder`, including
+    /// request timeout, connection-pool sizing, TLS roots, mTLS identity, and certificate
+    /// verification behavior. This constructor parses Loki labels and headers, then builds
+    /// and reuses one `reqwest::Client` for every sink created by the factory.
+    pub fn new_with_client(
+        name: String,
+        endpoint: String,
+        tenant_id: Option<String>,
+        static_labels: Vec<(String, String)>,
+        label_columns: Vec<String>,
+        headers: Vec<(String, String)>,
+        client_builder: reqwest::ClientBuilder,
+        stats: Arc<ComponentStats>,
+    ) -> io::Result<Self> {
+        let client = client_builder.build().map_err(io::Error::other)?;
 
         let parsed_headers = headers
             .into_iter()

@@ -867,12 +867,16 @@ impl Config {
                         )));
                     }
 
+                    if !matches!(
+                        output.output_type,
+                        OutputType::Otlp | OutputType::Elasticsearch | OutputType::Loki
+                    ) && output.tls.is_some()
+                    {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': 'tls' is only supported for otlp, elasticsearch, and loki outputs"
+                        )));
+                    }
                     if output.output_type != OutputType::Otlp {
-                        if output.tls.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'tls' is only supported for otlp outputs"
-                            )));
-                        }
                         if output.headers.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': 'headers' is only supported for otlp outputs"
@@ -893,9 +897,13 @@ impl Config {
                                 "pipeline '{name}' output '{label}': 'retry_max_backoff_ms' is only supported for otlp outputs"
                             )));
                         }
-                        if output.request_timeout_ms.is_some() {
+                        if !matches!(
+                            output.output_type,
+                            OutputType::Elasticsearch | OutputType::Loki
+                        ) && output.request_timeout_ms.is_some()
+                        {
                             return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'request_timeout_ms' is only supported for otlp outputs"
+                                "pipeline '{name}' output '{label}': 'request_timeout_ms' is only supported for otlp, elasticsearch, and loki outputs"
                             )));
                         }
                         if output.batch_timeout_ms.is_some() {
@@ -906,12 +914,17 @@ impl Config {
                     }
 
                     // Validate OTLP-specific field values when set.
+                    if matches!(
+                        output.output_type,
+                        OutputType::Otlp | OutputType::Elasticsearch | OutputType::Loki
+                    ) && output.request_timeout_ms == Some(0)
+                    {
+                        return Err(ConfigError::Validation(format!(
+                            "pipeline '{name}' output '{label}': 'request_timeout_ms' must be at least 1"
+                        )));
+                    }
+
                     if output.output_type == OutputType::Otlp {
-                        if output.request_timeout_ms == Some(0) {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'request_timeout_ms' must be at least 1"
-                            )));
-                        }
                         if output.batch_timeout_ms == Some(0) {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': 'batch_timeout_ms' must be at least 1"
@@ -2529,6 +2542,62 @@ pipelines:
 "#;
         let err = Config::load_str(yaml).unwrap_err().to_string();
         assert!(err.contains("'retry_attempts' is only supported for otlp outputs"));
+    }
+
+    #[test]
+    fn elasticsearch_accepts_tls_and_request_timeout_ms() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: elasticsearch
+        endpoint: https://localhost:9200
+        request_timeout_ms: 5000
+        tls:
+          insecure_skip_verify: true
+"#;
+        Config::load_str(yaml).expect("elasticsearch should accept tls and request_timeout_ms");
+    }
+
+    #[test]
+    fn loki_accepts_tls_and_request_timeout_ms() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: loki
+        endpoint: https://localhost:3100
+        request_timeout_ms: 5000
+        tls:
+          insecure_skip_verify: true
+"#;
+        Config::load_str(yaml).expect("loki should accept tls and request_timeout_ms");
+    }
+
+    #[test]
+    fn elasticsearch_rejects_zero_request_timeout_ms() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: elasticsearch
+        endpoint: https://localhost:9200
+        request_timeout_ms: 0
+"#;
+        let err = Config::load_str(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("request_timeout_ms") && err.contains("at least 1"),
+            "expected zero timeout rejection, got: {err}"
+        );
     }
 
     #[test]
