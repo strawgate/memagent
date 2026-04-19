@@ -56,13 +56,12 @@ pub(super) fn convert_request_to_batch(
 
                 // timestamp: prefer time_unix_nano, fall back to
                 // observed_time_unix_nano when event time is unknown (#1690).
-                let ts_raw = if record.time_unix_nano > 0 {
-                    record.time_unix_nano
+                let (ts_raw, ts_field) = if record.time_unix_nano > 0 {
+                    (record.time_unix_nano, "time_unix_nano")
                 } else {
-                    record.observed_time_unix_nano
+                    (record.observed_time_unix_nano, "observed_time_unix_nano")
                 };
-                if let Some(ts) =
-                    convert_otlp_timestamp(ts_raw, "time_unix_nano/observed_time_unix_nano")?
+                if let Some(ts) = convert_otlp_timestamp(ts_raw, ts_field)?
                 {
                     builder.append_i64_value_by_idx(timestamp_idx, ts);
                 }
