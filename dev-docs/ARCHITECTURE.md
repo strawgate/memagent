@@ -331,4 +331,4 @@ selection guidance, proof quality requirements, and per-module status.
 - `dev-docs/DESIGN.md` — vision, goals, and architecture decision records
 - `dev-docs/VERIFICATION.md` — verification tiers, tool selection, per-module status
 - `dev-docs/CRATE_RULES.md` — per-crate enforcement rules
-- [Roadmap (GitHub issue #889)](https://github.com/strawgate/memagent/issues/889) — implementation phases with issue references
+- [Roadmap (GitHub issue #889)](https://github.com/strawgate/fastforward/issues/889) — implementation phases with issue references
