@@ -55,7 +55,6 @@ fn source_id_for_sender(addr: SocketAddr) -> SourceId {
             h.update(&[6u8]);
             h.update(&v6.ip().octets());
             h.update(&v6.port().to_le_bytes());
-            h.update(&v6.flowinfo().to_le_bytes());
             h.update(&v6.scope_id().to_le_bytes());
         }
     }
@@ -180,7 +179,7 @@ impl InputSource for UdpInput {
         let mut datagrams_read = 0usize;
 
         // Emit one event per datagram to preserve sender attribution.
-        let mut events: Vec<InputEvent> = Vec::new();
+        let mut events: Vec<InputEvent> = Vec::with_capacity(MAX_DATAGRAMS_PER_POLL);
         let mut emitted_bytes_total = 0usize;
 
         // Drain all available datagrams in one poll cycle.
@@ -731,6 +730,28 @@ mod tests {
         };
 
         assert_ne!(source_a, source_b);
+    }
+
+    #[test]
+    fn source_id_ipv6_stable_and_distinct() {
+        use std::net::{Ipv6Addr, SocketAddrV6};
+
+        let addr_a = SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 5000, 0, 0));
+        let addr_b = SocketAddr::V6(SocketAddrV6::new(
+            Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1),
+            5000,
+            0,
+            0,
+        ));
+
+        // Stability: same address yields the same id across calls.
+        let id_a1 = source_id_for_sender(addr_a);
+        let id_a2 = source_id_for_sender(addr_a);
+        assert_eq!(id_a1, id_a2, "IPv6 source id must be stable");
+
+        // Distinctness: different addresses yield different ids.
+        let id_b = source_id_for_sender(addr_b);
+        assert_ne!(id_a1, id_b, "different IPv6 addresses must produce different ids");
     }
 }
 
