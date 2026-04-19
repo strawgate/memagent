@@ -435,6 +435,8 @@ Ship to Elasticsearch via the Bulk API.
 | `request_mode` | string | No | `buffered` | `buffered` or `streaming`. `streaming` currently requires `compression: none`. |
 | `auth` | object | No | — | Optional bearer token or custom headers for HTTP auth. |
 
+Bulk payloads are split before they exceed `5242880` bytes (5 MiB). That limit is internal and is not a YAML field.
+
 ```yaml
 output:
   type: elasticsearch

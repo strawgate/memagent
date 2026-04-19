@@ -194,6 +194,7 @@ Each log record produces 2 lines: an action line and a document line. The bulk A
 ## Performance Notes
 
 - The sink reuses buffers to minimize allocations (hot path optimization)
+- Bulk payloads are split before they exceed `5242880` bytes (5 MiB)
 - HTTP requests include retry logic with exponential backoff (100ms → 200ms → 400ms)
 - Transient errors (429, 5xx, network failures) are automatically retried up to 3 times
 - Response parsing checks for per-document errors and fails the entire batch if any document fails

@@ -350,6 +350,7 @@ pipelines:
 
     enrichment:
       - type: geo_database
+        format: mmdb
         path: /etc/logfwd/GeoIP2-City.mmdb
 
     outputs:
@@ -562,6 +563,7 @@ pipelines:
     enrichment:
       - type: host_info
       - type: geo_database
+        format: mmdb
         path: /etc/logfwd/GeoIP2-City.mmdb
 
     outputs:

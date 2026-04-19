@@ -92,6 +92,8 @@ Streaming mode is experimental and currently requires `compression: none`. Use `
 | `request_mode` | string | No | `buffered` | `buffered` or experimental `streaming` (streaming currently requires `compression: none`) |
 | `auth` | object | No | — | Bearer token or custom headers |
 
+Bulk payloads are split before they exceed `5242880` bytes (5 MiB). That limit is internal and is not a YAML field.
+
 </TabItem>
 <TabItem label="Loki">
 
