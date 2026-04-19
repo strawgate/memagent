@@ -1,5 +1,8 @@
 use crate::compat;
-use crate::serde_helpers::deserialize_one_or_many;
+use crate::serde_helpers::{
+    deserialize_from_string_or_value, deserialize_one_or_many,
+    deserialize_option_from_string_or_value,
+};
 use crate::shared::{TlsClientConfig, TlsInputConfig};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -234,6 +237,7 @@ pub enum GeneratorAttributeValueConfig {
 #[serde(deny_unknown_fields)]
 pub struct GeneratorSequenceConfig {
     pub field: String,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub start: Option<u64>,
 }
 
@@ -248,6 +252,7 @@ pub struct GeneratorTimestampConfig {
     /// Default: `"2024-01-15T00:00:00Z"`.
     pub start: Option<String>,
     /// Milliseconds between events. Negative = backward. Default: 1.
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub step_ms: Option<i64>,
 }
 
@@ -267,11 +272,15 @@ pub enum HttpMethodConfig {
 #[serde(deny_unknown_fields)]
 pub struct HttpInputConfig {
     pub path: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub strict_path: Option<bool>,
     pub method: Option<HttpMethodConfig>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub max_request_body_size: Option<usize>,
     /// Max bytes to drain per poll call. Default matches OTLP receiver (1GB).
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub max_drained_bytes_per_poll: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub response_code: Option<u16>,
     /// Optional static body returned on successful ingest.
     /// Must be omitted when `response_code` is `204`.
@@ -281,17 +290,20 @@ pub struct HttpInputConfig {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct GeneratorInputConfig {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub events_per_second: Option<u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub num_lines: Option<u64>,
     #[serde(default)]
     pub message_template: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub field_count: Option<usize>,
 
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub events_per_sec: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub batch_size: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub total_events: Option<u64>,
     pub complexity: Option<GeneratorComplexityConfig>,
     pub profile: Option<GeneratorProfileConfig>,
@@ -308,26 +320,32 @@ pub struct GeneratorInputConfig {
 #[serde(deny_unknown_fields)]
 pub struct HostMetricsInputConfig {
     /// Sensor sample cadence. Defaults to 10_000 when omitted.
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub poll_interval_ms: Option<u64>,
     /// Deprecated no-op retained for backward compatibility.
     ///
     /// Sensor inputs are Arrow-native and do not emit heartbeat rows.
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub emit_heartbeat: Option<bool>,
     /// Optional path to a JSON control file for runtime sensor tuning.
     pub control_path: Option<String>,
     /// How often to check `control_path` for updates. Defaults to 1_000 when omitted.
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub control_reload_interval_ms: Option<u64>,
     /// Optional explicit enabled families for this platform.
     ///
     /// `None` means "use platform defaults". `Some([])` means "disable all".
     pub enabled_families: Option<Vec<String>>,
     /// Emit periodic per-family sample rows. Defaults to true.
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub emit_signal_rows: Option<bool>,
     /// Upper bound on data rows emitted per collection cycle. Defaults to 256.
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub max_rows_per_poll: Option<usize>,
     /// Path to the compiled eBPF kernel binary (required for `linux_ebpf_sensor`).
     pub ebpf_binary_path: Option<String>,
     /// Maximum events to drain per poll cycle (default: 4096).
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub max_events_per_poll: Option<usize>,
     /// Glob patterns for process names to include (e.g., `["nginx*", "python"]`).
     #[serde(default)]
@@ -342,13 +360,13 @@ pub struct HostMetricsInputConfig {
     #[serde(default)]
     pub exclude_event_types: Option<Vec<String>>,
     /// Ring buffer size in kilobytes.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub ring_buffer_size_kb: Option<usize>,
     /// Optional list of scrapers to run (e.g. `["cpu", "memory", "disk", "network", "filesystem"]`).
     #[serde(default)]
     pub scrapers: Option<Vec<String>>,
     /// Cadence for metrics collection in milliseconds.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub collection_interval_ms: Option<u64>,
     /// List of disk devices to include.
     #[serde(default)]
@@ -391,14 +409,17 @@ pub struct JournaldInputConfig {
     #[serde(default)]
     pub cursor_path: Option<String>,
     /// Include `_BOOT_ID` field in output (default: false).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_from_string_or_value")]
     pub include_boot_id: bool,
     /// Only include entries from the current boot (default: true).
-    #[serde(default = "default_true")]
+    #[serde(
+        default = "default_true",
+        deserialize_with = "deserialize_from_string_or_value"
+    )]
     pub current_boot_only: bool,
     /// Only include entries appended after the receiver starts (default: false).
     /// When false, reads all history from the current boot.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_from_string_or_value")]
     pub since_now: bool,
     /// Path to `journalctl` binary. Defaults to `journalctl` (found via PATH).
     pub journalctl_path: Option<String>,
@@ -529,15 +550,21 @@ impl InputTypeConfig {
 pub struct FileTypeConfig {
     pub path: String,
     /// File input poll cadence in milliseconds (default: 50, minimum: 1).
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub poll_interval_ms: Option<u64>,
     /// File tail read buffer in bytes (default: 262_144, minimum: 1, maximum: 4_194_304).
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub read_buf_size: Option<usize>,
     /// Maximum bytes read per file per poll (default: 262_144, minimum: 1).
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub per_file_read_budget_bytes: Option<usize>,
     /// Immediate repoll budget armed when a file poll hits read budget
     /// (default: 8, set to 0 to disable adaptive fast repolls).
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub adaptive_fast_polls_max: Option<u8>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub max_open_files: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub glob_rescan_interval_ms: Option<u64>,
 }
 
@@ -545,9 +572,9 @@ pub struct FileTypeConfig {
 #[serde(deny_unknown_fields)]
 pub struct UdpTypeConfig {
     pub listen: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub max_message_size_bytes: Option<usize>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub so_rcvbuf: Option<usize>,
 }
 
@@ -557,11 +584,11 @@ pub struct TcpTypeConfig {
     pub listen: String,
     #[serde(default)]
     pub tls: Option<TlsInputConfig>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub max_connections: Option<usize>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub connection_timeout_ms: Option<u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub read_timeout_ms: Option<u64>,
 }
 
@@ -574,13 +601,13 @@ pub struct OtlpTypeConfig {
     pub resource_prefix: Option<String>,
     /// Experimental OTLP protobuf decode strategy. Defaults to `prost`.
     pub protobuf_decode_mode: Option<OtlpProtobufDecodeModeConfig>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub max_recv_message_size_bytes: Option<usize>,
     #[serde(default)]
     pub tls: Option<TlsInputConfig>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub grpc_keepalive_time_ms: Option<u64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub grpc_max_concurrent_streams: Option<u32>,
 }
 
@@ -610,9 +637,9 @@ pub struct SensorTypeConfig {
 #[serde(deny_unknown_fields)]
 pub struct ArrowIpcTypeConfig {
     pub listen: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub max_connections: Option<usize>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub max_message_size_bytes: Option<usize>,
 }
 
@@ -655,18 +682,23 @@ pub struct S3InputConfig {
     /// AWS session token for temporary credentials. Falls back to `AWS_SESSION_TOKEN` env var.
     pub session_token: Option<String>,
     /// Range-GET part size in bytes. Default: 8 MiB.
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub part_size_bytes: Option<u64>,
     /// Max concurrent range GET tasks per object. Default: 8.
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub max_concurrent_fetches: Option<usize>,
     /// Max objects being fetched simultaneously. Default: 4.
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub max_concurrent_objects: Option<usize>,
     /// SQS visibility timeout in seconds. Default: 300.
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub visibility_timeout_secs: Option<u32>,
     /// Compression override: `"auto"`, `"gzip"` (or `"gz"`), `"zstd"` (or
     /// `"zst"`), `"snappy"` (or `"sz"`), `"none"` (or `"identity"`).
     /// Default: `"auto"` (detect from key extension or Content-Encoding).
     pub compression: Option<String>,
     /// Polling interval for `ListObjectsV2` mode in milliseconds. Default: 5000.
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub poll_interval_ms: Option<u64>,
 }
 
@@ -696,37 +728,37 @@ pub struct OutputConfig {
     #[serde(default)]
     pub headers: Option<HashMap<String, String>>,
     /// Number of retry attempts for transient errors.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub retry_attempts: Option<u32>,
     /// Initial backoff delay for retries.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub retry_initial_backoff_ms: Option<u64>,
     /// Maximum backoff delay for retries.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub retry_max_backoff_ms: Option<u64>,
     /// Timeout for each HTTP request.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub request_timeout_ms: Option<u64>,
     /// Maximum number of log records to send per batch.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub batch_size: Option<usize>,
     /// Maximum time to wait before sending a batch.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub batch_timeout_ms: Option<u64>,
     /// Host for socket-based IPC.
     #[serde(default)]
     pub host: Option<String>,
     /// Port for socket-based IPC.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub port: Option<u16>,
     /// Write the legacy IPC format (default: false).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub write_legacy_ipc_format: Option<bool>,
     /// Buffer size for the IPC writer in bytes.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub buffer_size_bytes: Option<usize>,
     /// Whether to write the schema immediately upon connection.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub write_schema_on_connect: Option<bool>,
 }
 
@@ -747,6 +779,7 @@ pub enum GeoDatabaseFormat {
 pub struct GeoDatabaseConfig {
     pub format: GeoDatabaseFormat,
     pub path: String,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub refresh_interval: Option<u64>,
 }
 
@@ -779,6 +812,7 @@ pub struct CsvEnrichmentConfig {
     pub path: String,
     /// Reload the file from disk every N seconds. If absent the file is read
     /// once at startup and never reloaded.
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub refresh_interval: Option<u64>,
 }
 
@@ -789,6 +823,7 @@ pub struct JsonlEnrichmentConfig {
     pub path: String,
     /// Reload the file from disk every N seconds. If absent the file is read
     /// once at startup and never reloaded.
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub refresh_interval: Option<u64>,
 }
 
@@ -825,6 +860,7 @@ pub struct KvFileEnrichmentConfig {
     pub table_name: String,
     pub path: String,
     /// Reload the file from disk every N seconds (must be >= 1).
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub refresh_interval: Option<u64>,
 }
 
@@ -878,9 +914,13 @@ pub struct PipelineConfig {
     pub enrichment: Vec<EnrichmentConfig>,
     #[serde(default)]
     pub resource_attrs: HashMap<String, String>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub workers: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub batch_target_bytes: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub batch_timeout_ms: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub poll_interval_ms: Option<u64>,
 }
 
@@ -890,6 +930,7 @@ pub struct ServerConfig {
     pub diagnostics: Option<String>,
     pub log_level: Option<String>,
     pub metrics_endpoint: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub metrics_interval_secs: Option<u64>,
     pub traces_endpoint: Option<String>,
 }

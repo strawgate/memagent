@@ -967,8 +967,9 @@ server:
 
 If the variable is not set, config loading fails fast with a validation error.
 
-Exact unquoted placeholders use YAML scalar typing after expansion. This lets numeric
-and boolean fields read values directly from the environment:
+Environment variables are expanded as string data. The typed config schema then
+parses those strings into the field type, so numeric and boolean fields can read
+values directly from the environment without treating the env value as YAML:
 
 ```yaml
 pipelines:
@@ -976,13 +977,13 @@ pipelines:
     workers: ${LOGFWD_WORKERS}
 ```
 
-Quote a placeholder, or tag it with `!!str`, when the expanded value should remain
-a string even if it looks like a YAML number, boolean, or null:
+String fields remain strings even when the expanded value looks like a YAML
+number, boolean, or null:
 
 ```yaml
 input:
   type: file
-  path: "${LOG_PATH}"
+  path: ${LOG_PATH}
 ```
 
 Placeholders embedded inside longer strings always remain strings:

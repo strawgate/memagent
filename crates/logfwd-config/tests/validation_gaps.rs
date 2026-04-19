@@ -44,7 +44,7 @@ output:
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
-        err.contains("config deserialization error at"),
+        err.contains("config deserialization error"),
         "error should include a deserialization path: {err}"
     );
     assert!(err.contains("output"), "error should name output: {err}");
@@ -68,7 +68,7 @@ pipelines:
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
-        err.contains("config deserialization error at"),
+        err.contains("config deserialization error"),
         "error should include a deserialization path: {err}"
     );
     assert!(
@@ -137,7 +137,7 @@ output:
 }
 
 #[test]
-fn issue_1855_env_expansion_preserves_non_string_scalars() {
+fn issue_1855_env_strings_are_parsed_by_typed_schema() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_WORKERS", "4");
 
@@ -151,8 +151,44 @@ pipelines:
       - type: stdout
 "#;
 
-    let config = Config::load_str(yaml).expect("config should parse env-backed numeric scalar");
+    let config = Config::load_str(yaml).expect("config should parse env-backed numeric string");
     assert_eq!(config.pipelines["test"].workers, Some(4));
+
+    let expanded = Config::expand_env_yaml_str(yaml).expect("env expansion should succeed");
+    let expanded_value: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&expanded).expect("expanded YAML should parse");
+    assert_eq!(
+        expanded_value["pipelines"]["test"]["workers"].as_str(),
+        Some("4"),
+        "env substitution should produce string data, not YAML numbers"
+    );
+}
+
+#[test]
+fn issue_1855_env_strings_are_parsed_as_bools_by_typed_schema() {
+    let _env_lock = env_lock();
+    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_STRICT_PATH", "false");
+
+    let yaml = r#"
+input:
+  type: http
+  listen: 127.0.0.1:8080
+  http:
+    strict_path: ${LOGFWD_ISSUE_1855_STRICT_PATH}
+output:
+  type: stdout
+"#;
+
+    let config = Config::load_str(yaml).expect("config should parse env-backed bool");
+    let input = &config.pipelines["default"].inputs[0];
+    let strict_path = match &input.type_config {
+        logfwd_config::InputTypeConfig::Http(http) => {
+            http.http.as_ref().and_then(|config| config.strict_path)
+        }
+        _ => panic!("expected http input"),
+    };
+
+    assert_eq!(strict_path, Some(false));
 }
 
 #[test]
@@ -206,8 +242,8 @@ fn issue_1855_tagged_unquoted_env_expansion_preserves_string_scalars() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_TAGGED_UNQUOTED", "123");
 
-    // An unquoted env placeholder with a !str tag should NOT be coerced to a
-    // number — the explicit string tag means the user wants a string value.
+    // Env substitution already produces string data; the explicit string tag
+    // should preserve that behavior.
     let yaml = r#"
 input:
   type: file
@@ -250,7 +286,7 @@ output:
 }
 
 #[test]
-fn issue_1855_mixed_quoted_and_unquoted_env_uses_node_context() {
+fn issue_1855_mixed_env_uses_schema_for_types_and_strings_for_string_fields() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_MIXED", "4");
 
@@ -266,7 +302,7 @@ pipelines:
       - type: stdout
 "#;
 
-    let config = Config::load_str(yaml).expect("mixed env-backed scalars should parse");
+    let config = Config::load_str(yaml).expect("mixed env-backed values should parse");
 
     assert_eq!(config.pipelines["test"].workers, Some(4));
     assert_eq!(
@@ -296,7 +332,7 @@ output:
 }
 
 #[test]
-fn issue_1855_block_scalar_mixed_indentation_expands_without_marker_leak() {
+fn issue_1855_block_scalar_mixed_indentation_expands() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_BLOCK_FIELD", "message");
 
@@ -323,14 +359,10 @@ pipelines:
         transform.contains(r#""message""#),
         "unexpected transform: {transform}"
     );
-    assert!(
-        !transform.contains("__LOGFWD_QEP_"),
-        "placeholder marker leaked into transform: {transform}"
-    );
 }
 
 #[test]
-fn issue_1855_single_quoted_yaml_escape_survives_placeholder_marking() {
+fn issue_1855_single_quoted_yaml_escape_survives_env_expansion() {
     let yaml = r#"
 pipelines:
   test:

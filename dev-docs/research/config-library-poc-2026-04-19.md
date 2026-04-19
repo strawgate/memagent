@@ -14,10 +14,9 @@ config loading with a published Rust config library?
 - `${VAR}` expands inside YAML string values.
 - YAML-significant characters in env values remain data, not syntax.
 - Missing environment variables fail fast and name the missing variable.
-- Exact unquoted placeholders may coerce to YAML scalar types such as numbers,
-  booleans, or null.
-- Exact quoted placeholders stay strings.
-- YAML `!!str` / `!str` tags force string behavior.
+- Environment substitution always produces string data.
+- The typed Rust config schema parses env-backed strings into field types such as
+  numbers, booleans, and enums.
 - Mapping keys can contain `${VAR}`.
 - Duplicate mapping keys created by env expansion are rejected.
 - Deserialization diagnostics include useful field paths.
@@ -39,8 +38,8 @@ It is not a drop-in replacement:
 - it substitutes string values, not mapping keys;
 - it cannot reject duplicate mapping keys created by key expansion, because key
   expansion does not happen;
-- exact numeric placeholders remain strings and fail typed deserialization into
-  fields such as `usize`;
+- exact numeric placeholders remain strings, so typed coercion must happen in a
+  later config/schema layer;
 - it currently depends on `serde_yaml 0.9.34+deprecated`, while logfwd already
   uses `serde_yaml_ng`.
 
@@ -90,22 +89,23 @@ the missing-variable policy wrapper.
 
 ## Recommendation
 
-Use `config` for config-source layering and typed env overrides. Keep the YAML
-AST interpolation pass, but use `varsubst` for the `${VAR}` string grammar
-inside that pass instead of hand-parsing placeholders.
+Use `config` for schema-directed deserialization/coercion, and later for
+config-source layering and typed env overrides. Keep the YAML AST interpolation
+pass, but use `varsubst` for the `${VAR}` string grammar inside that pass
+instead of hand-parsing placeholders.
 
 The production design should be:
 
 1. Read YAML from file or string.
 2. Run logfwd's YAML-aware `${VAR}` expansion over the parsed YAML AST, delegating
-   per-string placeholder substitution to `varsubst`.
-3. Feed the expanded YAML into `config` as the base source.
-4. Add an optional `LOGFWD_` environment overlay source using `__` as the nested
+   per-string placeholder substitution to `varsubst`; env values remain strings.
+3. Convert the expanded YAML AST into a `config` source without reparsing YAML
+   text, so YAML-specific values like `.nan` still reach semantic validation.
+4. Deserialize to `RawConfig` through `config`, letting the typed Rust schema
+   parse env-backed strings into numeric, boolean, and enum fields.
+5. Add an optional `LOGFWD_` environment overlay source using `__` as the nested
    separator.
-5. Deserialize to `RawConfig`, preserving or replacing the current
-   `serde_path_to_error` diagnostics with an equally precise path-aware error.
 6. Run existing semantic validation.
 
 Do not replace the current interpolation with `subst` unless we intentionally
-drop key expansion, duplicate-key detection, exact-scalar coercion, and the
-current braces-only syntax.
+drop key expansion, duplicate-key detection, and the current braces-only syntax.
