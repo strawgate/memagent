@@ -23,7 +23,6 @@
 //! URI, TIMESTAMP_ISO8601, DATE, TIME, LOGLEVEL, HOSTNAME, EMAILADDRESS.
 
 use std::any::Any;
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use arrow::array::{Array, ArrayRef, AsArray, StringBuilder, StructArray};
@@ -33,6 +32,8 @@ use datafusion::common::Result as DfResult;
 use datafusion::logical_expr::{
     ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
+
+use crate::udf::bounded_lru::BoundedLruCache;
 
 // ---------------------------------------------------------------------------
 // Grok pattern compilation (via grok crate)
@@ -45,6 +46,10 @@ struct CompiledGrok {
     pattern: grok::Pattern,
     field_names: Vec<String>,
 }
+
+const GROK_CACHE_CAPACITY: usize = 128;
+
+type BoundedGrokCache = BoundedLruCache<String, Arc<CompiledGrok>>;
 
 /// Compile a grok pattern using the `grok` crate's built-in pattern library.
 fn compile_grok(pattern: &str) -> Result<CompiledGrok, crate::TransformError> {
@@ -81,7 +86,7 @@ pub struct GrokUdf {
     /// `OnceLock` would cache the first pattern and silently apply it to all
     /// calls with different patterns.  Keying by pattern string handles multiple
     /// patterns correctly while still avoiding recompilation across batches.
-    grok_cache: Mutex<HashMap<String, Arc<CompiledGrok>>>,
+    grok_cache: Mutex<BoundedGrokCache>,
 }
 
 impl std::fmt::Debug for GrokUdf {
@@ -124,8 +129,37 @@ impl GrokUdf {
                 ]),
                 Volatility::Immutable,
             ),
-            grok_cache: Mutex::new(HashMap::new()),
+            grok_cache: Mutex::new(BoundedGrokCache::new(GROK_CACHE_CAPACITY)),
         }
+    }
+
+    fn get_or_compile_grok(&self, pattern: &str) -> DfResult<Arc<CompiledGrok>> {
+        {
+            let mut cache = self.grok_cache.lock().map_err(|_| {
+                datafusion::error::DataFusionError::Execution(
+                    "grok() internal cache lock poisoned".to_string(),
+                )
+            })?;
+            if let Some(cached) = cache.get_cloned(pattern) {
+                return Ok(cached);
+            }
+        }
+
+        let compiled =
+            Arc::new(compile_grok(pattern).map_err(|e| {
+                datafusion::error::DataFusionError::Execution(format!("grok: {e}"))
+            })?);
+
+        let mut cache = self.grok_cache.lock().map_err(|_| {
+            datafusion::error::DataFusionError::Execution(
+                "grok() internal cache lock poisoned".to_string(),
+            )
+        })?;
+        if let Some(cached) = cache.get_cloned(pattern) {
+            return Ok(cached);
+        }
+        cache.insert(pattern.to_owned(), Arc::clone(&compiled));
+        Ok(compiled)
     }
 }
 
@@ -224,23 +258,7 @@ impl ScalarUDFImpl for GrokUdf {
         // distinct pattern gets its own cache entry so that multiple grok(...)
         // calls with different patterns in the same SQL query each use the
         // correct compiled pattern.
-        let compiled: Arc<CompiledGrok> = {
-            let mut cache = self.grok_cache.lock().map_err(|_| {
-                datafusion::error::DataFusionError::Execution(
-                    "grok() internal cache lock poisoned".to_string(),
-                )
-            })?;
-            if let Some(cached) = cache.get(&pattern_str) {
-                Arc::clone(cached)
-            } else {
-                let new_compiled = compile_grok(&pattern_str).map_err(|e| {
-                    datafusion::error::DataFusionError::Execution(format!("grok: {e}"))
-                })?;
-                let arc = Arc::new(new_compiled);
-                cache.insert(pattern_str, Arc::clone(&arc));
-                arc
-            }
-        };
+        let compiled = self.get_or_compile_grok(&pattern_str)?;
 
         match input {
             ColumnarValue::Array(array) => {
@@ -263,6 +281,10 @@ impl ScalarUDFImpl for GrokUdf {
                                 }
                                 continue;
                             }
+                            // NOTE: the grok crate uses fancy-regex internally.
+                            // If matching exceeds fancy-regex backtracking limits,
+                            // `match_against` currently reports None. We treat this
+                            // exactly like a non-match and return NULL captures.
                             match compiled.pattern.match_against(strings.value(row)) {
                                 Some(matches) => {
                                     for (i, name) in compiled.field_names.iter().enumerate() {
@@ -721,5 +743,96 @@ mod tests {
                 "row {row}: NULL pattern must propagate NULL"
             );
         }
+    }
+
+    #[test]
+    fn test_grok_cache_reuses_compiled_pattern() {
+        let udf = GrokUdf::new();
+        let first = udf
+            .get_or_compile_grok("%{WORD:method} %{NUMBER:status}")
+            .expect("pattern should compile");
+        let second = udf
+            .get_or_compile_grok("%{WORD:method} %{NUMBER:status}")
+            .expect("pattern should be cached");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "same pattern must reuse compiled grok program"
+        );
+    }
+
+    #[test]
+    fn test_grok_cache_evicts_lru_entry() {
+        let udf = GrokUdf::new();
+        for idx in 0..GROK_CACHE_CAPACITY {
+            let pattern = format!("%{{WORD:word{idx}}}");
+            udf.get_or_compile_grok(&pattern)
+                .expect("pattern should compile");
+        }
+
+        // Touch word0 so word1 becomes LRU.
+        udf.get_or_compile_grok("%{WORD:word0}")
+            .expect("pattern should remain cached");
+        udf.get_or_compile_grok("%{WORD:overflow}")
+            .expect("overflow pattern should compile");
+
+        let cache = udf.grok_cache.lock().expect("cache lock");
+        assert_eq!(
+            cache.entries.len(),
+            GROK_CACHE_CAPACITY,
+            "cache should remain bounded"
+        );
+        assert!(
+            cache.entries.contains_key("%{WORD:word0}"),
+            "most recently used entry should stay in cache"
+        );
+        assert!(
+            !cache.entries.contains_key("%{WORD:word1}"),
+            "least recently used entry should be evicted"
+        );
+    }
+
+    #[test]
+    fn test_grok_pathological_regex_returns_null_quickly() {
+        use std::time::{Duration, Instant};
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "message",
+            DataType::Utf8,
+            true,
+        )]));
+        let input = "a".repeat(4096);
+        let messages: ArrayRef = Arc::new(StringArray::from(vec![Some(input)]));
+        let batch = RecordBatch::try_new(schema, vec![messages]).expect("batch should build");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let started = Instant::now();
+        let result = rt.block_on(run_sql(
+            batch,
+            "SELECT grok(message, '(?<cat>(a+)+)b') AS captures FROM logs",
+        ));
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "pathological regex match took too long: {elapsed:?}"
+        );
+        assert_eq!(result.num_rows(), 1, "query should return one row");
+
+        let captures = result
+            .column_by_name("captures")
+            .expect("query should produce captures column")
+            .as_any()
+            .downcast_ref::<StructArray>()
+            .expect("grok(...) should return a struct array");
+        let cat = captures
+            .column_by_name("cat")
+            .expect("struct should contain cat capture");
+        assert!(
+            cat.is_null(0),
+            "pathological regex should surface as a NULL capture"
+        );
     }
 }

@@ -454,12 +454,12 @@ fn test_enrichment_join() {
 
     // Spot-check values: both "auth" rows should map to "platform".
     let team_col = result.column_by_name("team").expect("team column missing");
-    use arrow::array::StringArray;
-    // The CSV enrichment table stores columns as DataType::Utf8 (StringArray).
+    use arrow::array::StringViewArray;
+    // CSV enrichment tables store string columns as Utf8View.
     let team_arr = team_col
         .as_any()
-        .downcast_ref::<StringArray>()
-        .expect("team column should be DataType::Utf8");
+        .downcast_ref::<StringViewArray>()
+        .expect("team column should be DataType::Utf8View");
     let teams: Vec<&str> = team_arr.iter().map(|v| v.unwrap_or("")).collect();
     assert!(
         teams.contains(&"platform"),

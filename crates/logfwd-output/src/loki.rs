@@ -552,6 +552,18 @@ impl super::sink::SinkFactory for LokiSinkFactory {
     }
 }
 
+impl LokiSinkFactory {
+    #[cfg(test)]
+    fn create_sink(&self) -> LokiSink {
+        LokiSink::new(
+            self.name.clone(),
+            Arc::clone(&self.config),
+            Arc::clone(&self.client),
+            Arc::clone(&self.stats),
+        )
+    }
+}
+
 // ---------------------------------------------------------------------------
 // JSON escaping helpers
 // ---------------------------------------------------------------------------
@@ -718,6 +730,27 @@ mod tests {
         for (key, value) in labels {
             assert_eq!(stream[&key], value);
         }
+    }
+
+    #[test]
+    fn factory_reuses_single_client_across_workers() {
+        let factory = LokiSinkFactory::new(
+            "loki".to_string(),
+            "http://127.0.0.1:3100".to_string(),
+            None,
+            vec![("app".to_string(), "logfwd".to_string())],
+            vec![],
+            vec![],
+            Arc::new(ComponentStats::new()),
+        )
+        .expect("factory");
+        let sink1 = factory.create_sink();
+        let sink2 = factory.create_sink();
+
+        assert!(
+            Arc::ptr_eq(&sink1.client, &sink2.client),
+            "Loki workers should share factory client pool"
+        );
     }
 
     // -----------------------------------------------------------------------

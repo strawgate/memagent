@@ -28,7 +28,7 @@ use logfwd_otap_proto::otap::{
     ArrowPayloadType as ProtoArrowPayloadType, BatchArrowRecords as ProtoBatchArrowRecords,
     BatchStatus as ProtoBatchStatus, StatusCode as ProtoStatusCode,
 };
-use logfwd_types::diagnostics::ComponentHealth;
+use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 use prost::Message;
 use tokio::sync::oneshot;
 
@@ -82,12 +82,22 @@ struct OtapServerState {
     tx: mpsc::SyncSender<RecordBatch>,
     shutdown: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
+    stats: Option<Arc<ComponentStats>>,
 }
 
 impl OtapReceiver {
     /// Bind an HTTP server on `addr` (e.g. "0.0.0.0:4317").
     pub fn new(name: impl Into<String>, addr: &str) -> io::Result<Self> {
-        Self::new_with_capacity(name, addr, CHANNEL_BOUND)
+        Self::new_with_capacity_and_stats(name, addr, CHANNEL_BOUND, None)
+    }
+
+    /// Like [`Self::new`] but wires receiver diagnostics counters.
+    pub fn new_with_stats(
+        name: impl Into<String>,
+        addr: &str,
+        stats: Arc<ComponentStats>,
+    ) -> io::Result<Self> {
+        Self::new_with_capacity_and_stats(name, addr, CHANNEL_BOUND, Some(stats))
     }
 
     /// Like [`Self::new`] but with an explicit channel capacity. Useful for tests.
@@ -95,6 +105,16 @@ impl OtapReceiver {
         name: impl Into<String>,
         addr: &str,
         capacity: usize,
+    ) -> io::Result<Self> {
+        Self::new_with_capacity_and_stats(name, addr, capacity, None)
+    }
+
+    /// Like [`Self::new_with_capacity`] but wires receiver diagnostics counters.
+    pub fn new_with_capacity_and_stats(
+        name: impl Into<String>,
+        addr: &str,
+        capacity: usize,
+        stats: Option<Arc<ComponentStats>>,
     ) -> io::Result<Self> {
         let std_listener = std::net::TcpListener::bind(addr)
             .map_err(|e| io::Error::other(format!("OTAP receiver bind {addr}: {e}")))?;
@@ -110,6 +130,7 @@ impl OtapReceiver {
             tx,
             shutdown: Arc::clone(&shutdown),
             health: Arc::clone(&health),
+            stats,
         });
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
         let shutdown_for_server = Arc::clone(&shutdown);
@@ -224,6 +245,18 @@ impl OtapReceiver {
     }
 }
 
+fn record_error(stats: Option<&Arc<ComponentStats>>) {
+    if let Some(stats) = stats {
+        stats.inc_errors();
+    }
+}
+
+fn record_parse_error(stats: Option<&Arc<ComponentStats>>) {
+    if let Some(stats) = stats {
+        stats.inc_parse_errors(1);
+    }
+}
+
 fn store_health_event(health: &AtomicU8, event: ReceiverHealthEvent) {
     let mut current = health.load(Ordering::Relaxed);
     loop {
@@ -243,12 +276,16 @@ async fn handle_otap_request(
 ) -> Response {
     let content_encoding = match parse_content_encoding(&headers) {
         Ok(content_encoding) => content_encoding,
-        Err(status) => return (status, "invalid content-encoding header").into_response(),
+        Err(status) => {
+            record_error(state.stats.as_ref());
+            return (status, "invalid content-encoding header").into_response();
+        }
     };
 
     match parse_content_type(&headers) {
         Ok(Some(content_type)) => {
             if content_type != "application/x-protobuf" {
+                record_error(state.stats.as_ref());
                 return (
                     StatusCode::UNSUPPORTED_MEDIA_TYPE,
                     "unsupported content-type",
@@ -257,19 +294,25 @@ async fn handle_otap_request(
             }
         }
         Ok(None) => {
+            record_error(state.stats.as_ref());
             return (StatusCode::UNSUPPORTED_MEDIA_TYPE, "missing content-type").into_response();
         }
-        Err(status) => return (status, "invalid content-type header").into_response(),
+        Err(status) => {
+            record_error(state.stats.as_ref());
+            return (status, "invalid content-type header").into_response();
+        }
     }
 
     let content_length = parse_content_length(&headers);
     if content_length.is_some_and(|body_len| body_len > MAX_REQUEST_BODY_SIZE as u64) {
+        record_error(state.stats.as_ref());
         return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
     }
 
     let body = match read_limited_body(body, MAX_REQUEST_BODY_SIZE, content_length).await {
         Ok(body) => body,
         Err(status) => {
+            record_error(state.stats.as_ref());
             let message = if status == StatusCode::PAYLOAD_TOO_LARGE {
                 "payload too large"
             } else {
@@ -283,13 +326,16 @@ async fn handle_otap_request(
         Some("gzip") => match decompress_gzip(&body, MAX_REQUEST_BODY_SIZE) {
             Ok(decompressed) => decompressed,
             Err(InputError::Io(_)) => {
+                record_parse_error(state.stats.as_ref());
                 return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
             }
             Err(_) => {
+                record_parse_error(state.stats.as_ref());
                 return (StatusCode::BAD_REQUEST, "gzip decompression failed").into_response();
             }
         },
         Some(other) => {
+            record_error(state.stats.as_ref());
             return (
                 StatusCode::BAD_REQUEST,
                 format!("unsupported content-encoding: {other}"),
@@ -301,17 +347,24 @@ async fn handle_otap_request(
 
     let batch_records = match decode_batch_arrow_records(&body) {
         Ok(records) => records,
-        Err(msg) => return (StatusCode::BAD_REQUEST, msg.to_string()).into_response(),
+        Err(msg) => {
+            record_parse_error(state.stats.as_ref());
+            return (StatusCode::BAD_REQUEST, msg.to_string()).into_response();
+        }
     };
 
     let star = match assemble_star_schema(&batch_records.payloads) {
         Ok(star) => star,
-        Err(msg) => return (StatusCode::BAD_REQUEST, msg.to_string()).into_response(),
+        Err(msg) => {
+            record_parse_error(state.stats.as_ref());
+            return (StatusCode::BAD_REQUEST, msg.to_string()).into_response();
+        }
     };
 
     let flat = match star_to_flat(&star) {
         Ok(flat) => flat,
         Err(e) => {
+            record_parse_error(state.stats.as_ref());
             return (StatusCode::BAD_REQUEST, format!("star_to_flat failed: {e}")).into_response();
         }
     };
@@ -339,6 +392,7 @@ async fn handle_otap_request(
                 .into_response()
         }
         Err(mpsc::TrySendError::Full(_)) => {
+            record_error(state.stats.as_ref());
             store_health_event(&state.health, ReceiverHealthEvent::Backpressure);
             (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -347,6 +401,7 @@ async fn handle_otap_request(
                 .into_response()
         }
         Err(mpsc::TrySendError::Disconnected(_)) => {
+            record_error(state.stats.as_ref());
             if !state.shutdown.load(Ordering::Relaxed) {
                 store_health_event(&state.health, ReceiverHealthEvent::FatalFailure);
             }
@@ -584,6 +639,11 @@ mod tests {
         UInt32Array,
     };
     use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use logfwd_types::diagnostics::ComponentStats;
+    use std::io::Seek as _;
+    use std::io::Write as _;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -609,6 +669,22 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(predicate(), "{failure_message}");
+    }
+
+    fn wait_for_server(addr: std::net::SocketAddr) {
+        wait_until(
+            Duration::from_secs(2),
+            || std::net::TcpStream::connect(addr).is_ok(),
+            "OTAP receiver did not accept connections",
+        );
+    }
+
+    fn tempfile_payload(bytes: &[u8]) -> std::fs::File {
+        let mut file = tempfile::tempfile().expect("create tempfile payload");
+        file.write_all(bytes).expect("write tempfile payload");
+        file.flush().expect("flush tempfile payload");
+        file.rewind().expect("rewind tempfile payload");
+        file
     }
 
     // Regression test for issue #1142: clean shutdown
@@ -1028,10 +1104,74 @@ mod tests {
     }
 
     #[test]
-    fn receiver_returns_429_when_channel_full() {
-        let receiver = OtapReceiver::new_with_capacity("test-429", "127.0.0.1:0", 1)
+    fn receiver_rejects_unsupported_content_type() {
+        let stats = Arc::new(ComponentStats::new());
+        let receiver = OtapReceiver::new_with_capacity_and_stats(
+            "test-415",
+            "127.0.0.1:0",
+            16,
+            Some(Arc::clone(&stats)),
+        )
+        .expect("bind should succeed");
+        let addr = receiver.local_addr();
+        wait_for_server(addr);
+
+        let url = format!("http://{addr}/v1/arrow_logs");
+        let payload = tempfile_payload(b"{}");
+        let result = loopback_http_client()
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .send(payload);
+        match result {
+            Err(ureq::Error::StatusCode(code)) => assert_eq!(code, 415),
+            other => panic!("expected 415, got {other:?}"),
+        }
+        assert_eq!(stats.errors(), 1);
+    }
+
+    #[test]
+    fn receiver_rejects_truncated_gzip_body() {
+        let receiver = OtapReceiver::new_with_capacity("test-gzip-truncated", "127.0.0.1:0", 16)
             .expect("bind should succeed");
         let addr = receiver.local_addr();
+
+        let logs_ipc = serialize_batch_to_ipc(&make_logs_batch());
+        let proto = encode_batch_arrow_records(9, &[(PAYLOAD_TYPE_LOGS, &logs_ipc)]);
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder
+            .write_all(&proto)
+            .expect("should write OTAP payload to gzip stream");
+        let mut gzip = encoder.finish().expect("should finish gzip stream");
+        gzip.truncate(gzip.len().saturating_sub(4));
+
+        let url = format!("http://{addr}/v1/arrow_logs");
+        let payload = tempfile_payload(&gzip);
+        let result = loopback_http_client()
+            .post(&url)
+            .header("Content-Type", "application/x-protobuf")
+            .header("Content-Encoding", "gzip")
+            .send(payload);
+
+        let status: u16 = match result {
+            Ok(resp) => resp.status().as_u16(),
+            Err(ureq::Error::StatusCode(code)) => code,
+            Err(err) => panic!("unexpected transport error: {err}"),
+        };
+        assert_eq!(status, 400, "truncated gzip body must be rejected");
+    }
+
+    #[test]
+    fn receiver_returns_429_when_channel_full() {
+        let stats = Arc::new(ComponentStats::new());
+        let receiver = OtapReceiver::new_with_capacity_and_stats(
+            "test-429",
+            "127.0.0.1:0",
+            1,
+            Some(Arc::clone(&stats)),
+        )
+        .expect("bind should succeed");
+        let addr = receiver.local_addr();
+        wait_for_server(addr);
 
         let logs_ipc = serialize_batch_to_ipc(&make_logs_batch());
         let proto = encode_batch_arrow_records(1, &[(PAYLOAD_TYPE_LOGS, &logs_ipc)]);
@@ -1059,6 +1199,7 @@ mod tests {
         };
         assert_eq!(status, 429, "expected 429, got {status}");
         assert_eq!(receiver.health(), ComponentHealth::Degraded);
+        assert_eq!(stats.errors(), 1);
 
         // Drain so the receiver is valid.
         let _ = receiver.try_recv_all();
@@ -1079,5 +1220,63 @@ mod tests {
         let decoded = ProtoBatchStatus::decode(resp.as_slice()).expect("decode status");
         assert_eq!(decoded.batch_id, 42);
         assert_eq!(decoded.status_code, BATCH_STATUS_OK as i32);
+    }
+
+    #[test]
+    fn invalid_otap_payload_increments_parse_errors_when_stats_hooked() {
+        let stats = Arc::new(ComponentStats::new());
+        let receiver = OtapReceiver::new_with_capacity_and_stats(
+            "test-stats-parse",
+            "127.0.0.1:0",
+            16,
+            Some(Arc::clone(&stats)),
+        )
+        .expect("bind should succeed");
+        let addr = receiver.local_addr();
+        wait_for_server(addr);
+
+        let url = format!("http://{addr}/v1/arrow_logs");
+        let result = loopback_http_client()
+            .post(&url)
+            .header("Content-Type", "application/x-protobuf")
+            .send(b"invalid protobuf payload" as &[u8]);
+        let status = match result {
+            Ok(resp) => resp.status().as_u16(),
+            Err(ureq::Error::StatusCode(code)) => code,
+            Err(e) => panic!("unexpected error: {e}"),
+        };
+        assert_eq!(status, 400);
+        assert_eq!(stats.parse_errors(), 1);
+        assert_eq!(stats.errors(), 0);
+    }
+
+    #[test]
+    fn disconnected_pipeline_increments_errors_when_stats_hooked() {
+        let stats = Arc::new(ComponentStats::new());
+        let mut receiver = OtapReceiver::new_with_capacity_and_stats(
+            "test-stats-errors",
+            "127.0.0.1:0",
+            16,
+            Some(Arc::clone(&stats)),
+        )
+        .expect("bind should succeed");
+        let addr = receiver.local_addr();
+        wait_for_server(addr);
+        receiver.rx.take();
+
+        let logs_ipc = serialize_batch_to_ipc(&make_logs_batch());
+        let proto = encode_batch_arrow_records(1, &[(PAYLOAD_TYPE_LOGS, &logs_ipc)]);
+        let url = format!("http://{addr}/v1/arrow_logs");
+        let result = loopback_http_client()
+            .post(&url)
+            .header("Content-Type", "application/x-protobuf")
+            .send(&proto);
+        let status = match result {
+            Ok(resp) => resp.status().as_u16(),
+            Err(ureq::Error::StatusCode(code)) => code,
+            Err(e) => panic!("unexpected error: {e}"),
+        };
+        assert_eq!(status, 503);
+        assert_eq!(stats.errors(), 1);
     }
 }

@@ -65,19 +65,16 @@ async fn setup_bench_objects() -> Option<()> {
     )
     .ok()?;
 
-    // Probe MinIO health and create the bucket.
     if s3.create_bucket().await.is_err() {
         eprintln!("s3_bench: MinIO not reachable at {endpoint} — skipping");
         return None;
     }
 
-    // Upload test objects of various sizes.
     for (name, size_bytes) in &[
         ("bench/1mb.log", 1_000_000usize),
         ("bench/10mb.log", 10_000_000),
         ("bench/100mb.log", 100_000_000),
     ] {
-        // Check if the object already exists to avoid re-uploading.
         if s3.head_object(name).await.is_ok() {
             continue;
         }
@@ -110,7 +107,6 @@ fn bench_s3_download(c: &mut Criterion) {
         .build()
         .expect("tokio runtime");
 
-    // Skip benchmark if MinIO is not available.
     let minio_up = rt.block_on(async {
         let client = reqwest::Client::builder().use_rustls_tls().build().ok()?;
         client
@@ -126,7 +122,6 @@ fn bench_s3_download(c: &mut Criterion) {
         return;
     }
 
-    // Setup objects.
     let setup_ok = rt.block_on(async { setup_bench_objects().await });
     if setup_ok.is_none() {
         eprintln!("s3_bench: setup failed — skipping S3 benchmarks");
@@ -145,6 +140,7 @@ fn bench_s3_download(c: &mut Criterion) {
         ("10mb", "bench/10mb.log", 10_000_000u64),
     ] {
         group.throughput(Throughput::Bytes(*size));
+
         group.bench_with_input(BenchmarkId::new("single_get", label), label, |b, _| {
             let client = Arc::clone(&client);
             let key = *key;
@@ -156,7 +152,6 @@ fn bench_s3_download(c: &mut Criterion) {
             });
         });
 
-        // Parallel range-GET benchmark.
         group.bench_with_input(
             BenchmarkId::new("parallel_range_get", label),
             label,
@@ -165,36 +160,70 @@ fn bench_s3_download(c: &mut Criterion) {
                 let key = *key;
                 let size = *size;
                 b.to_async(&rt).iter(|| async {
-                    let part = 2 * 1024 * 1024u64; // 2 MiB parts
                     logfwd_io::s3_input::fetch_parallel_bench(
                         Arc::clone(&client),
                         key,
                         size,
-                        part,
-                        8,
+                        logfwd_io::s3_input::DEFAULT_PART_SIZE,
+                        logfwd_io::s3_input::DEFAULT_MAX_CONCURRENT_FETCHES,
                     )
                     .await
-                    .expect("benchmark parallel_range_get download should succeed");
+                    .expect("parallel_range_get should succeed");
                 });
             },
         );
 
-        // Streaming parallel range-GET (channels + JoinSet).
         group.bench_with_input(BenchmarkId::new("stream_parallel", label), label, |b, _| {
             let client = Arc::clone(&client);
             let key = *key;
             let size = *size;
             b.to_async(&rt).iter(|| async {
-                let part = 2 * 1024 * 1024u64;
-                logfwd_io::s3_input::fetch_parallel_stream_bench(
+                let received = logfwd_io::s3_input::fetch_parallel_stream_bench(
                     Arc::clone(&client),
                     key,
                     size,
-                    part,
-                    8,
+                    logfwd_io::s3_input::DEFAULT_PART_SIZE,
+                    logfwd_io::s3_input::DEFAULT_MAX_CONCURRENT_FETCHES,
                 )
                 .await
                 .expect("streaming bench should succeed");
+                assert_eq!(
+                    received, size as usize,
+                    "received bytes should match object size"
+                );
+            });
+        });
+    }
+
+    // Part-size sweep on 10 MB: vary part_size × concurrency at ~16 MiB memory.
+    let sweep_key = "bench/10mb.log";
+    let sweep_size = 10_000_000u64;
+    group.throughput(Throughput::Bytes(sweep_size));
+
+    for (part_label, part_size, concurrency) in &[
+        ("1m_x16", 1u64 * 1024 * 1024, 16usize), // 16 MiB peak
+        ("2m_x8", 2 * 1024 * 1024, 8),           // 16 MiB peak
+        ("4m_x4", 4 * 1024 * 1024, 4),           // 16 MiB peak
+        ("8m_x2", 8 * 1024 * 1024, 2),           // 16 MiB peak
+    ] {
+        group.bench_with_input(BenchmarkId::new("sweep", part_label), part_label, |b, _| {
+            let client = Arc::clone(&client);
+            let part_size = *part_size;
+            let concurrency = *concurrency;
+            b.to_async(&rt).iter(|| async {
+                let received = logfwd_io::s3_input::fetch_parallel_stream_bench(
+                    Arc::clone(&client),
+                    sweep_key,
+                    sweep_size,
+                    part_size,
+                    concurrency,
+                )
+                .await
+                .expect("sweep bench should succeed");
+                assert_eq!(
+                    received, sweep_size as usize,
+                    "sweep received bytes should match"
+                );
             });
         });
     }

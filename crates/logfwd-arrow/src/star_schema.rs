@@ -592,19 +592,23 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
     // severity_number
     if let Ok(sev_num_idx) = logs_schema.index_of("severity_number") {
         let sev_num_arr = star.logs.column(sev_num_idx);
-        if matches!(sev_num_arr.data_type(), DataType::Int32) {
-            let col_pos = ensure_int_col("severity_number", &mut flat_cols, &mut col_index);
-            protected_log_fact_cols.insert("severity_number".to_string());
-            let sev_num_arr = sev_num_arr
-                .as_any()
-                .downcast_ref::<Int32Array>()
-                .ok_or_else(|| ArrowError::SchemaError("severity_number not Int32".to_string()))?;
-            for row in 0..num_rows {
-                if !sev_num_arr.is_null(row)
-                    && let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1
-                {
-                    v[row] = Some(i64::from(sev_num_arr.value(row)));
-                }
+        if !matches!(sev_num_arr.data_type(), DataType::Int32) {
+            return Err(ArrowError::SchemaError(format!(
+                "severity_number must be Int32, got {}",
+                sev_num_arr.data_type()
+            )));
+        }
+        let col_pos = ensure_int_col("severity_number", &mut flat_cols, &mut col_index);
+        protected_log_fact_cols.insert("severity_number".to_string());
+        let sev_num_arr = sev_num_arr
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .ok_or_else(|| ArrowError::SchemaError("severity_number not Int32".to_string()))?;
+        for row in 0..num_rows {
+            if !sev_num_arr.is_null(row)
+                && let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1
+            {
+                v[row] = Some(i64::from(sev_num_arr.value(row)));
             }
         }
     }
@@ -612,21 +616,25 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
     // trace_id (16-byte fixed binary) -> lowercase hex string
     if let Ok(trace_idx) = logs_schema.index_of("trace_id") {
         let trace_arr = star.logs.column(trace_idx);
-        if matches!(trace_arr.data_type(), DataType::FixedSizeBinary(16)) {
-            let col_pos = ensure_str_col("trace_id", &mut flat_cols, &mut col_index);
-            protected_log_fact_cols.insert("trace_id".to_string());
-            let trace_arr = trace_arr
-                .as_any()
-                .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
-                .ok_or_else(|| {
-                    ArrowError::SchemaError("trace_id not FixedSizeBinary(16)".to_string())
-                })?;
-            for row in 0..num_rows {
-                if !trace_arr.is_null(row)
-                    && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
-                {
-                    v[row] = Some(hex_encode_lower(trace_arr.value(row)));
-                }
+        if !matches!(trace_arr.data_type(), DataType::FixedSizeBinary(16)) {
+            return Err(ArrowError::SchemaError(format!(
+                "trace_id must be FixedSizeBinary(16), got {}",
+                trace_arr.data_type()
+            )));
+        }
+        let col_pos = ensure_str_col("trace_id", &mut flat_cols, &mut col_index);
+        protected_log_fact_cols.insert("trace_id".to_string());
+        let trace_arr = trace_arr
+            .as_any()
+            .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
+            .ok_or_else(|| {
+                ArrowError::SchemaError("trace_id not FixedSizeBinary(16)".to_string())
+            })?;
+        for row in 0..num_rows {
+            if !trace_arr.is_null(row)
+                && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
+            {
+                v[row] = Some(hex_encode_lower(trace_arr.value(row)));
             }
         }
     }
@@ -634,21 +642,23 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
     // span_id (8-byte fixed binary) -> lowercase hex string
     if let Ok(span_idx) = logs_schema.index_of("span_id") {
         let span_arr = star.logs.column(span_idx);
-        if matches!(span_arr.data_type(), DataType::FixedSizeBinary(8)) {
-            let col_pos = ensure_str_col("span_id", &mut flat_cols, &mut col_index);
-            protected_log_fact_cols.insert("span_id".to_string());
-            let span_arr = span_arr
-                .as_any()
-                .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
-                .ok_or_else(|| {
-                    ArrowError::SchemaError("span_id not FixedSizeBinary(8)".to_string())
-                })?;
-            for row in 0..num_rows {
-                if !span_arr.is_null(row)
-                    && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
-                {
-                    v[row] = Some(hex_encode_lower(span_arr.value(row)));
-                }
+        if !matches!(span_arr.data_type(), DataType::FixedSizeBinary(8)) {
+            return Err(ArrowError::SchemaError(format!(
+                "span_id must be FixedSizeBinary(8), got {}",
+                span_arr.data_type()
+            )));
+        }
+        let col_pos = ensure_str_col("span_id", &mut flat_cols, &mut col_index);
+        protected_log_fact_cols.insert("span_id".to_string());
+        let span_arr = span_arr
+            .as_any()
+            .downcast_ref::<arrow::array::FixedSizeBinaryArray>()
+            .ok_or_else(|| ArrowError::SchemaError("span_id not FixedSizeBinary(8)".to_string()))?;
+        for row in 0..num_rows {
+            if !span_arr.is_null(row)
+                && let TypedColumn::Str(ref mut v) = flat_cols[col_pos].1
+            {
+                v[row] = Some(hex_encode_lower(span_arr.value(row)));
             }
         }
     }
@@ -656,19 +666,23 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
     // flags
     if let Ok(flags_idx) = logs_schema.index_of("flags") {
         let flags_arr = star.logs.column(flags_idx);
-        if matches!(flags_arr.data_type(), DataType::UInt32) {
-            let col_pos = ensure_int_col("flags", &mut flat_cols, &mut col_index);
-            protected_log_fact_cols.insert("flags".to_string());
-            let flags_arr = flags_arr
-                .as_any()
-                .downcast_ref::<UInt32Array>()
-                .ok_or_else(|| ArrowError::SchemaError("flags not UInt32".to_string()))?;
-            for row in 0..num_rows {
-                if !flags_arr.is_null(row)
-                    && let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1
-                {
-                    v[row] = Some(i64::from(flags_arr.value(row)));
-                }
+        if !matches!(flags_arr.data_type(), DataType::UInt32) {
+            return Err(ArrowError::SchemaError(format!(
+                "flags must be UInt32, got {}",
+                flags_arr.data_type()
+            )));
+        }
+        let col_pos = ensure_int_col("flags", &mut flat_cols, &mut col_index);
+        protected_log_fact_cols.insert("flags".to_string());
+        let flags_arr = flags_arr
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .ok_or_else(|| ArrowError::SchemaError("flags not UInt32".to_string()))?;
+        for row in 0..num_rows {
+            if !flags_arr.is_null(row)
+                && let TypedColumn::Int(ref mut v) = flat_cols[col_pos].1
+            {
+                v[row] = Some(i64::from(flags_arr.value(row)));
             }
         }
     }
@@ -3266,6 +3280,131 @@ mod tests {
                 .contains("time_unix_nano must be Timestamp(Nanosecond)"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn star_to_flat_returns_error_for_unsupported_optional_logs_column_types() {
+        let logs_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt32, false),
+            Field::new("resource_id", DataType::UInt32, false),
+            Field::new("scope_id", DataType::UInt32, false),
+            Field::new("severity_number", DataType::Utf8, true),
+        ]));
+        let logs = RecordBatch::try_new(
+            logs_schema,
+            vec![
+                Arc::new(UInt32Array::from(vec![0u32])),
+                Arc::new(UInt32Array::from(vec![0u32])),
+                Arc::new(UInt32Array::from(vec![0u32])),
+                Arc::new(StringArray::from(vec![Some("9")])),
+            ],
+        )
+        .expect("valid malformed logs batch");
+        let star = StarSchema {
+            logs,
+            log_attrs: RecordBatch::new_empty(Arc::new(attrs_schema())),
+            resource_attrs: RecordBatch::new_empty(Arc::new(attrs_schema())),
+            scope_attrs: RecordBatch::new_empty(Arc::new(attrs_schema())),
+        };
+
+        let err = star_to_flat(&star).expect_err("invalid severity_number type must fail");
+        assert!(
+            err.to_string().contains("severity_number must be Int32"),
+            "unexpected error: {err}"
+        );
+    }
+
+    fn assert_optional_logs_column_type_error(field: Field, column: ArrayRef, expected: &str) {
+        let field_name = field.name().clone();
+        let logs_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::UInt32, false),
+            Field::new("resource_id", DataType::UInt32, false),
+            Field::new("scope_id", DataType::UInt32, false),
+            field,
+        ]));
+        let logs = RecordBatch::try_new(
+            logs_schema,
+            vec![
+                Arc::new(UInt32Array::from(vec![0u32])),
+                Arc::new(UInt32Array::from(vec![0u32])),
+                Arc::new(UInt32Array::from(vec![0u32])),
+                column,
+            ],
+        )
+        .expect("valid malformed logs batch");
+        let star = StarSchema {
+            logs,
+            log_attrs: RecordBatch::new_empty(Arc::new(attrs_schema())),
+            resource_attrs: RecordBatch::new_empty(Arc::new(attrs_schema())),
+            scope_attrs: RecordBatch::new_empty(Arc::new(attrs_schema())),
+        };
+
+        let err = star_to_flat(&star).expect_err("invalid optional LOGS column type must fail");
+        let message = err.to_string();
+        assert!(
+            message.contains(&field_name),
+            "expected error to mention {field_name}, got: {message}"
+        );
+        assert!(
+            message.contains(expected),
+            "expected error to mention {expected}, got: {message}"
+        );
+    }
+
+    #[test]
+    fn star_to_flat_returns_error_for_unsupported_trace_id_type() {
+        assert_optional_logs_column_type_error(
+            Field::new("trace_id", DataType::Utf8, true),
+            Arc::new(StringArray::from(vec![Some("not-binary")])) as ArrayRef,
+            "FixedSizeBinary(16)",
+        );
+    }
+
+    #[test]
+    fn star_to_flat_returns_error_for_unsupported_span_id_type() {
+        assert_optional_logs_column_type_error(
+            Field::new("span_id", DataType::Utf8, true),
+            Arc::new(StringArray::from(vec![Some("not-binary")])) as ArrayRef,
+            "FixedSizeBinary(8)",
+        );
+    }
+
+    #[test]
+    fn star_to_flat_returns_error_for_unsupported_flags_type() {
+        assert_optional_logs_column_type_error(
+            Field::new("flags", DataType::Int64, true),
+            Arc::new(Int64Array::from(vec![Some(1i64)])) as ArrayRef,
+            "UInt32",
+        );
+    }
+
+    #[test]
+    fn empty_string_log_attr_survives_star_roundtrip() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("user.id", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("first"), Some("second")])),
+                Arc::new(StringArray::from(vec![Some(""), Some("alice")])),
+            ],
+        )
+        .expect("valid batch");
+
+        let star = flat_to_star(&batch).expect("flat_to_star");
+        let roundtrip = star_to_flat(&star).expect("star_to_flat");
+
+        let idx = roundtrip.schema().index_of("user.id").expect("user.id");
+        let values = roundtrip
+            .column(idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("utf8");
+        assert!(!values.is_null(0), "empty string must not become NULL");
+        assert_eq!(values.value(0), "");
+        assert_eq!(values.value(1), "alice");
     }
 
     /// Conflict struct columns (e.g. `status: Struct { int, str }`) must be

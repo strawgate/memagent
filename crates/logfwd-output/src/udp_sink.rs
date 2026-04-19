@@ -8,6 +8,7 @@
 
 use std::future::Future;
 use std::io;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -28,6 +29,7 @@ pub struct UdpSink {
     name: String,
     socket: UdpSocket,
     target: String,
+    resolved_target: Option<SocketAddr>,
     /// Scratch buffer for serializing a single row before deciding whether
     /// it fits in the current datagram.
     row_buf: Vec<u8>,
@@ -39,8 +41,8 @@ pub struct UdpSink {
 impl UdpSink {
     /// Create a new UDP sink.
     ///
-    /// Binds an outbound UDP socket and defers target DNS resolution until send
-    /// time so startup does not block on or fail due to transient DNS issues.
+    /// Binds an outbound UDP socket and defers initial target DNS resolution
+    /// until send time so startup does not block on transient DNS issues.
     pub fn new(
         name: impl Into<String>,
         target: impl Into<String>,
@@ -53,22 +55,27 @@ impl UdpSink {
             name: name.into(),
             socket,
             target: target.into(),
+            resolved_target: None,
             row_buf: Vec::with_capacity(2048),
             dgram_buf: Vec::with_capacity(MAX_DATAGRAM_PAYLOAD),
             stats,
         })
     }
 
-    async fn send_packet(&self, payload: &[u8]) -> io::Result<()> {
-        let addr = tokio::net::lookup_host(&self.target)
+    /// Resolve the target to the first IPv4 address because the socket is IPv4-bound.
+    async fn resolve_target(&self) -> io::Result<SocketAddr> {
+        tokio::net::lookup_host(&self.target)
             .await?
-            .find(std::net::SocketAddr::is_ipv4)
+            .find(SocketAddr::is_ipv4)
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::AddrNotAvailable,
                     format!("DNS lookup returned no IPv4 addresses for {}", self.target),
                 )
-            })?;
+            })
+    }
+
+    async fn send_packet_once(&self, payload: &[u8], addr: SocketAddr) -> io::Result<()> {
         match self.socket.send_to(payload, addr).await {
             Ok(n) if n == payload.len() => Ok(()),
             Ok(_) => Err(io::Error::new(
@@ -80,6 +87,39 @@ impl UdpSink {
         }
     }
 
+    async fn send_packet(&mut self, payload: &[u8]) -> io::Result<()> {
+        let cached = match self.resolved_target {
+            Some(addr) => addr,
+            None => {
+                let addr = self.resolve_target().await?;
+                self.resolved_target = Some(addr);
+                addr
+            }
+        };
+        match self.send_packet_once(payload, cached).await {
+            Ok(()) => Ok(()),
+            Err(first_send_error) => {
+                // Refresh strategy: re-resolve and retry once on send failure.
+                match self.resolve_target().await {
+                    Ok(refreshed_addr) => {
+                        self.resolved_target = Some(refreshed_addr);
+                        self.send_packet_once(payload, refreshed_addr).await
+                    }
+                    Err(resolve_error) => {
+                        // Clear cached address so next send starts with a fresh lookup.
+                        self.resolved_target = None;
+                        Err(io::Error::new(
+                            resolve_error.kind(),
+                            format!(
+                                "failed to send UDP packet ({first_send_error}); re-resolve failed: {resolve_error}"
+                            ),
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
     /// Send the current datagram buffer if non-empty, then clear it.
     /// ECONNREFUSED (ICMP port-unreachable) is silently ignored because UDP
     /// is fire-and-forget — the destination may come back later.
@@ -87,9 +127,19 @@ impl UdpSink {
         if self.dgram_buf.is_empty() {
             return Ok(());
         }
-        self.send_packet(&self.dgram_buf).await?;
-        self.dgram_buf.clear();
-        Ok(())
+        let mut payload = std::mem::take(&mut self.dgram_buf);
+        match self.send_packet(&payload).await {
+            Ok(()) => {
+                payload.clear();
+                self.dgram_buf = payload;
+                Ok(())
+            }
+            Err(e) => {
+                // Restore the buffer so data is not lost on transient failures.
+                self.dgram_buf = payload;
+                Err(e)
+            }
+        }
     }
 
     /// Serialize and send a batch of log records as UDP datagrams.
@@ -115,7 +165,10 @@ impl UdpSink {
             // but that is better than silently dropping data.
             if row_len > MAX_DATAGRAM_PAYLOAD {
                 self.flush_dgram().await?;
-                self.send_packet(&self.row_buf).await?;
+                let packet = std::mem::take(&mut self.row_buf);
+                let result = self.send_packet(&packet).await;
+                self.row_buf = packet;
+                result?;
                 continue;
             }
 
@@ -226,6 +279,19 @@ mod tests {
         RecordBatch::try_new(schema, vec![Arc::new(array)]).unwrap()
     }
 
+    async fn recv_with_retry(receiver: &StdSocket, buf: &mut [u8]) -> io::Result<usize> {
+        for _ in 0..20 {
+            match receiver.recv(buf) {
+                Ok(n) => return Ok(n),
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        receiver.recv(buf)
+    }
+
     #[tokio::test]
     async fn batches_rows_into_single_datagram() {
         let receiver = StdSocket::bind("127.0.0.1:0").unwrap();
@@ -237,12 +303,9 @@ mod tests {
         let batch = make_batch(5);
         sink.do_send_batch(&batch).await.unwrap();
 
-        // Give OS a moment to deliver.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
         // All 5 small rows should fit in one datagram.
         let mut buf = [0u8; 65507];
-        let n = receiver.recv(&mut buf).unwrap();
+        let n = recv_with_retry(&receiver, &mut buf).await.unwrap();
         let text = std::str::from_utf8(&buf[..n]).unwrap();
         assert_eq!(
             text.lines().count(),
@@ -271,10 +334,7 @@ mod tests {
         let mut total_lines = 0;
         let mut dgram_count = 0;
 
-        // Give OS a moment.
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-
-        while let Ok(n) = receiver.recv(&mut buf) {
+        while let Ok(n) = recv_with_retry(&receiver, &mut buf).await {
             assert!(n <= MAX_DATAGRAM_PAYLOAD, "datagram too large: {n}");
             let text = std::str::from_utf8(&buf[..n]).unwrap();
             total_lines += text.lines().count();
@@ -302,5 +362,64 @@ mod tests {
         assert_eq!(sink.name(), "test-udp");
 
         let _sink2 = factory.create().expect("second create should succeed");
+    }
+
+    #[tokio::test]
+    async fn reuses_cached_target_without_resolving_every_send() {
+        let receiver1 = StdSocket::bind("127.0.0.1:0").unwrap();
+        let addr1 = receiver1.local_addr().unwrap();
+        receiver1.set_nonblocking(true).unwrap();
+
+        let receiver2 = StdSocket::bind("127.0.0.1:0").unwrap();
+        let addr2 = receiver2.local_addr().unwrap();
+        receiver2.set_nonblocking(true).unwrap();
+
+        let mut sink =
+            UdpSink::new("test", addr1.to_string(), Arc::new(ComponentStats::new())).unwrap();
+        sink.send_packet(b"first\n").await.unwrap();
+
+        // If the sink re-resolves every send, this packet would go to receiver2.
+        sink.target = addr2.to_string();
+        sink.send_packet(b"second\n").await.unwrap();
+
+        let mut buf = [0u8; 128];
+        let first_n = recv_with_retry(&receiver1, &mut buf)
+            .await
+            .expect("receiver1 first packet");
+        assert_eq!(&buf[..first_n], b"first\n");
+        let second_n = recv_with_retry(&receiver1, &mut buf)
+            .await
+            .expect("receiver1 second packet");
+        assert_eq!(&buf[..second_n], b"second\n");
+        assert!(
+            receiver2.recv(&mut buf).is_err(),
+            "receiver2 should receive nothing when target is cached"
+        );
+    }
+
+    #[tokio::test]
+    async fn re_resolves_after_send_failure() {
+        let receiver = StdSocket::bind("127.0.0.1:0").unwrap();
+        let addr = receiver.local_addr().unwrap();
+        receiver.set_nonblocking(true).unwrap();
+
+        let mut sink = UdpSink::new(
+            "test",
+            "127.0.0.1:9".to_string(),
+            Arc::new(ComponentStats::new()),
+        )
+        .unwrap();
+        // Force first send attempt to fail on this IPv4-only socket, then
+        // ensure re-resolution picks the valid configured target.
+        sink.resolved_target = Some("[::1]:9".parse().expect("ipv6 addr"));
+        sink.target = addr.to_string();
+
+        sink.send_packet(b"retry\n").await.unwrap();
+
+        let mut buf = [0u8; 128];
+        let n = recv_with_retry(&receiver, &mut buf)
+            .await
+            .expect("packet after re-resolve");
+        assert_eq!(&buf[..n], b"retry\n");
     }
 }

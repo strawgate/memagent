@@ -4,14 +4,18 @@
 //! Each provider produces an Arrow RecordBatch representing a lookup table.
 //! The SqlTransform registers these as MemTables so users can JOIN against them.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use arrow::array::StringArray;
+#[cfg(test)]
+use arrow::array::ArrayRef;
+use arrow::array::{StringArray, new_null_array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
+use logfwd_arrow::columnar::builder::ColumnarBatchBuilder;
+use logfwd_arrow::columnar::plan::{BatchPlan, FieldKind};
 
 use crate::TransformError;
 
@@ -308,7 +312,7 @@ fn build_k8s_batch(entries: &[K8sPodEntry]) -> RecordBatch {
 // File-based lookup table (CSV)
 // ---------------------------------------------------------------------------
 
-/// A lookup table loaded from a CSV file. All columns are Utf8.
+/// A lookup table loaded from a CSV file. All columns are nullable Utf8View.
 /// Supports periodic refresh via `reload()`.
 ///
 /// ```yaml
@@ -336,6 +340,9 @@ impl CsvFileTable {
     }
 
     /// Load the file from a reader (useful for testing).
+    ///
+    /// The stored batch preserves CSV header order as nullable `Utf8View`
+    /// columns. Empty cells are empty strings; missing trailing cells are nulls.
     pub fn load_from_reader<R: io::Read>(&self, reader: R) -> Result<usize, TransformError> {
         let batch = read_csv_to_batch(reader)?;
         let num_rows = batch.num_rows();
@@ -372,36 +379,98 @@ impl EnrichmentTable for CsvFileTable {
     }
 }
 
-/// Read a CSV into an Arrow RecordBatch. All columns are Utf8.
+/// Read a CSV into an Arrow RecordBatch through the shared columnar builder.
+///
+/// CSV parsing semantics stay here: delimiter/quote/header handling and row
+/// alignment are owned by the CSV reader. `ColumnarBatchBuilder` owns string
+/// storage, sparse padding, and Arrow finalization into nullable Utf8View
+/// columns.
 fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, TransformError> {
     let mut csv_reader = csv::ReaderBuilder::new().flexible(true).from_reader(reader);
 
-    let headers: Vec<String> = csv_reader
-        .headers()
-        .map_err(|e| TransformError::Enrichment(format!("CSV header error: {e}")))?
+    let headers = read_csv_headers(&mut csv_reader)?;
+
+    let num_cols = headers.len();
+    let mut plan = BatchPlan::with_capacity(num_cols);
+    let handles = headers
         .iter()
-        .map(ToString::to_string)
-        .collect();
+        .map(|header| {
+            plan.declare_planned(header, FieldKind::Utf8View)
+                .map_err(|e| TransformError::Enrichment(format!("CSV plan error: {e}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut builder = ColumnarBatchBuilder::new(plan);
+    builder.set_dedup_enabled(false);
+    builder.begin_batch();
 
-    if headers.is_empty() {
-        return Err(TransformError::Enrichment("CSV has no columns".to_string()));
-    }
-
-    let mut seen = HashSet::with_capacity(headers.len());
-    for h in &headers {
-        if h.is_empty() {
-            return Err(TransformError::Enrichment(
-                "CSV has an empty header name".to_string(),
-            ));
-        }
-        if !seen.insert(h) {
+    for (row_idx, result) in csv_reader.records().enumerate() {
+        let record =
+            result.map_err(|e| TransformError::Enrichment(format!("CSV parse error: {e}")))?;
+        if record.len() > num_cols {
             return Err(TransformError::Enrichment(format!(
-                "CSV has duplicate header name: {h}"
+                "CSV row {} has {} fields, expected {} (header count)",
+                row_idx + 1,
+                record.len(),
+                num_cols,
             )));
         }
+
+        builder.begin_row();
+        // Missing trailing CSV cells are represented by leaving the field unwritten.
+        for (idx, handle) in handles.iter().enumerate() {
+            if let Some(field) = record.get(idx) {
+                builder
+                    .write_str(*handle, field)
+                    .map_err(|e| TransformError::Enrichment(format!("CSV builder error: {e}")))?;
+            }
+        }
+        builder.end_row();
     }
 
-    // Read all rows into column-oriented vecs.
+    let batch = builder
+        .finish_batch()
+        .map_err(|e| TransformError::Enrichment(format!("CSV builder error: {e}")))?;
+    restore_csv_header_columns(&headers, batch)
+}
+
+fn restore_csv_header_columns(
+    headers: &[String],
+    batch: RecordBatch,
+) -> Result<RecordBatch, TransformError> {
+    let schema = batch.schema();
+    let index_by_name: HashMap<&str, usize> = schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(idx, field)| (field.name().as_str(), idx))
+        .collect();
+
+    let mut fields = Vec::with_capacity(headers.len());
+    let mut arrays = Vec::with_capacity(headers.len());
+    for header in headers {
+        match index_by_name.get(header.as_str()).copied() {
+            Some(idx) => {
+                fields.push(Arc::clone(&schema.fields()[idx]));
+                arrays.push(Arc::clone(batch.column(idx)));
+            }
+            None => {
+                fields.push(Arc::new(Field::new(header, DataType::Utf8View, true)));
+                arrays.push(new_null_array(&DataType::Utf8View, batch.num_rows()));
+            }
+        }
+    }
+
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), arrays).map_err(TransformError::Arrow)
+}
+
+#[cfg(test)]
+fn read_csv_to_legacy_batch_for_test<R: io::Read>(
+    reader: R,
+) -> Result<RecordBatch, TransformError> {
+    let mut csv_reader = csv::ReaderBuilder::new().flexible(true).from_reader(reader);
+
+    let headers = read_csv_headers(&mut csv_reader)?;
+
     let num_cols = headers.len();
     let mut columns: Vec<Vec<Option<String>>> = vec![Vec::new(); num_cols];
 
@@ -419,7 +488,6 @@ fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, TransformErr
         for (i, field) in record.iter().enumerate() {
             columns[i].push(Some(field.to_string()));
         }
-        // Pad missing columns with NULL.
         for col in columns.iter_mut().skip(record.len()) {
             col.push(None);
         }
@@ -431,15 +499,49 @@ fn read_csv_to_batch<R: io::Read>(reader: R) -> Result<RecordBatch, TransformErr
         .collect();
     let schema = Arc::new(Schema::new(fields));
 
-    let arrays: Vec<Arc<dyn arrow::array::Array>> = columns
+    let arrays: Vec<ArrayRef> = columns
         .iter()
         .map(|col| {
             let arr: StringArray = col.iter().map(|s| s.as_deref()).collect();
-            Arc::new(arr) as _
+            Arc::new(arr) as ArrayRef
         })
         .collect();
 
     RecordBatch::try_new(schema, arrays).map_err(TransformError::Arrow)
+}
+
+fn read_csv_headers<R: io::Read>(
+    csv_reader: &mut csv::Reader<R>,
+) -> Result<Vec<String>, TransformError> {
+    let headers: Vec<String> = csv_reader
+        .headers()
+        .map_err(|e| TransformError::Enrichment(format!("CSV header error: {e}")))?
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    validate_csv_headers(&headers)?;
+    Ok(headers)
+}
+
+fn validate_csv_headers(headers: &[String]) -> Result<(), TransformError> {
+    if headers.is_empty() {
+        return Err(TransformError::Enrichment("CSV has no columns".to_string()));
+    }
+
+    let mut seen = HashSet::with_capacity(headers.len());
+    for h in headers {
+        if h.is_empty() {
+            return Err(TransformError::Enrichment(
+                "CSV has an empty header name".to_string(),
+            ));
+        }
+        if !seen.insert(h) {
+            return Err(TransformError::Enrichment(format!(
+                "CSV has duplicate header name: {h}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1469,6 +1571,18 @@ mod tests {
     use super::*;
     use arrow::array::Array;
 
+    fn csv_string_column<'a>(
+        batch: &'a RecordBatch,
+        name: &str,
+    ) -> &'a arrow::array::StringViewArray {
+        batch
+            .column_by_name(name)
+            .unwrap_or_else(|| panic!("missing CSV column: {name}"))
+            .as_any()
+            .downcast_ref::<arrow::array::StringViewArray>()
+            .unwrap_or_else(|| panic!("CSV column {name} should be Utf8View"))
+    }
+
     // -- CRI path parsing ---------------------------------------------------
 
     #[test]
@@ -1671,22 +1785,13 @@ mod tests {
         let batch = table.snapshot().unwrap();
         assert_eq!(batch.num_rows(), 2);
         assert_eq!(batch.num_columns(), 3);
+        assert_eq!(batch.schema().field(0).data_type(), &DataType::Utf8View);
 
-        let hostname = batch
-            .column_by_name("hostname")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
+        let hostname = csv_string_column(&batch, "hostname");
         assert_eq!(hostname.value(0), "web-1");
         assert_eq!(hostname.value(1), "api-2");
 
-        let team = batch
-            .column_by_name("team")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
+        let team = csv_string_column(&batch, "team");
         assert_eq!(team.value(0), "platform");
         assert_eq!(team.value(1), "backend");
     }
@@ -1698,14 +1803,82 @@ mod tests {
         table.load_from_reader(&csv_data[..]).unwrap();
         let batch = table.snapshot().unwrap();
         assert_eq!(batch.num_rows(), 2);
-        let c = batch
-            .column_by_name("c")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
+        let c = csv_string_column(&batch, "c");
         assert_eq!(c.value(0), "3");
         assert!(c.is_null(1)); // padded with NULL
+    }
+
+    #[test]
+    fn csv_empty_cells_are_empty_strings() {
+        let csv_data = b"a,b,c\n1,,3\n,5,\n";
+        let table = CsvFileTable::new("t", "/fake");
+        table.load_from_reader(&csv_data[..]).unwrap();
+        let batch = table.snapshot().unwrap();
+
+        let a = csv_string_column(&batch, "a");
+        let b = csv_string_column(&batch, "b");
+        let c = csv_string_column(&batch, "c");
+        assert_eq!(a.value(1), "");
+        assert_eq!(b.value(0), "");
+        assert_eq!(c.value(1), "");
+    }
+
+    #[test]
+    fn csv_quoted_commas_stay_in_cell() {
+        let csv_data = b"host,note\nweb-1,\"hello,team\"\napi-2,\"x,y,z\"\n";
+        let table = CsvFileTable::new("t", "/fake");
+        table.load_from_reader(&csv_data[..]).unwrap();
+        let batch = table.snapshot().unwrap();
+
+        let note = csv_string_column(&batch, "note");
+        assert_eq!(note.value(0), "hello,team");
+        assert_eq!(note.value(1), "x,y,z");
+    }
+
+    #[test]
+    fn csv_all_missing_column_preserves_header_as_nulls() {
+        let csv_data = b"a,b\n1\n2\n";
+        let table = CsvFileTable::new("t", "/fake");
+        table.load_from_reader(&csv_data[..]).unwrap();
+        let batch = table.snapshot().unwrap();
+
+        assert_eq!(batch.num_rows(), 2);
+        assert_eq!(batch.num_columns(), 2);
+        assert_eq!(batch.schema().field(1).name(), "b");
+        assert_eq!(batch.schema().field(1).data_type(), &DataType::Utf8View);
+        let b = csv_string_column(&batch, "b");
+        assert!(b.is_null(0));
+        assert!(b.is_null(1));
+    }
+
+    #[test]
+    fn csv_columnar_builder_matches_legacy_values() {
+        let csv_data = b"a,b,c\n1,2,3\n4,,\n5\n";
+        let columnar = read_csv_to_batch(&csv_data[..]).unwrap();
+        let legacy = read_csv_to_legacy_batch_for_test(&csv_data[..]).unwrap();
+
+        assert_eq!(columnar.num_rows(), legacy.num_rows());
+        assert_eq!(columnar.num_columns(), legacy.num_columns());
+        for field in legacy.schema().fields() {
+            let name = field.name();
+            let actual = csv_string_column(&columnar, name);
+            let expected = legacy
+                .column_by_name(name)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            for row in 0..legacy.num_rows() {
+                assert_eq!(
+                    actual.is_null(row),
+                    expected.is_null(row),
+                    "null mismatch for {name} row {row}",
+                );
+                if !expected.is_null(row) {
+                    assert_eq!(actual.value(row), expected.value(row));
+                }
+            }
+        }
     }
 
     #[test]
@@ -1756,12 +1929,7 @@ mod tests {
         assert_eq!(rows, 2);
 
         let batch = table.snapshot().unwrap();
-        let region = batch
-            .column_by_name("region")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
+        let region = csv_string_column(&batch, "region");
         assert_eq!(region.value(0), "us-east");
         assert_eq!(region.value(1), "eu-west");
     }

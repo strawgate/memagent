@@ -25,6 +25,8 @@ use crate::receiver_http::{parse_content_length, read_limited_body};
 
 /// Default max request body size (10 MiB).
 const DEFAULT_MAX_REQUEST_BODY_SIZE: usize = 10 * 1024 * 1024;
+/// Default max bytes drained per `poll()` call (1 GiB).
+const DEFAULT_MAX_DRAINED_BYTES_PER_POLL: usize = 1024 * 1024 * 1024;
 
 /// Bounded channel capacity — limits memory when the pipeline falls behind.
 const CHANNEL_BOUND: usize = 4096;
@@ -80,6 +82,8 @@ pub struct HttpInputOptions {
     pub method: HttpInputMethod,
     /// Max request body size in bytes.
     pub max_request_body_size: usize,
+    /// Max bytes drained from the internal queue per `poll()` call.
+    pub max_drained_bytes_per_poll: usize,
     /// HTTP response code for accepted requests.
     pub response_code: u16,
     /// Optional static response body for accepted requests.
@@ -93,6 +97,7 @@ impl Default for HttpInputOptions {
             strict_path: true,
             method: HttpInputMethod::Post,
             max_request_body_size: DEFAULT_MAX_REQUEST_BODY_SIZE,
+            max_drained_bytes_per_poll: DEFAULT_MAX_DRAINED_BYTES_PER_POLL,
             response_code: 200,
             response_body: None,
         }
@@ -113,6 +118,16 @@ pub struct HttpInput {
     is_running: Arc<AtomicBool>,
     /// Source-owned health snapshot for readiness and diagnostics.
     health: Arc<AtomicU8>,
+    /// Max bytes drained from internal request queue on each `poll()`.
+    max_drained_bytes_per_poll: usize,
+    /// Deferred request bytes that did not fit in the previous poll budget.
+    deferred_bytes: Option<DeferredBytes>,
+}
+
+#[derive(Debug)]
+struct DeferredBytes {
+    bytes: Vec<u8>,
+    offset: usize,
 }
 
 #[derive(Clone)]
@@ -245,6 +260,8 @@ impl HttpInput {
             shutdown_tx: Some(shutdown_tx),
             is_running,
             health,
+            max_drained_bytes_per_poll: options.max_drained_bytes_per_poll,
+            deferred_bytes: None,
         })
     }
 
@@ -273,13 +290,45 @@ impl Drop for HttpInput {
 
 impl InputSource for HttpInput {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
-        let Some(rx) = self.rx.as_ref() else {
+        if self.rx.is_none() {
             return Ok(vec![]);
-        };
+        }
 
         let mut all = Vec::new();
-        while let Ok(bytes) = rx.try_recv() {
-            all.extend_from_slice(&bytes);
+        if !append_deferred_capped(
+            &mut all,
+            self.max_drained_bytes_per_poll,
+            &mut self.deferred_bytes,
+        ) {
+            return Ok(vec![InputEvent::Data {
+                accounted_bytes: all.len() as u64,
+                bytes: all,
+                source_id: None,
+            }]);
+        }
+
+        loop {
+            if all.len() >= self.max_drained_bytes_per_poll {
+                break;
+            }
+
+            let recv_result = {
+                let Some(rx) = self.rx.as_ref() else {
+                    break;
+                };
+                rx.try_recv()
+            };
+            let Ok(bytes) = recv_result else {
+                break;
+            };
+            if !append_capped(
+                &mut all,
+                bytes,
+                self.max_drained_bytes_per_poll,
+                &mut self.deferred_bytes,
+            ) {
+                break;
+            }
         }
 
         if all.is_empty() {
@@ -309,6 +358,58 @@ impl InputSource for HttpInput {
         } else {
             stored
         }
+    }
+}
+
+fn append_capped(
+    out: &mut Vec<u8>,
+    bytes: Vec<u8>,
+    max_drained_bytes_per_poll: usize,
+    deferred_bytes: &mut Option<DeferredBytes>,
+) -> bool {
+    if out.len() >= max_drained_bytes_per_poll {
+        *deferred_bytes = Some(DeferredBytes { bytes, offset: 0 });
+        return false;
+    }
+
+    let remaining = max_drained_bytes_per_poll - out.len();
+    if bytes.len() <= remaining {
+        out.extend_from_slice(&bytes);
+        return true;
+    }
+
+    out.extend_from_slice(&bytes[..remaining]);
+    *deferred_bytes = Some(DeferredBytes {
+        bytes,
+        offset: remaining,
+    });
+    false
+}
+
+fn append_deferred_capped(
+    out: &mut Vec<u8>,
+    max_drained_bytes_per_poll: usize,
+    deferred_bytes: &mut Option<DeferredBytes>,
+) -> bool {
+    let Some(deferred) = deferred_bytes.as_mut() else {
+        return true;
+    };
+
+    if out.len() >= max_drained_bytes_per_poll {
+        return false;
+    }
+
+    let remaining = max_drained_bytes_per_poll - out.len();
+    let available = deferred.bytes.len().saturating_sub(deferred.offset);
+    let take = available.min(remaining);
+    out.extend_from_slice(&deferred.bytes[deferred.offset..deferred.offset + take]);
+    deferred.offset += take;
+
+    if deferred.offset >= deferred.bytes.len() {
+        *deferred_bytes = None;
+        true
+    } else {
+        false
     }
 }
 
@@ -440,6 +541,9 @@ fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusC
         return Ok(None);
     };
     let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?.trim();
+    if parsed.is_empty() {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     Ok(Some(parsed.to_ascii_lowercase()))
 }
 
@@ -449,6 +553,12 @@ fn normalize_options(mut options: HttpInputOptions) -> io::Result<HttpInputOptio
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "http input max_request_body_size must be >= 1",
+        ));
+    }
+    if options.max_drained_bytes_per_poll == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "http input max_drained_bytes_per_poll must be >= 1",
         ));
     }
     if !is_valid_success_response_code(options.response_code) {
@@ -861,6 +971,39 @@ Connection: close\r\n\
     }
 
     #[test]
+    fn http_rejects_empty_content_encoding_header_before_enqueue() {
+        let mut input =
+            HttpInput::new_with_options("test", "127.0.0.1:0", HttpInputOptions::default())
+                .expect("http input binds");
+        let mut stream = TcpStream::connect(input.local_addr()).expect("connect");
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("timeout");
+        let request = b"POST /ingest HTTP/1.1\r\n\
+Host: localhost\r\n\
+Content-Type: application/x-ndjson\r\n\
+Content-Encoding:   \r\n\
+Content-Length: 8\r\n\
+Connection: close\r\n\
+\r\n\
+{\"x\":1}\n";
+        stream.write_all(request).expect("write request");
+        stream.flush().expect("flush request");
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).expect("read response");
+        let text = String::from_utf8_lossy(&response);
+        assert!(
+            text.starts_with("HTTP/1.1 400"),
+            "expected 400 status line, got: {text}"
+        );
+        let data = poll_until_data(&mut input, Duration::from_millis(100));
+        assert!(
+            data.is_empty(),
+            "empty content-encoding must not enqueue data"
+        );
+    }
+
+    #[test]
     fn content_encoding_trims_optional_whitespace() {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -874,6 +1017,92 @@ Connection: close\r\n\
                 .as_deref(),
             Some("gzip")
         );
+    }
+
+    #[test]
+    fn content_encoding_absent_header_is_accepted() {
+        let headers = HeaderMap::new();
+        assert_eq!(
+            parse_content_encoding(&headers).expect("absent header must parse"),
+            None
+        );
+    }
+
+    #[test]
+    fn http_poll_respects_max_drained_bytes_per_poll() {
+        let options = HttpInputOptions {
+            max_drained_bytes_per_poll: 8,
+            ..HttpInputOptions::default()
+        };
+        let mut input =
+            HttpInput::new_with_options("test", "127.0.0.1:0", options).expect("http input binds");
+        let mut first = TcpStream::connect(input.local_addr()).expect("connect first");
+        first
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("timeout first");
+        first
+            .write_all(
+                b"POST /ingest HTTP/1.1\r\n\
+Host: localhost\r\n\
+Content-Type: application/x-ndjson\r\n\
+Content-Length: 6\r\n\
+Connection: close\r\n\
+\r\n\
+11111\n",
+            )
+            .expect("write first request");
+        first.flush().expect("flush first request");
+        let mut first_response = Vec::new();
+        first
+            .read_to_end(&mut first_response)
+            .expect("read first response");
+        assert!(
+            String::from_utf8_lossy(&first_response).starts_with("HTTP/1.1 200"),
+            "first request should succeed"
+        );
+
+        let mut second = TcpStream::connect(input.local_addr()).expect("connect second");
+        second
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("timeout second");
+        second
+            .write_all(
+                b"POST /ingest HTTP/1.1\r\n\
+Host: localhost\r\n\
+Content-Type: application/x-ndjson\r\n\
+Content-Length: 6\r\n\
+Connection: close\r\n\
+\r\n\
+22222\n",
+            )
+            .expect("write second request");
+        second.flush().expect("flush second request");
+        let mut second_response = Vec::new();
+        second
+            .read_to_end(&mut second_response)
+            .expect("read second response");
+        assert!(
+            String::from_utf8_lossy(&second_response).starts_with("HTTP/1.1 200"),
+            "second request should succeed"
+        );
+
+        let first_poll = poll_until_data(&mut input, Duration::from_secs(2));
+        assert_eq!(
+            first_poll.len(),
+            8,
+            "poll should stop at max_drained_bytes_per_poll"
+        );
+
+        let second_poll = poll_until_data(&mut input, Duration::from_secs(2));
+        assert_eq!(
+            second_poll.len(),
+            4,
+            "remainder should be deferred to the next poll"
+        );
+
+        let mut merged = first_poll;
+        merged.extend_from_slice(&second_poll);
+        assert_eq!(merged, b"11111\n22222\n");
     }
 
     fn decode_observed_seq(bytes: &[u8]) -> BTreeSet<u64> {

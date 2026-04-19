@@ -6,9 +6,10 @@
 //!
 //! Endpoint: POST /v1/arrow
 //!
-//! Content-Type: `application/vnd.apache.arrow.stream` (uncompressed)
-//! or `application/vnd.apache.arrow.stream+zstd` (zstd compressed).
-//! Also supports `Content-Encoding: zstd` header.
+//! Content-Type: `application/vnd.apache.arrow.stream` (uncompressed),
+//! `application/vnd.apache.arrow.stream+zstd` (zstd compressed), or
+//! `application/vnd.apache.arrow.stream+lz4` (lz4 compressed).
+//! Also supports `Content-Encoding: zstd` and `Content-Encoding: lz4` headers.
 
 use std::io;
 use std::io::Read as _;
@@ -26,7 +27,7 @@ use axum::http::header::{CONTENT_ENCODING, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use logfwd_types::diagnostics::ComponentHealth;
+use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 use tokio::sync::oneshot;
 
 use crate::InputError;
@@ -74,6 +75,7 @@ struct ArrowIpcServerState {
     tx: mpsc::SyncSender<DecodedBatch>,
     shutdown: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
+    stats: Option<Arc<ComponentStats>>,
     active_connections: Arc<std::sync::atomic::AtomicUsize>,
     max_connections: usize,
     max_message_size_bytes: usize,
@@ -103,7 +105,17 @@ impl ArrowIpcReceiver {
         addr: &str,
         options: ArrowIpcReceiverOptions,
     ) -> io::Result<Self> {
-        Self::new_with_capacity(name, addr, options, CHANNEL_BOUND)
+        Self::new_with_capacity_and_stats(name, addr, options, CHANNEL_BOUND, None)
+    }
+
+    /// Like [`Self::new`] but wires receiver diagnostics counters.
+    pub fn new_with_stats(
+        name: impl Into<String>,
+        addr: &str,
+        options: ArrowIpcReceiverOptions,
+        stats: Arc<ComponentStats>,
+    ) -> io::Result<Self> {
+        Self::new_with_capacity_and_stats(name, addr, options, CHANNEL_BOUND, Some(stats))
     }
 
     /// Like [`Self::new`] but with an explicit channel capacity. Useful for tests.
@@ -112,6 +124,17 @@ impl ArrowIpcReceiver {
         addr: &str,
         options: ArrowIpcReceiverOptions,
         capacity: usize,
+    ) -> io::Result<Self> {
+        Self::new_with_capacity_and_stats(name, addr, options, capacity, None)
+    }
+
+    /// Like [`Self::new_with_capacity`] but wires receiver diagnostics counters.
+    pub fn new_with_capacity_and_stats(
+        name: impl Into<String>,
+        addr: &str,
+        options: ArrowIpcReceiverOptions,
+        capacity: usize,
+        stats: Option<Arc<ComponentStats>>,
     ) -> io::Result<Self> {
         let std_listener = std::net::TcpListener::bind(addr)
             .map_err(|e| io::Error::other(format!("Arrow IPC receiver bind {addr}: {e}")))?;
@@ -129,6 +152,7 @@ impl ArrowIpcReceiver {
             tx,
             shutdown: Arc::clone(&shutdown),
             health: Arc::clone(&health),
+            stats,
             active_connections: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             max_connections: options.max_connections,
             max_message_size_bytes: options.max_message_size_bytes,
@@ -249,6 +273,18 @@ impl ArrowIpcReceiver {
     }
 }
 
+fn record_error(stats: Option<&Arc<ComponentStats>>) {
+    if let Some(stats) = stats {
+        stats.inc_errors();
+    }
+}
+
+fn record_parse_error(stats: Option<&Arc<ComponentStats>>) {
+    if let Some(stats) = stats {
+        stats.inc_parse_errors(1);
+    }
+}
+
 /// Decompress zstd body with size limit.
 fn decompress_zstd(body: &[u8], max_message_size_bytes: usize) -> Result<Vec<u8>, InputError> {
     let decoder = zstd::Decoder::new(body).map_err(|_| {
@@ -267,6 +303,28 @@ fn decompress_zstd(body: &[u8], max_message_size_bytes: usize) -> Result<Vec<u8>
             "zstd decompression failed: {e}"
         ))),
     }
+}
+
+/// Decompress lz4 (size-prepended block format) body with size limit.
+///
+/// `lz4_flex::decompress_size_prepended` reads the first 4 bytes as a LE u32
+/// declared size and pre-allocates that much memory. We validate the declared
+/// size against `max_message_size_bytes` *before* calling it to prevent a
+/// forged prefix from triggering an unbounded allocation (DoS vector).
+fn decompress_lz4(body: &[u8], max_message_size_bytes: usize) -> Result<Vec<u8>, InputError> {
+    if body.len() < 4 {
+        return Err(InputError::Receiver(
+            "lz4 decompression failed: missing size prefix".to_string(),
+        ));
+    }
+    let declared_len = u32::from_le_bytes([body[0], body[1], body[2], body[3]]) as usize;
+    if declared_len > max_message_size_bytes {
+        return Err(InputError::Receiver(
+            "decompressed payload too large".to_string(),
+        ));
+    }
+    lz4_flex::decompress_size_prepended(body)
+        .map_err(|e| InputError::Receiver(format!("lz4 decompression failed: {e}")))
 }
 
 /// Decode an Arrow IPC stream from bytes into RecordBatches.
@@ -301,6 +359,7 @@ async fn handle_arrow_ipc_request(
 ) -> Response {
     if state.active_connections.fetch_add(1, Ordering::Relaxed) >= state.max_connections {
         state.active_connections.fetch_sub(1, Ordering::Relaxed);
+        record_error(state.stats.as_ref());
         return (
             StatusCode::TOO_MANY_REQUESTS,
             "too many concurrent connections",
@@ -313,21 +372,29 @@ async fn handle_arrow_ipc_request(
 
     let content_length = parse_content_length(&headers);
     if content_length.is_some_and(|body_len| body_len > state.max_message_size_bytes as u64) {
+        record_error(state.stats.as_ref());
         return (StatusCode::PAYLOAD_TOO_LARGE, "payload too large").into_response();
     }
 
     let content_encodings = match parse_content_encoding(&headers) {
         Ok(content_encoding) => content_encoding,
-        Err(status) => return (status, "invalid content-encoding header").into_response(),
+        Err(status) => {
+            record_error(state.stats.as_ref());
+            return (status, "invalid content-encoding header").into_response();
+        }
     };
     let content_type = match parse_content_type(&headers) {
         Ok(content_type) => content_type,
-        Err(status) => return (status, "invalid content-type header").into_response(),
+        Err(status) => {
+            record_error(state.stats.as_ref());
+            return (status, "invalid content-type header").into_response();
+        }
     };
 
     let body = match read_limited_body(body, state.max_message_size_bytes, content_length).await {
         Ok(body) => body,
         Err(status) => {
+            record_error(state.stats.as_ref());
             let message = if status == StatusCode::PAYLOAD_TOO_LARGE {
                 "payload too large"
             } else {
@@ -341,23 +408,44 @@ async fn handle_arrow_ipc_request(
     let has_zstd_content_encoding = content_encodings
         .as_ref()
         .is_some_and(|encoding| encoding.has_zstd);
+    let has_lz4_content_encoding = content_encodings
+        .as_ref()
+        .is_some_and(|encoding| encoding.has_lz4);
     let is_zstd = has_zstd_content_encoding
         || content_type.as_ref().is_some_and(|media_type| {
             media_type.eq_ignore_ascii_case("application/vnd.apache.arrow.stream+zstd")
+        });
+    let is_lz4 = has_lz4_content_encoding
+        || content_type.as_ref().is_some_and(|media_type| {
+            media_type.eq_ignore_ascii_case("application/vnd.apache.arrow.stream+lz4")
         });
 
     let body = if is_zstd {
         match decompress_zstd(&body, state.max_message_size_bytes) {
             Ok(body) => body,
             Err(InputError::Receiver(msg)) => {
+                record_parse_error(state.stats.as_ref());
                 return (StatusCode::BAD_REQUEST, msg).into_response();
             }
             Err(_) => {
+                record_parse_error(state.stats.as_ref());
                 return (
                     StatusCode::BAD_REQUEST,
                     "zstd decompression failed: invalid header",
                 )
                     .into_response();
+            }
+        }
+    } else if is_lz4 {
+        match decompress_lz4(&body, state.max_message_size_bytes) {
+            Ok(body) => body,
+            Err(InputError::Receiver(msg)) => {
+                record_parse_error(state.stats.as_ref());
+                return (StatusCode::BAD_REQUEST, msg).into_response();
+            }
+            Err(_) => {
+                record_parse_error(state.stats.as_ref());
+                return (StatusCode::BAD_REQUEST, "lz4 decompression failed").into_response();
             }
         }
     } else {
@@ -366,8 +454,14 @@ async fn handle_arrow_ipc_request(
 
     let batches = match decode_ipc_stream(&body) {
         Ok(batches) => batches,
-        Err(InputError::Receiver(msg)) => return (StatusCode::BAD_REQUEST, msg).into_response(),
-        Err(_) => return (StatusCode::BAD_REQUEST, "invalid Arrow IPC stream").into_response(),
+        Err(InputError::Receiver(msg)) => {
+            record_parse_error(state.stats.as_ref());
+            return (StatusCode::BAD_REQUEST, msg).into_response();
+        }
+        Err(_) => {
+            record_parse_error(state.stats.as_ref());
+            return (StatusCode::BAD_REQUEST, "invalid Arrow IPC stream").into_response();
+        }
     };
 
     let mut send_error: Option<StatusCode> = None;
@@ -395,10 +489,12 @@ async fn handle_arrow_ipc_request(
         match state.tx.try_send(payload) {
             Ok(()) => {}
             Err(mpsc::TrySendError::Full(_)) => {
+                record_error(state.stats.as_ref());
                 send_error = Some(StatusCode::TOO_MANY_REQUESTS);
                 break;
             }
             Err(mpsc::TrySendError::Disconnected(_)) => {
+                record_error(state.stats.as_ref());
                 send_error = Some(StatusCode::SERVICE_UNAVAILABLE);
                 break;
             }
@@ -442,6 +538,7 @@ async fn handle_arrow_ipc_request(
 #[derive(Debug, Default, Eq, PartialEq)]
 struct ContentEncodingFlags {
     has_zstd: bool,
+    has_lz4: bool,
 }
 
 fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<ContentEncodingFlags>, StatusCode> {
@@ -457,12 +554,17 @@ fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<ContentEncodingF
         }
         if token.eq_ignore_ascii_case("zstd") {
             flags.has_zstd = true;
+        } else if token.eq_ignore_ascii_case("lz4") {
+            flags.has_lz4 = true;
         } else if !token.eq_ignore_ascii_case("identity") {
             return Err(StatusCode::BAD_REQUEST);
         }
         has_token = true;
     }
     if !has_token {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    if flags.has_zstd && flags.has_lz4 {
         return Err(StatusCode::BAD_REQUEST);
     }
     Ok(Some(flags))
@@ -529,6 +631,7 @@ impl InputSource for ArrowIpcReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use logfwd_types::diagnostics::ComponentStats;
 
     // Regression test for issue #1142: clean shutdown
     #[test]
@@ -555,6 +658,37 @@ mod tests {
     use arrow::array::{Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
+    use std::time::Instant;
+
+    fn loopback_http_client() -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .proxy(None)
+            .timeout_global(Some(std::time::Duration::from_secs(5)))
+            .build()
+            .into()
+    }
+
+    fn wait_until<F>(timeout: std::time::Duration, mut predicate: F, failure_message: &str)
+    where
+        F: FnMut() -> bool,
+    {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if predicate() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(predicate(), "{failure_message}");
+    }
+
+    fn wait_for_server(addr: std::net::SocketAddr) {
+        wait_until(
+            std::time::Duration::from_secs(2),
+            || std::net::TcpStream::connect(addr).is_ok(),
+            "Arrow IPC receiver did not accept connections",
+        );
+    }
 
     fn test_schema() -> Arc<Schema> {
         Arc::new(Schema::new(vec![
@@ -872,6 +1006,7 @@ mod tests {
         )
         .expect("bind should succeed");
         let addr = receiver.local_addr();
+        wait_for_server(addr);
 
         let url = format!("http://{addr}/v1/arrow");
         let result = ureq::get(&url).call();
@@ -883,14 +1018,17 @@ mod tests {
 
     #[test]
     fn receiver_reports_degraded_on_backpressure_and_recovers() {
-        let receiver = ArrowIpcReceiver::new_with_capacity(
+        let stats = Arc::new(ComponentStats::new());
+        let receiver = ArrowIpcReceiver::new_with_capacity_and_stats(
             "test-429",
             "127.0.0.1:0",
             ArrowIpcReceiverOptions::default(),
             1,
+            Some(Arc::clone(&stats)),
         )
         .expect("bind should succeed");
         let addr = receiver.local_addr();
+        wait_for_server(addr);
 
         let batch = make_test_batch();
         let ipc_bytes = serialize_batch(&batch);
@@ -912,6 +1050,7 @@ mod tests {
             Err(e) => panic!("unexpected error: {e}"),
         };
         assert_eq!(status, 429);
+        assert_eq!(stats.errors(), 1);
         assert_eq!(receiver.health(), ComponentHealth::Degraded);
 
         let _ = receiver.try_recv_all();
@@ -1112,5 +1251,177 @@ mod tests {
     fn decode_ipc_stream_invalid_body() {
         let result = decode_ipc_stream(b"not arrow data");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn receiver_accepts_lz4_compressed_arrow_ipc() {
+        let receiver = ArrowIpcReceiver::new_with_capacity(
+            "test-lz4",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            16,
+        )
+        .expect("bind should succeed");
+        let addr = receiver.local_addr();
+
+        let batch = make_test_batch();
+        let ipc_bytes = serialize_batch(&batch);
+        let compressed = lz4_flex::compress_prepend_size(&ipc_bytes);
+
+        let url = format!("http://{addr}/v1/arrow");
+        let response = ureq::post(&url)
+            .header("Content-Type", "application/vnd.apache.arrow.stream")
+            .header("Content-Encoding", "lz4")
+            .send(&compressed)
+            .expect("POST should succeed");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let received = receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("should receive a batch");
+        assert_eq!(received.num_rows(), 2);
+    }
+
+    #[test]
+    fn receiver_accepts_lz4_content_type() {
+        let receiver = ArrowIpcReceiver::new_with_capacity(
+            "test-lz4-ct",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            16,
+        )
+        .expect("bind should succeed");
+        let addr = receiver.local_addr();
+
+        let batch = make_test_batch();
+        let ipc_bytes = serialize_batch(&batch);
+        let compressed = lz4_flex::compress_prepend_size(&ipc_bytes);
+
+        let url = format!("http://{addr}/v1/arrow");
+        let response = ureq::post(&url)
+            .header("Content-Type", "application/vnd.apache.arrow.stream+lz4")
+            .send(&compressed)
+            .expect("POST should succeed");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let received = receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("should receive a batch");
+        assert_eq!(received.num_rows(), 2);
+    }
+
+    #[test]
+    fn decompress_lz4_rejects_oversized_declared_length() {
+        // Forge a 4-byte prefix claiming 1 GB, followed by minimal data.
+        let mut forged = Vec::new();
+        forged.extend_from_slice(&(1_073_741_824_u32).to_le_bytes());
+        forged.extend_from_slice(b"tiny");
+
+        let result = decompress_lz4(&forged, 10 * 1024 * 1024);
+        assert!(result.is_err());
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("too large"),
+            "expected 'too large' error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn decompress_lz4_rejects_missing_prefix() {
+        let result = decompress_lz4(b"abc", 10 * 1024 * 1024);
+        assert!(result.is_err());
+        let err_msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            err_msg.contains("missing size prefix"),
+            "expected 'missing size prefix' error, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn receiver_rejects_conflicting_zstd_and_lz4_content_encoding() {
+        let receiver = ArrowIpcReceiver::new_with_capacity(
+            "test-conflict-encoding",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            16,
+        )
+        .expect("bind should succeed");
+        let addr = receiver.local_addr();
+
+        let batch = make_test_batch();
+        let ipc_bytes = serialize_batch(&batch);
+
+        let url = format!("http://{addr}/v1/arrow");
+        let result = ureq::post(&url)
+            .header("Content-Type", "application/vnd.apache.arrow.stream")
+            .header("Content-Encoding", "zstd, lz4")
+            .send(&ipc_bytes);
+        let status = match result {
+            Ok(resp) => resp.status().as_u16(),
+            Err(ureq::Error::StatusCode(code)) => code,
+            Err(e) => panic!("unexpected error: {e}"),
+        };
+        assert_eq!(status, 400);
+    }
+
+    #[test]
+    fn malformed_arrow_lz4_payload_increments_parse_errors_when_stats_hooked() {
+        let stats = Arc::new(ComponentStats::new());
+        let receiver = ArrowIpcReceiver::new_with_capacity_and_stats(
+            "test-stats-parse",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            16,
+            Some(Arc::clone(&stats)),
+        )
+        .expect("bind should succeed");
+        let addr = receiver.local_addr();
+        wait_for_server(addr);
+
+        let url = format!("http://{addr}/v1/arrow");
+        let result = loopback_http_client()
+            .post(&url)
+            .header("Content-Type", "application/vnd.apache.arrow.stream")
+            .header("Content-Encoding", "lz4")
+            .send(b"bad" as &[u8]);
+        let status = match result {
+            Ok(resp) => resp.status().as_u16(),
+            Err(ureq::Error::StatusCode(code)) => code,
+            Err(e) => panic!("unexpected error: {e}"),
+        };
+        assert_eq!(status, 400);
+        assert_eq!(stats.parse_errors(), 1);
+        assert_eq!(stats.errors(), 0);
+    }
+
+    #[test]
+    fn disconnected_pipeline_increments_errors_when_stats_hooked() {
+        let stats = Arc::new(ComponentStats::new());
+        let mut receiver = ArrowIpcReceiver::new_with_capacity_and_stats(
+            "test-stats-errors",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            16,
+            Some(Arc::clone(&stats)),
+        )
+        .expect("bind should succeed");
+        let addr = receiver.local_addr();
+        wait_for_server(addr);
+        receiver.rx.take();
+
+        let batch = make_test_batch();
+        let ipc_bytes = serialize_batch(&batch);
+        let url = format!("http://{addr}/v1/arrow");
+        let result = loopback_http_client()
+            .post(&url)
+            .header("Content-Type", "application/vnd.apache.arrow.stream")
+            .send(&ipc_bytes);
+        let status = match result {
+            Ok(resp) => resp.status().as_u16(),
+            Err(ureq::Error::StatusCode(code)) => code,
+            Err(e) => panic!("unexpected error: {e}"),
+        };
+        assert_eq!(status, 503);
+        assert_eq!(stats.errors(), 1);
     }
 }

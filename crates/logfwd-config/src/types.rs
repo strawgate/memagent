@@ -5,6 +5,9 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt;
 
+/// Conservative upper bound for per-pipeline worker count.
+pub(crate) const PIPELINE_WORKERS_MAX: usize = 1024;
+
 /// Authentication configuration for output HTTP sinks.
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -322,6 +325,10 @@ pub struct HostMetricsInputConfig {
     pub emit_signal_rows: Option<bool>,
     /// Upper bound on data rows emitted per collection cycle. Defaults to 256.
     pub max_rows_per_poll: Option<usize>,
+    /// Upper bound on process rows emitted per collection cycle.
+    ///
+    /// Defaults to 1024. Set to 0 or omit for the default.
+    pub max_process_rows_per_poll: Option<usize>,
     /// Path to the compiled eBPF kernel binary (required for `linux_ebpf_sensor`).
     pub ebpf_binary_path: Option<String>,
     /// Maximum events to drain per poll cycle (default: 4096).

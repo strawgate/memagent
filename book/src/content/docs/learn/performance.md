@@ -4,7 +4,7 @@ description: "Benchmarks, throughput targets, and optimization techniques"
 ---
 
 :::tip[Performance at a glance]
-logfwd processes **~2.8 million log lines per second** on a single CPU core — parsing JSON, running SQL, encoding OTLP protobuf, and compressing with zstd. Total CPU time: 36ms per 100K lines.
+FastForward processes **~2.8 million log lines per second** on a single CPU core — parsing JSON, running SQL, encoding OTLP protobuf, and compressing with zstd. Total CPU time: 36ms per 100K lines.
 :::
 
 ## Benchmark results
@@ -25,7 +25,7 @@ Each optimization compounds on the others:
 
 - **SIMD structural indexing** — One vectorized pass classifies 10 JSON characters across 64 bytes simultaneously. Every subsequent string lookup is O(1) via bitmask + trailing_zeros. This is the same technique that powers simdjson.
 - **Zero-copy StringViewArray** — String data is never copied during scanning. 16-byte views point directly into the input buffer, shared via reference counting. Five string columns sharing one buffer use 1x memory, not 5x.
-- **Field pushdown** — logfwd analyzes your SQL query before scanning and only extracts referenced columns. If your query uses 3 of 20 fields, the scanner skips the other 17 — giving 2-3x throughput on wide data.
+- **Field pushdown** — FastForward analyzes your SQL query before scanning and only extracts referenced columns. If your query uses 3 of 20 fields, the scanner skips the other 17 — giving 2-3x throughput on wide data.
 - **Persistent zstd context** — The compression dictionary is reused across batches, avoiding re-initialization overhead.
 - **Connection pooling** — HTTP clients reuse connections for output requests, amortizing TLS handshake and TCP setup.
 
@@ -44,7 +44,7 @@ For stress tests at 1M lines:
 - `get_array_memory_size()` reports ~926 MB — this overcounts because StringViewArray shares the backing buffer across all string columns
 
 :::note
-Memory usage scales with batch size, not total data volume. logfwd processes data in streaming batches and releases memory after each batch completes.
+Memory usage scales with batch size, not total data volume. FastForward processes data in streaming batches and releases memory after each batch completes.
 :::
 
 ## Scanner throughput by data shape

@@ -133,13 +133,17 @@ pub fn build_sink_factory(
                     )));
                 }
             };
-            Ok(Arc::new(JsonLinesSinkFactory::new(
+            let factory = JsonLinesSinkFactory::new(
                 name.to_string(),
                 endpoint.clone(),
                 auth_headers,
                 compression,
                 stats,
-            )))
+            )
+            .map_err(|e| {
+                OutputError::Construction(format!("output '{name}': http factory: {e}"))
+            })?;
+            Ok(Arc::new(factory))
         }
         OutputType::Udp => {
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {

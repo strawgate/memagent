@@ -5,7 +5,7 @@
 
 ## Prerequisites
 
-- **Rust 1.85+** (`rustup` recommended)
+- **Rust 1.89+** (`rustup` recommended)
 - **[just](https://github.com/casey/just)** task runner (`cargo install just`)
 - **[taplo](https://taplo.tamasfe.dev/)** for TOML formatting (`cargo install taplo-cli`)
 - **[cargo-nextest](https://nexte.st/)** for test execution (`cargo install cargo-nextest`)
@@ -236,7 +236,7 @@ Component labels use `component:` prefix (e.g., `component:processor/scanner`). 
 - **Find what SQL UDFs exist:** `crates/logfwd-transform/src/udf/` — `int()`, `float()`, `json()`, `json_int()`, `json_float()`, `regexp_extract()`, `grok()`, `geo_lookup()`, `hash()`.
 - **Find config schema:** `book/src/content/docs/configuration/reference.mdx` — all YAML fields, input/output types.
 - **Find example configs:** `examples/use-cases/` — 20 common patterns.
-- **Find roadmap/priorities:** [GitHub issue #889](https://github.com/strawgate/memagent/issues/889).
+- **Review roadmap/priorities:** [GitHub issue #889](https://github.com/strawgate/fastforward/issues/889).
 - **Find library-specific patterns:** `dev-docs/references/` — Arrow, DataFusion, Tokio, OTLP, Kani.
 - **Find verification status:** `dev-docs/VERIFICATION.md` — per-module proof status.
 - **Find what breaks together:** `dev-docs/CHANGE_MAP.md` — co-change requirements.

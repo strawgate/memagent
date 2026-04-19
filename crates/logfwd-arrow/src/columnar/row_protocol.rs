@@ -122,6 +122,17 @@ impl RowLifecycle {
         self.state = BuilderState::Idle;
     }
 
+    /// Unconditionally reset to `Idle`, discarding any in-progress batch.
+    ///
+    /// Use when an error occurs mid-batch and the builder will be reused.
+    /// Unlike `finish_batch`, this accepts any state (including `InRow`).
+    #[inline(always)]
+    pub(crate) fn discard(&mut self) {
+        self.state = BuilderState::Idle;
+        self.row_count = 0;
+        self.written_bits = 0;
+    }
+
     // -----------------------------------------------------------------
     // Accessors — all #[inline(always)] for the hot path
     // -----------------------------------------------------------------

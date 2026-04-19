@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate that CI's TLC matrix covers expected TLA config files."""
+"""Validate that CI's TLC job covers expected TLA config files."""
 
 from __future__ import annotations
 
@@ -14,23 +14,20 @@ CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 TLA_DIR = ROOT / "tla"
 IGNORED_CFG_SUFFIXES = (".coverage.cfg", ".thorough.cfg")
 
+# Matches: java -cp ... tlc2.TLC <tla_file> -config <config> ...
+_TLC_JAVA_RE = re.compile(r"tlc2\.TLC\s+(\S+)\s+-config\s+(\S+)")
+# Matches: python3 scripts/verify_tla_coverage.py ... --tla-file <tla_file> --config <config>
+_TLC_COVERAGE_RE = re.compile(r"verify_tla_coverage\.py\s+.*--tla-file\s+(\S+)\s+--config\s+(\S+)")
+
 
 @dataclass(frozen=True)
-class TlcMatrixEntry:
-    spec: str
+class TlcEntry:
     tla_file: str
     config: str
-    property: str
 
 
-def _strip_yaml_value(value: str) -> str:
-    value = value.strip()
-    if value and value[0] == value[-1] and value[0] in {"'", '"'}:
-        return value[1:-1]
-    return value
-
-
-def parse_tlc_matrix_entries(workflow_text: str) -> list[TlcMatrixEntry]:
+def parse_tlc_entries(workflow_text: str) -> list[TlcEntry]:
+    """Parse TLC entries from sequential steps in the tlc job."""
     lines = workflow_text.splitlines()
     tlc_start = None
     tlc_indent = 0
@@ -54,70 +51,15 @@ def parse_tlc_matrix_entries(workflow_text: str) -> list[TlcMatrixEntry]:
                 break
         tlc_lines.append(line)
 
-    entries: list[TlcMatrixEntry] = []
-    current: dict[str, str] | None = None
-    in_include = False
-    include_indent: int | None = None
-    item_indent: int | None = None
-    allowed_keys = {"spec", "tla_file", "config", "property"}
-
-    def flush_current() -> None:
-        nonlocal current
-        if current is None:
-            return
-        entries.append(
-            TlcMatrixEntry(
-                spec=current.get("spec", ""),
-                tla_file=current.get("tla_file", ""),
-                config=current.get("config", ""),
-                property=current.get("property", ""),
-            )
-        )
-        current = None
-
+    entries: list[TlcEntry] = []
     for line in tlc_lines:
         stripped = line.strip()
-        indent = len(line) - len(line.lstrip(" "))
-
-        if not in_include:
-            if stripped == "include:":
-                in_include = True
-                include_indent = indent
-            continue
-
-        if stripped and include_indent is not None and indent <= include_indent:
-            flush_current()
-            break
-
-        if not stripped:
-            continue
-
-        if stripped.startswith("- "):
-            flush_current()
-            item_indent = indent
-            current = {}
-            stripped = stripped[2:].strip()
-            if ":" not in stripped:
-                continue
-
-            key, raw_value = stripped.split(":", 1)
-            key = key.strip()
-            if key in allowed_keys:
-                current[key] = _strip_yaml_value(raw_value)
-            continue
-
-        if current is None or item_indent is None or indent <= item_indent or ":" not in stripped:
-            continue
-
-        key, raw_value = stripped.split(":", 1)
-        key = key.strip()
-        if key in allowed_keys:
-            current[key] = _strip_yaml_value(raw_value)
-
-    flush_current()
+        m = _TLC_JAVA_RE.search(stripped) or _TLC_COVERAGE_RE.search(stripped)
+        if m:
+            entries.append(TlcEntry(tla_file=m.group(1), config=m.group(2)))
 
     if not entries:
-        raise ValueError("ci.yml tlc matrix has no entries")
+        raise ValueError("ci.yml tlc job has no TLC run steps")
 
     return entries
 
@@ -141,27 +83,23 @@ def expected_mc_tla_for_cfg(config_path: str) -> str:
 
 def validate() -> list[str]:
     errors: list[str] = []
-    entries = parse_tlc_matrix_entries(CI_WORKFLOW.read_text(encoding="utf-8"))
+    entries = parse_tlc_entries(CI_WORKFLOW.read_text(encoding="utf-8"))
 
-    matrix_cfgs: set[str] = set()
+    ci_cfgs: set[str] = set()
     seen_cfg: set[str] = set()
 
     for entry in entries:
-        if not entry.spec:
-            errors.append("tlc matrix entry has empty spec")
         if not entry.tla_file:
-            errors.append(f"{entry.spec}: tlc matrix entry has empty tla_file")
+            errors.append("tlc step has empty tla_file")
             continue
         if not entry.config:
-            errors.append(f"{entry.spec}: tlc matrix entry has empty config")
+            errors.append("tlc step has empty config")
             continue
-        if not entry.property:
-            errors.append(f"{entry.spec}: tlc matrix entry has empty property")
 
         if entry.config in seen_cfg:
-            errors.append(f"{entry.config}: duplicated tlc matrix config entry")
+            errors.append(f"{entry.config}: duplicated tlc config entry")
         seen_cfg.add(entry.config)
-        matrix_cfgs.add(entry.config)
+        ci_cfgs.add(entry.config)
 
         cfg_path = ROOT / entry.config
         if not cfg_path.is_file():
@@ -181,17 +119,19 @@ def validate() -> list[str]:
                 f"{entry.config}: expected tla file {expected_tla}, found {entry.tla_file}"
             )
 
+    # Filter to non-coverage/non-thorough configs for the completeness check
+    ci_standard_cfgs = {c for c in ci_cfgs if not c.endswith(IGNORED_CFG_SUFFIXES)}
     expected_cfg_set = expected_ci_cfgs()
-    missing = sorted(expected_cfg_set - matrix_cfgs)
-    extra = sorted(matrix_cfgs - expected_cfg_set)
+    missing = sorted(expected_cfg_set - ci_standard_cfgs)
+    extra = sorted(ci_standard_cfgs - expected_cfg_set)
 
     for cfg in missing:
         errors.append(
-            f"{cfg}: missing from tlc matrix (add entry or mark as ignored suffix)"
+            f"{cfg}: missing from tlc job (add step or mark as ignored suffix)"
         )
     for cfg in extra:
         errors.append(
-            f"{cfg}: present in tlc matrix but not in expected non-coverage/non-thorough cfg set"
+            f"{cfg}: present in tlc job but not in expected non-coverage/non-thorough cfg set"
         )
 
     return errors

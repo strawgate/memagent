@@ -242,6 +242,7 @@ pub(super) fn build_input_state(
                 }),
                 event_created_unix_nano_field: generator_cfg
                     .and_then(|c| c.event_created_unix_nano_field.clone()),
+                message_template: generator_cfg.and_then(|c| c.message_template.clone()),
                 timestamp: match generator_cfg.and_then(|c| c.timestamp.as_ref()) {
                     None => GeneratorTimestamp::default(),
                     Some(ts) => {
@@ -288,15 +289,17 @@ pub(super) fn build_input_state(
                 Some(Arc::clone(&stats)),
                 resource_prefix,
                 protobuf_decode_mode,
+                o.max_recv_message_size_bytes,
             )
             .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             #[cfg(not(feature = "otlp-research"))]
             let source =
-                logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats_and_resource_prefix(
+                logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats_resource_prefix_and_max_size(
                     name,
                     addr,
                     Arc::clone(&stats),
                     resource_prefix,
+                    o.max_recv_message_size_bytes,
                 )
                 .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             #[cfg(not(feature = "otlp-research"))]
@@ -314,8 +317,13 @@ pub(super) fn build_input_state(
             if let Some(v) = a.max_message_size_bytes {
                 options.max_message_size_bytes = v;
             }
-            let source = logfwd_io::arrow_ipc_receiver::ArrowIpcReceiver::new(name, addr, options)
-                .map_err(|e| format!("input '{name}': failed to start Arrow IPC receiver: {e}"))?;
+            let source = logfwd_io::arrow_ipc_receiver::ArrowIpcReceiver::new_with_stats(
+                name,
+                addr,
+                options,
+                Arc::clone(&stats),
+            )
+            .map_err(|e| format!("input '{name}': failed to start Arrow IPC receiver: {e}"))?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
         InputTypeConfig::Http(h) => {
@@ -337,6 +345,9 @@ pub(super) fn build_input_state(
                 }
                 if let Some(max_request_body_size) = http.max_request_body_size {
                     options.max_request_body_size = max_request_body_size;
+                }
+                if let Some(max_drained_bytes_per_poll) = http.max_drained_bytes_per_poll {
+                    options.max_drained_bytes_per_poll = max_drained_bytes_per_poll;
                 }
                 if let Some(response_code) = http.response_code {
                     options.response_code = response_code;
@@ -688,6 +699,10 @@ fn build_host_metrics_config(
             .and_then(|c| c.max_rows_per_poll)
             .filter(|&n| n > 0)
             .unwrap_or(256),
+        max_process_rows_per_poll: cfg
+            .and_then(|c| c.max_process_rows_per_poll)
+            .filter(|&n| n > 0)
+            .unwrap_or(1024),
     }
 }
 
@@ -912,6 +927,25 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn build_host_metrics_config_uses_defaults() {
+        let cfg = build_host_metrics_config(None);
+        assert_eq!(cfg.max_rows_per_poll, 256);
+        assert_eq!(cfg.max_process_rows_per_poll, 1024);
+    }
+
+    #[test]
+    fn build_host_metrics_config_ignores_zero_caps() {
+        let input = HostMetricsInputConfig {
+            max_rows_per_poll: Some(0),
+            max_process_rows_per_poll: Some(0),
+            ..HostMetricsInputConfig::default()
+        };
+        let cfg = build_host_metrics_config(Some(&input));
+        assert_eq!(cfg.max_rows_per_poll, 256);
+        assert_eq!(cfg.max_process_rows_per_poll, 1024);
     }
 
     #[test]

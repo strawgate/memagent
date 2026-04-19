@@ -176,4 +176,4 @@ All deliverables are in `dev-docs/research/fanout-2026-04-19-architecture-resear
 | 2 | `processor-chain-…/extracted/dev-docs/research/processor-chain-architecture-evaluation.md` |
 | 3 | `tagged-enum-config-…/extracted/dev-docs/research/tagged-enum-config-migration-plan.md` |
 | 4 | `file-tailer-typestate-…/extracted/dev-docs/research/file-tailer-typestate-model.md` |
-| 5 | OTLP projection gap analysis — extracted from `/tmp/otlp-task-diff.txt` |
+| 5 | OTLP projection gap analysis — extracted from Codex Cloud task diff output |

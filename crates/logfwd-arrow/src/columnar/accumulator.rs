@@ -233,6 +233,13 @@ impl ColumnAccumulator {
     // Typed write methods
     // -----------------------------------------------------------------------
 
+    /// Initial capacity for dynamic fact Vecs on first typed push.
+    ///
+    /// Starts small (16) to avoid over-allocating for sparse or
+    /// high-cardinality dynamic columns. Vec doubling reaches 256 in
+    /// 4 reallocations for dense columns that need it.
+    const DYNAMIC_INITIAL_CAPACITY: usize = 16;
+
     /// Append an i64 fact.
     ///
     /// Accepted by `Int64` and `Dynamic` accumulators. For other planned
@@ -244,6 +251,9 @@ impl ColumnAccumulator {
             ColumnAccumulator::Dynamic {
                 int_facts, has_int, ..
             } => {
+                if int_facts.capacity() == 0 {
+                    int_facts.reserve(Self::DYNAMIC_INITIAL_CAPACITY);
+                }
                 *has_int = true;
                 int_facts.push((row, value));
             }
@@ -261,6 +271,9 @@ impl ColumnAccumulator {
                 has_float,
                 ..
             } => {
+                if float_facts.capacity() == 0 {
+                    float_facts.reserve(Self::DYNAMIC_INITIAL_CAPACITY);
+                }
                 *has_float = true;
                 float_facts.push((row, value));
             }
@@ -278,6 +291,9 @@ impl ColumnAccumulator {
                 has_bool,
                 ..
             } => {
+                if bool_facts.capacity() == 0 {
+                    bool_facts.reserve(Self::DYNAMIC_INITIAL_CAPACITY);
+                }
                 *has_bool = true;
                 bool_facts.push((row, value));
             }
@@ -293,6 +309,9 @@ impl ColumnAccumulator {
             ColumnAccumulator::Dynamic {
                 str_facts, has_str, ..
             } => {
+                if str_facts.capacity() == 0 {
+                    str_facts.reserve(Self::DYNAMIC_INITIAL_CAPACITY);
+                }
                 *has_str = true;
                 str_facts.push((row, sref));
             }
@@ -482,9 +501,25 @@ fn is_dense<T>(facts: &[(u32, T)], num_rows: usize, dedup: bool) -> bool {
         && (num_rows == 0 || facts[num_rows - 1].0 as usize == num_rows - 1)
 }
 
-fn build_int64(facts: &[(u32, i64)], num_rows: usize, dedup: bool) -> (ArrayRef, DataType) {
+// ---------------------------------------------------------------------------
+// Pure scatter / bitmap — Arrow-free, Kani-provable
+// ---------------------------------------------------------------------------
+
+/// Scatter fact values into a default-initialized vec indexed by row.
+///
+/// Dense path: facts\[i\] → values\[i\] (sequential, no bounds check needed).
+/// Sparse path: facts\[i\].0 → row index (last-write-wins for duplicates).
+/// Rows without a fact retain `T::default()`.
+///
+/// Returns `(values, dense)`. Callers use `dense` to decide whether a
+/// validity bitmap is needed.
+fn scatter_values<T: Default + Copy>(
+    facts: &[(u32, T)],
+    num_rows: usize,
+    dedup: bool,
+) -> (Vec<T>, bool) {
     let dense = is_dense(facts, num_rows, dedup);
-    let mut values = vec![0i64; num_rows];
+    let mut values = vec![T::default(); num_rows];
     if dense {
         debug_assert!(
             facts.is_empty() || facts[0].0 == 0,
@@ -501,17 +536,43 @@ fn build_int64(facts: &[(u32, i64)], num_rows: usize, dedup: bool) -> (ArrayRef,
             }
         }
     }
+    (values, dense)
+}
+
+/// Build a bit-packed validity bitmap from sparse fact row indices.
+///
+/// Returns raw bytes where bit `i` is **set** (1) iff row `i` is valid
+/// (has at least one fact). This follows Arrow convention: 1 = valid, 0 = null.
+/// Arrow-free — just a `Vec<u8>` that callers wrap in `NullBuffer`.
+fn validity_bitmap_bits<T>(facts: &[(u32, T)], num_rows: usize) -> Vec<u8> {
+    let byte_len = num_rows.div_ceil(8);
+    let mut bits = vec![0u8; byte_len];
+    for &(row, _) in facts {
+        let r = row as usize;
+        if r < num_rows {
+            bits[r >> 3] |= 1 << (r & 7);
+        }
+    }
+    bits
+}
+
+// ---------------------------------------------------------------------------
+// Arrow wrappers — thin constructors over scatter/bitmap results
+// ---------------------------------------------------------------------------
+
+/// Build a `NullBuffer` from sparse row indices.
+fn sparse_null_buffer<T>(facts: &[(u32, T)], num_rows: usize) -> NullBuffer {
+    let bits = validity_bitmap_bits(facts, num_rows);
+    let buf = Buffer::from_vec(bits);
+    NullBuffer::new(arrow::buffer::BooleanBuffer::new(buf, 0, num_rows))
+}
+
+fn build_int64(facts: &[(u32, i64)], num_rows: usize, dedup: bool) -> (ArrayRef, DataType) {
+    let (values, dense) = scatter_values(facts, num_rows, dedup);
     let nulls = if dense {
         None
     } else {
-        let mut valid = vec![false; num_rows];
-        for &(row, _) in facts {
-            let r = row as usize;
-            if r < num_rows {
-                valid[r] = true;
-            }
-        }
-        Some(NullBuffer::from(valid))
+        Some(sparse_null_buffer(facts, num_rows))
     };
     (
         Arc::new(Int64Array::new(values.into(), nulls)),
@@ -520,35 +581,11 @@ fn build_int64(facts: &[(u32, i64)], num_rows: usize, dedup: bool) -> (ArrayRef,
 }
 
 fn build_float64(facts: &[(u32, f64)], num_rows: usize, dedup: bool) -> (ArrayRef, DataType) {
-    let dense = is_dense(facts, num_rows, dedup);
-    let mut values = vec![0.0f64; num_rows];
-    if dense {
-        debug_assert!(
-            facts.is_empty() || facts[0].0 == 0,
-            "dense path requires consecutive rows starting at 0"
-        );
-        for (i, &(_, v)) in facts.iter().enumerate() {
-            values[i] = v;
-        }
-    } else {
-        for &(row, v) in facts {
-            let r = row as usize;
-            if r < num_rows {
-                values[r] = v;
-            }
-        }
-    }
+    let (values, dense) = scatter_values(facts, num_rows, dedup);
     let nulls = if dense {
         None
     } else {
-        let mut valid = vec![false; num_rows];
-        for &(row, _) in facts {
-            let r = row as usize;
-            if r < num_rows {
-                valid[r] = true;
-            }
-        }
-        Some(NullBuffer::from(valid))
+        Some(sparse_null_buffer(facts, num_rows))
     };
     (
         Arc::new(Float64Array::new(values.into(), nulls)),
@@ -557,35 +594,11 @@ fn build_float64(facts: &[(u32, f64)], num_rows: usize, dedup: bool) -> (ArrayRe
 }
 
 fn build_bool(facts: &[(u32, bool)], num_rows: usize, dedup: bool) -> (ArrayRef, DataType) {
-    let dense = is_dense(facts, num_rows, dedup);
-    let mut values = vec![false; num_rows];
-    if dense {
-        debug_assert!(
-            facts.is_empty() || facts[0].0 == 0,
-            "dense path requires consecutive rows starting at 0"
-        );
-        for (i, &(_, v)) in facts.iter().enumerate() {
-            values[i] = v;
-        }
-    } else {
-        for &(row, v) in facts {
-            let r = row as usize;
-            if r < num_rows {
-                values[r] = v;
-            }
-        }
-    }
+    let (values, dense) = scatter_values(facts, num_rows, dedup);
     let nulls = if dense {
         None
     } else {
-        let mut valid = vec![false; num_rows];
-        for &(row, _) in facts {
-            let r = row as usize;
-            if r < num_rows {
-                valid[r] = true;
-            }
-        }
-        Some(NullBuffer::from(valid))
+        Some(sparse_null_buffer(facts, num_rows))
     };
     (
         Arc::new(BooleanArray::new(values.into(), nulls)),
@@ -675,7 +688,8 @@ fn build_string_view_trusted(
         }
     } else {
         // Sparse: iterate all facts, assign by row index (last-write-wins for duplicates).
-        let mut valid = vec![false; num_rows];
+        let byte_len = num_rows.div_ceil(8);
+        let mut bits = vec![0u8; byte_len];
         for &(row, sref) in facts {
             let r = row as usize;
             if r < num_rows {
@@ -687,10 +701,13 @@ fn build_string_view_trusted(
                     orig_block,
                     gen_block,
                 )?;
-                valid[r] = true;
+                bits[r >> 3] |= 1 << (r & 7);
             }
         }
-        nulls = Some(NullBuffer::from(valid));
+        let buf = Buffer::from_vec(bits);
+        nulls = Some(NullBuffer::new(arrow::buffer::BooleanBuffer::new(
+            buf, 0, num_rows,
+        )));
     }
 
     debug_assert!(
@@ -852,8 +869,10 @@ fn build_string_array_validated(
     let final_off = i32::try_from(values.len()).map_err(|_| MaterializeError::OffsetOverflow)?;
     offsets.push(final_off);
 
-    // Validate UTF-8 for external bytes.
-    if !original_buf.is_empty() && std::str::from_utf8(&values).is_err() {
+    // Validate UTF-8 for all string bytes (covers both original_buf and
+    // write_str_bytes sources). This runs only in the validated path
+    // (utf8_trusted=false), so the cost is acceptable.
+    if std::str::from_utf8(&values).is_err() {
         // Identify which row contains the invalid UTF-8.
         for row in 0..num_rows {
             let start = offsets[row] as usize;
@@ -875,15 +894,11 @@ fn build_string_array_validated(
     let offset_buf = OffsetBuffer::new(ScalarBuffer::from(offsets));
     let values_buf = Buffer::from_vec(values);
 
-    if original_buf.is_empty() {
-        // All data from write_str(&str) — valid UTF-8 by Rust's type system.
-        // SAFETY: offsets built sequentially, source is &str.
-        let array = unsafe { StringArray::new_unchecked(offset_buf, values_buf, nulls) };
-        Ok((Arc::new(array), DataType::Utf8))
-    } else {
-        let array = StringArray::new(offset_buf, values_buf, nulls);
-        Ok((Arc::new(array), DataType::Utf8))
-    }
+    // All bytes validated above — use checked constructor uniformly.
+    // (The prior unsafe shortcut for original_buf.is_empty() was unsound when
+    // write_str_bytes was used with non-&str sources.)
+    let array = StringArray::new(offset_buf, values_buf, nulls);
+    Ok((Arc::new(array), DataType::Utf8))
 }
 
 /// Read string bytes from the 2-buffer system without UTF-8 validation.
@@ -1229,6 +1244,34 @@ mod tests {
         );
     }
 
+    /// Regression test: invalid UTF-8 in generated buffer (write_str_bytes path)
+    /// must be caught even when original_buf is empty. Previously, the validated
+    /// path skipped checking when original_buf was empty, assuming all generated
+    /// data came from write_str(&str).
+    #[test]
+    fn invalid_utf8_in_generated_buffer_returns_error() {
+        let bad_bytes: &[u8] = &[0xFF, 0xFE, 0x80, 0x81];
+        let mut acc = ColumnAccumulator::for_planned(FieldKind::Utf8View);
+        // Offset 0 with empty original_buf → references generated_buf at index 0.
+        acc.push_str(0, StringRef { offset: 0, len: 4 });
+
+        let mode = FinalizationMode {
+            original_buf: Buffer::from(&[] as &[u8]),
+            generated_buf: Buffer::from(bad_bytes),
+            utf8_trusted: false,
+        };
+        let result = acc.materialize("x", 1, mode, true);
+        assert!(
+            result.is_err(),
+            "invalid UTF-8 in generated buffer must be caught"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, MaterializeError::InvalidUtf8 { .. }),
+            "expected InvalidUtf8, got {err:?}"
+        );
+    }
+
     #[test]
     fn out_of_bounds_generated_returns_error() {
         let input = b"short";
@@ -1439,6 +1482,264 @@ mod verification {
 
         kani::cover!(orig_offset == 0, "start of original");
         kani::cover!(gen_offset == 0, "start of generated");
+    }
+
+    // ── read_str_bytes — 2-buffer dispatch ─────────────────────────────────
+
+    /// Valid original-buffer reference returns correct bytes.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn verify_read_str_bytes_original() {
+        let original = [0xAAu8; 8];
+        let generated = [0xBBu8; 8];
+        let offset: u32 = kani::any();
+        let len: u32 = kani::any();
+        kani::assume(len > 0 && len <= 8);
+        kani::assume(offset <= 8 - len);
+
+        let sref = StringRef { offset, len };
+        let result = read_str_bytes(&original, &generated, original.len(), sref);
+        assert!(result.is_ok());
+        let bytes = result.unwrap();
+        assert_eq!(bytes.len(), len as usize);
+        for &b in bytes {
+            assert_eq!(b, 0xAA);
+        }
+
+        kani::cover!(len == 1, "single-byte original ref");
+        kani::cover!(offset == 0, "ref from start of original");
+    }
+
+    /// Valid generated-buffer reference returns correct bytes.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn verify_read_str_bytes_generated() {
+        let original = [0xAAu8; 8];
+        let generated = [0xBBu8; 8];
+        let gen_offset: u32 = kani::any();
+        let len: u32 = kani::any();
+        kani::assume(len > 0 && len <= 8);
+        kani::assume(gen_offset <= 8 - len);
+
+        let sref = StringRef {
+            offset: original.len() as u32 + gen_offset,
+            len,
+        };
+        let result = read_str_bytes(&original, &generated, original.len(), sref);
+        assert!(result.is_ok());
+        let bytes = result.unwrap();
+        assert_eq!(bytes.len(), len as usize);
+        for &b in bytes {
+            assert_eq!(b, 0xBB);
+        }
+
+        kani::cover!(len == 1, "single-byte generated ref");
+        kani::cover!(gen_offset == 0, "ref from start of generated");
+    }
+
+    /// Out-of-bounds StringRef returns error for both buffers.
+    #[kani::proof]
+    fn verify_read_str_bytes_oob() {
+        let original = [0u8; 4];
+        let generated = [0u8; 4];
+        let offset: u32 = kani::any();
+        let len: u32 = kani::any();
+        kani::assume(len > 0 && len <= 16);
+        kani::assume(offset <= 16);
+
+        let sref = StringRef { offset, len };
+
+        let end = (offset as usize).saturating_add(len as usize);
+        if offset < original.len() as u32 {
+            if end > original.len() {
+                let result = read_str_bytes(&original, &generated, original.len(), sref);
+                assert!(result.is_err());
+            }
+        } else {
+            let adj_start = offset as usize - original.len();
+            let adj_end = adj_start + len as usize;
+            if adj_end > generated.len() {
+                let result = read_str_bytes(&original, &generated, original.len(), sref);
+                assert!(result.is_err());
+            }
+        }
+
+        kani::cover!(offset < original.len() as u32, "OOB in original range");
+        kani::cover!(offset >= original.len() as u32, "OOB in generated range");
+    }
+
+    /// No StringRef can span across the original/generated boundary.
+    #[kani::proof]
+    fn verify_read_str_bytes_no_spanning() {
+        let original = [0xAAu8; 4];
+        let generated = [0xBBu8; 4];
+        let len: u32 = kani::any();
+        kani::assume(len > 0 && len <= 8);
+
+        let offset: u32 = kani::any();
+        kani::assume(offset < original.len() as u32);
+        kani::assume((offset as usize) + (len as usize) > original.len());
+
+        let sref = StringRef { offset, len };
+        let result = read_str_bytes(&original, &generated, original.len(), sref);
+        assert!(result.is_err(), "spanning ref must be rejected");
+
+        kani::cover!(len >= 2, "multi-byte spanning ref");
+        kani::cover!(offset == 0, "spanning from start of original");
+    }
+
+    // ── scatter_values — dense/sparse placement ────────────────────────────
+
+    /// Dense scatter: values[i] == facts[i].1 for all i.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn verify_scatter_values_dense() {
+        let num_rows: usize = kani::any();
+        kani::assume(num_rows > 0 && num_rows <= 4);
+
+        let mut facts: Vec<(u32, i64)> = Vec::new();
+        for row in 0..num_rows {
+            let val: i64 = kani::any();
+            facts.push((row as u32, val));
+        }
+
+        let (values, dense) = scatter_values(&facts, num_rows, true);
+        assert!(dense, "full-coverage + dedup must be dense");
+        assert_eq!(values.len(), num_rows);
+        for (i, &(_, v)) in facts.iter().enumerate() {
+            assert_eq!(values[i], v, "dense value must match fact");
+        }
+
+        kani::cover!(num_rows == 1, "single row dense");
+        kani::cover!(num_rows == 4, "max rows dense");
+    }
+
+    /// Sparse scatter: fact rows get their value, gap rows stay default.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn verify_scatter_values_sparse() {
+        let num_rows: usize = kani::any();
+        kani::assume(num_rows > 0 && num_rows <= 4);
+
+        let presence: u8 = kani::any();
+        let mut facts: Vec<(u32, i64)> = Vec::new();
+        for row in 0..num_rows {
+            if presence & (1 << row) != 0 {
+                facts.push((row as u32, row as i64 + 100));
+            }
+        }
+        kani::assume(!facts.is_empty());
+        kani::assume(facts.len() < num_rows);
+
+        let (values, dense) = scatter_values(&facts, num_rows, true);
+        assert!(!dense, "partial coverage must not be dense");
+        assert_eq!(values.len(), num_rows);
+
+        for row in 0..num_rows {
+            if presence & (1 << row) != 0 {
+                assert_eq!(values[row], row as i64 + 100);
+            } else {
+                assert_eq!(values[row], 0, "gap row must be default");
+            }
+        }
+
+        kani::cover!(facts.len() == 1, "single fact");
+        kani::cover!(num_rows == 4 && facts.len() == 2, "half-populated");
+    }
+
+    /// Last-write-wins: when dedup=false (sparse path), later facts overwrite.
+    #[kani::proof]
+    fn verify_scatter_values_last_write_wins() {
+        let first: i64 = kani::any();
+        let second: i64 = kani::any();
+        kani::assume(first != second);
+
+        let facts = vec![(0u32, first), (0u32, second)];
+        let (values, dense) = scatter_values(&facts, 1, false);
+        assert!(!dense, "dedup=false must not be dense");
+        assert_eq!(values[0], second, "last write must win");
+
+        kani::cover!(first < second, "increasing overwrite");
+        kani::cover!(first > second, "decreasing overwrite");
+    }
+
+    // ── validity_bitmap_bits — bit-packed correctness ──────────────────────
+
+    /// Every fact row has its bit set (valid), every gap row has bit clear (null).
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn verify_validity_bitmap_bits_correctness() {
+        let num_rows: usize = kani::any();
+        kani::assume(num_rows > 0 && num_rows <= 8);
+
+        let presence: u8 = kani::any();
+        let mut facts: Vec<(u32, i64)> = Vec::new();
+        for row in 0..num_rows {
+            if presence & (1 << row) != 0 {
+                facts.push((row as u32, 0));
+            }
+        }
+        kani::assume(!facts.is_empty());
+
+        let bits = validity_bitmap_bits(&facts, num_rows);
+        assert_eq!(bits.len(), num_rows.div_ceil(8));
+
+        for row in 0..num_rows {
+            let bit_set = bits[row >> 3] & (1 << (row & 7)) != 0;
+            let has_fact = presence & (1 << row) != 0;
+            assert_eq!(bit_set, has_fact, "bit must match fact presence at row");
+        }
+
+        kani::cover!(num_rows == 1, "single row");
+        kani::cover!(num_rows == 8, "full byte boundary");
+        kani::cover!(presence == 0xFF, "all rows present");
+    }
+
+    /// Out-of-bounds row indices are silently ignored.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn verify_validity_bitmap_bits_oob_ignored() {
+        let num_rows: usize = 4;
+        let oob_row: u32 = kani::any();
+        kani::assume(oob_row >= num_rows as u32 && oob_row <= 255);
+
+        let facts = vec![(0u32, 0i64), (oob_row, 0i64)];
+        let bits = validity_bitmap_bits(&facts, num_rows);
+
+        assert!(bits[0] & 1 != 0, "row 0 must be set");
+        for row in 1..num_rows {
+            let bit_set = bits[row >> 3] & (1 << (row & 7)) != 0;
+            assert!(!bit_set, "non-fact row must be clear");
+        }
+
+        kani::cover!(oob_row == 4, "minimal OOB");
+        kani::cover!(oob_row > 100, "large OOB");
+    }
+
+    // ── is_dense — classification ──────────────────────────────────────────
+
+    /// is_dense returns true iff facts cover [0, num_rows) exactly with dedup.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn verify_is_dense_classification() {
+        let num_rows: usize = kani::any();
+        kani::assume(num_rows > 0 && num_rows <= 4);
+
+        let mut facts: Vec<(u32, i64)> = Vec::new();
+        for row in 0..num_rows {
+            facts.push((row as u32, 0));
+        }
+
+        assert!(is_dense(&facts, num_rows, true));
+        assert!(!is_dense(&facts, num_rows, false));
+
+        if num_rows > 1 {
+            let partial = facts[..num_rows - 1].to_vec();
+            assert!(!is_dense(&partial, num_rows, true));
+        }
+
+        kani::cover!(num_rows == 1, "single row");
+        kani::cover!(num_rows == 4, "max test rows");
     }
 }
 

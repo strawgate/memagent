@@ -19,6 +19,7 @@ permissions:
 env:
   TAPLO_VERSION: "0.10.0"
   CARGO_DENY_VERSION: "0.19.0"
+  CARGO_MACHETE_VERSION: "0.9.1"
   # CI runners have 4 vCPU — use all of them.
   CARGO_BUILD_JOBS: "4"
   NEXTEST_TEST_THREADS: "4"
@@ -111,6 +112,7 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
       (github.event.pull_request.draft == false && needs.changes.outputs.frontend == 'true')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: dashboard
@@ -149,11 +151,16 @@ jobs:
   # Lint: fast checks (fmt, TOML, typos, actionlint) then clippy + audits.
   # Combined into one job to save a runner — fast checks fail-fast before
   # the expensive clippy build starts.
+  # Always runs on non-draft PRs (no path filter) — acts as a fast gate.
   # -------------------------------------------------------------------------
   lint:
     name: Lint
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    if: |
+      github.event_name == 'push' ||
+      github.event.pull_request.draft == false ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       checks: write  # needed by rustsec/audit-check@v2 to create check run annotations
@@ -161,10 +168,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/build-dashboard
 
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      - uses: ./.github/actions/setup-rust
 
       - name: Format check
         run: cargo fmt --check
@@ -210,10 +214,6 @@ jobs:
 
       # --- Expensive steps below — only reached if fast checks pass ---
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
       - name: Install cargo-deny
         run: |
           curl -sSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
@@ -232,7 +232,7 @@ jobs:
 
       - name: Install cargo-machete
         run: |
-          curl -fsSL "https://github.com/bnjbvr/cargo-machete/releases/download/v0.9.1/cargo-machete-v0.9.1-x86_64-unknown-linux-musl.tar.gz" \
+          curl -fsSL "https://github.com/bnjbvr/cargo-machete/releases/download/v${CARGO_MACHETE_VERSION}/cargo-machete-v${CARGO_MACHETE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
             | tar xz -C /tmp && mv /tmp/cargo-machete-*/cargo-machete /usr/local/bin/
 
       - name: Unused dependencies check
@@ -255,41 +255,41 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
       (github.event.pull_request.draft == false && needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/build-dashboard
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
       - uses: taiki-e/install-action@nextest
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Tests
         run: cargo nextest run --workspace --profile ci
 
+  # macOS: push + ci:full only (expensive runner, no path filter or draft check).
+  # Exclude Linux-only eBPF crates (aya does not compile on macOS).
   test-macos:
     name: Test (macOS)
     if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci:full')
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/build-dashboard
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
       - uses: taiki-e/install-action@nextest
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-
       - name: Tests
-        run: cargo nextest run --workspace --profile ci
+        run: >-
+          cargo nextest run --workspace --profile ci
+          --exclude sensor-ebpf
+          --exclude sensor-ebpf-common
 
   # -------------------------------------------------------------------------
   # Network integration tests — #[ignore] tests that bind ports / make
   # HTTP calls.  Runs after the main test job to reuse the build cache.
+  # Non-draft PRs only (no path filter); depends on test-linux for cache.
   # -------------------------------------------------------------------------
   test-network:
     name: Test (network integration)
@@ -301,12 +301,8 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/build-dashboard
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
       - uses: taiki-e/install-action@nextest
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Network integration tests
         run: |
@@ -318,74 +314,48 @@ jobs:
           cargo nextest run --no-tests fail -p logfwd-diagnostics --profile ci --run-ignored all --lib diagnostics::server::tests::
 
   # -------------------------------------------------------------------------
-  # Build check — aarch64 cross-compile only (release check removed:
-  # clippy already does a full debug build that catches the same errors)
+  # Cross-compilation checks — aarch64 workspace + thumbv6m no_std
   # -------------------------------------------------------------------------
-  build-check:
-    name: Build check (aarch64)
+  cross-check:
+    name: Cross-compilation checks
     needs: [changes]
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
-      (github.event.pull_request.draft == false && needs.changes.outputs.rust == 'true')
+      (github.event.pull_request.draft == false && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.core_no_std == 'true'))
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/build-dashboard
 
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-unknown-linux-gnu
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          key: aarch64
+      - uses: ./.github/actions/setup-rust
+      - run: rustup target add aarch64-unknown-linux-gnu thumbv6m-none-eabi
+        shell: bash
 
       - name: Install cross-compilation toolchain
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
 
-      - name: Check
+      - name: Check (aarch64)
         run: cargo check --workspace --target aarch64-unknown-linux-gnu
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
 
-  # -------------------------------------------------------------------------
-  # logfwd-core no_std contract
-  # -------------------------------------------------------------------------
-  core-no-std:
-    name: logfwd-core no_std
-    needs: [changes]
-    if: |
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
-      (github.event.pull_request.draft == false && needs.changes.outputs.core_no_std == 'true')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: thumbv6m-none-eabi
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          key: core-no-std
-
-      - name: Build logfwd-core for thumbv6m-none-eabi
+      - name: Check (logfwd-core no_std)
         run: cargo build -p logfwd-core --target thumbv6m-none-eabi
 
   # -------------------------------------------------------------------------
-  # Kani formal verification — single job running all proofs.
-  # kissat solver annotations on slow proofs keep total runtime within budget.
+  # Kani formal verification — split into three parallel shards.
+  #   kani-core:      logfwd-core (97 proofs, heaviest — structural/otlp unwinds)
+  #   kani-arrow:     logfwd-arrow (27 proofs, needs --lib flag)
+  #   kani-periphery: remaining 6 crates (107 proofs, lightweight)
+  # Each shard uses kissat solver and --jobs 2 for intra-crate parallelism.
   # -------------------------------------------------------------------------
-  kani:
-    name: Kani proofs
-    needs: [changes]
+  kani-core:
+    name: Kani proofs (core)
+    needs: [changes, lint]
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -398,38 +368,94 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          key: kani
+          key: kani-core
 
-      - name: Run Kani verification (all packages except logfwd-arrow)
+      - name: Run Kani verification (logfwd-core)
         uses: model-checking/kani-github-action@v1
         with:
           args: >-
+            --solver kissat
+            --jobs 2
+            --output-format terse
             -Z function-contracts
             -Z mem-predicates
             -Z stubbing
             -p logfwd-core
+
+  kani-arrow:
+    name: Kani proofs (arrow)
+    needs: [changes, lint]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: kani-arrow
+
+      - name: Run Kani verification (logfwd-arrow --lib)
+        # logfwd-arrow has a binary with required-features that cargo-kani
+        # cannot skip, so verify only the library target.
+        uses: model-checking/kani-github-action@v1
+        with:
+          args: >-
+            --solver kissat
+            --jobs 2
+            --output-format terse
+            -Z function-contracts
+            -Z mem-predicates
+            -Z stubbing
+            -p logfwd-arrow
+            --lib
+
+  kani-periphery:
+    name: Kani proofs (periphery)
+    needs: [changes, lint]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: kani-periphery
+
+      - name: Run Kani verification (periphery crates)
+        uses: model-checking/kani-github-action@v1
+        with:
+          args: >-
+            --solver kissat
+            --jobs 2
+            --output-format terse
+            -Z function-contracts
+            -Z mem-predicates
+            -Z stubbing
             -p logfwd-types
             -p logfwd-io
             -p logfwd-output
             -p logfwd-runtime
             -p logfwd-diagnostics
             -p logfwd
-        env:
-          RUSTC_WRAPPER: ""
-
-      - name: Run Kani verification (logfwd-arrow --lib)
-        # logfwd-arrow has a binary with required-features that cargo-kani
-        # cannot skip, so verify only the library target.
-        run: cargo kani -p logfwd-arrow --lib -Z function-contracts -Z mem-predicates -Z stubbing
-        env:
-          RUSTC_WRAPPER: ""
 
   # -------------------------------------------------------------------------
-  # Miri — UB-oriented execution for proof-heavy pure crates.
+  # Miri — UB-oriented execution, split into two parallel shards.
+  # PROPTEST_CASES=1: Miri validates UB per execution — 256 random cases
+  # adds no UB coverage and wastes ~30 min.
   # -------------------------------------------------------------------------
-  miri:
-    name: Miri
-    needs: [changes]
+  miri-core:
+    name: Miri (core)
+    needs: [changes, lint]
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -439,188 +465,75 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - uses: ./.github/actions/setup-rust
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri, rust-src
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Set up Miri
+        run: cargo +nightly miri setup
+
+      - name: Run Miri test suite (logfwd-core)
+        run: cargo +nightly miri test -p logfwd-core --lib
+        env:
+          MIRIFLAGS: "-Zmiri-strict-provenance"
+          PROPTEST_DISABLE_FAILURE_PERSISTENCE: "1"
+          PROPTEST_CASES: "1"
+
+  miri-types:
+    name: Miri (types)
+    needs: [changes, lint]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.miri == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup-rust
+      - uses: dtolnay/rust-toolchain@nightly
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          key: miri
+          components: miri, rust-src
 
       - name: Set up Miri
         run: cargo +nightly miri setup
-        env:
-          RUSTC_WRAPPER: ""
 
-      - name: Run Miri test suite
-        run: |
-          cargo +nightly miri test -p logfwd-core --lib
-          cargo +nightly miri test -p logfwd-types --lib
+      - name: Run Miri test suite (logfwd-types)
+        run: cargo +nightly miri test -p logfwd-types --lib
         env:
-          RUSTC_WRAPPER: ""
           MIRIFLAGS: "-Zmiri-strict-provenance"
           PROPTEST_DISABLE_FAILURE_PERSISTENCE: "1"
+          PROPTEST_CASES: "1"
 
   # -------------------------------------------------------------------------
-  # Turmoil deterministic simulation
+  # Deterministic simulation & concurrency model checks
   # -------------------------------------------------------------------------
-  turmoil:
-    name: Turmoil simulation
+  simulation:
+    name: Simulation (Turmoil + Loom)
     needs: [changes]
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
-      (github.event.pull_request.draft == false && needs.changes.outputs.rust == 'true')
+      (github.event.pull_request.draft == false && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.loom == 'true'))
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
 
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/setup-rust
       - name: Turmoil simulation tests
         run: cargo test -p logfwd --features turmoil --test turmoil_sim
-
-  # -------------------------------------------------------------------------
-  # Loom deterministic concurrency seam checks
-  # -------------------------------------------------------------------------
-  loom:
-    name: Loom seam checks
-    needs: [changes]
-    if: |
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
-      (github.event.pull_request.draft == false && needs.changes.outputs.loom == 'true')
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Loom seam test
         run: cargo test -p logfwd-runtime --lib --features loom-tests worker_pool::pool::tests::loom_worker_removal_vs_late_event_model_never_resurrects_slot -- --exact
 
   # -------------------------------------------------------------------------
-  # TLC: TLA+ model checking for all specs (parallelized via matrix)
+  # TLC: TLA+ model checking — all specs, coverage, and thorough in one job
   # -------------------------------------------------------------------------
   tlc:
-    name: "TLA+ ${{ matrix.spec }} (${{ matrix.property }})"
-    needs: [changes]
-    if: |
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
-      (github.event.pull_request.draft == false && needs.changes.outputs.tla == 'true')
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - spec: PipelineMachine
-            tla_file: tla/MCPipelineMachine.tla
-            config: tla/PipelineMachine.cfg
-            property: safety
-          - spec: PipelineMachine
-            tla_file: tla/MCPipelineMachine.tla
-            config: tla/PipelineMachine.liveness.cfg
-            property: liveness
-          - spec: ShutdownProtocol
-            tla_file: tla/MCShutdownProtocol.tla
-            config: tla/ShutdownProtocol.cfg
-            property: safety
-          - spec: ShutdownProtocol
-            tla_file: tla/MCShutdownProtocol.tla
-            config: tla/ShutdownProtocol.liveness.cfg
-            property: liveness
-          - spec: PipelineBatch
-            tla_file: tla/MCPipelineBatch.tla
-            config: tla/PipelineBatch.cfg
-            property: safety
-          - spec: PipelineBatch
-            tla_file: tla/MCPipelineBatch.tla
-            config: tla/PipelineBatch.liveness.cfg
-            property: liveness
-          - spec: TailLifecycle
-            tla_file: tla/MCTailLifecycle.tla
-            config: tla/TailLifecycle.cfg
-            property: safety
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Download tla2tools.jar
-        run: |
-          mkdir -p /tmp/tla
-          curl -sL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o /tmp/tla/tla2tools.jar
-
-      - name: "TLC: ${{ matrix.spec }} — ${{ matrix.property }}"
-        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC ${{ matrix.tla_file }} -config ${{ matrix.config }} -workers auto
-
-  # -------------------------------------------------------------------------
-  # TLC reachability / vacuity guards — coverage configs are expected to
-  # produce witness traces via invariant violations, so they need a dedicated
-  # harness rather than the normal "exit 0 means success" flow.
-  # -------------------------------------------------------------------------
-  tlc-coverage:
-    name: "TLA+ ${{ matrix.spec }} (coverage)"
-    needs: [changes]
-    if: |
-      github.event_name == 'push' ||
-      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
-      (github.event.pull_request.draft == false && needs.changes.outputs.tla == 'true')
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - spec: PipelineMachine
-            tla_file: tla/MCPipelineMachine.tla
-            config: tla/PipelineMachine.coverage.cfg
-          - spec: ShutdownProtocol
-            tla_file: tla/MCShutdownProtocol.tla
-            config: tla/ShutdownProtocol.coverage.cfg
-          - spec: PipelineBatch
-            tla_file: tla/MCPipelineBatch.tla
-            config: tla/PipelineBatch.coverage.cfg
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Download tla2tools.jar
-        run: |
-          mkdir -p /tmp/tla
-          curl -sL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o /tmp/tla/tla2tools.jar
-
-      - name: "TLC coverage: ${{ matrix.spec }}"
-        run: |
-          python3 scripts/verify_tla_coverage.py \
-            --jar /tmp/tla/tla2tools.jar \
-            --tla-file ${{ matrix.tla_file }} \
-            --config ${{ matrix.config }}
-
-  # -------------------------------------------------------------------------
-  # Thorough TLC safety model — deeper pre-merge sweep for the main lifecycle spec.
-  # -------------------------------------------------------------------------
-  tlc-thorough:
-    name: "TLA+ PipelineMachine (thorough)"
-    needs: [changes]
+    name: "TLA+ model checking"
+    needs: [changes, lint]
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
@@ -641,11 +554,37 @@ jobs:
           mkdir -p /tmp/tla
           curl -sL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o /tmp/tla/tla2tools.jar
 
+      # --- Safety & liveness ---
+      - name: "TLC: PipelineMachine — safety"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg -workers auto
+      - name: "TLC: PipelineMachine — liveness"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.liveness.cfg -workers auto
+      - name: "TLC: ShutdownProtocol — safety"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.cfg -workers auto
+      - name: "TLC: ShutdownProtocol — liveness"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.liveness.cfg -workers auto
+      - name: "TLC: PipelineBatch — safety"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.cfg -workers auto
+      - name: "TLC: PipelineBatch — liveness"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg -workers auto
+      - name: "TLC: TailLifecycle — safety"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCTailLifecycle.tla -config tla/TailLifecycle.cfg -workers auto
+
+      # --- Coverage (vacuity guards) ---
+      - name: "TLC coverage: PipelineMachine"
+        run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCPipelineMachine.tla --config tla/PipelineMachine.coverage.cfg
+      - name: "TLC coverage: ShutdownProtocol"
+        run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCShutdownProtocol.tla --config tla/ShutdownProtocol.coverage.cfg
+      - name: "TLC coverage: PipelineBatch"
+        run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCPipelineBatch.tla --config tla/PipelineBatch.coverage.cfg
+
+      # --- Thorough ---
       - name: "TLC: PipelineMachine — thorough"
         run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.thorough.cfg -workers auto
 
   # -------------------------------------------------------------------------
-  # Coverage — workspace code coverage via llvm-cov
+  # Coverage — workspace code coverage via llvm-cov.
+  # Informational only (continue-on-error); non-draft PRs, no path filter.
   # -------------------------------------------------------------------------
   coverage:
     name: Code Coverage
@@ -657,16 +596,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/build-dashboard
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
+      - uses: ./.github/actions/setup-rust
+      - run: rustup component add llvm-tools-preview
+        shell: bash
       - uses: taiki-e/install-action@cargo-llvm-cov
       - uses: taiki-e/install-action@nextest
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Generate workspace coverage
         run: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info --profile ci
@@ -715,15 +649,14 @@ jobs:
       - test-linux
       - test-macos
       - test-network
-      - build-check
-      - core-no-std
-      - kani
-      - miri
-      - turmoil
-      - loom
+      - cross-check
+      - kani-core
+      - kani-arrow
+      - kani-periphery
+      - miri-core
+      - miri-types
+      - simulation
       - tlc
-      - tlc-coverage
-      - tlc-thorough
     runs-on: ubuntu-latest
     steps:
       - run: |

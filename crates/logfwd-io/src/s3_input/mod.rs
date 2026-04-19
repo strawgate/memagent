@@ -14,15 +14,16 @@
 //!
 //! Data flows through the pipeline without buffering entire objects:
 //!
-//! - **Uncompressed objects**: parallel 8 MiB range-GET streams, fetched
-//!   concurrently but delivered in order (part 0's chunks first, then part 1,
-//!   etc.) via per-part bounded channels. Zero data corruption at boundaries.
+//! - **Uncompressed objects**: parallel range-GET fetches (default 1 MiB parts,
+//!   16 concurrent). Each part is fully downloaded inside a
+//!   `futures::stream::buffered` future, then chunked into ~256 KiB pieces for
+//!   ordered delivery. Smaller parts + high concurrency hides S3 first-byte
+//!   latency (~100-200ms).
 //! - **Compressed objects**: single GET stream → streaming async decompression
 //!   (gzip/zstd via `async-compression`, snappy via buffered bridge).
 //!
 //! All paths emit ~256 KiB chunks to the output channel as data arrives.
-//! Peak memory per concurrent object: ~part_size (8 MiB) + channel buffers,
-//! versus the full object size with the old buffered approach.
+//! Peak memory per concurrent object: ~max_fetches × part_size (16 MiB default).
 //!
 //! # Integration
 //!
@@ -54,10 +55,14 @@ use sqs::SqsClient;
 const CHANNEL_BOUND: usize = 1024;
 /// Maximum chunks drained from the output channel per `poll()` call.
 const MAX_DRAIN_PER_POLL: usize = 256;
-/// Default range-GET part size: 8 MiB.
-pub const DEFAULT_PART_SIZE: u64 = 8 * 1024 * 1024;
+/// Default range-GET part size: 1 MiB.
+///
+/// Smaller parts enable higher parallelism which hides S3 first-byte latency
+/// (~100-200ms). Benchmarks show 1 MiB × 16 concurrent fetches dramatically
+/// outperforms 8 MiB × 8 under realistic latency.
+pub const DEFAULT_PART_SIZE: u64 = 1024 * 1024;
 /// Default max concurrent range GETs *per object*.
-pub const DEFAULT_MAX_CONCURRENT_FETCHES: usize = 8;
+pub const DEFAULT_MAX_CONCURRENT_FETCHES: usize = 16;
 /// Default max objects fetched concurrently.
 pub const DEFAULT_MAX_CONCURRENT_OBJECTS: usize = 4;
 /// Default SQS visibility timeout in seconds.
@@ -1144,14 +1149,11 @@ async fn fetch_object(
 
 /// Stream an uncompressed object via parallel range-GETs with ordered delivery.
 ///
-/// Parts are fetched concurrently (limited by `max_fetches` semaphore) but
-/// delivered to `out_tx` **in order** — all of part 0's chunks first, then
-/// part 1, etc. This avoids data corruption at part boundaries while still
-/// getting the throughput benefit of parallel downloads.
+/// Each part is downloaded fully (body included) inside a `buffered(N)` future,
+/// so up to `max_fetches` parts download concurrently. Once a part resolves,
+/// its bytes are chunked into ~256 KiB pieces and sent to `out_tx` in order.
 ///
-/// Each part task streams its data into a per-part bounded channel. The main
-/// loop reads those channels sequentially, providing natural backpressure:
-/// if delivery stalls, the part channels fill up, which pauses downloads.
+/// Peak memory: `max_fetches × part_size` (default 16 × 1 MiB = 16 MiB).
 async fn fetch_parallel_stream(
     s3: Arc<S3Client>,
     key: &str,
@@ -1160,8 +1162,11 @@ async fn fetch_parallel_stream(
     max_fetches: usize,
     out_tx: mpsc::SyncSender<ChunkPayload>,
 ) -> io::Result<()> {
-    use tokio::io::AsyncReadExt;
+    use futures_util::{StreamExt, stream};
 
+    let source_id = source_id_from_key(key);
+
+    // Build range list.
     let mut ranges: Vec<(u64, u64)> = Vec::new();
     let mut offset: u64 = 0;
     while offset < size {
@@ -1174,7 +1179,7 @@ async fn fetch_parallel_stream(
         let payload = ChunkPayload {
             bytes: Vec::new(),
             accounted_bytes: 0,
-            source_id: source_id_from_key(key),
+            source_id,
             is_eof: true,
         };
         let send_result = tokio::task::spawn_blocking(move || out_tx.send(payload))
@@ -1186,178 +1191,36 @@ async fn fetch_parallel_stream(
         return Ok(());
     }
 
-    let source_id = source_id_from_key(key);
-
-    // Per-part bounded channels. 4 × 256 KiB = 1 MiB buffer per part.
-    const PART_CHANNEL_BOUND: usize = 4;
-    let num_parts = ranges.len();
-    let mut part_senders: Vec<Option<tokio::sync::mpsc::Sender<io::Result<Vec<u8>>>>> =
-        Vec::with_capacity(num_parts);
-    let mut part_receivers: Vec<tokio::sync::mpsc::Receiver<io::Result<Vec<u8>>>> =
-        Vec::with_capacity(num_parts);
-    for _ in 0..num_parts {
-        let (tx, rx) = tokio::sync::mpsc::channel(PART_CHANNEL_BOUND);
-        part_senders.push(Some(tx));
-        part_receivers.push(rx);
-    }
-
-    let mut join_set: JoinSet<()> = JoinSet::new();
-
-    // Spawn a helper to launch part downloads. `spawn_part` is a local
-    // closure that takes ownership of the per-part sender and starts the
-    // range-GET task. We call it for the initial batch and again each time
-    // the delivery loop finishes draining a part — this ensures at most
-    // `max_fetches` concurrent HTTP connections and avoids the semaphore
-    // priority-inversion deadlock that occurs when all tasks race for
-    // permits in random order.
-    let mut next_to_spawn: usize = 0;
-    let spawn_part =
-        |join_set: &mut JoinSet<()>,
-         part_senders: &mut [Option<tokio::sync::mpsc::Sender<io::Result<Vec<u8>>>>],
-         idx: usize,
-         ranges: &[(u64, u64)],
-         s3: &Arc<S3Client>,
-         key: &str| {
-            let (start, end) = ranges[idx];
-            let Some(part_tx) = part_senders[idx].take() else {
-                error!(part_idx = idx, "part sender already taken — skipping spawn");
-                return;
-            };
-            let s3 = Arc::clone(s3);
-            let key_owned = key.to_string();
-            let part_idx = idx;
-
-            join_set.spawn(async move {
-                // Retry the initial range-GET request up to 3 times.
-                // Mid-stream errors are NOT retried since partial data may
-                // have already been sent through part_tx.
-                let resp = {
-                    let mut last_err = None;
-                    let mut resp_ok = None;
-                    for attempt in 0..3u32 {
-                        if attempt > 0 {
-                            let delay_ms = 200 * (1u64 << (attempt - 1));
-                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                        }
-                        match s3.get_object_range_stream(&key_owned, start, end).await {
-                            Ok(r) => {
-                                resp_ok = Some(r);
-                                break;
-                            }
-                            Err(e) => last_err = Some(e),
-                        }
+    // Each future: fetch range + download full body → yield Bytes.
+    // `buffered(N)` runs up to N downloads concurrently, yields in order.
+    let key_arc: Arc<str> = Arc::from(key);
+    let mut part_stream = stream::iter(ranges)
+        .map(|(start, end)| {
+            let s3 = Arc::clone(&s3);
+            let key = Arc::clone(&key_arc);
+            async move {
+                let mut last_err = None;
+                for attempt in 0..3u32 {
+                    if attempt > 0 {
+                        let delay_ms = 200 * (1u64 << (attempt - 1));
+                        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
                     }
-                    match resp_ok {
-                        Some(r) => r,
-                        None => {
-                            let _ = part_tx
-                                .send(Err(
-                                    last_err.expect("last_err is Some when all attempts fail")
-                                ))
-                                .await;
-                            return;
-                        }
-                    }
-                };
-                let async_read = decompress::response_to_async_read(resp);
-                tokio::pin!(async_read);
-
-                let mut buf = vec![0u8; OUTPUT_CHUNK_SIZE];
-                loop {
-                    let mut filled = 0;
-                    while filled < buf.len() {
-                        match async_read.read(&mut buf[filled..]).await {
-                            Ok(0) => break,
-                            Ok(n) => filled += n,
-                            Err(e) => {
-                                let _ = part_tx
-                                    .send(Err(io::Error::other(format!(
-                                        "range GET stream part {part_idx}: {e}"
-                                    ))))
-                                    .await;
-                                return;
-                            }
-                        }
-                    }
-                    if filled == 0 {
-                        break;
-                    }
-                    if part_tx.send(Ok(buf[..filled].to_vec())).await.is_err() {
-                        return; // Consumer dropped — shutting down.
+                    match s3.get_object_range(&key, start, end).await {
+                        Ok(data) => return Ok(data),
+                        Err(e) => last_err = Some(e),
                     }
                 }
-            });
-        };
-
-    // Pre-spawn the first batch (up to max_fetches, but at least 1).
-    let effective_max_fetches = max_fetches.max(1);
-    while next_to_spawn < num_parts && next_to_spawn < effective_max_fetches {
-        spawn_part(
-            &mut join_set,
-            &mut part_senders,
-            next_to_spawn,
-            &ranges,
-            &s3,
-            key,
-        );
-        next_to_spawn += 1;
-    }
-
-    // Deliver parts in order: drain part 0 fully, then part 1, etc.
-    // After each part completes delivery, spawn the next download task
-    // to keep the pipeline saturated.
-    let mut first_chunk = true;
-    for mut part_rx in part_receivers {
-        while let Some(result) = part_rx.recv().await {
-            let chunk = match result {
-                Ok(c) => c,
-                Err(e) => {
-                    // A part failed. Send an EOF so the framer flushes any
-                    // stale partial remainder for this SourceId before retry.
-                    if !first_chunk {
-                        let eof = ChunkPayload {
-                            bytes: Vec::new(),
-                            accounted_bytes: 0,
-                            source_id,
-                            is_eof: true,
-                        };
-                        let tx = out_tx.clone();
-                        let _ = tokio::task::spawn_blocking(move || tx.send(eof)).await;
-                    }
-                    join_set.abort_all();
-                    return Err(e);
-                }
-            };
-            let ab = if first_chunk {
-                first_chunk = false;
-                size
-            } else {
-                0
-            };
-            let payload = ChunkPayload {
-                bytes: chunk,
-                accounted_bytes: ab,
-                source_id,
-                is_eof: false,
-            };
-            let tx = out_tx.clone();
-            let send_result = tokio::task::spawn_blocking(move || tx.send(payload))
-                .await
-                .map_err(|e| io::Error::other(format!("spawn_blocking send: {e}")))?;
-            if send_result.is_err() {
-                join_set.abort_all();
-                return Err(io::Error::other("output channel closed"));
+                Err(last_err.expect("last_err is Some when all attempts fail"))
             }
-        }
-        // Check for panicked tasks before proceeding to the next part.
-        // A panicked task drops its sender without sending an error, so
-        // part_rx.recv() returns None — but partial/corrupt data may
-        // already have been forwarded. Abort immediately.
-        while let Some(result) = join_set.try_join_next() {
-            if let Err(e) = result
-                && e.is_panic()
-            {
-                join_set.abort_all();
+        })
+        .buffered(max_fetches.max(1));
+
+    // Deliver pre-loaded parts in order, chunking into OUTPUT_CHUNK_SIZE.
+    let mut first_chunk = true;
+    while let Some(result) = part_stream.next().await {
+        let data = match result {
+            Ok(d) => d,
+            Err(e) => {
                 if !first_chunk {
                     let eof = ChunkPayload {
                         bytes: Vec::new(),
@@ -1368,20 +1231,34 @@ async fn fetch_parallel_stream(
                     let tx = out_tx.clone();
                     let _ = tokio::task::spawn_blocking(move || tx.send(eof)).await;
                 }
-                return Err(io::Error::other(format!("range GET task panicked: {e}")));
+                return Err(e);
             }
-        }
-        // Spawn the next part now that this one is fully delivered.
-        if next_to_spawn < num_parts {
-            spawn_part(
-                &mut join_set,
-                &mut part_senders,
-                next_to_spawn,
-                &ranges,
-                &s3,
-                key,
-            );
-            next_to_spawn += 1;
+        };
+
+        // Chunk the downloaded body into OUTPUT_CHUNK_SIZE pieces.
+        let mut pos = 0;
+        while pos < data.len() {
+            let end = (pos + OUTPUT_CHUNK_SIZE).min(data.len());
+            let ab = if first_chunk {
+                first_chunk = false;
+                size
+            } else {
+                0
+            };
+            let payload = ChunkPayload {
+                bytes: data[pos..end].to_vec(),
+                accounted_bytes: ab,
+                source_id,
+                is_eof: false,
+            };
+            let tx = out_tx.clone();
+            let send_result = tokio::task::spawn_blocking(move || tx.send(payload))
+                .await
+                .map_err(|e| io::Error::other(format!("spawn_blocking send: {e}")))?;
+            if send_result.is_err() {
+                return Err(io::Error::other("output channel closed"));
+            }
+            pos = end;
         }
     }
 
@@ -1394,15 +1271,6 @@ async fn fetch_parallel_stream(
     };
     let tx = out_tx.clone();
     let _ = tokio::task::spawn_blocking(move || tx.send(payload)).await;
-
-    // Drain JoinSet to propagate any panics.
-    while let Some(result) = join_set.join_next().await {
-        if let Err(e) = result
-            && e.is_panic()
-        {
-            return Err(io::Error::other(format!("range GET task panicked: {e}")));
-        }
-    }
 
     Ok(())
 }

@@ -196,6 +196,7 @@ fn test_json_lines_serializes_body_column() {
         "http://localhost:9200".to_string(),
         reqwest::header::HeaderMap::new(),
         Compression::None,
+        Arc::new(reqwest::Client::new()),
         Arc::new(ComponentStats::new()),
     );
     sink.serialize_batch(&batch).unwrap();
@@ -580,6 +581,7 @@ fn test_json_lines_body_only_no_panic() {
         "http://localhost:9200".to_string(),
         reqwest::header::HeaderMap::new(),
         Compression::None,
+        Arc::new(reqwest::Client::new()),
         Arc::new(ComponentStats::new()),
     );
     // Must not panic.

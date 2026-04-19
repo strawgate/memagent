@@ -4,15 +4,8 @@
 //! Contains `StreamingBuilder` (zero-copy hot path) and the `Scanner`
 //! wrapper type that produces `RecordBatch`.
 
-#[cfg(feature = "_test-internals")]
 /// Columnar batch builder for structured producers (OTLP, CSV).
-///
-/// Feature-gated behind `_test-internals` for profiling and test access.
-/// Production code should not depend on this module directly.
 pub mod columnar;
-#[cfg(not(feature = "_test-internals"))]
-#[allow(dead_code)]
-pub(crate) mod columnar;
 pub mod conflict_schema;
 pub mod materialize;
 pub mod scanner;

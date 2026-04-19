@@ -167,7 +167,8 @@ impl FileDiscovery {
                 tailed
                     .file
                     .metadata()
-                    .map_or(true, |m| has_metadata_indicating_deletion(&m))
+                    .ok()
+                    .is_none_or(|m| has_metadata_indicating_deletion(&m))
             })
             .map(|(path, _)| path.clone())
             .collect();

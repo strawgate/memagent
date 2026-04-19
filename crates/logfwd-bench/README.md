@@ -67,7 +67,7 @@ just bench-report
 |------|-------|-----------------|
 | `pipeline.rs` | `scanner`, `cri`, `transform`, `compress`, `output`, `end_to_end`, `elasticsearch` | Original pipeline stage benchmarks |
 | `output_encode.rs` | `output_encode` | OTLP protobuf, JSON lines, JSON+zstd encoding cost (narrow vs wide, 1K/10K rows) |
-| `otlp_io.rs` | `otlp_input_parser_only`, `otlp_input_decode_materialize`, `otlp_output_encode_only`, `otlp_output_compression`, `otlp_e2e_in_process` | OTLP fixture matrix with stage-separated decode, materialize, encode, compression, and in-process E2E measurements. |
+| `otlp_io.rs` | `otlp_input_parser_only`, `otlp_input_decode_materialize`, `otlp_input_decompress_decode`, `otlp_output_encode_only`, `otlp_output_compression`, `otlp_e2e_in_process`, `otlp_projected_fallback_mix` | OTLP fixture matrix with stage-separated decode, materialize, decompression, encode, compression, fallback mix, and in-process E2E measurements. |
 | `full_chain.rs` | `full_chain_json`, `full_chain_cri`, `full_chain_grok` | Composed pipeline chains — reveals hidden handoff overhead |
 | `file_io.rs` | `file_io_framing`, `file_io_cri` | Disk read + newline framing + CRI parse throughput |
 | `batch_formation.rs` | `batch_scan`, `batch_transform`, `batch_pipeline` | Batch size scaling (100–100K rows) — amortization curve |
@@ -79,13 +79,18 @@ validation in setup only. The timed regions measure just the named stage:
 
 - `otlp_input_parser_only` times protobuf decode only.
 - `otlp_input_decode_materialize` times decode plus Arrow batch materialization.
+- `otlp_input_decompress_decode` times zstd request decompression plus decode and Arrow materialization.
 - `otlp_output_encode_only` times OTLP serialization from a prebuilt batch.
 - `otlp_output_compression` times zstd compression of an already encoded payload.
 - `otlp_e2e_in_process` times decode plus encode in one process, without transport or network effects.
+- `otlp_projected_fallback_mix` times four projected-success payloads plus one unsupported-but-valid fallback payload.
 
 The suite includes the experimental projected wire-to-Arrow decoder for
 primitive fixtures; it is validated against the prost path before benchmark
-timing starts. Mode names are aligned between Criterion and the profile binary:
+timing starts. `projected_fallback_*` modes run the candidate production wrapper:
+primitive shapes use the projected path, while unsupported-but-valid OTLP shapes
+fall back to prost. Mode names are aligned between Criterion and the profile
+binary:
 
 | Decode path | Criterion (decode_materialize) | Criterion (e2e) | Profile binary |
 |-------------|-------------------------------|-----------------|----------------|
@@ -93,14 +98,24 @@ timing starts. Mode names are aligned between Criterion and the profile binary:
 | production current | `production_current_to_batch` | `production_current_to_*_encode` | `production_current_to_batch` |
 | projected detached | `projected_detached_to_batch` | `projected_detached_to_*_encode` | `projected_detached_to_batch` |
 | projected view | `projected_view_to_batch` | `projected_view_to_*_encode` | `projected_view_to_batch` |
+| projected fallback | `projected_fallback_to_batch` | `projected_fallback_to_handwritten_encode` | `projected_fallback_to_batch`, `e2e_projected_fallback` |
+| zstd + production current | `zstd_production_current_to_batch` | n/a | `zstd_production_current_to_batch` |
+| zstd + projected fallback | `zstd_projected_fallback_to_batch` | n/a | `zstd_projected_fallback_to_batch` |
+| projected fallback mix | `projected_success_4x_plus_fallback_1x` | n/a | `projected_fallback_mix` |
 
 **Timing boundaries:**
 
 - `otlp_input_parser_only` — protobuf decode only (no Arrow materialization).
 - `otlp_input_decode_materialize` — protobuf decode + Arrow batch construction.
+- `otlp_input_decompress_decode` — zstd request decompression + protobuf decode + Arrow batch construction.
 - `otlp_output_encode_only` — OTLP serialization from a prebuilt batch.
 - `otlp_output_compression` — zstd compression of an already-encoded payload.
 - `otlp_e2e_in_process` — decode + encode in one pass, no transport or network.
+- `otlp_projected_fallback_mix` — repeated in-process projected fallback decode with a 4:1 projected-success-to-fallback payload mix.
+
+HTTP parsing, request body collection, and receiver channel handoff are covered
+by `bin/http_receiver_apples.rs`; `otlp_io.rs` keeps those transport costs out
+of the Criterion groups so decode-path comparisons stay stable.
 
 All fixture synthesis, prost/reference parity checks, and encode-path assertions
 run in setup before any Criterion timer starts. In the profile binary, warmup
@@ -116,7 +131,7 @@ allocation counting begins after warmup completes.
 | `bin/cloudtrail_profile.rs` | `cloudtrail_profile` | CloudTrail-like generator profile (NDJSON vs direct RecordBatch generation, cardinality, compression) |
 | `es_throughput.rs` | `es-throughput` | Elasticsearch output throughput with worker scaling |
 | `bin/framed_input_profile.rs` | `framed_input_profile` | FramedInput stage timings, RSS, optional flamegraph, optional dhat allocation report |
-| `bin/otlp_io_profile.rs` | `otlp_io_profile` | Focused OTLP decode and decode→encode CPU flamegraphs and allocation counts. Mode names match Criterion (`prost_reference_to_batch`, `production_current_to_batch`, `projected_detached_to_batch`, `projected_view_to_batch`, `e2e_*`). |
+| `bin/otlp_io_profile.rs` | `otlp_io_profile` | Focused OTLP decode and decode→encode CPU flamegraphs and allocation counts. Mode names match Criterion (`prost_reference_to_batch`, `production_current_to_batch`, `projected_detached_to_batch`, `projected_view_to_batch`, `projected_fallback_to_batch`, `zstd_*`, `projected_fallback_mix`, `e2e_*`). |
 | `explore.rs` | *(lib)* | Multi-dimensional exploratory benchmark (CSV output) |
 | `rss.rs` | *(lib)* | Resident set size at each pipeline stage |
 | `sizes.rs` | *(lib)* | Data size analysis: raw → Arrow → IPC → Parquet |

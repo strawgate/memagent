@@ -15,6 +15,7 @@ use logfwd_output::BatchMetadata;
 use crate::cardinality::cardinality_helpers::{CardinalityProfile, CardinalityState, SamplePhase};
 
 pub mod cloudtrail;
+pub mod otlp;
 
 include!("generators/shared_profiles.rs");
 include!("generators/envoy_access.rs");

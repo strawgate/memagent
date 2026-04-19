@@ -471,6 +471,13 @@ fn safe_array_value_to_string(col: &dyn Array, row: usize) -> String {
     }
 }
 
+fn map_stdout_io_error(error: io::Error) -> SendResult {
+    if error.kind() == io::ErrorKind::BrokenPipe {
+        return SendResult::Rejected("stdout pipe closed (BrokenPipe)".to_string());
+    }
+    SendResult::IoError(error)
+}
+
 // ---------------------------------------------------------------------------
 // Async Sink implementation
 // ---------------------------------------------------------------------------
@@ -493,10 +500,10 @@ impl Sink for StdoutSink {
             // Write the pre-rendered buffer to async stdout in one shot.
             let mut stdout = tokio::io::stdout();
             if let Err(e) = stdout.write_all(&self.output_buf).await {
-                return SendResult::IoError(e);
+                return map_stdout_io_error(e);
             }
             if let Err(e) = stdout.flush().await {
-                return SendResult::IoError(e);
+                return map_stdout_io_error(e);
             }
 
             let lines_written = memchr_iter(b'\n', &self.output_buf).count() as u64;
@@ -997,6 +1004,15 @@ mod tests {
             stats.lines_total.load(Ordering::Relaxed),
             expected_lines,
             "lines_total should reflect emitted lines, not raw row count"
+        );
+    }
+
+    #[test]
+    fn broken_pipe_maps_to_terminal_rejected() {
+        let result = map_stdout_io_error(io::Error::new(io::ErrorKind::BrokenPipe, "epipe"));
+        assert!(
+            matches!(result, SendResult::Rejected(_)),
+            "BrokenPipe must map to terminal non-retryable outcome"
         );
     }
 }

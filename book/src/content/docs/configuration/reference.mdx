@@ -1,15 +1,15 @@
 ---
 title: "Configuration Reference"
-description: "Complete YAML reference for all logfwd settings"
+description: "Complete YAML reference for all FastForward settings"
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-logfwd commands that operate on pipeline config (for example `run`, `validate`, `dry-run`, and `effective-config`) accept a YAML file via `--config <config.yaml>`.
+FastForward commands that operate on pipeline config (for example `run`, `validate`, `dry-run`, and `effective-config`) accept a YAML file via `--config <config.yaml>`.
 
 ## Overview
 
-logfwd supports two layout styles:
+FastForward supports two layout styles:
 
 - **Simple** — single pipeline with top-level `input`, `transform`, and `output` keys.
 - **Advanced** — multiple named pipelines under a `pipelines` map.
@@ -194,7 +194,8 @@ Receive newline-delimited payloads over HTTP `POST`.
 | `http.path` | string | No | Route path. Must start with `/`. Defaults to `/`. |
 | `http.strict_path` | boolean | No | When `true` (default), require exact path match. |
 | `http.method` | string | No | Accepted method. Defaults to `POST`. |
-| `http.max_request_body_size` | integer | No | Maximum request body size in bytes. Defaults to 20 MiB. |
+| `http.max_request_body_size` | integer | No | Maximum request body size in bytes. Defaults to 10 MiB. |
+| `http.max_drained_bytes_per_poll` | integer | No | Maximum bytes drained from the internal request queue per poll. Defaults to 1 GiB. |
 | `http.response_code` | integer | No | Success code. One of `200`, `201`, `202`, `204` (default `200`). |
 | `http.response_body` | string | No | Optional static success response body. Not allowed when `http.response_code: 204`. |
 
@@ -207,7 +208,8 @@ input:
     path: /ingest
     strict_path: true
     method: POST
-    max_request_body_size: 20971520
+    max_request_body_size: 10485760
+    max_drained_bytes_per_poll: 1073741824
     response_code: 200
     response_body: '{"ok":true}'
 ```
@@ -287,6 +289,7 @@ the build target.
 | `sensor.enabled_families` | array[string] | No | Optional enabled signal families. Omit to use defaults; set `[]` to disable all families. |
 | `sensor.emit_signal_rows` | boolean | No | Emit periodic per-family sample rows. Defaults to `true`. |
 | `sensor.max_rows_per_poll` | integer | No | Upper bound on data rows returned per collection cycle. Defaults to `256`. Set to `0` or omit for the default. |
+| `sensor.max_process_rows_per_poll` | integer | No | Upper bound on process snapshot rows returned per collection cycle. Defaults to `1024`. Set to `0` or omit for the default. |
 | `sensor.scrapers` | array[string] | No | List of scrapers to run. Supported values are: `cpu`, `memory`, `disk`, `network`, `filesystem`. |
 | `sensor.collection_interval_ms` | integer | No | Metrics collection cadence in milliseconds. Defaults to `10000`. |
 | `sensor.disk_include_devices` | array[string] | No | Optional list of disk devices to include in scraping. |
@@ -425,9 +428,26 @@ output:
 
 Ship to Elasticsearch via the Bulk API.
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `endpoint` | string | Yes | Elasticsearch base URL. |
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `endpoint` | string | Yes | — | Elasticsearch base URL. |
+| `index` | string | No | `logs` | Target index name. Must not be empty, and must not contain Elasticsearch-reserved characters or prefixes. |
+| `compression` | string | No | `none` | `gzip` or `none`. |
+| `request_mode` | string | No | `buffered` | `buffered` or `streaming`. `streaming` currently requires `compression: none`. |
+| `auth` | object | No | — | Optional bearer token or custom headers for HTTP auth. |
+
+Bulk payloads are split before they exceed `5242880` bytes (5 MiB). That limit is internal and is not a YAML field.
+
+```yaml
+output:
+  type: elasticsearch
+  endpoint: https://es-cluster:9200
+  index: logs
+  compression: gzip
+  request_mode: buffered
+  auth:
+    bearer_token: "${ES_TOKEN}"
+```
 
 ### `loki` output
 
@@ -435,7 +455,26 @@ Push to Grafana Loki.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `endpoint` | string | Yes | Loki push URL. |
+| `endpoint` | string | Yes | Loki base URL. The `/loki/api/v1/push` path is appended automatically. |
+| `tenant_id` | string | No | Optional value sent as `X-Scope-OrgID` for multi-tenant Loki deployments. |
+| `static_labels` | map[string,string] | No | Static labels applied to every pushed log stream. Keys and values must be non-empty. |
+| `label_columns` | array[string] | No | Additional log columns to promote as Loki labels. |
+| `auth` | object | No | Optional bearer token or custom headers for HTTP auth. |
+
+```yaml
+output:
+  type: loki
+  endpoint: http://loki:3100
+  tenant_id: team-a
+  static_labels:
+    app: logfwd
+    env: prod
+  label_columns: [service, level]
+  auth:
+    bearer_token: "${LOKI_TOKEN}"
+```
+
+`compression` is not supported for Loki outputs.
 
 ### `file` output
 
@@ -770,8 +809,10 @@ Useful for `/etc/os-release`, `.env` files, or ConfigMap-mounted metadata files.
 
 ### `csv` enrichment
 
-A multi-row lookup table loaded from a CSV file. All columns are UTF-8 strings.
-The first row must be column headers.
+A multi-row lookup table loaded from a CSV file. All columns are UTF-8 strings
+and are materialized internally as Arrow `Utf8View` columns for SQL execution.
+The first row must be column headers. Empty cells are empty strings; missing
+trailing cells are `NULL`.
 
 ```yaml
 enrichment:
@@ -871,7 +912,7 @@ server:
 
 ## Diagnostics API
 
-When `server.diagnostics` is configured, logfwd exposes an HTTP API for monitoring and troubleshooting.
+When `server.diagnostics` is configured, FastForward exposes an HTTP API for monitoring and troubleshooting.
 
 | Route | Method | Description |
 |-------|--------|-------------|
@@ -880,8 +921,8 @@ When `server.diagnostics` is configured, logfwd exposes an HTTP API for monitori
 | `/ready` | GET | Readiness probe. Returns 200 OK when required components are initialized and in a ready health state; returns 503 while components are still starting, stopping, stopped, failed, or otherwise not ready. |
 | `/admin/v1/status` | GET | Canonical rich status payload with live/ready state, component health, and per-pipeline counters. |
 | `/admin/v1/stats` | GET | Aggregate process stats (uptime, RSS, CPU, aggregate line counts). |
-| `/admin/v1/config` | GET | Currently loaded YAML configuration and its file path. |
-| `/admin/v1/logs` | GET | Recent log lines from logfwd's own stderr (ring buffer). |
+| `/admin/v1/config` | GET | Currently loaded YAML configuration and its file path (disabled by default; enable with `LOGFWD_UNSAFE_EXPOSE_CONFIG=1`). May expose sensitive values; do not enable in shared or production environments unless strictly required. |
+| `/admin/v1/logs` | GET | Recent log lines from FastForward's own stderr (ring buffer). |
 | `/admin/v1/history` | GET | Time-series data (1-hour window) for dashboard charts. |
 | `/admin/v1/traces` | GET | Recent batch processing spans for detailed latency analysis. |
 
@@ -894,7 +935,7 @@ batch footprint or the post-decompression payload size.
 
 ## Storage configuration
 
-The optional `storage` block controls where logfwd persists state (checkpoints, disk
+The optional `storage` block controls where FastForward persists state (checkpoints, disk
 queue).
 
 | Field | Type | Default | Description |
@@ -922,6 +963,35 @@ server:
 ```
 
 If the variable is not set, config loading fails fast with a validation error.
+
+Exact unquoted placeholders use YAML scalar typing after expansion. This lets numeric
+and boolean fields read values directly from the environment:
+
+```yaml
+pipelines:
+  app:
+    workers: ${LOGFWD_WORKERS}
+```
+
+Quote a placeholder, or tag it with `!!str`, when the expanded value should remain
+a string even if it looks like a YAML number, boolean, or null:
+
+```yaml
+input:
+  type: file
+  path: "${LOG_PATH}"
+```
+
+Placeholders embedded inside longer strings always remain strings:
+
+```yaml
+output:
+  type: file
+  path: "/var/log/${SERVICE_NAME}.jsonl"
+```
+
+Environment variables can also appear in mapping keys. If expansion produces duplicate
+keys, config loading fails.
 
 ---
 

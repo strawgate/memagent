@@ -407,6 +407,7 @@ mod tests {
 #[cfg(kani)]
 mod verification {
     use super::*;
+    const PROOF_STEPS: u32 = 6;
 
     /// Generate a symbolic action with valid constraints.
     ///
@@ -485,11 +486,12 @@ mod verification {
         check_invariants(&tracker);
 
         let mut i = 0u32;
-        while i < 6 {
+        while i < PROOF_STEPS {
             apply_symbolic_action(&mut tracker);
             check_invariants(&tracker);
             i += 1;
         }
+        assert_eq!(i, PROOF_STEPS, "must complete all PROOF_STEPS steps");
 
         // Vacuity guards: confirm interesting cases are explored
         kani::cover!(tracker.remainder_len > 0, "has remainder");
@@ -520,7 +522,7 @@ mod verification {
         let mut prev_checkpoint = tracker.checkpoint_offset;
 
         let mut i = 0u32;
-        while i < 6 {
+        while i < PROOF_STEPS {
             apply_symbolic_action(&mut tracker);
             assert!(
                 tracker.checkpoint_offset >= prev_checkpoint,
@@ -529,6 +531,7 @@ mod verification {
             prev_checkpoint = tracker.checkpoint_offset;
             i += 1;
         }
+        assert_eq!(i, PROOF_STEPS, "must complete all PROOF_STEPS steps");
 
         // Vacuity: confirm checkpoint actually advanced in some path
         kani::cover!(
@@ -556,7 +559,7 @@ mod verification {
 
         // Do some reads and optional checkpoints
         let mut i = 0u32;
-        while i < 6 {
+        while i < PROOF_STEPS {
             let (n_bytes, last_newline_pos) = symbolic_read();
             tracker.apply_read(n_bytes, last_newline_pos);
 
@@ -565,6 +568,7 @@ mod verification {
             }
             i += 1;
         }
+        assert_eq!(i, PROOF_STEPS, "must complete all PROOF_STEPS steps");
 
         // Record pre-crash state
         let pre_crash_checkpoint = tracker.checkpoint_offset;
@@ -612,7 +616,7 @@ mod verification {
         let mut tracker = CheckpointTracker::new(resume);
 
         let mut i = 0u32;
-        while i < 6 {
+        while i < PROOF_STEPS {
             let prev_processed = tracker.processed_offset;
             let tag = symbolic_action_tag();
 
@@ -653,6 +657,7 @@ mod verification {
             }
             i += 1;
         }
+        assert_eq!(i, PROOF_STEPS, "must complete all PROOF_STEPS steps");
 
         // Vacuity
         kani::cover!(
@@ -679,7 +684,7 @@ mod verification {
         let mut tracker = CheckpointTracker::new(resume);
 
         let mut i = 0u32;
-        while i < 6 {
+        while i < PROOF_STEPS {
             let tag = symbolic_action_tag();
             match tag {
                 0 => {
@@ -696,6 +701,7 @@ mod verification {
             }
             i += 1;
         }
+        assert_eq!(i, PROOF_STEPS, "must complete all PROOF_STEPS steps");
         // Kani automatically asserts no overflow on +, -, etc.
         // If any reachable path overflows, Kani reports failure.
     }

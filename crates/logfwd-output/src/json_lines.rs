@@ -26,7 +26,7 @@ pub struct JsonLinesSink {
     pub(crate) batch_buf: Vec<u8>,
     compress_buf: Vec<u8>,
     compression: Compression,
-    client: reqwest::Client,
+    client: Arc<reqwest::Client>,
     stats: Arc<ComponentStats>,
 }
 
@@ -53,21 +53,19 @@ fn parse_headers(headers: &[(String, String)]) -> io::Result<HeaderMap> {
 }
 
 impl JsonLinesSink {
+    /// Create a JSON Lines HTTP sink using a shared client.
+    ///
+    /// Factories pass the same `Arc<reqwest::Client>` to every worker sink so
+    /// they share connection pools and DNS cache state while each sink keeps
+    /// its own serialization buffers.
     pub fn new(
         name: String,
         url: String,
         headers: HeaderMap,
         compression: Compression,
+        client: Arc<reqwest::Client>,
         stats: Arc<ComponentStats>,
     ) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .pool_max_idle_per_host(64)
-            .build()
-            .unwrap_or_else(|e| {
-                tracing::warn!("reqwest client builder failed: {e}");
-                reqwest::Client::new()
-            });
         JsonLinesSink {
             name,
             url,
@@ -224,12 +222,13 @@ impl Sink for JsonLinesSink {
 /// Factory that creates [`JsonLinesSink`] instances for a named HTTP endpoint.
 ///
 /// Implements [`SinkFactory`] so the pipeline can spawn per-worker sinks that
-/// each own their own HTTP client and serialisation buffers.
+/// share one HTTP client pool while owning per-worker serialization buffers.
 pub struct JsonLinesSinkFactory {
     name: String,
     endpoint: String,
     headers: Vec<(String, String)>,
     compression: Compression,
+    client: Arc<reqwest::Client>,
     stats: Arc<ComponentStats>,
 }
 
@@ -248,27 +247,38 @@ impl JsonLinesSinkFactory {
         headers: Vec<(String, String)>,
         compression: Compression,
         stats: Arc<ComponentStats>,
-    ) -> Self {
-        Self {
+    ) -> io::Result<Self> {
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .pool_max_idle_per_host(64)
+            .build()
+            .map_err(io::Error::other)?;
+        Ok(Self {
             name,
             endpoint,
             headers,
             compression,
+            client: Arc::new(client),
             stats,
-        }
+        })
+    }
+
+    fn create_sink(&self) -> io::Result<JsonLinesSink> {
+        let headers = parse_headers(&self.headers)?;
+        Ok(JsonLinesSink::new(
+            self.name.clone(),
+            self.endpoint.clone(),
+            headers,
+            self.compression,
+            Arc::clone(&self.client),
+            Arc::clone(&self.stats),
+        ))
     }
 }
 
 impl SinkFactory for JsonLinesSinkFactory {
     fn create(&self) -> io::Result<Box<dyn Sink>> {
-        let headers = parse_headers(&self.headers)?;
-        Ok(Box::new(JsonLinesSink::new(
-            self.name.clone(),
-            self.endpoint.clone(),
-            headers,
-            self.compression,
-            Arc::clone(&self.stats),
-        )))
+        Ok(Box::new(self.create_sink()?))
     }
 
     fn name(&self) -> &str {
@@ -288,11 +298,19 @@ mod tests {
     use logfwd_types::diagnostics::ComponentStats;
 
     fn make_sink() -> JsonLinesSink {
+        let client = Arc::new(
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .pool_max_idle_per_host(64)
+                .build()
+                .expect("client"),
+        );
         JsonLinesSink::new(
             "test".to_string(),
             "http://localhost:1".to_string(), // unreachable — tests only call serialize_batch
             HeaderMap::new(),
             Compression::None,
+            client,
             Arc::new(ComponentStats::default()),
         )
     }
@@ -440,5 +458,25 @@ mod tests {
         let err = parse_headers(&[("x-test".to_string(), "bad\r\nvalue".to_string())])
             .expect_err("invalid header values should fail");
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn factory_reuses_client_across_workers() {
+        let factory = JsonLinesSinkFactory::new(
+            "jsonl".to_string(),
+            "http://127.0.0.1:8080".to_string(),
+            vec![("x-test".to_string(), "1".to_string())],
+            Compression::None,
+            Arc::new(ComponentStats::default()),
+        )
+        .expect("factory");
+
+        let sink1 = factory.create_sink().expect("first sink");
+        let sink2 = factory.create_sink().expect("second sink");
+
+        assert!(
+            Arc::ptr_eq(&sink1.client, &sink2.client),
+            "factory should share one reqwest client across workers"
+        );
     }
 }

@@ -3,7 +3,7 @@
 > **Status:** Active  
 > **Date:** 2026-04-06  
 > **Context:** logfwd currently has one `SqlTransform` per pipeline. This analysis explores moving SQL to each input.  
-> **Tracking:** Relates to [#1363](https://github.com/strawgate/memagent/issues/1363)
+> **Tracking:** Relates to [#1363](https://github.com/strawgate/fastforward/issues/1363)
 
 ---
 
@@ -350,6 +350,7 @@ pipelines:
 
     enrichment:
       - type: geo_database
+        format: mmdb
         path: /etc/logfwd/GeoIP2-City.mmdb
 
     outputs:
@@ -562,6 +563,7 @@ pipelines:
     enrichment:
       - type: host_info
       - type: geo_database
+        format: mmdb
         path: /etc/logfwd/GeoIP2-City.mmdb
 
     outputs:

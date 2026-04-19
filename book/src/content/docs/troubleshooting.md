@@ -1,9 +1,9 @@
 ---
 title: "Troubleshooting"
-description: "Symptom-based triage for common logfwd issues"
+description: "Symptom-based triage for common FastForward issues"
 ---
 
-Use this page when logfwd is running but results are wrong, incomplete, or unstable.
+Use this page when FastForward is running but results are wrong, incomplete, or unstable.
 Start with the symptom table, run the exact checks, and compare expected output before changing config.
 
 :::tip[Before you start]
@@ -31,7 +31,7 @@ kubectl -n collectors logs -f daemonset/logfwd
 | No logs arrive at destination | `curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].inputs'` | `lines_total` increasing | Fix file path/mount permissions |
 | Logs read, but nothing forwarded | `curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].transform'` | `lines_in > 0` and `lines_out > 0` | Transform filter dropping all rows |
 | Frequent OTLP send errors | Check runtime logs for `error sending` | No repeated connection/auth errors | Fix endpoint/protocol/connectivity |
-| Startup/config errors | `logfwd validate --config config.yaml` | `configuration valid` (or no error output) | Fix required fields / YAML syntax |
+| Startup/config errors | `logfwd validate --config config.yaml` | Output contains `config ok:` | Fix required fields / YAML syntax |
 | Throughput unexpectedly low | `curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].stage_seconds'` | `output` not dominating total | Network/collector bottleneck |
 
 ## Scenario 1: No logs arrive at destination
@@ -116,7 +116,7 @@ kubectl -n collectors exec "$POD" -- nslookup otel-collector
 2. Wrong namespace-qualified service name.
    - Use full in-cluster DNS name when needed.
 3. Network policy blocking egress.
-   - Allow traffic from logfwd namespace to collector service.
+   - Allow traffic from the `collectors` namespace to the collector service.
 
 ### Verify fix
 
@@ -132,7 +132,7 @@ logfwd validate --config config.yaml
 
 ### Expected
 
-No validation errors.
+Validation succeeds and prints `config ok: <n> pipeline(s)`.
 
 ### Common causes and fixes
 
@@ -177,7 +177,7 @@ Stage times should be stable, with no sudden sustained growth in output time.
 2. Excessive transform complexity.
    - Simplify query or split into named pipelines.
 3. Node resource pressure.
-   - Increase CPU/memory requests for logfwd DaemonSet.
+   - Increase CPU/memory requests for the `logfwd` DaemonSet.
 
 ### Verify fix
 

@@ -110,34 +110,34 @@ where
 {
     let mut count = 0;
     let mut errors = 0;
-    let mut line_start = 0;
+    process_cri_chunk_lines(
+        chunk,
+        reassembler,
+        |line, reassembler| {
+            if line.is_empty() {
+                return (0, 0);
+            }
 
-    for pos in memchr::memchr_iter(b'\n', chunk) {
-        let line = &chunk[line_start..pos];
-        line_start = pos + 1;
-
-        if line.is_empty() {
-            continue;
-        }
-
-        match parse_cri_line(line) {
-            Some(cri) => match reassembler.feed(cri.message, cri.is_full) {
-                AggregateResult::Complete(msg) => {
-                    emit(msg);
-                    count += 1;
-                    reassembler.reset();
-                }
-                AggregateResult::Truncated(msg) => {
-                    emit(msg);
-                    count += 1;
-                    errors += 1;
-                    reassembler.reset();
-                }
-                AggregateResult::Pending => {}
-            },
-            None => errors += 1,
-        }
-    }
+            match parse_cri_line(line) {
+                Some(cri) => match reassembler.feed(cri.message, cri.is_full) {
+                    AggregateResult::Complete(msg) => {
+                        emit(msg);
+                        reassembler.reset();
+                        (1, 0)
+                    }
+                    AggregateResult::Truncated(msg) => {
+                        emit(msg);
+                        reassembler.reset();
+                        (1, 1)
+                    }
+                    AggregateResult::Pending => (0, 0),
+                },
+                None => (0, 1),
+            }
+        },
+        &mut count,
+        &mut errors,
+    );
 
     (count, errors)
 }
@@ -177,46 +177,93 @@ pub fn process_cri_to_buf_with_plain_text_field(
 ) -> (usize, usize) {
     let mut count = 0;
     let mut errors = 0;
+    process_cri_chunk_lines(
+        chunk,
+        reassembler,
+        |line, reassembler| {
+            if line.is_empty() {
+                return (0, 0);
+            }
+
+            match parse_cri_line(line) {
+                Some(cri) => match reassembler.feed(cri.message, cri.is_full) {
+                    AggregateResult::Complete(msg) => {
+                        write_json_line_for_plain_text_field(
+                            msg,
+                            json_prefix,
+                            plain_text_field_name,
+                            out,
+                        );
+                        reassembler.reset();
+                        (1, 0)
+                    }
+                    AggregateResult::Truncated(msg) => {
+                        write_json_line_for_plain_text_field(
+                            msg,
+                            json_prefix,
+                            plain_text_field_name,
+                            out,
+                        );
+                        reassembler.reset();
+                        (1, 1)
+                    }
+                    AggregateResult::Pending => (0, 0),
+                },
+                None => (0, 1),
+            }
+        },
+        &mut count,
+        &mut errors,
+    );
+
+    (count, errors)
+}
+
+#[inline]
+fn process_cri_chunk_lines<F>(
+    chunk: &[u8],
+    reassembler: &mut CriReassembler,
+    mut process_line: F,
+    count: &mut usize,
+    errors: &mut usize,
+) where
+    F: FnMut(&[u8], &mut CriReassembler) -> (usize, usize),
+{
     let mut line_start = 0;
 
     for pos in memchr::memchr_iter(b'\n', chunk) {
         let line = &chunk[line_start..pos];
         line_start = pos + 1;
 
-        if line.is_empty() {
+        if reassembler.has_line_fragment() {
+            reassembler.push_line_fragment(line);
+
+            if reassembler.line_fragment_truncated() {
+                *errors += 1;
+                // Reset the full reassembler state, not just the line fragment.
+                // If a P (partial) record was previously buffered, leaving it
+                // intact would cause the next unrelated F record to append to
+                // stale data and emit a corrupted message.
+                reassembler.reset();
+                continue;
+            }
+
+            let complete_line = reassembler.take_line_fragment();
+            let (line_count, line_errors) = process_line(&complete_line, reassembler);
+            *count += line_count;
+            *errors += line_errors;
             continue;
         }
 
-        match parse_cri_line(line) {
-            Some(cri) => match reassembler.feed(cri.message, cri.is_full) {
-                AggregateResult::Complete(msg) => {
-                    write_json_line_for_plain_text_field(
-                        msg,
-                        json_prefix,
-                        plain_text_field_name,
-                        out,
-                    );
-                    count += 1;
-                    reassembler.reset();
-                }
-                AggregateResult::Truncated(msg) => {
-                    write_json_line_for_plain_text_field(
-                        msg,
-                        json_prefix,
-                        plain_text_field_name,
-                        out,
-                    );
-                    count += 1;
-                    errors += 1;
-                    reassembler.reset();
-                }
-                AggregateResult::Pending => {}
-            },
-            None => errors += 1,
-        }
+        let (line_count, line_errors) = process_line(line, reassembler);
+        *count += line_count;
+        *errors += line_errors;
     }
 
-    (count, errors)
+    let trailing = &chunk[line_start..];
+    if !trailing.is_empty() {
+        reassembler.push_line_fragment(trailing);
+    }
 }
 
 #[inline]
@@ -413,6 +460,53 @@ mod tests {
     }
 
     #[test]
+    fn test_process_chunk_split_full_line_across_chunks() {
+        let mut reassembler = CriReassembler::new(1024 * 1024);
+        let mut lines = Vec::new();
+
+        let c1 = b"2024-01-15T10:30:00Z stdout F hel";
+        let c2 = b"lo\n";
+
+        let (count1, errors1) = process_cri_chunk(c1, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
+        assert_eq!(count1, 0);
+        assert_eq!(errors1, 0);
+        assert!(reassembler.has_line_fragment());
+
+        let (count2, errors2) = process_cri_chunk(c2, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
+        assert_eq!(count2, 1);
+        assert_eq!(errors2, 0);
+        assert_eq!(lines.as_slice(), &[b"hello".to_vec()]);
+        assert!(!reassembler.has_line_fragment());
+    }
+
+    #[test]
+    fn test_process_chunk_split_full_line_truncates_message_not_header() {
+        let mut reassembler = CriReassembler::new(5);
+        let mut lines = Vec::new();
+
+        let c1 = b"2024-01-15T10:30:00Z stdout F hel";
+        let c2 = b"lo world\n";
+
+        let (count1, errors1) = process_cri_chunk(c1, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
+        assert_eq!(count1, 0);
+        assert_eq!(errors1, 0);
+
+        let (count2, errors2) = process_cri_chunk(c2, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
+        assert_eq!(count2, 1);
+        assert_eq!(errors2, 1);
+        assert_eq!(lines.as_slice(), &[b"hello".to_vec()]);
+        assert!(!reassembler.has_line_fragment());
+    }
+
+    #[test]
     fn test_process_chunk_parse_errors() {
         // Mix of valid and invalid CRI lines.
         let chunk = b"not-a-cri-line\n\
@@ -437,6 +531,97 @@ mod tests {
         let (count, errors) = process_cri_to_buf(chunk, &mut reassembler, None, &mut out);
         assert_eq!(count, 1);
         assert_eq!(errors, 1);
+    }
+
+    #[test]
+    fn test_process_cri_to_buf_split_full_line_across_chunks() {
+        let mut reassembler = CriReassembler::new(1024 * 1024);
+        let mut out = Vec::new();
+
+        let c1 = b"2024-01-15T10:30:00Z stdout F hel";
+        let c2 = b"lo\n";
+
+        let (count1, errors1) =
+            process_cri_to_buf_with_plain_text_field(c1, &mut reassembler, None, "body", &mut out);
+        assert_eq!(count1, 0);
+        assert_eq!(errors1, 0);
+        assert!(out.is_empty());
+        assert!(reassembler.has_line_fragment());
+
+        let (count2, errors2) =
+            process_cri_to_buf_with_plain_text_field(c2, &mut reassembler, None, "body", &mut out);
+        assert_eq!(count2, 1);
+        assert_eq!(errors2, 0);
+        assert_eq!(out, b"{\"body\":\"hello\"}\n");
+        assert!(!reassembler.has_line_fragment());
+    }
+
+    #[test]
+    fn test_process_chunk_split_partial_and_full_lines_across_chunks() {
+        let mut reassembler = CriReassembler::new(1024 * 1024);
+        let mut lines = Vec::new();
+
+        let c1 = b"2024-01-15T10:30:00Z stdout P he";
+        let c2 = b"llo\n2024-01-15T10:30:01Z stdout F world\n";
+
+        let (count1, errors1) = process_cri_chunk(c1, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
+        assert_eq!(count1, 0);
+        assert_eq!(errors1, 0);
+
+        let (count2, errors2) = process_cri_chunk(c2, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
+        assert_eq!(count2, 1);
+        assert_eq!(errors2, 0);
+        assert_eq!(lines.as_slice(), &[b"helloworld".to_vec()]);
+    }
+
+    #[test]
+    fn test_truncated_raw_fragment_resets_pending_partial_state() {
+        let mut reassembler = CriReassembler::new(5);
+        let mut lines = Vec::new();
+
+        let (count1, errors1) = process_cri_chunk(
+            b"2024-01-15T10:30:00Z stdout P stale\n",
+            &mut reassembler,
+            |msg| lines.push(msg.to_vec()),
+        );
+        assert_eq!((count1, errors1), (0, 0));
+        assert!(reassembler.has_pending());
+
+        let oversized = [b'x'; 300];
+        let (count2, errors2) = process_cri_chunk(&oversized, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
+        assert_eq!((count2, errors2), (0, 0));
+
+        let (count3, errors3) = process_cri_chunk(
+            b"\n2024-01-15T10:30:01Z stdout F fresh\n",
+            &mut reassembler,
+            |msg| lines.push(msg.to_vec()),
+        );
+        assert_eq!((count3, errors3), (1, 1));
+        assert_eq!(lines.as_slice(), &[b"fresh".to_vec()]);
+        assert!(!reassembler.has_pending());
+        assert!(!reassembler.has_line_fragment());
+    }
+
+    #[test]
+    fn test_incomplete_trailing_data_remains_buffered() {
+        let mut reassembler = CriReassembler::new(1024 * 1024);
+        let mut lines = Vec::new();
+
+        let chunk = b"2024-01-15T10:30:00Z stdout F hello";
+        let (count, errors) = process_cri_chunk(chunk, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
+
+        assert_eq!(count, 0);
+        assert_eq!(errors, 0);
+        assert!(lines.is_empty());
+        assert!(reassembler.has_line_fragment());
     }
 
     #[test]
@@ -544,6 +729,55 @@ mod tests {
                 prop_assert!(parsed.is_some(), "valid stream token should parse");
             } else {
                 prop_assert!(parsed.is_none(), "invalid stream token should be rejected");
+            }
+        }
+
+        #[test]
+        fn proptest_split_full_line_matches_unsplit(
+            message in "[ -~]{0,64}",
+            max_size in 1..64usize,
+        ) {
+            let line = format!("2024-01-15T10:30:00Z stdout F {message}\n");
+            for split in 0..=line.len() {
+                let mut unsplit = CriReassembler::new(max_size);
+                let mut unsplit_lines = Vec::new();
+                let unsplit_counts = process_cri_chunk(
+                    line.as_bytes(),
+                    &mut unsplit,
+                    |msg| unsplit_lines.push(msg.to_vec()),
+                );
+
+                let mut split_reassembler = CriReassembler::new(max_size);
+                let mut split_lines = Vec::new();
+                let first_counts = process_cri_chunk(
+                    &line.as_bytes()[..split],
+                    &mut split_reassembler,
+                    |msg| split_lines.push(msg.to_vec()),
+                );
+                let second_counts = process_cri_chunk(
+                    &line.as_bytes()[split..],
+                    &mut split_reassembler,
+                    |msg| split_lines.push(msg.to_vec()),
+                );
+
+                prop_assert_eq!(
+                    (first_counts.0 + second_counts.0, first_counts.1 + second_counts.1),
+                    unsplit_counts,
+                    "split {} changed counts for line {:?}",
+                    split,
+                    line
+                );
+                prop_assert_eq!(
+                    split_lines,
+                    unsplit_lines,
+                    "split {} changed output for line {:?}",
+                    split,
+                    line
+                );
+                prop_assert!(
+                    !split_reassembler.has_line_fragment(),
+                    "complete split line left raw fragment buffered"
+                );
             }
         }
     }
@@ -728,6 +962,55 @@ mod verification {
             "msg",
             &mut out,
         );
+    }
+
+    /// Prove a valid CRI line split across chunks is equivalent to the same
+    /// line arriving unsplit through the public CRI-to-buffer entrypoint.
+    #[kani::proof]
+    #[kani::unwind(64)]
+    fn verify_process_cri_split_line_matches_unsplit() {
+        let first = b"2024-01-15T10:30:00Z stdout F h";
+        let second = b"i\n";
+        let whole = b"2024-01-15T10:30:00Z stdout F hi\n";
+
+        let mut split_out = Vec::new();
+        let mut split_reassembler = CriReassembler::new(8);
+        let first_counts = process_cri_to_buf_with_plain_text_field(
+            first,
+            &mut split_reassembler,
+            None,
+            SHORT_FIELD_NAME,
+            &mut split_out,
+        );
+        let second_counts = process_cri_to_buf_with_plain_text_field(
+            second,
+            &mut split_reassembler,
+            None,
+            SHORT_FIELD_NAME,
+            &mut split_out,
+        );
+
+        let mut unsplit_out = Vec::new();
+        let mut unsplit_reassembler = CriReassembler::new(8);
+        let unsplit_counts = process_cri_to_buf_with_plain_text_field(
+            whole,
+            &mut unsplit_reassembler,
+            None,
+            SHORT_FIELD_NAME,
+            &mut unsplit_out,
+        );
+
+        assert_eq!(
+            (
+                first_counts.0 + second_counts.0,
+                first_counts.1 + second_counts.1
+            ),
+            unsplit_counts
+        );
+        assert_bytes_eq(&split_out, &unsplit_out);
+        assert!(!split_reassembler.has_line_fragment());
+        kani::cover!(first_counts.0 == 0, "first split chunk buffers only");
+        kani::cover!(second_counts.0 == 1, "second split chunk emits row");
     }
 
     /// Prove parse_cri_line rejects known invalid stream tokens.

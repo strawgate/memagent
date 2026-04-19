@@ -1,46 +1,33 @@
 {
   "created_at": "2026-04-19T05:50:00Z",
-  "cwd": "/home/bill_easton/memagent.worktrees/copilot-find-and-remove-stale-issues",
   "prompt_dir": "dev-docs/research/fanout-2026-04-19-architecture-research",
   "pattern": "*.prompt.md",
   "branch": "copilot/find-and-remove-stale-issues",
-  "env_id": "strawgate/memagent",
-  "env_label": "strawgate/memagent",
   "tasks": [
     {
       "name": "Output Delivery Contract — State Machine and Formal Specification",
       "prompt_file": "dev-docs/research/fanout-2026-04-19-architecture-research/01-delivery-contract.prompt.md",
-      "attempts": 4,
-      "task_id": "task_e_69e46d5e0d28832e91afe5ab87e0a6c4",
-      "url": "https://chatgpt.com/codex/tasks/task_e_69e46d5e0d28832e91afe5ab87e0a6c4"
+      "attempts": 4
     },
     {
       "name": "Processor Chain Architecture — I/O/Compute Separation Evaluation",
       "prompt_file": "dev-docs/research/fanout-2026-04-19-architecture-research/02-processor-chain.prompt.md",
-      "attempts": 3,
-      "task_id": "task_e_69e46d692240832ea342ea0c88217826",
-      "url": "https://chatgpt.com/codex/tasks/task_e_69e46d692240832ea342ea0c88217826"
+      "attempts": 3
     },
     {
       "name": "Tagged Enum Config Migration — Plan and Compatibility Analysis",
       "prompt_file": "dev-docs/research/fanout-2026-04-19-architecture-research/03-tagged-enum-config.prompt.md",
-      "attempts": 3,
-      "task_id": "task_e_69e46d6bed98832e9ca71a9a9c283d88",
-      "url": "https://chatgpt.com/codex/tasks/task_e_69e46d6bed98832e9ca71a9a9c283d88"
+      "attempts": 3
     },
     {
       "name": "File Tailer Typestate Model and Refactor Plan",
       "prompt_file": "dev-docs/research/fanout-2026-04-19-architecture-research/04-file-tailer-typestate.prompt.md",
-      "attempts": 4,
-      "task_id": "task_e_69e46d6dc294832e8ff03d1bf061b5e6",
-      "url": "https://chatgpt.com/codex/tasks/task_e_69e46d6dc294832e8ff03d1bf061b5e6"
+      "attempts": 4
     },
     {
       "name": "OTLP Receiver Projection — Gap Analysis and Cutover Criteria",
       "prompt_file": "dev-docs/research/fanout-2026-04-19-architecture-research/05-otlp-projection-gap.prompt.md",
-      "attempts": 2,
-      "task_id": "task_e_69e46d708608832e93f955717462d088",
-      "url": "https://chatgpt.com/codex/tasks/task_e_69e46d708608832e93f955717462d088"
+      "attempts": 2
     }
   ]
 }

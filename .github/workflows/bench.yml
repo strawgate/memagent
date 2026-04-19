@@ -1,4 +1,4 @@
-name: Nightly Benchmarks
+name: Criterion Nightly
 
 on:
   schedule:
@@ -37,6 +37,8 @@ env:
   ITERATIONS: ${{ inputs.iterations || '3' }}
   SCENARIOS: ${{ inputs.scenarios || 'passthrough,json_parse,filter' }}
   AGENTS_INPUT: ${{ inputs.agents || '' }}
+  # All bench builds target x86-64-v3 (AVX2+BMI2) for consistent results.
+  BENCH_RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
 
 jobs:
   # -------------------------------------------------------------------
@@ -44,6 +46,7 @@ jobs:
   # -------------------------------------------------------------------
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
 
@@ -54,28 +57,25 @@ jobs:
           path: cached-binaries
           key: bench-binaries-${{ hashFiles('Cargo.lock', 'crates/*/src/**', 'crates/*/Cargo.toml') }}
 
-      - uses: mozilla-actions/sccache-action@v0.0.9
-        if: steps.bin-cache.outputs.cache-hit != 'true'
       - uses: dtolnay/rust-toolchain@stable
         if: steps.bin-cache.outputs.cache-hit != 'true'
       - uses: Swatinem/rust-cache@v2
         if: steps.bin-cache.outputs.cache-hit != 'true'
         with:
           cache-on-failure: true
-
       - name: Build release + bench harness
         if: steps.bin-cache.outputs.cache-hit != 'true'
         env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
+          RUSTFLAGS: ${{ env.BENCH_RUSTFLAGS }}
         run: |
           cargo build --release -p logfwd
           cargo build --release -p logfwd-competitive-bench
           cargo build --release --features dhat-heap -p logfwd
-          cp target/release/logfwd target/release/logfwd-dhat
+          cp target/release/ff target/release/ff-dhat
           cargo build --release -p logfwd
           mkdir -p cached-binaries
-          cp target/release/logfwd cached-binaries/
-          cp target/release/logfwd-dhat cached-binaries/
+          cp target/release/ff cached-binaries/
+          cp target/release/ff-dhat cached-binaries/
           cp target/release/logfwd-competitive-bench cached-binaries/
 
       - name: Upload binaries
@@ -90,35 +90,31 @@ jobs:
   # -------------------------------------------------------------------
   pgo:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-
+      - uses: ./.github/actions/setup-rust
       - name: Build + benchmark PGO variant
         run: |
-          RUSTFLAGS="-Ctarget-cpu=x86-64-v3" cargo build --release -p logfwd -p logfwd-competitive-bench
+          RUSTFLAGS="${BENCH_RUSTFLAGS}" cargo build --release -p logfwd -p logfwd-competitive-bench
 
           rustup component add llvm-tools
-          RUSTFLAGS="-Ctarget-cpu=x86-64-v3 -Cprofile-generate=/tmp/pgo-data" \
+          RUSTFLAGS="${BENCH_RUSTFLAGS} -Cprofile-generate=/tmp/pgo-data" \
             cargo build --release -p logfwd
 
-          LOGFWD=./target/release/logfwd ./target/release/logfwd-competitive-bench \
-            --lines 500000 --agents logfwd --scenarios passthrough --no-download
+          FF=./target/release/ff ./target/release/logfwd-competitive-bench \
+            --lines 500000 --agents ff --scenarios passthrough --no-download
 
           PROFDATA=$(find "$(rustc --print sysroot)" -name llvm-profdata -type f | head -1)
           if [ -n "$PROFDATA" ] && "$PROFDATA" merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw 2>/dev/null; then
-            RUSTFLAGS="-Ctarget-cpu=x86-64-v3 -Cprofile-use=/tmp/pgo-data/merged.profdata" \
+            RUSTFLAGS="${BENCH_RUSTFLAGS} -Cprofile-use=/tmp/pgo-data/merged.profdata" \
               cargo build --release -p logfwd
           else
             echo "::warning::PGO profile merge failed; using standard release build"
           fi
 
-          LOGFWD=./target/release/logfwd ./target/release/logfwd-competitive-bench \
-            --lines ${{ env.LINES }} --agents logfwd \
+          FF=./target/release/ff ./target/release/logfwd-competitive-bench \
+            --lines ${{ env.LINES }} --agents ff \
             --scenarios ${{ env.SCENARIOS }} --iterations ${{ env.ITERATIONS }} \
             --results-file pgo-results.jsonl --no-download
 
@@ -133,6 +129,7 @@ jobs:
   # -------------------------------------------------------------------
   matrix-setup:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       matrix: ${{ steps.gen.outputs.matrix }}
     steps:
@@ -142,7 +139,7 @@ jobs:
           SCENARIO_JSON=$(echo "$SCENARIOS" | tr ',' '\n' | jq -R . | jq -sc .)
           AGENTS="${{ env.AGENTS_INPUT }}"
           if [ -z "$AGENTS" ]; then
-            AGENTS="logfwd,vector,fluent-bit,filebeat,otelcol,vlagent"
+            AGENTS="ff,vector,fluent-bit,filebeat,otelcol,vlagent"
           fi
           AGENT_JSON=$(echo "$AGENTS" | tr ',' '\n' | jq -R . | jq -sc .)
           MATRIX=$(jq -nc --argjson s "$SCENARIO_JSON" --argjson a "$AGENT_JSON" '{scenario: $s, agent: $a}')
@@ -153,6 +150,7 @@ jobs:
   # -------------------------------------------------------------------
   bench:
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     needs: [build, matrix-setup]
     strategy:
       fail-fast: false
@@ -176,7 +174,7 @@ jobs:
             --mode binary \
             --results-file results.jsonl
         env:
-          LOGFWD: ./bin/logfwd
+          FF: ./bin/ff
 
       - uses: actions/upload-artifact@v7
         if: always()
@@ -186,10 +184,11 @@ jobs:
           retention-days: 7
 
   # -------------------------------------------------------------------
-  # Rate-ingest benchmark (logfwd only, measures RSS/CPU at each rate)
+  # Rate-ingest benchmark (ff only, measures RSS/CPU at each rate)
   # -------------------------------------------------------------------
   rate-bench:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: [build]
     steps:
       - uses: actions/checkout@v6
@@ -206,7 +205,7 @@ jobs:
             --json-file rate-bench-result.json \
             --gh-bench-file rate-gh-bench.json
         env:
-          LOGFWD: ./bin/logfwd
+          LOGFWD: ./bin/ff
 
       - uses: actions/upload-artifact@v7
         with:
@@ -220,18 +219,14 @@ jobs:
   # Criterion microbenchmarks + JSON scraping
   # -------------------------------------------------------------------
   micro:
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-
+      - uses: ./.github/actions/setup-rust
       - name: Run criterion benchmarks
         env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
+          RUSTFLAGS: ${{ env.BENCH_RUSTFLAGS }}
         run: |
           cargo bench -p logfwd-bench 2>&1 \
             | sed 's/\x1b\[[0-9;]*m//g' \
@@ -294,9 +289,10 @@ jobs:
           retention-days: 7
 
   # -------------------------------------------------------------------
-  # CPU/memory profiling (logfwd only)
+  # CPU/memory profiling (ff only)
   # -------------------------------------------------------------------
   profile:
+    timeout-minutes: 45
     runs-on: ubuntu-latest
     needs: [build]
     steps:
@@ -312,35 +308,30 @@ jobs:
           path: bin
       - run: chmod +x bin/*
 
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-on-failure: true
-
+      - uses: ./.github/actions/setup-rust
       - name: Build logfwd with profiling
         env:
-          RUSTFLAGS: "-Ctarget-cpu=x86-64-v3"
+          RUSTFLAGS: ${{ env.BENCH_RUSTFLAGS }}
         run: |
           cargo build --release --features cpu-profiling -p logfwd
-          cp target/release/logfwd bin/logfwd-prof
+          cp target/release/ff bin/ff-prof
 
       - name: Run profiling pass
         run: |
           bin/logfwd-competitive-bench \
             --lines ${{ env.LINES }} \
-            --agents logfwd \
+            --agents ff \
             --scenarios passthrough \
             --mode binary \
             --profile ./profiles \
-            --dhat-binary ./bin/logfwd-dhat
+            --dhat-binary ./bin/ff-dhat
         env:
-          LOGFWD: ./bin/logfwd-prof
+          FF: ./bin/ff-prof
 
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: logfwd-profiles
+          name: ff-profiles
           path: profiles/
           retention-days: 30
 
@@ -348,6 +339,7 @@ jobs:
   # Summarize + deploy dashboard
   # -------------------------------------------------------------------
   summarize:
+    timeout-minutes: 15
     runs-on: ubuntu-latest
     needs: [build, bench, rate-bench, micro, pgo]
     if: always() && needs.build.result == 'success' && needs.bench.result != 'cancelled'
@@ -397,7 +389,7 @@ jobs:
       # Commit bench data to the bench-data branch so the dashboard can fetch
       # it live via raw.githubusercontent.com — no Pages redeploy needed.
       - name: Commit results to bench-data branch
-        if: github.ref == 'refs/heads/master'
+        if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUN_ID: ${{ github.run_id }}
@@ -514,11 +506,11 @@ jobs:
           See [development dashboard](https://strawgate.github.io/memagent/bench/development.html) for full results."
           fi
 
-          TITLE="Benchmark results ${DATE} (${COMMIT})"
+          TITLE="Criterion Nightly ${DATE} (${COMMIT})"
           BODY="$(cat <<HEREDOC
           ## Benchmark Results --- ${DATE}
 
-          **Commit:** \`${COMMIT}\` on \`master\`
+          **Commit:** \`${COMMIT}\` on \`main\`
           **Runner:** \`ubuntu-latest\` (matrix: agent x scenario)
           **Iterations:** ${{ env.ITERATIONS }} per cell
           **Dashboard:** https://strawgate.github.io/memagent/bench/

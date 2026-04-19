@@ -11,6 +11,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{cmp::Ordering, collections::BinaryHeap};
 
 use arrow::array::{ArrayRef, BooleanArray, Float32Array, StringArray, UInt32Array, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema};
@@ -20,6 +21,32 @@ use serde::Deserialize;
 use sysinfo::{Networks, Process, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 use crate::input::{InputEvent, InputSource};
+
+#[derive(Clone, Copy)]
+struct SelectedProcess<'a> {
+    pid: u32,
+    process: &'a Process,
+}
+
+impl Eq for SelectedProcess<'_> {}
+
+impl PartialEq for SelectedProcess<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.pid == other.pid
+    }
+}
+
+impl Ord for SelectedProcess<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.pid.cmp(&other.pid)
+    }
+}
+
+impl PartialOrd for SelectedProcess<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 /// Platform target for a platform sensor input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +135,8 @@ const WINDOWS_FAMILIES: &[SignalFamily] = &[
     SignalFamily::Authz,
 ];
 
+const DEFAULT_MAX_PROCESS_ROWS_PER_POLL: usize = 1024;
+
 fn target_signal_families(target: HostMetricsTarget) -> &'static [SignalFamily] {
     match target {
         HostMetricsTarget::Linux => LINUX_FAMILIES,
@@ -133,6 +162,12 @@ pub struct HostMetricsConfig {
     pub emit_signal_rows: bool,
     /// Upper bound on data rows emitted per collection cycle.
     pub max_rows_per_poll: usize,
+    /// Upper bound on process rows emitted per collection cycle.
+    ///
+    /// This cap is applied after family budgeting to prevent unbounded memory
+    /// growth when hosts expose very large process tables. The default is 1024;
+    /// `0` also means "use the default".
+    pub max_process_rows_per_poll: usize,
 }
 
 impl Default for HostMetricsConfig {
@@ -144,6 +179,7 @@ impl Default for HostMetricsConfig {
             enabled_families: None,
             emit_signal_rows: true,
             max_rows_per_poll: 256,
+            max_process_rows_per_poll: DEFAULT_MAX_PROCESS_ROWS_PER_POLL,
         }
     }
 }
@@ -670,15 +706,39 @@ impl HostMetricsCommon {
         out: &mut Vec<SensorRow>,
         limit: usize,
     ) -> usize {
-        let mut procs: Vec<(&sysinfo::Pid, &Process)> = self.system.processes().iter().collect();
-        procs.sort_unstable_by_key(|(pid, _)| pid.as_u32());
+        let limit = limit.min(self.cfg.max_process_rows_per_poll);
+        if limit == 0 {
+            return 0;
+        }
+
+        let processes = self.system.processes();
+        let mut procs = BinaryHeap::with_capacity(limit.min(processes.len()));
+        for (pid, process) in processes {
+            let selected = SelectedProcess {
+                pid: pid.as_u32(),
+                process,
+            };
+            if procs.len() < limit {
+                procs.push(selected);
+            } else if procs
+                .peek()
+                .is_some_and(|largest| selected.pid < largest.pid)
+            {
+                procs.pop();
+                procs.push(selected);
+            }
+        }
+        let mut procs = procs.into_vec();
+        procs.sort_unstable_by_key(|selected| selected.pid);
 
         let mut emitted = 0usize;
-        for (pid, process) in procs.into_iter().take(limit) {
+        for selected in procs {
+            let pid = selected.pid;
+            let process = selected.process;
             let disk_usage = process.disk_usage();
             let mut row = self.base_row(control, "process", "snapshot", "ok", "process snapshot");
             row.signal_family = Some("process".to_string());
-            row.process_pid = Some(pid.as_u32());
+            row.process_pid = Some(pid);
             row.process_parent_pid = process.parent().map(sysinfo::Pid::as_u32);
             row.process_name = Some(os_to_string(process.name()));
             row.process_cmd = Some(os_vec_to_string(process.cmd()));
@@ -702,7 +762,7 @@ impl HostMetricsCommon {
             row.process_run_time_secs = Some(process.run_time());
             row.process_open_files = process.open_files().map(|n| n as u64);
             row.process_thread_count = process.tasks().map(|t| t.len() as u64);
-            row.process_container_id = extract_container_id(pid.as_u32());
+            row.process_container_id = extract_container_id(pid);
             out.push(row);
             emitted += 1;
         }
@@ -1047,7 +1107,7 @@ impl HostMetricsInput {
     pub fn new(
         name: impl Into<String>,
         target: HostMetricsTarget,
-        cfg: HostMetricsConfig,
+        mut cfg: HostMetricsConfig,
     ) -> io::Result<Self> {
         let name = name.into();
         let host_platform = current_host_platform().as_str().ok_or_else(|| {
@@ -1067,6 +1127,9 @@ impl HostMetricsInput {
                     host_platform
                 ),
             ));
+        }
+        if cfg.max_process_rows_per_poll == 0 {
+            cfg.max_process_rows_per_poll = DEFAULT_MAX_PROCESS_ROWS_PER_POLL;
         }
 
         let control = ControlState {
@@ -1994,6 +2057,78 @@ mod tests {
         assert!(
             snapshot_count <= 3,
             "max_rows_per_poll should cap data rows, got {snapshot_count}"
+        );
+    }
+
+    #[test]
+    fn max_process_rows_per_poll_caps_process_collection() {
+        let mut input = HostMetricsInput::new(
+            "sensor",
+            host_target(),
+            HostMetricsConfig {
+                enabled_families: Some(vec!["process".to_string()]),
+                emit_signal_rows: false,
+                max_rows_per_poll: usize::MAX,
+                max_process_rows_per_poll: 3,
+                ..HostMetricsConfig::default()
+            },
+        )
+        .expect("host metrics input should construct");
+
+        let events = input.poll().expect("poll should succeed");
+        let batch = first_batch(&events);
+
+        let families = string_col(batch, "signal_family");
+        let kinds = string_col(batch, "event_kind");
+        let snapshot_count = families
+            .iter()
+            .zip(kinds.iter())
+            .filter(|(_, kind)| kind.as_deref() == Some("snapshot"))
+            .filter(|(family, _)| family.as_deref() == Some("process"))
+            .count();
+        assert!(
+            snapshot_count > 0,
+            "expected process snapshot rows to be emitted so the cap can be validated"
+        );
+        assert!(
+            snapshot_count <= 3,
+            "max_process_rows_per_poll should cap process rows, got {snapshot_count}"
+        );
+    }
+
+    #[test]
+    fn zero_max_process_rows_per_poll_uses_runtime_default() {
+        let mut input = HostMetricsInput::new(
+            "sensor",
+            host_target(),
+            HostMetricsConfig {
+                enabled_families: Some(vec!["process".to_string()]),
+                emit_signal_rows: false,
+                max_rows_per_poll: usize::MAX,
+                max_process_rows_per_poll: 0,
+                ..HostMetricsConfig::default()
+            },
+        )
+        .expect("host metrics input should construct");
+
+        let events = input.poll().expect("poll should succeed");
+        let batch = first_batch(&events);
+
+        let families = string_col(batch, "signal_family");
+        let kinds = string_col(batch, "event_kind");
+        let snapshot_count = families
+            .iter()
+            .zip(kinds.iter())
+            .filter(|(_, kind)| kind.as_deref() == Some("snapshot"))
+            .filter(|(family, _)| family.as_deref() == Some("process"))
+            .count();
+        assert!(
+            snapshot_count > 0,
+            "expected default process cap to leave process rows enabled"
+        );
+        assert!(
+            snapshot_count <= DEFAULT_MAX_PROCESS_ROWS_PER_POLL,
+            "default process cap should apply when runtime config is 0, got {snapshot_count}"
         );
     }
 

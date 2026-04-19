@@ -22,5 +22,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OpenTelemetry metrics endpoint for diagnostics.
 - YAML-based configuration (`logfwd-config`).
 
-[Unreleased]: https://github.com/strawgate/memagent/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/strawgate/memagent/releases/tag/v0.1.0
+[Unreleased]: https://github.com/strawgate/fastforward/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/strawgate/fastforward/releases/tag/v0.1.0

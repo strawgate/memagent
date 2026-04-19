@@ -13,7 +13,8 @@ use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_m
 
 use logfwd_arrow::scanner::Scanner;
 use logfwd_bench::{NullSink, generators, make_otlp_sink};
-use logfwd_core::cri::{CriReassembler, ReassembleResult, parse_cri_line};
+use logfwd_core::cri::{CriReassembler, parse_cri_line};
+use logfwd_core::reassembler::AggregateResult;
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_output::Compression;
 use logfwd_transform::SqlTransform;
@@ -30,13 +31,13 @@ fn cri_to_json(data: &[u8], reassembler: &mut CriReassembler, json_buf: &mut Vec
     while start < data.len() {
         let end = memchr::memchr(b'\n', &data[start..]).map_or(data.len(), |p| start + p);
         if let Some(cri) = parse_cri_line(&data[start..end]) {
-            match reassembler.feed(&cri) {
-                ReassembleResult::Complete(msg) | ReassembleResult::Truncated(msg) => {
+            match reassembler.feed(cri.message, cri.is_full) {
+                AggregateResult::Complete(msg) | AggregateResult::Truncated(msg) => {
                     json_buf.extend_from_slice(msg);
                     json_buf.push(b'\n');
                     reassembler.reset();
                 }
-                ReassembleResult::Pending => {}
+                AggregateResult::Pending => {}
             }
         }
         start = end + 1;

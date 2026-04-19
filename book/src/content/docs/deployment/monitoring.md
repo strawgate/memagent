@@ -19,7 +19,7 @@ server:
 
 ### Log level
 
-The `log_level` field controls the verbosity of logfwd's own stderr output.
+The `log_level` field controls the verbosity of FastForward's own stderr output.
 Supported values, from most verbose to least:
 
 | Value | When to use |
@@ -113,7 +113,7 @@ Pipelines are returned as an array. Use `jq '.pipelines[0]'` to access the first
 | `live` | `true` when the process is running and the control plane is healthy |
 | `ready` | `true` once all pipelines have completed initialization |
 | `uptime_secs` | Seconds since the process started |
-| `version` | logfwd binary version |
+| `version` | FastForward binary version |
 | `pipelines.<name>.input.lines_total` | Total lines read by this input since startup |
 | `pipelines.<name>.input.bytes_total` | Total bytes read by this input |
 | `pipelines.<name>.input.errors_total` | Cumulative read errors (file permission, connection reset, etc.) |
@@ -169,12 +169,12 @@ alerts you always act on than twenty you learn to ignore.
 :::caution
 An `output.errors_total` that keeps climbing usually means the downstream
 collector or storage is unreachable. Check network connectivity and the
-destination's health before adjusting logfwd configuration.
+destination's health before adjusting FastForward configuration.
 :::
 
 ## OTLP metrics push
 
-In addition to the pull-based diagnostics API, logfwd can push its own internal
+In addition to the pull-based diagnostics API, FastForward can push its own internal
 metrics to an OpenTelemetry Collector over OTLP/HTTP.
 
 ```yaml
@@ -186,19 +186,19 @@ server:
 | Field | Description |
 |-------|-------------|
 | `metrics_endpoint` | URL of the OTLP HTTP receiver (typically port 4318) |
-| `metrics_interval_secs` | How often logfwd pushes a metrics batch (default: 60) |
+| `metrics_interval_secs` | How often FastForward pushes a metrics batch (default: 60) |
 
 ### What gets pushed
 
 All of the counters and histograms listed in the Key metrics table above are
-exported as OTLP metrics, using the `logfwd_` prefix. Each metric includes
-resource attributes identifying the host and logfwd instance. The payload uses
+exported as OTLP metrics, using the `logfwd_` prefix (metric prefix will change in a future release). Each metric includes
+resource attributes identifying the host and FastForward instance. The payload uses
 OTLP protobuf encoding over HTTP.
 
 ### Verifying the push path
 
 ```bash
-# 1. Confirm logfwd is sending metrics (look for export lines in debug logs)
+# 1. Confirm FastForward is sending metrics (look for export lines in debug logs)
 docker logs logfwd 2>&1 | grep -i "metrics export"
 
 # 2. Query the collector's own metrics to see ingest counts
@@ -209,7 +209,7 @@ curl -s http://localhost:9090/admin/v1/status | jq '.metrics_push'
 ```
 
 :::tip
-If `metrics_endpoint` is not set, logfwd does not attempt to push metrics.
+If `metrics_endpoint` is not set, FastForward does not attempt to push metrics.
 The pull-based `/admin/v1/status` and `/admin/v1/stats` endpoints remain
 available regardless.
 :::

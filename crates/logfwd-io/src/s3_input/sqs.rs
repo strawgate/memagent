@@ -12,7 +12,7 @@ use bytes::Bytes;
 use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 
-use super::client::url_encode;
+use super::client::{error_body_preview, url_encode};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -256,19 +256,17 @@ async fn sqs_post(
         .await
         .map_err(|e| io::Error::other(format!("SQS POST: {e}")))?;
 
-    let status = resp.status();
-    let response_bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| io::Error::other(format!("SQS read response: {e}")))?;
-
-    if !status.is_success() {
-        let preview = String::from_utf8_lossy(&response_bytes[..response_bytes.len().min(1024)]);
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let preview = error_body_preview(resp).await;
         return Err(io::Error::other(format!(
             "SQS POST HTTP {status}: {preview}"
         )));
     }
-    Ok(response_bytes)
+
+    resp.bytes()
+        .await
+        .map_err(|e| io::Error::other(format!("SQS read response: {e}")))
 }
 
 fn sha256_hex(data: &[u8]) -> String {

@@ -199,6 +199,12 @@ scanner only extracts fields the SQL actually uses.
 Custom UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`,
 `geo_lookup()`.
 
+CSV enrichment tables are parsed in `logfwd-transform` and materialized through
+`ColumnarBatchBuilder` as nullable `Utf8View` columns. Delimiter, quote, header,
+duplicate-header, and row-alignment semantics remain local to the transform
+crate; `logfwd-arrow` only owns the shared columnar builder and Arrow
+finalization mechanics.
+
 ### 7. Output: RecordBatch → wire format
 
 ```
@@ -325,4 +331,4 @@ selection guidance, proof quality requirements, and per-module status.
 - `dev-docs/DESIGN.md` — vision, goals, and architecture decision records
 - `dev-docs/VERIFICATION.md` — verification tiers, tool selection, per-module status
 - `dev-docs/CRATE_RULES.md` — per-crate enforcement rules
-- [Roadmap (GitHub issue #889)](https://github.com/strawgate/memagent/issues/889) — implementation phases with issue references
+- [Roadmap (GitHub issue #889)](https://github.com/strawgate/fastforward/issues/889) — implementation phases with issue references

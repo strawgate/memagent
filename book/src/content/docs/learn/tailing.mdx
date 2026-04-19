@@ -1,6 +1,6 @@
 ---
 title: "Tailing"
-description: "Rotation, truncation, crash recovery — and how logfwd handles all of them"
+description: "Rotation, truncation, crash recovery — and how FastForward handles all of them"
 ---
 
 import TailingDiagram from '../../../components/TailingDiagram.astro';
@@ -10,7 +10,7 @@ Everyone thinks `tail -f` is simple. Open a file, read new lines, done. But in p
 
 ## Rotation
 
-When logrotate renames `app.log` to `app.log.1` and creates a fresh `app.log`, a naive tailer keeps reading the old file by path — or stops entirely. logfwd tracks files by **inode**, not path, so it detects the new file on the next poll, drains whatever remains in the old file, then opens the new one at offset 0. No data lost.
+When logrotate renames `app.log` to `app.log.1` and creates a fresh `app.log`, a naive tailer keeps reading the old file by path — or stops entirely. FastForward tracks files by **inode**, not path, so it detects the new file on the next poll, drains whatever remains in the old file, then opens the new one at offset 0. No data lost.
 
 The simulation auto-rotates after 30 lines. You can also trigger it manually.
 
@@ -18,19 +18,19 @@ The simulation auto-rotates after 30 lines. You can also trigger it manually.
 
 ## Truncation
 
-Truncation is different: the file path and inode stay the same, but the file is suddenly smaller than the last recorded offset. A naive tailer would either block waiting for more data or keep seeking past end-of-file. logfwd detects that the current offset exceeds the file size and rewinds to 0 — no new file, no inode change.
+Truncation is different: the file path and inode stay the same, but the file is suddenly smaller than the last recorded offset. A naive tailer would either block waiting for more data or keep seeking past end-of-file. FastForward detects that the current offset exceeds the file size and rewinds to 0 — no new file, no inode change.
 
 <TruncationDemo />
 
-## How logfwd tracks file identity
+## How FastForward tracks file identity
 
-The key insight: logfwd doesn't track files by **path** — it tracks them by **identity**. A file's identity is the combination of:
+The key insight: FastForward doesn't track files by **path** — it tracks them by **identity**. A file's identity is the combination of:
 
 - **Device ID** — which filesystem the file lives on
 - **Inode number** — the kernel's unique identifier for the file
 - **Fingerprint** — xxhash64 of the first 1024 bytes
 
-When logrotate renames `app.log` to `app.log.1` and creates a new `app.log`, the path is the same but the inode is different. logfwd detects this on the next poll and switches to the new file.
+When logrotate renames `app.log` to `app.log.1` and creates a new `app.log`, the path is the same but the inode is different. FastForward detects this on the next poll and switches to the new file.
 
 ## Atomic checkpointing
 
@@ -40,8 +40,8 @@ Checkpoints are written atomically using a three-step dance:
 2. `fsync` the temp file (force data to disk)
 3. `rename` the temp file to `checkpoints.json` (atomic on POSIX)
 
-If logfwd crashes at **any** point in this sequence, the previous checkpoint file survives intact. On restart, logfwd resumes from the last good checkpoint — no corruption, no data loss.
+If FastForward crashes at **any** point in this sequence, the previous checkpoint file survives intact. On restart, FastForward resumes from the last good checkpoint — no corruption, no data loss.
 
 ## Adaptive polling
 
-logfwd doesn't poll at a fixed interval. When a file is "hot" (data arriving faster than the read budget allows), logfwd triggers up to 8 consecutive immediate re-polls before returning to the normal cadence. This reduces latency for bursty log sources without wasting CPU during quiet periods.
+FastForward doesn't poll at a fixed interval. When a file is "hot" (data arriving faster than the read budget allows), it triggers up to 8 consecutive immediate re-polls before returning to the normal cadence. This reduces latency for bursty log sources without wasting CPU during quiet periods.

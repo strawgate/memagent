@@ -18,22 +18,46 @@ type HmacSha256 = Hmac<Sha256>;
 const EMPTY_BODY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 /// Max bytes of a response body to include in error messages.
-const ERROR_BODY_PREVIEW_LEN: usize = 1024;
+pub(super) const ERROR_BODY_PREVIEW_LEN: usize = 1024;
 
-/// Read the response body text, truncated to [`ERROR_BODY_PREVIEW_LEN`] bytes
-/// to prevent large error responses from exhausting memory in error messages.
-async fn error_body_preview(resp: reqwest::Response) -> String {
-    let body = resp.text().await.unwrap_or_default();
-    if body.len() <= ERROR_BODY_PREVIEW_LEN {
-        body
-    } else {
-        // Find a valid UTF-8 char boundary at or before the limit.
-        let mut end = ERROR_BODY_PREVIEW_LEN;
-        while end > 0 && !body.is_char_boundary(end) {
-            end -= 1;
+/// Read up to [`ERROR_BODY_PREVIEW_LEN`] bytes from a response body.
+///
+/// Uses chunked reading to avoid buffering arbitrarily large error
+/// responses into memory.
+pub(super) async fn error_body_preview(resp: reqwest::Response) -> String {
+    let mut buf = Vec::with_capacity(ERROR_BODY_PREVIEW_LEN);
+    let mut stream = resp;
+    let mut truncated = false;
+
+    while buf.len() < ERROR_BODY_PREVIEW_LEN {
+        match stream.chunk().await {
+            Ok(Some(chunk)) => {
+                let remaining = ERROR_BODY_PREVIEW_LEN - buf.len();
+                if chunk.len() >= remaining {
+                    buf.extend_from_slice(&chunk[..remaining]);
+                    truncated = chunk.len() > remaining;
+                    break;
+                }
+                buf.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(_) => break,
         }
-        let truncated = &body[..end];
-        format!("{truncated}... (truncated)")
+    }
+
+    // If we filled exactly to the limit, check if more data exists.
+    if !truncated
+        && buf.len() == ERROR_BODY_PREVIEW_LEN
+        && let Ok(Some(_)) = stream.chunk().await
+    {
+        truncated = true;
+    }
+
+    let text = String::from_utf8_lossy(&buf);
+    if truncated {
+        format!("{text}... (truncated)")
+    } else {
+        text.into_owned()
     }
 }
 

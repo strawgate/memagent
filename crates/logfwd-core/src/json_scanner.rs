@@ -273,7 +273,7 @@ fn scan_line<B: ScanBuilder>(
                     if c == b'.' || c == b'e' || c == b'E' {
                         is_float = true;
                         pos += 1;
-                    } else if c == b',' || c == b'}' || c == b' ' || c == b'\t' || c == b'\r' {
+                    } else if is_json_delimiter(c) {
                         break;
                     } else {
                         pos += 1;
@@ -424,13 +424,14 @@ fn is_json_delimiter(b: u8) -> bool {
 }
 
 /// Skip a bare value (used for malformed tokens).
+/// Stops at the first byte where `is_json_delimiter` returns true.
 #[inline]
 fn skip_bare_value(buf: &[u8], mut pos: usize, end: usize) -> usize {
     while pos < end {
-        match buf[pos] {
-            b',' | b'}' | b' ' | b'\t' | b'\r' | b'\n' => return pos,
-            _ => pos += 1,
+        if is_json_delimiter(buf[pos]) {
+            return pos;
         }
+        pos += 1;
     }
     pos
 }
@@ -1169,6 +1170,163 @@ mod tests {
                 "valid deeply nested JSON should preserve sibling fields past MAX_TRACKED_DEPTH"
             );
         }
+
+        /// Proptest: skip_bare_value always stops at the first `]` delimiter.
+        ///
+        /// Generates numeric payloads immediately followed by `]`, with varying
+        /// amounts of prefix padding to probe near 64-byte SIMD block boundaries.
+        /// Invariants checked:
+        ///  - `skip_bare_value` returns the index of the `]` byte
+        ///  - all bytes before the returned index are non-delimiters
+        ///  - `scan_streaming` on the enclosing JSON object produces exactly 1 row
+        #[test]
+        fn skip_bare_value_close_bracket_proptest(
+            num in 0u32..1_000_000,
+            padding in 0usize..90,
+        ) {
+            // Direct: "42]extra" — must stop exactly at position of ']'
+            let value_str = alloc::format!("{num}");
+            let mut direct_buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+            direct_buf.extend_from_slice(value_str.as_bytes());
+            direct_buf.push(b']');
+            direct_buf.extend_from_slice(b"extra");
+            let pos = skip_bare_value(&direct_buf, 0, direct_buf.len());
+            prop_assert_eq!(
+                pos, value_str.len(),
+                "skip_bare_value must stop exactly at ']' for input {:?}", direct_buf
+            );
+            prop_assert_eq!(direct_buf[pos], b']', "stopped byte must be ']'");
+            for i in 0..pos {
+                prop_assert!(!is_json_delimiter(direct_buf[i]), "byte at {i} must not be a delimiter");
+            }
+
+            // Integration: {"arr":[<num>]} padded to stress SIMD block edges
+            let spaces = " ".repeat(padding);
+            let json = alloc::format!("{spaces}{{\"arr\":[{num}]}}\n");
+            let config = ScanConfig::default();
+            let mut builder = TestBuilder::new();
+            scan_streaming(json.as_bytes(), &config, &mut builder);
+            prop_assert_eq!(
+                builder.rows.len(), 1,
+                "padded JSON with array value must produce exactly 1 row"
+            );
+        }
+
+        /// Escape sequences in string values survive SIMD block boundaries.
+        ///
+        /// Padding `[0, 90)` bytes of whitespace before the JSON object probes
+        /// positions near 64-byte SIMD block edges. Invariants checked:
+        ///  - Exactly 1 row is produced
+        ///  - The `v` field is present and its decoded value equals the
+        ///    original (unescaped) ASCII character
+        #[test]
+        fn escape_sequences_survive_simd_boundaries(
+            padding in 0usize..90,
+        ) {
+            // Test the 8 standard RFC 8259 single-char escapes that round-trip
+            // to a known single byte.
+            let escapes: &[(&str, u8)] = &[
+                ("\\\"", b'"'),
+                ("\\\\", b'\\'),
+                ("\\/", b'/'),
+                ("\\b", 0x08),
+                ("\\f", 0x0C),
+                ("\\n", b'\n'),
+                ("\\r", b'\r'),
+                ("\\t", b'\t'),
+            ];
+            for (esc, expected_byte) in escapes {
+                let spaces = " ".repeat(padding);
+                // Build JSON with the escape inside the string value
+                let json = alloc::format!("{spaces}{{\"v\":\"{esc}\"}}\n");
+                let config = ScanConfig::default();
+                let mut builder = TestBuilder::new();
+                scan_streaming(json.as_bytes(), &config, &mut builder);
+                prop_assert_eq!(
+                    builder.rows.len(), 1,
+                    "JSON with escape must produce 1 row"
+                );
+                let row = &builder.rows[0];
+                let val = row.iter().find(|(k, _)| k == "v").map(|(_, v)| v.as_bytes());
+                prop_assert!(
+                    val.is_some(),
+                    "escape sequence {esc:?} must produce field 'v'"
+                );
+                prop_assert_eq!(
+                    val.unwrap(), &[*expected_byte],
+                    "escape must decode correctly"
+                );
+            }
+        }
+
+        /// Integer vs float classification is consistent across scan_streaming.
+        ///
+        /// An integer JSON value must produce a value prefixed with "int:" and
+        /// a floating-point JSON value must produce a value prefixed with "float:".
+        #[test]
+        fn numeric_classification_is_consistent(
+            int_val in -1_000_000i64..=1_000_000,
+            frac in 1u32..999,
+        ) {
+            let config = ScanConfig::default();
+
+            // Integer path
+            let int_json = alloc::format!("{{\"n\":{int_val}}}\n");
+            let mut int_builder = TestBuilder::new();
+            scan_streaming(int_json.as_bytes(), &config, &mut int_builder);
+            prop_assert_eq!(int_builder.rows.len(), 1, "integer JSON must produce 1 row");
+            let int_row = &int_builder.rows[0];
+            let int_stored = int_row.iter().find(|(k, _)| k == "n").map(|(_, v)| v.as_str());
+            prop_assert!(int_stored.is_some(), "integer JSON must have field 'n'");
+            prop_assert!(
+                int_stored.unwrap().starts_with("int:"),
+                "integer value must be stored with 'int:' prefix, got {:?}", int_stored
+            );
+
+            // Float path
+            let float_json = alloc::format!("{{\"n\":{int_val}.{frac:03}}}\n");
+            let mut float_builder = TestBuilder::new();
+            scan_streaming(float_json.as_bytes(), &config, &mut float_builder);
+            prop_assert_eq!(float_builder.rows.len(), 1, "float JSON must produce 1 row");
+            let float_row = &float_builder.rows[0];
+            let float_stored = float_row.iter().find(|(k, _)| k == "n").map(|(_, v)| v.as_str());
+            prop_assert!(float_stored.is_some(), "float JSON must have field 'n'");
+            prop_assert!(
+                float_stored.unwrap().starts_with("float:"),
+                "float value must be stored with 'float:' prefix, got {:?}", float_stored
+            );
+        }
+
+        /// Duplicate keys: scanner emits values in source order (first-writer-wins).
+        ///
+        /// When a JSON object contains the same key twice, the scanner must
+        /// produce exactly 1 row. The first emitted value for "k" must be v1
+        /// (first-writer-wins), matching the dedup behavior of production
+        /// builders like `StreamingBuilder::check_dup_bits`.
+        #[test]
+        fn duplicate_keys_produce_consistent_row(
+            v1 in "[a-z]{1,10}",
+            v2 in "[a-z]{1,10}",
+        ) {
+            let json = alloc::format!("{{\"k\":\"{v1}\",\"k\":\"{v2}\"}}\n");
+            let config = ScanConfig::default();
+            let mut builder = TestBuilder::new();
+            scan_streaming(json.as_bytes(), &config, &mut builder);
+            prop_assert_eq!(builder.rows.len(), 1, "duplicate-key JSON must produce 1 row");
+            let row = &builder.rows[0];
+            let k_entries: Vec<&str> = row.iter()
+                .filter(|(k, _)| k == "k")
+                .map(|(_, v)| v.as_str())
+                .collect();
+            prop_assert!(
+                !k_entries.is_empty(),
+                "duplicate-key JSON must have at least one 'k' entry"
+            );
+            prop_assert_eq!(
+                k_entries[0], v1.as_str(),
+                "first-writer-wins: first emitted value must be v1 {:?}, got {:?}", v1, k_entries[0]
+            );
+        }
     }
 
     /// CRLF line endings must not leak \r into extracted field values or captured line fields.
@@ -1314,6 +1472,36 @@ mod tests {
         assert_eq!(builder.lines.len(), 1, "one captured line for the JSON row");
         assert_eq!(builder.lines[0].as_deref(), Some("{\"x\":\"1\"}"));
     }
+
+    /// Regression for #2227: skip_bare_value must stop at `]` just like all
+    /// other JSON delimiters. Previously `]` was missing from the stop set,
+    /// causing bare values inside arrays to consume the closing bracket.
+    #[test]
+    fn skip_bare_value_stops_at_close_bracket() {
+        // Direct call: a number immediately followed by `]` — skip_bare_value
+        // must stop at position 2 (the `]`), not consume it.
+        let buf = b"12]more";
+        let result = skip_bare_value(buf, 0, buf.len());
+        assert_eq!(result, 2, "skip_bare_value must stop at ']'");
+        assert_eq!(buf[result], b']', "stopped byte must be ']'");
+
+        // Integration: an array value inside a JSON object should parse correctly.
+        // The number in `[1,2]` must not swallow the `]`.
+        let input = b"{\"arr\":[1,2]}\n";
+        let config = ScanConfig {
+            wanted_fields: alloc::vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        assert_eq!(
+            builder.rows.len(),
+            1,
+            "one JSON line should produce one row"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1361,10 +1549,20 @@ mod verification {
         let result = skip_bare_value(&buf, start, end);
 
         assert!(result >= start && result <= end);
+        // When we stopped before end, the stop byte MUST be a delimiter.
+        if result < end {
+            assert!(
+                is_json_delimiter(buf[result]),
+                "stop byte must be a JSON delimiter"
+            );
+        }
         let mut i = start;
         while i < result {
             let b = buf[i];
-            assert!(b != b',' && b != b'}' && b != b' ' && b != b'\t' && b != b'\r' && b != b'\n');
+            assert!(
+                !is_json_delimiter(b),
+                "byte at {i} is a delimiter: {b:#04x}"
+            );
             i += 1;
         }
 
@@ -1372,6 +1570,8 @@ mod verification {
         kani::cover!(result > start, "found non-delimiter bytes");
         kani::cover!(result == start, "delimiter at start");
         kani::cover!(result == end, "no delimiter found");
+        // Explicitly cover the previously-missing ] delimiter path
+        kani::cover!(result < end && buf[result] == b']', "stopped at ]");
     }
 
     /// is_json_delimiter covers all JSON value delimiters exhaustively.
@@ -1478,5 +1678,173 @@ mod verification {
         }
         kani::cover!(result.is_some(), "quote found in range");
         kani::cover!(result.is_none(), "no quote in range");
+    }
+
+    /// `parse_hex4` correctness: exhaustive oracle check over all valid 4-hex-digit inputs.
+    ///
+    /// For every input that consists of exactly 4 ASCII hex characters, the
+    /// output must equal the value obtained by parsing each hex nibble manually.
+    /// For any byte that is not a hex digit, `parse_hex4` must return `None`.
+    #[kani::proof]
+    fn verify_parse_hex4_correctness() {
+        let bytes: [u8; 4] = kani::any();
+
+        /// True iff `b` is a valid ASCII hex digit.
+        fn is_hex(b: u8) -> bool {
+            matches!(b, b'0'..=b'9' | b'a'..=b'f' | b'A'..=b'F')
+        }
+
+        fn hex_val(b: u8) -> u16 {
+            match b {
+                b'0'..=b'9' => (b - b'0') as u16,
+                b'a'..=b'f' => (b - b'a' + 10) as u16,
+                b'A'..=b'F' => (b - b'A' + 10) as u16,
+                _ => unreachable!(),
+            }
+        }
+
+        let result = parse_hex4(&bytes);
+
+        if bytes.iter().all(|&b| is_hex(b)) {
+            // All four bytes are hex digits → must return Some with the correct value
+            let expected = (hex_val(bytes[0]) << 12)
+                | (hex_val(bytes[1]) << 8)
+                | (hex_val(bytes[2]) << 4)
+                | hex_val(bytes[3]);
+            assert_eq!(
+                result,
+                Some(expected),
+                "parse_hex4 must return correct value for valid input"
+            );
+        } else {
+            // At least one non-hex byte → must return None
+            assert_eq!(
+                result, None,
+                "parse_hex4 must return None for invalid input"
+            );
+        }
+
+        kani::cover!(result.is_some(), "valid hex input");
+        kani::cover!(result.is_none(), "invalid hex input");
+    }
+
+    /// `decode_json_escapes` RFC 8259 correctness for all 8 standard single-char escapes.
+    ///
+    /// For each recognized escape byte (`"`, `\`, `/`, `b`, `f`, `n`, `r`, `t`),
+    /// the function must decode `\X` to exactly the correct output byte.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn verify_decode_json_escapes_rfc8259_correctness() {
+        let escape_char: u8 = kani::any();
+        // Constrain to the 8 standard RFC 8259 single-char escapes (excludes `u`)
+        kani::assume(matches!(
+            escape_char,
+            b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't'
+        ));
+
+        let input = [b'\\', escape_char];
+        let mut out = alloc::vec::Vec::with_capacity(2);
+        decode_json_escapes(&input, &mut out);
+
+        let expected: u8 = match escape_char {
+            b'"' => b'"',
+            b'\\' => b'\\',
+            b'/' => b'/',
+            b'b' => 0x08,
+            b'f' => 0x0C,
+            b'n' => b'\n',
+            b'r' => b'\r',
+            b't' => b'\t',
+            _ => unreachable!(),
+        };
+
+        assert_eq!(
+            out.len(),
+            1,
+            "standard escape must decode to exactly 1 byte"
+        );
+        assert_eq!(
+            out[0], expected,
+            "standard escape must decode to correct byte"
+        );
+
+        kani::cover!(escape_char == b'"', "double-quote escape");
+        kani::cover!(escape_char == b'n', "newline escape");
+    }
+
+    /// `decode_json_escapes` passes through unknown escapes unchanged.
+    ///
+    /// For any byte that is not a recognized RFC 8259 escape, `\X` must be
+    /// passed through literally as `\X` (two bytes).
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn verify_decode_json_escapes_unknown_passthrough() {
+        let escape_char: u8 = kani::any();
+        // Exclude all recognized escapes (standard single-char + u for unicode)
+        kani::assume(!matches!(
+            escape_char,
+            b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' | b'u'
+        ));
+
+        let input = [b'\\', escape_char];
+        let mut out = alloc::vec::Vec::with_capacity(2);
+        decode_json_escapes(&input, &mut out);
+
+        // Unknown escape: pass through the backslash, then continue.
+        // The escape_char byte is processed in the next iteration as a literal.
+        // So output is [b'\\', escape_char].
+        assert_eq!(out.len(), 2, "unknown escape must pass through 2 bytes");
+        assert_eq!(out[0], b'\\', "first byte must be backslash");
+        assert_eq!(
+            out[1], escape_char,
+            "second byte must be the original escape char"
+        );
+
+        kani::cover!(escape_char == b'x', "non-standard \\x passthrough");
+        kani::cover!(escape_char == b' ', "whitespace passthrough");
+    }
+
+    /// `decode_json_escapes` never panics on arbitrary short inputs.
+    ///
+    /// Crash-freedom proof: for any 8-byte input, the function must return
+    /// normally (no panic, no OOB access, no infinite loop).
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn verify_decode_json_escapes_no_panic() {
+        let input: [u8; 8] = kani::any();
+        let mut out = alloc::vec::Vec::with_capacity(36);
+        decode_json_escapes(&input, &mut out);
+        // The function must not panic. Output length ≤ input length × 4 + 4
+        // (worst case: \uXXXX can expand to 4 UTF-8 bytes from 6 input bytes,
+        // plus trailing partial escapes can add a few extra bytes).
+        assert!(out.len() <= input.len() * 4 + 4);
+    }
+
+    /// `decode_unicode_escape` always advances past its input position.
+    ///
+    /// Whatever the input, the returned position must be strictly greater
+    /// than `pos` (no infinite loop / stuck cursor), and the output must be
+    /// non-empty.
+    #[kani::proof]
+    #[kani::unwind(16)]
+    fn verify_decode_unicode_escape_advance() {
+        let input: [u8; 14] = kani::any();
+        let pos: usize = kani::any_where(|&p: &usize| p < 14);
+
+        let mut out = alloc::vec::Vec::with_capacity(14);
+        let new_pos = decode_unicode_escape(&input, pos, &mut out);
+
+        // Must always advance (never return pos itself)
+        assert!(new_pos > pos, "decode_unicode_escape must advance past pos");
+
+        // Must always produce at least 1 output byte
+        assert!(
+            !out.is_empty(),
+            "decode_unicode_escape must write at least 1 byte"
+        );
+
+        kani::cover!(new_pos == pos + 1, "short/invalid: advance by 1");
+        kani::cover!(new_pos == pos + 6, "BMP or lone surrogate: advance by 6");
+        kani::cover!(new_pos == pos + 12, "surrogate pair: advance by 12");
     }
 }

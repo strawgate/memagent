@@ -1,11 +1,12 @@
 // builder.rs — ColumnarBatchBuilder: shared column construction engine.
 //
 // Drives BatchPlan + FieldHandle → typed writes → Arrow materialization.
-// Uses ColumnAccumulator for per-field storage (typed enum, no dead vecs).
+// Uses ColumnAccumulator for per-field storage.
 //
 // Scope:
-//   - Planned fields: single-type columns, zero conflict overhead
-//   - Dynamic fields: multi-type, conflict detection at finalization
+//   - Planned fields: stable handles and typed write calls
+//   - Current storage: dynamic accumulators for planned and dynamic fields
+//   - Future optimization: planned fields can move to single-type accumulators
 //   - Detached string materialization via shared string buffer
 //   - Sparse padding with deferred (row, value) facts
 //   - StringViewArray zero-copy when given input buffer
@@ -15,18 +16,15 @@
 
 use std::sync::Arc;
 
-use arrow::array::{
-    ArrayRef, BooleanArray, Float64Array, Int64Array, StringArray, StringViewArray,
-};
-use arrow::buffer::{Buffer, NullBuffer};
-use arrow::datatypes::{DataType, Field, Schema};
+use arrow::buffer::Buffer;
+use arrow::datatypes::Schema;
 use arrow::error::ArrowError;
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 
 use logfwd_core::scanner::BuilderState;
 
 use super::accumulator::{ColumnAccumulator, FinalizationMode, MaterializeError, StringRef};
-use super::plan::{BatchPlan, FieldHandle, FieldKind, FieldSchemaMode, PlanError};
+use super::plan::{BatchPlan, FieldHandle, FieldKind, PlanError};
 use super::row_protocol::RowLifecycle;
 use crate::check_dup_bits;
 
@@ -100,9 +98,9 @@ impl From<MaterializeError> for BuilderError {
 ///
 /// # Design
 ///
-/// - Each field gets a `ColumnAccumulator` matched to its schema mode:
-///   planned Int64 → `ColumnAccumulator::Int64` (one vec, no conflict overhead),
-///   dynamic → `ColumnAccumulator::Dynamic` (all vecs, conflict detection).
+/// - Each field currently gets a dynamic `ColumnAccumulator`, regardless of
+///   schema mode. Planned fields still use stable handles and typed write calls;
+///   single-type planned accumulators are a future optimization.
 /// - Dedup uses the same bitmask approach as `RowLifecycle::written_bits`.
 /// - `finish_batch` iterates fields and calls `accumulator.materialize()`.
 pub struct ColumnarBatchBuilder {
@@ -125,19 +123,23 @@ pub struct ColumnarBatchBuilder {
     /// `StringViewArray` using `new_unchecked`. When false, produces
     /// validated `StringArray` with full UTF-8 checking.
     utf8_trusted: bool,
+    /// Capacity hint for `string_buf` based on the previous batch's usage.
+    /// `finish_batch` takes the Vec (Arrow owns the allocation), so the
+    /// next batch starts at capacity 0. This hint avoids the 0→1→2→…→N
+    /// doubling chain on every batch.
+    string_buf_hint: usize,
 }
 
 impl ColumnarBatchBuilder {
     /// Create a builder from a plan.
     ///
-    /// Allocates per-field storage matched to each field's schema mode.
+    /// All fields (planned and dynamic) use Dynamic accumulators, which
+    /// accept all types uniformly. Single-type fields are still materialized
+    /// as flat columns; multi-type fields become conflict structs.
     pub fn new(plan: BatchPlan) -> Self {
         let columns: Vec<ColumnAccumulator> = plan
             .fields()
-            .map(|(_handle, _name, mode)| match mode {
-                FieldSchemaMode::Planned(kind) => ColumnAccumulator::for_planned(*kind),
-                FieldSchemaMode::Dynamic { .. } => ColumnAccumulator::dynamic(),
-            })
+            .map(|(_handle, _name, _mode)| ColumnAccumulator::dynamic())
             .collect();
         ColumnarBatchBuilder {
             plan,
@@ -147,6 +149,7 @@ impl ColumnarBatchBuilder {
             string_buf: Vec::new(),
             dedup_enabled: true,
             utf8_trusted: true,
+            string_buf_hint: 0,
         }
     }
 
@@ -182,15 +185,21 @@ impl ColumnarBatchBuilder {
     /// re-resolved from scratch each batch), and resets string buffers.
     pub fn begin_batch(&mut self) {
         self.lifecycle.begin_batch();
-        // Reset dynamic fields so the schema doesn't grow unboundedly.
-        // Planned fields are kept; dynamic ones are re-resolved per batch.
-        self.plan.reset_dynamic();
-        self.columns.truncate(self.plan.len());
+        // Drop dynamic columns — they are re-resolved from scratch each batch.
+        let num_planned = self.plan.num_planned();
+        self.columns.truncate(num_planned);
+        // Clear planned columns in place (capacity retained).
         for col in &mut self.columns {
             col.clear();
         }
+        // Reset dynamic field names so the schema doesn't grow unboundedly.
+        self.plan.reset_dynamic();
         self.original_buf = Buffer::from(Vec::<u8>::new());
         self.string_buf.clear();
+        // Pre-reserve based on previous batch's string usage to avoid doubling.
+        if self.string_buf.capacity() == 0 && self.string_buf_hint > 0 {
+            self.string_buf.reserve(self.string_buf_hint);
+        }
     }
 
     /// Set the original input buffer for zero-copy string references.
@@ -377,6 +386,108 @@ impl ColumnarBatchBuilder {
         self.columns[handle.index()].push_str(self.lifecycle.row_count(), sref);
     }
 
+    /// Write pre-validated UTF-8 bytes to the generated string buffer.
+    ///
+    /// Like [`write_str`](Self::write_str), but accepts `&[u8]` that the
+    /// caller guarantees is valid UTF-8. This avoids a redundant UTF-8
+    /// validation round-trip for producers (like protobuf decoders) that
+    /// already know their bytes are valid.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the string buffer would exceed u32 addressable range.
+    #[inline]
+    pub fn write_str_bytes(
+        &mut self,
+        handle: FieldHandle,
+        value: &[u8],
+    ) -> Result<(), BuilderError> {
+        debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
+        debug_assert!(handle.index() < self.columns.len());
+        if !self.columns[handle.index()].accepts_str() {
+            return Ok(());
+        }
+        if self.dedup_enabled && self.is_duplicate(handle) {
+            return Ok(());
+        }
+        let raw_offset = self
+            .original_buf
+            .len()
+            .checked_add(self.string_buf.len())
+            .ok_or(BuilderError::StringBufferOverflow {
+                buffer_len: self.string_buf.len(),
+                value_len: value.len(),
+            })?;
+        let offset = u32::try_from(raw_offset).map_err(|_| BuilderError::StringBufferOverflow {
+            buffer_len: self.string_buf.len(),
+            value_len: value.len(),
+        })?;
+        let len = u32::try_from(value.len()).map_err(|_| BuilderError::StringBufferOverflow {
+            buffer_len: self.string_buf.len(),
+            value_len: value.len(),
+        })?;
+        self.string_buf.extend_from_slice(value);
+        let sref = StringRef { offset, len };
+        self.columns[handle.index()].push_str(self.lifecycle.row_count(), sref);
+        Ok(())
+    }
+
+    /// Write a zero-copy reference to a subslice of the original input buffer.
+    ///
+    /// The `value` must be a subslice of the buffer previously set via
+    /// [`set_original_buffer`](Self::set_original_buffer). The offset is
+    /// computed via pointer arithmetic.
+    ///
+    /// Returns `BuilderError::StringBufferOverflow` if the value is not within
+    /// the original buffer bounds or the offset exceeds `u32::MAX`.
+    #[inline]
+    pub fn write_input_ref(
+        &mut self,
+        handle: FieldHandle,
+        value: &[u8],
+    ) -> Result<(), BuilderError> {
+        debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
+        debug_assert!(handle.index() < self.columns.len());
+        if !self.columns[handle.index()].accepts_str() {
+            return Ok(());
+        }
+        if self.dedup_enabled && self.is_duplicate(handle) {
+            return Ok(());
+        }
+        let base = self.original_buf.as_ptr() as usize;
+        let ptr = value.as_ptr() as usize;
+        let value_end = ptr
+            .checked_add(value.len())
+            .ok_or(BuilderError::StringBufferOverflow {
+                buffer_len: self.original_buf.len(),
+                value_len: value.len(),
+            })?;
+        let buf_end = base.checked_add(self.original_buf.len()).ok_or(
+            BuilderError::StringBufferOverflow {
+                buffer_len: self.original_buf.len(),
+                value_len: value.len(),
+            },
+        )?;
+        if ptr < base || value_end > buf_end {
+            return Err(BuilderError::StringBufferOverflow {
+                buffer_len: self.original_buf.len(),
+                value_len: value.len(),
+            });
+        }
+        let raw_offset = ptr - base;
+        let offset = u32::try_from(raw_offset).map_err(|_| BuilderError::StringBufferOverflow {
+            buffer_len: self.original_buf.len(),
+            value_len: value.len(),
+        })?;
+        let len = u32::try_from(value.len()).map_err(|_| BuilderError::StringBufferOverflow {
+            buffer_len: self.original_buf.len(),
+            value_len: value.len(),
+        })?;
+        let sref = StringRef { offset, len };
+        self.columns[handle.index()].push_str(self.lifecycle.row_count(), sref);
+        Ok(())
+    }
+
     /// Record that a field is explicitly null for the current row.
     ///
     /// Sparse fields default to null for rows with no writes, so this is only
@@ -409,6 +520,7 @@ impl ColumnarBatchBuilder {
         // Transfer buffers to Arrow — O(1) for the ref-counted original,
         // O(1) move for the generated Vec.
         let original = std::mem::replace(&mut self.original_buf, Buffer::from(Vec::<u8>::new()));
+        self.string_buf_hint = self.string_buf.len();
         let generated = Buffer::from_vec(std::mem::take(&mut self.string_buf));
 
         let mode = FinalizationMode {
@@ -422,6 +534,16 @@ impl ColumnarBatchBuilder {
         Ok(result)
     }
 
+    /// Discard an in-progress batch, resetting the builder to idle state.
+    ///
+    /// Use when a decode error occurs mid-batch and the builder will be
+    /// reused for a subsequent request. Accepts any state (including mid-row).
+    pub fn discard_batch(&mut self) {
+        self.lifecycle.discard();
+        self.original_buf = Buffer::from(Vec::<u8>::new());
+        self.string_buf.clear();
+    }
+
     /// Core materialization — shared by all finalization paths.
     fn materialize_all(
         &self,
@@ -431,7 +553,7 @@ impl ColumnarBatchBuilder {
         let mut schema_fields = Vec::with_capacity(self.plan.len());
         let mut arrays = Vec::with_capacity(self.plan.len());
 
-        for (handle, name, field_mode) in self.plan.fields() {
+        for (handle, name, _field_mode) in self.plan.fields() {
             let col = &self.columns[handle.index()];
             match col.materialize(name, num_rows, mode.clone(), self.dedup_enabled)? {
                 Some((field, array)) => {
@@ -439,14 +561,8 @@ impl ColumnarBatchBuilder {
                     arrays.push(array);
                 }
                 None => {
-                    // Planned fields always appear in the schema (all-null if
-                    // no values were written). Dynamic fields with no data are
-                    // omitted — this matches StreamingBuilder behavior.
-                    if let FieldSchemaMode::Planned(kind) = field_mode {
-                        let (field, array) = null_column(name, *kind, num_rows, mode.utf8_trusted);
-                        schema_fields.push(field);
-                        arrays.push(array);
-                    }
+                    // All unwritten fields are omitted from the schema,
+                    // matching StreamingBuilder behavior.
                 }
             }
         }
@@ -470,53 +586,6 @@ impl ColumnarBatchBuilder {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Create an all-null column of the appropriate Arrow type for a planned field.
-fn null_column(
-    name: &str,
-    kind: FieldKind,
-    num_rows: usize,
-    utf8_trusted: bool,
-) -> (Field, ArrayRef) {
-    match kind {
-        FieldKind::Int64 => {
-            let nulls = NullBuffer::new_null(num_rows);
-            let arr = Int64Array::new(vec![0i64; num_rows].into(), Some(nulls));
-            (Field::new(name, DataType::Int64, true), Arc::new(arr))
-        }
-        FieldKind::Float64 => {
-            let nulls = NullBuffer::new_null(num_rows);
-            let arr = Float64Array::new(vec![0.0f64; num_rows].into(), Some(nulls));
-            (Field::new(name, DataType::Float64, true), Arc::new(arr))
-        }
-        FieldKind::Bool => {
-            let nulls = NullBuffer::new_null(num_rows);
-            let arr = BooleanArray::new(vec![false; num_rows].into(), Some(nulls));
-            (Field::new(name, DataType::Boolean, true), Arc::new(arr))
-        }
-        FieldKind::Utf8View => {
-            if utf8_trusted {
-                let arr = StringViewArray::new_null(num_rows);
-                (Field::new(name, DataType::Utf8View, true), Arc::new(arr))
-            } else {
-                let arr = StringArray::new_null(num_rows);
-                (Field::new(name, DataType::Utf8, true), Arc::new(arr))
-            }
-        }
-        FieldKind::BinaryView => {
-            let arr = arrow::array::BinaryViewArray::new_null(num_rows);
-            (Field::new(name, DataType::BinaryView, true), Arc::new(arr))
-        }
-        FieldKind::FixedBinary(n) => {
-            let width = i32::try_from(n).expect("FixedBinary width exceeds i32::MAX");
-            let arr = arrow::array::FixedSizeBinaryArray::new_null(width, num_rows);
-            (
-                Field::new(name, DataType::FixedSizeBinary(width), true),
-                Arc::new(arr),
-            )
-        }
-    }
-}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -864,10 +933,12 @@ mod tests {
         b.end_row();
 
         let batch = b.finish_batch().unwrap();
-        let col = batch.column_by_name("x").unwrap();
-        let arr = col.as_primitive::<Int64Type>();
-        // The field was written as null first, so i64 write was suppressed.
-        assert!(arr.is_null(0));
+        // write_null marks the dedup bit but writes no facts, so the
+        // Dynamic accumulator has no data and the column is omitted.
+        assert!(
+            batch.column_by_name("x").is_none(),
+            "null-only column should be omitted"
+        );
     }
 
     #[test]
@@ -917,13 +988,16 @@ mod tests {
     #[test]
     fn column_order_matches_declaration_order() {
         let mut plan = BatchPlan::new();
-        plan.declare_planned("z_last", FieldKind::Int64).unwrap();
-        plan.declare_planned("a_first", FieldKind::Int64).unwrap();
-        plan.declare_planned("m_middle", FieldKind::Int64).unwrap();
+        let z = plan.declare_planned("z_last", FieldKind::Int64).unwrap();
+        let a = plan.declare_planned("a_first", FieldKind::Int64).unwrap();
+        let m = plan.declare_planned("m_middle", FieldKind::Int64).unwrap();
         let mut b = ColumnarBatchBuilder::new(plan);
 
         b.begin_batch();
         b.begin_row();
+        b.write_i64(z, 1);
+        b.write_i64(a, 2);
+        b.write_i64(m, 3);
         b.end_row();
         let batch = b.finish_batch().unwrap();
 
@@ -933,54 +1007,47 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Planned-field type safety: wrong-type writes are benign
+    // Dynamic accumulator: all types accepted, first-write-wins via dedup
     // -----------------------------------------------------------------------
 
     #[test]
-    fn planned_wrong_type_write_stored_but_planned_kind_selects_output() {
-        // If a producer writes a string to a planned Int64 field, the string
-        // is stored but the planned kind selects int_values at materialization.
-        // The result is an all-null column for that field.
+    fn all_types_accepted_by_declared_field() {
+        // With Dynamic accumulators, a declared Int64 field still accepts
+        // string writes. The actual type is determined by what's written,
+        // not the declared hint.
         let mut plan = BatchPlan::new();
         let h = plan.declare_planned("x", FieldKind::Int64).unwrap();
         let mut b = ColumnarBatchBuilder::new(plan);
 
         b.begin_batch();
         b.begin_row();
-        b.write_str(h, "not an int").unwrap();
+        b.write_str(h, "hello").unwrap();
         b.end_row();
 
         let batch = b.finish_batch().unwrap();
         let col = batch.column_by_name("x").unwrap();
-        let arr = col.as_primitive::<Int64Type>();
-        // Planned kind is Int64, but we only wrote a string → int column is all-null.
-        assert!(arr.is_null(0));
+        // Dynamic accumulator stores the string; single-type → flat column.
+        assert_eq!(col.data_type(), &arrow::datatypes::DataType::Utf8View);
     }
 
     #[test]
-    fn wrong_type_write_does_not_consume_dedup_slot() {
-        // Writing the wrong type should NOT consume the dedup slot.
-        // A subsequent correct-type write to the same field must succeed.
+    fn first_write_wins_with_dedup() {
+        // When dedup is enabled, the first write to a field in a row wins.
+        // The second write (even if correct type) is suppressed.
         let mut plan = BatchPlan::new();
         let h = plan.declare_planned("x", FieldKind::Int64).unwrap();
         let mut b = ColumnarBatchBuilder::new(plan);
 
         b.begin_batch();
         b.begin_row();
-        // Wrong type: string to an Int64 field — should be silently ignored.
-        b.write_str(h, "not an int").unwrap();
-        // Correct type: this must NOT be rejected as a duplicate.
         b.write_i64(h, 42);
+        b.write_str(h, "ignored").unwrap(); // dedup suppresses
         b.end_row();
 
         let batch = b.finish_batch().unwrap();
         let col = batch.column_by_name("x").unwrap();
         let arr = col.as_primitive::<Int64Type>();
-        assert_eq!(
-            arr.value(0),
-            42,
-            "correct-type write after wrong-type must succeed"
-        );
+        assert_eq!(arr.value(0), 42);
     }
 
     // -----------------------------------------------------------------------
@@ -1043,6 +1110,32 @@ mod tests {
             result.is_err(),
             "finish_batch should fail for out-of-bounds StringRef"
         );
+    }
+
+    /// Regression: write_str_bytes with invalid UTF-8 must fail when
+    /// utf8_trusted is false, even when no original buffer is set.
+    #[test]
+    fn write_str_bytes_invalid_utf8_untrusted_fails() {
+        let mut plan = BatchPlan::new();
+        let msg = plan.declare_planned("msg", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        b.set_utf8_trusted(false);
+
+        b.begin_batch();
+        b.begin_row();
+        // Accept error from either write_str_bytes or finish_batch — the
+        // invariant is that invalid bytes cannot materialize successfully.
+        let write_result = b.write_str_bytes(msg, &[0xFF, 0xFE]);
+
+        if write_result.is_ok() {
+            b.end_row();
+
+            let result = b.finish_batch();
+            assert!(
+                result.is_err(),
+                "invalid UTF-8 via write_str_bytes must be caught when utf8_trusted=false"
+            );
+        }
     }
 
     #[test]
@@ -1411,5 +1504,375 @@ mod tests {
         // Only field "z" — no stale columns.
         assert_eq!(batch2.num_columns(), 1);
         assert_eq!(batch2.schema().field(0).name(), "z");
+    }
+
+    #[test]
+    fn write_str_bytes_produces_correct_string() {
+        let mut plan = BatchPlan::new();
+        let name = plan.declare_planned("name", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        b.begin_batch();
+        b.begin_row();
+        b.write_str_bytes(name, b"hello world").unwrap();
+        b.end_row();
+        let batch = b.finish_batch().unwrap();
+        let col = batch.column(0).as_string_view();
+        assert_eq!(col.value(0), "hello world");
+    }
+
+    #[test]
+    fn write_str_bytes_multiple_values() {
+        let mut plan = BatchPlan::new();
+        let msg = plan.declare_planned("msg", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        b.begin_batch();
+        for i in 0..5 {
+            b.begin_row();
+            let val = format!("message-{i}");
+            b.write_str_bytes(msg, val.as_bytes()).unwrap();
+            b.end_row();
+        }
+        let batch = b.finish_batch().unwrap();
+        let col = batch.column(0).as_string_view();
+        for i in 0..5 {
+            assert_eq!(col.value(i), format!("message-{i}"));
+        }
+    }
+
+    #[test]
+    fn write_input_ref_zero_copy() {
+        let mut plan = BatchPlan::new();
+        let body = plan.declare_planned("body", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        let input = b"hello world from input buffer";
+        let buf = Buffer::from_vec(input.to_vec());
+        b.begin_batch();
+        b.set_original_buffer(buf.clone());
+        b.begin_row();
+        // Reference the subslice "world" at offset 6..11.
+        b.write_input_ref(body, &buf[6..11]).unwrap();
+        b.end_row();
+        let batch = b.finish_batch().unwrap();
+        let col = batch.column(0).as_string_view();
+        assert_eq!(col.value(0), "world");
+    }
+
+    #[test]
+    fn write_input_ref_multiple_subslices() {
+        let mut plan = BatchPlan::new();
+        let f = plan.declare_planned("field", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        let input = b"aaa|bbb|ccc";
+        let buf = Buffer::from_vec(input.to_vec());
+        b.begin_batch();
+        b.set_original_buffer(buf.clone());
+        b.begin_row();
+        b.write_input_ref(f, &buf[0..3]).unwrap(); // "aaa"
+        b.end_row();
+        b.begin_row();
+        b.write_input_ref(f, &buf[4..7]).unwrap(); // "bbb"
+        b.end_row();
+        b.begin_row();
+        b.write_input_ref(f, &buf[8..11]).unwrap(); // "ccc"
+        b.end_row();
+        let batch = b.finish_batch().unwrap();
+        let col = batch.column(0).as_string_view();
+        assert_eq!(col.value(0), "aaa");
+        assert_eq!(col.value(1), "bbb");
+        assert_eq!(col.value(2), "ccc");
+    }
+
+    #[test]
+    fn write_str_bytes_and_input_ref_coexist() {
+        let mut plan = BatchPlan::new();
+        let f = plan.declare_planned("field", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        let input = b"original-data";
+        let buf = Buffer::from_vec(input.to_vec());
+        b.begin_batch();
+        b.set_original_buffer(buf.clone());
+        // Row 0: input ref
+        b.begin_row();
+        b.write_input_ref(f, &buf[0..8]).unwrap(); // "original"
+        b.end_row();
+        // Row 1: generated string
+        b.begin_row();
+        b.write_str_bytes(f, b"generated").unwrap();
+        b.end_row();
+        let batch = b.finish_batch().unwrap();
+        let col = batch.column(0).as_string_view();
+        assert_eq!(col.value(0), "original");
+        assert_eq!(col.value(1), "generated");
+    }
+
+    #[test]
+    fn write_input_ref_returns_error_on_oob() {
+        let mut plan = BatchPlan::new();
+        let f = plan.declare_planned("field", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        let buf = Buffer::from_vec(b"short".to_vec());
+        b.begin_batch();
+        b.set_original_buffer(buf);
+        b.begin_row();
+        // Not a subslice of original buffer — should return error.
+        let result = b.write_input_ref(f, b"external");
+        assert!(result.is_err());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Proptest — end-to-end builder verification
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use crate::columnar::plan::{BatchPlan, FieldHandle, FieldKind};
+    use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, StringViewArray};
+    use proptest::prelude::*;
+
+    proptest! {
+        /// End-to-end builder: random planned fields, random writes, verify
+        /// RecordBatch invariants (row count, null counts, value correctness).
+        #[test]
+        fn builder_e2e_planned_fields(
+            num_fields in 1usize..=8,
+            num_rows in 1usize..=16,
+            seed in any::<u64>(),
+        ) {
+            // Deterministic kind selection from seed.
+            let kinds: Vec<FieldKind> = (0..num_fields)
+                .map(|i| {
+                    match (seed.wrapping_mul(i as u64 + 1)) % 6 {
+                        0 => FieldKind::Int64,
+                        1 => FieldKind::Float64,
+                        2 => FieldKind::Bool,
+                        3 => FieldKind::Utf8View,
+                        4 => FieldKind::BinaryView,
+                        _ => FieldKind::FixedBinary(16),
+                    }
+                })
+                .collect();
+
+            let mut plan = BatchPlan::new();
+            let handles: Vec<FieldHandle> = kinds
+                .iter()
+                .enumerate()
+                .map(|(i, &k)| {
+                    plan.declare_planned(&format!("f{i}"), k).unwrap()
+                })
+                .collect();
+
+            let mut b = ColumnarBatchBuilder::new(plan);
+            b.begin_batch();
+
+            // Track expected values for oracle comparison.
+            let mut expected_i64: Vec<Vec<Option<i64>>> =
+                vec![vec![None; num_rows]; num_fields];
+            let mut expected_f64: Vec<Vec<Option<f64>>> =
+                vec![vec![None; num_rows]; num_fields];
+            let mut expected_bool: Vec<Vec<Option<bool>>> =
+                vec![vec![None; num_rows]; num_fields];
+            let mut expected_str: Vec<Vec<Option<String>>> =
+                vec![vec![None; num_rows]; num_fields];
+
+            for row in 0..num_rows {
+                b.begin_row();
+                for (fi, (&h, &kind)) in handles.iter().zip(kinds.iter()).enumerate() {
+                    // Deterministic skip pattern: some rows have gaps.
+                    let write_it = (seed.wrapping_mul((row * num_fields + fi) as u64 + 7)) % 5 != 0;
+                    if !write_it {
+                        continue;
+                    }
+                    match kind {
+                        FieldKind::Int64 => {
+                            let val = (row * 100 + fi) as i64;
+                            b.write_i64(h, val);
+                            expected_i64[fi][row] = Some(val);
+                        }
+                        FieldKind::Float64 => {
+                            let val = (row * 100 + fi) as f64 * 0.5;
+                            b.write_f64(h, val);
+                            expected_f64[fi][row] = Some(val);
+                        }
+                        FieldKind::Bool => {
+                            let val = (row + fi) % 2 == 0;
+                            b.write_bool(h, val);
+                            expected_bool[fi][row] = Some(val);
+                        }
+                        FieldKind::Utf8View => {
+                            let val = format!("r{row}f{fi}");
+                            b.write_str(h, &val).unwrap();
+                            expected_str[fi][row] = Some(val);
+                        }
+                        // No typed write methods for binary kinds yet;
+                        // all values remain null, verified below.
+                        FieldKind::BinaryView | FieldKind::FixedBinary(_) => {}
+                    }
+                }
+                b.end_row();
+            }
+
+            let batch = b.finish_batch().unwrap();
+
+            // Verify RecordBatch invariants.
+            prop_assert_eq!(batch.num_rows(), num_rows);
+
+            // Fields with no write methods (BinaryView, FixedBinary) are omitted
+            // since Dynamic accumulators skip empty columns.
+            let written_fields: usize = kinds.iter().filter(|k| {
+                !matches!(k, FieldKind::BinaryView | FieldKind::FixedBinary(_))
+            }).count();
+            // Some written fields may be all-skipped (sparse pattern), so the
+            // actual column count may be less. Just verify it doesn't exceed.
+            prop_assert!(batch.num_columns() <= written_fields,
+                "too many columns: {} > {}", batch.num_columns(), written_fields);
+
+            // Verify each column matches the oracle (by name lookup).
+            for (fi, &kind) in kinds.iter().enumerate() {
+                let col_name = format!("f{fi}");
+                let col = match batch.column_by_name(&col_name) {
+                    Some(c) => c,
+                    None => {
+                        // Column was omitted — verify all expected values are None.
+                        match kind {
+                            FieldKind::Int64 => {
+                                for row in 0..num_rows {
+                                    prop_assert!(expected_i64[fi][row].is_none(),
+                                        "field {} row {} expected data but column omitted", fi, row);
+                                }
+                            }
+                            FieldKind::Float64 => {
+                                for row in 0..num_rows {
+                                    prop_assert!(expected_f64[fi][row].is_none(),
+                                        "field {} row {} expected data but column omitted", fi, row);
+                                }
+                            }
+                            FieldKind::Bool => {
+                                for row in 0..num_rows {
+                                    prop_assert!(expected_bool[fi][row].is_none(),
+                                        "field {} row {} expected data but column omitted", fi, row);
+                                }
+                            }
+                            FieldKind::Utf8View => {
+                                for row in 0..num_rows {
+                                    prop_assert!(expected_str[fi][row].is_none(),
+                                        "field {} row {} expected data but column omitted", fi, row);
+                                }
+                            }
+                            FieldKind::BinaryView | FieldKind::FixedBinary(_) => {}
+                        }
+                        continue;
+                    }
+                };
+                prop_assert_eq!(col.len(), num_rows, "column {} length mismatch", fi);
+
+                match kind {
+                    FieldKind::Int64 => {
+                        let typed = col.as_any().downcast_ref::<Int64Array>().unwrap();
+                        for row in 0..num_rows {
+                            match expected_i64[fi][row] {
+                                Some(v) => {
+                                    prop_assert!(!typed.is_null(row),
+                                        "field {} row {} should not be null", fi, row);
+                                    prop_assert_eq!(typed.value(row), v);
+                                }
+                                None => {
+                                    prop_assert!(typed.is_null(row),
+                                        "field {} row {} should be null", fi, row);
+                                }
+                            }
+                        }
+                    }
+                    FieldKind::Float64 => {
+                        let typed = col.as_any().downcast_ref::<Float64Array>().unwrap();
+                        for row in 0..num_rows {
+                            match expected_f64[fi][row] {
+                                Some(v) => {
+                                    prop_assert!(!typed.is_null(row));
+                                    prop_assert_eq!(typed.value(row).to_bits(), v.to_bits());
+                                }
+                                None => {
+                                    prop_assert!(typed.is_null(row));
+                                }
+                            }
+                        }
+                    }
+                    FieldKind::Bool => {
+                        let typed = col.as_any().downcast_ref::<BooleanArray>().unwrap();
+                        for row in 0..num_rows {
+                            match expected_bool[fi][row] {
+                                Some(v) => {
+                                    prop_assert!(!typed.is_null(row));
+                                    prop_assert_eq!(typed.value(row), v);
+                                }
+                                None => {
+                                    prop_assert!(typed.is_null(row));
+                                }
+                            }
+                        }
+                    }
+                    FieldKind::Utf8View => {
+                        let typed = col.as_any().downcast_ref::<StringViewArray>().unwrap();
+                        for row in 0..num_rows {
+                            match &expected_str[fi][row] {
+                                Some(v) => {
+                                    prop_assert!(!typed.is_null(row));
+                                    prop_assert_eq!(typed.value(row), v.as_str());
+                                }
+                                None => {
+                                    prop_assert!(typed.is_null(row));
+                                }
+                            }
+                        }
+                    }
+                    // Binary kinds have no write methods yet; columns are
+                    // omitted (handled by the None branch above).
+                    FieldKind::BinaryView | FieldKind::FixedBinary(_) => {}
+                }
+            }
+        }
+
+        /// Multi-batch builder: planned fields persist, values reset between batches.
+        #[test]
+        fn builder_e2e_multi_batch(
+            num_rows_per_batch in 1usize..=8,
+            num_batches in 2usize..=4,
+        ) {
+            let mut plan = BatchPlan::new();
+            let h_int = plan.declare_planned("count", FieldKind::Int64).unwrap();
+            let h_str = plan.declare_planned("label", FieldKind::Utf8View).unwrap();
+
+            let mut b = ColumnarBatchBuilder::new(plan);
+
+            for batch_idx in 0..num_batches {
+                b.begin_batch();
+                for row in 0..num_rows_per_batch {
+                    b.begin_row();
+                    let val = (batch_idx * 1000 + row) as i64;
+                    b.write_i64(h_int, val);
+                    let label = format!("b{batch_idx}r{row}");
+                    b.write_str(h_str, &label).unwrap();
+                    b.end_row();
+                }
+                let batch = b.finish_batch().unwrap();
+
+                prop_assert_eq!(batch.num_rows(), num_rows_per_batch,
+                    "batch {} row count", batch_idx);
+                prop_assert_eq!(batch.num_columns(), 2,
+                    "batch {} column count", batch_idx);
+
+                let ints = batch.column(0).as_any()
+                    .downcast_ref::<Int64Array>().unwrap();
+                let strs = batch.column(1).as_any()
+                    .downcast_ref::<StringViewArray>().unwrap();
+
+                for row in 0..num_rows_per_batch {
+                    let expected_val = (batch_idx * 1000 + row) as i64;
+                    let expected_label = format!("b{batch_idx}r{row}");
+                    prop_assert_eq!(ints.value(row), expected_val);
+                    prop_assert_eq!(strs.value(row), expected_label.as_str());
+                }
+            }
+        }
     }
 }

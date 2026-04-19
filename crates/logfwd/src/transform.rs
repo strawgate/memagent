@@ -46,6 +46,7 @@ mod passthrough {
 
     pub struct QueryAnalyzer {
         pub referenced_columns: HashSet<String>,
+        pub uses_select_star: bool,
     }
 
     pub struct SqlTransform {
@@ -64,6 +65,7 @@ mod passthrough {
             Ok(Self {
                 analyzer: QueryAnalyzer {
                     referenced_columns: HashSet::new(),
+                    uses_select_star: true,
                 },
             })
         }

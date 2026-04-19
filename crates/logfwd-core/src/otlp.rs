@@ -99,6 +99,10 @@ pub const ANY_VALUE_BOOL_VALUE: u32 = 2;
 pub const ANY_VALUE_INT_VALUE: u32 = 3;
 /// `AnyValue.double_value` (double/fixed64).
 pub const ANY_VALUE_DOUBLE_VALUE: u32 = 4;
+/// `AnyValue.array_value` (ArrayValue message).
+pub const ANY_VALUE_ARRAY_VALUE: u32 = 5;
+/// `AnyValue.kvlist_value` (KeyValueList message).
+pub const ANY_VALUE_KVLIST_VALUE: u32 = 6;
 /// `AnyValue.bytes_value` (bytes).
 pub const ANY_VALUE_BYTES_VALUE: u32 = 7;
 
@@ -862,7 +866,7 @@ mod tests {
             month in 1u32..=12,
             day in 1u32..=31,
         ) {
-            use chrono::{NaiveDate, NaiveDateTime};
+            use chrono::NaiveDate;
             let max_day = days_in_month(year, month);
             proptest::prop_assume!(day <= max_day);
 
@@ -874,7 +878,6 @@ mod tests {
                 proptest::prop_assert_eq!(our, chrono_days,
                     "days_from_civil mismatch");
             }
-            let _ = NaiveDateTime::MAX; // suppress unused import warning
         }
 
         /// `parse_timestamp_nanos` must produce the same result as chrono for
@@ -1148,6 +1151,8 @@ mod tests {
         assert_eq!(ANY_VALUE_BOOL_VALUE, 2);
         assert_eq!(ANY_VALUE_INT_VALUE, 3);
         assert_eq!(ANY_VALUE_DOUBLE_VALUE, 4);
+        assert_eq!(ANY_VALUE_ARRAY_VALUE, 5);
+        assert_eq!(ANY_VALUE_KVLIST_VALUE, 6);
         assert_eq!(ANY_VALUE_BYTES_VALUE, 7);
 
         // KeyValue fields (common.proto).
@@ -1832,10 +1837,14 @@ mod verification {
         assert!(ANY_VALUE_BOOL_VALUE == 2);
         assert!(ANY_VALUE_INT_VALUE == 3);
         assert!(ANY_VALUE_DOUBLE_VALUE == 4);
+        assert!(ANY_VALUE_ARRAY_VALUE == 5);
+        assert!(ANY_VALUE_KVLIST_VALUE == 6);
         assert!(ANY_VALUE_BYTES_VALUE == 7);
 
         kani::cover!(ANY_VALUE_STRING_VALUE == 1, "string_value is 1");
         kani::cover!(ANY_VALUE_DOUBLE_VALUE == 4, "double_value is 4");
+        kani::cover!(ANY_VALUE_ARRAY_VALUE == 5, "array_value is 5");
+        kani::cover!(ANY_VALUE_KVLIST_VALUE == 6, "kvlist_value is 6");
         kani::cover!(ANY_VALUE_BYTES_VALUE == 7, "bytes_value is 7");
     }
 

@@ -5,208 +5,84 @@
 //! stage:
 //! - parser-only protobuf decode (`prost`)
 //! - receiver decode + Arrow materialization
+//! - request decompression + receiver decode + Arrow materialization
 //! - sink encode-only (handwritten vs generated-fast)
 //! - encoded-payload compression
 //! - in-process decode -> encode.
 
+use std::sync::Arc;
+
+use arrow::array::{Array, StructArray, make_array};
+use arrow::compute::cast;
+use arrow::datatypes::{DataType, Schema};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use logfwd_bench::generators::otlp::{self, OtlpFixtureProfile};
 use logfwd_bench::{generators, make_otlp_sink};
 use logfwd_io::compress::ChunkCompressor;
 use logfwd_io::otlp_receiver::{
-    decode_protobuf_bytes_to_batch_projected_experimental, decode_protobuf_to_batch,
+    ProjectedOtlpDecoder, decode_protobuf_bytes_to_batch_projected_experimental,
+    decode_protobuf_bytes_to_batch_projected_only_experimental, decode_protobuf_to_batch,
     decode_protobuf_to_batch_projected_detached_experimental,
     decode_protobuf_to_batch_prost_reference,
 };
 use logfwd_output::Compression;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
-use opentelemetry_proto::tonic::common::v1::any_value::Value;
-use opentelemetry_proto::tonic::common::v1::{
-    AnyValue, ArrayValue, InstrumentationScope, KeyValue, KeyValueList,
-};
-use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
-use opentelemetry_proto::tonic::resource::v1::Resource;
 use prost::Message;
 
-const NANOS_BASE: u64 = 1_712_509_200_123_456_789;
-
-#[derive(Clone, Copy)]
-struct FixtureProfile {
-    name: &'static str,
-    resources: usize,
-    scopes_per_resource: usize,
-    rows_per_scope: usize,
-    attrs_per_record: usize,
-    resource_attrs: usize,
-    body_len: usize,
-    has_complex_any: bool,
-    has_duplicate_keys: bool,
-    has_trace_heavy: bool,
-}
-
-impl FixtureProfile {
-    const fn total_rows(self) -> usize {
-        self.resources * self.scopes_per_resource * self.rows_per_scope
-    }
-}
-
-const FIXTURES: [FixtureProfile; 10] = [
-    FixtureProfile {
-        name: "tiny",
-        resources: 1,
-        scopes_per_resource: 1,
-        rows_per_scope: 32,
-        attrs_per_record: 4,
-        resource_attrs: 3,
-        body_len: 48,
-        has_complex_any: false,
-        has_duplicate_keys: false,
-        has_trace_heavy: false,
-    },
-    FixtureProfile {
-        name: "narrow-1k",
-        resources: 1,
-        scopes_per_resource: 1,
-        rows_per_scope: 1_000,
-        attrs_per_record: 4,
-        resource_attrs: 4,
-        body_len: 72,
-        has_complex_any: false,
-        has_duplicate_keys: false,
-        has_trace_heavy: false,
-    },
-    FixtureProfile {
-        name: "wide-10k",
-        resources: 1,
-        scopes_per_resource: 1,
-        rows_per_scope: 10_000,
-        attrs_per_record: 20,
-        resource_attrs: 6,
-        body_len: 240,
-        has_complex_any: false,
-        has_duplicate_keys: false,
-        has_trace_heavy: false,
-    },
-    FixtureProfile {
-        name: "attrs-heavy",
-        resources: 1,
-        scopes_per_resource: 1,
-        rows_per_scope: 2_000,
-        attrs_per_record: 40,
-        resource_attrs: 8,
-        body_len: 96,
-        has_complex_any: false,
-        has_duplicate_keys: false,
-        has_trace_heavy: false,
-    },
-    FixtureProfile {
-        name: "multi-resource-scope",
-        resources: 12,
-        scopes_per_resource: 4,
-        rows_per_scope: 120,
-        attrs_per_record: 6,
-        resource_attrs: 8,
-        body_len: 96,
-        has_complex_any: false,
-        has_duplicate_keys: false,
-        has_trace_heavy: false,
-    },
-    FixtureProfile {
-        name: "complex-anyvalue",
-        resources: 1,
-        scopes_per_resource: 2,
-        rows_per_scope: 1_000,
-        attrs_per_record: 12,
-        resource_attrs: 6,
-        body_len: 128,
-        has_complex_any: true,
-        has_duplicate_keys: false,
-        has_trace_heavy: false,
-    },
-    FixtureProfile {
-        name: "duplicate-collision",
-        resources: 1,
-        scopes_per_resource: 1,
-        rows_per_scope: 1_500,
-        attrs_per_record: 14,
-        resource_attrs: 6,
-        body_len: 80,
-        has_complex_any: false,
-        has_duplicate_keys: true,
-        has_trace_heavy: false,
-    },
-    FixtureProfile {
-        name: "trace-heavy",
-        resources: 1,
-        scopes_per_resource: 2,
-        rows_per_scope: 4_000,
-        attrs_per_record: 8,
-        resource_attrs: 6,
-        body_len: 120,
-        has_complex_any: false,
-        has_duplicate_keys: false,
-        has_trace_heavy: true,
-    },
-    FixtureProfile {
-        name: "resource-heavy",
-        resources: 80,
-        scopes_per_resource: 1,
-        rows_per_scope: 64,
-        attrs_per_record: 5,
-        resource_attrs: 24,
-        body_len: 64,
-        has_complex_any: false,
-        has_duplicate_keys: false,
-        has_trace_heavy: false,
-    },
-    FixtureProfile {
-        name: "compression-relevant",
-        resources: 1,
-        scopes_per_resource: 1,
-        rows_per_scope: 5_000,
-        attrs_per_record: 20,
-        resource_attrs: 16,
-        body_len: 512,
-        has_complex_any: false,
-        has_duplicate_keys: false,
-        has_trace_heavy: true,
-    },
-];
-
 struct FixtureData {
-    profile: FixtureProfile,
+    profile: OtlpFixtureProfile,
     payload: Vec<u8>,
     payload_bytes: bytes::Bytes,
+    zstd_payload: Vec<u8>,
     production_batch: arrow::record_batch::RecordBatch,
     projected_batch: Option<arrow::record_batch::RecordBatch>,
     projected_view_batch: Option<arrow::record_batch::RecordBatch>,
+    projected_fallback_batch: arrow::record_batch::RecordBatch,
 }
 
 fn fixtures() -> Vec<FixtureData> {
-    FIXTURES.into_iter().map(build_fixture).collect()
+    otlp::ALL_PROFILES
+        .iter()
+        .copied()
+        .map(build_fixture)
+        .collect()
 }
 
-fn build_fixture(profile: FixtureProfile) -> FixtureData {
+fn build_fixture(profile: OtlpFixtureProfile) -> FixtureData {
     // Setup-only work: synthesize a request, encode it, and validate the
     // decoder outputs before any Criterion timing begins.
-    let payload = build_request(profile).encode_to_vec();
-    let payload_bytes = bytes::Bytes::from(payload.clone());
-    let prost_reference_batch = decode_protobuf_to_batch_prost_reference(&payload)
+    let otlp_data = otlp::build_fixture(profile);
+    let prost_reference_batch = decode_protobuf_to_batch_prost_reference(&otlp_data.payload)
         .expect("benchmark fixture should decode");
     assert_eq!(prost_reference_batch.num_rows(), profile.total_rows());
     let production_batch =
-        decode_protobuf_to_batch(&payload).expect("production fixture should decode");
+        decode_protobuf_to_batch(&otlp_data.payload).expect("production fixture should decode");
     assert_batch_matches(&prost_reference_batch, &production_batch, profile.name);
     assert_encode_paths_match(&production_batch, profile.name);
+    let projected_fallback_batch =
+        decode_protobuf_bytes_to_batch_projected_experimental(otlp_data.payload_bytes.clone())
+            .expect("experimental projected fallback decoder should decode fixture");
+    let detached_projected_fallback = logfwd_arrow::materialize::detach(&projected_fallback_batch);
+    assert_batch_matches(
+        &prost_reference_batch,
+        &detached_projected_fallback,
+        profile.name,
+    );
+    assert_encode_paths_match(&projected_fallback_batch, profile.name);
+    let zstd_payload =
+        zstd::encode_all(otlp_data.payload.as_slice(), 1).expect("fixture should zstd compress");
     let mut projected_batch = None;
     let mut projected_view_batch = None;
     if !profile.has_complex_any {
-        let wire_batch = decode_protobuf_to_batch_projected_detached_experimental(&payload)
-            .expect("experimental wire decoder should decode primitive fixture");
+        let wire_batch =
+            decode_protobuf_to_batch_projected_detached_experimental(&otlp_data.payload)
+                .expect("experimental wire decoder should decode primitive fixture");
         assert_batch_matches(&prost_reference_batch, &wire_batch, profile.name);
         assert_encode_paths_match(&wire_batch, profile.name);
-        let view_batch =
-            decode_protobuf_bytes_to_batch_projected_experimental(payload_bytes.clone())
-                .expect("experimental wire view decoder should decode primitive fixture");
+        let view_batch = decode_protobuf_bytes_to_batch_projected_only_experimental(
+            otlp_data.payload_bytes.clone(),
+        )
+        .expect("experimental wire view decoder should decode primitive fixture");
         let detached_view_batch = logfwd_arrow::materialize::detach(&view_batch);
         assert_batch_matches(&prost_reference_batch, &detached_view_batch, profile.name);
         assert_encode_paths_match(&view_batch, profile.name);
@@ -215,11 +91,13 @@ fn build_fixture(profile: FixtureProfile) -> FixtureData {
     }
     FixtureData {
         profile,
-        payload,
-        payload_bytes,
+        payload: otlp_data.payload,
+        payload_bytes: otlp_data.payload_bytes,
+        zstd_payload,
         production_batch,
         projected_batch,
         projected_view_batch,
+        projected_fallback_batch,
     }
 }
 
@@ -241,11 +119,74 @@ fn assert_encode_paths_match(batch: &arrow::record_batch::RecordBatch, fixture_n
     );
 }
 
+/// Recursively cast Utf8View → Utf8 in an array, including Struct children.
+fn normalize_utf8view_array(arr: &dyn Array) -> Arc<dyn Array> {
+    match arr.data_type() {
+        DataType::Utf8View => cast(arr, &DataType::Utf8).expect("cast Utf8View→Utf8"),
+        DataType::Struct(fields) => {
+            let struct_arr = arr
+                .as_any()
+                .downcast_ref::<StructArray>()
+                .expect("struct downcast");
+            let new_fields: Vec<_> = fields
+                .iter()
+                .enumerate()
+                .map(|(i, f)| {
+                    let child = normalize_utf8view_array(struct_arr.column(i).as_ref());
+                    let new_dt = child.data_type().clone();
+                    let new_field = if &new_dt == f.data_type() {
+                        Arc::clone(f)
+                    } else {
+                        Arc::new(f.as_ref().clone().with_data_type(new_dt))
+                    };
+                    (new_field, child)
+                })
+                .collect();
+            let (new_field_refs, new_arrays): (Vec<_>, Vec<_>) = new_fields.into_iter().unzip();
+            Arc::new(
+                StructArray::try_new(
+                    new_field_refs.into(),
+                    new_arrays,
+                    struct_arr.nulls().cloned(),
+                )
+                .expect("struct rebuild"),
+            )
+        }
+        _ => make_array(arr.to_data()),
+    }
+}
+
+/// Normalize a batch by recursively casting Utf8View columns to Utf8.
+/// ColumnarBatchBuilder produces Utf8View; prost/StreamingBuilder produces Utf8.
+fn normalize_utf8view(
+    batch: &arrow::record_batch::RecordBatch,
+) -> arrow::record_batch::RecordBatch {
+    let schema = batch.schema();
+    let mut new_fields = Vec::with_capacity(schema.fields().len());
+    let mut new_columns = Vec::with_capacity(batch.num_columns());
+    for (i, field) in schema.fields().iter().enumerate() {
+        let col = batch.column(i);
+        let normalized = normalize_utf8view_array(col.as_ref());
+        let new_dt = normalized.data_type().clone();
+        // Preserve field metadata — only change data_type when it differs.
+        let new_field = if &new_dt == field.data_type() {
+            Arc::clone(field)
+        } else {
+            Arc::new(field.as_ref().clone().with_data_type(new_dt))
+        };
+        new_fields.push(new_field);
+        new_columns.push(normalized);
+    }
+    let new_schema = Arc::new(Schema::new(new_fields));
+    arrow::record_batch::RecordBatch::try_new(new_schema, new_columns).expect("normalized batch")
+}
+
 fn assert_batch_matches(
     expected: &arrow::record_batch::RecordBatch,
     actual: &arrow::record_batch::RecordBatch,
     fixture_name: &str,
 ) {
+    let actual = normalize_utf8view(actual);
     assert_eq!(
         expected.schema(),
         actual.schema(),
@@ -330,6 +271,21 @@ fn bench_decode_materialize(c: &mut Criterion) {
             },
         );
 
+        group.bench_with_input(
+            BenchmarkId::new("projected_fallback_to_batch", fixture.profile.name),
+            &fixture.payload_bytes,
+            |b, payload| {
+                b.iter(|| {
+                    let batch =
+                        decode_protobuf_bytes_to_batch_projected_experimental(payload.clone())
+                            .expect(
+                                "projected fallback decode + materialize should decode fixture",
+                            );
+                    std::hint::black_box(batch.num_rows());
+                });
+            },
+        );
+
         if !fixture.profile.has_complex_any {
             group.bench_with_input(
                 BenchmarkId::new("projected_detached_to_batch", fixture.profile.name),
@@ -349,9 +305,10 @@ fn bench_decode_materialize(c: &mut Criterion) {
                 &fixture.payload_bytes,
                 |b, payload| {
                     b.iter(|| {
-                        let batch =
-                            decode_protobuf_bytes_to_batch_projected_experimental(payload.clone())
-                                .expect("experimental wire view decoder should decode fixture");
+                        let batch = decode_protobuf_bytes_to_batch_projected_only_experimental(
+                            payload.clone(),
+                        )
+                        .expect("experimental wire view decoder should decode fixture");
                         std::hint::black_box(batch.num_rows());
                     });
                 },
@@ -360,6 +317,61 @@ fn bench_decode_materialize(c: &mut Criterion) {
     }
 
     group.finish();
+}
+
+fn bench_decompress_decode(c: &mut Criterion) {
+    let fixtures = fixtures();
+    let mut group = c.benchmark_group("otlp_input_decompress_decode");
+    group.sample_size(10);
+
+    for fixture in fixtures
+        .iter()
+        .filter(|f| is_decompress_gate_profile(f.profile))
+    {
+        // Timed work: zstd request decompression plus decode into Arrow. HTTP
+        // header parsing, body collection, and receiver channel handoff are
+        // covered by `src/bin/http_receiver_apples.rs`; this group isolates the
+        // decompression+decode cost with the same payload shapes.
+        group.throughput(Throughput::Elements(fixture.profile.total_rows() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("zstd_production_current_to_batch", fixture.profile.name),
+            &fixture.zstd_payload,
+            |b, compressed| {
+                b.iter(|| {
+                    let decompressed =
+                        zstd::decode_all(compressed.as_slice()).expect("zstd fixture decodes");
+                    let batch = decode_protobuf_to_batch(&decompressed)
+                        .expect("production decode + materialize should decode fixture");
+                    std::hint::black_box(batch.num_rows());
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("zstd_projected_fallback_to_batch", fixture.profile.name),
+            &fixture.zstd_payload,
+            |b, compressed| {
+                b.iter(|| {
+                    let decompressed =
+                        zstd::decode_all(compressed.as_slice()).expect("zstd fixture decodes");
+                    let batch = decode_protobuf_bytes_to_batch_projected_experimental(
+                        bytes::Bytes::from(decompressed),
+                    )
+                    .expect("projected fallback decode + materialize should decode fixture");
+                    std::hint::black_box(batch.num_rows());
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn is_decompress_gate_profile(profile: OtlpFixtureProfile) -> bool {
+    matches!(
+        profile.name,
+        "narrow-1k" | "compression-relevant" | "complex-anyvalue"
+    )
 }
 
 fn bench_output_encode_only(c: &mut Criterion) {
@@ -392,6 +404,18 @@ fn bench_output_encode_only(c: &mut Criterion) {
                 let mut sink = make_otlp_sink(Compression::None);
                 b.iter(|| {
                     sink.encode_batch_generated_fast(&fixture.production_batch, &metadata);
+                    std::hint::black_box(sink.encoded_payload().len());
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("projected_fallback_handwritten", fixture.profile.name),
+            &fixture.projected_fallback_batch,
+            |b, batch| {
+                let mut sink = make_otlp_sink(Compression::None);
+                b.iter(|| {
+                    sink.encode_batch(batch, &metadata);
                     std::hint::black_box(sink.encoded_payload().len());
                 });
             },
@@ -541,6 +565,26 @@ fn bench_end_to_end(c: &mut Criterion) {
             },
         );
 
+        group.bench_with_input(
+            BenchmarkId::new(
+                "projected_fallback_to_handwritten_encode",
+                fixture.profile.name,
+            ),
+            &fixture.payload_bytes,
+            |b, payload| {
+                let mut sink = make_otlp_sink(Compression::None);
+                b.iter(|| {
+                    let batch =
+                        decode_protobuf_bytes_to_batch_projected_experimental(payload.clone())
+                            .expect(
+                                "projected fallback decode + materialize should decode fixture",
+                            );
+                    sink.encode_batch(&batch, &metadata);
+                    std::hint::black_box(sink.encoded_payload().len());
+                });
+            },
+        );
+
         if !fixture.profile.has_complex_any {
             group.bench_with_input(
                 BenchmarkId::new(
@@ -566,9 +610,10 @@ fn bench_end_to_end(c: &mut Criterion) {
                 |b, payload| {
                     let mut sink = make_otlp_sink(Compression::None);
                     b.iter(|| {
-                        let batch =
-                            decode_protobuf_bytes_to_batch_projected_experimental(payload.clone())
-                                .expect("experimental wire view decoder should decode fixture");
+                        let batch = decode_protobuf_bytes_to_batch_projected_only_experimental(
+                            payload.clone(),
+                        )
+                        .expect("experimental wire view decoder should decode fixture");
                         sink.encode_batch(&batch, &metadata);
                         std::hint::black_box(sink.encoded_payload().len());
                     });
@@ -580,254 +625,166 @@ fn bench_end_to_end(c: &mut Criterion) {
     group.finish();
 }
 
-fn build_request(profile: FixtureProfile) -> ExportLogsServiceRequest {
-    let mut resource_logs = Vec::with_capacity(profile.resources);
+fn bench_projected_fallback_mix(c: &mut Criterion) {
+    let projected = build_fixture(otlp::NARROW_1K);
+    let fallback = build_fixture(otlp::COMPLEX_ANYVALUE);
+    let payloads = [
+        projected.payload_bytes.clone(),
+        projected.payload_bytes.clone(),
+        projected.payload_bytes.clone(),
+        projected.payload_bytes.clone(),
+        fallback.payload_bytes.clone(),
+    ];
+    let rows_per_iter = projected.profile.total_rows() * 4 + fallback.profile.total_rows();
 
-    for resource_idx in 0..profile.resources {
-        let mut scopes = Vec::with_capacity(profile.scopes_per_resource);
-        for scope_idx in 0..profile.scopes_per_resource {
-            let mut records = Vec::with_capacity(profile.rows_per_scope);
-            for row in 0..profile.rows_per_scope {
-                let global_row = ((resource_idx * profile.scopes_per_resource + scope_idx)
-                    * profile.rows_per_scope)
-                    + row;
-                let mut attributes = make_record_attrs(profile, global_row);
-                if profile.has_duplicate_keys {
-                    attributes.push(kv_string("body", "attr-body-shadow"));
-                    attributes.push(kv_string("trace_id", "attr-trace-shadow"));
-                    attributes.push(kv_string("flags", "attr-flags-shadow"));
-                    attributes.push(kv_string("_resource_service.name", "attr-resource-shadow"));
-                }
-
-                let body = if profile.has_complex_any && row % 2 == 0 {
-                    complex_body_any_value(global_row)
-                } else {
-                    AnyValue {
-                        value: Some(Value::StringValue(make_message(
-                            global_row,
-                            profile.body_len,
-                        ))),
-                    }
-                };
-
-                let trace_id = if profile.has_trace_heavy || row % 3 != 0 {
-                    trace_id_for(global_row)
-                } else {
-                    Vec::new()
-                };
-                let span_id = if profile.has_trace_heavy || row % 5 != 0 {
-                    span_id_for(global_row)
-                } else {
-                    Vec::new()
-                };
-
-                records.push(LogRecord {
-                    time_unix_nano: NANOS_BASE + global_row as u64,
-                    observed_time_unix_nano: NANOS_BASE + global_row as u64 + 123,
-                    severity_text: severity_text(global_row).to_string(),
-                    severity_number: severity_number(global_row),
-                    body: Some(body),
-                    trace_id,
-                    span_id,
-                    flags: 1,
-                    attributes,
-                    ..Default::default()
-                });
+    let mut group = c.benchmark_group("otlp_projected_fallback_mix");
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(rows_per_iter as u64));
+    group.bench_function("projected_success_4x_plus_fallback_1x", |b| {
+        b.iter(|| {
+            let mut rows = 0usize;
+            for payload in &payloads {
+                let batch = decode_protobuf_bytes_to_batch_projected_experimental(payload.clone())
+                    .expect("projected fallback mix should decode each fixture");
+                rows += batch.num_rows();
             }
+            std::hint::black_box(rows);
+        });
+    });
+    group.finish();
+}
 
-            scopes.push(ScopeLogs {
-                scope: Some(InstrumentationScope {
-                    name: format!("bench-scope-{resource_idx}-{scope_idx}"),
-                    version: "2026.04".to_string(),
-                    attributes: vec![kv_string("scope.env", "bench")],
-                    dropped_attributes_count: 0,
-                }),
-                log_records: records,
-                schema_url: String::new(),
-            });
+/// Multi-batch decoder reuse: measures steady-state decode performance when the
+/// same `ProjectedOtlpDecoder` processes multiple batches in sequence.
+///
+/// Scenarios:
+/// - **repeated**: same fixture decoded N times (steady-state, column hints warm)
+/// - **alternating**: two different fixtures decoded alternately (schema churn)
+/// - **spike-recovery**: one wide batch followed by many narrow batches
+///   (tests that a single anomalous batch doesn't permanently inflate overhead)
+fn bench_multi_batch_reuse(c: &mut Criterion) {
+    let mut group = c.benchmark_group("otlp_multi_batch_reuse");
+    group.sample_size(10);
+
+    // --- Repeated: same payload decoded 10 times ---
+    let profiles_for_repeat = [
+        otlp::NARROW_1K,
+        otlp::WIDE_10K,
+        otlp::ATTRS_HEAVY,
+        otlp::MINIMAL,
+    ];
+    for profile in &profiles_for_repeat {
+        if profile.has_complex_any {
+            continue;
         }
-
-        resource_logs.push(ResourceLogs {
-            resource: Some(Resource {
-                attributes: make_resource_attrs(profile, resource_idx),
-                dropped_attributes_count: 0,
-                entity_refs: Vec::new(),
-            }),
-            scope_logs: scopes,
-            schema_url: String::new(),
-        });
+        let fixture = otlp::build_fixture(*profile);
+        let batches_per_iter = 10;
+        let total_rows = profile.total_rows() * batches_per_iter;
+        group.throughput(Throughput::Elements(total_rows as u64));
+        group.bench_with_input(
+            BenchmarkId::new("repeated_10x", profile.name),
+            &fixture.payload_bytes,
+            |b, payload| {
+                let mut decoder = ProjectedOtlpDecoder::new("resource.");
+                // Warm with one batch outside timing.
+                let _ = decoder.decode_view_bytes(payload.clone()).unwrap();
+                b.iter(|| {
+                    for _ in 0..batches_per_iter {
+                        let batch = decoder
+                            .decode_view_bytes(payload.clone())
+                            .expect("repeated decode should succeed");
+                        std::hint::black_box(batch.num_rows());
+                    }
+                });
+            },
+        );
     }
 
-    ExportLogsServiceRequest { resource_logs }
-}
-
-fn make_resource_attrs(profile: FixtureProfile, resource_idx: usize) -> Vec<KeyValue> {
-    let mut attrs = Vec::with_capacity(profile.resource_attrs.max(4));
-    attrs.push(kv_string(
-        "service.name",
-        &format!("bench-service-{resource_idx}"),
-    ));
-    attrs.push(kv_string("service.namespace", "bench"));
-    attrs.push(kv_string(
-        "host.name",
-        &format!("bench-node-{}", resource_idx % 32),
-    ));
-    attrs.push(kv_string("k8s.cluster.name", "bench-cluster"));
-
-    for idx in 0..profile.resource_attrs.saturating_sub(4) {
-        attrs.push(kv_string(
-            &format!("resource.attr.{idx}"),
-            &format!("rv{}_{}", resource_idx % 19, idx % 11),
-        ));
+    // --- Alternating: two different schemas decoded alternately ---
+    let pairs = [
+        (otlp::NARROW_1K, otlp::ATTRS_HEAVY, "narrow_vs_heavy"),
+        (otlp::MINIMAL, otlp::WIDE_10K, "minimal_vs_wide"),
+    ];
+    for (a, b_profile, label) in &pairs {
+        if a.has_complex_any || b_profile.has_complex_any {
+            continue;
+        }
+        let fix_a = otlp::build_fixture(*a);
+        let fix_b = otlp::build_fixture(*b_profile);
+        let rounds = 5;
+        let total_rows = (a.total_rows() + b_profile.total_rows()) * rounds;
+        group.throughput(Throughput::Elements(total_rows as u64));
+        group.bench_with_input(
+            BenchmarkId::new("alternating_5x", *label),
+            &(fix_a.payload_bytes.clone(), fix_b.payload_bytes.clone()),
+            |bench, (pa, pb)| {
+                let mut decoder = ProjectedOtlpDecoder::new("resource.");
+                // Warm
+                let _ = decoder.decode_view_bytes(pa.clone()).unwrap();
+                bench.iter(|| {
+                    for _ in 0..rounds {
+                        let batch_a = decoder
+                            .decode_view_bytes(pa.clone())
+                            .expect("decode A should succeed");
+                        std::hint::black_box(batch_a.num_rows());
+                        let batch_b = decoder
+                            .decode_view_bytes(pb.clone())
+                            .expect("decode B should succeed");
+                        std::hint::black_box(batch_b.num_rows());
+                    }
+                });
+            },
+        );
     }
 
-    attrs
-}
-
-fn make_record_attrs(profile: FixtureProfile, row: usize) -> Vec<KeyValue> {
-    let mut attrs = Vec::with_capacity(profile.attrs_per_record + 4);
-    attrs.push(kv_string("host", &format!("host-{}", row % 64)));
-    attrs.push(kv_i64("status", 200 + (row % 9) as i64));
-    attrs.push(kv_f64("duration_ms", (row % 1000) as f64 / 10.0));
-    attrs.push(kv_bool("success", row % 17 != 0));
-
-    for idx in 0..profile.attrs_per_record.saturating_sub(4) {
-        let value = if profile.has_complex_any && idx % 5 == 0 {
-            complex_body_any_value(row + idx)
-        } else if idx % 3 == 0 {
-            AnyValue {
-                value: Some(Value::IntValue((row as i64 + idx as i64) % 4096)),
-            }
-        } else {
-            AnyValue {
-                value: Some(Value::StringValue(format!("v{}_{}", idx % 37, row % 23))),
-            }
-        };
-        attrs.push(KeyValue {
-            key: format!("attr_{idx}"),
-            value: Some(value),
-        });
+    // --- Spike recovery: 1 wide batch then 10 narrow batches ---
+    // Tests that processing one anomalously wide batch doesn't permanently
+    // inflate allocations for subsequent normal batches.
+    {
+        let spike = otlp::build_fixture(otlp::WIDE_ATTRS);
+        let normal = otlp::build_fixture(otlp::NARROW_1K);
+        let narrow_count = 10;
+        let total_rows =
+            otlp::WIDE_ATTRS.total_rows() + otlp::NARROW_1K.total_rows() * narrow_count;
+        group.throughput(Throughput::Elements(total_rows as u64));
+        group.bench_function(
+            BenchmarkId::new("spike_then_narrow_10x", "wide_attrs_then_narrow"),
+            |bench| {
+                let mut decoder = ProjectedOtlpDecoder::new("resource.");
+                // Warm
+                let _ = decoder
+                    .decode_view_bytes(normal.payload_bytes.clone())
+                    .unwrap();
+                bench.iter(|| {
+                    // Spike batch
+                    let batch = decoder
+                        .decode_view_bytes(spike.payload_bytes.clone())
+                        .expect("spike decode should succeed");
+                    std::hint::black_box(batch.num_rows());
+                    // Normal batches
+                    for _ in 0..narrow_count {
+                        let batch = decoder
+                            .decode_view_bytes(normal.payload_bytes.clone())
+                            .expect("narrow decode should succeed");
+                        std::hint::black_box(batch.num_rows());
+                    }
+                });
+            },
+        );
     }
 
-    attrs
-}
-
-fn complex_body_any_value(row: usize) -> AnyValue {
-    AnyValue {
-        value: Some(Value::KvlistValue(KeyValueList {
-            values: vec![
-                kv_string("event.kind", "benchmark"),
-                KeyValue {
-                    key: "event.row".to_string(),
-                    value: Some(AnyValue {
-                        value: Some(Value::IntValue(row as i64)),
-                    }),
-                },
-                KeyValue {
-                    key: "nested".to_string(),
-                    value: Some(AnyValue {
-                        value: Some(Value::ArrayValue(ArrayValue {
-                            values: vec![
-                                AnyValue {
-                                    value: Some(Value::StringValue("alpha".to_string())),
-                                },
-                                AnyValue {
-                                    value: Some(Value::BoolValue(row % 2 == 0)),
-                                },
-                            ],
-                        })),
-                    }),
-                },
-            ],
-        })),
-    }
-}
-
-fn make_message(row: usize, target_len: usize) -> String {
-    let mut message = format!("benchmark row={row} subsystem=otlp_io ");
-    while message.len() < target_len {
-        message.push_str("payload_token ");
-    }
-    message.truncate(target_len);
-    message
-}
-
-fn severity_text(row: usize) -> &'static str {
-    match row % 4 {
-        0 => "INFO",
-        1 => "WARN",
-        2 => "ERROR",
-        _ => "DEBUG",
-    }
-}
-
-fn severity_number(row: usize) -> i32 {
-    match row % 4 {
-        0 => 9,
-        1 => 13,
-        2 => 17,
-        _ => 5,
-    }
-}
-
-fn trace_id_for(row: usize) -> Vec<u8> {
-    let mut out = vec![0u8; 16];
-    for (idx, byte) in out.iter_mut().enumerate() {
-        *byte = ((row + idx) % 251) as u8;
-    }
-    out
-}
-
-fn span_id_for(row: usize) -> Vec<u8> {
-    let mut out = vec![0u8; 8];
-    for (idx, byte) in out.iter_mut().enumerate() {
-        *byte = ((row + idx + 31) % 251) as u8;
-    }
-    out
-}
-
-fn kv_string(key: &str, value: &str) -> KeyValue {
-    KeyValue {
-        key: key.to_string(),
-        value: Some(AnyValue {
-            value: Some(Value::StringValue(value.to_string())),
-        }),
-    }
-}
-
-fn kv_i64(key: &str, value: i64) -> KeyValue {
-    KeyValue {
-        key: key.to_string(),
-        value: Some(AnyValue {
-            value: Some(Value::IntValue(value)),
-        }),
-    }
-}
-
-fn kv_f64(key: &str, value: f64) -> KeyValue {
-    KeyValue {
-        key: key.to_string(),
-        value: Some(AnyValue {
-            value: Some(Value::DoubleValue(value)),
-        }),
-    }
-}
-
-fn kv_bool(key: &str, value: bool) -> KeyValue {
-    KeyValue {
-        key: key.to_string(),
-        value: Some(AnyValue {
-            value: Some(Value::BoolValue(value)),
-        }),
-    }
+    group.finish();
 }
 
 criterion_group!(
     benches,
     bench_parser_only,
     bench_decode_materialize,
+    bench_decompress_decode,
     bench_output_encode_only,
     bench_output_compression,
-    bench_end_to_end
+    bench_end_to_end,
+    bench_projected_fallback_mix,
+    bench_multi_batch_reuse
 );
 criterion_main!(benches);

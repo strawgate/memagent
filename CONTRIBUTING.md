@@ -162,7 +162,7 @@ Work-unit issues (`work-unit` label) are scheduling tickets that bundle small, l
 
 ## Getting Help
 
-- File an issue at https://github.com/strawgate/memagent/issues
+- File an issue at https://github.com/strawgate/fastforward/issues
 - Read `dev-docs/README.md` for architecture/constraint entrypoints
 - Read `dev-docs/references/README.md` for concise library-specific notes
 - Read `dev-docs/research/README.md` for active investigations
