@@ -126,10 +126,18 @@ impl UdpSink {
             return Ok(());
         }
         let mut payload = std::mem::take(&mut self.dgram_buf);
-        self.send_packet(&payload).await?;
-        payload.clear();
-        self.dgram_buf = payload;
-        Ok(())
+        match self.send_packet(&payload).await {
+            Ok(()) => {
+                payload.clear();
+                self.dgram_buf = payload;
+                Ok(())
+            }
+            Err(e) => {
+                // Restore the buffer so data is not lost on transient failures.
+                self.dgram_buf = payload;
+                Err(e)
+            }
+        }
     }
 
     /// Serialize and send a batch of log records as UDP datagrams.
@@ -322,7 +330,7 @@ mod tests {
         let mut total_lines = 0;
         let mut dgram_count = 0;
 
-        while let Ok(n) = receiver.recv(&mut buf) {
+        while let Ok(n) = recv_with_retry(&receiver, &mut buf).await {
             assert!(n <= MAX_DATAGRAM_PAYLOAD, "datagram too large: {n}");
             let text = std::str::from_utf8(&buf[..n]).unwrap();
             total_lines += text.lines().count();
