@@ -433,6 +433,8 @@ Ship to Elasticsearch via the Bulk API.
 | `index` | string | No | `logs` | Target index name. Must not be empty, and must not contain Elasticsearch-reserved characters or prefixes. |
 | `compression` | string | No | `none` | `gzip` or `none`. |
 | `request_mode` | string | No | `buffered` | `buffered` or `streaming`. `streaming` currently requires `compression: none`. |
+| `request_timeout_ms` | integer | No | `30000` | HTTP request timeout in milliseconds. Must be >= 1 when set. |
+| `tls` | object | No | — | Optional TLS client options (`ca_file`, `cert_file`, `key_file`, `insecure_skip_verify`) for HTTPS endpoints. |
 | `auth` | object | No | — | Optional bearer token or custom headers for HTTP auth. |
 
 Bulk payloads are split before they exceed `5242880` bytes (5 MiB). That limit is internal and is not a YAML field.
@@ -448,6 +450,10 @@ output:
     bearer_token: "${ES_TOKEN}"
 ```
 
+`retry_attempts`, `retry_initial_backoff_ms`, `retry_max_backoff_ms`, `batch_size`, and
+`batch_timeout_ms` are currently rejected for Elasticsearch outputs because per-output
+retry/batch controls are not wired into the Elasticsearch sink yet.
+
 ### `loki` output
 
 Push to Grafana Loki.
@@ -455,6 +461,8 @@ Push to Grafana Loki.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Loki base URL. The `/loki/api/v1/push` path is appended automatically. |
+| `request_timeout_ms` | integer | No | HTTP request timeout in milliseconds (default: `30000`). Must be >= 1 when set. |
+| `tls` | object | No | Optional TLS client options (`ca_file`, `cert_file`, `key_file`, `insecure_skip_verify`) for HTTPS endpoints. |
 | `tenant_id` | string | No | Optional value sent as `X-Scope-OrgID` for multi-tenant Loki deployments. |
 | `static_labels` | map[string,string] | No | Static labels applied to every pushed log stream. Keys and values must be non-empty. |
 | `label_columns` | array[string] | No | Additional log columns to promote as Loki labels. |
@@ -475,6 +483,10 @@ output:
 
 `compression` is not supported for Loki outputs.
 
+`retry_attempts`, `retry_initial_backoff_ms`, `retry_max_backoff_ms`, `batch_size`, and
+`batch_timeout_ms` are currently rejected for Loki outputs because the Loki sink does not
+implement per-output retry/batch controls yet.
+
 ### `file` output
 
 Write records to a file.
@@ -490,6 +502,26 @@ output:
   path: /var/log/logfwd/capture.ndjson
   format: json
 ```
+
+### `tcp` output
+
+Send newline-delimited JSON records to a TCP endpoint.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `endpoint` | string | Yes | Host:port destination (for example `tcp.example.com:9000`). |
+
+`format`, `compression`, `tls`, retry, and batch controls are currently rejected for TCP outputs.
+
+### `udp` output
+
+Send newline-delimited JSON records as UDP datagrams.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `endpoint` | string | Yes | Host:port destination (for example `udp.example.com:514`). |
+
+`format`, `compression`, `tls`, retry, and batch controls are currently rejected for UDP outputs.
 
 ### `parquet` output *(not yet supported)*
 
@@ -508,7 +540,7 @@ Write records to Parquet files.
 | `otlp` | Implemented | OTLP protobuf over HTTP or gRPC. |
 | `http` | Not yet supported | Reserved for newline-delimited JSON over HTTP POST. |
 | `stdout` | Implemented | Print to stdout (JSON, console, or text). |
-| `elasticsearch` | Implemented | Elasticsearch Bulk API with retry and request-mode controls. |
+| `elasticsearch` | Implemented | Elasticsearch Bulk API with index/compression/request-mode controls. |
 | `loki` | Implemented | Grafana Loki push API with label grouping. |
 | `file` | Implemented | Write NDJSON or text to a local file. |
 | `null` | Implemented | Drop records intentionally for tests and benchmark baselines. |

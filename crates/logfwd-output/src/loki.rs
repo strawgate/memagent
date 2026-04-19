@@ -38,6 +38,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::sync::Arc;
+use std::time::Duration;
 
 use arrow::array::AsArray;
 use arrow::datatypes::DataType;
@@ -504,10 +505,30 @@ impl LokiSinkFactory {
         headers: Vec<(String, String)>,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()
-            .map_err(io::Error::other)?;
+        Self::new_with_client(
+            name,
+            endpoint,
+            tenant_id,
+            static_labels,
+            label_columns,
+            headers,
+            reqwest::Client::builder().timeout(Duration::from_secs(30)),
+            stats,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_client(
+        name: String,
+        endpoint: String,
+        tenant_id: Option<String>,
+        static_labels: Vec<(String, String)>,
+        label_columns: Vec<String>,
+        headers: Vec<(String, String)>,
+        client_builder: reqwest::ClientBuilder,
+        stats: Arc<ComponentStats>,
+    ) -> io::Result<Self> {
+        let client = client_builder.build().map_err(io::Error::other)?;
 
         let parsed_headers = headers
             .into_iter()

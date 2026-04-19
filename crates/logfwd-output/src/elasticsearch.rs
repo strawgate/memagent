@@ -1,6 +1,7 @@
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
@@ -811,6 +812,31 @@ impl ElasticsearchSinkFactory {
         request_mode: ElasticsearchRequestMode,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
+        Self::new_with_client(
+            name,
+            endpoint,
+            index,
+            headers,
+            compress,
+            request_mode,
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .pool_max_idle_per_host(64),
+            stats,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_client(
+        name: String,
+        endpoint: String,
+        index: String,
+        headers: Vec<(String, String)>,
+        compress: bool,
+        request_mode: ElasticsearchRequestMode,
+        client_builder: reqwest::ClientBuilder,
+        stats: Arc<ComponentStats>,
+    ) -> io::Result<Self> {
         if compress && request_mode == ElasticsearchRequestMode::Streaming {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -829,15 +855,7 @@ impl ElasticsearchSinkFactory {
             })
             .collect::<io::Result<Vec<_>>>()?;
 
-        // 30s timeout: generous enough for large bulk responses, short enough to
-        // detect dead connections before the pipeline stalls.
-        // 64 max idle per host: allows all workers (typically ≤16) to keep warm
-        // connections without excessive socket churn.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .pool_max_idle_per_host(64)
-            .build()
-            .map_err(io::Error::other)?;
+        let client = client_builder.build().map_err(io::Error::other)?;
 
         let endpoint = endpoint.trim_end_matches('/').to_string();
         let bulk_url = format!(
@@ -1928,7 +1946,7 @@ mod tests {
 
     #[test]
     fn split_result_keeps_retryable_result_visible() {
-        let delay = std::time::Duration::from_secs(3);
+        let delay = Duration::from_secs(3);
         let result = ElasticsearchSink::merge_split_send_results(
             crate::sink::SendResult::Rejected("left bad doc".to_string()),
             crate::sink::SendResult::RetryAfter(delay),
@@ -1944,7 +1962,7 @@ mod tests {
     fn split_result_io_error_takes_precedence_over_retry() {
         let result = ElasticsearchSink::merge_split_send_results(
             crate::sink::SendResult::IoError(io::Error::other("network")),
-            crate::sink::SendResult::RetryAfter(std::time::Duration::from_secs(3)),
+            crate::sink::SendResult::RetryAfter(Duration::from_secs(3)),
         );
 
         assert!(
