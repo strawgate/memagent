@@ -12,7 +12,9 @@ use super::tailer::{TailConfig, TailEvent};
 
 /// State tracked per tailed file.
 pub(super) struct TailedFile {
+    /// Stable identity used to derive the source id.
     pub(super) identity: FileIdentity,
+    /// Fingerprint used for rotation and eviction comparisons; promoted as the file grows.
     pub(super) comparison_fingerprint: u64,
     pub(super) fingerprint_len: u64,
     pub(super) file: File,
