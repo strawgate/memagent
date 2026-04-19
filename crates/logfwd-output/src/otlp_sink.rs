@@ -40,6 +40,8 @@ mod generated {
 const SCOPE_NAME: &[u8] = b"logfwd";
 /// Version emitted in the OTLP `InstrumentationScope.version` field (from Cargo.toml).
 const SCOPE_VERSION: &[u8] = env!("CARGO_PKG_VERSION").as_bytes();
+/// Default gRPC outbound message size guardrail.
+const DEFAULT_GRPC_MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // OtlpSink
@@ -540,6 +542,16 @@ impl OtlpSink {
             Compression::None => false,
         };
         let payload: &[u8] = if self.protocol == OtlpProtocol::Grpc {
+            if payload.len() > DEFAULT_GRPC_MAX_MESSAGE_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "OTLP gRPC payload too large: {} bytes exceeds max {} bytes",
+                        payload.len(),
+                        DEFAULT_GRPC_MAX_MESSAGE_BYTES
+                    ),
+                ));
+            }
             write_grpc_frame(&mut self.grpc_buf, payload, payload_is_compressed)?;
             &self.grpc_buf
         } else {
@@ -783,6 +795,7 @@ enum AttrArray<'a> {
     Bytes(&'a BinaryArray),
     LargeBytes(&'a LargeBinaryArray),
     Int(&'a PrimitiveArray<Int64Type>),
+    UInt(&'a PrimitiveArray<UInt64Type>),
     Float(&'a PrimitiveArray<Float64Type>),
     Bool(&'a arrow::array::BooleanArray),
 }
@@ -813,6 +826,24 @@ impl AttrArray<'_> {
                 (!arr.is_null(row)).then(|| ResourceValueRef::Bytes(arr.value(row)))
             }
             Self::Int(arr) => (!arr.is_null(row)).then(|| ResourceValueRef::Int(arr.value(row))),
+            Self::UInt(arr) => {
+                if arr.is_null(row) {
+                    return None;
+                }
+                let value = arr.value(row);
+                match i64::try_from(value) {
+                    Ok(value) => Some(ResourceValueRef::Int(value)),
+                    Err(_) => {
+                        tracing::warn!(
+                            column = field_name,
+                            row,
+                            value,
+                            "skipping OTLP resource attribute: UInt64 value exceeds AnyValue.int_value range"
+                        );
+                        None
+                    }
+                }
+            }
             Self::Float(arr) => {
                 (!arr.is_null(row)).then(|| ResourceValueRef::Float(arr.value(row).to_bits()))
             }
@@ -1062,6 +1093,7 @@ fn resolve_batch_columns<'a>(
         if let Some(original_key) = resource_key {
             let resource_attr = match field.data_type() {
                 DataType::Int64 => AttrArray::Int(batch.column(idx).as_primitive::<Int64Type>()),
+                DataType::UInt64 => AttrArray::UInt(batch.column(idx).as_primitive::<UInt64Type>()),
                 DataType::Float64 => {
                     AttrArray::Float(batch.column(idx).as_primitive::<Float64Type>())
                 }
@@ -1109,6 +1141,7 @@ fn resolve_batch_columns<'a>(
         // `field.data_type()` avoids an `as_primitive` panic in that case.
         let attr = match field.data_type() {
             DataType::Int64 => AttrArray::Int(batch.column(idx).as_primitive::<Int64Type>()),
+            DataType::UInt64 => AttrArray::UInt(batch.column(idx).as_primitive::<UInt64Type>()),
             DataType::Float64 => AttrArray::Float(batch.column(idx).as_primitive::<Float64Type>()),
             DataType::Boolean => AttrArray::Bool(batch.column(idx).as_boolean()),
             DataType::Binary => {
@@ -1483,6 +1516,30 @@ fn encode_col_attr(buf: &mut Vec<u8>, field_number: u32, col: &ColAttr<'_>, row:
             encode_varint(buf, anyvalue_inner as u64);
             encode_varint_field(buf, otlp::ANY_VALUE_INT_VALUE, value as u64);
         }
+        AttrArray::UInt(arr) => {
+            if col.has_nulls && arr.is_null(row) {
+                return;
+            }
+            let value = arr.value(row);
+            let Ok(value) = i64::try_from(value) else {
+                tracing::warn!(
+                    column = col.name.as_str(),
+                    row,
+                    value,
+                    "skipping OTLP attribute: UInt64 value exceeds AnyValue.int_value range"
+                );
+                return;
+            };
+            let anyvalue_inner = 1 + varint_len(value as u64);
+            let kv_inner =
+                col.kv_key_cost + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);
+            encode_tag(buf, field_number, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, kv_inner as u64);
+            buf.extend_from_slice(&col.key_encoding);
+            encode_tag(buf, otlp::KEY_VALUE_VALUE, otlp::WIRE_TYPE_LEN);
+            encode_varint(buf, anyvalue_inner as u64);
+            encode_varint_field(buf, otlp::ANY_VALUE_INT_VALUE, value as u64);
+        }
         AttrArray::Float(arr) => {
             if col.has_nulls && arr.is_null(row) {
                 return;
@@ -1736,6 +1793,28 @@ mod tests {
             }
             _ => panic!("Expected RetryAfter on 503 response, got: {:?}", result),
         }
+    }
+
+    #[tokio::test]
+    async fn grpc_oversized_payload_is_rejected_before_send() {
+        let mut sink = OtlpSink::new(
+            "test".into(),
+            "http://localhost:4317".into(),
+            OtlpProtocol::Grpc,
+            Compression::None,
+            vec![],
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::new()),
+        )
+        .expect("sink must construct");
+
+        sink.encoder_buf = vec![0u8; DEFAULT_GRPC_MAX_MESSAGE_BYTES + 1];
+        let err = sink
+            .send_payload(1)
+            .await
+            .expect_err("oversized gRPC payload must return InvalidInput");
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 
     #[test]
@@ -3554,6 +3633,83 @@ mod tests {
         assert_eq!(
             lr.time_unix_nano, EXPECTED_NS,
             "UInt64 time_unix_nano column must be encoded as LogRecord.time_unix_nano"
+        );
+    }
+
+    #[test]
+    fn uint64_attribute_encodes_as_int_when_representable() {
+        use arrow::array::UInt64Array;
+        use opentelemetry_proto::tonic::{
+            collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
+        };
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("body", DataType::Utf8, true),
+            Field::new("count_u64", DataType::UInt64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("hello")])),
+                Arc::new(UInt64Array::from(vec![Some(42u64)])),
+            ],
+        )
+        .expect("valid batch");
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode UInt64 attribute batch");
+        let attrs = &request.resource_logs[0].scope_logs[0].log_records[0].attributes;
+        let attr = attrs
+            .iter()
+            .find(|kv| kv.key == "count_u64")
+            .expect("count_u64 attribute must be present");
+
+        assert_eq!(
+            attr.value
+                .as_ref()
+                .and_then(|v| v.value.as_ref())
+                .and_then(|v| match v {
+                    Value::IntValue(v) => Some(*v),
+                    _ => None,
+                }),
+            Some(42),
+            "representable UInt64 must encode as AnyValue.int_value"
+        );
+    }
+
+    #[test]
+    fn uint64_attribute_over_i64_max_is_dropped() {
+        use arrow::array::UInt64Array;
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("body", DataType::Utf8, true),
+            Field::new("count_u64", DataType::UInt64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("hello")])),
+                Arc::new(UInt64Array::from(vec![Some(u64::MAX)])),
+            ],
+        )
+        .expect("valid batch");
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode oversized UInt64 attribute batch");
+        let attrs = &request.resource_logs[0].scope_logs[0].log_records[0].attributes;
+
+        assert!(
+            attrs.iter().all(|kv| kv.key != "count_u64"),
+            "out-of-range UInt64 must not be stringified or wrapped into int_value"
         );
     }
 
