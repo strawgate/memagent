@@ -151,9 +151,8 @@ fn wall_clock_ns() -> u64 {
 
 /// Format an IPv4 address from a `__be32` u32.
 ///
-/// The kernel stores `saddr`/`daddr` as `__be32`: the raw bytes in memory are
-/// already in network order. `to_ne_bytes()` gives those raw bytes on any
-/// platform, and `Ipv4Addr::from([u8; 4])` interprets them in network order.
+/// The sensor reads network-order address bytes into a native `u32`, so native
+/// bytes recover the original IPv4 octets.
 fn format_addr(addr: u32) -> String {
     let ip = Ipv4Addr::from(addr.to_ne_bytes());
     ip.to_string()
@@ -831,5 +830,22 @@ impl InputSource for PlatformSensorInput {
             SensorState::Running { health, .. } => *health,
             SensorState::Poisoned => ComponentHealth::Failed,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_addr;
+
+    #[test]
+    fn format_addr_renders_network_order_ipv4() {
+        let addr = u32::from_ne_bytes([127, 0, 0, 1]);
+        assert_eq!(format_addr(addr), "127.0.0.1");
+    }
+
+    #[test]
+    fn format_addr_renders_multibyte_octets() {
+        let addr = u32::from_ne_bytes([192, 168, 1, 10]);
+        assert_eq!(format_addr(addr), "192.168.1.10");
     }
 }

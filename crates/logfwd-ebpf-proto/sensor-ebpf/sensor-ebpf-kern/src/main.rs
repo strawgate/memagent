@@ -176,6 +176,13 @@ pub fn sched_process_exit(ctx: TracePointContext) -> u32 {
 }
 
 fn try_process_exit(_ctx: &TracePointContext) -> Result<(), i64> {
+    let pid_tgid = bpf_get_current_pid_tgid();
+    let pid = pid_tgid as u32;
+    let tgid = (pid_tgid >> 32) as u32;
+    if pid != tgid {
+        return Ok(());
+    }
+
     let mut entry = match EVENTS.reserve::<ProcessExitEvent>(0) {
         Some(e) => e,
         None => return Ok(()),

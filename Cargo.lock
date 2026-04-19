@@ -4523,6 +4523,7 @@ name = "sensor-ebpf"
 version = "0.1.0"
 dependencies = [
  "aya",
+ "libc",
  "sensor-ebpf-common",
 ]
 
