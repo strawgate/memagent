@@ -1189,6 +1189,12 @@ where
 
     let mut errors = 0;
     for (name, pipe_cfg) in &config.pipelines {
+        if let Err(err) = validate_pipeline_read_only(pipe_cfg, base_path) {
+            on_error(format!("pipeline '{name}': {err}"));
+            errors += 1;
+            continue;
+        }
+
         match Pipeline::from_config(name, pipe_cfg, &meter, base_path) {
             Ok(mut pipeline) => {
                 // Execute a probe batch through the SQL plan to catch planning
@@ -1280,6 +1286,81 @@ fn validate_transform_probe_read_only(
         .execute_blocking(batch)
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+fn known_input_columns_read_only(
+    input_cfg: &logfwd_config::InputConfig,
+) -> Option<std::collections::HashSet<&'static str>> {
+    use logfwd_config::{GeneratorComplexityConfig, GeneratorProfileConfig, InputTypeConfig};
+
+    match &input_cfg.type_config {
+        // Generator logs/simple has a stable built-in schema. Other profiles
+        // or complexities are broader or user-defined, so skip strict checks.
+        InputTypeConfig::Generator(generator_cfg) => {
+            let profile = generator_cfg
+                .generator
+                .as_ref()
+                .and_then(|cfg| cfg.profile.clone())
+                .unwrap_or(GeneratorProfileConfig::Logs);
+            let complexity = generator_cfg
+                .generator
+                .as_ref()
+                .and_then(|cfg| cfg.complexity.clone())
+                .unwrap_or(GeneratorComplexityConfig::Simple);
+            if !matches!(profile, GeneratorProfileConfig::Logs)
+                || !matches!(complexity, GeneratorComplexityConfig::Simple)
+            {
+                None
+            } else {
+                Some(std::collections::HashSet::from([
+                    "timestamp",
+                    "level",
+                    "message",
+                    "duration_ms",
+                    "request_id",
+                    "service",
+                    "status",
+                ]))
+            }
+        }
+        _ => None,
+    }
+}
+
+fn validate_known_columns_read_only(
+    input_name: &str,
+    transform: &logfwd::transform::SqlTransform,
+    known_columns: Option<&std::collections::HashSet<&'static str>>,
+) -> Result<(), String> {
+    let Some(known_columns) = known_columns else {
+        return Ok(());
+    };
+
+    if transform.analyzer().uses_select_star {
+        return Ok(());
+    }
+
+    let mut unknown: Vec<String> = transform
+        .analyzer()
+        .referenced_columns
+        .iter()
+        .filter(|column| !known_columns.contains(column.as_str()))
+        .cloned()
+        .collect();
+    unknown.sort_unstable();
+    unknown.dedup();
+
+    if unknown.is_empty() {
+        return Ok(());
+    }
+
+    let mut supported: Vec<&str> = known_columns.iter().copied().collect();
+    supported.sort_unstable();
+    Err(format!(
+        "input '{input_name}': SQL references unknown column(s) {} for this input schema (known: {})",
+        unknown.join(", "),
+        supported.join(", ")
+    ))
 }
 
 fn validate_pipeline_read_only(
@@ -1495,6 +1576,8 @@ fn validate_pipeline_read_only(
 
         let input_sql = input_cfg.sql.as_deref().unwrap_or(pipeline_sql);
         let mut transform = SqlTransform::new(input_sql).map_err(|e| e.to_string())?;
+        let known_columns = known_input_columns_read_only(input_cfg);
+        validate_known_columns_read_only(&input_name, &transform, known_columns.as_ref())?;
         #[cfg(feature = "datafusion")]
         {
             if let Some(ref db) = geo_database {
@@ -2345,6 +2428,67 @@ transform: |
         assert!(
             read_only.is_err(),
             "effective-config validation should reject duplicate aliases"
+        );
+    }
+
+    #[test]
+    fn issue_1955_dry_run_rejects_unknown_generator_logs_column() {
+        let yaml = r#"
+input:
+  type: generator
+output:
+  type: null
+transform: |
+  SELECT missing_column FROM logs
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let runtime = validate_pipelines(&config, true, None);
+        let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
+        assert!(
+            runtime.is_err(),
+            "dry-run validation should reject unknown columns"
+        );
+        assert!(
+            read_only.is_err(),
+            "read-only validation should reject unknown columns"
+        );
+    }
+
+    #[test]
+    fn issue_1955_dry_run_rejects_generator_message_source_parts() {
+        let yaml = r#"
+input:
+  type: generator
+output:
+  type: null
+transform: |
+  SELECT method FROM logs
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let runtime = validate_pipelines(&config, true, None);
+        assert!(
+            runtime.is_err(),
+            "dry-run validation should reject fields embedded only inside message"
+        );
+    }
+
+    #[test]
+    fn issue_1955_dry_run_skips_strict_check_for_complex_generator_logs() {
+        let yaml = r#"
+input:
+  type: generator
+  generator:
+    complexity: complex
+output:
+  type: null
+transform: |
+  SELECT bytes_in FROM logs
+"#;
+        let config = logfwd_config::Config::load_str(yaml).expect("config should parse");
+        let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
+        assert!(
+            read_only.is_ok(),
+            "complex generator profile has additional fields and should not use simple schema checks"
         );
     }
 

@@ -619,3 +619,69 @@ pipelines:
         "unexpected error: {err}"
     );
 }
+
+#[test]
+fn issue_1958_generator_record_profile_preserves_null_attribute_values() {
+    let yaml = r#"
+input:
+  type: generator
+  generator:
+    profile: record
+    attributes:
+      deleted_at: null
+output:
+  type: stdout
+"#;
+
+    Config::load_str(yaml).expect("generator null attributes should remain supported");
+}
+
+#[test]
+fn issue_2060_reject_unmatched_opening_bracket_in_host_port() {
+    let yaml = r#"
+input:
+  type: udp
+  listen: foo[bar:4317
+output:
+  type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(err.contains("unmatched '['"), "unexpected error: {err}");
+}
+
+#[test]
+fn issue_2062_reject_sensor_max_rows_per_poll_zero() {
+    let yaml = r#"
+input:
+  type: host_metrics
+  sensor:
+    max_rows_per_poll: 0
+output:
+  type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("sensor.max_rows_per_poll") && err.contains("at least 1"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn issue_2178_reject_otlp_max_recv_message_size_bytes_zero() {
+    let yaml = r#"
+input:
+  type: otlp
+  listen: 127.0.0.1:4318
+  max_recv_message_size_bytes: 0
+output:
+  type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("otlp.max_recv_message_size_bytes") && err.contains("at least 1"),
+        "unexpected error: {err}"
+    );
+}
