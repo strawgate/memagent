@@ -123,13 +123,14 @@ The Arrow IPC receiver accepts `POST /v1/arrow` and forwards decoded
 ### Delivery rules
 
 - If every non-empty batch in the request is accepted, return `200`.
-- If the channel becomes full after some prefix of batches has already been
-  accepted, return `429` for the whole request (never `200`).
-- A `429` on this path means **partial acceptance is possible**: a prefix may
-  already be delivered, so client retries are required to avoid loss of the
-  unsent suffix and may duplicate already-accepted prefix batches.
-- Downstream processing for Arrow IPC ingress is therefore at-least-once under
-  backpressure unless request-level deduplication is introduced externally.
+- If the remaining channel capacity cannot fit every non-empty batch in the
+  request, return `429` before enqueueing any request batch.
+- A `429` on this path means zero batches from that request were accepted, so
+  the client can retry the same request without duplicating an accepted prefix.
+- A `500` means the receiver detected an internal channel-accounting invariant
+  violation after reserving capacity. The request outcome is unknown and may be
+  partially processed; clients must not automatically resend the same request
+  unless they have application-level deduplication.
 - A disconnected pipeline channel returns `503`.
 
 ## OTLP Sink Contract
