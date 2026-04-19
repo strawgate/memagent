@@ -184,9 +184,10 @@ fn try_process_exit(ctx: &TracePointContext) -> Result<(), i64> {
         if cfg.sched_process_exit_has_group_dead != 0 {
             let offset = cfg.sched_process_exit_group_dead_offset as usize;
             // SAFETY: the offset is parsed from the kernel tracepoint format
-            // before programs attach; read failures fall back to filtering.
-            let group_dead: u32 = unsafe { ctx.read_at(offset) }.unwrap_or(0);
-            should_emit = group_dead != 0;
+            // before programs attach; read failures preserve the pid==tgid fallback.
+            if let Ok(group_dead) = unsafe { ctx.read_at::<u32>(offset) } {
+                should_emit = group_dead != 0;
+            }
         }
     }
     if !should_emit {

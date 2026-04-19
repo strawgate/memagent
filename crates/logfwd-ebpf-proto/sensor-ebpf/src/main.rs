@@ -814,17 +814,28 @@ fn parse_tracepoint_field_offset(format_text: &str, field_name: &str) -> Option<
         if !trimmed.starts_with("field:") || !trimmed.contains("offset:") {
             continue;
         }
-        let field_decl = trimmed.strip_prefix("field:")?.split(';').next()?.trim();
-        let actual_name = field_decl
-            .split_whitespace()
-            .last()?
-            .split('[')
-            .next()
-            .unwrap_or_default();
+        let Some(field_decl) = trimmed
+            .strip_prefix("field:")
+            .and_then(|field| field.split(';').next())
+            .map(str::trim)
+        else {
+            continue;
+        };
+        let Some(field_name_with_suffix) = field_decl.split_whitespace().last() else {
+            continue;
+        };
+        let actual_name = field_name_with_suffix.split('[').next().unwrap_or_default();
         if actual_name != field_name {
             continue;
         }
-        let offset_str = trimmed.split("offset:").nth(1)?.split(';').next()?.trim();
+        let Some(offset_str) = trimmed
+            .split("offset:")
+            .nth(1)
+            .and_then(|offset| offset.split(';').next())
+            .map(str::trim)
+        else {
+            continue;
+        };
         if let Ok(offset) = offset_str.parse::<u32>() {
             return Some(offset);
         }
