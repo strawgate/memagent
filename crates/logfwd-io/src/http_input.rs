@@ -289,22 +289,25 @@ impl InputSource for HttpInput {
         }
 
         let mut all = Vec::new();
-        if let Some(bytes) = self.deferred_bytes.take() {
-            if !append_capped(
+        if let Some(bytes) = self.deferred_bytes.take()
+            && !append_capped(
                 &mut all,
                 bytes,
                 self.max_drained_bytes_per_poll,
                 &mut self.deferred_bytes,
-            ) {
-                return Ok(vec![InputEvent::Data {
-                    accounted_bytes: all.len() as u64,
-                    bytes: all,
-                    source_id: None,
-                }]);
-            }
+            )
+        {
+            return Ok(vec![InputEvent::Data {
+                accounted_bytes: all.len() as u64,
+                bytes: all,
+                source_id: None,
+            }]);
         }
 
         loop {
+            if all.len() >= self.max_drained_bytes_per_poll {
+                break;
+            }
             let recv_result = {
                 let Some(rx) = self.rx.as_ref() else {
                     break;
@@ -356,7 +359,7 @@ impl InputSource for HttpInput {
 
 fn append_capped(
     out: &mut Vec<u8>,
-    bytes: Vec<u8>,
+    mut bytes: Vec<u8>,
     max_drained_bytes_per_poll: usize,
     deferred_bytes: &mut Option<Vec<u8>>,
 ) -> bool {
@@ -371,8 +374,9 @@ fn append_capped(
         return true;
     }
 
-    out.extend_from_slice(&bytes[..remaining]);
-    *deferred_bytes = Some(bytes[remaining..].to_vec());
+    let overflow = bytes.split_off(remaining);
+    out.extend_from_slice(&bytes);
+    *deferred_bytes = Some(overflow);
     false
 }
 
