@@ -30,13 +30,27 @@
 /// F "simple"  → Complete("simple")  // zero-copy fast path
 /// ```
 use alloc::vec::Vec;
+
+/// Slack added to `max_message_size` when capping the raw CRI line fragment buffer.
+///
+/// The fragment buffer holds an entire raw CRI line (header + message) until a
+/// newline delimiter arrives. The CRI header (timestamp + stream + flag) is
+/// typically ~31-45 bytes, but the raw line also contains the full *unsplit*
+/// message which may exceed `max_message_size` (truncation happens later at
+/// the message layer, not the raw-line layer). Using a generous constant
+/// ensures that split lines with small `max_message_size` settings are still
+/// parsed correctly rather than silently discarded as fragment-truncation errors.
+const CRI_RAW_LINE_OVERHEAD: usize = 256;
+
 /// CRI partial line aggregator. Merges P/F lines into complete messages.
 pub struct CriReassembler {
     pending: Vec<u8>,
+    line_fragment: Vec<u8>,
     max_message_size: usize,
     /// Set to `true` when any chunk in the current P/F sequence was truncated
     /// due to `max_message_size`. Reset in `reset()`.
     truncated: bool,
+    line_fragment_truncated: bool,
 }
 
 /// Result of feeding a line to the aggregator.
@@ -62,8 +76,10 @@ impl CriReassembler {
     pub fn new(max_message_size: usize) -> Self {
         CriReassembler {
             pending: Vec::new(),
+            line_fragment: Vec::new(),
             max_message_size,
             truncated: false,
+            line_fragment_truncated: false,
         }
     }
 
@@ -123,7 +139,9 @@ impl CriReassembler {
     /// internal buffer and truncation flag but preserves allocated capacity.
     pub fn reset(&mut self) {
         self.pending.clear();
+        self.line_fragment.clear();
         self.truncated = false;
+        self.line_fragment_truncated = false;
     }
 
     /// Returns true if there are pending partial lines.
@@ -134,6 +152,48 @@ impl CriReassembler {
     /// Returns the configured maximum message size.
     pub fn max_message_size(&self) -> usize {
         self.max_message_size
+    }
+
+    fn raw_line_fragment_limit(&self) -> usize {
+        self.max_message_size.saturating_add(CRI_RAW_LINE_OVERHEAD)
+    }
+
+    /// Append raw bytes for an unterminated CRI line split across chunk boundaries.
+    ///
+    /// The buffered bytes are bounded by `max_message_size + CRI_RAW_LINE_OVERHEAD`
+    /// to prevent unbounded growth while still allowing the full CRI header
+    /// (timestamp + stream + flag) plus the message to be buffered. Using only
+    /// `max_message_size` would truncate the raw line before the header is fully
+    /// received, turning a valid split line into a parse error.
+    pub(crate) fn push_line_fragment(&mut self, bytes: &[u8]) {
+        let remaining = self
+            .raw_line_fragment_limit()
+            .saturating_sub(self.line_fragment.len());
+        let to_add = bytes.len().min(remaining);
+        if to_add < bytes.len() {
+            self.line_fragment_truncated = true;
+        }
+        self.line_fragment.extend_from_slice(&bytes[..to_add]);
+    }
+
+    /// Returns true if raw CRI bytes are buffered for the next chunk.
+    pub(crate) fn has_line_fragment(&self) -> bool {
+        !self.line_fragment.is_empty()
+    }
+
+    /// Returns true if the buffered raw CRI line fragment was truncated.
+    pub(crate) fn line_fragment_truncated(&self) -> bool {
+        self.line_fragment_truncated
+    }
+
+    /// Move out the buffered raw CRI line fragment and clear truncation state.
+    ///
+    /// Preserves the internal buffer capacity so the next split-line sequence
+    /// can reuse the existing allocation instead of starting from zero capacity.
+    pub(crate) fn take_line_fragment(&mut self) -> Vec<u8> {
+        let capacity = self.line_fragment.capacity();
+        self.line_fragment_truncated = false;
+        core::mem::replace(&mut self.line_fragment, Vec::with_capacity(capacity))
     }
 }
 
@@ -219,10 +279,13 @@ mod tests {
         let mut agg = CriReassembler::new(1024);
         agg.feed(b"some data", false);
         let cap_before = agg.pending.capacity();
+        agg.push_line_fragment(b"partial-cri-line");
         agg.reset();
         assert_eq!(agg.pending.capacity(), cap_before);
         assert!(agg.pending.is_empty());
+        assert!(!agg.has_line_fragment());
         assert!(!agg.truncated);
+        assert!(!agg.line_fragment_truncated);
     }
 
     #[test]
