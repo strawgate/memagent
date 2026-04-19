@@ -24,7 +24,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use logfwd_bench::generators;
-use logfwd_output::{BatchMetadata, StdoutFormat, StdoutSink, build_col_infos, write_row_json};
+use logfwd_output::{
+    BatchMetadata, StdoutFormat, StdoutSink, build_col_infos, resolve_col_infos, write_row_json,
+    write_row_json_resolved,
+};
 use logfwd_types::diagnostics::ComponentStats;
 
 // ---------------------------------------------------------------------------
@@ -156,13 +159,14 @@ fn run_breakdown(
     }
     let build_col_elapsed = start.elapsed();
 
-    // 2. write_row_json loop timing (with pre-built col_infos)
+    // 2. write_row_json_resolved loop timing (with pre-built col_infos + resolve)
     let cols = build_col_infos(batch);
+    let resolved = resolve_col_infos(batch, &cols);
     let start = Instant::now();
     for _ in 0..num_batches {
         buf.clear();
         for row in 0..batch.num_rows() {
-            write_row_json(batch, row, &cols, &mut buf).expect("json failed");
+            write_row_json_resolved(row, &resolved, &mut buf).expect("json failed");
             buf.push(b'\n');
         }
         std::hint::black_box(&buf);
@@ -233,7 +237,7 @@ fn run_breakdown(
     println!("|-------|-------|-----------|-----------|------------|");
     let stages: Vec<(&str, Duration)> = vec![
         ("build_col_infos", build_col_elapsed),
-        ("write_row_json (loop)", json_elapsed),
+        ("write_row_json_resolved (loop)", json_elapsed),
         ("write_batch_to (end-to-end)", batch_elapsed),
         ("memchr line count", memchr_only),
         ("file write_all + sync", io_elapsed),
@@ -320,15 +324,16 @@ fn run_alloc(
     }
     let col_stats = reg.change();
 
-    // 2. write_row_json with pre-built cols (buffer reuse)
+    // 2. write_row_json_resolved with pre-built cols (buffer reuse)
     let cols = build_col_infos(batch);
+    let resolved = resolve_col_infos(batch, &cols);
     buf.clear();
     buf.reserve(batch_size * 300);
     let reg = Region::new(&INSTRUMENTED_SYSTEM);
     for _ in 0..num_batches {
         buf.clear();
         for row in 0..batch.num_rows() {
-            write_row_json(batch, row, &cols, &mut buf).expect("json failed");
+            write_row_json_resolved(row, &resolved, &mut buf).expect("json failed");
             buf.push(b'\n');
         }
     }
@@ -367,7 +372,7 @@ fn run_alloc(
 
     let stages = vec![
         ("build_col_infos", &col_stats),
-        ("write_row_json (reuse buf)", &json_stats),
+        ("write_row_json_resolved (reuse buf)", &json_stats),
         ("write_batch_to", &batch_stats),
         ("FULL (ser+count+IO)", &full_stats),
     ];

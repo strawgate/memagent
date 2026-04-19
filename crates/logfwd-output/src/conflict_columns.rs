@@ -420,13 +420,16 @@ fn upsert_col_info(
     }
 }
 
-/// Pre-serialize `"fieldname":` into a heap-allocated byte slice.
+/// Pre-serialize `,"fieldname":` into a heap-allocated byte slice.
 ///
 /// Called once per field at `build_col_infos` time.  The result is stored in
-/// `ColInfo::key_json` so `write_row_json` can emit the JSON key with a single
-/// `extend_from_slice` instead of re-running the SIMD escape scan per row.
+/// `ColInfo::key_json` so `write_row_json` can emit the key with a single
+/// `extend_from_slice`.  The leading comma allows the hot loop to write
+/// `&key_json[1..]` for the first field and `&key_json[..]` for subsequent
+/// fields, eliminating a separate `push(b',')` per field per row.
 fn build_key_json(field_name: &str) -> Box<[u8]> {
-    let mut buf = Vec::with_capacity(field_name.len() + 3); // " + name + " + :
+    let mut buf = Vec::with_capacity(field_name.len() + 4); // , + " + name + " + :
+    buf.push(b',');
     write_json_string(&mut buf, field_name)
         .expect("field name JSON serialization cannot fail for valid UTF-8 field names");
     buf.push(b':');

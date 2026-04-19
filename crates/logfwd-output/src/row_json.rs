@@ -415,25 +415,25 @@ pub(crate) fn write_typed_json_value(
 /// - virtual `is_null()` dispatch → direct `NullBuffer` bitmap check
 /// - `data_type()` + `downcast_ref` → pre-resolved `TypedArrayRef` enum
 /// - `batch.columns().get()` + `Arc::deref` → cached references
+/// - per-field `push(b',')` → comma embedded in key_json prefix
 pub fn write_row_json_resolved(
     row: usize,
     cols: &[ResolvedCol],
     out: &mut Vec<u8>,
 ) -> io::Result<()> {
     out.push(b'{');
-    let mut first = true;
+    // key_json is `b',"fieldname":'`.  For the first non-null field we skip
+    // the leading comma (offset 1); for subsequent fields we include it (offset 0).
+    // This replaces N separate `push(b',')` calls with one extend_from_slice.
+    let mut sep_skip = 1usize;
     for col in cols {
         let Some((key_json, typed)) = col.resolve(row) else {
             continue;
         };
 
-        if !first {
-            out.push(b',');
-        }
-        first = false;
-
-        out.extend_from_slice(key_json);
+        out.extend_from_slice(&key_json[sep_skip..]);
         write_typed_json_value(typed, row, out)?;
+        sep_skip = 0;
     }
     out.push(b'}');
     Ok(())
@@ -453,7 +453,7 @@ pub fn write_row_json(
     out: &mut Vec<u8>,
 ) -> io::Result<()> {
     out.push(b'{');
-    let mut first = true;
+    let mut sep_skip = 1usize;
     for col in cols {
         // Find the first non-null variant for this field (json ordering).
         let variant = col.json_variants.iter().find(|v| !is_null(batch, v, row));
@@ -471,13 +471,10 @@ pub fn write_row_json(
             continue;
         };
 
-        if !first {
-            out.push(b',');
-        }
-        first = false;
-
-        // Key — pre-serialized `"fieldname":` bytes, built once at batch setup.
-        out.extend_from_slice(&col.key_json);
+        // Key — pre-serialized `,"fieldname":` bytes (comma-prefixed).
+        // First non-null field skips the leading comma.
+        out.extend_from_slice(&col.key_json[sep_skip..]);
+        sep_skip = 0;
 
         // Value — dispatch on Arrow DataType, not column name suffix
         write_json_value(arr, row, out)?;
