@@ -248,24 +248,18 @@ import { createSimulation } from './highway-sim.mjs';
     return Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI;
   }
   // Junction mapping for segment transitions.
-  // When a car moves between segments, its visual `d` jumps to the
-  // correct entry point on the new path so there's no screen-space snap.
-  // ramp end → highway at mergeSlot d, highway end → exit/cont start
+  // Computed from actual SVG path endpoints so screen positions match perfectly.
+  // Ramp ends at rampEnd; find highway d where highway passes through rampEnd.
+  // Highway is M30,100 L560,100 (straight), so d = rampEnd.x - 30.
+  const rampEnd = pathRamp.getPointAtLength(lenRamp);
+  const hwyEnd = pathHwy.getPointAtLength(lenHwy);
+  const junctionMap = {
+    'ramp→highway': rampEnd.x - 30, // highway d matching ramp endpoint screen x
+    'highway→exit': 0,               // exit path starts where highway ends
+    'highway→cont': 0,               // cont path starts where highway ends
+  };
   function junctionD(fromSeg, toSeg) {
-    if (fromSeg === 'ramp' && toSeg === 'highway') return lenMap.highway * (sim.cfg.mergeSlot / (sim.cfg.slotsHwy - 1));
-    if (fromSeg === 'highway' && toSeg === 'exit') return 0;
-    if (fromSeg === 'highway' && toSeg === 'cont') return 0;
-    return 0;
-  }
-  // Junction-aware padding: only pad at ends that connect to other segments
-  // highway: pad end (→exit/cont), ramp: pad end (→highway merge)
-  // exit: pad start (highway→), cont: pad start (highway→)
-  function padD(segment, d) {
-    const len = lenMap[segment];
-    if (len <= 0) return d;
-    const padStart = (segment === 'exit' || segment === 'cont') ? JUNCTION_PAD : 0;
-    const padEnd = (segment === 'highway' || segment === 'ramp') ? JUNCTION_PAD : 0;
-    return padStart + (d / len) * (len - padStart - padEnd);
+    return junctionMap[fromSeg + '→' + toSeg] || 0;
   }
 
   // ---- Per-car visual state ----
@@ -281,7 +275,6 @@ import { createSimulation } from './highway-sim.mjs';
   const SNAP_DIST = 0.5;      // snap to target when this close
   const ANGLE_RATE = 0.25;    // angle follow speed (slightly faster for curves)
   const FADE_IN_FRAMES = 12;  // ~300ms fade-in at 40fps
-  const JUNCTION_PAD = 8;     // visual padding at segment endpoints (path px)
 
   function createCarEl(car) {
     let w = CAR_W * car.scale;
@@ -401,10 +394,9 @@ import { createSimulation } from './highway-sim.mjs';
     const segLen = lenMap[vis.seg];
     vis.d = Math.max(0, Math.min(vis.d, segLen));
 
-    // Convert path d to screen position with junction padding
-    const pd = padD(vis.seg, vis.d);
-    const sp = posAt(vis.seg, pd);
-    const sa = angleAt(vis.seg, pd);
+    // Convert path d to screen position
+    const sp = posAt(vis.seg, vis.d);
+    const sa = angleAt(vis.seg, vis.d);
 
     // Smooth angle follow (with wraparound)
     let da = sa - vis.angle;
