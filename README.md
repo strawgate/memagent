@@ -30,9 +30,8 @@ The [documentation site](https://strawgate.github.io/fastforward/) has interacti
 git clone https://github.com/strawgate/fastforward.git && cd fastforward
 cargo build --release -p logfwd
 
-# Generate some test data and filter it with SQL
+# Generate some test data
 ./target/release/logfwd generate-json 100000 logs.json
-./target/release/logfwd run --config config.yaml
 ```
 
 ```yaml
@@ -50,6 +49,10 @@ transform: |
 output:
   type: stdout
   format: console
+```
+
+```bash
+./target/release/logfwd run --config config.yaml
 ```
 
 Only error records with slow durations make it through — everything else is filtered by the SQL transform.
