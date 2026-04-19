@@ -179,15 +179,11 @@ import { createRenderState } from './highway-render-state.mjs';
     carsG.appendChild(g);
     carEls[car.id] = { g: g, body: body };
 
-    // Register in render state at current screen position with forward velocity.
-    // Push an ahead-waypoint so the car is already moving during its fade-in
-    // instead of appearing stationary at the screen edge.
+    // Register in render state at current screen position.
+    // No ahead-waypoint — the sim will push real targets each tick.
     const ip = posAt(car.segment, car.targetD);
     const ia = angleAt(car.segment, car.targetD);
-    rs.addCar(car.id, ip.x, ip.y, ia, 3);
-    const aheadD = Math.min(car.targetD + 30, lenMap[car.segment]);
-    const ap = posAt(car.segment, aheadD);
-    rs.pushTarget(car.id, ap.x, ap.y, 1, 'flow');
+    rs.addCar(car.id, ip.x, ip.y, ia, 0);
   }
 
   function removeCarEl(id) {
@@ -235,9 +231,17 @@ import { createRenderState } from './highway-render-state.mjs';
       const allCars = lastFrame.cars;
       for (let c = 0; c < allCars.length; c++) {
         const car = allCars[c];
-        if (!carEls[car.id]) createCarEl(car);
+        const isNew = !carEls[car.id];
+        if (isNew) createCarEl(car);
         const tp = posAt(car.segment, car.targetD);
         rs.pushTarget(car.id, tp.x, tp.y, car.opacity != null ? car.opacity : 1, car.color);
+        // For newly spawned cars, push a look-ahead waypoint at the next
+        // slot so interpolation starts moving immediately during fade-in.
+        if (isNew) {
+          const nextD = car.targetD + (lenMap[car.segment] / 10);
+          const np = posAt(car.segment, nextD);
+          rs.pushTarget(car.id, np.x, np.y, 1, 'flow');
+        }
       }
 
       // Remove delivered cars

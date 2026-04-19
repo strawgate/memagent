@@ -185,10 +185,11 @@ export function createSimulation(overrides, scaleFn) {
 
   // ---- segment advancement ----
 
-  function advanceSegment(seg) {
+  function advanceSegment(seg, segName) {
     const { slots, slotD, len, hasGate, fadePastGate, fadeFullLen } = seg;
+    const lastSlot = slots.length - 1;
 
-    for (let i = slots.length - 1; i >= 0; i--) {
+    for (let i = lastSlot; i >= 0; i--) {
       const car = slots[i];
       if (!car) continue;
 
@@ -211,6 +212,28 @@ export function createSimulation(overrides, scaleFn) {
           moveCar(car, car.segment, i);
           car.color = carColor(car);
           continue;
+        }
+
+        // Junction hold: don't advance into the last slot if the
+        // downstream segment entrance is occupied — prevents visual overlap
+        // at the screen-space junction point.
+        if (nextSlot === lastSlot) {
+          if (segName === 'ramp' && segs.highway.slots[cfg.mergeSlot] !== null) {
+            car.speed = 0;
+            moveCar(car, car.segment, i);
+            car.color = carColor(car);
+            continue;
+          }
+          if (segName === 'highway') {
+            const exitOccupied = segs.exit.slots[0] !== null;
+            const contOccupied = segs.cont.slots[0] !== null;
+            if (exitOccupied && (contOccupied || !lightIsGreen)) {
+              car.speed = 0;
+              moveCar(car, car.segment, i);
+              car.color = carColor(car);
+              continue;
+            }
+          }
         }
 
         // Move forward
@@ -373,17 +396,17 @@ export function createSimulation(overrides, scaleFn) {
     const removedIds = removeDelivered(now);
 
     // 2. Advance continuation (downstream first — frees slots)
-    advanceSegment(segs.cont);
+    advanceSegment(segs.cont, 'cont');
 
     // 3. Highway → exit/cont transition (before exit advancement,
     //    so a full exit causes overflow to cont)
     tryHwyToExit();
 
     // 4. Advance exit
-    advanceSegment(segs.exit);
+    advanceSegment(segs.exit, 'exit');
 
     // 5. Advance highway
-    advanceSegment(segs.highway);
+    advanceSegment(segs.highway, 'highway');
 
     // 6. Try transition again (after highway advancement freed the lead car)
     tryHwyToExit();
@@ -392,7 +415,7 @@ export function createSimulation(overrides, scaleFn) {
     tryRampMerge();
 
     // 8. Advance ramp
-    advanceSegment(segs.ramp);
+    advanceSegment(segs.ramp, 'ramp');
 
     // 9. Try merge again
     tryRampMerge();
