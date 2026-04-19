@@ -43,18 +43,31 @@ fn build_http_client_builder(
             })?;
             client_builder = client_builder.add_root_certificate(cert);
         }
-        if let (Some(cert), Some(key)) = (&tls.cert_file, &tls.key_file) {
-            let cert_data = read_tls_file(name, "cert_file", cert)?;
-            let key_data = read_tls_file(name, "key_file", key)?;
-            let mut pem = cert_data;
-            pem.push(b'\n');
-            pem.extend(key_data);
-            let identity = reqwest::Identity::from_pem(&pem).map_err(|e| {
-                OutputError::Construction(format!(
-                    "output '{name}': invalid tls cert_file/key_file '{cert}'/'{key}': {e}"
-                ))
-            })?;
-            client_builder = client_builder.identity(identity);
+        match (&tls.cert_file, &tls.key_file) {
+            (Some(cert), Some(key)) => {
+                let cert_data = read_tls_file(name, "cert_file", cert)?;
+                let key_data = read_tls_file(name, "key_file", key)?;
+                let mut pem = cert_data;
+                pem.push(b'\n');
+                pem.extend(key_data);
+                let identity = reqwest::Identity::from_pem(&pem).map_err(|e| {
+                    OutputError::Construction(format!(
+                        "output '{name}': invalid tls cert_file/key_file '{cert}'/'{key}': {e}"
+                    ))
+                })?;
+                client_builder = client_builder.identity(identity);
+            }
+            (Some(_), None) => {
+                return Err(OutputError::Construction(format!(
+                    "output '{name}': tls cert_file requires tls key_file"
+                )));
+            }
+            (None, Some(_)) => {
+                return Err(OutputError::Construction(format!(
+                    "output '{name}': tls key_file requires tls cert_file"
+                )));
+            }
+            (None, None) => {}
         }
     }
 
@@ -462,5 +475,46 @@ mod tests {
             err.to_string().contains("builder error"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn build_sink_factory_rejects_tls_cert_without_key() {
+        let cfg = OutputConfig {
+            output_type: OutputType::Elasticsearch,
+            endpoint: Some("https://localhost:9200".to_string()),
+            tls: Some(logfwd_config::TlsClientConfig {
+                cert_file: Some("/tmp/client.pem".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let result = build_sink_factory("es", &cfg, None, Arc::new(ComponentStats::new()));
+        let err = match result {
+            Ok(_) => panic!("half-configured mTLS identity should reject sink construction"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("cert_file requires tls key_file"));
+    }
+
+    #[test]
+    fn build_sink_factory_rejects_tls_key_without_cert() {
+        let cfg = OutputConfig {
+            output_type: OutputType::Loki,
+            endpoint: Some("https://localhost:3100".to_string()),
+            tls: Some(logfwd_config::TlsClientConfig {
+                key_file: Some("/tmp/client.key".to_string()),
+                ..Default::default()
+            }),
+            static_labels: Some(HashMap::from([("app".to_string(), "logfwd".to_string())])),
+            ..Default::default()
+        };
+
+        let result = build_sink_factory("loki", &cfg, None, Arc::new(ComponentStats::new()));
+        let err = match result {
+            Ok(_) => panic!("half-configured mTLS identity should reject sink construction"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("key_file requires tls cert_file"));
     }
 }

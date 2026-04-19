@@ -827,6 +827,13 @@ impl ElasticsearchSinkFactory {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Creates an Elasticsearch sink factory with a caller-provided HTTP client builder.
+    ///
+    /// The caller owns all cross-cutting HTTP client policy on `client_builder`, including
+    /// request timeout, connection-pool sizing, TLS roots, mTLS identity, and certificate
+    /// verification behavior. This constructor validates Elasticsearch-specific request
+    /// mode and compression compatibility, then builds and reuses one `reqwest::Client`
+    /// for every sink created by the factory.
     pub fn new_with_client(
         name: String,
         endpoint: String,
