@@ -256,7 +256,11 @@ fn run_breakdown(
         } else {
             0.0
         };
-        let per_batch = *dur / num_batches as u32;
+        let per_batch = if num_batches > 0 {
+            *dur / num_batches as u32
+        } else {
+            Duration::ZERO
+        };
         println!(
             "| {:<30} | {:>9.1?} | {:>9.1?} | {:>7.1}% | {} |",
             name,
