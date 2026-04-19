@@ -218,6 +218,7 @@ impl FileReader {
             tailed.eof_state.on_data();
             tailed.file.seek(SeekFrom::Start(0))?;
             tailed.identity.fingerprint = compute_fingerprint(&mut tailed.file, fingerprint_bytes)?;
+            tailed.comparison_fingerprint = tailed.identity.fingerprint;
             tailed.fingerprint_len = observed_fingerprint_len(
                 tailed.identity.fingerprint,
                 current_size,
@@ -1058,7 +1059,8 @@ mod tests {
     fn read_new_data_promotes_partial_fingerprint_window_while_file_grows() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("fingerprint-growth.log");
-        fs::write(&path, b"LINE-00000000\n").unwrap();
+        let initial = b"LINE-00000000\n";
+        fs::write(&path, initial).unwrap();
 
         let mut reader = FileReader {
             config: TailConfig {
@@ -1083,9 +1085,9 @@ mod tests {
         assert!(matches!(got, ReadResult::Data(_)));
 
         let updated = reader.files.get(&path).unwrap();
-        assert_eq!(first_fingerprint_len, 14);
+        assert_eq!(first_fingerprint_len, initial.len() as u64);
         assert_eq!(
-            updated.fingerprint_len, 32,
+            updated.fingerprint_len, reader.config.fingerprint_bytes as u64,
             "fingerprint window should promote once enough bytes are observable"
         );
         assert_eq!(
@@ -1095,6 +1097,46 @@ mod tests {
         assert_ne!(
             updated.comparison_fingerprint, first_comparison_fingerprint,
             "comparison fingerprint should cover the larger observed prefix"
+        );
+    }
+
+    #[test]
+    fn truncation_refreshes_comparison_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("truncate-refresh.log");
+        let original = b"original-long-enough-for-window-and-offset";
+        let rewritten = b"rewritten-full-window";
+        fs::write(&path, original).unwrap();
+
+        let mut reader = FileReader {
+            config: TailConfig {
+                fingerprint_bytes: 16,
+                ..TailConfig::default()
+            },
+            ..test_reader()
+        };
+        reader.open_file_at(&path, false).unwrap();
+        let got = reader.read_new_data(&path).unwrap();
+        assert!(matches!(got, ReadResult::Data(_)));
+        assert!(original.len() > rewritten.len());
+        let before = reader.files.get(&path).unwrap().comparison_fingerprint;
+
+        fs::write(&path, rewritten).unwrap();
+        let got = reader.read_new_data(&path).unwrap();
+        assert!(matches!(got, ReadResult::TruncatedThenData(_)));
+
+        let tailed = reader.files.get(&path).unwrap();
+        assert_ne!(
+            tailed.comparison_fingerprint, before,
+            "truncated content should refresh the comparison fingerprint"
+        );
+        assert_eq!(
+            tailed.comparison_fingerprint, tailed.identity.fingerprint,
+            "truncation refresh should keep comparison and identity fingerprints aligned"
+        );
+        assert_eq!(
+            tailed.fingerprint_len, reader.config.fingerprint_bytes as u64,
+            "full-window truncation should not rely on later promotion"
         );
     }
 

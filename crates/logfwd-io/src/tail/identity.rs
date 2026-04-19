@@ -68,6 +68,8 @@ fn metadata_device_inode(_meta: &std::fs::Metadata) -> (u64, u64) {
 }
 
 /// Compute the fingerprint of a file: xxhash64 of the first N bytes.
+///
+/// Preserves the caller's current file cursor position.
 pub(super) fn compute_fingerprint(file: &mut File, max_bytes: usize) -> io::Result<u64> {
     let pos = file.stream_position()?;
     file.seek(SeekFrom::Start(0))?;
