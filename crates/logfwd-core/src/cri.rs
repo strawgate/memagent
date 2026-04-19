@@ -240,6 +240,10 @@ fn process_cri_chunk_lines<F>(
 
             if reassembler.line_fragment_truncated() {
                 *errors += 1;
+                // Reset the full reassembler state, not just the line fragment.
+                // If a P (partial) record was previously buffered, leaving it
+                // intact would cause the next unrelated F record to append to
+                // stale data and emit a corrupted message.
                 reassembler.reset();
                 continue;
             }

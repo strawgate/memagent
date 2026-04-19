@@ -31,6 +31,15 @@
 /// ```
 use alloc::vec::Vec;
 
+/// Slack added to `max_message_size` when capping the raw CRI line fragment buffer.
+///
+/// The fragment buffer holds an entire raw CRI line (header + message) until a
+/// newline delimiter arrives. The CRI header (timestamp + stream + flag) is
+/// typically ~31-45 bytes, but the raw line also contains the full *unsplit*
+/// message which may exceed `max_message_size` (truncation happens later at
+/// the message layer, not the raw-line layer). Using a generous constant
+/// ensures that split lines with small `max_message_size` settings are still
+/// parsed correctly rather than silently discarded as fragment-truncation errors.
 const CRI_RAW_LINE_OVERHEAD: usize = 256;
 
 /// CRI partial line aggregator. Merges P/F lines into complete messages.
@@ -151,8 +160,11 @@ impl CriReassembler {
 
     /// Append raw bytes for an unterminated CRI line split across chunk boundaries.
     ///
-    /// The buffered bytes include the CRI header, so this limit intentionally
-    /// includes fixed header slack in addition to the message payload limit.
+    /// The buffered bytes are bounded by `max_message_size + CRI_RAW_LINE_OVERHEAD`
+    /// to prevent unbounded growth while still allowing the full CRI header
+    /// (timestamp + stream + flag) plus the message to be buffered. Using only
+    /// `max_message_size` would truncate the raw line before the header is fully
+    /// received, turning a valid split line into a parse error.
     pub(crate) fn push_line_fragment(&mut self, bytes: &[u8]) {
         let remaining = self
             .raw_line_fragment_limit()
@@ -175,6 +187,9 @@ impl CriReassembler {
     }
 
     /// Move out the buffered raw CRI line fragment and clear truncation state.
+    ///
+    /// Preserves the internal buffer capacity so the next split-line sequence
+    /// can reuse the existing allocation instead of starting from zero capacity.
     pub(crate) fn take_line_fragment(&mut self) -> Vec<u8> {
         let capacity = self.line_fragment.capacity();
         self.line_fragment_truncated = false;
