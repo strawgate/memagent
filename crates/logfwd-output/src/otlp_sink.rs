@@ -3637,7 +3637,7 @@ mod tests {
     }
 
     #[test]
-    fn uint64_attribute_encodes_as_int_when_representable() {
+    fn uint64_attribute_encodes_or_drops_by_int64_range() {
         use arrow::array::UInt64Array;
         use opentelemetry_proto::tonic::{
             collector::logs::v1::ExportLogsServiceRequest, common::v1::any_value::Value,
@@ -3651,8 +3651,8 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema,
             vec![
-                Arc::new(StringArray::from(vec![Some("hello")])),
-                Arc::new(UInt64Array::from(vec![Some(42u64)])),
+                Arc::new(StringArray::from(vec![Some("ok"), Some("too-big")])),
+                Arc::new(UInt64Array::from(vec![Some(42u64), Some(u64::MAX)])),
             ],
         )
         .expect("valid batch");
@@ -3662,53 +3662,23 @@ mod tests {
 
         let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
             .expect("prost must decode UInt64 attribute batch");
-        let attrs = &request.resource_logs[0].scope_logs[0].log_records[0].attributes;
-        let attr = attrs
+        let records = &request.resource_logs[0].scope_logs[0].log_records;
+        let first = records[0]
+            .attributes
             .iter()
             .find(|kv| kv.key == "count_u64")
             .expect("count_u64 attribute must be present");
 
         assert_eq!(
-            attr.value
-                .as_ref()
-                .and_then(|v| v.value.as_ref())
-                .and_then(|v| match v {
-                    Value::IntValue(v) => Some(*v),
-                    _ => None,
-                }),
+            first.value.as_ref().and_then(|v| match v.value.as_ref() {
+                Some(Value::IntValue(v)) => Some(*v),
+                _ => None,
+            }),
             Some(42),
             "representable UInt64 must encode as AnyValue.int_value"
         );
-    }
-
-    #[test]
-    fn uint64_attribute_over_i64_max_is_dropped() {
-        use arrow::array::UInt64Array;
-        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
-        use prost::Message;
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("body", DataType::Utf8, true),
-            Field::new("count_u64", DataType::UInt64, true),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(StringArray::from(vec![Some("hello")])),
-                Arc::new(UInt64Array::from(vec![Some(u64::MAX)])),
-            ],
-        )
-        .expect("valid batch");
-
-        let mut sink = make_sink();
-        sink.encode_batch(&batch, &make_metadata());
-
-        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
-            .expect("prost must decode oversized UInt64 attribute batch");
-        let attrs = &request.resource_logs[0].scope_logs[0].log_records[0].attributes;
-
         assert!(
-            attrs.iter().all(|kv| kv.key != "count_u64"),
+            records[1].attributes.iter().all(|kv| kv.key != "count_u64"),
             "out-of-range UInt64 must not be stringified or wrapped into int_value"
         );
     }
