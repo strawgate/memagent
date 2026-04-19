@@ -240,7 +240,7 @@ fn process_cri_chunk_lines<F>(
 
             if reassembler.line_fragment_truncated() {
                 *errors += 1;
-                reassembler.clear_line_fragment();
+                reassembler.reset();
                 continue;
             }
 
@@ -480,6 +480,29 @@ mod tests {
     }
 
     #[test]
+    fn test_process_chunk_split_full_line_truncates_message_not_header() {
+        let mut reassembler = CriReassembler::new(5);
+        let mut lines = Vec::new();
+
+        let c1 = b"2024-01-15T10:30:00Z stdout F hel";
+        let c2 = b"lo world\n";
+
+        let (count1, errors1) = process_cri_chunk(c1, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
+        assert_eq!(count1, 0);
+        assert_eq!(errors1, 0);
+
+        let (count2, errors2) = process_cri_chunk(c2, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
+        assert_eq!(count2, 1);
+        assert_eq!(errors2, 1);
+        assert_eq!(lines.as_slice(), &[b"hello".to_vec()]);
+        assert!(!reassembler.has_line_fragment());
+    }
+
+    #[test]
     fn test_process_chunk_parse_errors() {
         // Mix of valid and invalid CRI lines.
         let chunk = b"not-a-cri-line\n\
@@ -549,6 +572,36 @@ mod tests {
         assert_eq!(count2, 1);
         assert_eq!(errors2, 0);
         assert_eq!(lines.as_slice(), &[b"helloworld".to_vec()]);
+    }
+
+    #[test]
+    fn test_truncated_raw_fragment_resets_pending_partial_state() {
+        let mut reassembler = CriReassembler::new(5);
+        let mut lines = Vec::new();
+
+        let (count1, errors1) = process_cri_chunk(
+            b"2024-01-15T10:30:00Z stdout P stale\n",
+            &mut reassembler,
+            |msg| lines.push(msg.to_vec()),
+        );
+        assert_eq!((count1, errors1), (0, 0));
+        assert!(reassembler.has_pending());
+
+        let oversized = [b'x'; 300];
+        let (count2, errors2) = process_cri_chunk(&oversized, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
+        assert_eq!((count2, errors2), (0, 0));
+
+        let (count3, errors3) = process_cri_chunk(
+            b"\n2024-01-15T10:30:01Z stdout F fresh\n",
+            &mut reassembler,
+            |msg| lines.push(msg.to_vec()),
+        );
+        assert_eq!((count3, errors3), (1, 1));
+        assert_eq!(lines.as_slice(), &[b"fresh".to_vec()]);
+        assert!(!reassembler.has_pending());
+        assert!(!reassembler.has_line_fragment());
     }
 
     #[test]
@@ -672,6 +725,55 @@ mod tests {
                 prop_assert!(parsed.is_some(), "valid stream token should parse");
             } else {
                 prop_assert!(parsed.is_none(), "invalid stream token should be rejected");
+            }
+        }
+
+        #[test]
+        fn proptest_split_full_line_matches_unsplit(
+            message in "[ -~]{0,64}",
+            max_size in 1..64usize,
+        ) {
+            let line = format!("2024-01-15T10:30:00Z stdout F {message}\n");
+            for split in 0..=line.len() {
+                let mut unsplit = CriReassembler::new(max_size);
+                let mut unsplit_lines = Vec::new();
+                let unsplit_counts = process_cri_chunk(
+                    line.as_bytes(),
+                    &mut unsplit,
+                    |msg| unsplit_lines.push(msg.to_vec()),
+                );
+
+                let mut split_reassembler = CriReassembler::new(max_size);
+                let mut split_lines = Vec::new();
+                let first_counts = process_cri_chunk(
+                    &line.as_bytes()[..split],
+                    &mut split_reassembler,
+                    |msg| split_lines.push(msg.to_vec()),
+                );
+                let second_counts = process_cri_chunk(
+                    &line.as_bytes()[split..],
+                    &mut split_reassembler,
+                    |msg| split_lines.push(msg.to_vec()),
+                );
+
+                prop_assert_eq!(
+                    (first_counts.0 + second_counts.0, first_counts.1 + second_counts.1),
+                    unsplit_counts,
+                    "split {} changed counts for line {:?}",
+                    split,
+                    line
+                );
+                prop_assert_eq!(
+                    split_lines,
+                    unsplit_lines,
+                    "split {} changed output for line {:?}",
+                    split,
+                    line
+                );
+                prop_assert!(
+                    !split_reassembler.has_line_fragment(),
+                    "complete split line left raw fragment buffered"
+                );
             }
         }
     }
@@ -856,6 +958,55 @@ mod verification {
             "msg",
             &mut out,
         );
+    }
+
+    /// Prove a valid CRI line split across chunks is equivalent to the same
+    /// line arriving unsplit through the public CRI-to-buffer entrypoint.
+    #[kani::proof]
+    #[kani::unwind(64)]
+    fn verify_process_cri_split_line_matches_unsplit() {
+        let first = b"2024-01-15T10:30:00Z stdout F h";
+        let second = b"i\n";
+        let whole = b"2024-01-15T10:30:00Z stdout F hi\n";
+
+        let mut split_out = Vec::new();
+        let mut split_reassembler = CriReassembler::new(8);
+        let first_counts = process_cri_to_buf_with_plain_text_field(
+            first,
+            &mut split_reassembler,
+            None,
+            SHORT_FIELD_NAME,
+            &mut split_out,
+        );
+        let second_counts = process_cri_to_buf_with_plain_text_field(
+            second,
+            &mut split_reassembler,
+            None,
+            SHORT_FIELD_NAME,
+            &mut split_out,
+        );
+
+        let mut unsplit_out = Vec::new();
+        let mut unsplit_reassembler = CriReassembler::new(8);
+        let unsplit_counts = process_cri_to_buf_with_plain_text_field(
+            whole,
+            &mut unsplit_reassembler,
+            None,
+            SHORT_FIELD_NAME,
+            &mut unsplit_out,
+        );
+
+        assert_eq!(
+            (
+                first_counts.0 + second_counts.0,
+                first_counts.1 + second_counts.1
+            ),
+            unsplit_counts
+        );
+        assert_bytes_eq(&split_out, &unsplit_out);
+        assert!(!split_reassembler.has_line_fragment());
+        kani::cover!(first_counts.0 == 0, "first split chunk buffers only");
+        kani::cover!(second_counts.0 == 1, "second split chunk emits row");
     }
 
     /// Prove parse_cri_line rejects known invalid stream tokens.

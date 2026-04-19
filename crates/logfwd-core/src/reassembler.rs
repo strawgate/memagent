@@ -30,6 +30,9 @@
 /// F "simple"  → Complete("simple")  // zero-copy fast path
 /// ```
 use alloc::vec::Vec;
+
+const CRI_RAW_LINE_OVERHEAD: usize = 256;
+
 /// CRI partial line aggregator. Merges P/F lines into complete messages.
 pub struct CriReassembler {
     pending: Vec<u8>,
@@ -142,13 +145,17 @@ impl CriReassembler {
         self.max_message_size
     }
 
+    fn raw_line_fragment_limit(&self) -> usize {
+        self.max_message_size.saturating_add(CRI_RAW_LINE_OVERHEAD)
+    }
+
     /// Append raw bytes for an unterminated CRI line split across chunk boundaries.
     ///
-    /// The buffered bytes are bounded by `max_message_size` to prevent unbounded
-    /// growth if a stream never emits a newline.
+    /// The buffered bytes include the CRI header, so this limit intentionally
+    /// includes fixed header slack in addition to the message payload limit.
     pub(crate) fn push_line_fragment(&mut self, bytes: &[u8]) {
         let remaining = self
-            .max_message_size
+            .raw_line_fragment_limit()
             .saturating_sub(self.line_fragment.len());
         let to_add = bytes.len().min(remaining);
         if to_add < bytes.len() {
@@ -167,16 +174,11 @@ impl CriReassembler {
         self.line_fragment_truncated
     }
 
-    /// Clear any buffered raw CRI line fragment and truncation state.
-    pub(crate) fn clear_line_fragment(&mut self) {
-        self.line_fragment.clear();
-        self.line_fragment_truncated = false;
-    }
-
     /// Move out the buffered raw CRI line fragment and clear truncation state.
     pub(crate) fn take_line_fragment(&mut self) -> Vec<u8> {
+        let capacity = self.line_fragment.capacity();
         self.line_fragment_truncated = false;
-        core::mem::take(&mut self.line_fragment)
+        core::mem::replace(&mut self.line_fragment, Vec::with_capacity(capacity))
     }
 }
 
