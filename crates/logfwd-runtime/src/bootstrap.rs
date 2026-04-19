@@ -418,6 +418,7 @@ fn input_label(i: &logfwd_config::InputConfig) -> String {
         InputTypeConfig::Udp(u) => format!("udp   {}", u.listen),
         InputTypeConfig::Otlp(o) => format!("otlp  {}", o.listen),
         InputTypeConfig::Http(h) => format!("http  {}", h.listen),
+        InputTypeConfig::Stdin(_) => "stdin".to_string(),
         InputTypeConfig::ArrowIpc(a) => format!("arrow_ipc  {}", a.listen),
         InputTypeConfig::Generator(_) => "generator".to_string(),
         InputTypeConfig::LinuxEbpfSensor(_) => "linux_ebpf_sensor".to_string(),

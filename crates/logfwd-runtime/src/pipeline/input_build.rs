@@ -10,7 +10,7 @@ use logfwd_config::{
 use logfwd_diagnostics::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
-use logfwd_io::input::{FileInput, InputSource};
+use logfwd_io::input::{FileInput, InputSource, StdinInput};
 use logfwd_io::tail::TailConfig;
 
 use super::InputState;
@@ -64,6 +64,17 @@ fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> 
         InputType::Http if !matches!(format, Format::Json | Format::Raw) => {
             return Err(format!(
                 "input '{name}': format {:?} is not supported for {:?} inputs (expected json or raw)",
+                format, input_type
+            ));
+        }
+        InputType::Stdin
+            if !matches!(
+                format,
+                Format::Cri | Format::Auto | Format::Json | Format::Raw
+            ) =>
+        {
+            return Err(format!(
+                "input '{name}': format {:?} is not supported for {:?} inputs (expected cri, auto, json, or raw)",
                 format, input_type
             ));
         }
@@ -371,6 +382,12 @@ pub(super) fn build_input_state(
             }
             let source = logfwd_io::http_input::HttpInput::new_with_options(name, addr, options)
                 .map_err(|e| format!("input '{name}': failed to start HTTP input: {e}"))?;
+            (Box::new(source), format, 4 * 1024 * 1024)
+        }
+        InputTypeConfig::Stdin(_) => {
+            let format = cfg.format.clone().unwrap_or(Format::Auto);
+            validate_input_format(name, InputType::Stdin, &format)?;
+            let source = StdinInput::new(name);
             (Box::new(source), format, 4 * 1024 * 1024)
         }
         InputTypeConfig::Udp(u) => {
@@ -724,6 +741,30 @@ mod tests {
     fn http_input_accepts_json_and_raw_formats() {
         assert!(validate_input_format("http", InputType::Http, &Format::Json).is_ok());
         assert!(validate_input_format("http", InputType::Http, &Format::Raw).is_ok());
+    }
+
+    #[test]
+    fn stdin_input_accepts_line_or_raw_formats() {
+        for format in [Format::Auto, Format::Cri, Format::Json, Format::Raw] {
+            assert!(validate_input_format("stdin", InputType::Stdin, &format).is_ok());
+        }
+    }
+
+    #[test]
+    fn stdin_input_rejects_structured_formats() {
+        for format in [
+            Format::Logfmt,
+            Format::Syslog,
+            Format::Text,
+            Format::Console,
+        ] {
+            let err = validate_input_format("stdin", InputType::Stdin, &format)
+                .expect_err("stdin input must reject unsupported format");
+            assert!(
+                err.contains("expected cri, auto, json, or raw"),
+                "unexpected error: {err}"
+            );
+        }
     }
 
     #[test]

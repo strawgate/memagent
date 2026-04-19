@@ -393,6 +393,10 @@ impl InputSource for FramedInput {
         self.inner.health()
     }
 
+    fn is_finished(&self) -> bool {
+        self.inner.is_finished()
+    }
+
     fn apply_hints(&mut self, hints: &FilterHints) {
         self.inner.apply_hints(hints);
     }

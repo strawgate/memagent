@@ -321,6 +321,15 @@ impl Config {
                                 &h.listen,
                             )?;
                         }
+                        InputTypeConfig::Stdin(_) => {
+                            if let Some(fmt) = &input.format
+                                && !fmt.is_stdin_compatible()
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': stdin input only supports format auto, cri, json, or raw (got {fmt})"
+                                )));
+                            }
+                        }
                         InputTypeConfig::Generator(g) => {
                             if g.generator.as_ref().and_then(|cfg| cfg.batch_size) == Some(0) {
                                 return Err(ConfigError::Validation(format!(

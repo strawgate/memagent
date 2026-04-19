@@ -721,6 +721,7 @@ pipelines:
             ("otlp", "listen: 0.0.0.0:4317"),
             ("arrow_ipc", "listen: 0.0.0.0:4319"),
             ("http", "listen: 0.0.0.0:8080"),
+            ("stdin", ""),
             ("generator", ""),
             ("linux_ebpf_sensor", ""),
             ("macos_es_sensor", ""),
@@ -730,6 +731,51 @@ pipelines:
             let yaml = format!("input:\n  type: {itype}\n  {extra}\noutput:\n  type: stdout\n");
             Config::load_str(&yaml).unwrap_or_else(|e| panic!("failed for {itype}: {e}"));
         }
+    }
+
+    #[test]
+    fn stdin_input_accepts_supported_formats() {
+        for format in ["auto", "cri", "json", "raw"] {
+            let yaml =
+                format!("input:\n  type: stdin\n  format: {format}\noutput:\n  type: stdout\n");
+            let cfg = Config::load_str(&yaml)
+                .unwrap_or_else(|e| panic!("failed for stdin format {format}: {e}"));
+            let input = &cfg.pipelines["default"].inputs[0];
+            assert_eq!(input.input_type(), InputType::Stdin);
+        }
+    }
+
+    #[test]
+    fn stdin_input_rejects_unsupported_format() {
+        let yaml = r"
+input:
+  type: stdin
+  format: logfmt
+output:
+  type: stdout
+";
+        let err = Config::load_str(yaml).expect_err("stdin should reject unsupported format");
+        assert!(
+            err.to_string()
+                .contains("stdin input only supports format auto, cri, json, or raw"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn stdin_input_rejects_file_only_fields() {
+        let yaml = r"
+input:
+  type: stdin
+  path: /tmp/app.log
+output:
+  type: stdout
+";
+        let err = Config::load_str(yaml).expect_err("stdin should reject path");
+        assert!(
+            err.to_string().contains("unknown field `path`"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

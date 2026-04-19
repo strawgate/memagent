@@ -44,6 +44,8 @@ pub enum InputType {
     Tcp,
     Otlp,
     Http,
+    /// Finite input read from process standard input.
+    Stdin,
     Generator,
     /// Linux eBPF sensor input.
     #[serde(rename = "linux_ebpf_sensor", alias = "linux_sensor_beta")]
@@ -77,6 +79,7 @@ impl fmt::Display for InputType {
             InputType::Tcp => f.write_str("tcp"),
             InputType::Otlp => f.write_str("otlp"),
             InputType::Http => f.write_str("http"),
+            InputType::Stdin => f.write_str("stdin"),
             InputType::Generator => f.write_str("generator"),
             InputType::LinuxEbpfSensor => f.write_str("linux_ebpf_sensor"),
             InputType::MacosEsSensor => f.write_str("macos_es_sensor"),
@@ -179,6 +182,13 @@ pub enum Format {
     Auto,
     Console,
     Text,
+}
+
+impl Format {
+    /// Returns whether this format can be decoded from stdin input.
+    pub fn is_stdin_compatible(&self) -> bool {
+        matches!(self, Self::Auto | Self::Cri | Self::Json | Self::Raw)
+    }
 }
 
 impl fmt::Display for Format {
@@ -522,6 +532,8 @@ pub enum InputTypeConfig {
     Tcp(TcpTypeConfig),
     Otlp(OtlpTypeConfig),
     Http(HttpTypeConfig),
+    /// Configuration for `type: stdin`.
+    Stdin(StdinTypeConfig),
     Generator(GeneratorTypeConfig),
     #[serde(rename = "linux_ebpf_sensor", alias = "linux_sensor_beta")]
     LinuxEbpfSensor(SensorTypeConfig),
@@ -551,6 +563,7 @@ impl InputTypeConfig {
             Self::Tcp(_) => InputType::Tcp,
             Self::Otlp(_) => InputType::Otlp,
             Self::Http(_) => InputType::Http,
+            Self::Stdin(_) => InputType::Stdin,
             Self::Generator(_) => InputType::Generator,
             Self::LinuxEbpfSensor(_) => InputType::LinuxEbpfSensor,
             Self::MacosEsSensor(_) => InputType::MacosEsSensor,
@@ -644,6 +657,14 @@ pub struct HttpTypeConfig {
     #[serde(default)]
     pub http: Option<HttpInputConfig>,
 }
+
+/// Configuration for stdin input.
+///
+/// Stdin input has no input-specific fields; unknown fields are rejected so
+/// file-tail options such as `path` do not silently apply to command input.
+#[derive(Debug, Clone, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct StdinTypeConfig {}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(deny_unknown_fields)]

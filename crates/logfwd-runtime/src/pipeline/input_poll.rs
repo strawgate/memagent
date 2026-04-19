@@ -153,6 +153,20 @@ pub(super) async fn async_input_poll_loop(
             }
         }
 
+        if input.source.is_finished() {
+            if !input.buf.is_empty() {
+                if let Some(msg) =
+                    scan_and_transform_for_send(&mut input, &mut transform, &metrics, input_index)
+                        .await
+                {
+                    if tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+            }
+            break;
+        }
+
         let timeout_elapsed = buffered_since.is_some_and(|t| t.elapsed() >= batch_timeout);
         let should_send = should_flush_buffer(input.buf.len(), batch_target_bytes, timeout_elapsed);
         if should_send {

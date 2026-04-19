@@ -266,6 +266,23 @@ fn io_worker_loop(
             }
         }
 
+        if input.source.is_finished() {
+            if !input.buf.is_empty() {
+                metrics.inc_flush_by_timeout();
+                if !flush_buf(
+                    &mut input.buf,
+                    &*input.source,
+                    &tx,
+                    &metrics,
+                    &mut last_bp_warn,
+                    input_index,
+                ) {
+                    break;
+                }
+            }
+            break;
+        }
+
         let timeout_elapsed = buffered_since.is_some_and(|t| t.elapsed() >= batch_timeout);
         let flush_by_size = input.buf.len() >= safe_batch_target_bytes;
         let flush_by_timeout = !input.buf.is_empty() && timeout_elapsed;

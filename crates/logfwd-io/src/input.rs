@@ -1,5 +1,7 @@
-use std::io;
+use std::io::{self, Read};
 use std::path::PathBuf;
+use std::sync::mpsc;
+use std::thread;
 
 use arrow::record_batch::RecordBatch;
 use logfwd_types::diagnostics::ComponentHealth;
@@ -84,6 +86,14 @@ pub trait InputSource: Send {
     /// Coarse runtime health for readiness and diagnostics.
     fn health(&self) -> ComponentHealth;
 
+    /// Whether the source has reached a terminal end-of-input state.
+    ///
+    /// Long-running inputs return `false`. Finite inputs such as stdin return
+    /// `true` after emitting EOF so the runtime can drain and exit cleanly.
+    fn is_finished(&self) -> bool {
+        false
+    }
+
     /// Apply filter hints for predicate pushdown. Inputs that support
     /// pushdown use these to skip data early (e.g., XDP severity filtering).
     /// Default implementation ignores hints — correct but slower.
@@ -133,6 +143,138 @@ pub trait InputSource: Send {
     /// Used for checkpoint restore — the checkpoint stores fingerprint + offset.
     /// The input source finds the matching file by fingerprint, not path.
     fn set_offset_by_source(&mut self, _source_id: SourceId, _offset: u64) {}
+}
+
+enum StdinMessage {
+    Data(Vec<u8>),
+    EndOfFile,
+    Error(io::ErrorKind, String),
+}
+
+/// Finite stdin source for command-line ingestion.
+pub struct StdinInput {
+    name: String,
+    rx: mpsc::Receiver<StdinMessage>,
+    is_finished: bool,
+    pending_error: Option<(io::ErrorKind, String)>,
+}
+
+impl StdinInput {
+    /// Spawn a background reader that forwards stdin chunks to the poll loop.
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        const CHANNEL_BOUND: usize = 16;
+        const READ_BUF_SIZE: usize = 64 * 1024;
+
+        let name = name.into();
+        let (tx, rx) = mpsc::sync_channel(CHANNEL_BOUND);
+        let thread_tx = tx.clone();
+        if let Err(err) = thread::Builder::new()
+            .name("logfwd-stdin-reader".to_owned())
+            .spawn(move || {
+                let stdin = io::stdin();
+                let mut stdin = stdin.lock();
+                let mut buf = vec![0; READ_BUF_SIZE];
+                loop {
+                    match stdin.read(&mut buf) {
+                        Ok(0) => {
+                            let _ = thread_tx.send(StdinMessage::EndOfFile);
+                            break;
+                        }
+                        Ok(n) => {
+                            if thread_tx
+                                .send(StdinMessage::Data(buf[..n].to_vec()))
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+                        Err(err) => {
+                            let kind = err.kind();
+                            let message = err.to_string();
+                            let _ = thread_tx.send(StdinMessage::Error(kind, message));
+                            break;
+                        }
+                    }
+                }
+            })
+        {
+            let _ = tx.send(StdinMessage::Error(err.kind(), err.to_string()));
+        }
+
+        Self {
+            name,
+            rx,
+            is_finished: false,
+            pending_error: None,
+        }
+    }
+}
+
+impl InputSource for StdinInput {
+    fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
+        const MAX_EVENTS_PER_POLL: usize = 16;
+
+        if self.is_finished {
+            return Ok(vec![]);
+        }
+        if let Some((kind, message)) = self.pending_error.take() {
+            self.is_finished = true;
+            return Err(io::Error::new(kind, message));
+        }
+
+        let mut events = Vec::new();
+        while events.len() < MAX_EVENTS_PER_POLL {
+            match self.rx.try_recv() {
+                Ok(StdinMessage::Data(bytes)) => {
+                    let accounted_bytes = bytes.len() as u64;
+                    events.push(InputEvent::Data {
+                        bytes,
+                        source_id: None,
+                        accounted_bytes,
+                    });
+                }
+                Ok(StdinMessage::EndOfFile) => {
+                    self.is_finished = true;
+                    events.push(InputEvent::EndOfFile { source_id: None });
+                    break;
+                }
+                Ok(StdinMessage::Error(kind, message)) => {
+                    if !events.is_empty() {
+                        self.pending_error = Some((kind, message));
+                        break;
+                    }
+                    self.is_finished = true;
+                    return Err(io::Error::new(kind, message));
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.is_finished = true;
+                    events.push(InputEvent::EndOfFile { source_id: None });
+                    break;
+                }
+            }
+        }
+
+        Ok(events)
+    }
+
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn health(&self) -> ComponentHealth {
+        if self.is_finished {
+            ComponentHealth::Stopped
+        } else {
+            ComponentHealth::Healthy
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.is_finished
+    }
 }
 
 /// An input source backed by a `FileTailer`.
@@ -229,5 +371,59 @@ impl InputSource for FileInput {
 
     fn get_adaptive_fast_polls_max(&self) -> u8 {
         self.tailer.get_adaptive_fast_polls_max()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stdin_from_messages(messages: Vec<StdinMessage>) -> StdinInput {
+        let (tx, rx) = mpsc::sync_channel(messages.len().max(1));
+        for message in messages {
+            tx.send(message).expect("send test stdin message");
+        }
+        drop(tx);
+        StdinInput {
+            name: "stdin".to_owned(),
+            rx,
+            is_finished: false,
+            pending_error: None,
+        }
+    }
+
+    #[test]
+    fn stdin_poll_defers_error_until_consumed_data_is_returned() {
+        let mut input = stdin_from_messages(vec![
+            StdinMessage::Data(b"first\n".to_vec()),
+            StdinMessage::Error(io::ErrorKind::BrokenPipe, "stdin failed".to_owned()),
+        ]);
+
+        let events = input.poll().expect("data should be returned before error");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], InputEvent::Data { .. }));
+        assert!(!input.is_finished());
+
+        let err = match input.poll() {
+            Ok(_) => panic!("pending read error should surface"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+        assert!(input.is_finished());
+    }
+
+    #[test]
+    fn stdin_poll_error_without_data_finishes_immediately() {
+        let mut input = stdin_from_messages(vec![StdinMessage::Error(
+            io::ErrorKind::UnexpectedEof,
+            "stdin failed".to_owned(),
+        )]);
+
+        let err = match input.poll() {
+            Ok(_) => panic!("read error should surface"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(input.is_finished());
     }
 }

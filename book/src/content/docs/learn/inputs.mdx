@@ -1,11 +1,11 @@
 ---
 title: "Inputs"
-description: "The 8 input types FastForward supports — from file tailing to Arrow-native sources"
+description: "The 9 input types FastForward supports — from stdin piping to Arrow-native sources"
 ---
 
-Sources produce raw bytes or Arrow batches independently and feed into a bounded pipeline channel. FastForward supports 8 input types across two modes:
+Sources produce raw bytes or Arrow batches independently and feed into a bounded pipeline channel. FastForward supports 9 input types across two modes:
 
-- **Raw bytes** — File, TCP, UDP, HTTP. The scanner parses these into Arrow RecordBatches.
+- **Raw bytes** — File, stdin, TCP, UDP, HTTP. The scanner parses these into Arrow RecordBatches.
 - **Arrow-native** — OTLP, Arrow IPC, Platform Sensor, Generator. These produce structured RecordBatches directly, bypassing the scanner entirely.
 
 ## File
@@ -17,6 +17,14 @@ Tail files matching glob patterns with position tracking across restarts. Detect
 **Internal stages:** Glob Discovery → File Watcher → Read Loop → Budget Control → EOF Detection
 
 See [Tailing](/learn/tailing/) for a detailed look at rotation, truncation, and crash recovery.
+
+## Stdin
+
+Read from standard input until EOF, then drain the pipeline and exit.
+
+**Key properties:** finite command input. Bounded reader channel. No checkpointing, glob discovery, or rotation handling.
+
+**Internal stages:** Stdin Reader → Bounded Channel → EOF Detection → Drain
 
 ## TCP
 

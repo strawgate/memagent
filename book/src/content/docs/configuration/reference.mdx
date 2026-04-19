@@ -6,6 +6,7 @@ description: "Complete YAML reference for all FastForward settings"
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 FastForward commands that operate on pipeline config (for example `run`, `validate`, `dry-run`, and `effective-config`) accept a YAML file via `--config <config.yaml>`.
+`ff send` accepts a destination-only config with top-level `output`, injects stdin as the input, drains the output, and exits.
 
 ## Overview
 
@@ -118,6 +119,19 @@ input:
   path: /var/log/pods/**/*.log
   format: cri
 ```
+
+### `stdin` input
+
+Read data from standard input. This input has no input-specific fields.
+It is primarily used by `ff send` for command-line piping.
+
+```yaml
+input:
+  type: stdin
+  format: auto
+```
+
+Supported formats: `auto`, `cri`, `json`, and `raw`.
 
 ### `generator` input
 
@@ -334,6 +348,7 @@ Behavior:
 | Value | Status | Description |
 |-------|--------|-------------|
 | `file` | Implemented | Tail files matching a glob pattern. |
+| `stdin` | Implemented | Read piped stdin until EOF, then drain outputs and exit. |
 | `generator` | Implemented | Emit synthetic JSON-like records from an in-process source. |
 | `udp` | Implemented | Receive log lines over UDP. |
 | `tcp` | Implemented | Accept log lines over TCP. |

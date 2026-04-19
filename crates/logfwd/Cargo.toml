@@ -43,6 +43,7 @@ logfwd-transform = { version = "0.1.0", path = "../logfwd-transform", optional =
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
+serde_yaml_ng = { workspace = true }
 tokio = { version = "1", features = [
     "rt-multi-thread",
     "macros",

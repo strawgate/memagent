@@ -32,6 +32,8 @@ const LONG_VERSION: &str = concat!(
 );
 const CLI_AFTER_HELP: &str = r"Examples:
   ff run --config config.yaml
+  cat app.log | ff
+  kubectl logs pod/app | ff send --format json --service checkout
   ff validate --config config.yaml
   ff dry-run --config config.yaml
   ff effective-config --config config.yaml
@@ -314,6 +316,48 @@ struct DevourArgs {
     diagnostics_addr: String,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum SendFormat {
+    Auto,
+    Cri,
+    Json,
+    Raw,
+}
+
+impl SendFormat {
+    fn as_config_format(self) -> logfwd_config::Format {
+        match self {
+            Self::Auto => logfwd_config::Format::Auto,
+            Self::Cri => logfwd_config::Format::Cri,
+            Self::Json => logfwd_config::Format::Json,
+            Self::Raw => logfwd_config::Format::Raw,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Args, Default)]
+struct SendArgs {
+    #[arg(
+        short = 'c',
+        long = "config",
+        value_name = "FILE",
+        help = "Destination YAML config file"
+    )]
+    config: Option<String>,
+
+    /// Input format for stdin.
+    #[arg(long, value_enum)]
+    format: Option<SendFormat>,
+
+    /// Set `service.name` on emitted records.
+    #[arg(long)]
+    service: Option<String>,
+
+    /// Add or override a resource attribute, repeatable: --resource key=value.
+    #[arg(long, value_name = "KEY=VALUE")]
+    resource: Vec<String>,
+}
+
 #[derive(Debug, Parser)]
 #[command(
     name = "ff",
@@ -361,6 +405,8 @@ enum Commands {
         )]
         config: Option<String>,
     },
+    /// Read stdin, send it to the configured destination, drain, and exit.
+    Send(SendArgs),
     /// Blast generated data into a destination sink via the normal runtime pipeline.
     Blast(BlastArgs),
     /// Run a blackhole receiver via the normal runtime pipeline.
@@ -431,6 +477,8 @@ async fn main_inner() -> i32 {
 
     let result = if let Some(command) = cli.command {
         run_command(command).await
+    } else if !io::stdin().is_terminal() {
+        run_command(Commands::Send(SendArgs::default())).await
     } else {
         if let Some(path) = discover_config() {
             eprintln!(
@@ -490,6 +538,7 @@ async fn run_command(command: Commands) -> Result<(), CliError> {
             let config_path = resolve_config_path(config.as_deref())?;
             cmd_run(&config_path, false, true).await
         }
+        Commands::Send(args) => cmd_send(args).await,
         Commands::Blast(args) => cmd_blast(args).await,
         Commands::Devour(args) => cmd_devour(args).await,
         Commands::Blackhole { bind_addr } => cmd_blackhole(bind_addr.as_deref()).await,
@@ -528,6 +577,132 @@ async fn cmd_run(config_path: &str, validate_only: bool, dry_run: bool) -> Resul
     }
 
     run_pipelines(config, base_path, config_path, &config_yaml, None).await
+}
+
+async fn cmd_send(args: SendArgs) -> Result<(), CliError> {
+    if io::stdin().is_terminal() {
+        return Err(CliError::Config(
+            "stdin is interactive; pipe data into `ff` or use `ff run --config <file>` for daemon mode"
+                .to_owned(),
+        ));
+    }
+
+    let config_path = resolve_send_config_path(args.config.as_deref())?;
+    let config_yaml = std::fs::read_to_string(&config_path)
+        .map_err(|e| CliError::Config(format!("cannot read {config_path}: {e}")))?;
+    let runnable_yaml = build_stdin_send_config_yaml(
+        &config_yaml,
+        args.format,
+        args.service.as_deref(),
+        &args.resource,
+    )?;
+    let base_path = std::path::Path::new(&config_path).parent();
+    let config = logfwd_config::Config::load_str_with_base_path(&runnable_yaml, base_path)
+        .map_err(|e| CliError::Config(e.to_string()))?;
+
+    run_pipelines(config, base_path, &config_path, &runnable_yaml, None).await
+}
+
+fn build_stdin_send_config_yaml(
+    config_yaml: &str,
+    format: Option<SendFormat>,
+    service: Option<&str>,
+    resources: &[String],
+) -> Result<String, CliError> {
+    let mut value: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(config_yaml).map_err(|e| CliError::Config(e.to_string()))?;
+    let mapping = value.as_mapping_mut().ok_or_else(|| {
+        CliError::Config("send destination config must be a YAML mapping".to_owned())
+    })?;
+
+    for unsupported in ["input", "pipelines"] {
+        if mapping.contains_key(&yaml_string(unsupported)) {
+            return Err(CliError::Config(format!(
+                "`ff send` expects a destination-only config; remove top-level `{unsupported}` or use `ff run`"
+            )));
+        }
+    }
+    if !mapping.contains_key(&yaml_string("output")) {
+        return Err(CliError::Config(
+            "`ff send` destination config must define top-level `output`".to_owned(),
+        ));
+    }
+
+    let mut input = serde_yaml_ng::Mapping::new();
+    input.insert(yaml_string("type"), yaml_string("stdin"));
+    if let Some(format) = format {
+        let format = format.as_config_format().to_string();
+        input.insert(yaml_string("format"), yaml_string(&format));
+    }
+    mapping.insert(yaml_string("input"), serde_yaml_ng::Value::Mapping(input));
+
+    merge_send_resource_attrs(mapping, service, resources)?;
+
+    serde_yaml_ng::to_string(&value).map_err(|e| CliError::Config(e.to_string()))
+}
+
+fn merge_send_resource_attrs(
+    mapping: &mut serde_yaml_ng::Mapping,
+    service: Option<&str>,
+    resources: &[String],
+) -> Result<(), CliError> {
+    if service.is_none() && resources.is_empty() {
+        return Ok(());
+    }
+
+    let key = yaml_string("resource_attrs");
+    if !mapping.contains_key(&key) {
+        mapping.insert(
+            key.clone(),
+            serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new()),
+        );
+    }
+    let attrs = mapping
+        .get_mut(&key)
+        .and_then(serde_yaml_ng::Value::as_mapping_mut)
+        .ok_or_else(|| {
+            CliError::Config(
+                "top-level `resource_attrs` must be a mapping when using send overrides".to_owned(),
+            )
+        })?;
+
+    if let Some(service) = service {
+        attrs.insert(yaml_string("service.name"), yaml_string(service));
+    }
+    for raw in resources {
+        let (name, value) = parse_key_value(raw, "--resource")?;
+        attrs.insert(yaml_string(name), yaml_string(value));
+    }
+
+    Ok(())
+}
+
+fn parse_key_value<'a>(raw: &'a str, flag: &str) -> Result<(&'a str, &'a str), CliError> {
+    let (name, value) = raw.split_once('=').ok_or_else(|| {
+        CliError::Config(format!("{flag} must be in KEY=VALUE form, got `{raw}`"))
+    })?;
+    let name = name.trim();
+    let value = value.trim();
+    if name.is_empty() {
+        return Err(CliError::Config(format!(
+            "{flag} key must not be empty, got `{raw}`"
+        )));
+    }
+    Ok((name, value))
+}
+
+fn yaml_string(value: &str) -> serde_yaml_ng::Value {
+    serde_yaml_ng::Value::String(value.to_owned())
+}
+
+fn resolve_send_config_path(config_path: Option<&str>) -> Result<String, CliError> {
+    resolve_config_path(config_path).map_err(|err| match err {
+        CliError::Config(_) => CliError::Config(
+            "no destination config file found (use `ff send --config <file>` or set LOGFWD_CONFIG)"
+                .to_owned(),
+        ),
+        other => other,
+    })
 }
 
 async fn cmd_blast(mut args: BlastArgs) -> Result<(), CliError> {
@@ -1575,7 +1750,7 @@ fn validate_pipeline_read_only(
                 .format
                 .clone()
                 .unwrap_or(match input_cfg.type_config {
-                    InputTypeConfig::File(_) => Format::Auto,
+                    InputTypeConfig::File(_) | InputTypeConfig::Stdin(_) => Format::Auto,
                     _ => Format::Json,
                 });
             validate_input_format_read_only(&input_name, input_cfg.input_type(), &format)?;
@@ -1619,6 +1794,7 @@ fn validate_input_format_read_only(
             format,
             Format::Cri | Format::Auto | Format::Json | Format::Raw
         ),
+        InputType::Stdin => format.is_stdin_compatible(),
         InputType::Generator | InputType::Otlp => matches!(format, Format::Json),
         InputType::Http => matches!(format, Format::Json | Format::Raw),
         InputType::Udp | InputType::Tcp => matches!(format, Format::Json | Format::Raw),
@@ -1952,6 +2128,127 @@ mod cli_tests {
             Commands::Blackhole { bind_addr } => assert!(bind_addr.is_none()),
             other => panic!("expected blackhole command, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn send_command_with_overrides_parses_successfully() {
+        let cli = Cli::try_parse_from([
+            "ff",
+            "send",
+            "--config",
+            "dest.yaml",
+            "--format",
+            "json",
+            "--service",
+            "checkout",
+            "--resource",
+            "deployment=blue",
+        ])
+        .expect("parser should accept send command");
+        match cli.command.expect("command") {
+            Commands::Send(args) => {
+                assert_eq!(args.config.as_deref(), Some("dest.yaml"));
+                assert!(matches!(args.format, Some(SendFormat::Json)));
+                assert_eq!(args.service.as_deref(), Some("checkout"));
+                assert_eq!(args.resource, ["deployment=blue"]);
+            }
+            other => panic!("expected send command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stdin_send_config_injects_input_and_merges_resources() {
+        let yaml = r"
+resource_attrs:
+  env: prod
+output:
+  type: stdout
+";
+        let resource = vec![" deployment = blue ".to_owned()];
+        let generated =
+            build_stdin_send_config_yaml(yaml, Some(SendFormat::Json), Some("checkout"), &resource)
+                .expect("send config should render");
+        let config =
+            logfwd_config::Config::load_str(&generated).expect("generated config should parse");
+        let pipeline = &config.pipelines["default"];
+        let input = &pipeline.inputs[0];
+
+        assert_eq!(input.input_type(), logfwd_config::InputType::Stdin);
+        assert_eq!(input.format, Some(logfwd_config::Format::Json));
+        assert_eq!(
+            pipeline
+                .resource_attrs
+                .get("service.name")
+                .map(String::as_str),
+            Some("checkout")
+        );
+        assert_eq!(
+            pipeline
+                .resource_attrs
+                .get("deployment")
+                .map(String::as_str),
+            Some("blue")
+        );
+        assert_eq!(
+            pipeline.resource_attrs.get("env").map(String::as_str),
+            Some("prod")
+        );
+    }
+
+    #[test]
+    fn stdin_send_config_rejects_runtime_inputs() {
+        for (field, yaml) in [
+            (
+                "input",
+                "input:\n  type: file\n  path: /tmp/app.log\noutput:\n  type: stdout\n",
+            ),
+            (
+                "pipelines",
+                "pipelines:\n  default:\n    input:\n      type: file\n      path: /tmp/app.log\n    output:\n      type: stdout\n",
+            ),
+        ] {
+            let err = build_stdin_send_config_yaml(yaml, None, None, &[])
+                .expect_err("send config should reject runtime input shape");
+            assert!(
+                err.to_string().contains(field),
+                "error should mention {field}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn stdin_send_config_requires_destination_output() {
+        let err = build_stdin_send_config_yaml("server: {}\n", None, None, &[])
+            .expect_err("send config should require output");
+        assert!(
+            err.to_string().contains("must define top-level `output`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn stdin_send_config_rejects_malformed_resource_override() {
+        let err = build_stdin_send_config_yaml(
+            "output:\n  type: stdout\n",
+            None,
+            None,
+            &["deployment".to_owned()],
+        )
+        .expect_err("send config should reject malformed resource override");
+        assert!(
+            err.to_string().contains("--resource"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_input_format_read_only_accepts_stdin_auto() {
+        validate_input_format_read_only(
+            "stdin",
+            logfwd_config::InputType::Stdin,
+            &logfwd_config::Format::Auto,
+        )
+        .expect("stdin should accept auto format");
     }
 
     #[test]
