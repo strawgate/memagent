@@ -72,8 +72,8 @@ def main() -> int:
 
     print(
         "No-raw-payload-injection guard failed. "
-        "New source metadata fields must be scanner-attached _resource_* columns, "
-        "not raw-byte injections.",
+        "New raw source-metadata injections are only allowed at the legacy seam; "
+        "expand this checker before claiming broader resource.attributes.* enforcement.",
         file=sys.stderr,
     )
     print("Violations:", file=sys.stderr)

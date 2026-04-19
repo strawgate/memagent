@@ -109,7 +109,21 @@ impl FileDiscovery {
                 continue;
             }
 
-            let current_identity = match identify_file(path, reader.config.fingerprint_bytes) {
+            let previous_fingerprint_len = reader
+                .files
+                .get(path)
+                .map_or(reader.config.fingerprint_bytes as u64, |tailed| {
+                    tailed.fingerprint_len
+                });
+            let fingerprint_bytes = if previous_fingerprint_len > 0
+                && previous_fingerprint_len < reader.config.fingerprint_bytes as u64
+            {
+                previous_fingerprint_len as usize
+            } else {
+                reader.config.fingerprint_bytes
+            };
+
+            let current_identity = match identify_file(path, fingerprint_bytes) {
                 Ok(id) => id,
                 Err(e) => {
                     tracing::warn!(path = %path.display(), error = %e, "tail.identify_failed");
@@ -127,8 +141,7 @@ impl FileDiscovery {
                     &tailed.identity,
                     &current_identity,
                     is_previous_handle_deleted,
-                    tailed.offset,
-                    reader.config.fingerprint_bytes,
+                    tailed.fingerprint_len,
                 )
             });
             let is_new = !reader.files.contains_key(path);
@@ -201,8 +214,7 @@ fn has_metadata_indicating_deletion(_meta: &std::fs::Metadata) -> bool {
 fn should_identity_rotate(
     previous: &FileIdentity,
     current: &FileIdentity,
-    tailed_offset: u64,
-    fingerprint_bytes: usize,
+    previous_fingerprint_len: u64,
 ) -> bool {
     if previous.device != current.device || previous.inode != current.inode {
         return true;
@@ -214,11 +226,7 @@ fn should_identity_rotate(
         return false;
     }
 
-    if tailed_offset < fingerprint_bytes as u64 {
-        return false;
-    }
-
-    previous.fingerprint != current.fingerprint
+    previous_fingerprint_len > 0 && previous.fingerprint != current.fingerprint
 }
 
 #[inline]
@@ -226,11 +234,10 @@ fn should_rotate_file(
     previous: &FileIdentity,
     current: &FileIdentity,
     is_previous_handle_deleted: bool,
-    tailed_offset: u64,
-    fingerprint_bytes: usize,
+    previous_fingerprint_len: u64,
 ) -> bool {
     is_previous_handle_deleted
-        || should_identity_rotate(previous, current, tailed_offset, fingerprint_bytes)
+        || should_identity_rotate(previous, current, previous_fingerprint_len)
 }
 
 #[cfg(test)]
@@ -310,6 +317,7 @@ mod tests {
                     inode: 222,
                     fingerprint: 333,
                 },
+                fingerprint_len: 1024,
                 offset: 7,
                 path: path.clone(),
                 source_id: SourceId(123),
@@ -362,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn identity_fingerprint_drift_without_inode_change_is_not_rotation() {
+    fn identity_matching_partial_fingerprint_is_not_rotation() {
         let previous = FileIdentity {
             device: 1,
             inode: 2,
@@ -371,16 +379,16 @@ mod tests {
         let current = FileIdentity {
             device: 1,
             inode: 2,
-            fingerprint: 4,
+            fingerprint: 3,
         };
         assert!(
-            !should_identity_rotate(&previous, &current, 0, 1024),
-            "fingerprint drift during append must not be treated as rotation"
+            !should_identity_rotate(&previous, &current, 12),
+            "matching same-inode partial fingerprint must not be treated as rotation"
         );
     }
 
     #[test]
-    fn identity_fingerprint_drift_after_fingerprint_window_is_rotation() {
+    fn identity_partial_fingerprint_drift_is_rotation() {
         let previous = FileIdentity {
             device: 1,
             inode: 2,
@@ -392,8 +400,26 @@ mod tests {
             fingerprint: 4,
         };
         assert!(
-            should_identity_rotate(&previous, &current, 1024, 1024),
-            "same-inode fingerprint drift after the fingerprint window must be treated as rotation"
+            should_identity_rotate(&previous, &current, 12),
+            "same-inode partial fingerprint drift means the verified prefix changed"
+        );
+    }
+
+    #[test]
+    fn identity_mature_fingerprint_drift_is_rotation() {
+        let previous = FileIdentity {
+            device: 1,
+            inode: 2,
+            fingerprint: 3,
+        };
+        let current = FileIdentity {
+            device: 1,
+            inode: 2,
+            fingerprint: 4,
+        };
+        assert!(
+            should_identity_rotate(&previous, &current, 1024),
+            "same-inode mature fingerprint drift must be treated as rotation"
         );
     }
 
@@ -410,7 +436,7 @@ mod tests {
             fingerprint: 4,
         };
         assert!(
-            !should_identity_rotate(&previous, &current, 1024, 1024),
+            !should_identity_rotate(&previous, &current, 0),
             "empty-file fingerprint sentinel must not rotate when first bytes appear"
         );
     }
@@ -428,7 +454,7 @@ mod tests {
             fingerprint: 3,
         };
         assert!(
-            should_rotate_file(&previous, &current, true, 0, 1024),
+            should_rotate_file(&previous, &current, true, 0),
             "unlinked previous handle must rotate to the current path file"
         );
     }
@@ -454,6 +480,7 @@ mod tests {
             path.clone(),
             TailedFile {
                 identity: stale_identity,
+                fingerprint_len: 1024,
                 file,
                 offset: 2048,
                 last_read: Instant::now(),

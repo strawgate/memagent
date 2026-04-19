@@ -41,7 +41,7 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | `InputSource` implementations must define `health()` explicitly; no optimistic trait default | Compilation + code review |
 | `InputSource` trait-shape changes must pass cross-workspace compile checks for turmoil tests and bench binaries (`cargo test -p logfwd --features turmoil --test turmoil_sim --no-run`, `cargo build -p logfwd-bench --bin framed_input_profile`) | CI/local verification checklist |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
-| **No raw payload injection.** Legacy `_source_path` raw-byte insertion exists only in `framed.rs::inject_source_path_metadata` as a deprecated compatibility seam (#1615) and must not be expanded. New source metadata fields must be attached post-scan as Arrow columns using canonical `_resource_*` naming (scanner-attached resource columns shared across OTLP/OTAP paths). | CI guard script (`python3 scripts/check_no_raw_payload_injection.py`) + code review |
+| **No raw payload injection.** Legacy `_source_path` raw-byte insertion exists only in `framed.rs::inject_source_path_metadata` as a deprecated compatibility seam (#1615) and must not be expanded. New source metadata fields must be attached post-scan as Arrow columns using canonical `resource.attributes.*` naming (scanner-attached resource columns shared across OTLP/OTAP paths). | CI guard script (`python3 scripts/check_no_raw_payload_injection.py`) + code review |
 
 ## logfwd-diagnostics
 

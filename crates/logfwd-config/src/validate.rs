@@ -249,18 +249,6 @@ impl Config {
                                     "pipeline '{name}' input '{label}': {msg}"
                                 )));
                             }
-                            if let Some(prefix) = o.resource_prefix.as_deref() {
-                                if prefix.trim().is_empty() {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': 'resource_prefix' must not be empty for otlp inputs"
-                                    )));
-                                }
-                                if prefix != "resource.attributes." {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': unsupported otlp resource_prefix '{prefix}' (currently only 'resource.attributes.' is supported)"
-                                    )));
-                                }
-                            }
                             if o.max_recv_message_size_bytes == Some(0) {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': otlp.max_recv_message_size_bytes must be at least 1"

@@ -300,7 +300,10 @@ pub fn build_request(profile: OtlpFixtureProfile) -> ExportLogsServiceRequest {
                     attributes.push(kv_string("body", "attr-body-shadow"));
                     attributes.push(kv_string("trace_id", "attr-trace-shadow"));
                     attributes.push(kv_string("flags", "attr-flags-shadow"));
-                    attributes.push(kv_string("_resource_service.name", "attr-resource-shadow"));
+                    attributes.push(kv_string(
+                        "resource_shadow.service.name",
+                        "attr-resource-shadow",
+                    ));
                 }
 
                 let body = if profile.has_complex_any && row % 2 == 0 {

@@ -16,7 +16,7 @@ Tailer reads into read_buf: [u8; 8192]
     → partial: Vec<u8> holds tail bytes (copy on every partial)
   → json_buf → Bytes (move, not copy)
   → Scanner receives Bytes
-    → StructuralIndex (zero-copy bitmasks)
+    → streaming structural classifier (zero-copy bitmasks)
     → StreamingBuilder (zero-copy offset/len views)
     → Arrow StringViewArray (references Bytes)
 ```
@@ -35,7 +35,7 @@ Tailer reads into BytesMut (reusable, per-file)
       → F lines: Bytes::slice_ref() of message field (ZERO COPY)
       → P+F merge: accumulate P messages in BytesMut, freeze on F
   → Scanner receives Bytes (the original buffer or reassembly buffer)
-    → StructuralIndex classifies buffer
+    → streaming structural classifier processes 64-byte blocks
     → StreamingBuilder stores views
     → Arrow StringViewArray references original Bytes
 ```
@@ -110,7 +110,7 @@ For CRI:
 ### Layer 4: Scanner
 
 Receives `Bytes`, produces Arrow RecordBatch. Already zero-copy
-via StructuralIndex + StreamingBuilder.
+via streaming structural classification + StreamingBuilder.
 
 The scanner doesn't care where the Bytes came from — it could be
 from the tailer's buffer, the CRI reassembly buffer, or an Arrow
@@ -144,14 +144,13 @@ persists across reads, accumulating until a delimiter is found.
 ## simdjson padding consideration
 
 simdjson requires SIMDJSON_PADDING (32 bytes) after the input data
-for SIMD overread safety. Our StructuralIndex already handles this by
-padding the last block with spaces. But if we wanted to match
-simdjson's approach (pad the buffer itself), we'd need the reader
+for SIMD overread safety. The scanner handles this by padding the last
+64-byte block with spaces before classification. But if we wanted to
+match simdjson's approach (pad the buffer itself), we'd need the reader
 to allocate with extra capacity.
 
-For now: keep our padding approach (in StructuralIndex::new, the tail
-block is copied into a padded array). This avoids requiring the
-reader to know about SIMD padding requirements.
+For now: keep our padding approach in the scanner's block loop. This
+avoids requiring the reader to know about SIMD padding requirements.
 
 ## Batch accumulation
 

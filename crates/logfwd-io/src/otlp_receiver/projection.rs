@@ -1169,7 +1169,7 @@ mod tests {
                             kv_string("body", "attr-body-shadow"),
                             kv_string("trace_id", "attr-trace-shadow"),
                             kv_string("flags", "attr-flags-shadow"),
-                            kv_string("_resource_service.name", "attr-resource-shadow"),
+                            kv_string("resource_shadow.service.name", "attr-resource-shadow"),
                         ],
                         ..Default::default()
                     }],

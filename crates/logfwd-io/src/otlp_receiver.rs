@@ -179,23 +179,7 @@ impl OtlpReceiverInput {
     /// Bind an HTTP server on `addr` (e.g. "0.0.0.0:4318").
     /// Spawns a background thread to handle requests.
     pub fn new(name: impl Into<String>, addr: &str) -> io::Result<Self> {
-        Self::new_with_resource_prefix(name, addr, field_names::DEFAULT_RESOURCE_PREFIX)
-    }
-
-    /// Like [`Self::new`], but with a custom resource attribute prefix used
-    /// when materializing OTLP resource attributes into flat columns.
-    pub fn new_with_resource_prefix(
-        name: impl Into<String>,
-        addr: &str,
-        resource_prefix: impl Into<String>,
-    ) -> io::Result<Self> {
-        Self::new_with_capacity_stats_and_prefix(
-            name,
-            addr,
-            CHANNEL_BOUND,
-            None,
-            resource_prefix.into(),
-        )
+        Self::new_with_capacity_and_stats(name, addr, CHANNEL_BOUND, None)
     }
 
     /// Like [`Self::new`], but wires input diagnostics into receiver-side
@@ -205,84 +189,38 @@ impl OtlpReceiverInput {
         addr: &str,
         stats: Arc<ComponentStats>,
     ) -> io::Result<Self> {
-        Self::new_with_stats_and_resource_prefix(
-            name,
-            addr,
-            stats,
-            field_names::DEFAULT_RESOURCE_PREFIX,
-        )
-    }
-
-    /// Like [`Self::new_with_stats`], but allows configuring the resource
-    /// attribute prefix used when flattening OTLP resource attributes.
-    pub fn new_with_stats_and_resource_prefix(
-        name: impl Into<String>,
-        addr: &str,
-        stats: Arc<ComponentStats>,
-        resource_prefix: impl Into<String>,
-    ) -> io::Result<Self> {
-        Self::new_with_capacity_stats_and_prefix(
-            name,
-            addr,
-            CHANNEL_BOUND,
-            Some(stats),
-            resource_prefix.into(),
-        )
+        Self::new_with_capacity_and_stats(name, addr, CHANNEL_BOUND, Some(stats))
     }
 
     /// Like [`Self::new`] but with an explicit channel capacity. Useful for tests.
     #[cfg(test)]
     fn new_with_capacity(name: impl Into<String>, addr: &str, capacity: usize) -> io::Result<Self> {
-        Self::new_with_capacity_stats_and_prefix(
-            name,
-            addr,
-            capacity,
-            None,
-            field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
-        )
+        Self::new_with_capacity_and_stats(name, addr, capacity, None)
     }
 
-    #[cfg(test)]
     fn new_with_capacity_and_stats(
         name: impl Into<String>,
         addr: &str,
         capacity: usize,
         stats: Option<Arc<ComponentStats>>,
     ) -> io::Result<Self> {
-        Self::new_with_capacity_stats_and_prefix(
-            name,
-            addr,
-            capacity,
-            stats,
-            field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
-        )
-    }
-
-    fn new_with_capacity_stats_and_prefix(
-        name: impl Into<String>,
-        addr: &str,
-        capacity: usize,
-        stats: Option<Arc<ComponentStats>>,
-        resource_prefix: String,
-    ) -> io::Result<Self> {
         Self::new_with_capacity_stats_prefix_and_decode_mode(
             name,
             addr,
             capacity,
             stats,
-            resource_prefix,
+            field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
             OtlpProtobufDecodeMode::Prost,
             None,
         )
     }
 
-    /// Like [`Self::new_with_stats_and_resource_prefix`], but allows overriding
-    /// the maximum request body size. Pass `None` to keep the 10 MiB default.
-    pub fn new_with_stats_resource_prefix_and_max_size(
+    /// Like [`Self::new_with_stats`], but allows overriding the maximum request
+    /// body size. Pass `None` to keep the 10 MiB default.
+    pub fn new_with_stats_and_max_size(
         name: impl Into<String>,
         addr: &str,
         stats: Arc<ComponentStats>,
-        resource_prefix: impl Into<String>,
         max_message_size_bytes: Option<usize>,
     ) -> io::Result<Self> {
         Self::new_with_capacity_stats_prefix_and_decode_mode(
@@ -290,7 +228,7 @@ impl OtlpReceiverInput {
             addr,
             CHANNEL_BOUND,
             Some(stats),
-            resource_prefix.into(),
+            field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
             OtlpProtobufDecodeMode::Prost,
             max_message_size_bytes,
         )
@@ -302,7 +240,6 @@ impl OtlpReceiverInput {
         name: impl Into<String>,
         addr: &str,
         stats: Option<Arc<ComponentStats>>,
-        resource_prefix: impl Into<String>,
         protobuf_decode_mode: OtlpProtobufDecodeMode,
         max_message_size_bytes: Option<usize>,
     ) -> io::Result<Self> {
@@ -311,7 +248,7 @@ impl OtlpReceiverInput {
             addr,
             CHANNEL_BOUND,
             stats,
-            resource_prefix.into(),
+            field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
             protobuf_decode_mode,
             max_message_size_bytes,
         )

@@ -1115,7 +1115,6 @@ fn experimental_projection_decode_mode_controls_http_protobuf_path() {
         "projected-only",
         "127.0.0.1:0",
         None,
-        field_names::DEFAULT_RESOURCE_PREFIX,
         OtlpProtobufDecodeMode::ProjectedOnly,
         None,
     )
@@ -1140,7 +1139,6 @@ fn experimental_projection_decode_mode_controls_http_protobuf_path() {
         "projected-fallback",
         "127.0.0.1:0",
         Some(Arc::clone(&stats)),
-        field_names::DEFAULT_RESOURCE_PREFIX,
         OtlpProtobufDecodeMode::ProjectedFallback,
         None,
     )

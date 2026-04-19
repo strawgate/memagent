@@ -193,8 +193,8 @@ impl<'a> StructuralIter<'a> {
         }
     }
 
-    /// Find the next position at or after `from` that is NOT a space
-    /// (outside strings). Returns `from` if it's already non-space.
+    /// Find the next position at or after `from` that is NOT an ASCII space.
+    /// Returns `from` if it's already non-space.
     ///
     /// Uses the space bitmask — O(1) per block, no byte scanning.
     #[inline]
@@ -227,7 +227,7 @@ impl<'a> StructuralIter<'a> {
         let mut pos = from;
         while pos < self.len {
             match self.buf[pos] {
-                b' ' | b'\t' | b'\r' => pos += 1,
+                b' ' => pos += 1,
                 _ => return pos,
             }
         }
@@ -335,6 +335,29 @@ mod tests {
     }
 
     #[test]
+    fn next_non_space_fast_and_fallback_use_ascii_space_only() {
+        let buf = b" \t\rx";
+
+        let fast = StructuralIter::new(buf).next_non_space(0);
+        let fallback = StructuralIter {
+            buf,
+            len: buf.len(),
+            block_idx: 99,
+            num_blocks: 0,
+            remaining_bits: 0,
+            current_block: ProcessedBlock::default(),
+            block_offset: 0,
+            classifier: StreamingClassifier::new(),
+            current_space: 0,
+        }
+        .next_non_space(0);
+
+        assert_eq!(fast, 1);
+        assert_eq!(fallback, fast);
+        assert_eq!(buf[fast], b'\t');
+    }
+
+    #[test]
     fn multi_block_buffer() {
         // Create a buffer > 64 bytes to test cross-block processing
         let line = br#"{"longkey":"longvalue","another":"field","third":"value"}"#;
@@ -435,7 +458,7 @@ mod verification {
             remaining_bits: 0,
             current_block: p,
             block_offset: 0,
-            classifier: crate::structural::StreamingClassifier::new(),
+            classifier: StreamingClassifier::new(),
             current_space: 0,
         };
 
@@ -497,7 +520,7 @@ mod verification {
     }
 
     /// next_non_space fallback path: result is always in [from, len],
-    /// and the byte at result (if < len) is not a space/tab/CR.
+    /// and the byte at result (if < len) is not an ASCII space.
     #[kani::proof]
     #[kani::unwind(18)]
     fn verify_next_non_space_fallback() {
@@ -514,7 +537,7 @@ mod verification {
             remaining_bits: 0,
             current_block: ProcessedBlock::default(),
             block_offset: 0,
-            classifier: crate::structural::StreamingClassifier::new(),
+            classifier: StreamingClassifier::new(),
             current_space: 0,
         };
 
@@ -523,7 +546,7 @@ mod verification {
         assert!(result >= from && result <= 16);
         if result < 16 {
             let b = buf[result];
-            assert!(b != b' ' && b != b'\t' && b != b'\r');
+            assert!(b != b' ');
         }
     }
 

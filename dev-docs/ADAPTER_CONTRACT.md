@@ -200,10 +200,10 @@ The file path is:
   `inject_source_path_metadata` for compatibility with current file JSON/CRI
   paths. Treat this as transitional technical debt until #1615 lands; do not
   add new `_source_*` raw injection helpers.
-- Canonical pattern for new metadata: scanner-attached `_resource_*` columns
-  (the same resource-column model used by OTLP/OTAP paths), attached at
-  scan/build time in the RecordBatch schema and accessible via SQL without raw
-  payload mutation.
+- Canonical pattern for new metadata: scanner-attached
+  `resource.attributes.*` columns (the same resource-column model used by
+  OTLP/OTAP paths), attached at scan/build time in the RecordBatch schema and
+  accessible via SQL without raw payload mutation.
 - Rationale: raw injection mutates user data, causes format-specific edge
   cases (invalid JSON for empty objects), and is 30x slower than post-scan
   column attachment (PR #1370 prototype measurements).

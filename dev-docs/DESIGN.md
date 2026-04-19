@@ -11,7 +11,7 @@ metrics, traces, or CSV files.
 ```
 logfwd-core         Proven pure logic. #![no_std], #![forbid(unsafe_code)]
                     Parsing, encoding, pipeline state machine.
-                    StructuralIndex consumers (framer, CRI, scanner).
+                    Streaming structural classification, framer, CRI, scanner.
                     Dependencies: memchr, wide (portable SIMD).
                     Every public function has a Kani proof or proptest.
 
@@ -200,8 +200,9 @@ provides bare-name access for suffixed columns.
 
 ### Flat schema (not OTAP star schema)
 
-Single `RecordBatch` with all fields as columns. `_resource_*` prefix for resource
-attributes. Directly queryable by DuckDB, Polars, DataFusion with zero schema knowledge.
+Single `RecordBatch` with all fields as columns. `resource.attributes.*` prefix
+for resource attributes. Directly queryable by DuckDB, Polars, DataFusion with
+zero schema knowledge.
 OTAP's star schema (4+ tables with foreign keys) is optimized for wire efficiency, not
 queryability. Convert at the boundary when needed.
 

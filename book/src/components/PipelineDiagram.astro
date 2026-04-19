@@ -160,7 +160,7 @@ const stages: Stage[] = [
         detail: 'Encodes log records as OTLP protobuf with 3-phase encoding: encode LogRecords, group by resource/scope, write final protobuf with computed sizes.',
         why: 'OTLP is the standard. By encoding directly to protobuf with zstd compression, logfwd produces payloads that are 5-10x smaller than JSON. Resource grouping means pods from the same deployment share metadata in a single ResourceLogs envelope — further reducing wire size.',
         flow: ['Row Encode', 'Resource Group', 'Size Compute', 'Proto Serialize', 'Compress + Send'],
-        notes: 'Groups rows by _resource_* columns into ResourceLogs. Two encoders: handwritten (full) and generated fast path. zstd/gzip compression. HTTP and gRPC protocols.',
+        notes: 'Groups rows by resource.attributes.* columns into ResourceLogs. Two encoders: handwritten (full) and generated fast path. zstd/gzip compression. HTTP and gRPC protocols.',
       },
       {
         id: 'elasticsearch', label: 'Elasticsearch',
