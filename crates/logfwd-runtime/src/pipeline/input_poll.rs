@@ -36,6 +36,68 @@ const fn should_flush_buffer(
     buffered_len >= safe_target || (buffered_len > 0 && timeout_elapsed)
 }
 
+#[cfg(feature = "turmoil")]
+async fn send_channel_msg(
+    tx: &tokio::sync::mpsc::Sender<ChannelMsg>,
+    msg: ChannelMsg,
+) -> Result<(), tokio::sync::mpsc::error::SendError<ChannelMsg>> {
+    tx.send(msg).await
+}
+
+#[cfg(feature = "turmoil")]
+#[allow(clippy::too_many_arguments)]
+async fn process_input_events(
+    input: &mut InputState,
+    transform: &mut InputTransform,
+    tx: &tokio::sync::mpsc::Sender<ChannelMsg>,
+    metrics: &PipelineMetrics,
+    input_index: usize,
+    events: Vec<InputEvent>,
+    buffered_since: &mut Option<tokio::time::Instant>,
+) -> bool {
+    for event in events {
+        match event {
+            InputEvent::Data { bytes, .. } => {
+                input.buf.extend_from_slice(&bytes);
+            }
+            InputEvent::Batch { batch, .. } => {
+                if !input.buf.is_empty() {
+                    if let Some(msg) =
+                        scan_and_transform_for_send(input, transform, metrics, input_index).await
+                    {
+                        if send_channel_msg(tx, msg).await.is_err() {
+                            return false;
+                        }
+                    }
+                    *buffered_since = None;
+                }
+
+                if let Some(msg) =
+                    transform_direct_batch_for_send(input, transform, metrics, input_index, batch)
+                        .await
+                {
+                    if send_channel_msg(tx, msg).await.is_err() {
+                        return false;
+                    }
+                }
+            }
+            InputEvent::Rotated { .. } => {
+                input.stats.inc_rotations();
+            }
+            InputEvent::Truncated { .. } => {
+                // Treat truncation as a rotation-equivalent rewind signal
+                // for existing dashboards that chart a single restart counter.
+                input.stats.inc_rotations();
+            }
+            InputEvent::EndOfFile { .. } => {}
+        }
+    }
+    if buffered_since.is_none() && !input.buf.is_empty() {
+        *buffered_since = Some(tokio::time::Instant::now());
+    }
+    true
+}
+
 /// Async input loop for simulation testing.
 ///
 /// Polls source, accumulates bytes, scans + SQL transforms, and sends
@@ -64,6 +126,30 @@ pub(super) async fn async_input_poll_loop(
                 input.stats.health(),
                 HealthTransitionEvent::ShutdownRequested,
             ));
+            match input.source.poll_shutdown() {
+                Ok(events) => {
+                    if !process_input_events(
+                        &mut input,
+                        &mut transform,
+                        &tx,
+                        &metrics,
+                        input_index,
+                        events,
+                        &mut buffered_since,
+                    )
+                    .await
+                    {
+                        break 'poll_loop;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        input = input.source.name(),
+                        error = %e,
+                        "input.shutdown_poll_error"
+                    );
+                }
+            }
             break;
         }
 
@@ -100,57 +186,18 @@ pub(super) async fn async_input_poll_loop(
                 metrics.inc_cadence_idle_sleep();
                 tokio::time::sleep(poll_interval).await;
             }
-        } else {
-            for event in events {
-                match event {
-                    InputEvent::Data { bytes, .. } => {
-                        input.buf.extend_from_slice(&bytes);
-                    }
-                    InputEvent::Batch { batch, .. } => {
-                        if !input.buf.is_empty() {
-                            if let Some(msg) = scan_and_transform_for_send(
-                                &mut input,
-                                &mut transform,
-                                &metrics,
-                                input_index,
-                            )
-                            .await
-                            {
-                                if tx.send(msg).await.is_err() {
-                                    break 'poll_loop;
-                                }
-                            }
-                            buffered_since = None;
-                        }
-
-                        if let Some(msg) = transform_direct_batch_for_send(
-                            &mut input,
-                            &mut transform,
-                            &metrics,
-                            input_index,
-                            batch,
-                        )
-                        .await
-                        {
-                            if tx.send(msg).await.is_err() {
-                                break 'poll_loop;
-                            }
-                        }
-                    }
-                    InputEvent::Rotated { .. } => {
-                        input.stats.inc_rotations();
-                    }
-                    InputEvent::Truncated { .. } => {
-                        // Treat truncation as a rotation-equivalent rewind signal
-                        // for existing dashboards that chart a single restart counter.
-                        input.stats.inc_rotations();
-                    }
-                    InputEvent::EndOfFile { .. } => {}
-                }
-            }
-            if buffered_since.is_none() && !input.buf.is_empty() {
-                buffered_since = Some(tokio::time::Instant::now());
-            }
+        } else if !process_input_events(
+            &mut input,
+            &mut transform,
+            &tx,
+            &metrics,
+            input_index,
+            events,
+            &mut buffered_since,
+        )
+        .await
+        {
+            break 'poll_loop;
         }
 
         if input.source.is_finished() {

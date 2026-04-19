@@ -136,6 +136,144 @@ fn flush_buf(
     }
 }
 
+#[cfg(not(feature = "turmoil"))]
+#[allow(clippy::too_many_arguments)]
+fn process_io_events(
+    input: &mut InputState,
+    input_name: &Arc<str>,
+    events: Vec<InputEvent>,
+    tx: &mpsc::Sender<IoWorkItem>,
+    metrics: &PipelineMetrics,
+    last_bp_warn: &mut Option<Instant>,
+    input_index: usize,
+    safe_batch_target_bytes: usize,
+    buffered_since: &mut Option<Instant>,
+    pending_row_origin: &mut Option<PendingRowOrigin>,
+    source_metadata_plan: SourceMetadataPlan,
+) -> bool {
+    let source_path_snapshot = if source_metadata_plan.has_source_path {
+        input.source.source_paths()
+    } else {
+        Vec::new()
+    };
+
+    for event in events {
+        match event {
+            InputEvent::Data {
+                bytes, source_id, ..
+            } => {
+                if source_metadata_plan.has_any() {
+                    if source_metadata_plan.has_source_path {
+                        capture_source_path(
+                            &mut input.source_paths,
+                            &source_path_snapshot,
+                            source_id,
+                        );
+                    }
+                    append_data_row_origins(
+                        &mut input.row_origins,
+                        pending_row_origin,
+                        source_id,
+                        input_name,
+                        &bytes,
+                    );
+                }
+                input.buf.extend_from_slice(&bytes);
+                // Flush eagerly when the buffer reaches the target so
+                // that a single poll returning many Data events cannot
+                // accumulate an unbounded buffer.
+                if input.buf.len() >= safe_batch_target_bytes {
+                    metrics.inc_flush_by_size();
+                    if !flush_buf(
+                        &mut input.buf,
+                        &mut input.row_origins,
+                        pending_row_origin,
+                        &mut input.source_paths,
+                        &*input.source,
+                        tx,
+                        metrics,
+                        last_bp_warn,
+                        input_index,
+                        source_metadata_plan,
+                    ) {
+                        return false;
+                    }
+                    *buffered_since = None;
+                }
+            }
+            InputEvent::Batch {
+                batch, source_id, ..
+            } => {
+                if !flush_buf(
+                    &mut input.buf,
+                    &mut input.row_origins,
+                    pending_row_origin,
+                    &mut input.source_paths,
+                    &*input.source,
+                    tx,
+                    metrics,
+                    last_bp_warn,
+                    input_index,
+                    source_metadata_plan,
+                ) {
+                    return false;
+                }
+                *buffered_since = None;
+
+                let row_origins = if source_metadata_plan.has_any() {
+                    vec![RowOriginSpan {
+                        source_id,
+                        input_name: Arc::clone(input_name),
+                        rows: batch.num_rows(),
+                    }]
+                } else {
+                    Vec::new()
+                };
+                let source_paths = if source_metadata_plan.has_source_path {
+                    source_paths_by_id(&source_path_snapshot, &row_origins)
+                } else {
+                    HashMap::new()
+                };
+                let item = IoWorkItem::Batch {
+                    batch,
+                    checkpoints: input.source.checkpoint_data(),
+                    row_origins,
+                    source_paths,
+                    queued_at: tokio::time::Instant::now(),
+                    input_index,
+                };
+                match tx.try_send(item) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(item)) => {
+                        if last_bp_warn.is_none_or(|t| t.elapsed() >= Duration::from_secs(5)) {
+                            tracing::warn!(input = input.source.name(), "input.backpressure");
+                            *last_bp_warn = Some(Instant::now());
+                        }
+                        metrics.inc_backpressure_stall();
+                        if tx.blocking_send(item).is_err() {
+                            return false;
+                        }
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => return false,
+                }
+            }
+            InputEvent::Rotated { .. } => {
+                input.stats.inc_rotations();
+                tracing::info!(input = input.source.name(), "input.file_rotated");
+            }
+            InputEvent::Truncated { .. } => {
+                input.stats.inc_rotations();
+                tracing::info!(input = input.source.name(), "input.file_truncated");
+            }
+            InputEvent::EndOfFile { .. } => {}
+        }
+    }
+    if buffered_since.is_none() && !input.buf.is_empty() {
+        *buffered_since = Some(Instant::now());
+    }
+    true
+}
+
 // ---------------------------------------------------------------------------
 // I/O worker — reads bytes from source, accumulates, sends to CPU worker
 // ---------------------------------------------------------------------------
@@ -564,6 +702,32 @@ fn io_worker_loop(
                 input.stats.health(),
                 HealthTransitionEvent::ShutdownRequested,
             ));
+            match input.source.poll_shutdown() {
+                Ok(events) => {
+                    if !process_io_events(
+                        &mut input,
+                        &input_name,
+                        events,
+                        &tx,
+                        &metrics,
+                        &mut last_bp_warn,
+                        input_index,
+                        safe_batch_target_bytes,
+                        &mut buffered_since,
+                        &mut pending_row_origin,
+                        source_metadata_plan,
+                    ) {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        input = input.source.name(),
+                        error = %e,
+                        "input.shutdown_poll_error"
+                    );
+                }
+            }
             break;
         }
 
@@ -600,131 +764,20 @@ fn io_worker_loop(
                 metrics.inc_cadence_idle_sleep();
                 std::thread::sleep(poll_interval);
             }
-        } else {
-            let source_path_snapshot = if source_metadata_plan.has_source_path {
-                input.source.source_paths()
-            } else {
-                Vec::new()
-            };
-            for event in events {
-                match event {
-                    InputEvent::Data {
-                        bytes, source_id, ..
-                    } => {
-                        if source_metadata_plan.has_any() {
-                            if source_metadata_plan.has_source_path {
-                                capture_source_path(
-                                    &mut input.source_paths,
-                                    &source_path_snapshot,
-                                    source_id,
-                                );
-                            }
-                            append_data_row_origins(
-                                &mut input.row_origins,
-                                &mut pending_row_origin,
-                                source_id,
-                                &input_name,
-                                &bytes,
-                            );
-                        }
-                        input.buf.extend_from_slice(&bytes);
-                        // Flush eagerly when the buffer reaches the target so
-                        // that a single poll returning many Data events cannot
-                        // accumulate an unbounded buffer.
-                        if input.buf.len() >= safe_batch_target_bytes {
-                            metrics.inc_flush_by_size();
-                            if !flush_buf(
-                                &mut input.buf,
-                                &mut input.row_origins,
-                                &mut pending_row_origin,
-                                &mut input.source_paths,
-                                &*input.source,
-                                &tx,
-                                &metrics,
-                                &mut last_bp_warn,
-                                input_index,
-                                source_metadata_plan,
-                            ) {
-                                break 'io_loop;
-                            }
-                            buffered_since = None;
-                        }
-                    }
-                    InputEvent::Batch {
-                        batch, source_id, ..
-                    } => {
-                        if !flush_buf(
-                            &mut input.buf,
-                            &mut input.row_origins,
-                            &mut pending_row_origin,
-                            &mut input.source_paths,
-                            &*input.source,
-                            &tx,
-                            &metrics,
-                            &mut last_bp_warn,
-                            input_index,
-                            source_metadata_plan,
-                        ) {
-                            break 'io_loop;
-                        }
-                        buffered_since = None;
-
-                        let row_origins = if source_metadata_plan.has_any() {
-                            vec![RowOriginSpan {
-                                source_id,
-                                input_name: Arc::clone(&input_name),
-                                rows: batch.num_rows(),
-                            }]
-                        } else {
-                            Vec::new()
-                        };
-                        let source_paths = if source_metadata_plan.has_source_path {
-                            source_paths_by_id(&source_path_snapshot, &row_origins)
-                        } else {
-                            HashMap::new()
-                        };
-                        let item = IoWorkItem::Batch {
-                            batch,
-                            checkpoints: input.source.checkpoint_data(),
-                            row_origins,
-                            source_paths,
-                            queued_at: tokio::time::Instant::now(),
-                            input_index,
-                        };
-                        match tx.try_send(item) {
-                            Ok(()) => {}
-                            Err(mpsc::error::TrySendError::Full(item)) => {
-                                if last_bp_warn
-                                    .is_none_or(|t| t.elapsed() >= Duration::from_secs(5))
-                                {
-                                    tracing::warn!(
-                                        input = input.source.name(),
-                                        "input.backpressure"
-                                    );
-                                    last_bp_warn = Some(Instant::now());
-                                }
-                                metrics.inc_backpressure_stall();
-                                if tx.blocking_send(item).is_err() {
-                                    break 'io_loop;
-                                }
-                            }
-                            Err(mpsc::error::TrySendError::Closed(_)) => break 'io_loop,
-                        }
-                    }
-                    InputEvent::Rotated { .. } => {
-                        input.stats.inc_rotations();
-                        tracing::info!(input = input.source.name(), "input.file_rotated");
-                    }
-                    InputEvent::Truncated { .. } => {
-                        input.stats.inc_rotations();
-                        tracing::info!(input = input.source.name(), "input.file_truncated");
-                    }
-                    InputEvent::EndOfFile { .. } => {}
-                }
-            }
-            if buffered_since.is_none() && !input.buf.is_empty() {
-                buffered_since = Some(Instant::now());
-            }
+        } else if !process_io_events(
+            &mut input,
+            &input_name,
+            events,
+            &tx,
+            &metrics,
+            &mut last_bp_warn,
+            input_index,
+            safe_batch_target_bytes,
+            &mut buffered_since,
+            &mut pending_row_origin,
+            source_metadata_plan,
+        ) {
+            break 'io_loop;
         }
 
         if input.source.is_finished() {
@@ -2123,6 +2176,55 @@ output:
         assert!(
             fast_repolls > 0,
             "expected adaptive cadence fast repolls to be recorded, got {fast_repolls}"
+        );
+    }
+
+    #[cfg(not(feature = "turmoil"))]
+    #[test]
+    fn split_pipeline_shutdown_flushes_file_remainder_before_idle_eof() {
+        use std::sync::atomic::Ordering;
+
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("shutdown_partial.log");
+        std::fs::write(&log_path, br#"{"level":"INFO","seq":775}"#).unwrap();
+
+        let yaml = format!(
+            r#"
+input:
+  type: file
+  path: {}
+  format: json
+  poll_interval_ms: 60000
+output:
+  type: 'null'
+"#,
+            log_path.display()
+        );
+
+        let config = logfwd_config::Config::load_str(&yaml).unwrap();
+        let pipe_cfg = &config.pipelines["default"];
+        let meter = opentelemetry::global::meter("test");
+        let mut pipeline =
+            crate::pipeline::Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
+        pipeline.set_batch_timeout(Duration::from_secs(60));
+
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
+
+        let result = pipeline.run(&shutdown);
+        assert!(
+            result.is_ok(),
+            "shutdown flush pipeline should run cleanly: {result:?}"
+        );
+
+        let lines_in = pipeline
+            .metrics
+            .transform_in
+            .lines_total
+            .load(Ordering::Relaxed);
+        assert_eq!(
+            lines_in, 1,
+            "shutdown must flush final no-newline file record before normal idle EOF"
         );
     }
 

@@ -2,7 +2,7 @@
 
 use super::state::{
     EOF_IDLE_POLLS_BEFORE_EMIT, EofModelState, MAX_BACKOFF_MS, backoff_delay_ms,
-    backoff_transition, eof_model_transition,
+    backoff_transition, eof_model_transition, shutdown_should_emit_eof,
 };
 
 /// EndOfFile can only fire when we cross the idle-poll threshold for the first
@@ -88,6 +88,37 @@ fn verify_eof_fires_again_after_data_resets_flag() {
     assert!(fires5, "new no-data streak second poll must emit EOF");
     kani::cover!(fires2, "first post-threshold EOF fired");
     kani::cover!(fires5, "EOF fires again after data reset");
+}
+
+#[kani::proof]
+fn verify_shutdown_eof_requires_caught_up_offset() {
+    let offset: u64 = kani::any();
+    let file_size: u64 = kani::any();
+
+    let should_emit = shutdown_should_emit_eof(offset, file_size);
+    assert_eq!(
+        should_emit,
+        offset >= file_size,
+        "shutdown EOF predicate must match caught-up offset check"
+    );
+
+    if should_emit {
+        assert!(
+            offset >= file_size,
+            "shutdown EOF may only emit when offset is caught up"
+        );
+    } else {
+        assert!(
+            offset < file_size,
+            "shutdown EOF must be suppressed while unread bytes remain"
+        );
+    }
+
+    kani::cover!(should_emit, "shutdown EOF can emit for caught-up file");
+    kani::cover!(
+        !should_emit,
+        "shutdown EOF can be suppressed for unread suffix"
+    );
 }
 
 #[kani::proof]

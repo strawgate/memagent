@@ -91,13 +91,10 @@ impl FramedInput {
             stats,
         }
     }
-}
 
-impl InputSource for FramedInput {
-    fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
-        let raw_events = self.inner.poll()?;
+    fn process_raw_events(&mut self, raw_events: Vec<InputEvent>) -> Vec<InputEvent> {
         if raw_events.is_empty() {
-            return Ok(vec![]);
+            return vec![];
         }
 
         let mut result_events: Vec<InputEvent> = Vec::new();
@@ -366,7 +363,19 @@ impl InputSource for FramedInput {
             }
         }
 
-        Ok(result_events)
+        result_events
+    }
+}
+
+impl InputSource for FramedInput {
+    fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
+        let raw_events = self.inner.poll()?;
+        Ok(self.process_raw_events(raw_events))
+    }
+
+    fn poll_shutdown(&mut self) -> io::Result<Vec<InputEvent>> {
+        let raw_events = self.inner.poll_shutdown()?;
+        Ok(self.process_raw_events(raw_events))
     }
 
     fn name(&self) -> &str {
@@ -442,6 +451,7 @@ mod tests {
     struct MockSource {
         name: String,
         events: VecDeque<Vec<InputEvent>>,
+        shutdown_events: VecDeque<Vec<InputEvent>>,
         offsets: Vec<(SourceId, ByteOffset)>,
         source_paths: Vec<(SourceId, std::path::PathBuf)>,
         health: ComponentHealth,
@@ -454,6 +464,7 @@ mod tests {
             Self {
                 name: "mock".to_string(),
                 events: batches.into(),
+                shutdown_events: VecDeque::new(),
                 offsets: vec![],
                 source_paths: vec![],
                 health: ComponentHealth::Healthy,
@@ -501,6 +512,11 @@ mod tests {
             self
         }
 
+        fn with_shutdown_events(mut self, events: Vec<Vec<InputEvent>>) -> Self {
+            self.shutdown_events = events.into();
+            self
+        }
+
         fn with_source_paths(mut self, source_paths: Vec<(SourceId, std::path::PathBuf)>) -> Self {
             self.source_paths = source_paths;
             self
@@ -521,6 +537,10 @@ mod tests {
     impl InputSource for MockSource {
         fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
             Ok(self.events.pop_front().unwrap_or_default())
+        }
+
+        fn poll_shutdown(&mut self) -> io::Result<Vec<InputEvent>> {
+            Ok(self.shutdown_events.pop_front().unwrap_or_default())
         }
 
         fn name(&self) -> &str {
@@ -1059,6 +1079,31 @@ mod tests {
 
         // Second poll: EndOfFile flushes the remainder as a complete line.
         let events2 = framed.poll().unwrap();
+        assert_eq!(collect_data(events2), b"no-newline\n");
+    }
+
+    /// Runtime shutdown is a terminal lifecycle event: when the wrapped source
+    /// emits EOF from `poll_shutdown`, `FramedInput` must flush bytes that were
+    /// already held in its per-source remainder buffer.
+    #[test]
+    fn poll_shutdown_flushes_existing_remainder() {
+        let stats = make_stats();
+        let source = MockSource::new(vec![vec![InputEvent::Data {
+            bytes: b"no-newline".to_vec(),
+            source_id: None,
+            accounted_bytes: 10,
+        }]])
+        .with_shutdown_events(vec![vec![InputEvent::EndOfFile { source_id: None }]]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(stats.clone()),
+            stats,
+        );
+
+        let events1 = framed.poll().unwrap();
+        assert!(collect_data(events1).is_empty());
+
+        let events2 = framed.poll_shutdown().unwrap();
         assert_eq!(collect_data(events2), b"no-newline\n");
     }
 
