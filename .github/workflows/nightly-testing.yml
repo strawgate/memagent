@@ -14,15 +14,13 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
       - name: Run proptests with 100K cases
         run: |
-          PROPTEST_CASES=100000 cargo test -p logfwd-core --test it -- proptest
-          PROPTEST_CASES=100000 cargo test -p logfwd-io --test it -- proptest
-          PROPTEST_CASES=100000 cargo test -p logfwd-types -- proptest
-          PROPTEST_CASES=100000 cargo test -p logfwd-output -- proptest
+          cargo test -p logfwd-core --test it -- proptest
+          cargo test -p logfwd-io --test it -- proptest
+          cargo test -p logfwd-types -- proptest
+          cargo test -p logfwd-output -- proptest
         env:
           PROPTEST_CASES: "100000"
 
@@ -50,13 +48,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
           go-version-file: scripts/linearizability/go.mod
-      - uses: Swatinem/rust-cache@v2
       - name: Replay-equivalence test lane
         run: |
           cargo test -p logfwd --features turmoil --test turmoil_sim fault_scenario_sim::replay_equivalence_seed_supports_three_identical_replays -- --exact
@@ -73,13 +69,11 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
           go-version-file: scripts/linearizability/go.mod
-      - uses: Swatinem/rust-cache@v2
       - name: Build turmoil tests once
         run: cargo test -p logfwd --features turmoil --test turmoil_sim --no-run
       - name: Run turmoil tests with shard-assigned seeds
@@ -217,42 +211,32 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
 
-  fuzz-short:
-    name: Fuzz (5 minutes per target)
+  fuzz:
+    name: Fuzz (${{ matrix.label }})
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: 5 minutes per target
+            duration: 300
+            timeout: 60
+          - label: 30 minutes per target
+            duration: 1800
+            timeout: 180
     steps:
       - uses: actions/checkout@v6
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: ./.github/actions/setup-rust
       - uses: dtolnay/rust-toolchain@nightly
       - name: Install cargo-fuzz
         run: cargo +nightly install cargo-fuzz
-        env:
-          RUSTC_WRAPPER: ""
       - name: Run fuzz targets
         run: |
           cd crates/logfwd-core
           for target in $(cargo +nightly fuzz list 2>/dev/null); do
-            echo "=== Fuzzing $target for 5 minutes ==="
-            cargo +nightly fuzz run "$target" -- -max_total_time=300
+            echo "=== Fuzzing $target for ${{ matrix.duration }}s ==="
+            cargo +nightly fuzz run "$target" -- -max_total_time=${{ matrix.duration }}
           done
-
-  fuzz-extended:
-    name: Fuzz (30 minutes per target)
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    steps:
-      - uses: actions/checkout@v6
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - uses: dtolnay/rust-toolchain@nightly
-      - name: Install cargo-fuzz
-        run: cargo +nightly install cargo-fuzz
         env:
-          RUSTC_WRAPPER: ""
-      - name: Run fuzz targets
-        run: |
-          cd crates/logfwd-core
-          for target in $(cargo +nightly fuzz list 2>/dev/null); do
-            echo "=== Fuzzing $target for 30 minutes ==="
-            cargo +nightly fuzz run "$target" -- -max_total_time=1800
-          done
+          RUSTUP_TOOLCHAIN: nightly

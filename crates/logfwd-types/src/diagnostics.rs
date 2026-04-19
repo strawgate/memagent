@@ -22,6 +22,12 @@ pub struct ComponentStats {
     pub rotations_total: AtomicU64,
     /// Lines that failed format parsing (e.g. malformed CRI lines).
     pub parse_errors_total: AtomicU64,
+    /// OTLP protobuf requests decoded through the projected fast path.
+    pub otlp_projected_success_total: AtomicU64,
+    /// OTLP protobuf requests that used prost fallback after unsupported projection.
+    pub otlp_projected_fallback_total: AtomicU64,
+    /// OTLP protobuf requests rejected after projection reported malformed input.
+    pub otlp_projection_invalid_total: AtomicU64,
     /// Coarse lifecycle and health snapshot for readiness/diagnostics.
     health: AtomicU8,
     // Transport specific
@@ -41,6 +47,9 @@ pub struct ComponentStats {
     otel_errors: Counter<u64>,
     otel_rotations: Counter<u64>,
     otel_parse_errors: Counter<u64>,
+    otel_otlp_projected_success: Counter<u64>,
+    otel_otlp_projected_fallback: Counter<u64>,
+    otel_otlp_projection_invalid: Counter<u64>,
     otel_attrs: Vec<KeyValue>,
 }
 
@@ -58,6 +67,9 @@ impl ComponentStats {
             errors_total: AtomicU64::new(0),
             rotations_total: AtomicU64::new(0),
             parse_errors_total: AtomicU64::new(0),
+            otlp_projected_success_total: AtomicU64::new(0),
+            otlp_projected_fallback_total: AtomicU64::new(0),
+            otlp_projection_invalid_total: AtomicU64::new(0),
             health: AtomicU8::new(initial_health.as_repr()),
             file_error_polls: AtomicU32::new(0),
             tcp_accepted: AtomicU64::new(0),
@@ -69,6 +81,15 @@ impl ComponentStats {
             otel_errors: meter.u64_counter(format!("{prefix}_errors")).build(),
             otel_rotations: meter.u64_counter(format!("{prefix}_rotations")).build(),
             otel_parse_errors: meter.u64_counter(format!("{prefix}_parse_errors")).build(),
+            otel_otlp_projected_success: meter
+                .u64_counter(format!("{prefix}_otlp_projected_success"))
+                .build(),
+            otel_otlp_projected_fallback: meter
+                .u64_counter(format!("{prefix}_otlp_projected_fallback"))
+                .build(),
+            otel_otlp_projection_invalid: meter
+                .u64_counter(format!("{prefix}_otlp_projection_invalid"))
+                .build(),
             otel_attrs: attrs,
         }
     }
@@ -118,6 +139,27 @@ impl ComponentStats {
         self.otel_parse_errors.add(n, &self.otel_attrs);
     }
 
+    /// Increment OTLP projected fast-path success count.
+    pub fn inc_otlp_projected_success(&self) {
+        self.otlp_projected_success_total
+            .fetch_add(1, Ordering::Relaxed);
+        self.otel_otlp_projected_success.add(1, &self.otel_attrs);
+    }
+
+    /// Increment OTLP projected fallback-to-prost count.
+    pub fn inc_otlp_projected_fallback(&self) {
+        self.otlp_projected_fallback_total
+            .fetch_add(1, Ordering::Relaxed);
+        self.otel_otlp_projected_fallback.add(1, &self.otel_attrs);
+    }
+
+    /// Increment OTLP malformed projection rejection count.
+    pub fn inc_otlp_projection_invalid(&self) {
+        self.otlp_projection_invalid_total
+            .fetch_add(1, Ordering::Relaxed);
+        self.otel_otlp_projection_invalid.add(1, &self.otel_attrs);
+    }
+
     /// Current line count (relaxed load).
     pub fn lines(&self) -> u64 {
         self.lines_total.load(Ordering::Relaxed)
@@ -141,6 +183,21 @@ impl ComponentStats {
     /// Current parse-error count (relaxed load).
     pub fn parse_errors(&self) -> u64 {
         self.parse_errors_total.load(Ordering::Relaxed)
+    }
+
+    /// Current OTLP projected success count.
+    pub fn otlp_projected_success(&self) -> u64 {
+        self.otlp_projected_success_total.load(Ordering::Relaxed)
+    }
+
+    /// Current OTLP projected fallback count.
+    pub fn otlp_projected_fallback(&self) -> u64 {
+        self.otlp_projected_fallback_total.load(Ordering::Relaxed)
+    }
+
+    /// Current OTLP malformed projection rejection count.
+    pub fn otlp_projection_invalid(&self) -> u64 {
+        self.otlp_projection_invalid_total.load(Ordering::Relaxed)
     }
 
     /// Update the component's coarse health snapshot.

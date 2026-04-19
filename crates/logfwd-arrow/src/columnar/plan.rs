@@ -1,4 +1,4 @@
-// plan.rs — BatchPlan, FieldHandle, and FieldKind skeleton.
+// plan.rs — BatchPlan, FieldHandle, and FieldKind.
 //
 // Provides the planning layer for columnar batch construction.  Producers
 // declare fields up front (planned) or discover them dynamically; the plan
@@ -7,8 +7,9 @@
 //
 // See dev-docs/research/columnar-batch-builder.md for the design intent.
 //
-// These types are not yet wired into StreamingBuilder; follow-up issues
-// (#1844, #1845) will integrate them.
+// These types are wired into the shared ColumnarBatchBuilder path used by
+// structured producers such as OTLP projection. StreamingBuilder remains the
+// scanner-facing adapter.
 
 use std::collections::HashMap;
 use std::sync::Arc;

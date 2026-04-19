@@ -27,6 +27,8 @@ use decode::*;
 use projection::ProjectionError;
 
 use std::io;
+#[cfg(any(feature = "otlp-research", test))]
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, mpsc};
 
@@ -34,6 +36,7 @@ use arrow::record_batch::RecordBatch;
 use axum::routing::post;
 use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 use logfwd_types::field_names;
+use tokio::sync::Semaphore;
 use tokio::sync::oneshot;
 
 use crate::InputError;
@@ -41,6 +44,7 @@ use crate::background_http_task::BackgroundHttpTask;
 use crate::input::{InputEvent, InputSource};
 
 const CHANNEL_BOUND: usize = 4096;
+const FALLBACK_PROTOBUF_DECODE_TASKS: usize = 4;
 /// Max payloads drained from the internal channel in a single `poll()` call.
 ///
 /// This bounds per-poll work and prevents one call from aggregating an
@@ -92,6 +96,9 @@ struct OtlpServerState {
     health: Arc<AtomicU8>,
     resource_prefix: String,
     protobuf_decode_mode: OtlpProtobufDecodeMode,
+    protobuf_decode_permits: Arc<Semaphore>,
+    #[cfg(any(feature = "otlp-research", test))]
+    projected_decoder: Option<Mutex<ProjectedOtlpDecoder>>,
     stats: Option<Arc<ComponentStats>>,
     /// Maximum request body size. Defaults to `MAX_REQUEST_BODY_SIZE` (10 MiB).
     max_message_size_bytes: usize,
@@ -226,6 +233,7 @@ impl OtlpReceiverInput {
         stats: Option<Arc<ComponentStats>>,
         resource_prefix: impl Into<String>,
         protobuf_decode_mode: OtlpProtobufDecodeMode,
+        max_message_size_bytes: Option<usize>,
     ) -> io::Result<Self> {
         Self::new_with_capacity_stats_prefix_and_decode_mode(
             name,
@@ -234,7 +242,7 @@ impl OtlpReceiverInput {
             stats,
             resource_prefix.into(),
             protobuf_decode_mode,
-            None,
+            max_message_size_bytes,
         )
     }
 
@@ -259,12 +267,21 @@ impl OtlpReceiverInput {
         let (tx, rx) = mpsc::sync_channel(capacity);
         let is_running = Arc::new(AtomicBool::new(true));
         let health = Arc::new(AtomicU8::new(ComponentHealth::Healthy.as_repr()));
+        #[cfg(any(feature = "otlp-research", test))]
+        let projected_decoder = if protobuf_decode_mode == OtlpProtobufDecodeMode::Prost {
+            None
+        } else {
+            Some(Mutex::new(ProjectedOtlpDecoder::new(&resource_prefix)))
+        };
         let state = Arc::new(OtlpServerState {
             tx,
             is_running: Arc::clone(&is_running),
             health: Arc::clone(&health),
             resource_prefix,
             protobuf_decode_mode,
+            protobuf_decode_permits: Arc::new(Semaphore::new(protobuf_decode_task_limit())),
+            #[cfg(any(feature = "otlp-research", test))]
+            projected_decoder,
             stats,
             max_message_size_bytes,
         });
@@ -331,6 +348,14 @@ impl OtlpReceiverInput {
     pub fn local_addr(&self) -> std::net::SocketAddr {
         self.addr
     }
+}
+
+fn protobuf_decode_task_limit() -> usize {
+    std::thread::available_parallelism()
+        .map_or(FALLBACK_PROTOBUF_DECODE_TASKS, |parallelism| {
+            parallelism.get().saturating_mul(2)
+        })
+        .max(1)
 }
 
 impl Drop for OtlpReceiverInput {

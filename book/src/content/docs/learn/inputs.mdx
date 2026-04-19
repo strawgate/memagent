@@ -1,9 +1,9 @@
 ---
 title: "Inputs"
-description: "The 8 input types logfwd supports — from file tailing to Arrow-native sources"
+description: "The 8 input types FastForward supports — from file tailing to Arrow-native sources"
 ---
 
-Sources produce raw bytes or Arrow batches independently and feed into a bounded pipeline channel. logfwd supports 8 input types across two modes:
+Sources produce raw bytes or Arrow batches independently and feed into a bounded pipeline channel. FastForward supports 8 input types across two modes:
 
 - **Raw bytes** — File, TCP, UDP, HTTP. The scanner parses these into Arrow RecordBatches.
 - **Arrow-native** — OTLP, Arrow IPC, Platform Sensor, Generator. These produce structured RecordBatches directly, bypassing the scanner entirely.
@@ -42,7 +42,7 @@ Receive OpenTelemetry log records over HTTP. Decodes protobuf and JSON payloads 
 
 **Internal stages:** HTTP Server → Proto/JSON Decode → Resource Flatten → Arrow Convert
 
-Use logfwd as an OTLP relay or aggregator. Because the input produces structured Arrow data directly, there is no parsing overhead — just decode the protobuf envelope and convert. Resource attributes, trace context, and severity are all preserved.
+Use FastForward as an OTLP relay or aggregator. Because the input produces structured Arrow data directly, there is no parsing overhead — just decode the protobuf envelope and convert. Resource attributes, trace context, and severity are all preserved.
 
 ## HTTP
 

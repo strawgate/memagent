@@ -49,6 +49,8 @@ pub(crate) struct ArrowIpcSinkConfig {
 }
 
 impl ArrowIpcSink {
+    const INITIAL_IPC_BUFFER_CAPACITY: usize = 64 * 1024;
+
     pub(crate) fn new(
         name: String,
         config: Arc<ArrowIpcSinkConfig>,
@@ -59,7 +61,7 @@ impl ArrowIpcSink {
             name,
             config,
             client,
-            ipc_buf: Vec::with_capacity(64 * 1024),
+            ipc_buf: Vec::with_capacity(Self::INITIAL_IPC_BUFFER_CAPACITY),
             stats,
         }
     }
@@ -97,8 +99,11 @@ impl ArrowIpcSink {
         Ok(())
     }
 
-    /// Compress the IPC buffer with zstd if configured.
-    fn maybe_compress(&self) -> io::Result<Vec<u8>> {
+    /// Build the HTTP payload from the IPC buffer.
+    ///
+    /// For `Compression::None`, this transfers ownership of `self.ipc_buf`
+    /// into the request payload and avoids a full-buffer clone.
+    fn build_payload(&mut self) -> io::Result<Vec<u8>> {
         match self.config.compression {
             Compression::Zstd => zstd::bulk::compress(&self.ipc_buf, 1).map_err(io::Error::other),
             Compression::Gzip => {
@@ -107,7 +112,20 @@ impl ArrowIpcSink {
                 io::Write::write_all(&mut encoder, &self.ipc_buf)?;
                 encoder.finish()
             }
-            Compression::None => Ok(self.ipc_buf.clone()),
+            Compression::None => Ok(std::mem::take(&mut self.ipc_buf)),
+        }
+    }
+
+    /// Rebuild reusable IPC buffer capacity after uncompressed send.
+    ///
+    /// `reqwest` consumes the payload `Vec<u8>`, so when we avoid cloning by
+    /// moving `self.ipc_buf` into the request body, we intentionally allocate
+    /// a fresh reusable buffer with the prior capacity.
+    fn restore_uncompressed_buffer_capacity(&mut self, prior_capacity: usize) {
+        if self.config.compression == Compression::None && self.ipc_buf.capacity() < prior_capacity
+        {
+            self.ipc_buf =
+                Vec::with_capacity(prior_capacity.max(Self::INITIAL_IPC_BUFFER_CAPACITY));
         }
     }
 
@@ -126,9 +144,11 @@ impl ArrowIpcSink {
             .post(&self.config.endpoint)
             .header("Content-Type", content_type);
 
-        if self.config.compression == Compression::Zstd {
-            req = req.header("Content-Encoding", "zstd");
-        }
+        req = match self.config.compression {
+            Compression::Zstd => req.header("Content-Encoding", "zstd"),
+            Compression::Gzip => req.header("Content-Encoding", "gzip"),
+            Compression::None => req,
+        };
 
         for (k, v) in &self.config.headers {
             req = req.header(k.clone(), v.clone());
@@ -176,14 +196,17 @@ impl Sink for ArrowIpcSink {
                 return SendResult::Ok;
             }
 
-            let payload = match self.maybe_compress() {
+            let prior_capacity = self.ipc_buf.capacity();
+            let payload = match self.build_payload() {
                 Ok(p) => p,
                 Err(e) => return SendResult::IoError(e),
             };
             let payload_len = payload.len() as u64;
             let row_count = batch.num_rows() as u64;
 
-            let result = match self.do_send(payload).await {
+            self.restore_uncompressed_buffer_capacity(prior_capacity);
+            let send_result = self.do_send(payload).await;
+            let result = match send_result {
                 Ok(r) => r,
                 Err(e) => return SendResult::IoError(e),
             };
@@ -431,5 +454,83 @@ mod tests {
     fn deserialize_invalid_bytes_returns_error() {
         let result = deserialize_ipc(b"not arrow ipc data");
         assert!(result.is_err(), "invalid bytes should produce an error");
+    }
+
+    #[test]
+    fn uncompressed_payload_moves_ipc_buffer_without_clone() {
+        let batch = make_test_batch();
+        let config = Arc::new(ArrowIpcSinkConfig {
+            endpoint: "http://localhost:9999".to_string(),
+            compression: Compression::None,
+            headers: Vec::new(),
+        });
+        let stats = Arc::new(ComponentStats::new());
+        let client = reqwest::Client::new();
+        let mut sink = ArrowIpcSink::new("test".to_string(), config, client, stats);
+
+        sink.serialize_batch(&batch)
+            .expect("serialize batch should succeed");
+        let prior_capacity = sink.ipc_buf.capacity();
+        let prior_ptr = sink.ipc_buf.as_ptr();
+
+        let payload = sink.build_payload().expect("build payload should succeed");
+        assert_eq!(
+            payload.as_ptr(),
+            prior_ptr,
+            "uncompressed payload should take ownership of existing IPC allocation"
+        );
+        assert!(
+            sink.ipc_buf.is_empty(),
+            "IPC buffer should be empty after ownership transfer"
+        );
+        assert_eq!(
+            sink.ipc_buf.capacity(),
+            0,
+            "taken IPC buffer should leave zero-capacity Vec"
+        );
+
+        sink.restore_uncompressed_buffer_capacity(prior_capacity);
+        assert!(
+            sink.ipc_buf.capacity() >= prior_capacity,
+            "IPC reusable capacity should be restored after send"
+        );
+    }
+
+    #[tokio::test]
+    async fn uncompressed_send_restores_ipc_buffer_after_transport_error() {
+        let batch = make_test_batch();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("ephemeral test listener should bind");
+        let addr = listener
+            .local_addr()
+            .expect("ephemeral test listener should have an address");
+        drop(listener);
+
+        let config = Arc::new(ArrowIpcSinkConfig {
+            endpoint: format!("http://{addr}/arrow"),
+            compression: Compression::None,
+            headers: Vec::new(),
+        });
+        let stats = Arc::new(ComponentStats::new());
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_millis(200))
+            .build()
+            .expect("test client should build");
+        let mut sink = ArrowIpcSink::new("test".to_string(), config, client, stats);
+        let metadata = BatchMetadata {
+            resource_attrs: Arc::new(Vec::new()),
+            observed_time_ns: 0,
+        };
+
+        let result = sink.send_batch(&batch, &metadata).await;
+        assert!(
+            matches!(result, SendResult::IoError(_)),
+            "closed endpoint should produce a transport error"
+        );
+        assert!(
+            sink.ipc_buf.capacity() >= ArrowIpcSink::INITIAL_IPC_BUFFER_CAPACITY,
+            "uncompressed transport errors should not leave the reusable IPC buffer at zero capacity"
+        );
     }
 }

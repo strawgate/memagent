@@ -4,10 +4,36 @@ use std::any::Any;
 
 use arrow::datatypes::DataType;
 use datafusion::logical_expr::{
-    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, Volatility,
+    ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Signature, TypeSignature, Volatility,
 };
 
-/// UDF: int(col) — safe cast from Utf8 to Int64, returns NULL on failure.
+fn cast_or_passthrough_array(
+    array: &std::sync::Arc<dyn arrow::array::Array>,
+    target_type: &DataType,
+) -> datafusion::common::Result<ColumnarValue> {
+    if array.data_type() == target_type {
+        return Ok(ColumnarValue::Array(array.clone()));
+    }
+
+    let result = arrow::compute::cast(array, target_type)
+        .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+    Ok(ColumnarValue::Array(result))
+}
+
+fn cast_scalar_to(
+    scalar: &datafusion::common::ScalarValue,
+    target_type: &DataType,
+) -> datafusion::common::Result<datafusion::common::ScalarValue> {
+    let array = scalar
+        .to_array()
+        .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+    let result = arrow::compute::cast(&array, target_type)
+        .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
+    datafusion::common::ScalarValue::try_from_array(&result, 0)
+}
+
+/// UDF: int(col) — safe cast from strings/numerics to Int64, returns NULL on
+/// parse failure.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) struct IntCastUdf {
     signature: Signature,
@@ -16,7 +42,15 @@ pub(crate) struct IntCastUdf {
 impl IntCastUdf {
     pub(crate) fn new() -> Self {
         Self {
-            signature: Signature::exact(vec![DataType::Utf8], Volatility::Immutable),
+            signature: Signature::new(
+                TypeSignature::OneOf(vec![
+                    TypeSignature::Exact(vec![DataType::Utf8]),
+                    TypeSignature::Exact(vec![DataType::Utf8View]),
+                    TypeSignature::Exact(vec![DataType::LargeUtf8]),
+                    TypeSignature::Numeric(1),
+                ]),
+                Volatility::Immutable,
+            ),
         }
     }
 }
@@ -44,27 +78,20 @@ impl ScalarUDFImpl for IntCastUdf {
     ) -> datafusion::common::Result<ColumnarValue> {
         let arg = &args.args[0];
         match arg {
-            ColumnarValue::Array(array) => {
-                // Safe cast: returns NULL on parse failure.
-                let result = arrow::compute::cast(array, &DataType::Int64)
-                    .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
-                Ok(ColumnarValue::Array(result))
+            ColumnarValue::Array(array) => cast_or_passthrough_array(array, &DataType::Int64),
+            ColumnarValue::Scalar(scalar @ datafusion::common::ScalarValue::Int64(_)) => {
+                Ok(ColumnarValue::Scalar(scalar.clone()))
             }
-            ColumnarValue::Scalar(scalar) => {
-                // Convert scalar to single-element array, cast, convert back.
-                let array = scalar
-                    .to_array()
-                    .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
-                let result = arrow::compute::cast(&array, &DataType::Int64)
-                    .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
-                let scalar_val = datafusion::common::ScalarValue::try_from_array(&result, 0)?;
-                Ok(ColumnarValue::Scalar(scalar_val))
-            }
+            ColumnarValue::Scalar(scalar) => Ok(ColumnarValue::Scalar(cast_scalar_to(
+                scalar,
+                &DataType::Int64,
+            )?)),
         }
     }
 }
 
-/// UDF: float(col) — safe cast from Utf8 to Float64, returns NULL on failure.
+/// UDF: float(col) — safe cast from strings/numerics to Float64, returns NULL
+/// on parse failure.
 #[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) struct FloatCastUdf {
     signature: Signature,
@@ -73,7 +100,15 @@ pub(crate) struct FloatCastUdf {
 impl FloatCastUdf {
     pub(crate) fn new() -> Self {
         Self {
-            signature: Signature::exact(vec![DataType::Utf8], Volatility::Immutable),
+            signature: Signature::new(
+                TypeSignature::OneOf(vec![
+                    TypeSignature::Exact(vec![DataType::Utf8]),
+                    TypeSignature::Exact(vec![DataType::Utf8View]),
+                    TypeSignature::Exact(vec![DataType::LargeUtf8]),
+                    TypeSignature::Numeric(1),
+                ]),
+                Volatility::Immutable,
+            ),
         }
     }
 }
@@ -101,20 +136,14 @@ impl ScalarUDFImpl for FloatCastUdf {
     ) -> datafusion::common::Result<ColumnarValue> {
         let arg = &args.args[0];
         match arg {
-            ColumnarValue::Array(array) => {
-                let result = arrow::compute::cast(array, &DataType::Float64)
-                    .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
-                Ok(ColumnarValue::Array(result))
+            ColumnarValue::Array(array) => cast_or_passthrough_array(array, &DataType::Float64),
+            ColumnarValue::Scalar(scalar @ datafusion::common::ScalarValue::Float64(_)) => {
+                Ok(ColumnarValue::Scalar(scalar.clone()))
             }
-            ColumnarValue::Scalar(scalar) => {
-                let array = scalar
-                    .to_array()
-                    .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
-                let result = arrow::compute::cast(&array, &DataType::Float64)
-                    .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
-                let scalar_val = datafusion::common::ScalarValue::try_from_array(&result, 0)?;
-                Ok(ColumnarValue::Scalar(scalar_val))
-            }
+            ColumnarValue::Scalar(scalar) => Ok(ColumnarValue::Scalar(cast_scalar_to(
+                scalar,
+                &DataType::Float64,
+            )?)),
         }
     }
 }

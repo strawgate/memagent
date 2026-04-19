@@ -17,6 +17,7 @@ jobs:
   build:
     name: Build (${{ matrix.artifact }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -37,15 +38,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/build-dashboard
-      - uses: mozilla-actions/sccache-action@v0.0.9
-
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
+      - uses: ./.github/actions/setup-rust
+      - run: rustup target add ${{ matrix.target }}
+        shell: bash
 
       - name: Install musl-tools (Linux x86_64)
         if: matrix.target == 'x86_64-unknown-linux-musl'
@@ -58,8 +53,6 @@ jobs:
       - name: Build (cross)
         if: matrix.use_cross == true
         run: cross build --release -p logfwd --target ${{ matrix.target }}
-        env:
-          RUSTC_WRAPPER: ""
 
       - name: Build (cargo)
         if: matrix.use_cross != true
@@ -81,6 +74,7 @@ jobs:
     name: Create GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
 
@@ -104,6 +98,7 @@ jobs:
   docker:
     name: Docker (${{ github.ref_name }})
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
 

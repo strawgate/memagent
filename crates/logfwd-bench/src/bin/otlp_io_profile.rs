@@ -12,8 +12,9 @@ use bytes::Bytes;
 use logfwd_bench::generators::otlp::{self, OtlpFixtureProfile};
 use logfwd_bench::{generators, make_otlp_sink};
 use logfwd_io::otlp_receiver::{
-    ProjectedOtlpDecoder, decode_protobuf_bytes_to_batch_projected_only_experimental,
-    decode_protobuf_to_batch, decode_protobuf_to_batch_projected_detached_experimental,
+    ProjectedOtlpDecoder, decode_protobuf_bytes_to_batch_projected_experimental,
+    decode_protobuf_bytes_to_batch_projected_only_experimental, decode_protobuf_to_batch,
+    decode_protobuf_to_batch_projected_detached_experimental,
     decode_protobuf_to_batch_prost_reference,
 };
 use logfwd_output::Compression;
@@ -34,23 +35,33 @@ enum Mode {
     ProjectedDetachedToBatch,
     ProjectedViewToBatch,
     ProjectedViewReuseToBatch,
+    ProjectedFallbackToBatch,
+    ZstdProductionCurrentToBatch,
+    ZstdProjectedFallbackToBatch,
+    ProjectedFallbackMix,
     E2eProstReference,
     E2eProductionCurrent,
     E2eProjectedDetached,
     E2eProjectedView,
+    E2eProjectedFallback,
 }
 
 impl Mode {
-    const ALL: [Mode; 9] = [
+    const ALL: [Mode; 14] = [
         Mode::ProstReferenceToBatch,
         Mode::ProductionCurrentToBatch,
         Mode::ProjectedDetachedToBatch,
         Mode::ProjectedViewToBatch,
         Mode::ProjectedViewReuseToBatch,
+        Mode::ProjectedFallbackToBatch,
+        Mode::ZstdProductionCurrentToBatch,
+        Mode::ZstdProjectedFallbackToBatch,
+        Mode::ProjectedFallbackMix,
         Mode::E2eProstReference,
         Mode::E2eProductionCurrent,
         Mode::E2eProjectedDetached,
         Mode::E2eProjectedView,
+        Mode::E2eProjectedFallback,
     ];
 
     fn name(self) -> &'static str {
@@ -60,10 +71,15 @@ impl Mode {
             Mode::ProjectedDetachedToBatch => "projected_detached_to_batch",
             Mode::ProjectedViewToBatch => "projected_view_to_batch",
             Mode::ProjectedViewReuseToBatch => "projected_view_reuse_to_batch",
+            Mode::ProjectedFallbackToBatch => "projected_fallback_to_batch",
+            Mode::ZstdProductionCurrentToBatch => "zstd_production_current_to_batch",
+            Mode::ZstdProjectedFallbackToBatch => "zstd_projected_fallback_to_batch",
+            Mode::ProjectedFallbackMix => "projected_fallback_mix",
             Mode::E2eProstReference => "e2e_prost_reference",
             Mode::E2eProductionCurrent => "e2e_production_current",
             Mode::E2eProjectedDetached => "e2e_projected_detached",
             Mode::E2eProjectedView => "e2e_projected_view",
+            Mode::E2eProjectedFallback => "e2e_projected_fallback",
         }
     }
 
@@ -75,10 +91,15 @@ impl Mode {
             "projected_detached_to_batch" => Mode::ProjectedDetachedToBatch,
             "projected_view_to_batch" => Mode::ProjectedViewToBatch,
             "projected_view_reuse_to_batch" => Mode::ProjectedViewReuseToBatch,
+            "projected_fallback_to_batch" => Mode::ProjectedFallbackToBatch,
+            "zstd_production_current_to_batch" => Mode::ZstdProductionCurrentToBatch,
+            "zstd_projected_fallback_to_batch" => Mode::ZstdProjectedFallbackToBatch,
+            "projected_fallback_mix" => Mode::ProjectedFallbackMix,
             "e2e_prost_reference" => Mode::E2eProstReference,
             "e2e_production_current" => Mode::E2eProductionCurrent,
             "e2e_projected_detached" => Mode::E2eProjectedDetached,
             "e2e_projected_view" => Mode::E2eProjectedView,
+            "e2e_projected_fallback" => Mode::E2eProjectedFallback,
             // deprecated aliases from earlier naming
             "prost_decode" => Mode::ProstReferenceToBatch,
             "production_to_batch" => Mode::ProductionCurrentToBatch,
@@ -101,7 +122,13 @@ struct Cli {
 struct FixtureData {
     payload: Vec<u8>,
     payload_bytes: Bytes,
+    zstd_payload: Vec<u8>,
     rows: usize,
+}
+
+struct FallbackMixFixture {
+    payloads: [Bytes; 5],
+    rows_per_iteration: usize,
 }
 
 struct ProfileResult {
@@ -253,6 +280,7 @@ fn run_profile(fixture: &FixtureData, mode: Mode, iterations: usize) -> ProfileR
             | Mode::E2eProductionCurrent
             | Mode::E2eProjectedDetached
             | Mode::E2eProjectedView
+            | Mode::E2eProjectedFallback
     ) {
         let batch = match mode {
             Mode::E2eProstReference => decode_protobuf_to_batch_prost_reference(&fixture.payload)
@@ -268,11 +296,19 @@ fn run_profile(fixture: &FixtureData, mode: Mode, iterations: usize) -> ProfileR
                 fixture.payload_bytes.clone(),
             )
             .expect("warmup projected view decode"),
+            Mode::E2eProjectedFallback => {
+                decode_protobuf_bytes_to_batch_projected_experimental(fixture.payload_bytes.clone())
+                    .expect("warmup projected fallback decode")
+            }
             Mode::ProstReferenceToBatch
             | Mode::ProductionCurrentToBatch
             | Mode::ProjectedDetachedToBatch
             | Mode::ProjectedViewToBatch
-            | Mode::ProjectedViewReuseToBatch => {
+            | Mode::ProjectedViewReuseToBatch
+            | Mode::ProjectedFallbackToBatch
+            | Mode::ZstdProductionCurrentToBatch
+            | Mode::ZstdProjectedFallbackToBatch
+            | Mode::ProjectedFallbackMix => {
                 unreachable!("decode-only modes are not warmed here")
             }
         };
@@ -286,6 +322,11 @@ fn run_profile(fixture: &FixtureData, mode: Mode, iterations: usize) -> ProfileR
             .decode_view_bytes(fixture.payload_bytes.clone())
             .expect("warmup reuse decoder");
         Some(dec)
+    } else {
+        None
+    };
+    let fallback_mix = if matches!(mode, Mode::ProjectedFallbackMix) {
+        Some(build_fallback_mix_fixture())
     } else {
         None
     };
@@ -324,6 +365,39 @@ fn run_profile(fixture: &FixtureData, mode: Mode, iterations: usize) -> ProfileR
                     .expect("projected view reuse");
                 black_box(batch.num_rows());
             }
+            Mode::ProjectedFallbackToBatch => {
+                let batch = decode_protobuf_bytes_to_batch_projected_experimental(
+                    fixture.payload_bytes.clone(),
+                )
+                .expect("projected fallback");
+                black_box(batch.num_rows());
+            }
+            Mode::ZstdProductionCurrentToBatch => {
+                let decompressed =
+                    zstd::decode_all(fixture.zstd_payload.as_slice()).expect("zstd decode");
+                let batch = decode_protobuf_to_batch(&decompressed).expect("production");
+                black_box(batch.num_rows());
+            }
+            Mode::ZstdProjectedFallbackToBatch => {
+                let decompressed =
+                    zstd::decode_all(fixture.zstd_payload.as_slice()).expect("zstd decode");
+                let batch = decode_protobuf_bytes_to_batch_projected_experimental(Bytes::from(
+                    decompressed,
+                ))
+                .expect("projected fallback");
+                black_box(batch.num_rows());
+            }
+            Mode::ProjectedFallbackMix => {
+                let mix = fallback_mix.as_ref().expect("fallback mix initialized");
+                let mut rows = 0usize;
+                for payload in &mix.payloads {
+                    let batch =
+                        decode_protobuf_bytes_to_batch_projected_experimental(payload.clone())
+                            .expect("projected fallback mix");
+                    rows += batch.num_rows();
+                }
+                black_box(rows);
+            }
             Mode::E2eProstReference => {
                 let batch =
                     decode_protobuf_to_batch_prost_reference(&fixture.payload).expect("prost");
@@ -350,6 +424,14 @@ fn run_profile(fixture: &FixtureData, mode: Mode, iterations: usize) -> ProfileR
                 sink.encode_batch(&batch, &metadata);
                 black_box(sink.encoded_payload().len());
             }
+            Mode::E2eProjectedFallback => {
+                let batch = decode_protobuf_bytes_to_batch_projected_experimental(
+                    fixture.payload_bytes.clone(),
+                )
+                .expect("projected fallback");
+                sink.encode_batch(&batch, &metadata);
+                black_box(sink.encoded_payload().len());
+            }
         }
     }
     let elapsed = started.elapsed();
@@ -365,10 +447,14 @@ fn run_profile(fixture: &FixtureData, mode: Mode, iterations: usize) -> ProfileR
     #[cfg(not(feature = "otlp-profile-alloc"))]
     let stats = AllocStats::default();
 
+    let rows_per_iteration = fallback_mix
+        .as_ref()
+        .map_or(fixture.rows, |mix| mix.rows_per_iteration);
+
     ProfileResult {
         mode: mode.name(),
         iterations,
-        rows: fixture.rows.saturating_mul(iterations),
+        rows: rows_per_iteration.saturating_mul(iterations),
         elapsed,
         bytes_allocated: stats.bytes_allocated,
         allocations: stats.allocations,
@@ -404,6 +490,12 @@ fn build_fixture(profile: OtlpFixtureProfile) -> FixtureData {
         decode_protobuf_to_batch(&otlp_data.payload).expect("production fixture decodes");
     assert_batch_matches(&batch, &production, profile.name);
     assert_encode_paths_match(&production, profile.name);
+    let projected_fallback =
+        decode_protobuf_bytes_to_batch_projected_experimental(otlp_data.payload_bytes.clone())
+            .expect("projected fallback fixture decodes");
+    let detached_projected_fallback = logfwd_arrow::materialize::detach(&projected_fallback);
+    assert_batch_matches(&batch, &detached_projected_fallback, profile.name);
+    assert_encode_paths_match(&projected_fallback, profile.name);
     if !profile.has_complex_any {
         let projected =
             decode_protobuf_to_batch_projected_detached_experimental(&otlp_data.payload)
@@ -419,10 +511,29 @@ fn build_fixture(profile: OtlpFixtureProfile) -> FixtureData {
         assert_encode_paths_match(&view, profile.name);
     }
 
+    let zstd_payload =
+        zstd::encode_all(otlp_data.payload.as_slice(), 1).expect("fixture zstd compresses");
+
     FixtureData {
         payload: otlp_data.payload,
         payload_bytes: otlp_data.payload_bytes,
+        zstd_payload,
         rows: profile.total_rows(),
+    }
+}
+
+fn build_fallback_mix_fixture() -> FallbackMixFixture {
+    let projected = build_fixture(otlp::NARROW_1K);
+    let fallback = build_fixture(otlp::COMPLEX_ANYVALUE);
+    FallbackMixFixture {
+        payloads: [
+            projected.payload_bytes.clone(),
+            projected.payload_bytes.clone(),
+            projected.payload_bytes.clone(),
+            projected.payload_bytes.clone(),
+            fallback.payload_bytes.clone(),
+        ],
+        rows_per_iteration: projected.rows * 4 + fallback.rows,
     }
 }
 

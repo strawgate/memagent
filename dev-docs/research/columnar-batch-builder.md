@@ -4,7 +4,7 @@
 > **Date:** 2026-04-12
 > **Context:** Recovered design intent for the shared `ColumnarBatchBuilder` direction, landing independently of OTLP projection PR #1837.
 
-This note captures the current design stance for the shared column construction engine.
+This note captures the current design stance for the shared column construction engine. Follow-up stabilization work is tracked in GitHub.
 
 `ColumnarBatchBuilder` is the reusable column construction engine for structured inputs. It is **not** an OTLP-specific builder.
 
@@ -78,6 +78,11 @@ Typed inputs must stay clean.
 - JSON-style conflict handling only activates when a field genuinely changes type within a batch.
 - Clean typed inputs must not pay conflict overhead they do not need.
 
+Current implementation note: planned field handles and typed write calls are
+landed, but `ColumnarBatchBuilder` still uses dynamic accumulators internally
+for both planned and dynamic fields. Single-type planned accumulators remain a
+future optimization, not current behavior.
+
 The output schema can use generic Arrow kinds such as:
 
 - `FixedBinary(16)`
@@ -122,10 +127,13 @@ The durable architecture is:
 5. typed inputs keep typed fast paths
 6. JSON conflict handling remains a dynamic-input concern only
 
-## Next work units
+## Current follow-up work units
 
 - [#1838](https://github.com/strawgate/memagent/issues/1838) architecture: shared ColumnarBatchBuilder for structured inputs
-- [#1839](https://github.com/strawgate/memagent/issues/1839) work-unit: columnar docs - land recovered design intent on main
+- [#1847](https://github.com/strawgate/memagent/issues/1847) work-unit: otlp codegen - generated projection metadata
+- [#2249](https://github.com/strawgate/memagent/issues/2249) work-unit: otlp projection - harden protobuf group skipping
+- [#2254](https://github.com/strawgate/memagent/issues/2254) work-unit: columnar builder - align docs and comments with landed architecture
+- [#1846](https://github.com/strawgate/memagent/issues/1846) work-unit: csv input - prove non-OTLP ColumnarBatchBuilder producer
 
 ## References
 

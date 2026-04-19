@@ -23,7 +23,7 @@ output:
     bearer_token: "${OTEL_TOKEN}"
 ```
 
-The `endpoint` must include the full path (e.g. `/v1/logs` for HTTP). logfwd posts directly to this URL.
+The `endpoint` must include the full path (e.g. `/v1/logs` for HTTP). FastForward posts directly to this URL.
 
 </TabItem>
 <TabItem label="HTTP (JSON Lines)">
@@ -108,7 +108,7 @@ output:
   label_columns: [service, level]
 ```
 
-When `label_columns` or `static_labels` are used, logfwd sanitizes label keys
+When `label_columns` or `static_labels` are used, FastForward sanitizes label keys
 into Loki-compatible names. Configurations are rejected if two source columns,
 two `static_labels` entries, or a source column and a `static_labels` entry
 would collapse to the same sanitized Loki label key.

@@ -3,7 +3,7 @@ title: "SQL Transforms"
 description: "Filter, reshape, and enrich logs with DataFusion SQL"
 ---
 
-logfwd uses Apache DataFusion to run SQL queries on your log data. Every log
+FastForward uses Apache DataFusion to run SQL queries on your log data. Every log
 line becomes a row in a virtual `logs` table.
 
 ## Column naming
@@ -28,7 +28,7 @@ Use `int(status)` or `float(status)` for numeric operations on these columns.
 
 ## Custom UDFs
 
-logfwd registers the following custom scalar functions in addition to
+FastForward registers the following custom scalar functions in addition to
 [DataFusion's built-in functions](https://datafusion.apache.org/user-guide/sql/scalar_functions.html).
 
 ### `json(column, key)` — extract a string value from JSON

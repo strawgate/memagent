@@ -289,6 +289,7 @@ pub(super) fn build_input_state(
                 Some(Arc::clone(&stats)),
                 resource_prefix,
                 protobuf_decode_mode,
+                o.max_recv_message_size_bytes,
             )
             .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             #[cfg(not(feature = "otlp-research"))]

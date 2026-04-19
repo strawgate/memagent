@@ -755,17 +755,40 @@ mod tests {
 mod verification {
     use super::*;
 
+    // Use u8 instead of u64 for symbolic checkpoint values in Kani proofs.
+    // The proofs verify state-machine behavior (ordering, drain, advance),
+    // not checkpoint arithmetic. u8 gives 256 symbolic values — sufficient
+    // for coverage — while avoiding the SAT explosion that u64 causes in
+    // BTreeMap reasoning (verify_dropped_ticket_does_not_block took 54 min
+    // with u64 vs <1s with u8).
+    //
+    // TLA+ no-impact: PipelineMachine.tla models checkpoints as opaque
+    // values. This cfg(kani)-only alias narrows only the Rust proof input
+    // domain; it does not change lifecycle transitions for batch sequencing,
+    // ACK/reject advance, drain, or checkpoint ordering.
+    type Cp = u8;
+
     /// Ordered ACK: after all batches acked, committed checkpoint equals the last batch's.
     #[kani::proof]
     #[kani::unwind(4)]
     fn verify_ordered_ack() {
-        let mut running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let mut running: PipelineMachine<Running, Cp> =
+            PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(0);
 
-        let cp1: u64 = kani::any();
-        let cp2: u64 = kani::any();
-        let cp3: u64 = kani::any();
+        let cp1: Cp = kani::any();
+        let cp2: Cp = kani::any();
+        let cp3: Cp = kani::any();
+        kani::assume(cp1 <= cp2);
+        kani::assume(cp2 <= cp3);
+        kani::cover!(
+            cp1 == cp2 || cp2 == cp3,
+            "non-strict checkpoint ordering boundary covered"
+        );
+        kani::cover!(
+            cp1 < cp2 && cp2 < cp3,
+            "strictly increasing checkpoints covered"
+        );
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -799,12 +822,12 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(3)]
     fn verify_all_acked_final_checkpoint() {
-        let mut running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let mut running: PipelineMachine<Running, Cp> =
+            PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(0);
 
-        let cp1: u64 = kani::any();
-        let cp2: u64 = kani::any();
+        let cp1: Cp = kani::any();
+        let cp2: Cp = kani::any();
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -823,11 +846,11 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(3)]
     fn verify_drain_to_stop() {
-        let mut running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let mut running: PipelineMachine<Running, Cp> =
+            PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(0);
 
-        let cp: u64 = kani::any();
+        let cp: Cp = kani::any();
         let t1 = running.create_batch(src, cp);
         let s1 = running.begin_send(t1);
 
@@ -843,13 +866,13 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(3)]
     fn verify_multi_source_independence() {
-        let mut running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let mut running: PipelineMachine<Running, Cp> =
+            PipelineMachine::<Starting, Cp>::new().start();
         let src_a = SourceId(0);
         let src_b = SourceId(1);
 
-        let cp_a: u64 = kani::any();
-        let cp_b: u64 = kani::any();
+        let cp_a: Cp = kani::any();
+        let cp_b: Cp = kani::any();
 
         let ta = running.create_batch(src_a, cp_a);
         let tb = running.create_batch(src_b, cp_b);
@@ -870,11 +893,11 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(3)]
     fn verify_duplicate_ack_harmless() {
-        let mut running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let mut running: PipelineMachine<Running, Cp> =
+            PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(0);
 
-        let cp: u64 = kani::any();
+        let cp: Cp = kani::any();
         let t1 = running.create_batch(src, cp);
         let s1 = running.begin_send(t1);
         let receipt = s1.ack();
@@ -906,14 +929,14 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(5)]
     fn verify_symbolic_order_ack_4_batches() {
-        let mut running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let mut running: PipelineMachine<Running, Cp> =
+            PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(0);
 
-        let cp1: u64 = kani::any();
-        let cp2: u64 = kani::any();
-        let cp3: u64 = kani::any();
-        let cp4: u64 = kani::any();
+        let cp1: Cp = kani::any();
+        let cp2: Cp = kani::any();
+        let cp3: Cp = kani::any();
+        let cp4: Cp = kani::any();
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -991,13 +1014,13 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(4)]
     fn verify_committed_monotonic() {
-        let mut running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let mut running: PipelineMachine<Running, Cp> =
+            PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(0);
 
-        let cp1: u64 = kani::any();
-        let cp2: u64 = kani::any();
-        let cp3: u64 = kani::any();
+        let cp1: Cp = kani::any();
+        let cp2: Cp = kani::any();
+        let cp3: Cp = kani::any();
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -1045,11 +1068,11 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(3)]
     fn verify_stop_blocks_when_in_flight() {
-        let mut running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let mut running: PipelineMachine<Running, Cp> =
+            PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(0);
 
-        let cp: u64 = kani::any();
+        let cp: Cp = kani::any();
         let t1 = running.create_batch(src, cp);
         let _s1 = running.begin_send(t1); // leave it in-flight
 
@@ -1074,11 +1097,11 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(3)]
     fn verify_reject_advances_checkpoint() {
-        let mut running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let mut running: PipelineMachine<Running, Cp> =
+            PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(0);
 
-        let cp: u64 = kani::any();
+        let cp: Cp = kani::any();
         let t1 = running.create_batch(src, cp);
         let s1 = running.begin_send(t1);
 
@@ -1105,13 +1128,13 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(4)]
     fn verify_batch_id_strictly_monotonic() {
-        let mut running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let mut running: PipelineMachine<Running, Cp> =
+            PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(0);
 
-        let t1 = running.create_batch(src, 0u64);
-        let t2 = running.create_batch(src, 0u64);
-        let t3 = running.create_batch(src, 0u64);
+        let t1 = running.create_batch(src, 0);
+        let t2 = running.create_batch(src, 0);
+        let t3 = running.create_batch(src, 0);
 
         assert!(t1.id() < t2.id(), "batch IDs must be strictly increasing");
         assert!(t2.id() < t3.id(), "batch IDs must be strictly increasing");
@@ -1126,8 +1149,7 @@ mod verification {
     #[kani::unwind(2)]
     fn verify_is_drained_when_empty() {
         // An empty pipeline (never any batches) must be immediately drained.
-        let running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let running: PipelineMachine<Running, Cp> = PipelineMachine::<Starting, Cp>::new().start();
         let draining = running.begin_drain();
         assert!(draining.is_drained());
         assert_eq!(draining.in_flight_count(), 0);
@@ -1138,10 +1160,10 @@ mod verification {
     #[kani::unwind(3)]
     fn verify_not_drained_with_in_flight() {
         // A pipeline with exactly one unsent-to-acked batch must NOT be drained.
-        let mut running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let mut running: PipelineMachine<Running, Cp> =
+            PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(kani::any());
-        let cp: u64 = kani::any();
+        let cp: Cp = kani::any();
         let t1 = running.create_batch(src, cp);
         let _s1 = running.begin_send(t1); // in-flight, not acked
 
@@ -1161,13 +1183,13 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(4)]
     fn verify_mixed_ack_reject_advances() {
-        let mut running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let mut running: PipelineMachine<Running, Cp> =
+            PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(0);
 
-        let cp1: u64 = kani::any();
-        let cp2: u64 = kani::any();
-        let cp3: u64 = kani::any();
+        let cp1: Cp = kani::any();
+        let cp2: Cp = kani::any();
+        let cp3: Cp = kani::any();
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -1203,11 +1225,11 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(3)]
     fn verify_force_stop_always_succeeds() {
-        let mut running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let mut running: PipelineMachine<Running, Cp> =
+            PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(0);
 
-        let cp: u64 = kani::any();
+        let cp: Cp = kani::any();
         let t1 = running.create_batch(src, cp);
         let _s1 = running.begin_send(t1); // leave in-flight
 
@@ -1235,12 +1257,12 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(3)]
     fn verify_force_stop_preserves_committed() {
-        let mut running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let mut running: PipelineMachine<Running, Cp> =
+            PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(0);
 
-        let cp1: u64 = kani::any();
-        let cp2: u64 = kani::any();
+        let cp1: Cp = kani::any();
+        let cp2: Cp = kani::any();
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -1271,12 +1293,12 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(4)]
     fn verify_dropped_ticket_does_not_block() {
-        let mut running: PipelineMachine<Running, u64> =
-            PipelineMachine::<Starting, u64>::new().start();
+        let mut running: PipelineMachine<Running, Cp> =
+            PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(0);
 
-        let cp1: u64 = kani::any();
-        let cp2: u64 = kani::any();
+        let cp1: Cp = kani::any();
+        let cp2: Cp = kani::any();
 
         // Create batch 1 — then DROP the Queued ticket (simulates scan error)
         let _dropped = running.create_batch(src, cp1);

@@ -234,10 +234,10 @@ tlc-tail:
     just tlc MCTailLifecycle.tla TailLifecycle.cfg
 
 # Lint — fast (default-members, skips datafusion)
-lint: fmt-check workspace-inheritance-guard clippy toml-check
+lint: fmt-check otlp-codegen-check workspace-inheritance-guard clippy toml-check
 
 # Lint — full workspace (CI uses this)
-lint-all: fmt-check verification-guardrail workspace-inheritance-guard clippy-all toml-check deny
+lint-all: fmt-check verification-guardrail otlp-codegen-check workspace-inheritance-guard clippy-all toml-check deny
 
 # Quick CI — fast lint + test (default-members, no datafusion)
 ci: lint test
@@ -251,6 +251,10 @@ ci-all: lint-all test-all tlc-tail
 # Check TOML formatting (Cargo.toml, etc.)
 toml-check:
     taplo check
+
+# Check generated OTLP fast-row encoder drift.
+otlp-codegen-check:
+    python3 scripts/generate_otlp_fast_encoder.py --check
 
 # Guardrail: inherited dependencies must not override default-features locally.
 workspace-inheritance-guard:

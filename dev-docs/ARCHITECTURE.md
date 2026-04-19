@@ -199,6 +199,12 @@ scanner only extracts fields the SQL actually uses.
 Custom UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`,
 `geo_lookup()`.
 
+CSV enrichment tables are parsed in `logfwd-transform` and materialized through
+`ColumnarBatchBuilder` as nullable `Utf8View` columns. Delimiter, quote, header,
+duplicate-header, and row-alignment semantics remain local to the transform
+crate; `logfwd-arrow` only owns the shared columnar builder and Arrow
+finalization mechanics.
+
 ### 7. Output: RecordBatch → wire format
 
 ```

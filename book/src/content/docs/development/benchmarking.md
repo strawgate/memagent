@@ -13,7 +13,7 @@ Measures scanner throughput, OTLP encoding speed, and compression performance.
 
 ## Competitive benchmarks
 
-Compare logfwd against vector, fluent-bit, filebeat, otelcol, and vlagent:
+Compare FastForward against other log forwarders:
 
 ```bash
 # Binary mode (local dev)

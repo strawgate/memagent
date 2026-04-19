@@ -26,6 +26,8 @@ logfwd-io           Produces RecordBatch from external sources.
 
 logfwd-transform    RecordBatch → RecordBatch via DataFusion SQL.
                     UDFs, enrichment tables, JOINs.
+                    CSV enrichment tables produce Utf8View columns via the
+                    shared columnar builder.
 
 logfwd-output       Consumes RecordBatch, sends externally.
                     OTLP, Arrow IPC, JSON lines. Parquet/ClickHouse are planned.
@@ -136,6 +138,16 @@ work for file inputs.
 `CheckpointAdvance<C>`.  
 **Research:** `dev-docs/research/offset-checkpoint-research.md`. **Related:** #270.
 
+### Kani checkpoint proof domain
+
+The `pipeline/lifecycle.rs` Kani harnesses may narrow symbolic checkpoint values
+to a small integer domain when the proof only checks lifecycle behavior. This is
+valid because `PipelineMachine<S, C>` stores, orders, and returns checkpoints
+without interpreting their arithmetic meaning. TLA+ coverage is unchanged: the
+`PipelineMachine.tla` model already treats checkpoint values as opaque tokens
+while checking batch sequencing, ACK/reject advance, drain, and ordering
+invariants.
+
 ### Rejected batches advance the checkpoint
 
 `RejectBatch` has the same state transition as `AckBatch` — permanently-undeliverable data
@@ -177,8 +189,9 @@ field has multiple types within a batch.
 **Core requirement — round-trip type fidelity.** A field that enters as `int 200` must
 exit as `int 200`. No type promotion across documents.  
 **Core requirement — clean schemas stay clean.** OTLP, Arrow IPC, CSV, and consistent JSON
-produce bare column names with native types. The suffix machinery only activates when there
-is an actual per-row type conflict.
+produce bare column names with native types. CSV enrichment columns are bare nullable
+`Utf8View` string columns. The suffix machinery only activates when there is an actual
+per-row type conflict.
 
 Output always serializes with the bare JSON key, dispatching on DataType. A view layer
 provides bare-name access for suffixed columns.

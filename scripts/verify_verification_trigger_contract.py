@@ -201,9 +201,11 @@ def extract_paths_filter_entries(ci_text: str, filter_name: str) -> set[str]:
     return entries
 
 
-def extract_kani_args_crates(ci_text: str) -> set[str]:
-    kani_block = extract_job_block(ci_text, "kani")
+KANI_JOB_NAMES = ["kani", "kani-core", "kani-arrow", "kani-periphery"]
 
+
+def _extract_kani_crates_from_block(kani_block: list[str]) -> set[str]:
+    """Extract -p crate names from a single Kani job block."""
     crates: set[str] = set()
 
     # Collect crates from kani-github-action args blocks.
@@ -245,8 +247,22 @@ def extract_kani_args_crates(ci_text: str) -> set[str]:
             if "cargo kani" in cmd or "cargo-kani" in cmd:
                 crates |= set(re.findall(r"-p\s+([A-Za-z0-9_-]+)", cmd))
 
+    return crates
+
+
+def extract_kani_args_crates(ci_text: str) -> set[str]:
+    crates: set[str] = set()
+
+    # Support both single 'kani' job and split shard jobs.
+    for job_name in KANI_JOB_NAMES:
+        try:
+            kani_block = extract_job_block(ci_text, job_name)
+            crates |= _extract_kani_crates_from_block(kani_block)
+        except ValueError:
+            continue
+
     if not crates:
-        raise ValueError("ci.yml kani job missing -p crate entries")
+        raise ValueError("ci.yml kani job(s) missing -p crate entries")
     return crates
 
 
@@ -483,6 +499,35 @@ jobs:
             -Z function-contracts
 """
         self.assertEqual(extract_kani_args_crates(ci_text), {"logfwd-core", "logfwd-io"})
+
+    def test_extract_kani_args_crates_split_shards(self) -> None:
+        ci_text = """
+jobs:
+  kani-core:
+    steps:
+      - uses: model-checking/kani-github-action@v1
+        with:
+          args: >-
+            -p logfwd-core
+  kani-arrow:
+    steps:
+      - uses: model-checking/kani-github-action@v1
+        with:
+          args: >-
+            -p logfwd-arrow
+            --lib
+  kani-periphery:
+    steps:
+      - uses: model-checking/kani-github-action@v1
+        with:
+          args: >-
+            -p logfwd-io
+            -p logfwd-output
+"""
+        self.assertEqual(
+            extract_kani_args_crates(ci_text),
+            {"logfwd-core", "logfwd-arrow", "logfwd-io", "logfwd-output"},
+        )
 
     def test_extract_kani_args_crates_uses_kani_action_step(self) -> None:
         ci_text = """

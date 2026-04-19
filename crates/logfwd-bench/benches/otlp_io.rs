@@ -5,6 +5,7 @@
 //! stage:
 //! - parser-only protobuf decode (`prost`)
 //! - receiver decode + Arrow materialization
+//! - request decompression + receiver decode + Arrow materialization
 //! - sink encode-only (handwritten vs generated-fast)
 //! - encoded-payload compression
 //! - in-process decode -> encode.
@@ -20,7 +21,8 @@ use logfwd_bench::{generators, make_otlp_sink};
 use logfwd_io::compress::ChunkCompressor;
 use logfwd_io::otlp_receiver::{
     ProjectedOtlpDecoder, decode_protobuf_bytes_to_batch_projected_experimental,
-    decode_protobuf_to_batch, decode_protobuf_to_batch_projected_detached_experimental,
+    decode_protobuf_bytes_to_batch_projected_only_experimental, decode_protobuf_to_batch,
+    decode_protobuf_to_batch_projected_detached_experimental,
     decode_protobuf_to_batch_prost_reference,
 };
 use logfwd_output::Compression;
@@ -31,9 +33,11 @@ struct FixtureData {
     profile: OtlpFixtureProfile,
     payload: Vec<u8>,
     payload_bytes: bytes::Bytes,
+    zstd_payload: Vec<u8>,
     production_batch: arrow::record_batch::RecordBatch,
     projected_batch: Option<arrow::record_batch::RecordBatch>,
     projected_view_batch: Option<arrow::record_batch::RecordBatch>,
+    projected_fallback_batch: arrow::record_batch::RecordBatch,
 }
 
 fn fixtures() -> Vec<FixtureData> {
@@ -55,6 +59,18 @@ fn build_fixture(profile: OtlpFixtureProfile) -> FixtureData {
         decode_protobuf_to_batch(&otlp_data.payload).expect("production fixture should decode");
     assert_batch_matches(&prost_reference_batch, &production_batch, profile.name);
     assert_encode_paths_match(&production_batch, profile.name);
+    let projected_fallback_batch =
+        decode_protobuf_bytes_to_batch_projected_experimental(otlp_data.payload_bytes.clone())
+            .expect("experimental projected fallback decoder should decode fixture");
+    let detached_projected_fallback = logfwd_arrow::materialize::detach(&projected_fallback_batch);
+    assert_batch_matches(
+        &prost_reference_batch,
+        &detached_projected_fallback,
+        profile.name,
+    );
+    assert_encode_paths_match(&projected_fallback_batch, profile.name);
+    let zstd_payload =
+        zstd::encode_all(otlp_data.payload.as_slice(), 1).expect("fixture should zstd compress");
     let mut projected_batch = None;
     let mut projected_view_batch = None;
     if !profile.has_complex_any {
@@ -63,9 +79,10 @@ fn build_fixture(profile: OtlpFixtureProfile) -> FixtureData {
                 .expect("experimental wire decoder should decode primitive fixture");
         assert_batch_matches(&prost_reference_batch, &wire_batch, profile.name);
         assert_encode_paths_match(&wire_batch, profile.name);
-        let view_batch =
-            decode_protobuf_bytes_to_batch_projected_experimental(otlp_data.payload_bytes.clone())
-                .expect("experimental wire view decoder should decode primitive fixture");
+        let view_batch = decode_protobuf_bytes_to_batch_projected_only_experimental(
+            otlp_data.payload_bytes.clone(),
+        )
+        .expect("experimental wire view decoder should decode primitive fixture");
         let detached_view_batch = logfwd_arrow::materialize::detach(&view_batch);
         assert_batch_matches(&prost_reference_batch, &detached_view_batch, profile.name);
         assert_encode_paths_match(&view_batch, profile.name);
@@ -76,9 +93,11 @@ fn build_fixture(profile: OtlpFixtureProfile) -> FixtureData {
         profile,
         payload: otlp_data.payload,
         payload_bytes: otlp_data.payload_bytes,
+        zstd_payload,
         production_batch,
         projected_batch,
         projected_view_batch,
+        projected_fallback_batch,
     }
 }
 
@@ -252,6 +271,21 @@ fn bench_decode_materialize(c: &mut Criterion) {
             },
         );
 
+        group.bench_with_input(
+            BenchmarkId::new("projected_fallback_to_batch", fixture.profile.name),
+            &fixture.payload_bytes,
+            |b, payload| {
+                b.iter(|| {
+                    let batch =
+                        decode_protobuf_bytes_to_batch_projected_experimental(payload.clone())
+                            .expect(
+                                "projected fallback decode + materialize should decode fixture",
+                            );
+                    std::hint::black_box(batch.num_rows());
+                });
+            },
+        );
+
         if !fixture.profile.has_complex_any {
             group.bench_with_input(
                 BenchmarkId::new("projected_detached_to_batch", fixture.profile.name),
@@ -271,9 +305,10 @@ fn bench_decode_materialize(c: &mut Criterion) {
                 &fixture.payload_bytes,
                 |b, payload| {
                     b.iter(|| {
-                        let batch =
-                            decode_protobuf_bytes_to_batch_projected_experimental(payload.clone())
-                                .expect("experimental wire view decoder should decode fixture");
+                        let batch = decode_protobuf_bytes_to_batch_projected_only_experimental(
+                            payload.clone(),
+                        )
+                        .expect("experimental wire view decoder should decode fixture");
                         std::hint::black_box(batch.num_rows());
                     });
                 },
@@ -282,6 +317,61 @@ fn bench_decode_materialize(c: &mut Criterion) {
     }
 
     group.finish();
+}
+
+fn bench_decompress_decode(c: &mut Criterion) {
+    let fixtures = fixtures();
+    let mut group = c.benchmark_group("otlp_input_decompress_decode");
+    group.sample_size(10);
+
+    for fixture in fixtures
+        .iter()
+        .filter(|f| is_decompress_gate_profile(f.profile))
+    {
+        // Timed work: zstd request decompression plus decode into Arrow. HTTP
+        // header parsing, body collection, and receiver channel handoff are
+        // covered by `src/bin/http_receiver_apples.rs`; this group isolates the
+        // decompression+decode cost with the same payload shapes.
+        group.throughput(Throughput::Elements(fixture.profile.total_rows() as u64));
+        group.bench_with_input(
+            BenchmarkId::new("zstd_production_current_to_batch", fixture.profile.name),
+            &fixture.zstd_payload,
+            |b, compressed| {
+                b.iter(|| {
+                    let decompressed =
+                        zstd::decode_all(compressed.as_slice()).expect("zstd fixture decodes");
+                    let batch = decode_protobuf_to_batch(&decompressed)
+                        .expect("production decode + materialize should decode fixture");
+                    std::hint::black_box(batch.num_rows());
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("zstd_projected_fallback_to_batch", fixture.profile.name),
+            &fixture.zstd_payload,
+            |b, compressed| {
+                b.iter(|| {
+                    let decompressed =
+                        zstd::decode_all(compressed.as_slice()).expect("zstd fixture decodes");
+                    let batch = decode_protobuf_bytes_to_batch_projected_experimental(
+                        bytes::Bytes::from(decompressed),
+                    )
+                    .expect("projected fallback decode + materialize should decode fixture");
+                    std::hint::black_box(batch.num_rows());
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+fn is_decompress_gate_profile(profile: OtlpFixtureProfile) -> bool {
+    matches!(
+        profile.name,
+        "narrow-1k" | "compression-relevant" | "complex-anyvalue"
+    )
 }
 
 fn bench_output_encode_only(c: &mut Criterion) {
@@ -314,6 +404,18 @@ fn bench_output_encode_only(c: &mut Criterion) {
                 let mut sink = make_otlp_sink(Compression::None);
                 b.iter(|| {
                     sink.encode_batch_generated_fast(&fixture.production_batch, &metadata);
+                    std::hint::black_box(sink.encoded_payload().len());
+                });
+            },
+        );
+
+        group.bench_with_input(
+            BenchmarkId::new("projected_fallback_handwritten", fixture.profile.name),
+            &fixture.projected_fallback_batch,
+            |b, batch| {
+                let mut sink = make_otlp_sink(Compression::None);
+                b.iter(|| {
+                    sink.encode_batch(batch, &metadata);
                     std::hint::black_box(sink.encoded_payload().len());
                 });
             },
@@ -463,6 +565,26 @@ fn bench_end_to_end(c: &mut Criterion) {
             },
         );
 
+        group.bench_with_input(
+            BenchmarkId::new(
+                "projected_fallback_to_handwritten_encode",
+                fixture.profile.name,
+            ),
+            &fixture.payload_bytes,
+            |b, payload| {
+                let mut sink = make_otlp_sink(Compression::None);
+                b.iter(|| {
+                    let batch =
+                        decode_protobuf_bytes_to_batch_projected_experimental(payload.clone())
+                            .expect(
+                                "projected fallback decode + materialize should decode fixture",
+                            );
+                    sink.encode_batch(&batch, &metadata);
+                    std::hint::black_box(sink.encoded_payload().len());
+                });
+            },
+        );
+
         if !fixture.profile.has_complex_any {
             group.bench_with_input(
                 BenchmarkId::new(
@@ -488,9 +610,10 @@ fn bench_end_to_end(c: &mut Criterion) {
                 |b, payload| {
                     let mut sink = make_otlp_sink(Compression::None);
                     b.iter(|| {
-                        let batch =
-                            decode_protobuf_bytes_to_batch_projected_experimental(payload.clone())
-                                .expect("experimental wire view decoder should decode fixture");
+                        let batch = decode_protobuf_bytes_to_batch_projected_only_experimental(
+                            payload.clone(),
+                        )
+                        .expect("experimental wire view decoder should decode fixture");
                         sink.encode_batch(&batch, &metadata);
                         std::hint::black_box(sink.encoded_payload().len());
                     });
@@ -499,6 +622,35 @@ fn bench_end_to_end(c: &mut Criterion) {
         }
     }
 
+    group.finish();
+}
+
+fn bench_projected_fallback_mix(c: &mut Criterion) {
+    let projected = build_fixture(otlp::NARROW_1K);
+    let fallback = build_fixture(otlp::COMPLEX_ANYVALUE);
+    let payloads = [
+        projected.payload_bytes.clone(),
+        projected.payload_bytes.clone(),
+        projected.payload_bytes.clone(),
+        projected.payload_bytes.clone(),
+        fallback.payload_bytes.clone(),
+    ];
+    let rows_per_iter = projected.profile.total_rows() * 4 + fallback.profile.total_rows();
+
+    let mut group = c.benchmark_group("otlp_projected_fallback_mix");
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(rows_per_iter as u64));
+    group.bench_function("projected_success_4x_plus_fallback_1x", |b| {
+        b.iter(|| {
+            let mut rows = 0usize;
+            for payload in &payloads {
+                let batch = decode_protobuf_bytes_to_batch_projected_experimental(payload.clone())
+                    .expect("projected fallback mix should decode each fixture");
+                rows += batch.num_rows();
+            }
+            std::hint::black_box(rows);
+        });
+    });
     group.finish();
 }
 
@@ -628,9 +780,11 @@ criterion_group!(
     benches,
     bench_parser_only,
     bench_decode_materialize,
+    bench_decompress_decode,
     bench_output_encode_only,
     bench_output_compression,
     bench_end_to_end,
+    bench_projected_fallback_mix,
     bench_multi_batch_reuse
 );
 criterion_main!(benches);

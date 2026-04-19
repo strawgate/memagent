@@ -1,6 +1,6 @@
 ---
 title: "Quick Start"
-description: "Install logfwd, run your first pipeline, and ship logs in about 15 minutes"
+description: "Install FastForward, run your first pipeline, and ship logs in about 15 minutes"
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
@@ -9,7 +9,7 @@ import DataFlowAnimation from '../../components/DataFlowAnimation.astro';
 <DataFlowAnimation />
 
 :::note
-The product is **logfwd**. The GitHub repository is named `memagent` for historical reasons. Docker images, URLs, and `git clone` commands reference `memagent`; the binary and all user-facing output say `logfwd`.
+The product is **FastForward**. The GitHub repository is named `memagent` for historical reasons. Docker images, URLs, and `git clone` commands reference `memagent`; the binary is currently named `logfwd` and will be renamed to `ff` in a future release.
 :::
 
 ## Install
@@ -92,10 +92,10 @@ logfwd running (1 pipeline(s))
 ...
 ```
 
-logfwd parsed every JSON line, detected field types automatically, built Arrow RecordBatches, and printed them in a human-readable format. All 10,000 lines stream through in under a second.
+FastForward parsed every JSON line, detected field types automatically, built Arrow RecordBatches, and printed them in a human-readable format. All 10,000 lines stream through in under a second.
 
 :::note
-logfwd exits when it reaches the end of a finite file. In production you'd point it at a log file being actively appended to, and logfwd tails it continuously.
+FastForward exits when it reaches the end of a finite file. In production you'd point it at a log file being actively appended to, and it tails continuously.
 :::
 
 ---
@@ -105,7 +105,7 @@ logfwd exits when it reaches the end of a finite file. In production you'd point
 Add a SQL transform to keep only what matters. Every batch of parsed records becomes a DataFusion SQL table named `logs`.
 
 ```bash
-logfwd generate-json 10000 logs.json    # regenerate — logfwd tracks file positions
+logfwd generate-json 10000 logs.json    # regenerate — FastForward tracks file positions
 ```
 
 ```yaml
@@ -134,16 +134,16 @@ Now you see only errors with slow durations. Only the columns from the `SELECT` 
 Full SQL works: `JOIN`, `GROUP BY`, `HAVING`, subqueries, window functions. Built-in UDFs: `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`, `geo_lookup()`. See [SQL Transforms](/configuration/sql-transforms/) for the complete reference.
 
 :::caution
-`ORDER BY` works within each batch but logfwd processes data in streaming batches, so ordering is per-batch, not global.
+`ORDER BY` works within each batch but FastForward processes data in streaming batches, so ordering is per-batch, not global.
 :::
 
 ---
 
 ## Stage 3: Ship to a collector
 
-logfwd sends OTLP protobuf to an OpenTelemetry Collector, Grafana Alloy, or any OTLP-compatible backend.
+FastForward sends OTLP protobuf to an OpenTelemetry Collector, Grafana Alloy, or any OTLP-compatible backend.
 
-Test locally with logfwd's built-in blackhole receiver:
+Test locally with FastForward's built-in blackhole receiver:
 
 ```bash
 logfwd blackhole &
@@ -211,8 +211,8 @@ server:
 
 What's different from the earlier stages:
 
-- **`format: cri`** — Kubernetes container runtime format. logfwd strips the CRI prefix and reassembles multi-line logs via the `P` partial flag.
-- **`path: /var/log/pods/**/*.log`** — Recursive glob. logfwd discovers new files automatically and handles rotation.
+- **`format: cri`** — Kubernetes container runtime format. FastForward strips the CRI prefix and reassembles multi-line logs via the `P` partial flag.
+- **`path: /var/log/pods/**/*.log`** — Recursive glob. FastForward discovers new files automatically and handles rotation.
 - **`server.diagnostics`** — Exposes health checks, metrics, and pipeline status.
 
 ### Validate before deploying

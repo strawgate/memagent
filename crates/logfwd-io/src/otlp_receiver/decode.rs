@@ -14,6 +14,7 @@ use prost::Message;
 
 use crate::InputError;
 
+#[cfg(any(feature = "otlp-research", test))]
 use super::OtlpProtobufDecodeMode;
 use super::convert::{
     convert_request_to_batch, decode_protojson_bytes, hex, parse_protojson_f64,
@@ -73,6 +74,7 @@ pub(super) fn decode_otlp_protobuf(
     decode_otlp_protobuf_with_prost(body, resource_prefix)
 }
 
+#[cfg(any(feature = "otlp-research", test))]
 pub(super) fn decode_otlp_protobuf_bytes_with_mode(
     body: Bytes,
     resource_prefix: &str,
