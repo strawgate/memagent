@@ -737,6 +737,7 @@ pipelines:
     fs::remove_dir_all(&dir).expect("temp dir cleanup should succeed");
 }
 
+#[cfg(unix)]
 #[test]
 fn issue_2035_reject_file_output_when_parent_directory_is_read_only() {
     let dir = unique_temp_dir("readonly-parent");
@@ -770,6 +771,47 @@ pipelines:
     );
 
     fs::set_permissions(&dir, original_perms).expect("permissions reset should succeed");
+    fs::remove_dir_all(&dir).expect("temp dir cleanup should succeed");
+}
+
+#[test]
+fn issue_2035_reject_file_output_when_existing_file_is_read_only() {
+    let dir = unique_temp_dir("readonly-file");
+    fs::create_dir_all(&dir).expect("temp dir should be created");
+    let out_path = dir.join("out.ndjson");
+    fs::write(&out_path, b"existing content").expect("output file should be written");
+
+    let mut readonly_perms = fs::metadata(&out_path)
+        .expect("file metadata should be readable")
+        .permissions();
+    readonly_perms.set_readonly(true);
+    fs::set_permissions(&out_path, readonly_perms).expect("setting read-only should succeed");
+
+    let yaml = format!(
+        r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+    outputs:
+      - type: file
+        path: {}
+"#,
+        out_path.display()
+    );
+
+    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("file output path") && err.contains("read-only"),
+        "unexpected error: {err}"
+    );
+
+    // Reset permissions so cleanup can remove the file.
+    let mut writable_perms = fs::metadata(&out_path)
+        .expect("file metadata should be readable")
+        .permissions();
+    writable_perms.set_readonly(false);
+    fs::set_permissions(&out_path, writable_perms).expect("permissions reset should succeed");
     fs::remove_dir_all(&dir).expect("temp dir cleanup should succeed");
 }
 

@@ -1378,7 +1378,7 @@ fn validate_file_output_path_writable(
             parent.display()
         )));
     }
-    if parent_meta.permissions().readonly() {
+    if !resolved.exists() && parent_meta.permissions().readonly() {
         return Err(ConfigError::Validation(format!(
             "pipeline '{pipeline_name}' output '{output_label}': file output parent '{}' is read-only",
             parent.display()
