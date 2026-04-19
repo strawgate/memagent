@@ -1,6 +1,9 @@
 use logfwd_config::Config;
 use std::ffi::OsString;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 static ENV_LOCK: Mutex<()> = Mutex::new(());
 
@@ -30,6 +33,14 @@ impl Drop for EnvVarGuard {
 
 fn env_lock() -> MutexGuard<'static, ()> {
     ENV_LOCK.lock().expect("env lock should not be poisoned")
+}
+
+fn unique_temp_dir(prefix: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock should be after epoch")
+        .as_nanos();
+    std::env::temp_dir().join(format!("logfwd-{prefix}-{nanos}-{}", std::process::id()))
 }
 
 #[test]
@@ -646,6 +657,170 @@ pipelines:
         output_err.contains("duplicate output name 'out1'"),
         "unexpected error: {output_err}"
     );
+}
+
+#[test]
+fn issue_2035_reject_file_output_when_parent_directory_missing() {
+    let missing_parent = unique_temp_dir("missing-parent").join("child");
+    let out_path = missing_parent.join("out.ndjson");
+    let yaml = format!(
+        r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+    outputs:
+      - type: file
+        path: {}
+"#,
+        out_path.display()
+    );
+
+    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("file output parent directory") && err.contains("is not usable"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn issue_2035_reject_relative_file_output_when_base_parent_directory_missing() {
+    let base = unique_temp_dir("relative-base");
+    fs::create_dir_all(&base).expect("base dir should be created");
+    let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+    outputs:
+      - type: file
+        path: missing/out.ndjson
+"#;
+
+    let err = Config::load_str_with_base_path(yaml, Some(&base))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("file output parent directory") && err.contains("is not usable"),
+        "unexpected error: {err}"
+    );
+
+    fs::remove_dir_all(&base).expect("base dir cleanup should succeed");
+}
+
+#[test]
+fn issue_2035_reject_file_output_when_parent_path_is_file() {
+    let dir = unique_temp_dir("parent-file");
+    fs::create_dir_all(&dir).expect("temp dir should be created");
+    let parent_file = dir.join("not-a-dir");
+    fs::write(&parent_file, b"not a directory").expect("parent file should be written");
+    let out_path = parent_file.join("out.ndjson");
+    let yaml = format!(
+        r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+    outputs:
+      - type: file
+        path: {}
+"#,
+        out_path.display()
+    );
+
+    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("file output parent") && err.contains("is not a directory"),
+        "unexpected error: {err}"
+    );
+
+    fs::remove_dir_all(&dir).expect("temp dir cleanup should succeed");
+}
+
+#[test]
+fn issue_2035_reject_file_output_when_parent_directory_is_read_only() {
+    let dir = unique_temp_dir("readonly-parent");
+    fs::create_dir_all(&dir).expect("temp dir should be created");
+    let original_perms = fs::metadata(&dir)
+        .expect("temp dir metadata should be readable")
+        .permissions();
+    let mut readonly_perms = original_perms.clone();
+    readonly_perms.set_readonly(true);
+    fs::set_permissions(&dir, readonly_perms)
+        .expect("setting read-only permissions should succeed");
+
+    let out_path = dir.join("out.ndjson");
+    let yaml = format!(
+        r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+    outputs:
+      - type: file
+        path: {}
+"#,
+        out_path.display()
+    );
+
+    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("file output parent") && err.contains("read-only"),
+        "unexpected error: {err}"
+    );
+
+    fs::set_permissions(&dir, original_perms).expect("permissions reset should succeed");
+    fs::remove_dir_all(&dir).expect("temp dir cleanup should succeed");
+}
+
+#[test]
+fn issue_2035_reject_file_output_when_existing_path_is_directory() {
+    let dir = unique_temp_dir("output-is-dir");
+    let out_path = dir.join("capture.ndjson");
+    fs::create_dir_all(&out_path).expect("output directory should be created");
+    let yaml = format!(
+        r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+    outputs:
+      - type: file
+        path: {}
+"#,
+        out_path.display()
+    );
+
+    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("file output path") && err.contains("is a directory"),
+        "unexpected error: {err}"
+    );
+
+    fs::remove_dir_all(&dir).expect("temp dir cleanup should succeed");
+}
+
+#[test]
+fn issue_2035_accept_file_output_when_parent_directory_is_writable() {
+    let dir = unique_temp_dir("writable-parent");
+    fs::create_dir_all(&dir).expect("temp dir should be created");
+    let out_path = dir.join("out.ndjson");
+    let yaml = format!(
+        r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+    outputs:
+      - type: file
+        path: {}
+"#,
+        out_path.display()
+    );
+
+    Config::load_str(&yaml).expect("writable output parent should validate");
+
+    fs::remove_dir_all(&dir).expect("temp dir cleanup should succeed");
 }
 
 #[test]

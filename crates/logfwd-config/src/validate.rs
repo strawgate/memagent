@@ -1300,6 +1300,8 @@ impl Config {
                             )));
                         }
                     }
+
+                    validate_file_output_path_writable(name, &out_label, out_path, base_path)?;
                 }
 
                 Ok(())
@@ -1349,6 +1351,62 @@ fn normalize_path_key_for_compare(path: &Path) -> std::path::PathBuf {
     {
         normalized
     }
+}
+
+fn validate_file_output_path_writable(
+    pipeline_name: &str,
+    output_label: &str,
+    output_path: &str,
+    base_path: Option<&Path>,
+) -> Result<(), ConfigError> {
+    let resolved = path_for_config_compare(output_path, base_path);
+    let parent = match resolved.parent() {
+        Some(parent) if parent.as_os_str().is_empty() => Path::new("."),
+        Some(parent) => parent,
+        None => Path::new("."),
+    };
+
+    let parent_meta = parent.metadata().map_err(|e| {
+        ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' output '{output_label}': file output parent directory '{}' is not usable: {e}",
+            parent.display()
+        ))
+    })?;
+    if !parent_meta.is_dir() {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' output '{output_label}': file output parent '{}' is not a directory",
+            parent.display()
+        )));
+    }
+    if parent_meta.permissions().readonly() {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' output '{output_label}': file output parent '{}' is read-only",
+            parent.display()
+        )));
+    }
+
+    if resolved.exists() {
+        let md = resolved.metadata().map_err(|e| {
+            ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' output '{output_label}': failed to inspect file output path '{}': {e}",
+                resolved.display()
+            ))
+        })?;
+        if md.is_dir() {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' output '{output_label}': file output path '{}' is a directory",
+                resolved.display()
+            )));
+        }
+        if md.permissions().readonly() {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' output '{output_label}': file output path '{}' is read-only",
+                resolved.display()
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn path_for_config_compare(path: &str, base_path: Option<&Path>) -> std::path::PathBuf {

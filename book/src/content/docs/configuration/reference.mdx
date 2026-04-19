@@ -494,7 +494,7 @@ Write records to a file.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `path` | string | Yes | Destination file path. |
+| `path` | string | Yes | Destination file path. Parent directory must already exist and be writable. |
 | `format` | string | No | `json` for NDJSON output, or `text` to write raw lines. |
 
 ```yaml
