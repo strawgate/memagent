@@ -8,11 +8,11 @@ pub struct Logfwd;
 
 impl Agent for Logfwd {
     fn name(&self) -> &'static str {
-        "logfwd"
+        "ff"
     }
 
     fn binary_name(&self) -> &'static str {
-        "logfwd"
+        "ff"
     }
 
     fn download_url(&self, _os: &str, _arch: &str) -> Option<String> {
@@ -21,7 +21,7 @@ impl Agent for Logfwd {
     }
 
     fn write_config(&self, ctx: &BenchContext, scenario: Scenario) -> Result<PathBuf, String> {
-        let cfg_path = ctx.bench_dir.join("logfwd.yaml");
+        let cfg_path = ctx.bench_dir.join("ff.yaml");
         // Since the type-suffix redesign (#684), columns are only suffixed on
         // type conflict. With uniform test data, columns are unsuffixed.
         let transform = match scenario {

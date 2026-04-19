@@ -18,5 +18,5 @@ data:
 
     output:
       type: http
-      endpoint: http://blackhole-receiver.e2e-logfwd.svc.cluster.local:4318
+      endpoint: http://blackhole-receiver.e2e-ff.svc.cluster.local:4318
       format: json

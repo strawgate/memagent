@@ -6,8 +6,8 @@
 CLUSTER_NAME ?= log-collectors-bench
 
 build-logfwd:
-	docker build -t logfwd:latest .
-	kind load docker-image --name $(CLUSTER_NAME) logfwd:latest
+	docker build -t ff:latest .
+	kind load docker-image --name $(CLUSTER_NAME) ff:latest
 
 bench-up-logfwd: build-logfwd
 	kubectl create namespace collectors 2>/dev/null || true
@@ -22,7 +22,7 @@ bench-down-logfwd:
 
 # Quick test: verify the daemon starts and connects
 test-logfwd:
-	kubectl logs -n collectors -l app=logfwd --tail=20
+	kubectl logs -n collectors -l app=ff --tail=20
 
 # Full benchmark workflow (assumes VM benchmark repo is cloned at /tmp/vm-bench):
 #

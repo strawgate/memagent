@@ -337,7 +337,7 @@ fn main() {
         });
 
         // Find the logfwd binary.
-        let logfwd_resolved = available.iter().find(|r| r.agent.name() == "logfwd");
+        let logfwd_resolved = available.iter().find(|r| r.agent.name() == "ff");
 
         if let Some(resolved) = logfwd_resolved.filter(|r| r.binary.is_some()) {
             let binary = resolved.binary.as_ref().unwrap();
@@ -477,7 +477,7 @@ fn find_logfwd_binary() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    if let Ok(output) = process::Command::new("which").arg("logfwd").output()
+    if let Ok(output) = process::Command::new("which").arg("ff").output()
         && output.status.success()
     {
         let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
