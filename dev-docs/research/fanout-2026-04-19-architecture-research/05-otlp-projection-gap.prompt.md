@@ -1,5 +1,9 @@
 # Research: OTLP Receiver Projection — Measure Remaining Overhead and Cutover Criteria
 
+> **Status:** Completed
+> **Date:** 2026-04-19
+> **Context:** Architecture research fanout — workstream synthesis
+
 You are handling one workstream inside a larger architecture research fanout for the FastForward (formerly logfwd) log forwarder.
 
 ## Objective

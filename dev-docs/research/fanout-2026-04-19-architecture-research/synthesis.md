@@ -1,5 +1,9 @@
 # Architecture Research Synthesis
 
+> **Status:** Completed
+> **Date:** 2026-04-19
+> **Context:** Architecture research fanout — workstream synthesis
+
 > Five workstreams, 16 Codex Cloud attempts, one recommendation memo.
 > Fan-in from `fanout-manifest.json` (2026-04-19).
 
