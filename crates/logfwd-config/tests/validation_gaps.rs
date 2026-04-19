@@ -190,6 +190,40 @@ output:
 }
 
 #[test]
+fn issue_1855_block_scalar_mixed_indentation_expands_without_marker_leak() {
+    let _env_lock = env_lock();
+    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_BLOCK_FIELD", "message");
+
+    let yaml = r#"
+pipelines:
+  test:
+    transform: |
+      {
+        "${LOGFWD_ISSUE_1855_BLOCK_FIELD}"
+      }
+    inputs:
+      - type: generator
+    outputs:
+      - type: stdout
+"#;
+
+    let config = Config::load_str(yaml).expect("block scalar env placeholder should parse");
+    let transform = config.pipelines["test"]
+        .transform
+        .as_ref()
+        .expect("transform should be present");
+
+    assert!(
+        transform.contains(r#""message""#),
+        "unexpected transform: {transform}"
+    );
+    assert!(
+        !transform.contains("__LOGFWD_QEP_"),
+        "placeholder marker leaked into transform: {transform}"
+    );
+}
+
+#[test]
 fn issue_1855_single_quoted_yaml_escape_survives_placeholder_marking() {
     let yaml = r#"
 pipelines:
@@ -323,6 +357,27 @@ pipelines:
         err.contains("listen address '[0:0:0:0:0:0:0:1]:9000' duplicates"),
         "unexpected error: {err}"
     );
+}
+
+#[test]
+fn issue_1856_allow_duplicate_ephemeral_port_zero_for_same_transport() {
+    let yaml = r#"
+pipelines:
+  p1:
+    inputs:
+      - type: udp
+        listen: 127.0.0.1:0
+    outputs:
+      - type: stdout
+  p2:
+    inputs:
+      - type: udp
+        listen: 127.0.0.1:0
+    outputs:
+      - type: stdout
+"#;
+
+    Config::load_str(yaml).expect("port 0 asks the OS for distinct ephemeral ports");
 }
 
 #[test]

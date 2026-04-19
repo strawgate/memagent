@@ -1390,11 +1390,14 @@ fn track_listen_addr_uniqueness(
     input_label: &str,
     listen: &str,
 ) -> Result<(), ConfigError> {
-    let listen_key = canonical_listen_addr_key(transport, listen).map_err(|msg| {
+    let Some(listen_key) = canonical_listen_addr_key(transport, listen).map_err(|msg| {
         ConfigError::Validation(format!(
             "pipeline '{pipeline_name}' input '{input_label}': {msg}"
         ))
-    })?;
+    })?
+    else {
+        return Ok(());
+    };
     let current_ref = format!("pipeline '{pipeline_name}' input '{input_label}'");
     if let Some(previous_ref) = seen_listen_addrs.get(&listen_key) {
         return Err(ConfigError::Validation(format!(
@@ -1405,7 +1408,7 @@ fn track_listen_addr_uniqueness(
     Ok(())
 }
 
-fn canonical_listen_addr_key(transport: &str, listen: &str) -> Result<String, String> {
+fn canonical_listen_addr_key(transport: &str, listen: &str) -> Result<Option<String>, String> {
     let (host, port_str) = if listen.starts_with('[') {
         let close_bracket = listen
             .find(']')
@@ -1422,10 +1425,13 @@ fn canonical_listen_addr_key(transport: &str, listen: &str) -> Result<String, St
     let port = port_str
         .parse::<u16>()
         .map_err(|_| format!("'{listen}' has an invalid port '{port_str}'"))?;
-    Ok(format!(
+    if port == 0 {
+        return Ok(None);
+    }
+    Ok(Some(format!(
         "{transport}:{}:{port}",
         canonical_listen_host_key(host)
-    ))
+    )))
 }
 
 fn canonical_listen_host_key(host: &str) -> String {

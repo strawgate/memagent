@@ -314,16 +314,27 @@ fn is_inside_block_scalar(yaml: &str, line_start: usize) -> bool {
             if let Some(last_segment) = trimmed.split_whitespace().last()
                 && is_block_scalar_indicator(last_segment)
             {
-                return true;
+                return block_scalar_body_reaches_line(
+                    yaml,
+                    search_end + 1,
+                    line_start,
+                    prev_indent,
+                );
             }
             // Also check if the whole trimmed line ends with the indicator
             // (handles `key: |` where the last space-separated token is `|`).
             if is_block_scalar_indicator(trimmed) {
-                return true;
+                return block_scalar_body_reaches_line(
+                    yaml,
+                    search_end + 1,
+                    line_start,
+                    prev_indent,
+                );
             }
-            // Found a non-blank line with lower indentation that isn't a
-            // block indicator — we are not inside a block scalar.
-            return false;
+            // Mixed-indentation block bodies can include lines with lower
+            // indentation than the current line. Keep scanning upward; if we
+            // later find an indicator, validate that every intervening
+            // non-blank line remains indented beyond that indicator.
         }
 
         // Same or higher indentation: this line is a peer or content line,
@@ -335,6 +346,26 @@ fn is_inside_block_scalar(yaml: &str, line_start: usize) -> bool {
     }
 
     false
+}
+
+fn block_scalar_body_reaches_line(
+    yaml: &str,
+    body_start: usize,
+    line_start: usize,
+    indicator_indent: usize,
+) -> bool {
+    let mut cursor = body_start;
+    while cursor < line_start {
+        let line_end = yaml[cursor..line_start]
+            .find('\n')
+            .map_or(line_start, |idx| cursor + idx);
+        let line = &yaml[cursor..line_end];
+        if !line.trim().is_empty() && count_leading_spaces(line) <= indicator_indent {
+            return false;
+        }
+        cursor = line_end.saturating_add(1);
+    }
+    true
 }
 
 fn strip_yaml_inline_comment(line: &str) -> &str {
