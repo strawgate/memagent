@@ -177,6 +177,16 @@ fn expand_env_vars_in_yaml_value(
             }
         }
         Value::Tagged(tagged) => {
+            if tagged.tag == "str" || tagged.tag == "tag:yaml.org,2002:str" {
+                // An explicit string tag (!!str or !str) means the user
+                // wants a string value — expand env vars but skip coercion,
+                // then unwrap the tag so serde sees a plain string.
+                if let Value::String(text) = &mut tagged.value {
+                    let expanded = expand_env_vars(text)?;
+                    *value = Value::String(expanded);
+                    return Ok(());
+                }
+            }
             expand_env_vars_in_yaml_value(&mut tagged.value, quoted_placeholders)?;
         }
         _ => {}

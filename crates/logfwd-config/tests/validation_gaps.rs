@@ -121,6 +121,31 @@ output:
 }
 
 #[test]
+fn issue_1855_tagged_unquoted_env_expansion_preserves_string_scalars() {
+    let _env_lock = env_lock();
+    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_TAGGED_UNQUOTED", "123");
+
+    // An unquoted env placeholder with a !str tag should NOT be coerced to a
+    // number — the explicit string tag means the user wants a string value.
+    let yaml = r#"
+input:
+  type: file
+  path: !str ${LOGFWD_ISSUE_1855_TAGGED_UNQUOTED}
+output:
+  type: stdout
+"#;
+
+    let config = Config::load_str(yaml).expect("tagged unquoted env-backed string should parse");
+    let input = &config.pipelines["default"].inputs[0];
+    let path = match &input.type_config {
+        logfwd_config::InputTypeConfig::File(file) => file.path.as_str(),
+        _ => panic!("expected file input"),
+    };
+
+    assert_eq!(path, "123");
+}
+
+#[test]
 fn issue_1855_anchored_quoted_env_expansion_preserves_string_scalars() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_ANCHORED_PATH", "true");
