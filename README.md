@@ -1,45 +1,39 @@
-<p align="center">
-  <img src="assets/brand/readme-header.svg" alt="FastForward" width="600" />
-</p>
-
 # FastForward
 
-<p align="center">
-  <em>a blazing-fast log, metric & trace forwarder — built with rust</em>
-</p>
+<div align="center">
 
-> **Note:** The CLI binary is currently named `logfwd` and will be renamed to `ff` in a future release.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/brand/lockup-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="assets/brand/lockup-light.svg">
+  <img width="400" alt="FastForward" src="assets/brand/lockup-dark.svg">
+</picture>
 
-A Rust log forwarder that tails files, parses JSON and Kubernetes CRI logs with portable SIMD, transforms with SQL, and ships to any OTLP-compatible collector — at 1.7 million lines/second on a single ARM64 core.
+**a learning-oriented log forwarder built with Rust**
 
-```
-log files → SIMD parse → Arrow RecordBatch → DataFusion SQL → OTLP → your collector
-```
+[![Docs](https://img.shields.io/badge/docs-fastforward-D85A30)](https://strawgate.github.io/fastforward/)
+[![CI](https://github.com/strawgate/fastforward/actions/workflows/ci.yml/badge.svg)](https://github.com/strawgate/fastforward/actions/workflows/ci.yml)
+
+</div>
 
 ---
 
-## Quick Start
+FastForward is a research and learning project exploring how far you can push a log forwarding pipeline with modern Rust tooling. It tails files, parses JSON and CRI logs with portable SIMD, transforms with SQL, and ships to OTLP collectors.
 
-Try FastForward in 60 seconds — no collector, no infrastructure, just a terminal.
+The [documentation site](https://strawgate.github.io/fastforward/) has interactive guides that explain how each piece works — from SIMD parsing to backpressure to checkpoint ordering — with live simulations you can play with.
 
-**1. Install**
+> **Note:** The CLI is currently named `logfwd` and will be renamed to `ff` in a future release.
 
-```bash
-# Download the latest release (macOS Apple Silicon shown — see Install section for all platforms)
-curl -fsSL https://github.com/strawgate/memagent/releases/latest/download/logfwd-darwin-arm64 -o logfwd
-chmod +x logfwd
-
-# Or build from source (Rust 1.85+)
-cargo build --release -p logfwd && cp target/release/logfwd .
-```
-
-**2. Generate test data**
+## Try it
 
 ```bash
-./logfwd generate-json 100000 logs.json
-```
+# Build from source (Rust 1.89+)
+git clone https://github.com/strawgate/fastforward.git && cd fastforward
+cargo build --release -p logfwd
 
-**3. Create a pipeline**
+# Generate some test data and filter it with SQL
+./target/release/logfwd generate-json 100000 logs.json
+./target/release/logfwd run --config config.yaml
+```
 
 ```yaml
 # config.yaml
@@ -58,229 +52,47 @@ output:
   format: console
 ```
 
-**4. Run it**
+Only error records with slow durations make it through — everything else is filtered by the SQL transform.
 
-```bash
-./logfwd run --config config.yaml
+## What makes it interesting
+
+```text
+log files → SIMD parse → Arrow RecordBatch → DataFusion SQL → OTLP → your collector
 ```
 
-You'll see only the records that match your SQL filter:
-
-```
-ERROR  request handled GET /api/v2/products/10049  status=500 duration_ms=92
-ERROR  request handled POST /api/v1/orders/10121  status=503 duration_ms=78
-...
-```
-
-Only error records with slow durations made it through — everything else was filtered by the SQL transform. See the [Quick Start guide](book/src/content/docs/quick-start.mdx) to keep going.
-
----
-
-## Why FastForward?
-
-| What | How |
-|------|-----|
-| **Fast SIMD parsing** | One pass per buffer with portable SIMD — 10 broadcast-compare ops per 64-byte block, runs on x86_64 and ARM64 |
-| **Low-copy pipeline** | Apache Arrow `StringViewArray` stores views into the read buffer — string data isn't copied from scanner to RecordBatch |
-| **SQL transforms** | Every batch runs through a DataFusion SQL query. Filter, reshape, regex-extract, join enrichment tables — standard SQL |
-| **OTLP native** | Encodes directly to OTLP protobuf. Works with any OpenTelemetry Collector, Grafana Alloy, or OTLP-speaking backend |
-| **Kani-verified core** | The framer, aggregator, and OTLP wire-format code are verified with the [Kani model checker](https://github.com/model-checking/kani) — exhaustive bounded proofs that these paths cannot panic, overflow, or produce invalid output |
-| **Single static binary** | One statically-linked file (~15 MB). No JVM, no Python, no Lua, no runtime dependencies |
-
----
-
-## SQL Transforms
-
-The SQL transform is why you'd pick FastForward over a plain forwarder. Every parsed batch becomes a DataFusion table named `logs`.
-
-```sql
--- Forward only errors and slow requests
-SELECT level, message, duration_ms, status
-FROM logs
-WHERE level = 'ERROR' OR duration_ms > 1000
-```
-
-```sql
--- Extract fields with regex, rename columns
-SELECT
-  level,
-  regexp_extract(message, 'request_id=([a-f0-9-]+)', 1) AS request_id,
-  status
-FROM logs
-WHERE status >= 400
-```
-
-Built-in UDFs: `int()`, `float()`, `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`. The `geo_lookup()` UDF is also available when a geo-IP database is configured. See the [SQL Transforms guide](book/src/content/docs/configuration/sql-transforms.md).
-
----
-
-## Install
-
-```bash
-# Binary (pick your platform)
-#   logfwd-linux-amd64, logfwd-linux-arm64, logfwd-darwin-amd64, logfwd-darwin-arm64
-curl -fsSL https://github.com/strawgate/memagent/releases/latest/download/logfwd-linux-amd64 -o logfwd
-chmod +x logfwd
-sudo mv logfwd /usr/local/bin/
-
-# Docker
-docker run --rm -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
-  ghcr.io/strawgate/memagent:latest run --config /etc/logfwd/config.yaml
-
-# From source (requires Rust 1.85+)
-cargo build --release -p logfwd
-
-# Dev-only faster local build (no DataFusion SQL support)
-cargo build --release -p logfwd --no-default-features
-```
-
-See [Installation](book/src/content/docs/quick-start.mdx) for all platforms and options.
-
----
-
-## Configuration
-
-### Simple — one pipeline
-
-```yaml
-input:
-  type: file
-  path: /var/log/app/*.log
-  format: json
-
-transform: SELECT level, message, status FROM logs WHERE status >= 400
-
-output:
-  type: otlp
-  endpoint: http://otel-collector:4318/v1/logs
-  compression: zstd
-```
-
-### Advanced — multiple named pipelines
-
-```yaml
-pipelines:
-  errors:
-    inputs:
-      - type: file
-        path: /var/log/pods/**/*.log
-        format: cri
-    transform: SELECT * FROM logs WHERE level = 'ERROR'
-    outputs:
-      - type: otlp
-        endpoint: http://otel-collector:4318/v1/logs
-
-  debug:
-    inputs:
-      - type: file
-        path: /var/log/pods/**/*.log
-        format: cri
-    outputs:
-      - type: stdout
-        format: console
-```
-
-See the [Configuration Reference](book/src/content/docs/configuration/reference.mdx) for all YAML fields, input/output types, and enrichment tables.
-
-### Platform Sensors
-
-FastForward includes explicit sensor input lanes for all three major host platforms:
-
-- `linux_ebpf_sensor`
-- `macos_es_sensor`
-- `windows_ebpf_sensor`
-
-These inputs are platform-gated and emit Arrow-native sensor control/signal batches while
-deeper native sensor integrations are being brought online.
-
-```yaml
-input:
-  type: linux_ebpf_sensor
-  sensor:
-    poll_interval_ms: 2000
-    emit_signal_rows: true
-output:
-  type: stdout
-```
-
-See [Configuration Reference](book/src/content/docs/configuration/reference.mdx#input-types) for full status/details.
-
----
-
-## Kubernetes
-
-```bash
-kubectl apply -f deploy/daemonset.yml
-kubectl -n collectors rollout status daemonset/logfwd
-```
-
-Runs one FastForward pod per node, reads all container logs from `/var/log`. Typical resource use: ~128 MiB memory, 250m CPU at moderate log volume.
-
-See the [Deployment Guide](book/src/content/docs/deployment/kubernetes.md) for resource sizing, OTLP collector integration, and CRI log format details.
-
----
-
-## Output Destinations
-
-For current output support status, see the canonical tables in the
-[Configuration Reference](book/src/content/docs/configuration/reference.mdx#output-types). The
-README and task-oriented guides intentionally avoid duplicating status claims.
-
----
-
-## CLI Reference
-
-```
-logfwd run --config <file>               Run the pipeline
-logfwd validate --config <file>          Validate config and environment-dependent pipeline requirements
-logfwd dry-run --config <file>           Build and validate the pipeline without starting the runtime
-logfwd init                              Generate a starter config from built-in templates
-logfwd blackhole [bind_addr]             Start OTLP blackhole receiver for testing
-logfwd generate-json <n> <file>          Generate synthetic JSON log data
-logfwd effective-config [--config file]  Validate and print effective runnable config
-logfwd wizard                            Interactive config wizard
-logfwd completions <shell>               Generate shell completions (bash, zsh, fish, nushell, powershell, elvish)
-logfwd --version                         Print version
-```
-
-For ready-made starters, see [`examples/use-cases/`](examples/use-cases/README.md) (20 common app/source patterns).
-
----
+- **Portable SIMD parsing** — 10 broadcast-compare ops per 64-byte block, one pass per buffer, runs on x86_64 and ARM64
+- **Zero-copy Arrow pipeline** — `StringViewArray` stores views into the read buffer; string data isn't copied from scanner to RecordBatch
+- **SQL transforms** — every batch runs through a [DataFusion](https://datafusion.apache.org/) SQL query with built-in UDFs like `regexp_extract()`, `grok()`, and `geo_lookup()`
+- **Formal verification** — the parsing core is verified with [Kani](https://github.com/model-checking/kani) (bounded model checking), state machines with TLA+, and SIMD conformance with proptest
+- **Single static binary** — ~15 MB, no JVM, no Python, no runtime dependencies
 
 ## Documentation
 
-**Contributors (first stop)**
+The docs are the best way to understand FastForward:
 
-- Start at [dev-docs/README.md](dev-docs/README.md) for task routing and canonical engineering docs.
-- Use [CONTRIBUTING.md](CONTRIBUTING.md) for PR workflow and checks.
-- Use [DEVELOPING.md](DEVELOPING.md) for build/test/profiling loops.
+- **[Quick Start](https://strawgate.github.io/fastforward/quick-start/)** — install, run your first pipeline, ship logs
+- **[SQL Transforms](https://strawgate.github.io/fastforward/configuration/sql-transforms/)** — filter, reshape, extract, join
+- **[Configuration Reference](https://strawgate.github.io/fastforward/configuration/reference/)** — every YAML field, input/output type, UDF
 
-**Start here by goal**
+The "Understand It" section of the docs has interactive guides with live simulations:
 
-- Not sure where to begin: [Choose the Right Guide](book/src/content/docs/quick-start.mdx)
-- Run FastForward quickly: [Quick Start](book/src/content/docs/quick-start.mdx)
-- Build a safer production baseline: [Your First Pipeline](book/src/content/docs/deployment/docker.md)
-- Debug failures: [Troubleshooting](book/src/content/docs/troubleshooting.md)
+- **[Tailing](https://strawgate.github.io/fastforward/learn/tailing/)** — watch file rotation and truncation handling live
+- **[SIMD Scanner](https://strawgate.github.io/fastforward/learn/scanner/)** — step through JSON parsing, toggle field pushdown
+- **[Backpressure](https://strawgate.github.io/fastforward/learn/backpressure/)** — slow the output and watch pressure cascade back
+- **[Columnar Storage](https://strawgate.github.io/fastforward/learn/columnar/)** — row vs column layout, why Arrow makes SQL fast
+- **[Checkpoint Ordering](https://strawgate.github.io/fastforward/learn/checkpoints/)** — out-of-order ACKs and the committed watermark
 
-**User guides** — [book/src/content/docs/](book/src/content/docs/)
+## Contributing
 
-| Guide | Description |
-|-------|-------------|
-| [Choose the Right Guide](book/src/content/docs/quick-start.mdx) | Goal-based starting point for operators, contributors, and evaluators |
-| [Quick Start](book/src/content/docs/quick-start.mdx) | Working pipeline in 10 minutes with copy/paste commands |
-| [Your First Pipeline](book/src/content/docs/deployment/docker.md) | Production config with monitoring and validation |
-| [Configuration Reference](book/src/content/docs/configuration/reference.mdx) | All YAML fields, input/output types, SQL transforms, UDFs, enrichment |
-| [SQL Transforms](book/src/content/docs/configuration/sql-transforms.md) | DataFusion SQL examples, column naming, UDFs |
-| [Deployment](book/src/content/docs/deployment/kubernetes.md) | Kubernetes DaemonSet, Docker, resource sizing |
-| [Troubleshooting](book/src/content/docs/troubleshooting.md) | Common errors, debug mode, diagnostics API |
+This is a learning project — contributions, questions, and experiments are welcome.
 
-**Developer guides**
+- **[Quick Start for contributors](dev-docs/README.md)** — task routing and developer docs
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — PR process and pre-commit checks
+- **[DEVELOPING.md](DEVELOPING.md)** — build, test, lint, bench commands
 
-| Guide | Description |
-|-------|-------------|
-| [dev-docs/README.md](dev-docs/README.md) | Canonical developer-doc start page and task routing |
-| [DEVELOPING.md](DEVELOPING.md) | Build, test, lint, bench commands |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute — PR process, pre-commit checks |
-| [Architecture](dev-docs/ARCHITECTURE.md) | Pipeline data flow, SIMD stages, crate map |
-| [Design](dev-docs/DESIGN.md) | Vision, target architecture, decision records |
-| [Verification](dev-docs/VERIFICATION.md) | TLA+, Kani, proptest — tool selection, proof status |
+```bash
+just build    # release binary
+just test     # run tests
+just lint     # fmt + clippy + toml check
+just ci       # lint + test (run before pushing)
+```
