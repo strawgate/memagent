@@ -173,7 +173,7 @@ fn decode_otlp_logs_json(body: &[u8], resource_prefix: &str) -> Result<Vec<u8>, 
 
     for rl in resource_logs {
         // Collect resource attributes.
-        let mut resource_attrs: Vec<(String, String)> = Vec::new();
+        let mut resource_attrs: Vec<(String, &serde_json::Value)> = Vec::new();
         if let Some(attrs) = rl
             .get("resource")
             .and_then(|r| r.get("attributes"))
@@ -186,9 +186,7 @@ fn decode_otlp_logs_json(body: &[u8], resource_prefix: &str) -> Result<Vec<u8>, 
                 let Some(value) = kv.get("value") else {
                     continue;
                 };
-                if let Some(value) = json_any_value_to_string(value)? {
-                    resource_attrs.push((format!("{resource_prefix}{key}"), value));
-                }
+                resource_attrs.push((format!("{resource_prefix}{key}"), value));
             }
         }
 
@@ -281,8 +279,9 @@ fn decode_otlp_logs_json(body: &[u8], resource_prefix: &str) -> Result<Vec<u8>, 
                 }
 
                 for (key, value) in &resource_attrs {
-                    write_json_string_field(&mut out, key, value);
-                    out.push(b',');
+                    if write_json_any_value_field_from_json(&mut out, key, value)? {
+                        out.push(b',');
+                    }
                 }
 
                 // Write protocol fields BEFORE log record attributes so that
