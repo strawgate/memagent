@@ -9,7 +9,7 @@ use arrow::array::{
     Array, AsArray, BinaryArray, LargeBinaryArray, LargeStringArray, PrimitiveArray, StringArray,
     StringViewArray,
 };
-use arrow::datatypes::{DataType, Float64Type, Int64Type, UInt64Type};
+use arrow::datatypes::{DataType, Float64Type, Int64Type, UInt32Type, UInt64Type};
 use arrow::record_batch::RecordBatch;
 use arrow::util::display::array_value_to_string;
 use flate2::Compression as GzipLevel;
@@ -88,6 +88,28 @@ type ScopeKey<'a> = (Option<&'a str>, Option<&'a str>);
 
 /// Per-group state: resource key + scope key + byte-range spans of encoded log records.
 type ResourceGroup<'a> = (ResourceKey<'a>, ScopeKey<'a>, Vec<(usize, usize)>);
+
+#[derive(Clone, Copy)]
+enum FlagsArray<'a> {
+    Int64(&'a PrimitiveArray<Int64Type>),
+    UInt32(&'a PrimitiveArray<UInt32Type>),
+    UInt64(&'a PrimitiveArray<UInt64Type>),
+}
+
+impl FlagsArray<'_> {
+    #[inline]
+    fn value_u32(self, row: usize) -> Option<u32> {
+        match self {
+            FlagsArray::Int64(arr) => (!arr.is_null(row))
+                .then(|| arr.value(row))
+                .and_then(|raw| u32::try_from(raw).ok()),
+            FlagsArray::UInt32(arr) => (!arr.is_null(row)).then(|| arr.value(row)),
+            FlagsArray::UInt64(arr) => (!arr.is_null(row))
+                .then(|| arr.value(row))
+                .and_then(|raw| u32::try_from(raw).ok()),
+        }
+    }
+}
 
 impl OtlpSink {
     #[allow(clippy::too_many_arguments)]
@@ -588,48 +610,10 @@ impl OtlpSink {
                 let status = response.status();
 
                 if status.is_success() {
-                    // For gRPC, check grpc-status header — HTTP 200 can carry a
-                    // gRPC error in headers (trailers-only responses). (#1097)
-                    //
-                    // Note: reqwest does not surface HTTP/2 trailers from the
-                    // trailers frame, only from the initial HEADERS frame. This
-                    // catches trailers-only responses (the common error path for
-                    // OTLP collectors) but not normal headers→data→trailers flow.
                     if self.protocol == OtlpProtocol::Grpc
-                        && let Some(grpc_status) = response.headers().get("grpc-status")
+                        && let Some(send_result) = classify_grpc_status_headers(response.headers())
                     {
-                        let code = grpc_status
-                            .to_str()
-                            .unwrap_or("unknown")
-                            .trim()
-                            .parse::<u32>()
-                            .unwrap_or(2); // default to UNKNOWN
-                        if code != 0 {
-                            let msg = response
-                                .headers()
-                                .get("grpc-message")
-                                .and_then(|v| v.to_str().ok())
-                                .unwrap_or("")
-                                .to_string();
-                            // Classify gRPC status codes per gRPC spec:
-                            // Retryable: CANCELLED(1), DEADLINE_EXCEEDED(4),
-                            //   RESOURCE_EXHAUSTED(8), ABORTED(10), UNAVAILABLE(14)
-                            // Permanent: all others (INVALID_ARGUMENT, NOT_FOUND, etc.)
-                            return Ok(match code {
-                                1 | 4 | 10 | 14 => super::sink::SendResult::IoError(
-                                    io::Error::other(format!("gRPC error {code}: {msg}")),
-                                ),
-                                8 => {
-                                    // RESOURCE_EXHAUSTED → treat like 429
-                                    super::sink::SendResult::RetryAfter(Duration::from_secs(
-                                        DEFAULT_RETRY_AFTER_SECS,
-                                    ))
-                                }
-                                _ => super::sink::SendResult::Rejected(format!(
-                                    "gRPC error {code}: {msg}"
-                                )),
-                            });
-                        }
+                        return Ok(send_result);
                     }
                     self.stats.inc_lines(batch_rows);
                     self.stats.inc_bytes(self.encoder_buf.len() as u64);
@@ -661,6 +645,44 @@ impl OtlpSink {
             Err(e) => Err(io::Error::other(e.to_string())),
         }
     }
+}
+
+/// Classify gRPC application status from response headers.
+///
+/// OTLP/gRPC uses HTTP 200 for transport-level success and reports application errors
+/// in `grpc-status`/`grpc-message`.
+///
+/// Behavior:
+/// - Header-only or trailers-only responses where `grpc-status` is exposed in the initial
+///   header map are classified and returned.
+/// - Normal responses that send `grpc-status` only in the trailing headers are currently
+///   treated as transport success because reqwest does not expose HTTP/2 trailing headers
+///   via the response header map used here.
+fn classify_grpc_status_headers(
+    headers: &reqwest::header::HeaderMap,
+) -> Option<super::sink::SendResult> {
+    let grpc_status = headers.get("grpc-status")?;
+    let code = grpc_status
+        .to_str()
+        .unwrap_or("unknown")
+        .trim()
+        .parse::<u32>()
+        .unwrap_or(2); // default to UNKNOWN
+    if code == 0 {
+        return None;
+    }
+    let msg = headers
+        .get("grpc-message")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    Some(match code {
+        1 | 4 | 10 | 14 => {
+            super::sink::SendResult::IoError(io::Error::other(format!("gRPC error {code}: {msg}")))
+        }
+        8 => super::sink::SendResult::RetryAfter(Duration::from_secs(DEFAULT_RETRY_AFTER_SECS)),
+        _ => super::sink::SendResult::Rejected(format!("gRPC error {code}: {msg}")),
+    })
 }
 
 impl super::sink::Sink for OtlpSink {
@@ -898,7 +920,7 @@ struct BatchColumns<'a> {
     /// Downcast array for the `span_id` column (16 hex chars → 8-byte OTLP field 10).
     span_id_col: Option<(usize, OtlpStrCol<'a>)>,
     /// Downcast array for the `flags` / `trace_flags` column (uint32, OTLP field 8).
-    flags_col: Option<(usize, &'a PrimitiveArray<Int64Type>)>,
+    flags_col: Option<(usize, FlagsArray<'a>)>,
     /// Severity number column (Int64, OTLP severity_number).
     severity_num_col: Option<(usize, &'a PrimitiveArray<Int64Type>)>,
     /// Observed timestamp column (Int64, nanoseconds).
@@ -931,7 +953,7 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, message_field: &str) -> Bat
     let mut body_col: Option<(usize, OtlpStrCol<'_>)> = None;
     let mut trace_id_col: Option<(usize, OtlpStrCol<'_>)> = None;
     let mut span_id_col: Option<(usize, OtlpStrCol<'_>)> = None;
-    let mut flags_col: Option<(usize, &PrimitiveArray<Int64Type>)> = None;
+    let mut flags_col: Option<(usize, FlagsArray<'_>)> = None;
     // Column indices to exclude from attributes.
     let mut excluded = vec![false; schema.fields().len()];
 
@@ -990,11 +1012,19 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, message_field: &str) -> Bat
                 name,
                 field_names::TRACE_FLAGS,
                 field_names::TRACE_FLAGS_VARIANTS,
-            ) && flags_col.is_none()
-                && matches!(field.data_type(), DataType::Int64) =>
+            ) && flags_col.is_none() =>
             {
-                flags_col = Some((idx, batch.column(idx).as_primitive::<Int64Type>()));
-                excluded[idx] = true;
+                let col = batch.column(idx);
+                let resolved = match field.data_type() {
+                    DataType::Int64 => Some(FlagsArray::Int64(col.as_primitive::<Int64Type>())),
+                    DataType::UInt32 => Some(FlagsArray::UInt32(col.as_primitive::<UInt32Type>())),
+                    DataType::UInt64 => Some(FlagsArray::UInt64(col.as_primitive::<UInt64Type>())),
+                    _ => None,
+                };
+                if let Some(flags_arr) = resolved {
+                    flags_col = Some((idx, flags_arr));
+                    excluded[idx] = true;
+                }
             }
             name if name == message_field
                 || field_names::matches_any(
@@ -1341,12 +1371,9 @@ fn encode_row_as_log_record(
     // Clamp to u32 range: negative or >u32::MAX values are invalid per the
     // W3C Trace Context spec (only 8 bits are defined). (#1121)
     if let Some((_, arr)) = columns.flags_col
-        && !arr.is_null(row)
+        && let Some(flags) = arr.value_u32(row)
     {
-        let raw = arr.value(row);
-        if let Ok(flags) = u32::try_from(raw) {
-            encode_fixed32(buf, otlp::LOG_RECORD_FLAGS, flags);
-        }
+        encode_fixed32(buf, otlp::LOG_RECORD_FLAGS, flags);
     }
 
     // LogRecord.trace_id (bytes, 16 bytes) — hex-decoded from 32-char string column
@@ -1649,6 +1676,9 @@ fn write_grpc_frame(buf: &mut Vec<u8>, payload: &[u8], compressed: bool) -> io::
     buf.extend_from_slice(payload);
     Ok(())
 }
+
+#[cfg(test)]
+mod otlp_sink_correctness_tests;
 
 #[cfg(test)]
 mod tests {

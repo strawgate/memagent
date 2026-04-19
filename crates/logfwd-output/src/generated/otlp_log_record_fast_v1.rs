@@ -83,11 +83,8 @@ pub(super) fn encode_row_as_log_record_fast_v1(
     }
 
     if let Some((_, arr)) = columns.flags_col
-        && !arr.is_null(row) {
-            let raw = arr.value(row);
-            if let Ok(flags) = u32::try_from(raw) {
-                encode_fixed32(buf, otlp::LOG_RECORD_FLAGS, flags);
-            }
+        && let Some(flags) = arr.value_u32(row) {
+            encode_fixed32(buf, otlp::LOG_RECORD_FLAGS, flags);
         }
 
     if let Some((_, arr)) = columns.trace_id_col.as_ref()
