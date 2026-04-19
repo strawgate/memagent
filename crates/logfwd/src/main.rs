@@ -745,7 +745,7 @@ fn cmd_effective_config(config_path: Option<&str>) -> Result<(), CliError> {
 
     let config_yaml = std::fs::read_to_string(&config_path)
         .map_err(|e| CliError::Config(format!("cannot read {config_path}: {e}")))?;
-    let effective_yaml = logfwd_config::Config::expand_env_str(&config_yaml)
+    let effective_yaml = logfwd_config::Config::expand_env_yaml_str(&config_yaml)
         .map_err(|e| CliError::Config(e.to_string()))?;
 
     // Read-only validation for inspection flows: reject configs that would

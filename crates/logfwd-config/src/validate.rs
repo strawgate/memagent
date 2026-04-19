@@ -1219,6 +1219,7 @@ impl Config {
                             // Resolve globs against base_path so relative glob
                             // patterns compare correctly with resolved output paths.
                             let resolved = path_for_config_compare(p, base_path);
+                            let resolved = normalize_path_key_for_compare(&resolved);
                             glob_input_patterns.push(resolved.to_string_lossy().into_owned());
                         } else {
                             let pb = path_for_config_compare(p, base_path);
@@ -1266,7 +1267,7 @@ impl Config {
                     }
 
                     // Check if the output path could match any glob input pattern.
-                    let resolved_out_path = out_pb.to_string_lossy();
+                    let resolved_out_path = out_norm.to_string_lossy();
                     for glob_pattern in &glob_input_patterns {
                         if is_glob_match_possible(glob_pattern, &resolved_out_path) {
                             return Err(ConfigError::Validation(format!(
