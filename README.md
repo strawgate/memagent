@@ -2,6 +2,8 @@
   <img src="assets/brand/readme-header.svg" alt="FastForward" width="600" />
 </p>
 
+# FastForward
+
 <p align="center">
   <em>a blazing-fast log, metric & trace forwarder — built with rust</em>
 </p>

@@ -116,7 +116,7 @@ kubectl -n collectors exec "$POD" -- nslookup otel-collector
 2. Wrong namespace-qualified service name.
    - Use full in-cluster DNS name when needed.
 3. Network policy blocking egress.
-   - Allow traffic from FastForward namespace to collector service.
+   - Allow traffic from the `collectors` namespace to the collector service.
 
 ### Verify fix
 
@@ -177,7 +177,7 @@ Stage times should be stable, with no sudden sustained growth in output time.
 2. Excessive transform complexity.
    - Simplify query or split into named pipelines.
 3. Node resource pressure.
-   - Increase CPU/memory requests for FastForward DaemonSet.
+   - Increase CPU/memory requests for the `logfwd` DaemonSet.
 
 ### Verify fix
 
