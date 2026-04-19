@@ -782,6 +782,10 @@ mod verification {
         kani::assume(cp1 <= cp2);
         kani::assume(cp2 <= cp3);
         kani::cover!(
+            cp1 == cp2 || cp2 == cp3,
+            "non-strict checkpoint ordering boundary covered"
+        );
+        kani::cover!(
             cp1 < cp2 && cp2 < cp3,
             "strictly increasing checkpoints covered"
         );
