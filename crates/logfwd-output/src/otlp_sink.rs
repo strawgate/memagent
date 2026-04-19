@@ -1322,7 +1322,7 @@ fn encode_row_as_log_record(
         if arr.is_null(row) {
             severity_num as u64
         } else {
-            u64::try_from(arr.value(row)).unwrap_or(severity_num as u64)
+            u64::try_from(arr.value(row)).unwrap_or(0)
         }
     } else {
         severity_num as u64
@@ -2707,6 +2707,39 @@ mod tests {
             lr.severity_number, 17,
             "null severity_number column must fall back to parsed level"
         );
+    }
+
+    #[test]
+    fn negative_severity_number_encodes_unspecified() {
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("level", DataType::Utf8, true),
+            Field::new(field_names::SEVERITY_NUMBER, DataType::Int64, true),
+            Field::new("message", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("ERROR")])),
+                Arc::new(Int64Array::from(vec![Some(-1)])),
+                Arc::new(StringArray::from(vec![Some("broken")])),
+            ],
+        )
+        .expect("valid batch");
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode output");
+        let lr = &request.resource_logs[0].scope_logs[0].log_records[0];
+        assert_eq!(
+            lr.severity_number, 0,
+            "negative severity_number must not wrap or inherit level severity"
+        );
+        assert_eq!(lr.severity_text, "ERROR");
     }
 
     #[test]
