@@ -889,16 +889,16 @@ use std::sync::Arc;
 /// * `n` — number of rows to generate
 /// * `start_counter` — first event counter value (rows use `start_counter..start_counter+n`)
 /// * `timestamp_config` — timestamp base and step
-/// * `message_template` — raw (un-escaped) message template, or `None` for
-///   default `"{method} {path}/{id} {status}"`. When the JSON generator uses a
-///   pre-escaped template for embedding in JSON strings, this function expects
-///   the **decoded** form — the value the scanner would extract after
-///   un-escaping the JSON string.
+/// * `message_template` — raw (un-escaped) message template as a `&str`, or
+///   `None` for default `"{method} {path}/{id} {status}"`. When the JSON
+///   generator uses a pre-escaped template for embedding in JSON strings, this
+///   function expects the **decoded** form — the value the scanner would extract
+///   after un-escaping the JSON string.
 pub fn generate_arrow_batch(
     n: usize,
     start_counter: u64,
     timestamp_config: &GeneratorTimestamp,
-    message_template: Option<&[u8]>,
+    message_template: Option<&str>,
 ) -> RecordBatch {
     let mut ts_builder = StringBuilder::with_capacity(n, n * 24);
     let mut level_builder = StringBuilder::with_capacity(n, n * 5);
@@ -913,7 +913,7 @@ pub fn generate_arrow_batch(
     let mut msg_buf = Vec::with_capacity(64);
 
     for i in 0..n {
-        let counter = start_counter + i as u64;
+        let counter = start_counter.wrapping_add(i as u64);
         // Pass None as template to compute_log_fields so the message is
         // built via write_message_value's default formatting path. When
         // the caller provides a raw template, we write it directly.
@@ -932,12 +932,14 @@ pub fn generate_arrow_batch(
 
         // Message — reuse buffer
         msg_buf.clear();
-        if let Some(raw_tmpl) = message_template {
-            msg_buf.extend_from_slice(raw_tmpl);
+        if let Some(tmpl) = message_template {
+            msg_buf.extend_from_slice(tmpl.as_bytes());
         } else {
             write_message_value(&mut msg_buf, &fields);
         }
-        // SAFETY: write_message_value produces only ASCII (method, path, id, status)
+        // SAFETY: both paths produce valid UTF-8:
+        // - message_template is `&str`, guaranteed valid UTF-8
+        // - write_message_value writes only ASCII (method, path, id, status)
         message_builder.append_value(unsafe { std::str::from_utf8_unchecked(&msg_buf) });
 
         // Integer fields as Int64 (matching scanner's append_int_by_idx → Int64Array)
@@ -1090,7 +1092,7 @@ mod tests {
             start: u64,
             n: usize,
             ts_config: &GeneratorTimestamp,
-            raw_template: Option<&[u8]>,
+            raw_template: Option<&str>,
             label: &str,
         ) {
             // Arrow path: raw (un-escaped) template
@@ -1099,10 +1101,7 @@ mod tests {
             // JSON path: needs pre-escaped template for JSON embedding
             let escaped_template: Option<Vec<u8>> = raw_template.map(|raw| {
                 let mut buf = Vec::with_capacity(raw.len() + 4);
-                write_json_escaped_string_contents(
-                    &mut buf,
-                    std::str::from_utf8(raw).expect("raw template must be valid UTF-8"),
-                );
+                write_json_escaped_string_contents(&mut buf, raw);
                 buf
             });
             let escaped_slice = escaped_template.as_deref();
@@ -1154,8 +1153,8 @@ mod tests {
             use_template in proptest::bool::ANY,
         )| {
             let ts_config = GeneratorTimestamp { start_epoch_ms, step_ms };
-            let template_bytes: Vec<u8> = b"GET /api/test 200".to_vec();
-            let template = if use_template { Some(template_bytes.as_slice()) } else { None };
+            let template_str = "GET /api/test 200";
+            let template = if use_template { Some(template_str) } else { None };
             let label = format!("proptest(start={start},n={n},epoch={start_epoch_ms},step={step_ms},tmpl={use_template})");
             run_comparison(start, n, &ts_config, template, &label);
         });
@@ -1187,7 +1186,7 @@ mod tests {
             0,
             50,
             &GeneratorTimestamp::default(),
-            Some(b"hello \"world\" \n\t\\end" as &[u8]),
+            Some("hello \"world\" \n\t\\end"),
             "special_chars_template",
         );
     }
@@ -2306,23 +2305,26 @@ mod tests {
     /// Throughput comparison: Arrow-direct vs JSON→Scanner.
     ///
     /// Not a Criterion bench — just a quick sanity check that the Arrow path
-    /// is significantly faster. Run with `--release --nocapture` to see numbers.
+    /// is significantly faster. Run with `--release --nocapture -- --ignored` to see numbers.
+    ///
+    /// Ignored by default: wall-clock assertions are inherently flaky under CI
+    /// load. Run manually to verify performance claims.
     #[test]
+    #[ignore = "wall-clock speedup assertion is flaky under CI load"]
     fn arrow_vs_json_throughput() {
         use logfwd_arrow::Scanner;
         use logfwd_core::scan_config::ScanConfig;
         use std::time::Instant;
 
         let ts_config = GeneratorTimestamp::default();
-        let message_template: Option<Vec<u8>> = None;
+        let message_template: Option<&str> = None;
         let n = 10_000;
         let rounds = 5;
 
         // Arrow-direct path
         let start = Instant::now();
         for r in 0..rounds {
-            let batch =
-                generate_arrow_batch(n, (r * n) as u64, &ts_config, message_template.as_deref());
+            let batch = generate_arrow_batch(n, (r * n) as u64, &ts_config, message_template);
             std::hint::black_box(&batch);
         }
         let arrow_elapsed = start.elapsed();
@@ -2342,7 +2344,7 @@ mod tests {
                     counter,
                     &ts_config,
                     GeneratorComplexity::Simple,
-                    message_template.as_deref(),
+                    message_template.map(|s| s.as_bytes()),
                 )
                 .expect("valid counter");
                 write_log_fields_json(&mut json_buf, &fields);

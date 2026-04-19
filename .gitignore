@@ -18,6 +18,7 @@ crates/logfwd-io/src/dashboard-dist/
 *.env
 .env
 es-flamegraph.svg
+flamegraph.svg
 
 # Build artifacts in sub-crates
 **/target/
