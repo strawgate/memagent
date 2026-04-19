@@ -249,17 +249,17 @@ import { createSimulation } from './highway-sim.mjs';
   }
 
   // ---- Per-car visual state ----
-  // Velocity chase: each car tracks screen-space (x, y, vx, vy, angle)
-  // and accelerates toward the sim's target position. Velocity always
-  // points at the target, so cars can never move backward.
+  // Path-space tracking: each car tracks distance `d` along its SVG path
+  // and a 1D `speed` along that path. Screen position is derived from
+  // posAt(segment, d) every frame, so cars always follow the road.
   const carEls = {};
-  const carVis = {}; // { x, y, vx, vy, angle, fadeAge }
+  const carVis = {}; // { d, speed, seg, angle, fadeAge }
 
-  const MAX_SPEED = 4;        // max visual speed (px/frame)
+  const MAX_SPEED = 4;        // max visual speed (path px/frame)
   const ACCEL = 0.5;          // acceleration per frame
   const DECEL_DIST = 30;      // start decelerating within this distance
   const SNAP_DIST = 0.5;      // snap to target when this close
-  const ANGLE_RATE = 0.2;     // angle follow speed
+  const ANGLE_RATE = 0.25;    // angle follow speed (slightly faster for curves)
   const FADE_IN_FRAMES = 12;  // ~300ms fade-in at 40fps
   const JUNCTION_PAD = 8;     // visual padding at segment endpoints (path px)
 
@@ -327,15 +327,9 @@ import { createSimulation } from './highway-sim.mjs';
 
     carsG.appendChild(g);
     carEls[car.id] = { g: g, body: body };
-    const ip = posAt(car.segment, car.targetD);
     const ia = angleAt(car.segment, car.targetD);
-    // Spawn with forward velocity so cars appear already in motion
-    const fp = posAt(car.segment, Math.min(car.targetD + 5, lenMap[car.segment]));
-    const dvx = fp.x - ip.x;
-    const dvy = fp.y - ip.y;
-    const dlen = Math.sqrt(dvx * dvx + dvy * dvy) || 1;
-    const initSpeed = 2;
-    carVis[car.id] = { x: ip.x, y: ip.y, vx: dvx / dlen * initSpeed, vy: dvy / dlen * initSpeed, angle: ia, fadeAge: 0 };
+    // Init at path position with forward speed so car appears already moving
+    carVis[car.id] = { d: car.targetD, speed: 2, seg: car.segment, angle: ia, fadeAge: 0 };
   }
 
   function removeCarEl(id) {
@@ -353,51 +347,54 @@ import { createSimulation } from './highway-sim.mjs';
     const vis = carVis[car.id];
     if (!vis) return;
 
-    // Target position with visual padding at segment endpoints
-    const seg = car.segment;
-    const segLen = lenMap[seg];
-    const rawD = Math.min(Math.max(0, car.targetD), segLen);
-    const paddedD = segLen > 0
-      ? JUNCTION_PAD + (rawD / segLen) * Math.max(0, segLen - 2 * JUNCTION_PAD)
-      : rawD;
-    const tp = posAt(seg, paddedD);
-    const ta = angleAt(seg, paddedD);
-
-    // Velocity chase: always accelerate toward target, never away
-    const dx = tp.x - vis.x;
-    const dy = tp.y - vis.y;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-
-    if (dist < SNAP_DIST) {
-      vis.x = tp.x; vis.y = tp.y; vis.vx = 0; vis.vy = 0;
-    } else {
-      const dirX = dx / dist;
-      const dirY = dy / dist;
-      // Decelerate when close, full speed when far
-      const desired = Math.min(MAX_SPEED, (dist / DECEL_DIST) * MAX_SPEED);
-      const curSpeed = Math.sqrt(vis.vx * vis.vx + vis.vy * vis.vy);
-      let newSpeed;
-      if (curSpeed < desired) {
-        newSpeed = Math.min(curSpeed + ACCEL, desired);
-      } else {
-        newSpeed = Math.max(curSpeed - ACCEL * 2, desired);
-      }
-      vis.vx = dirX * newSpeed;
-      vis.vy = dirY * newSpeed;
-      vis.x += vis.vx;
-      vis.y += vis.vy;
-      // Anti-overshoot: if we passed the target, snap
-      const nd = Math.sqrt((tp.x - vis.x) * (tp.x - vis.x) + (tp.y - vis.y) * (tp.y - vis.y));
-      if (nd > dist) { vis.x = tp.x; vis.y = tp.y; vis.vx = 0; vis.vy = 0; }
+    // Handle segment transition — paths connect at junctions
+    if (vis.seg !== car.segment) {
+      vis.seg = car.segment;
+      vis.d = car.targetD;
+      vis.speed = Math.max(vis.speed, 1); // maintain momentum through junction
     }
 
+    // 1D velocity chase along the path
+    const targetD = car.targetD;
+    const gap = targetD - vis.d;
+
+    if (Math.abs(gap) < SNAP_DIST) {
+      vis.d = targetD;
+      vis.speed = 0;
+    } else {
+      // Desired speed: decelerate when close, full speed when far
+      const desired = Math.min(MAX_SPEED, (Math.abs(gap) / DECEL_DIST) * MAX_SPEED);
+      if (vis.speed < desired) {
+        vis.speed = Math.min(vis.speed + ACCEL, desired);
+      } else {
+        vis.speed = Math.max(vis.speed - ACCEL * 2, desired);
+      }
+      vis.d += vis.speed * (gap > 0 ? 1 : -1);
+      // Anti-overshoot: if we passed the target, snap
+      if ((gap > 0 && vis.d > targetD) || (gap < 0 && vis.d < targetD)) {
+        vis.d = targetD;
+        vis.speed = 0;
+      }
+    }
+
+    // Clamp to path bounds
+    const segLen = lenMap[vis.seg];
+    vis.d = Math.max(0, Math.min(vis.d, segLen));
+
+    // Convert path d to screen position with junction padding
+    const paddedD = segLen > 0
+      ? JUNCTION_PAD + (vis.d / segLen) * Math.max(0, segLen - 2 * JUNCTION_PAD)
+      : vis.d;
+    const sp = posAt(vis.seg, paddedD);
+    const sa = angleAt(vis.seg, paddedD);
+
     // Smooth angle follow (with wraparound)
-    let da = ta - vis.angle;
+    let da = sa - vis.angle;
     while (da > 180) da -= 360;
     while (da < -180) da += 360;
     vis.angle += da * ANGLE_RATE;
 
-    el.g.setAttribute('transform', 'translate(' + vis.x.toFixed(1) + ',' + vis.y.toFixed(1) + ') rotate(' + vis.angle.toFixed(1) + ')');
+    el.g.setAttribute('transform', 'translate(' + sp.x.toFixed(1) + ',' + sp.y.toFixed(1) + ') rotate(' + vis.angle.toFixed(1) + ')');
 
     // Fade-in: during fade, always show flow color (car appears already moving)
     vis.fadeAge = Math.min(1, (vis.fadeAge || 0) + 1 / FADE_IN_FRAMES);
