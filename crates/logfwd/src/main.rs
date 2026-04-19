@@ -685,7 +685,7 @@ fn build_stdin_send_config_yaml(
     merge_send_resource_attrs(mapping, service, resources)?;
 
     if has_outputs {
-        rewrite_send_config_with_outputs(mapping, input)?;
+        rewrite_send_config_with_outputs(mapping, input);
     } else {
         mapping.insert(yaml_string("input"), serde_yaml_ng::Value::Mapping(input));
     }
@@ -696,7 +696,7 @@ fn build_stdin_send_config_yaml(
 fn rewrite_send_config_with_outputs(
     mapping: &mut serde_yaml_ng::Mapping,
     input: serde_yaml_ng::Mapping,
-) -> Result<(), CliError> {
+) {
     let outputs = mapping
         .remove(yaml_string("outputs"))
         .expect("internal invariant violated: `ff send` rewrite requires top-level `outputs`");
@@ -723,7 +723,6 @@ fn rewrite_send_config_with_outputs(
         yaml_string("pipelines"),
         serde_yaml_ng::Value::Mapping(pipelines),
     );
-    Ok(())
 }
 
 fn merge_send_resource_attrs(
