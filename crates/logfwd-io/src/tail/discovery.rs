@@ -137,8 +137,13 @@ impl FileDiscovery {
                     .file
                     .metadata()
                     .is_ok_and(|meta| has_metadata_indicating_deletion(&meta));
+                let previous_identity = FileIdentity {
+                    device: tailed.identity.device,
+                    inode: tailed.identity.inode,
+                    fingerprint: tailed.comparison_fingerprint,
+                };
                 should_rotate_file(
-                    &tailed.identity,
+                    &previous_identity,
                     &current_identity,
                     is_previous_handle_deleted,
                     tailed.fingerprint_len,
@@ -317,6 +322,7 @@ mod tests {
                     inode: 222,
                     fingerprint: 333,
                 },
+                comparison_fingerprint: 333,
                 fingerprint_len: 1024,
                 offset: 7,
                 path: path.clone(),
@@ -366,6 +372,68 @@ mod tests {
         assert!(
             !appended_text.contains("old replaced content"),
             "historical content must remain skipped"
+        );
+    }
+
+    #[test]
+    fn detect_changes_uses_promoted_fingerprint_window_after_short_file_grows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("promoted.log");
+        fs::write(&path, b"LINE-00000000\n").unwrap();
+
+        let mut reader = FileReader {
+            config: TailConfig {
+                start_from_end: false,
+                fingerprint_bytes: 32,
+                poll_interval_ms: 10,
+                glob_rescan_interval_ms: 0,
+                ..Default::default()
+            },
+            ..test_reader()
+        };
+        reader.open_file_at(&path, false).unwrap();
+        assert!(matches!(
+            reader.read_new_data(&path).expect("initial read"),
+            super::super::reader::ReadResult::Data(_)
+        ));
+
+        {
+            let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+            f.write_all(b"LINE-00000001\nLINE-00000002\n").unwrap();
+        }
+        assert!(matches!(
+            reader.read_new_data(&path).expect("growth read"),
+            super::super::reader::ReadResult::Data(_)
+        ));
+
+        let tailed = reader.files.get(&path).expect("tailed file");
+        assert_eq!(tailed.fingerprint_len, 32);
+        let source_id = tailed.identity.source_id();
+
+        fs::write(&path, b"LINE-00000000\nrewritten-after-promoted-window\n").unwrap();
+
+        let (watcher, rx) = test_watcher();
+        let discovery = FileDiscovery {
+            watcher,
+            watched_dirs: HashSet::new(),
+            glob_patterns: Vec::new(),
+            watch_paths: vec![path.clone()],
+            fs_events: rx,
+            last_glob_rescan: Instant::now(),
+        };
+
+        let mut events = Vec::new();
+        let had_error = discovery.detect_changes(&mut reader, &mut events);
+        assert!(!had_error, "detect_changes should succeed");
+        assert!(
+            events.iter().any(|event| matches!(
+                event,
+                TailEvent::Rotated {
+                    path: event_path,
+                    source_id: event_source_id,
+                } if event_path == &path && *event_source_id == Some(source_id)
+            )),
+            "rewrite preserving the original short prefix should still rotate after fingerprint promotion"
         );
     }
 
@@ -479,6 +547,7 @@ mod tests {
         reader.files.insert(
             path.clone(),
             TailedFile {
+                comparison_fingerprint: stale_identity.fingerprint,
                 identity: stale_identity,
                 fingerprint_len: 1024,
                 file,
