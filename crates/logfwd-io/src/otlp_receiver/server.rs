@@ -321,12 +321,33 @@ fn decode_with_reusable_projected_decoder(
     let decoder_pool = state.projected_decoders.as_ref().ok_or_else(|| {
         ProjectedDecodeError::Internal("projected decoder pool not initialized".to_string())
     })?;
-    let mut decoder = decoder_pool.next().lock().map_err(|_| {
-        ProjectedDecodeError::Internal("projected decoder lock poisoned".to_string())
-    })?;
-    decoder
-        .try_decode_view_bytes(body)
-        .map_err(ProjectedDecodeError::Projection)
+    let mut saw_poisoned_shard = false;
+    for _ in 0..decoder_pool.len() {
+        let Some(shard) = decoder_pool.next() else {
+            break;
+        };
+        let mut decoder = match shard.decoder.lock() {
+            Ok(decoder) => decoder,
+            Err(_) => {
+                saw_poisoned_shard = true;
+                shard.mark_unavailable();
+                continue;
+            }
+        };
+        return decoder
+            .try_decode_view_bytes(body)
+            .map_err(ProjectedDecodeError::Projection);
+    }
+
+    if saw_poisoned_shard {
+        Err(ProjectedDecodeError::Internal(
+            "all projected decoder shards are poisoned or unavailable".to_string(),
+        ))
+    } else {
+        Err(ProjectedDecodeError::Internal(
+            "projected decoder pool has no available shards".to_string(),
+        ))
+    }
 }
 
 #[cfg(any(feature = "otlp-research", test))]
@@ -401,6 +422,7 @@ mod tests {
         let poison_result = catch_unwind(AssertUnwindSafe(|| {
             let _guard = decoder_pool
                 .first()
+                .decoder
                 .lock()
                 .expect("initial lock should succeed");
             panic!("poison projected decoder");
@@ -415,30 +437,80 @@ mod tests {
     }
 
     #[test]
+    fn projected_decoder_pool_caps_requested_shards() {
+        let pool = ProjectedDecoderPool::new(field_names::DEFAULT_RESOURCE_PREFIX, usize::MAX);
+        assert_eq!(pool.len(), super::super::MAX_PROJECTED_DECODER_SHARDS);
+    }
+
+    #[test]
     fn projected_decoder_pool_round_robins_shards() {
         let pool = ProjectedDecoderPool::new(field_names::DEFAULT_RESOURCE_PREFIX, 2);
-        let first = pool.next();
-        let second = pool.next();
-        let third = pool.next();
+        let first = pool.next().expect("first shard should be available");
+        let second = pool.next().expect("second shard should be available");
+        let third = pool.next().expect("first shard should be selected again");
 
         assert!(!std::ptr::eq(first, second));
         assert!(std::ptr::eq(first, third));
     }
 
     #[test]
-    fn projected_decoder_poison_is_internal_error() {
+    fn projected_decoder_pool_skips_unavailable_shards() {
+        let pool = ProjectedDecoderPool::new(field_names::DEFAULT_RESOURCE_PREFIX, 2);
+        let first = pool.next().expect("first shard should be available");
+        first.mark_unavailable();
+        let second = pool.next().expect("second shard should be available");
+        let third = pool.next().expect("second shard should remain available");
+
+        assert!(!std::ptr::eq(first, second));
+        assert!(std::ptr::eq(second, third));
+    }
+
+    #[test]
+    fn single_projected_decoder_poison_is_internal_error() {
         let state = projected_only_state(1024);
         poison_projected_decoder_lock(&state);
 
         match decode_otlp_protobuf_request_blocking(Vec::new(), &state) {
             Err(OtlpRequestDecodeError::Internal(msg)) => {
-                assert!(msg.contains("projected decoder lock poisoned"));
+                assert!(msg.contains("all projected decoder shards are poisoned"));
             }
             Err(OtlpRequestDecodeError::Payload(_)) => {
                 panic!("poisoned decoder lock must not be reported as a payload error");
             }
             Ok(_) => panic!("poisoned decoder lock must fail"),
         }
+    }
+
+    #[test]
+    fn projected_decoder_poisoned_shard_is_removed_from_rotation_without_failing_request() {
+        let (tx, _rx) = mpsc::sync_channel(1);
+        let state = OtlpServerState {
+            tx,
+            is_running: Arc::new(AtomicBool::new(true)),
+            health: Arc::new(AtomicU8::new(ComponentHealth::Healthy.as_repr())),
+            resource_prefix: field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
+            protobuf_decode_mode: OtlpProtobufDecodeMode::ProjectedOnly,
+            protobuf_decode_permits: Arc::new(Semaphore::new(1)),
+            projected_decoders: Some(ProjectedDecoderPool::new(
+                field_names::DEFAULT_RESOURCE_PREFIX,
+                2,
+            )),
+            stats: None,
+            max_message_size_bytes: 1024,
+        };
+        poison_projected_decoder_lock(&state);
+
+        let first = decode_otlp_protobuf_request_blocking(Vec::new(), &state);
+        assert!(
+            first.is_ok(),
+            "request should retry against a healthy shard after disabling the poisoned shard"
+        );
+
+        let second = decode_otlp_protobuf_request_blocking(Vec::new(), &state);
+        assert!(
+            second.is_ok(),
+            "subsequent request should skip the poisoned shard"
+        );
     }
 
     #[test]

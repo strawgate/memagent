@@ -96,16 +96,32 @@ struct ReceiverPayload {
 
 #[cfg(any(feature = "otlp-research", test))]
 struct ProjectedDecoderPool {
-    decoders: Box<[Mutex<ProjectedOtlpDecoder>]>,
+    decoders: Box<[ProjectedDecoderShard]>,
     next_decoder: AtomicUsize,
+}
+
+/// One reusable projected decoder in the pool.
+///
+/// The decoder mutex protects reusable builder/scratch state. `is_available`
+/// lets selection skip a shard after lock poisoning is observed, avoiding
+/// intermittent reuse of a permanently poisoned decoder.
+#[cfg(any(feature = "otlp-research", test))]
+struct ProjectedDecoderShard {
+    /// Reusable projected decoder state for one shard.
+    decoder: Mutex<ProjectedOtlpDecoder>,
+    /// True while the shard may be selected by round-robin decode traffic.
+    is_available: AtomicBool,
 }
 
 #[cfg(any(feature = "otlp-research", test))]
 impl ProjectedDecoderPool {
     fn new(resource_prefix: &str, shard_count: usize) -> Self {
-        let shard_count = shard_count.max(1);
+        let shard_count = shard_count.clamp(1, MAX_PROJECTED_DECODER_SHARDS);
         let decoders = (0..shard_count)
-            .map(|_| Mutex::new(ProjectedOtlpDecoder::new(resource_prefix)))
+            .map(|_| ProjectedDecoderShard {
+                decoder: Mutex::new(ProjectedOtlpDecoder::new(resource_prefix)),
+                is_available: AtomicBool::new(true),
+            })
             .collect::<Vec<_>>()
             .into_boxed_slice();
         Self {
@@ -114,19 +130,34 @@ impl ProjectedDecoderPool {
         }
     }
 
-    fn next(&self) -> &Mutex<ProjectedOtlpDecoder> {
-        let index = self.next_decoder.fetch_add(1, Ordering::Relaxed) % self.decoders.len();
-        &self.decoders[index]
+    fn next(&self) -> Option<&ProjectedDecoderShard> {
+        let len = self.decoders.len();
+        let start_index = self.next_decoder.fetch_add(1, Ordering::Relaxed);
+        for offset in 0..len {
+            let index = start_index.wrapping_add(offset) % len;
+            let shard = &self.decoders[index];
+            if shard.is_available.load(Ordering::Acquire) {
+                return Some(shard);
+            }
+        }
+        None
     }
 
     #[cfg(test)]
-    fn first(&self) -> &Mutex<ProjectedOtlpDecoder> {
+    fn first(&self) -> &ProjectedDecoderShard {
         &self.decoders[0]
     }
 
-    #[cfg(test)]
     fn len(&self) -> usize {
         self.decoders.len()
+    }
+}
+
+#[cfg(any(feature = "otlp-research", test))]
+impl ProjectedDecoderShard {
+    /// Remove this shard from future selection after a poison/error boundary.
+    fn mark_unavailable(&self) {
+        self.is_available.store(false, Ordering::Release);
     }
 }
 

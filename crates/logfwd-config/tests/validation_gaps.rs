@@ -44,7 +44,7 @@ output:
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
-        err.contains("config deserialization error at"),
+        err.contains("config deserialization error"),
         "error should include a deserialization path: {err}"
     );
     assert!(err.contains("output"), "error should name output: {err}");
@@ -68,7 +68,7 @@ pipelines:
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
-        err.contains("config deserialization error at"),
+        err.contains("config deserialization error"),
         "error should include a deserialization path: {err}"
     );
     assert!(
@@ -84,7 +84,222 @@ pipelines:
 }
 
 #[test]
-fn issue_1855_env_expansion_preserves_yaml_hash_content() {
+fn raw_yaml_number_for_string_field_is_rejected() {
+    let yaml = r#"
+input:
+  type: file
+  path: 123
+output:
+  type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("config deserialization error"),
+        "error should come from deserialization: {err}"
+    );
+    assert!(
+        err.contains("string"),
+        "error should expect a string: {err}"
+    );
+}
+
+#[test]
+fn raw_yaml_bool_for_string_field_is_rejected() {
+    let yaml = r#"
+input:
+  type: http
+  listen: 127.0.0.1:8080
+  http:
+    path: true
+output:
+  type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("config deserialization error"),
+        "error should come from deserialization: {err}"
+    );
+    assert!(
+        err.contains("string"),
+        "error should expect a string: {err}"
+    );
+}
+
+#[test]
+fn raw_yaml_bool_for_numeric_field_is_rejected() {
+    let yaml = r#"
+pipelines:
+  app:
+    workers: true
+    inputs:
+      - type: generator
+    outputs:
+      - type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("config deserialization error"),
+        "error should come from deserialization: {err}"
+    );
+    assert!(
+        err.contains("unsigned integer"),
+        "error should expect an unsigned integer: {err}"
+    );
+}
+
+#[test]
+fn raw_yaml_float_for_integer_field_is_rejected() {
+    let yaml = r#"
+pipelines:
+  app:
+    workers: 1.5
+    inputs:
+      - type: generator
+    outputs:
+      - type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("config deserialization error"),
+        "error should come from deserialization: {err}"
+    );
+    assert!(
+        err.contains("unsigned integer"),
+        "error should expect an unsigned integer: {err}"
+    );
+}
+
+#[test]
+fn raw_yaml_number_for_bool_field_is_rejected() {
+    let yaml = r#"
+input:
+  type: http
+  listen: 127.0.0.1:8080
+  http:
+    strict_path: 1
+output:
+  type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("config deserialization error"),
+        "error should come from deserialization: {err}"
+    );
+    assert!(
+        err.contains("boolean"),
+        "error should expect a boolean: {err}"
+    );
+}
+
+#[test]
+fn top_level_dotted_yaml_key_is_rejected_as_unknown_field() {
+    let yaml = r#"
+server.log_level: debug
+input:
+  type: generator
+output:
+  type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("unknown field"),
+        "dotted YAML key should remain literal and be rejected: {err}"
+    );
+    assert!(
+        err.contains("server.log_level"),
+        "error should name the literal dotted key: {err}"
+    );
+}
+
+#[test]
+fn generator_attribute_scalar_types_are_preserved() {
+    let yaml = r#"
+input:
+  type: generator
+  generator:
+    profile: record
+    attributes:
+      count: 7
+      enabled: true
+      label: "7"
+output:
+  type: stdout
+"#;
+
+    let config = Config::load_str(yaml).expect("generator attributes should parse");
+    let input = &config.pipelines["default"].inputs[0];
+    let attributes = match &input.type_config {
+        logfwd_config::InputTypeConfig::Generator(generator) => generator
+            .generator
+            .as_ref()
+            .expect("generator config should be present")
+            .attributes
+            .clone(),
+        _ => panic!("expected generator input"),
+    };
+
+    assert!(matches!(
+        attributes["count"],
+        logfwd_config::GeneratorAttributeValueConfig::Integer(7)
+    ));
+    assert!(matches!(
+        attributes["enabled"],
+        logfwd_config::GeneratorAttributeValueConfig::Bool(true)
+    ));
+    assert!(matches!(
+        attributes["label"],
+        logfwd_config::GeneratorAttributeValueConfig::String(ref value) if value == "7"
+    ));
+}
+
+#[test]
+fn env_generator_attribute_values_remain_strings() {
+    let _env_lock = env_lock();
+    let _count = EnvVarGuard::set("LOGFWD_ISSUE_1855_GENERATOR_COUNT", "7");
+    let _enabled = EnvVarGuard::set("LOGFWD_ISSUE_1855_GENERATOR_ENABLED", "true");
+
+    let yaml = r#"
+input:
+  type: generator
+  generator:
+    profile: record
+    attributes:
+      count: ${LOGFWD_ISSUE_1855_GENERATOR_COUNT}
+      enabled: ${LOGFWD_ISSUE_1855_GENERATOR_ENABLED}
+output:
+  type: stdout
+"#;
+
+    let config = Config::load_str(yaml).expect("generator attributes should parse");
+    let input = &config.pipelines["default"].inputs[0];
+    let attributes = match &input.type_config {
+        logfwd_config::InputTypeConfig::Generator(generator) => generator
+            .generator
+            .as_ref()
+            .expect("generator config should be present")
+            .attributes
+            .clone(),
+        _ => panic!("expected generator input"),
+    };
+
+    assert!(matches!(
+        attributes["count"],
+        logfwd_config::GeneratorAttributeValueConfig::String(ref value) if value == "7"
+    ));
+    assert!(matches!(
+        attributes["enabled"],
+        logfwd_config::GeneratorAttributeValueConfig::String(ref value) if value == "true"
+    ));
+}
+
+#[test]
+fn env_expansion_preserves_yaml_hash_content() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855", "/var/log/my app #1.log");
 
@@ -107,7 +322,7 @@ output:
 }
 
 #[test]
-fn issue_1855_effective_yaml_preserves_yaml_hash_content() {
+fn effective_yaml_preserves_yaml_hash_content() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_EFFECTIVE", "/var/log/my app #1.log");
 
@@ -137,7 +352,7 @@ output:
 }
 
 #[test]
-fn issue_1855_env_expansion_preserves_non_string_scalars() {
+fn env_numeric_string_is_parsed_by_typed_schema() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_WORKERS", "4");
 
@@ -151,12 +366,70 @@ pipelines:
       - type: stdout
 "#;
 
-    let config = Config::load_str(yaml).expect("config should parse env-backed numeric scalar");
+    let config = Config::load_str(yaml).expect("config should parse env-backed numeric string");
     assert_eq!(config.pipelines["test"].workers, Some(4));
+
+    let expanded = Config::expand_env_yaml_str(yaml).expect("env expansion should succeed");
+    let expanded_value: serde_yaml_ng::Value =
+        serde_yaml_ng::from_str(&expanded).expect("expanded YAML should parse");
+    assert_eq!(
+        expanded_value["pipelines"]["test"]["workers"].as_str(),
+        Some("4"),
+        "env substitution should produce string data, not YAML numbers"
+    );
 }
 
 #[test]
-fn issue_1855_quoted_env_expansion_preserves_string_scalars() {
+fn env_bool_string_is_parsed_by_typed_schema() {
+    let _env_lock = env_lock();
+    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_STRICT_PATH", "false");
+
+    let yaml = r#"
+input:
+  type: http
+  listen: 127.0.0.1:8080
+  http:
+    strict_path: ${LOGFWD_ISSUE_1855_STRICT_PATH}
+output:
+  type: stdout
+"#;
+
+    let config = Config::load_str(yaml).expect("config should parse env-backed bool");
+    let input = &config.pipelines["default"].inputs[0];
+    let strict_path = match &input.type_config {
+        logfwd_config::InputTypeConfig::Http(http) => {
+            http.http.as_ref().and_then(|config| config.strict_path)
+        }
+        _ => panic!("expected http input"),
+    };
+
+    assert_eq!(strict_path, Some(false));
+}
+
+#[test]
+fn env_bool_string_is_parsed_by_shared_tls_schema() {
+    let _env_lock = env_lock();
+    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_TLS_SKIP_VERIFY", "true");
+
+    let yaml = r#"
+input:
+  type: generator
+output:
+  type: otlp
+  endpoint: http://127.0.0.1:4318
+  tls:
+    insecure_skip_verify: ${LOGFWD_ISSUE_1855_TLS_SKIP_VERIFY}
+"#;
+
+    let config = Config::load_str(yaml).expect("config should parse env-backed TLS bool");
+    let output = &config.pipelines["default"].outputs[0];
+    let tls = output.tls.as_ref().expect("TLS config should be present");
+
+    assert!(tls.insecure_skip_verify);
+}
+
+#[test]
+fn quoted_env_expansion_preserves_string_scalars() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_QUOTED_PATH", "1234");
 
@@ -179,7 +452,7 @@ output:
 }
 
 #[test]
-fn issue_1855_tagged_quoted_env_expansion_preserves_string_scalars() {
+fn tagged_quoted_env_expansion_preserves_string_scalars() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_TAGGED_PATH", "true");
 
@@ -202,12 +475,12 @@ output:
 }
 
 #[test]
-fn issue_1855_tagged_unquoted_env_expansion_preserves_string_scalars() {
+fn tagged_unquoted_env_expansion_preserves_string_scalars() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_TAGGED_UNQUOTED", "123");
 
-    // An unquoted env placeholder with a !str tag should NOT be coerced to a
-    // number — the explicit string tag means the user wants a string value.
+    // Env substitution already produces string data; the explicit string tag
+    // should preserve that behavior.
     let yaml = r#"
 input:
   type: file
@@ -227,7 +500,83 @@ output:
 }
 
 #[test]
-fn issue_1855_anchored_quoted_env_expansion_preserves_string_scalars() {
+fn explicit_string_yaml_tag_preserves_string_field() {
+    let yaml = r#"
+input:
+  type: file
+  path: !!str 123
+output:
+  type: stdout
+"#;
+
+    let config = Config::load_str(yaml).expect("explicit string tag should parse as string");
+    let input = &config.pipelines["default"].inputs[0];
+    let path = match &input.type_config {
+        logfwd_config::InputTypeConfig::File(file) => file.path.as_str(),
+        _ => panic!("expected file input"),
+    };
+
+    assert_eq!(path, "123");
+}
+
+#[test]
+fn non_string_core_yaml_tag_for_string_field_is_rejected() {
+    let yaml = r#"
+input:
+  type: file
+  path: !!int "123"
+output:
+  type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("config deserialization error"),
+        "error should come from deserialization: {err}"
+    );
+    assert!(
+        err.contains("string"),
+        "error should expect a string: {err}"
+    );
+}
+
+#[test]
+fn custom_yaml_tag_for_string_field_is_rejected() {
+    let yaml = r#"
+input:
+  type: file
+  path: !custom "123"
+output:
+  type: stdout
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("unsupported explicit YAML tag"),
+        "error should reject unsupported explicit tags: {err}"
+    );
+}
+
+#[test]
+fn custom_yaml_tag_for_mapping_key_is_rejected() {
+    let yaml = r#"
+input:
+  type: generator
+output:
+  type: stdout
+resource_attrs:
+  !custom key: value
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("unsupported explicit YAML tag"),
+        "error should reject unsupported explicit mapping-key tags: {err}"
+    );
+}
+
+#[test]
+fn anchored_quoted_env_expansion_preserves_string_scalars() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_ANCHORED_PATH", "true");
 
@@ -250,7 +599,7 @@ output:
 }
 
 #[test]
-fn issue_1855_mixed_quoted_and_unquoted_env_uses_node_context() {
+fn mixed_env_uses_schema_for_types_and_strings_for_string_fields() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_MIXED", "4");
 
@@ -266,7 +615,7 @@ pipelines:
       - type: stdout
 "#;
 
-    let config = Config::load_str(yaml).expect("mixed env-backed scalars should parse");
+    let config = Config::load_str(yaml).expect("mixed env-backed values should parse");
 
     assert_eq!(config.pipelines["test"].workers, Some(4));
     assert_eq!(
@@ -276,7 +625,7 @@ pipelines:
 }
 
 #[test]
-fn issue_1855_plain_scalar_apostrophe_is_not_treated_as_quote_boundary() {
+fn plain_scalar_apostrophe_is_not_treated_as_quote_boundary() {
     let yaml = r#"
 input:
   type: file
@@ -296,7 +645,7 @@ output:
 }
 
 #[test]
-fn issue_1855_block_scalar_mixed_indentation_expands_without_marker_leak() {
+fn block_scalar_mixed_indentation_expands() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_BLOCK_FIELD", "message");
 
@@ -323,14 +672,10 @@ pipelines:
         transform.contains(r#""message""#),
         "unexpected transform: {transform}"
     );
-    assert!(
-        !transform.contains("__LOGFWD_QEP_"),
-        "placeholder marker leaked into transform: {transform}"
-    );
 }
 
 #[test]
-fn issue_1855_single_quoted_yaml_escape_survives_placeholder_marking() {
+fn single_quoted_yaml_escape_survives_env_expansion() {
     let yaml = r#"
 pipelines:
   test:
@@ -351,7 +696,7 @@ pipelines:
 }
 
 #[test]
-fn issue_1855_env_expanded_mapping_key_collision_is_rejected() {
+fn env_expanded_mapping_key_collision_is_rejected() {
     let _env_lock = env_lock();
     let _env_a = EnvVarGuard::set("LOGFWD_ISSUE_1855_KEY_A", "prod");
     let _env_b = EnvVarGuard::set("LOGFWD_ISSUE_1855_KEY_B", "prod");
@@ -377,7 +722,7 @@ pipelines:
 }
 
 #[test]
-fn issue_1855_env_expansion_applies_to_mapping_keys() {
+fn env_expansion_applies_to_mapping_keys() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_PIPELINE", "from-env");
 

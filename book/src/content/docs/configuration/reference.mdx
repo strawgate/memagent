@@ -983,7 +983,11 @@ storage:
 
 ## Environment variable substitution
 
-Any value in the config file can reference an environment variable with `${VAR}`:
+Any value in the config file can reference an environment variable with `${VAR}`.
+Variable names must start with an ASCII letter or `_`, and then contain only
+ASCII letters, digits, or `_`. `$VAR` stays literal, and default expressions
+such as `${VAR:fallback}` are rejected because `:` is not valid in variable
+names.
 
 ```yaml
 output:
@@ -995,9 +999,13 @@ server:
 ```
 
 If the variable is not set, config loading fails fast with a validation error.
+An unterminated reference such as `${VAR` is preserved literally so existing
+config text is not rewritten accidentally; completed placeholders before that
+literal tail are still expanded.
 
-Exact unquoted placeholders use YAML scalar typing after expansion. This lets numeric
-and boolean fields read values directly from the environment:
+Environment variables are expanded as string data. The typed config schema then
+parses those strings into the field type, so numeric and boolean fields can read
+values directly from the environment without treating the env value as YAML:
 
 ```yaml
 pipelines:
@@ -1005,13 +1013,13 @@ pipelines:
     workers: ${LOGFWD_WORKERS}
 ```
 
-Quote a placeholder, or tag it with `!!str`, when the expanded value should remain
-a string even if it looks like a YAML number, boolean, or null:
+String fields remain strings even when the expanded value looks like a YAML
+number, boolean, or null:
 
 ```yaml
 input:
   type: file
-  path: "${LOG_PATH}"
+  path: ${LOG_PATH}
 ```
 
 Placeholders embedded inside longer strings always remain strings:

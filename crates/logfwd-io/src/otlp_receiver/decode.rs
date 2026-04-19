@@ -563,7 +563,7 @@ mod tests {
         match err {
             InputError::Io(io_err) => {
                 assert_eq!(io_err.kind(), io::ErrorKind::InvalidData);
-                assert_eq!(io_err.to_string(), "payload too large");
+                assert!(io_err.to_string().contains("payload too large"));
             }
             other => panic!("expected InvalidData payload-too-large error, got {other:?}"),
         }
@@ -579,7 +579,7 @@ mod tests {
         match err {
             InputError::Io(io_err) => {
                 assert_eq!(io_err.kind(), io::ErrorKind::InvalidData);
-                assert_eq!(io_err.to_string(), "payload too large");
+                assert!(io_err.to_string().contains("payload too large"));
             }
             other => panic!("expected InvalidData payload-too-large error, got {other:?}"),
         }

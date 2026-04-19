@@ -21,6 +21,7 @@ Point-in-time investigations that informed architecture decisions.
 
 - [checkpoint-snapshot-design.md](checkpoint-snapshot-design.md)
 - [columnar-batch-builder.md](columnar-batch-builder.md)
+- [config-library-poc-2026-04-19.md](config-library-poc-2026-04-19.md)
 - [crate-restructure-plan.md](crate-restructure-plan.md)
 - [elasticsearch-retry-contract-2026-04-18.md](elasticsearch-retry-contract-2026-04-18.md)
 - [file-tailing-audit.md](file-tailing-audit.md)

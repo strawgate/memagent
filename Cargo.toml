@@ -55,6 +55,7 @@ chrono = { version = "0.4.44", default-features = false }
 clap = "4.5"
 clap_complete = "4.5"
 clap_complete_nushell = "4.6"
+config = { version = "0.15.22", default-features = false }
 arrow-json = "58"
 datafusion = { version = "53", default-features = false, features = [
     "sql",
@@ -76,7 +77,6 @@ opentelemetry-otlp = { version = "0.31", default-features = false, features = [
 ] }
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
-serde_path_to_error = "0.1"
 sonic-rs = "0.5"
 tokio = { version = "1" }
 tracing = "0.1"
@@ -101,6 +101,7 @@ csv = "1"
 flate2 = "1"
 wasm-bindgen = "0.2"
 js-sys = "0.3"
+varsubst = { version = "0.0.1", default-features = false }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
