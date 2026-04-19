@@ -1,9 +1,9 @@
 ---
 title: "Troubleshooting"
-description: "Symptom-based triage for common logfwd issues"
+description: "Symptom-based triage for common FastForward issues"
 ---
 
-Use this page when logfwd is running but results are wrong, incomplete, or unstable.
+Use this page when FastForward is running but results are wrong, incomplete, or unstable.
 Start with the symptom table, run the exact checks, and compare expected output before changing config.
 
 :::tip[Before you start]
@@ -116,7 +116,7 @@ kubectl -n collectors exec "$POD" -- nslookup otel-collector
 2. Wrong namespace-qualified service name.
    - Use full in-cluster DNS name when needed.
 3. Network policy blocking egress.
-   - Allow traffic from logfwd namespace to collector service.
+   - Allow traffic from the `collectors` namespace to the collector service.
 
 ### Verify fix
 
@@ -177,7 +177,7 @@ Stage times should be stable, with no sudden sustained growth in output time.
 2. Excessive transform complexity.
    - Simplify query or split into named pipelines.
 3. Node resource pressure.
-   - Increase CPU/memory requests for logfwd DaemonSet.
+   - Increase CPU/memory requests for the `logfwd` DaemonSet.
 
 ### Verify fix
 

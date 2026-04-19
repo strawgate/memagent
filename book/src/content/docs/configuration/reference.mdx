@@ -1,15 +1,15 @@
 ---
 title: "Configuration Reference"
-description: "Complete YAML reference for all logfwd settings"
+description: "Complete YAML reference for all FastForward settings"
 ---
 
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-logfwd commands that operate on pipeline config (for example `run`, `validate`, `dry-run`, and `effective-config`) accept a YAML file via `--config <config.yaml>`.
+FastForward commands that operate on pipeline config (for example `run`, `validate`, `dry-run`, and `effective-config`) accept a YAML file via `--config <config.yaml>`.
 
 ## Overview
 
-logfwd supports two layout styles:
+FastForward supports two layout styles:
 
 - **Simple** — single pipeline with top-level `input`, `transform`, and `output` keys.
 - **Advanced** — multiple named pipelines under a `pipelines` map.
@@ -907,7 +907,7 @@ server:
 
 ## Diagnostics API
 
-When `server.diagnostics` is configured, logfwd exposes an HTTP API for monitoring and troubleshooting.
+When `server.diagnostics` is configured, FastForward exposes an HTTP API for monitoring and troubleshooting.
 
 | Route | Method | Description |
 |-------|--------|-------------|
@@ -917,7 +917,7 @@ When `server.diagnostics` is configured, logfwd exposes an HTTP API for monitori
 | `/admin/v1/status` | GET | Canonical rich status payload with live/ready state, component health, and per-pipeline counters. |
 | `/admin/v1/stats` | GET | Aggregate process stats (uptime, RSS, CPU, aggregate line counts). |
 | `/admin/v1/config` | GET | Currently loaded YAML configuration and its file path (disabled by default; enable with `LOGFWD_UNSAFE_EXPOSE_CONFIG=1`). May expose sensitive values; do not enable in shared or production environments unless strictly required. |
-| `/admin/v1/logs` | GET | Recent log lines from logfwd's own stderr (ring buffer). |
+| `/admin/v1/logs` | GET | Recent log lines from FastForward's own stderr (ring buffer). |
 | `/admin/v1/history` | GET | Time-series data (1-hour window) for dashboard charts. |
 | `/admin/v1/traces` | GET | Recent batch processing spans for detailed latency analysis. |
 
@@ -930,7 +930,7 @@ batch footprint or the post-decompression payload size.
 
 ## Storage configuration
 
-The optional `storage` block controls where logfwd persists state (checkpoints, disk
+The optional `storage` block controls where FastForward persists state (checkpoints, disk
 queue).
 
 | Field | Type | Default | Description |

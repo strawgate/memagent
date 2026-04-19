@@ -86,6 +86,7 @@ proptest = "1"
 proptest-state-machine = "0.8"
 serial_test = "3"
 tempfile = "3.27.0"
+tower = { version = "0.5", features = ["util"] }
 ureq = "3"
 
 [lints]

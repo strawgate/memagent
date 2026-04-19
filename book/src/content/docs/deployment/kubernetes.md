@@ -1,9 +1,9 @@
 ---
 title: "Kubernetes Deployment"
-description: "Deploy logfwd as a DaemonSet with OTLP forwarding"
+description: "Deploy FastForward as a DaemonSet with OTLP forwarding"
 ---
 
-This page is the Kubernetes-specific production deployment guide for logfwd.
+This page is the Kubernetes-specific production deployment guide for FastForward.
 For standalone container usage, see [Docker deployment](/deployment/docker/).
 
 :::tip[Production safe defaults]
@@ -21,8 +21,8 @@ These defaults prioritize stability and debuggability over premature optimizatio
 
 ## DaemonSet
 
-A DaemonSet is the recommended way to deploy logfwd in a Kubernetes cluster. Each
-node runs one logfwd pod that reads container logs from `/var/log` on the host.
+A DaemonSet is the recommended way to deploy FastForward in a Kubernetes cluster. Each
+node runs one FastForward pod that reads container logs from `/var/log` on the host.
 
 A ready-to-use manifest is provided at `deploy/daemonset.yml`.
 
@@ -219,7 +219,7 @@ query the endpoint directly in your monitoring stack.
 
 ## OTLP collector integration
 
-logfwd sends log records as OTLP protobuf. Any OpenTelemetry-compatible collector
+FastForward sends log records as OTLP protobuf. Any OpenTelemetry-compatible collector
 can receive them.
 
 ### OpenTelemetry Collector
@@ -249,7 +249,7 @@ service:
       exporters: [debug, otlphttp/loki]
 ```
 
-Point logfwd at the collector:
+Point FastForward at the collector:
 
 ```yaml
 output:
@@ -268,7 +268,7 @@ Grafana Alloy can receive OTLP logs and forward them to Loki or Tempo. Configure
 
 ## Resource sizing guidelines
 
-logfwd is designed to process logs on a single CPU core. The pipeline runs as a set
+FastForward is designed to process logs on a single CPU core. The pipeline runs as a set
 of blocking OS threads — one per input plus shared coordinator threads.
 
 ### Baseline
@@ -309,7 +309,7 @@ resources:
     memory: "512Mi"
 ```
 
-Set the limit higher than the request so logfwd can burst during log spikes without
+Set the limit higher than the request so FastForward can burst during log spikes without
 being OOM-killed.
 
 ---

@@ -1,9 +1,9 @@
 ---
 title: "Docker Deployment"
-description: "Run logfwd as a standalone container"
+description: "Run FastForward as a standalone container"
 ---
 
-Use this page when you want to run logfwd as a standalone container on a single host.
+Use this page when you want to run FastForward as a standalone container on a single host.
 For Kubernetes clusters, see [Kubernetes deployment](/deployment/kubernetes/).
 
 :::tip[Safe defaults]
@@ -14,7 +14,7 @@ Start with these settings for predictable behavior:
 - Enable diagnostics (`server.diagnostics: 0.0.0.0:9090`).
 - Use OTLP compression (`compression: zstd`) for remote collectors.
 - Mount a named volume for checkpoint persistence (see below).
-- Set resource constraints so logfwd cannot starve the host.
+- Set resource constraints so FastForward cannot starve the host.
 :::
 
 ## Quick start
@@ -36,7 +36,7 @@ docker run -d \
 
 | Flag | Purpose |
 |------|---------|
-| `-v /var/log:/var/log:ro` | Gives logfwd read-only access to host log files |
+| `-v /var/log:/var/log:ro` | Gives FastForward read-only access to host log files |
 | `-v ./config.yaml:/etc/logfwd/config.yaml:ro` | Injects your pipeline configuration (read-only) |
 | `-v logfwd-data:/var/lib/logfwd` | Persists checkpoint data between container restarts |
 | `-p 9090:9090` | Exposes the diagnostics/admin API on the host |
@@ -46,7 +46,7 @@ docker run -d \
 ## Checkpoint persistence
 
 :::tip[Always mount a checkpoint volume]
-Without a persistent volume for `/var/lib/logfwd`, logfwd loses its file-read
+Without a persistent volume for `/var/lib/logfwd`, FastForward loses its file-read
 position on every container restart. This causes **duplicate log delivery**
 (re-reading from the beginning) or **data loss** (if the output has
 already acknowledged earlier batches). A Docker named volume or a host-path
@@ -82,14 +82,14 @@ docker run -d --cpus 0.5 --memory 128m ...
 docker run -d --cpus 2.0 --memory 512m ...
 ```
 
-Monitor `logfwd_stage_seconds_total` and container memory usage via `docker stats`
+Monitor `logfwd_stage_seconds_total` (metric prefix will change in a future release) and container memory usage via `docker stats`
 to decide whether you need to adjust. See [Monitoring & Diagnostics](/deployment/monitoring/)
 for details on available metrics.
 
 ## Environment variable passthrough
 
 Use `-e` flags to inject secrets or endpoint addresses without baking them into
-the configuration file. logfwd interpolates `${VAR}` references in YAML values
+the configuration file. FastForward interpolates `${VAR}` references in YAML values
 at startup.
 
 ```bash
@@ -120,7 +120,7 @@ output:
 
 ## Network inputs with port mapping
 
-When logfwd receives logs over TCP or UDP (instead of tailing files), you need
+When FastForward receives logs over TCP or UDP (instead of tailing files), you need
 to publish the listener ports.
 
 ```bash
@@ -156,12 +156,12 @@ pipelines:
 
 :::caution
 Binding to `0.0.0.0` inside the container is required for Docker port mapping
-to work. If you bind to `127.0.0.1`, external traffic will not reach logfwd.
+to work. If you bind to `127.0.0.1`, external traffic will not reach FastForward.
 :::
 
 ## Docker Compose
 
-A Compose file is the easiest way to run logfwd alongside an OpenTelemetry
+A Compose file is the easiest way to run FastForward alongside an OpenTelemetry
 Collector on the same host. The example below tails host logs, forwards them
 over OTLP to the collector sidecar, and exposes the diagnostics API.
 
@@ -253,7 +253,7 @@ Then validate with the same diagnostics commands above.
 
 :::tip
 Because checkpoint data is stored in the `logfwd-data` volume, rolling back
-the image or configuration does not lose read position. logfwd resumes where
+the image or configuration does not lose read position. FastForward resumes where
 it left off.
 :::
 

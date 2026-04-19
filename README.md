@@ -1,4 +1,14 @@
-# logfwd
+<p align="center">
+  <img src="assets/brand/readme-header.svg" alt="FastForward" width="600" />
+</p>
+
+# FastForward
+
+<p align="center">
+  <em>a blazing-fast log, metric & trace forwarder — built with rust</em>
+</p>
+
+> **Note:** The CLI binary is currently named `logfwd` and will be renamed to `ff` in a future release.
 
 A Rust log forwarder that tails files, parses JSON and Kubernetes CRI logs with portable SIMD, transforms with SQL, and ships to any OTLP-compatible collector — at 1.7 million lines/second on a single ARM64 core.
 
@@ -10,7 +20,7 @@ log files → SIMD parse → Arrow RecordBatch → DataFusion SQL → OTLP → y
 
 ## Quick Start
 
-Try logfwd in 60 seconds — no collector, no infrastructure, just a terminal.
+Try FastForward in 60 seconds — no collector, no infrastructure, just a terminal.
 
 **1. Install**
 
@@ -66,7 +76,7 @@ Only error records with slow durations made it through — everything else was f
 
 ---
 
-## Why logfwd?
+## Why FastForward?
 
 | What | How |
 |------|-----|
@@ -81,7 +91,7 @@ Only error records with slow durations made it through — everything else was f
 
 ## SQL Transforms
 
-The SQL transform is why you'd pick logfwd over a plain forwarder. Every parsed batch becomes a DataFusion table named `logs`.
+The SQL transform is why you'd pick FastForward over a plain forwarder. Every parsed batch becomes a DataFusion table named `logs`.
 
 ```sql
 -- Forward only errors and slow requests
@@ -174,7 +184,7 @@ See the [Configuration Reference](book/src/content/docs/configuration/reference.
 
 ### Platform Sensors
 
-`logfwd` includes explicit sensor input lanes for all three major host platforms:
+FastForward includes explicit sensor input lanes for all three major host platforms:
 
 - `linux_ebpf_sensor`
 - `macos_es_sensor`
@@ -204,7 +214,7 @@ kubectl apply -f deploy/daemonset.yml
 kubectl -n collectors rollout status daemonset/logfwd
 ```
 
-Runs one logfwd pod per node, reads all container logs from `/var/log`. Typical resource use: ~128 MiB memory, 250m CPU at moderate log volume.
+Runs one FastForward pod per node, reads all container logs from `/var/log`. Typical resource use: ~128 MiB memory, 250m CPU at moderate log volume.
 
 See the [Deployment Guide](book/src/content/docs/deployment/kubernetes.md) for resource sizing, OTLP collector integration, and CRI log format details.
 
@@ -248,7 +258,7 @@ For ready-made starters, see [`examples/use-cases/`](examples/use-cases/README.m
 **Start here by goal**
 
 - Not sure where to begin: [Choose the Right Guide](book/src/content/docs/quick-start.mdx)
-- Run logfwd quickly: [Quick Start](book/src/content/docs/quick-start.mdx)
+- Run FastForward quickly: [Quick Start](book/src/content/docs/quick-start.mdx)
 - Build a safer production baseline: [Your First Pipeline](book/src/content/docs/deployment/docker.md)
 - Debug failures: [Troubleshooting](book/src/content/docs/troubleshooting.md)
 

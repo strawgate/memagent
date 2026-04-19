@@ -138,6 +138,16 @@ work for file inputs.
 `CheckpointAdvance<C>`.  
 **Research:** `dev-docs/research/offset-checkpoint-research.md`. **Related:** #270.
 
+### Kani checkpoint proof domain
+
+The `pipeline/lifecycle.rs` Kani harnesses may narrow symbolic checkpoint values
+to a small integer domain when the proof only checks lifecycle behavior. This is
+valid because `PipelineMachine<S, C>` stores, orders, and returns checkpoints
+without interpreting their arithmetic meaning. TLA+ coverage is unchanged: the
+`PipelineMachine.tla` model already treats checkpoint values as opaque tokens
+while checking batch sequencing, ACK/reject advance, drain, and ordering
+invariants.
+
 ### Rejected batches advance the checkpoint
 
 `RejectBatch` has the same state transition as `AckBatch` — permanently-undeliverable data

@@ -50,6 +50,7 @@ fn pre_durability_flush_failure_never_persists_checkpoint_and_keeps_delivery_con
         .checkpoint_updates_ge(1, 1)
         .checkpoint_monotonic(1)
         .checkpoint_durable_absent(1)
+        .trace_contract_valid()
         .verify(&outcome);
 }
 
@@ -81,7 +82,101 @@ fn post_durability_flush_failure_preserves_valid_checkpoint_progress_and_deliver
         .checkpoint_updates_ge(1, 1)
         .checkpoint_monotonic(1)
         .checkpoint_durable_not_ahead_of_updates(1)
+        .trace_contract_valid()
         .verify(&outcome);
+}
+
+/// Issue #1314 / #895 contract mapping:
+/// - #1314 Turmoil fault simulation coverage for checkpoint protocol behavior.
+/// - #895 Phase 7 terminalization invariant: run must reach terminal stopped phase.
+///
+/// This scenario forces a deterministic pre-boundary fault by crashing exactly on
+/// the first checkpoint flush attempt. Since no durability/ack boundary is crossed,
+/// durable checkpoint state must remain absent even though checkpoint updates were
+/// observed in memory.
+#[test]
+fn issue_1314_895_pre_boundary_crash_holds_checkpoint_before_durability_ack_boundary() {
+    let outcome = FaultScenario::builder("issue-1314-895-pre-boundary-crash")
+        .with_seed(20260434)
+        .with_line_count(24)
+        .with_counting_sink()
+        .with_batch_target_bytes(128)
+        .with_batch_timeout(Duration::from_millis(10))
+        .with_checkpoint_flush_interval(Duration::from_millis(40))
+        .with_checkpoint_crash_on_nth_flush(1)
+        .with_shutdown_after(Duration::from_secs(4))
+        .run();
+
+    InvariantSet::new()
+        .no_sim_error()
+        .delivered_eq(24)
+        .checkpoint_crash_count_ge(1)
+        .checkpoint_updates_ge(1, 1)
+        .checkpoint_monotonic(1)
+        .checkpoint_durable_absent(1)
+        .trace_contract_valid()
+        .verify(&outcome);
+
+    let checkpoint = outcome
+        .checkpoint()
+        .expect("pre-boundary scenario should expose checkpoint handle");
+    assert!(
+        checkpoint.flush_count() <= 1,
+        "pre-boundary crash should not permit sustained durable advancement; flush_count={}",
+        checkpoint.flush_count()
+    );
+}
+
+/// Issue #1314 / #895 contract mapping:
+/// - #1314 checkpoint protocol: durable checkpoint must never jump ahead of
+///   acknowledged/update history under faulted flushes.
+/// - #895 terminalization: even with late crash, scenario must terminate cleanly.
+///
+/// This scenario creates a deterministic post-boundary fault by crashing on the
+/// second checkpoint flush. The first flush crosses durability/ack boundary, then
+/// later updates occur before the crash. Durable checkpoint must remain <= observed
+/// updates and must not advance to the latest in-memory update after the crash.
+#[test]
+fn issue_1314_895_post_boundary_crash_preserves_checkpoint_and_terminalization_invariants() {
+    let mut script = Vec::new();
+    for _ in 0..64 {
+        script.push(FailureAction::Delay(Duration::from_millis(20)));
+    }
+    let outcome = FaultScenario::builder("issue-1314-895-post-boundary-crash")
+        .with_seed(20260435)
+        .with_line_count(64)
+        .with_sink_script(script)
+        .with_batch_target_bytes(128)
+        .with_batch_timeout(Duration::from_millis(10))
+        .with_checkpoint_flush_interval(Duration::from_millis(40))
+        .with_checkpoint_crash_on_nth_flush(2)
+        .with_shutdown_after(Duration::from_secs(10))
+        .run();
+
+    InvariantSet::new()
+        .no_sim_error()
+        .delivered_eq(64)
+        .checkpoint_crash_count_ge(1)
+        .checkpoint_flush_count_ge(1)
+        .checkpoint_updates_ge(1, 2)
+        .checkpoint_monotonic(1)
+        .checkpoint_durable_not_ahead_of_updates(1)
+        .trace_contract_valid()
+        .verify(&outcome);
+
+    let checkpoint = outcome
+        .checkpoint()
+        .expect("post-boundary scenario should expose checkpoint handle");
+    let durable = checkpoint
+        .durable_offset(1)
+        .expect("post-boundary crash should keep previously durable checkpoint");
+    let max_update = checkpoint
+        .max_update_offset(1)
+        .expect("post-boundary scenario must emit checkpoint updates");
+    assert!(
+        durable <= max_update,
+        "durable checkpoint must never advance beyond observed updates: durable={durable}, max_update={max_update}"
+    );
 }
 
 #[test]

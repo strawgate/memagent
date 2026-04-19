@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 
+use arrow::record_batch::RecordBatch;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::header::{CONTENT_ENCODING, CONTENT_TYPE};
@@ -11,14 +12,17 @@ use axum::response::{IntoResponse, Response};
 #[cfg(any(feature = "otlp-research", test))]
 use bytes::Bytes;
 use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
+use tokio::sync::OwnedSemaphorePermit;
 
 use crate::InputError;
 use crate::receiver_http::{parse_content_length, parse_content_type, read_limited_body};
 
+#[cfg(any(feature = "otlp-research", test))]
+use super::OtlpProtobufDecodeMode;
 use super::decode::{decode_otlp_json, decode_otlp_protobuf, decompress_gzip, decompress_zstd};
 #[cfg(any(feature = "otlp-research", test))]
 use super::projection::ProjectionError;
-use super::{OtlpProtobufDecodeMode, OtlpServerState, ReceiverPayload};
+use super::{OtlpServerState, ReceiverPayload};
 
 pub(super) fn record_error(stats: Option<&Arc<ComponentStats>>) {
     if let Some(stats) = stats {
@@ -51,6 +55,15 @@ pub(super) async fn handle_otlp_request(
             return (status, "invalid content-encoding header").into_response();
         }
     };
+
+    let content_type = match parse_content_type(&headers) {
+        Ok(content_type) => content_type,
+        Err(status) => {
+            record_error(state.stats.as_ref());
+            return (status, "invalid content-type header").into_response();
+        }
+    };
+    let is_json = matches!(content_type.as_deref(), Some("application/json"));
 
     let mut body = match read_limited_body(body, max_body, content_length).await {
         Ok(body) => body,
@@ -108,25 +121,43 @@ pub(super) async fn handle_otlp_request(
         }
     };
 
-    let content_type = match parse_content_type(&headers) {
-        Ok(content_type) => content_type,
-        Err(status) => {
-            record_error(state.stats.as_ref());
-            return (status, "invalid content-type header").into_response();
-        }
-    };
-    let is_json = matches!(content_type.as_deref(), Some("application/json"));
-
     let batch = if is_json {
-        decode_otlp_json(&body, &state.resource_prefix)
+        decode_otlp_json(&body, &state.resource_prefix).map_err(OtlpRequestDecodeError::Payload)
     } else {
-        decode_otlp_protobuf_request(body, &state).await
+        let decode_permit = match Arc::clone(&state.protobuf_decode_permits).try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                state
+                    .health
+                    .store(ComponentHealth::Degraded.as_repr(), Ordering::Relaxed);
+                return (
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "too many requests: protobuf decode backpressure",
+                )
+                    .into_response();
+            }
+        };
+        decode_otlp_protobuf_request(body, Arc::clone(&state), decode_permit).await
     };
     let batch = match batch {
         Ok(batch) => batch,
-        Err(msg) => {
+        Err(OtlpRequestDecodeError::Payload(msg)) => {
             record_parse_error(state.stats.as_ref());
             return (StatusCode::BAD_REQUEST, msg.to_string()).into_response();
+        }
+        Err(OtlpRequestDecodeError::Internal(msg)) => {
+            record_error(state.stats.as_ref());
+            tracing::error!(error = %msg, "OTLP protobuf decode internal failure");
+            if state.is_running.load(Ordering::Relaxed) {
+                state
+                    .health
+                    .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
+            }
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal OTLP decode error",
+            )
+                .into_response();
         }
     };
 
@@ -177,75 +208,125 @@ pub(super) async fn handle_otlp_request(
     }
 }
 
+enum OtlpRequestDecodeError {
+    Payload(InputError),
+    Internal(String),
+}
+
 async fn decode_otlp_protobuf_request(
     body: Vec<u8>,
+    state: Arc<OtlpServerState>,
+    decode_permit: OwnedSemaphorePermit,
+) -> Result<RecordBatch, OtlpRequestDecodeError> {
+    // Protobuf decode and Arrow materialization are CPU work. Keep them off the
+    // current-thread Axum runtime so the receiver can continue polling I/O.
+    tokio::task::spawn_blocking(move || {
+        let result = decode_otlp_protobuf_request_blocking(body, &state);
+        drop(decode_permit);
+        result
+    })
+    .await
+    .map_err(|err| {
+        OtlpRequestDecodeError::Internal(format!("OTLP protobuf decode task failed: {err}"))
+    })?
+}
+
+#[cfg(any(feature = "otlp-research", test))]
+fn decode_otlp_protobuf_request_blocking(
+    body: Vec<u8>,
     state: &OtlpServerState,
-) -> Result<arrow::record_batch::RecordBatch, InputError> {
+) -> Result<RecordBatch, OtlpRequestDecodeError> {
+    let body = Bytes::from(body);
     match state.protobuf_decode_mode {
-        OtlpProtobufDecodeMode::Prost => decode_otlp_protobuf(&body, &state.resource_prefix),
+        OtlpProtobufDecodeMode::Prost => {
+            decode_otlp_protobuf(body.as_ref(), &state.resource_prefix)
+                .map_err(OtlpRequestDecodeError::Payload)
+        }
         #[cfg(any(feature = "otlp-research", test))]
         OtlpProtobufDecodeMode::ProjectedFallback => {
-            decode_otlp_protobuf_projected_fallback(Bytes::from(body), state).await
+            decode_otlp_protobuf_projected_fallback(body, state)
         }
         #[cfg(any(feature = "otlp-research", test))]
-        OtlpProtobufDecodeMode::ProjectedOnly => {
-            decode_otlp_protobuf_projected_only(Bytes::from(body), state).await
-        }
+        OtlpProtobufDecodeMode::ProjectedOnly => decode_otlp_protobuf_projected_only(body, state),
     }
 }
 
+#[cfg(not(any(feature = "otlp-research", test)))]
+fn decode_otlp_protobuf_request_blocking(
+    body: Vec<u8>,
+    state: &OtlpServerState,
+) -> Result<RecordBatch, OtlpRequestDecodeError> {
+    debug_assert_eq!(
+        state.protobuf_decode_mode,
+        super::OtlpProtobufDecodeMode::Prost
+    );
+    decode_otlp_protobuf(&body, &state.resource_prefix).map_err(OtlpRequestDecodeError::Payload)
+}
+
 #[cfg(any(feature = "otlp-research", test))]
-async fn decode_otlp_protobuf_projected_fallback(
+fn decode_otlp_protobuf_projected_fallback(
     body: Bytes,
     state: &OtlpServerState,
-) -> Result<arrow::record_batch::RecordBatch, InputError> {
-    match decode_with_reusable_projected_decoder(body.clone(), state).await {
+) -> Result<RecordBatch, OtlpRequestDecodeError> {
+    match decode_with_reusable_projected_decoder(body.clone(), state) {
         Ok(batch) => {
             record_projected_success(state.stats.as_ref());
             Ok(batch)
         }
-        Err(ProjectionError::Unsupported(_)) => {
+        Err(ProjectedDecodeError::Projection(ProjectionError::Unsupported(_))) => {
             record_projected_fallback(state.stats.as_ref());
             decode_otlp_protobuf(&body, &state.resource_prefix)
+                .map_err(OtlpRequestDecodeError::Payload)
         }
-        Err(err) => {
+        Err(ProjectedDecodeError::Projection(err)) => {
             record_projection_invalid(state.stats.as_ref());
-            Err(err.into_input_error())
+            Err(OtlpRequestDecodeError::Payload(err.into_input_error()))
         }
+        Err(ProjectedDecodeError::Internal(msg)) => Err(OtlpRequestDecodeError::Internal(msg)),
     }
 }
 
 #[cfg(any(feature = "otlp-research", test))]
-async fn decode_otlp_protobuf_projected_only(
+fn decode_otlp_protobuf_projected_only(
     body: Bytes,
     state: &OtlpServerState,
-) -> Result<arrow::record_batch::RecordBatch, InputError> {
-    match decode_with_reusable_projected_decoder(body, state).await {
+) -> Result<RecordBatch, OtlpRequestDecodeError> {
+    match decode_with_reusable_projected_decoder(body, state) {
         Ok(batch) => {
             record_projected_success(state.stats.as_ref());
             Ok(batch)
         }
-        Err(ProjectionError::Unsupported(err)) => {
-            Err(ProjectionError::Unsupported(err).into_input_error())
-        }
-        Err(err) => {
+        Err(ProjectedDecodeError::Projection(ProjectionError::Unsupported(err))) => Err(
+            OtlpRequestDecodeError::Payload(ProjectionError::Unsupported(err).into_input_error()),
+        ),
+        Err(ProjectedDecodeError::Projection(err)) => {
             record_projection_invalid(state.stats.as_ref());
-            Err(err.into_input_error())
+            Err(OtlpRequestDecodeError::Payload(err.into_input_error()))
         }
+        Err(ProjectedDecodeError::Internal(msg)) => Err(OtlpRequestDecodeError::Internal(msg)),
     }
 }
 
 #[cfg(any(feature = "otlp-research", test))]
-async fn decode_with_reusable_projected_decoder(
+enum ProjectedDecodeError {
+    Projection(ProjectionError),
+    Internal(String),
+}
+
+#[cfg(any(feature = "otlp-research", test))]
+fn decode_with_reusable_projected_decoder(
     body: Bytes,
     state: &OtlpServerState,
-) -> Result<arrow::record_batch::RecordBatch, ProjectionError> {
-    let decoder = state
-        .projected_decoder
-        .as_ref()
-        .ok_or_else(|| ProjectionError::Batch("projected decoder not initialized".to_string()))?;
-    let mut decoder = decoder.lock().await;
-    decoder.try_decode_view_bytes(body)
+) -> Result<RecordBatch, ProjectedDecodeError> {
+    let decoder = state.projected_decoder.as_ref().ok_or_else(|| {
+        ProjectedDecodeError::Internal("projected decoder not initialized".to_string())
+    })?;
+    let mut decoder = decoder.lock().map_err(|_| {
+        ProjectedDecodeError::Internal("projected decoder lock poisoned".to_string())
+    })?;
+    decoder
+        .try_decode_view_bytes(body)
+        .map_err(ProjectedDecodeError::Projection)
 }
 
 #[cfg(any(feature = "otlp-research", test))]
@@ -278,4 +359,130 @@ fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusC
         return Err(StatusCode::BAD_REQUEST);
     }
     Ok(Some(parsed.to_ascii_lowercase()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, AtomicU8};
+
+    use axum::http::Request;
+    use axum::routing::post;
+    use logfwd_types::field_names;
+    use tokio::sync::Semaphore;
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::otlp_receiver::ProjectedOtlpDecoder;
+
+    fn projected_only_state(max_message_size_bytes: usize) -> Arc<OtlpServerState> {
+        let (tx, _rx) = mpsc::sync_channel(1);
+        Arc::new(OtlpServerState {
+            tx,
+            is_running: Arc::new(AtomicBool::new(true)),
+            health: Arc::new(AtomicU8::new(ComponentHealth::Healthy.as_repr())),
+            resource_prefix: field_names::DEFAULT_RESOURCE_PREFIX.to_string(),
+            protobuf_decode_mode: OtlpProtobufDecodeMode::ProjectedOnly,
+            protobuf_decode_permits: Arc::new(Semaphore::new(1)),
+            projected_decoder: Some(Mutex::new(ProjectedOtlpDecoder::new(
+                field_names::DEFAULT_RESOURCE_PREFIX,
+            ))),
+            stats: None,
+            max_message_size_bytes,
+        })
+    }
+
+    fn poison_projected_decoder_lock(state: &OtlpServerState) {
+        let decoder = state
+            .projected_decoder
+            .as_ref()
+            .expect("projected decoder should be initialized");
+        let poison_result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = decoder.lock().expect("initial lock should succeed");
+            panic!("poison projected decoder");
+        }));
+        assert!(poison_result.is_err(), "test must poison the decoder lock");
+    }
+
+    #[test]
+    fn projected_decoder_poison_is_internal_error() {
+        let state = projected_only_state(1024);
+        poison_projected_decoder_lock(&state);
+
+        match decode_otlp_protobuf_request_blocking(Vec::new(), &state) {
+            Err(OtlpRequestDecodeError::Internal(msg)) => {
+                assert!(msg.contains("projected decoder lock poisoned"));
+            }
+            Err(OtlpRequestDecodeError::Payload(_)) => {
+                panic!("poisoned decoder lock must not be reported as a payload error");
+            }
+            Ok(_) => panic!("poisoned decoder lock must fail"),
+        }
+    }
+
+    #[test]
+    fn poisoned_projected_decoder_returns_http_500_and_failed_health() {
+        let state = projected_only_state(1024);
+        poison_projected_decoder_lock(&state);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        let app = axum::Router::new()
+            .route("/v1/logs", post(handle_otlp_request))
+            .with_state(Arc::clone(&state));
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/logs")
+            .header(CONTENT_TYPE, "application/x-protobuf")
+            .body(Body::empty())
+            .expect("test request should build");
+
+        let response = runtime
+            .block_on(app.oneshot(request))
+            .expect("handler should return a response");
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            state.health.load(Ordering::Relaxed),
+            ComponentHealth::Failed.as_repr()
+        );
+    }
+
+    #[test]
+    fn protobuf_decode_permit_exhaustion_does_not_mask_pre_decode_errors() {
+        let state = projected_only_state(1024);
+        let _held_permit = Arc::clone(&state.protobuf_decode_permits)
+            .try_acquire_owned()
+            .expect("test should exhaust the only decode permit");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime should build");
+
+        let app = axum::Router::new()
+            .route("/v1/logs", post(handle_otlp_request))
+            .with_state(Arc::clone(&state));
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/logs")
+            .header(CONTENT_TYPE, "application/x-protobuf")
+            .header(CONTENT_ENCODING, "unsupported")
+            .body(Body::empty())
+            .expect("test request should build");
+
+        let response = runtime
+            .block_on(app.oneshot(request))
+            .expect("handler should return a response");
+
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+        assert_eq!(
+            state.health.load(Ordering::Relaxed),
+            ComponentHealth::Healthy.as_repr()
+        );
+    }
 }

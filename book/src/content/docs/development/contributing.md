@@ -1,6 +1,6 @@
 ---
 title: "Contributing"
-description: "Build, test, and contribute to logfwd"
+description: "Build, test, and contribute to FastForward"
 ---
 
 ## Quick reference
