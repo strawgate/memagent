@@ -205,25 +205,31 @@ impl InputSource for UdpInput {
                     if n > 0 {
                         let source_id = source_id_for_sender(sender);
                         let data = &self.buf[..n];
-                        let needs_newline = !data.ends_with(b"\n");
+                        let should_append_newline = !data.ends_with(b"\n");
                         if current
                             .as_ref()
                             .is_none_or(|(current_source_id, _, _)| *current_source_id != source_id)
                         {
                             flush_current_sender(&mut events, &mut current);
-                            current = Some((source_id, Vec::with_capacity(4096), 0));
+                            current = Some((
+                                source_id,
+                                Vec::with_capacity(
+                                    n.saturating_add(usize::from(should_append_newline)),
+                                ),
+                                0,
+                            ));
                         }
                         let (_, out, accounted_bytes) =
                             current.as_mut().expect("current sender just initialized");
                         out.extend_from_slice(data);
                         // Ensure newline termination so the scanner always sees
                         // complete lines, even if the sender omitted a trailing LF.
-                        if needs_newline {
+                        if should_append_newline {
                             out.push(b'\n');
                         }
                         *accounted_bytes = accounted_bytes.saturating_add(n as u64);
                         emitted_bytes =
-                            emitted_bytes.saturating_add(n + usize::from(needs_newline));
+                            emitted_bytes.saturating_add(n + usize::from(should_append_newline));
                     }
                     if should_stop_udp_drain(datagrams_read, emitted_bytes) {
                         under_pressure = true;

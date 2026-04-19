@@ -1245,9 +1245,17 @@ fn collect_logs_aliases_from_table_factor(
                 }
             }
         }
-        sqlast::TableFactor::Derived { subquery, .. } => {
+        sqlast::TableFactor::Derived {
+            subquery, alias, ..
+        } => {
             scope.visible_relations = scope.visible_relations.saturating_add(1);
             collect_logs_source_metadata_from_query(subquery, usage);
+            if query_exposes_logs_relation(subquery) {
+                scope.logs_relations = scope.logs_relations.saturating_add(1);
+                if let Some(alias) = alias {
+                    scope.logs_aliases.insert(alias.name.value.clone());
+                }
+            }
         }
         sqlast::TableFactor::NestedJoin {
             table_with_joins, ..
@@ -1262,6 +1270,48 @@ fn collect_logs_aliases_from_table_factor(
         _ => {
             scope.visible_relations = scope.visible_relations.saturating_add(1);
         }
+    }
+}
+
+fn query_exposes_logs_relation(query: &sqlast::Query) -> bool {
+    set_expr_exposes_logs_relation(query.body.as_ref())
+}
+
+fn set_expr_exposes_logs_relation(set_expr: &SetExpr) -> bool {
+    match set_expr {
+        SetExpr::Select(select) => select
+            .from
+            .iter()
+            .any(table_with_joins_exposes_logs_relation),
+        SetExpr::Query(query) => query_exposes_logs_relation(query),
+        SetExpr::SetOperation { left, right, .. } => {
+            set_expr_exposes_logs_relation(left) || set_expr_exposes_logs_relation(right)
+        }
+        _ => false,
+    }
+}
+
+fn table_with_joins_exposes_logs_relation(table_with_joins: &sqlast::TableWithJoins) -> bool {
+    table_factor_exposes_logs_relation(&table_with_joins.relation)
+        || table_with_joins
+            .joins
+            .iter()
+            .any(|join| table_factor_exposes_logs_relation(&join.relation))
+}
+
+fn table_factor_exposes_logs_relation(factor: &sqlast::TableFactor) -> bool {
+    match factor {
+        sqlast::TableFactor::Table { name, .. } => object_name_last_eq(name, "logs"),
+        sqlast::TableFactor::Derived { subquery, .. } => query_exposes_logs_relation(subquery),
+        sqlast::TableFactor::NestedJoin {
+            table_with_joins, ..
+        } => table_with_joins_exposes_logs_relation(table_with_joins),
+        sqlast::TableFactor::Pivot { table, .. }
+        | sqlast::TableFactor::Unpivot { table, .. }
+        | sqlast::TableFactor::MatchRecognize { table, .. } => {
+            table_factor_exposes_logs_relation(table)
+        }
+        _ => false,
     }
 }
 
@@ -1815,5 +1865,19 @@ mod tests {
         )
         .unwrap();
         assert!(analyzer.explicit_source_metadata_plan().has_source_path);
+    }
+
+    #[test]
+    fn explicit_source_metadata_plan_tracks_logs_derived_alias() {
+        let analyzer =
+            QueryAnalyzer::new("SELECT d._source_path FROM (SELECT * FROM logs) d").unwrap();
+        assert!(analyzer.explicit_source_metadata_plan().has_source_path);
+
+        let analyzer =
+            QueryAnalyzer::new("SELECT d._source_path FROM (SELECT * FROM alerts) d").unwrap();
+        assert_eq!(
+            analyzer.explicit_source_metadata_plan(),
+            SourceMetadataPlan::default()
+        );
     }
 }
