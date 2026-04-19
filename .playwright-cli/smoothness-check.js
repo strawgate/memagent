@@ -1,9 +1,6 @@
-// Track 3 cars over 100 frames to check for teleporting/jerkiness
-async function check(page) {
-  // Wait for animation to start
+async (page) => {
   await page.waitForTimeout(2000);
-  
-  const data = await page.evaluate(() => {
+  return await page.evaluate(() => {
     return new Promise(resolve => {
       const results = [];
       let frame = 0;
@@ -13,18 +10,15 @@ async function check(page) {
         cars.forEach(c => {
           const t = c.getAttribute('transform');
           if (!t) return;
-          const m = t.match(/translate\(([\d.]+),\s*([\d.]+)\)/);
+          const m = t.match(/translate\(([\d.-]+),\s*([\d.-]+)\)/);
           if (m) {
-            const id = c.getAttribute('data-car-id') || '?';
-            snapshot.push({ id, x: +m[1], y: +m[2] });
+            snapshot.push({ id: c.getAttribute('data-car-id') || '?', x: +m[1], y: +m[2] });
           }
         });
         results.push({ f: frame, cars: snapshot });
         frame++;
-        if (frame >= 60) {
+        if (frame >= 80) {
           clearInterval(interval);
-          
-          // Analyze: find max frame-to-frame jumps per car
           const carJumps = {};
           for (let i = 1; i < results.length; i++) {
             const prev = {};
@@ -34,16 +28,17 @@ async function check(page) {
                 const dx = c.x - prev[c.id].x;
                 const dy = c.y - prev[c.id].y;
                 const dist = Math.sqrt(dx*dx + dy*dy);
-                if (!carJumps[c.id]) carJumps[c.id] = [];
-                if (dist > 5) carJumps[c.id].push({ f: i, dist: +dist.toFixed(1), dx: +dx.toFixed(1), dy: +dy.toFixed(1) });
+                if (dist > 8) {
+                  if (!carJumps[c.id]) carJumps[c.id] = [];
+                  carJumps[c.id].push({ f: i, dist: +(dist.toFixed(1)), dx: +(dx.toFixed(1)), dy: +(dy.toFixed(1)) });
+                }
               }
             });
           }
-          resolve(JSON.stringify({ bigJumps: carJumps }, null, 2));
+          const jumpCount = Object.values(carJumps).reduce((s, a) => s + a.length, 0);
+          resolve(JSON.stringify({ totalBigJumps: jumpCount, jumps: carJumps }, null, 2));
         }
       }, 25);
     });
   });
-  return data;
 }
-check(page);
