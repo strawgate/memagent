@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   # -----------------------------------------------------------------------
-  # Build the logfwd binary for each supported target platform.
+  # Build the ff binary for each supported target platform.
   # Linux targets are built with musl for fully static binaries.
   # macOS targets are built on the native runners.
   # -----------------------------------------------------------------------
@@ -24,17 +24,17 @@ jobs:
         include:
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-            artifact: logfwd-linux-amd64
+            artifact: ff-linux-amd64
           - target: aarch64-unknown-linux-musl
             os: ubuntu-latest
-            artifact: logfwd-linux-arm64
+            artifact: ff-linux-arm64
             use_cross: true
           - target: x86_64-apple-darwin
             os: macos-15-intel
-            artifact: logfwd-darwin-amd64
+            artifact: ff-darwin-amd64
           - target: aarch64-apple-darwin
             os: macos-latest
-            artifact: logfwd-darwin-arm64
+            artifact: ff-darwin-arm64
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/build-dashboard
@@ -59,7 +59,7 @@ jobs:
         run: cargo build --release -p logfwd --target ${{ matrix.target }}
 
       - name: Rename binary
-        run: cp target/${{ matrix.target }}/release/logfwd ${{ matrix.artifact }}
+        run: cp target/${{ matrix.target }}/release/ff ${{ matrix.artifact }}
 
       - uses: actions/upload-artifact@v7
         with:

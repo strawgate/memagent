@@ -69,7 +69,7 @@ case "${1:-}" in
     exit 0
     ;;
   get)
-    if [ "${2:-}" = "pod" ] && [ "${3:-}" = "-n" ] && [ "${4:-}" = "e2e-logfwd" ] && [ "${5:-}" = "log-generator" ] && [ "${6:-}" = "-o" ] && [[ "${7:-}" == jsonpath=* ]]; then
+    if [ "${2:-}" = "pod" ] && [ "${3:-}" = "-n" ] && [ "${4:-}" = "e2e-ff" ] && [ "${5:-}" = "log-generator" ] && [ "${6:-}" = "-o" ] && [[ "${7:-}" == jsonpath=* ]]; then
       counter_file="$STATE_DIR/log_generator_polls"
       count=0
       if [ -f "$counter_file" ]; then
@@ -88,7 +88,7 @@ case "${1:-}" in
     exit 0
     ;;
   logs)
-    if [ "${2:-}" = "-n" ] && [ "${3:-}" = "e2e-logfwd" ] && [ "${4:-}" = "log-generator" ]; then
+    if [ "${2:-}" = "-n" ] && [ "${3:-}" = "e2e-ff" ] && [ "${4:-}" = "log-generator" ]; then
       if [ -f "$STATE_DIR/log_generator_running" ]; then
         printf '%s\n' \
           'LOGFWD_E2E_MARKER_001' \
@@ -119,8 +119,8 @@ E2E_CLUSTER_NAME="smoke" \
 NO_DESTROY=1 \
 bash "$RUN_SH"
 
-logs_line="$(grep -n 'logs -n e2e-logfwd log-generator --tail=40' "$LOG_FILE" | head -n1 | cut -d: -f1 || true)"
-pf_line="$(grep -n 'port-forward -n e2e-logfwd svc/blackhole-receiver 14318:4318' "$LOG_FILE" | head -n1 | cut -d: -f1 || true)"
+logs_line="$(grep -n 'logs -n e2e-ff log-generator --tail=40' "$LOG_FILE" | head -n1 | cut -d: -f1 || true)"
+pf_line="$(grep -n 'port-forward -n e2e-ff svc/blackhole-receiver 14318:4318' "$LOG_FILE" | head -n1 | cut -d: -f1 || true)"
 
 if [ -z "$logs_line" ]; then
   echo "FAIL: smoke test never waited for generator markers"

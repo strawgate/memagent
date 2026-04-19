@@ -6,20 +6,20 @@ metadata:
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: logfwd
+  name: ff
   namespace: collectors
   labels:
-    app: logfwd
+    app: ff
 spec:
   selector:
     matchLabels:
-      app: logfwd
+      app: ff
   template:
     metadata:
       labels:
-        app: logfwd
+        app: ff
     spec:
-      serviceAccountName: logfwd
+      serviceAccountName: ff
       tolerations:
         - operator: Exists
       securityContext:
@@ -28,7 +28,7 @@ spec:
         runAsGroup: 65532
         fsGroup: 65532
       containers:
-        - name: logfwd
+        - name: ff
           image: ghcr.io/strawgate/memagent:latest
           imagePullPolicy: IfNotPresent
           args:

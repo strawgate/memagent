@@ -1,4 +1,4 @@
-# logfwd development task runner
+# ff development task runner
 # Install: cargo install just
 # Usage:  just --list
 
@@ -76,7 +76,7 @@ doctor:
             MISSING_OPTIONAL=1
         fi
     }
-    echo "logfwd development environment"
+    echo "ff development environment"
     echo "==============================="
     echo ""
     echo "Required:"
@@ -304,7 +304,7 @@ build-dev-lite:
 _bench-run name config seconds="10" diag="http://127.0.0.1:9090":
     #!/usr/bin/env bash
     set -euo pipefail
-    LOGFWD=./target/release/logfwd
+    LOGFWD=./target/release/ff
     $LOGFWD run --config {{config}} &
     PID=$!
     sleep {{seconds}}
@@ -323,7 +323,7 @@ _bench-run name config seconds="10" diag="http://127.0.0.1:9090":
 _bench-pair name rx_config tx_config seconds="10":
     #!/usr/bin/env bash
     set -euo pipefail
-    LOGFWD=./target/release/logfwd
+    LOGFWD=./target/release/ff
     $LOGFWD run --config {{rx_config}} &
     RX=$!;
 
@@ -461,7 +461,7 @@ bench-pipelines seconds="10":
     just bench-otlp {{seconds}}
 
 # Build release binary with Profile-Guided Optimisation (PGO).
-# Runs a training workload automatically; output binary is target/release/logfwd-pgo.
+# Runs a training workload automatically; output binary is target/release/ff-pgo.
 # Requires llvm-profdata on PATH (e.g. `sudo apt install llvm`).
 build-pgo:
     #!/usr/bin/env bash
@@ -470,15 +470,15 @@ build-pgo:
     echo "==> Step 1: build with PGO instrumentation (profile-generate)"
     RUSTFLAGS="-Cprofile-generate=${PGO_DIR}" cargo build --release -p logfwd
     echo "==> Step 2: run training workload to collect profiles"
-    LOGFWD=./target/release/logfwd cargo run -p logfwd-competitive-bench --release -- \
+    FF=./target/release/ff cargo run -p logfwd-competitive-bench --release -- \
         --lines 500000 --mode binary --cpus 1 --memory 1g \
         --scenarios passthrough,json_parse,filter
     echo "==> Step 3: merge raw profiles"
     llvm-profdata merge -output="${PGO_DIR}/merged.profdata" "${PGO_DIR}"/*.profraw
     echo "==> Step 4: rebuild with PGO profile applied"
     RUSTFLAGS="-Cprofile-use=${PGO_DIR}/merged.profdata" cargo build --release -p logfwd
-    cp target/release/logfwd target/release/logfwd-pgo
-    echo "PGO binary written to target/release/logfwd-pgo"
+    cp target/release/ff target/release/ff-pgo
+    echo "PGO binary written to target/release/ff-pgo"
 
 # Run Tier 1 criterion benchmarks (fast, ~30s — composed functions, no heavy I/O)
 bench:
@@ -506,11 +506,11 @@ bench-competitive *ARGS:
 bench-docker:
     cargo build --release -p logfwd
     cargo build --release --features dhat-heap -p logfwd
-    cp target/release/logfwd target/release/logfwd-dhat
+    cp target/release/ff target/release/ff-dhat
     cargo build --release -p logfwd
-    LOGFWD=./target/release/logfwd cargo run -p logfwd-competitive-bench --release -- \
+    FF=./target/release/ff cargo run -p logfwd-competitive-bench --release -- \
         --lines 5000000 --docker --cpus 1 --memory 1g --markdown \
-        --profile ./profiles --dhat-binary ./target/release/logfwd-dhat
+        --profile ./profiles --dhat-binary ./target/release/ff-dhat
 
 # Run a local File -> OTLP profile with pprof-rs.
 # Outputs a temp directory containing config.yaml, logs.json, pipeline.log,
@@ -525,10 +525,10 @@ profile-otlp-local lines="500000" seconds="6":
     RUSTC_WRAPPER= cargo build --release --features cpu-profiling -p logfwd
 
     mkdir -p "${ROOT}/bin"
-    cp target/release/logfwd "${ROOT}/bin/logfwd-prof"
+    cp target/release/ff "${ROOT}/bin/ff-prof"
 
     echo "==> Generate test data ({{lines}} lines)"
-    "${ROOT}/bin/logfwd-prof" generate-json "{{lines}}" "${ROOT}/logs.json"
+    "${ROOT}/bin/ff-prof" generate-json "{{lines}}" "${ROOT}/logs.json"
 
     printf '%s\n' \
       "input:" \
@@ -545,7 +545,7 @@ profile-otlp-local lines="500000" seconds="6":
       > "${ROOT}/config.yaml"
 
     echo "==> Start blackhole on ${PORT}"
-    "${ROOT}/bin/logfwd-prof" blackhole "127.0.0.1:${PORT}" > "${ROOT}/blackhole.log" 2>&1 &
+    "${ROOT}/bin/ff-prof" blackhole "127.0.0.1:${PORT}" > "${ROOT}/blackhole.log" 2>&1 &
     BLACKHOLE_PID=$!
     cleanup() {
         kill -TERM "${BLACKHOLE_PID}" 2>/dev/null || true
@@ -554,7 +554,7 @@ profile-otlp-local lines="500000" seconds="6":
 
     echo "==> Run profiled pipeline for {{seconds}}s"
     pushd "${ROOT}" >/dev/null
-    "${ROOT}/bin/logfwd-prof" run --config "${ROOT}/config.yaml" > pipeline.log 2>&1 &
+    "${ROOT}/bin/ff-prof" run --config "${ROOT}/config.yaml" > pipeline.log 2>&1 &
     PIPELINE_PID=$!
     sleep "{{seconds}}"
     kill -TERM "${PIPELINE_PID}"
@@ -601,7 +601,7 @@ bench-framed-input-alloc *ARGS:
 # Run low-and-slow rate-ingest benchmark (logfwd only, measures memory and CPU at each eps)
 bench-rate *ARGS:
     cargo build --release -p logfwd
-    LOGFWD=./target/release/logfwd cargo run -p logfwd-competitive-bench --release -- --rate-bench {{ARGS}}
+    LOGFWD=./target/release/ff cargo run -p logfwd-competitive-bench --release -- --rate-bench {{ARGS}}
 
 # Run sustained-load memory profiler (generator → SQL → null, default 5 minutes).
 # Use --quick (30s) for CI or --medium (120s) for quick checks.

@@ -71,11 +71,11 @@ jobs:
           cargo build --release -p logfwd
           cargo build --release -p logfwd-competitive-bench
           cargo build --release --features dhat-heap -p logfwd
-          cp target/release/logfwd target/release/logfwd-dhat
+          cp target/release/ff target/release/ff-dhat
           cargo build --release -p logfwd
           mkdir -p cached-binaries
-          cp target/release/logfwd cached-binaries/
-          cp target/release/logfwd-dhat cached-binaries/
+          cp target/release/ff cached-binaries/
+          cp target/release/ff-dhat cached-binaries/
           cp target/release/logfwd-competitive-bench cached-binaries/
 
       - name: Upload binaries
@@ -102,8 +102,8 @@ jobs:
           RUSTFLAGS="${BENCH_RUSTFLAGS} -Cprofile-generate=/tmp/pgo-data" \
             cargo build --release -p logfwd
 
-          LOGFWD=./target/release/logfwd ./target/release/logfwd-competitive-bench \
-            --lines 500000 --agents logfwd --scenarios passthrough --no-download
+          FF=./target/release/ff ./target/release/logfwd-competitive-bench \
+            --lines 500000 --agents ff --scenarios passthrough --no-download
 
           PROFDATA=$(find "$(rustc --print sysroot)" -name llvm-profdata -type f | head -1)
           if [ -n "$PROFDATA" ] && "$PROFDATA" merge -output=/tmp/pgo-data/merged.profdata /tmp/pgo-data/*.profraw 2>/dev/null; then
@@ -113,8 +113,8 @@ jobs:
             echo "::warning::PGO profile merge failed; using standard release build"
           fi
 
-          LOGFWD=./target/release/logfwd ./target/release/logfwd-competitive-bench \
-            --lines ${{ env.LINES }} --agents logfwd \
+          FF=./target/release/ff ./target/release/logfwd-competitive-bench \
+            --lines ${{ env.LINES }} --agents ff \
             --scenarios ${{ env.SCENARIOS }} --iterations ${{ env.ITERATIONS }} \
             --results-file pgo-results.jsonl --no-download
 
@@ -139,7 +139,7 @@ jobs:
           SCENARIO_JSON=$(echo "$SCENARIOS" | tr ',' '\n' | jq -R . | jq -sc .)
           AGENTS="${{ env.AGENTS_INPUT }}"
           if [ -z "$AGENTS" ]; then
-            AGENTS="logfwd,vector,fluent-bit,filebeat,otelcol,vlagent"
+            AGENTS="ff,vector,fluent-bit,filebeat,otelcol,vlagent"
           fi
           AGENT_JSON=$(echo "$AGENTS" | tr ',' '\n' | jq -R . | jq -sc .)
           MATRIX=$(jq -nc --argjson s "$SCENARIO_JSON" --argjson a "$AGENT_JSON" '{scenario: $s, agent: $a}')
@@ -174,7 +174,7 @@ jobs:
             --mode binary \
             --results-file results.jsonl
         env:
-          LOGFWD: ./bin/logfwd
+          FF: ./bin/ff
 
       - uses: actions/upload-artifact@v7
         if: always()
@@ -184,7 +184,7 @@ jobs:
           retention-days: 7
 
   # -------------------------------------------------------------------
-  # Rate-ingest benchmark (logfwd only, measures RSS/CPU at each rate)
+  # Rate-ingest benchmark (ff only, measures RSS/CPU at each rate)
   # -------------------------------------------------------------------
   rate-bench:
     runs-on: ubuntu-latest
@@ -205,7 +205,7 @@ jobs:
             --json-file rate-bench-result.json \
             --gh-bench-file rate-gh-bench.json
         env:
-          LOGFWD: ./bin/logfwd
+          LOGFWD: ./bin/ff
 
       - uses: actions/upload-artifact@v7
         with:
@@ -289,7 +289,7 @@ jobs:
           retention-days: 7
 
   # -------------------------------------------------------------------
-  # CPU/memory profiling (logfwd only)
+  # CPU/memory profiling (ff only)
   # -------------------------------------------------------------------
   profile:
     timeout-minutes: 45
@@ -314,24 +314,24 @@ jobs:
           RUSTFLAGS: ${{ env.BENCH_RUSTFLAGS }}
         run: |
           cargo build --release --features cpu-profiling -p logfwd
-          cp target/release/logfwd bin/logfwd-prof
+          cp target/release/ff bin/ff-prof
 
       - name: Run profiling pass
         run: |
           bin/logfwd-competitive-bench \
             --lines ${{ env.LINES }} \
-            --agents logfwd \
+            --agents ff \
             --scenarios passthrough \
             --mode binary \
             --profile ./profiles \
-            --dhat-binary ./bin/logfwd-dhat
+            --dhat-binary ./bin/ff-dhat
         env:
-          LOGFWD: ./bin/logfwd-prof
+          FF: ./bin/ff-prof
 
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: logfwd-profiles
+          name: ff-profiles
           path: profiles/
           retention-days: 30
 

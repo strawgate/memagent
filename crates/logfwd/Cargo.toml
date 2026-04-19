@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
+[[bin]]
+name = "ff"
+path = "src/main.rs"
+
 [lib]
 doctest = false
 

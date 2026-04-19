@@ -10,14 +10,14 @@ RUN --mount=type=cache,target=/src/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
     CARGO_BUILD_RUSTC_WRAPPER="" \
     RUSTFLAGS="${RUSTFLAGS}" \
-    cargo build --release -p logfwd --bin logfwd && \
-    strip target/release/logfwd && \
-    cp target/release/logfwd /logfwd
+    cargo build --release -p logfwd --bin ff && \
+    strip target/release/ff && \
+    cp target/release/ff /ff
 
 FROM gcr.io/distroless/cc-debian12:nonroot
-COPY --from=builder /logfwd /usr/local/bin/logfwd
+COPY --from=builder /ff /usr/local/bin/ff
 USER nonroot
 EXPOSE 9090
 # Health checks should be configured at the orchestrator level (e.g. k8s
 # liveness/readiness probes) since distroless images have no shell.
-ENTRYPOINT ["logfwd"]
+ENTRYPOINT ["ff"]

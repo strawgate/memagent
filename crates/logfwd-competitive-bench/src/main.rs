@@ -69,7 +69,7 @@ fn main() {
     }
 
     // -----------------------------------------------------------------------
-    // Rate-ingest benchmark: non-competitive, logfwd only.
+    // Rate-ingest benchmark: non-competitive, ff only.
     // -----------------------------------------------------------------------
     if args.rate_bench {
         run_rate_bench_main(&args);
@@ -329,21 +329,21 @@ fn main() {
         write_gh_bench_json(&results, args.lines, path);
     }
 
-    // Profiling pass (logfwd only).
+    // Profiling pass (ff only).
     if let Some(ref profile_dir) = args.profile_dir {
         std::fs::create_dir_all(profile_dir).unwrap_or_else(|e| {
             eprintln!("ERROR: failed to create profile dir: {e}");
             process::exit(1);
         });
 
-        // Find the logfwd binary.
-        let logfwd_resolved = available.iter().find(|r| r.agent.name() == "logfwd");
+        // Find the ff binary.
+        let logfwd_resolved = available.iter().find(|r| r.agent.name() == "ff");
 
         if let Some(resolved) = logfwd_resolved.filter(|r| r.binary.is_some()) {
             let binary = resolved.binary.as_ref().unwrap();
             let logfwd_agent = resolved.agent;
 
-            eprintln!("=== Profiling logfwd ===");
+            eprintln!("=== Profiling ff ===");
 
             // CPU profiling with perf (Linux only).
             if runner::perf_available() {
@@ -393,7 +393,7 @@ fn main() {
 
             eprintln!();
         } else {
-            eprintln!("WARN: logfwd binary not available, skipping profiling");
+            eprintln!("WARN: ff binary not available, skipping profiling");
         }
     }
 }
@@ -402,17 +402,17 @@ fn main() {
 // Rate-ingest benchmark dispatch
 // ---------------------------------------------------------------------------
 
-/// Run the low-and-slow rate-ingest benchmark (non-competitive, logfwd only).
+/// Run the low-and-slow rate-ingest benchmark (non-competitive, ff only).
 fn run_rate_bench_main(args: &Args) {
-    // Locate logfwd binary via LOGFWD env var or PATH.
+    // Locate ff binary via LOGFWD env var or PATH.
     let logfwd_binary = find_logfwd_binary().unwrap_or_else(|| {
         eprintln!(
-            "ERROR: logfwd binary not found. \
-             Set the LOGFWD env var or ensure logfwd is on PATH."
+            "ERROR: ff binary not found. \
+             Set the LOGFWD env var or ensure ff is on PATH."
         );
         process::exit(1);
     });
-    eprintln!("=== Rate Ingest Benchmark (logfwd only) ===");
+    eprintln!("=== Rate Ingest Benchmark (ff only) ===");
     eprintln!("  binary: {}", logfwd_binary.display());
     eprintln!();
 
@@ -477,7 +477,7 @@ fn find_logfwd_binary() -> Option<PathBuf> {
             return Some(p);
         }
     }
-    if let Ok(output) = process::Command::new("which").arg("logfwd").output()
+    if let Ok(output) = process::Command::new("which").arg("ff").output()
         && output.status.success()
     {
         let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -999,7 +999,7 @@ impl Args {
                 eprintln!("  --profile DIR        Write CPU/memory profiles to DIR");
                 eprintln!("  --dhat-binary PATH   logfwd binary built with --features dhat-heap");
                 eprintln!(
-                    "  --rate-bench         Run low-and-slow rate-ingest benchmark (logfwd only)"
+                    "  --rate-bench         Run low-and-slow rate-ingest benchmark (ff only)"
                 );
                 process::exit(0);
             }
@@ -1180,7 +1180,7 @@ impl Args {
                         "  --dhat-binary PATH   logfwd binary built with --features dhat-heap"
                     );
                     eprintln!(
-                        "  --rate-bench         Run low-and-slow rate-ingest benchmark (logfwd only)"
+                        "  --rate-bench         Run low-and-slow rate-ingest benchmark (ff only)"
                     );
                     process::exit(1);
                 }

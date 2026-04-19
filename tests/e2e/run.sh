@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# KIND e2e test for logfwd.
+# KIND e2e test for ff.
 # Validates the full pipeline: file tail → CRI parse → SQL transform → HTTP output.
 #
 # shellcheck disable=SC2329
 set -euo pipefail
 
-CLUSTER_NAME="${E2E_CLUSTER_NAME:-logfwd-e2e}"
+CLUSTER_NAME="${E2E_CLUSTER_NAME:-ff-e2e}"
 KUBE_CONTEXT="kind-${CLUSTER_NAME}"
-NAMESPACE="e2e-logfwd"
-IMAGE="logfwd:e2e"
+NAMESPACE="e2e-ff"
+IMAGE="ff:e2e"
 TIMEOUT=120
 # Accept a range to tolerate benign duplicates from container restarts
 # or CRI partial-line reassembly edge cases.
@@ -96,9 +96,9 @@ kind load docker-image "$IMAGE" --name "$CLUSTER_NAME"
 
 echo "=== Phase 3: Deploy ==="
 k create namespace "$NAMESPACE" 2>/dev/null || true
-k apply -n "$NAMESPACE" -f "$SCRIPT_DIR/manifests/logfwd-config.yaml"
+k apply -n "$NAMESPACE" -f "$SCRIPT_DIR/manifests/ff-config.yaml"
 k apply -n "$NAMESPACE" -f "$SCRIPT_DIR/manifests/blackhole-receiver.yaml"
-k apply -n "$NAMESPACE" -f "$SCRIPT_DIR/manifests/logfwd-daemonset.yaml"
+k apply -n "$NAMESPACE" -f "$SCRIPT_DIR/manifests/ff-daemonset.yaml"
 
 echo "=== Phase 4: Wait for readiness ==="
 if ! k wait -n "$NAMESPACE" deployment/blackhole-receiver \
@@ -109,12 +109,12 @@ if ! k wait -n "$NAMESPACE" deployment/blackhole-receiver \
     k logs -n "$NAMESPACE" -l app=blackhole-receiver --tail=50 2>&1 || true
     exit 1
 fi
-if ! k rollout status -n "$NAMESPACE" daemonset/logfwd --timeout="$DEPLOY_TIMEOUT"; then
+if ! k rollout status -n "$NAMESPACE" daemonset/ff --timeout="$DEPLOY_TIMEOUT"; then
     echo ""
-    fail "LOGFWD_ROLLOUT_TIMEOUT" "logfwd daemonset rollout timed out"
-    k get pods -n "$NAMESPACE" -l app=logfwd -o wide 2>&1 || true
-    k describe pods -n "$NAMESPACE" -l app=logfwd 2>&1 || true
-    k logs -n "$NAMESPACE" -l app=logfwd --tail=80 2>&1 || true
+    fail "FF_ROLLOUT_TIMEOUT" "ff daemonset rollout timed out"
+    k get pods -n "$NAMESPACE" -l app=ff -o wide 2>&1 || true
+    k describe pods -n "$NAMESPACE" -l app=ff 2>&1 || true
+    k logs -n "$NAMESPACE" -l app=ff --tail=80 2>&1 || true
     k get events -n "$NAMESPACE" --sort-by='.lastTimestamp' 2>&1 || true
     exit 1
 fi
@@ -181,8 +181,8 @@ while [ $SECONDS -lt $DEADLINE ]; do
     elif [ "$LINES" -gt "$MAX_EXPECTED_LINES" ]; then
         echo ""
         fail "TOO_MANY_LINES" "blackhole received $LINES lines (> max expected $MAX_EXPECTED_LINES)"
-        echo "--- logfwd logs ---"
-        k logs -n "$NAMESPACE" -l app=logfwd --tail=40 2>&1 || true
+        echo "--- ff logs ---"
+        k logs -n "$NAMESPACE" -l app=ff --tail=40 2>&1 || true
         exit 1
     fi
 
@@ -194,8 +194,8 @@ done
 echo ""
 fail "VERIFY_TIMEOUT" "timed out after ${TIMEOUT}s — blackhole received $LINES lines, expected ${MIN_EXPECTED_LINES}..${MAX_EXPECTED_LINES}"
 echo ""
-echo "--- logfwd DaemonSet logs ---"
-k logs -n "$NAMESPACE" -l app=logfwd --tail=80 2>&1 || true
+echo "--- ff DaemonSet logs ---"
+k logs -n "$NAMESPACE" -l app=ff --tail=80 2>&1 || true
 echo ""
 echo "--- blackhole-receiver logs ---"
 k logs -n "$NAMESPACE" -l app=blackhole-receiver --tail=30 2>&1 || true

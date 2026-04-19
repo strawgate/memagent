@@ -1,17 +1,17 @@
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: logfwd
+  name: ff
   labels:
-    app: logfwd
+    app: ff
 spec:
   selector:
     matchLabels:
-      app: logfwd
+      app: ff
   template:
     metadata:
       labels:
-        app: logfwd
+        app: ff
     spec:
       automountServiceAccountToken: false
       tolerations:
@@ -23,8 +23,8 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: logfwd
-          image: logfwd:e2e
+        - name: ff
+          image: ff:e2e
           imagePullPolicy: IfNotPresent
           args: ["run", "--config", "/etc/logfwd/config.yaml"]
           securityContext:

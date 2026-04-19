@@ -31,16 +31,16 @@ const LONG_VERSION: &str = concat!(
     ")"
 );
 const CLI_AFTER_HELP: &str = r"Examples:
-  logfwd run --config config.yaml
-  logfwd validate --config config.yaml
-  logfwd dry-run --config config.yaml
-  logfwd effective-config --config config.yaml
-  logfwd blackhole
-  logfwd blast --destination otlp --endpoint http://127.0.0.1:4318/v1/logs
-  logfwd devour --mode otlp --listen 127.0.0.1:4318
-  logfwd generate-json 10000 test.json
-  logfwd wizard
-  logfwd completions bash
+  ff run --config config.yaml
+  ff validate --config config.yaml
+  ff dry-run --config config.yaml
+  ff effective-config --config config.yaml
+  ff blackhole
+  ff blast --destination otlp --endpoint http://127.0.0.1:4318/v1/logs
+  ff devour --mode otlp --listen 127.0.0.1:4318
+  ff generate-json 10000 test.json
+  ff wizard
+  ff completions bash
 
 Environment:
   LOGFWD_CONFIG    Config file path (auto-discovered if not set)
@@ -316,7 +316,7 @@ struct DevourArgs {
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "logfwd",
+    name = "ff",
     about = "Fast log forwarder with SQL transforms",
     long_about = "Fast log forwarder with SQL transforms",
     version = VERSION,
@@ -442,7 +442,7 @@ async fn main_inner() -> i32 {
                 reset(),
             );
             eprintln!(
-                "{}      run {}logfwd run --config {}{}",
+                "{}      run {}ff run --config {}{}",
                 dim(),
                 bold(),
                 path.display(),
@@ -451,7 +451,7 @@ async fn main_inner() -> i32 {
             eprintln!();
         } else {
             eprintln!(
-                "{}hint{}: no config found — try {}logfwd init{} or {}logfwd wizard{} to get started",
+                "{}hint{}: no config found — try {}ff init{} or {}ff wizard{} to get started",
                 dim(),
                 reset(),
                 bold(),
@@ -770,17 +770,17 @@ fn cmd_effective_config(config_path: Option<&str>) -> Result<(), CliError> {
 fn cmd_init() -> Result<(), CliError> {
     let path = std::path::Path::new("logfwd.yaml");
 
-    let template = r#"# logfwd configuration
+    let template = r#"# ff configuration
 # Docs: https://github.com/strawgate/memagent
 
 # ── Quick start ─────────────────────────────────────────────
-# 1. Generate sample data:  logfwd generate-json 10000 sample.json
-# 2. Validate this config:  logfwd validate --config logfwd.yaml
-# 3. Run the pipeline:      logfwd run --config logfwd.yaml
+# 1. Generate sample data:  ff generate-json 10000 sample.json
+# 2. Validate this config:  ff validate --config logfwd.yaml
+# 3. Run the pipeline:      ff run --config logfwd.yaml
 #
 # For production, change the input path and output to your real
 # source/destination — see the examples at https://github.com/strawgate/memagent/tree/main/examples/use-cases/
-# Or run `logfwd wizard` for an interactive setup.
+# Or run `ff wizard` for an interactive setup.
 
 # Tail a JSON log file and stream new lines as they appear.
 input:
@@ -822,12 +822,12 @@ output:
     eprintln!();
     eprintln!("{}Try it now:{}", bold(), reset());
     eprintln!(
-        "  logfwd generate-json 10000 sample.json   {}# create sample data{}",
+        "  ff generate-json 10000 sample.json   {}# create sample data{}",
         dim(),
         reset()
     );
     eprintln!(
-        "  logfwd run --config logfwd.yaml           {}# run the pipeline{}",
+        "  ff run --config logfwd.yaml           {}# run the pipeline{}",
         dim(),
         reset()
     );
@@ -844,7 +844,7 @@ fn cmd_wizard() -> Result<(), CliError> {
             "wizard requires an interactive terminal on stdin and stdout".to_owned(),
         ));
     }
-    println!("{}logfwd config wizard{}", bold(), reset());
+    println!("{}ff config wizard{}", bold(), reset());
     println!();
 
     // Step 1: Choose between a use-case preset or custom input/output.
@@ -927,7 +927,7 @@ fn cmd_wizard() -> Result<(), CliError> {
 
     eprintln!("{}created{} {}", green(), reset(), path.as_path().display());
     eprintln!(
-        "{}next{}: run {}logfwd validate --config {}{}",
+        "{}next{}: run {}ff validate --config {}{}",
         dim(),
         reset(),
         bold(),
@@ -1067,37 +1067,27 @@ fn cmd_completions(shell: CompletionShell) {
 
     match shell {
         CompletionShell::Bash => {
-            clap_complete::generate(clap_complete::Shell::Bash, &mut cmd, "logfwd", &mut stdout);
+            clap_complete::generate(clap_complete::Shell::Bash, &mut cmd, "ff", &mut stdout);
         }
         CompletionShell::Elvish => {
-            clap_complete::generate(
-                clap_complete::Shell::Elvish,
-                &mut cmd,
-                "logfwd",
-                &mut stdout,
-            );
+            clap_complete::generate(clap_complete::Shell::Elvish, &mut cmd, "ff", &mut stdout);
         }
         CompletionShell::Fish => {
-            clap_complete::generate(clap_complete::Shell::Fish, &mut cmd, "logfwd", &mut stdout);
+            clap_complete::generate(clap_complete::Shell::Fish, &mut cmd, "ff", &mut stdout);
         }
         CompletionShell::PowerShell => {
             clap_complete::generate(
                 clap_complete::Shell::PowerShell,
                 &mut cmd,
-                "logfwd",
+                "ff",
                 &mut stdout,
             );
         }
         CompletionShell::Zsh => {
-            clap_complete::generate(clap_complete::Shell::Zsh, &mut cmd, "logfwd", &mut stdout);
+            clap_complete::generate(clap_complete::Shell::Zsh, &mut cmd, "ff", &mut stdout);
         }
         CompletionShell::Nushell => {
-            clap_complete::generate(
-                clap_complete_nushell::Nushell,
-                &mut cmd,
-                "logfwd",
-                &mut stdout,
-            );
+            clap_complete::generate(clap_complete_nushell::Nushell, &mut cmd, "ff", &mut stdout);
         }
     }
 }
@@ -1825,7 +1815,7 @@ mod cli_tests {
 
     #[test]
     fn clap_parses_validate_subcommand() {
-        let cli = Cli::try_parse_from(["logfwd", "validate", "--config", "foo.yaml"])
+        let cli = Cli::try_parse_from(["ff", "validate", "--config", "foo.yaml"])
             .expect("parser should accept validate subcommand");
         match cli.command.expect("command") {
             Commands::Validate { config } => assert_eq!(config.as_deref(), Some("foo.yaml")),
@@ -1835,14 +1825,14 @@ mod cli_tests {
 
     #[test]
     fn clap_parses_effective_config_with_optional_config_flag() {
-        let with_path = Cli::try_parse_from(["logfwd", "effective-config", "--config", "foo.yaml"])
+        let with_path = Cli::try_parse_from(["ff", "effective-config", "--config", "foo.yaml"])
             .expect("parser should accept effective-config with path");
         match with_path.command.expect("command") {
             Commands::EffectiveConfig { config } => assert_eq!(config.as_deref(), Some("foo.yaml")),
             other => panic!("expected effective-config command, got {other:?}"),
         }
 
-        let without_path = Cli::try_parse_from(["logfwd", "effective-config"])
+        let without_path = Cli::try_parse_from(["ff", "effective-config"])
             .expect("parser should accept effective-config without path");
         match without_path.command.expect("command") {
             Commands::EffectiveConfig { config } => assert!(config.is_none()),
@@ -1852,7 +1842,7 @@ mod cli_tests {
 
     #[test]
     fn clap_parses_blackhole_default_form() {
-        let cli = Cli::try_parse_from(["logfwd", "blackhole"])
+        let cli = Cli::try_parse_from(["ff", "blackhole"])
             .expect("parser should accept blackhole without addr");
         match cli.command.expect("command") {
             Commands::Blackhole { bind_addr } => assert!(bind_addr.is_none()),
@@ -1862,15 +1852,15 @@ mod cli_tests {
 
     #[test]
     fn clap_completions_supports_nushell_and_powershell_alias() {
-        let nu = Cli::try_parse_from(["logfwd", "completions", "nushell"])
-            .expect("nushell should parse");
+        let nu =
+            Cli::try_parse_from(["ff", "completions", "nushell"]).expect("nushell should parse");
         match nu.command.expect("command") {
             Commands::Completions { shell } => assert!(matches!(shell, CompletionShell::Nushell)),
             other => panic!("expected completions command, got {other:?}"),
         }
 
-        let pwsh = Cli::try_parse_from(["logfwd", "completions", "pwsh"])
-            .expect("pwsh alias should parse");
+        let pwsh =
+            Cli::try_parse_from(["ff", "completions", "pwsh"]).expect("pwsh alias should parse");
         match pwsh.command.expect("command") {
             Commands::Completions { shell } => {
                 assert!(matches!(shell, CompletionShell::PowerShell))
@@ -1881,7 +1871,7 @@ mod cli_tests {
 
     #[test]
     fn clap_parses_generate_json_subcommand() {
-        let cli = Cli::try_parse_from(["logfwd", "generate-json", "5", "out.json"])
+        let cli = Cli::try_parse_from(["ff", "generate-json", "5", "out.json"])
             .expect("generate-json should parse");
         match cli.command.expect("command") {
             Commands::GenerateJson {
@@ -1897,7 +1887,7 @@ mod cli_tests {
 
     #[test]
     fn clap_supports_help_subcommand() {
-        let err = Cli::try_parse_from(["logfwd", "help"])
+        let err = Cli::try_parse_from(["ff", "help"])
             .expect_err("help subcommand should trigger help display");
         assert_eq!(err.kind(), ErrorKind::DisplayHelp);
     }
@@ -1905,7 +1895,7 @@ mod cli_tests {
     #[test]
     fn clap_parses_blast_and_devour_aliases() {
         let blast = Cli::try_parse_from([
-            "logfwd",
+            "ff",
             "blast",
             "--destination",
             "elasticsearch_otlp",
@@ -1921,7 +1911,7 @@ mod cli_tests {
         }
 
         let blast_arrow = Cli::try_parse_from([
-            "logfwd",
+            "ff",
             "blast",
             "--destination",
             "arrow_ipc",
@@ -1936,7 +1926,7 @@ mod cli_tests {
             other => panic!("expected blast command, got {other:?}"),
         }
 
-        let devour = Cli::try_parse_from(["logfwd", "devour", "--mode", "elasticsearch"])
+        let devour = Cli::try_parse_from(["ff", "devour", "--mode", "elasticsearch"])
             .expect("devour elasticsearch alias should parse");
         match devour.command.expect("command") {
             Commands::Devour(args) => assert!(matches!(args.mode, DevourMode::ElasticsearchBulk)),
@@ -1946,7 +1936,7 @@ mod cli_tests {
 
     #[test]
     fn clap_parses_devour_defaults() {
-        let cli = Cli::try_parse_from(["logfwd", "devour"]).expect("devour should parse");
+        let cli = Cli::try_parse_from(["ff", "devour"]).expect("devour should parse");
         match cli.command.expect("command") {
             Commands::Devour(args) => {
                 assert!(matches!(args.mode, DevourMode::Otlp));
@@ -2006,7 +1996,7 @@ mod cli_tests {
     #[test]
     fn blast_destination_http_is_rejected_by_cli_parser() {
         let err = Cli::try_parse_from([
-            "logfwd",
+            "ff",
             "blast",
             "--destination",
             "http",
@@ -2020,7 +2010,7 @@ mod cli_tests {
     #[test]
     fn blast_duration_defaults_to_none() {
         let cli = Cli::try_parse_from([
-            "logfwd",
+            "ff",
             "blast",
             "--destination",
             "otlp",
