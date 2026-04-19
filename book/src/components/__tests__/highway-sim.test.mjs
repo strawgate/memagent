@@ -542,13 +542,12 @@ describe('slot positions', function () {
     assert.equal(car.targetD, expected);
   });
 
-  it('keeps legacy d synchronized with targetD after slot movement', function () {
+  it('targetD tracks slot position after movement', function () {
     var sim = createSimulation({ greenPct: 100, spawnMs: 99999 }, fixedScale(1));
     sim.exitAuto();
     var car = sim.addCar('highway', 1);
     sim.tick(1000);
-    assert.equal(car.d, car.targetD);
-    assert.equal(car.d, sim.getSlotD('highway', 2));
+    assert.equal(car.targetD, sim.getSlotD('highway', 2));
   });
 
   it('keeps a car stopped at the last slot when it cannot advance', function () {
