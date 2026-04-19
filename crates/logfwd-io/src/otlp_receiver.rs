@@ -44,6 +44,11 @@ use crate::input::{InputEvent, InputSource};
 
 const CHANNEL_BOUND: usize = 4096;
 const FALLBACK_REQUEST_CPU_WORKERS: usize = 4;
+/// Maximum CPU decode workers regardless of available parallelism.
+///
+/// Prevents excessive thread spawning on large-core machines where the
+/// decode pool would otherwise grow unboundedly per receiver input.
+const MAX_REQUEST_CPU_WORKERS: usize = 16;
 /// Max payloads drained from the internal channel in a single `poll()` call.
 ///
 /// This bounds per-poll work and prevents one call from aggregating an
@@ -279,12 +284,6 @@ impl OtlpReceiverInput {
     }
 }
 
-/// Maximum CPU decode workers regardless of available parallelism.
-///
-/// Prevents excessive thread spawning on large-core machines where the
-/// decode pool would otherwise grow unboundedly.
-const MAX_REQUEST_CPU_WORKERS: usize = 16;
-
 fn request_cpu_worker_count() -> usize {
     std::thread::available_parallelism()
         .map_or(FALLBACK_REQUEST_CPU_WORKERS, |parallelism| {
@@ -503,5 +502,10 @@ mod poll_tests {
     fn request_cpu_outstanding_limit_follows_worker_count_floor() {
         assert_eq!(request_cpu_outstanding_limit(0), 1);
         assert_eq!(request_cpu_outstanding_limit(3), 3);
+    }
+
+    #[test]
+    fn request_cpu_worker_count_is_capped() {
+        assert!(request_cpu_worker_count() <= MAX_REQUEST_CPU_WORKERS);
     }
 }

@@ -80,6 +80,7 @@ pub(crate) struct BoundedBlockingStage<W: BlockingWorker> {
     max_outstanding: usize,
     outstanding: Arc<AtomicUsize>,
     is_worker_failed: Arc<AtomicBool>,
+    is_shutting_down: Arc<AtomicBool>,
 }
 
 impl<W: BlockingWorker> BoundedBlockingStage<W> {
@@ -96,6 +97,7 @@ impl<W: BlockingWorker> BoundedBlockingStage<W> {
         let max_outstanding = max_outstanding.max(1);
         let outstanding = Arc::new(AtomicUsize::new(0));
         let is_worker_failed = Arc::new(AtomicBool::new(false));
+        let is_shutting_down = Arc::new(AtomicBool::new(false));
 
         let mut submit_txs = Vec::with_capacity(worker_count);
         let mut worker_handles = Vec::with_capacity(worker_count);
@@ -103,10 +105,11 @@ impl<W: BlockingWorker> BoundedBlockingStage<W> {
             let (worker_tx, worker_rx) = bounded::<StageJob<W>>(max_outstanding);
             submit_txs.push(worker_tx);
             let worker_failed = Arc::clone(&is_worker_failed);
+            let shutting_down = Arc::clone(&is_shutting_down);
             let mut worker = build_worker(worker_id);
             let handle = thread::Builder::new()
                 .name(format!("blocking-stage-{worker_id}"))
-                .spawn(move || worker_loop(&mut worker, worker_rx, worker_failed))?;
+                .spawn(move || worker_loop(&mut worker, worker_rx, worker_failed, shutting_down))?;
             worker_handles.push(handle);
         }
 
@@ -117,6 +120,7 @@ impl<W: BlockingWorker> BoundedBlockingStage<W> {
             max_outstanding,
             outstanding,
             is_worker_failed,
+            is_shutting_down,
         })
     }
 
@@ -127,6 +131,9 @@ impl<W: BlockingWorker> BoundedBlockingStage<W> {
     ) -> Result<BlockingStageResult<W::Output, W::Error>, BlockingStageSubmitError> {
         if self.is_worker_failed.load(Ordering::Acquire) {
             return Err(BlockingStageSubmitError::WorkerFailed);
+        }
+        if self.is_shutting_down.load(Ordering::Acquire) {
+            return Err(BlockingStageSubmitError::Closed);
         }
         if self.submit_txs.is_empty() {
             return Err(BlockingStageSubmitError::Closed);
@@ -202,6 +209,7 @@ impl<W: BlockingWorker> BoundedBlockingStage<W> {
 
 impl<W: BlockingWorker> Drop for BoundedBlockingStage<W> {
     fn drop(&mut self) {
+        self.is_shutting_down.store(true, Ordering::Release);
         self.submit_txs.clear();
         for handle in self.worker_handles.drain(..) {
             let _ = handle.join();
@@ -213,6 +221,7 @@ fn worker_loop<W: BlockingWorker>(
     worker: &mut W,
     submit_rx: Receiver<StageJob<W>>,
     is_worker_failed: Arc<AtomicBool>,
+    is_shutting_down: Arc<AtomicBool>,
 ) {
     while let Ok(StageJob {
         job,
@@ -220,7 +229,7 @@ fn worker_loop<W: BlockingWorker>(
         _outstanding,
     }) = submit_rx.recv()
     {
-        if is_worker_failed.load(Ordering::Acquire) {
+        if is_worker_failed.load(Ordering::Acquire) || is_shutting_down.load(Ordering::Acquire) {
             let _ = response_tx.send(Err(BlockingStageReceiveError::Closed));
             close_pending_jobs(&submit_rx);
             return;
@@ -408,6 +417,36 @@ mod tests {
             block_on(queued.recv()),
             Err(BlockingStageReceiveError::Closed)
         ));
+    }
+
+    #[test]
+    fn drop_closes_queued_jobs_without_processing_them() {
+        let total_seen = Arc::new(AtomicUsize::new(0));
+        let stage = BoundedBlockingStage::new(1, 2, |_| CountingWorker {
+            processed: 0,
+            total_seen: Arc::clone(&total_seen),
+        })
+        .expect("stage should build");
+
+        let first = stage
+            .try_submit(usize::MAX - 2)
+            .expect("sleeping job submit");
+        let queued = stage.try_submit(1).expect("queued job submit");
+        drop(stage);
+
+        match block_on(first.recv()) {
+            Ok(_) | Err(BlockingStageReceiveError::Closed) => {}
+            Err(other) => panic!("unexpected first job result during shutdown: {other:?}"),
+        }
+        assert!(matches!(
+            block_on(queued.recv()),
+            Err(BlockingStageReceiveError::Closed)
+        ));
+        assert_eq!(
+            total_seen.load(Ordering::Relaxed),
+            0,
+            "queued normal job should not be processed during shutdown"
+        );
     }
 
     #[test]

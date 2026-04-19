@@ -15,57 +15,75 @@ use super::decode::{
 #[cfg(any(feature = "otlp-research", test))]
 use super::projection::{ProjectedOtlpDecoder, ProjectionError};
 
-/// Bounded blocking stage for OTLP request CPU decoding workers.
+/// Fixed worker pool that owns all payload-scaling OTLP request CPU work.
 pub(super) type OtlpRequestCpuStage = BoundedBlockingStage<OtlpRequestCpuWorker>;
 
-/// A single OTLP decode job submitted to the CPU worker pool.
+/// Request body and decode metadata handed from the HTTP runtime to CPU workers.
 pub(super) struct OtlpRequestCpuJob {
+    /// Raw bounded HTTP body bytes, still compressed when `encoding` is not identity.
     pub(super) body: Vec<u8>,
+    /// Decoder family selected from the normalized content type.
     pub(super) content: OtlpRequestContent,
+    /// Content encoding selected from the normalized content-encoding header.
     pub(super) encoding: OtlpContentEncoding,
+    /// Maximum allowed decompressed payload size for compressed requests.
     pub(super) max_body_size: usize,
 }
 
-/// Content type of an incoming OTLP request (JSON or Protobuf).
+/// OTLP request serialization family selected before CPU-stage submission.
 pub(super) enum OtlpRequestContent {
+    /// OTLP JSON payload accepted as `application/json`.
     Json,
+    /// OTLP protobuf payload used for absent or non-JSON content types.
     Protobuf,
 }
 
-/// Content-Encoding applied to the OTLP request body.
+/// Compression applied to the HTTP request body before OTLP decode.
 #[derive(Clone, Copy)]
 pub(super) enum OtlpContentEncoding {
+    /// Body is already an OTLP JSON/protobuf payload.
     Identity,
+    /// Body must be gzip-decompressed inside the CPU worker.
     Gzip,
+    /// Body must be zstd-decompressed inside the CPU worker.
     Zstd,
 }
 
-/// Successful output from a CPU decode worker: a record batch and decode outcome.
+/// Successful CPU-stage output returned to the HTTP handler.
 pub(super) struct OtlpRequestCpuOutput {
+    /// Materialized Arrow batch ready for receiver queue submission.
     pub(super) batch: RecordBatch,
+    /// Decode path used, for projection metrics and fallback accounting.
     pub(super) outcome: OtlpRequestCpuOutcome,
 }
 
-/// Which decode path produced the output batch.
+/// Decode path used to produce a successful OTLP request batch.
 pub(super) enum OtlpRequestCpuOutcome {
+    /// OTLP JSON path decoded and materialized the request.
     Json,
+    /// Prost reference protobuf path decoded and materialized the request.
     Prost,
+    /// Experimental projection path handled the protobuf request directly.
     #[cfg(any(feature = "otlp-research", test))]
     ProjectedSuccess,
+    /// Experimental projection found unsupported valid OTLP and fell back to prost.
     #[cfg(any(feature = "otlp-research", test))]
     ProjectedFallback,
 }
 
-/// Error returned by a CPU decode worker.
+/// Recoverable CPU-stage failure classified for HTTP response mapping.
 #[derive(Debug)]
 pub(super) enum OtlpRequestCpuError {
+    /// Compression transport failed before decode; invalid data maps to transport errors.
     Decompression(InputError),
+    /// JSON/protobuf payload decode or materialization failed.
     Payload(InputError),
+    /// Projection rejected malformed protobuf that should not fall back to prost.
     #[cfg(any(feature = "otlp-research", test))]
     ProjectionInvalid(InputError),
 }
 
-/// Per-thread OTLP decode worker holding reusable decoder state.
+/// Per-thread OTLP request processor with reusable decoder state.
 pub(super) struct OtlpRequestCpuWorker {
     resource_prefix: Arc<str>,
     mode: OtlpProtobufDecodeMode,
@@ -207,6 +225,11 @@ fn decompress_request_body(
     }
 }
 
+/// Build the bounded worker-owned CPU stage used by the OTLP HTTP handler.
+///
+/// Each worker owns its projected decoder state, so protobuf projection reuse
+/// does not require locking on the async HTTP runtime. `max_outstanding` bounds
+/// active plus queued requests and causes submit-side backpressure when full.
 pub(super) fn build_otlp_request_cpu_stage(
     worker_count: usize,
     max_outstanding: usize,
