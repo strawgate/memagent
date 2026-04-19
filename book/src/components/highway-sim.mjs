@@ -12,7 +12,7 @@
  *   cont:    cars continue east past the fork (always flowing, fade out)
  */
 
-export var DEFAULTS = {
+export const DEFAULTS = {
   slotsHwy: 15,
   slotsRamp: 5,
   slotsExit: 6,
@@ -30,79 +30,100 @@ export var DEFAULTS = {
   scaleMin: 0.8,
   scaleMax: 1.15,
   spawnBlockedThreshold: 8,
-  // Segment d-lengths for rendering (used to compute slot positions)
   lenHwy: 530,
   lenRamp: 180,
   lenExit: 210,
   lenCont: 215,
 };
 
-var SHAPES = ['sedan', 'truck', 'compact', 'van'];
-var SHAPE_W = { sedan: 1, truck: 1.3, compact: 0.8, van: 1 };
+const SHAPES = ['sedan', 'truck', 'compact', 'van'];
+const SHAPE_W = { sedan: 1, truck: 1.3, compact: 0.8, van: 1 };
 
 export function fixedScale(s) {
   return function () { return s; };
 }
 
 export function createSimulation(overrides, scaleFn) {
-  var cfg = {};
-  var k;
-  for (k in DEFAULTS) cfg[k] = DEFAULTS[k];
-  if (overrides) for (k in overrides) cfg[k] = overrides[k];
+  const cfg = {};
+  for (const k in DEFAULTS) cfg[k] = DEFAULTS[k];
+  if (overrides) for (const k in overrides) cfg[k] = overrides[k];
 
-  var getScale = scaleFn || function () {
+  const getScale = scaleFn || function () {
     return cfg.scaleMin + Math.random() * (cfg.scaleMax - cfg.scaleMin);
   };
 
-  // Compute slot d-positions for each segment
+  // Compute evenly-spaced slot positions along a segment
   function slotPositions(count, segLen) {
-    var positions = [];
-    var spacing = count > 1 ? segLen / (count - 1) : 0;
-    for (var i = 0; i < count; i++) {
+    const positions = [];
+    const spacing = count > 1 ? segLen / (count - 1) : 0;
+    for (let i = 0; i < count; i++) {
       positions.push(i * spacing);
     }
     return positions;
   }
 
-  var hwySlotD = slotPositions(cfg.slotsHwy, cfg.lenHwy);
-  var rampSlotD = slotPositions(cfg.slotsRamp, cfg.lenRamp);
-  var exitSlotD = slotPositions(cfg.slotsExit, cfg.lenExit);
-  var contSlotD = slotPositions(cfg.slotsCont, cfg.lenCont);
+  // ---- Segment map — single source of truth per segment ----
+  const segs = {
+    highway: {
+      slots: new Array(cfg.slotsHwy).fill(null),
+      slotD: slotPositions(cfg.slotsHwy, cfg.lenHwy),
+      len: cfg.lenHwy,
+      hasGate: false, fadePastGate: false, fadeFullLen: false,
+    },
+    ramp: {
+      slots: new Array(cfg.slotsRamp).fill(null),
+      slotD: slotPositions(cfg.slotsRamp, cfg.lenRamp),
+      len: cfg.lenRamp,
+      hasGate: false, fadePastGate: false, fadeFullLen: false,
+    },
+    exit: {
+      slots: new Array(cfg.slotsExit).fill(null),
+      slotD: slotPositions(cfg.slotsExit, cfg.lenExit),
+      len: cfg.lenExit,
+      hasGate: true, fadePastGate: true, fadeFullLen: false,
+    },
+    cont: {
+      slots: new Array(cfg.slotsCont).fill(null),
+      slotD: slotPositions(cfg.slotsCont, cfg.lenCont),
+      len: cfg.lenCont,
+      hasGate: false, fadePastGate: false, fadeFullLen: true,
+    },
+  };
 
-  // Slot arrays — null means empty, otherwise holds a car object
-  var hwySlots = new Array(cfg.slotsHwy).fill(null);
-  var rampSlots = new Array(cfg.slotsRamp).fill(null);
-  var exitSlots = new Array(cfg.slotsExit).fill(null);
-  var contSlots = new Array(cfg.slotsCont).fill(null);
+  let nextId = 0;
+  let lightIsGreen = true;
+  let greenPct = cfg.greenPct;
+  let cycleStart = 0;
+  let lastSpawn = -Infinity;
+  let spawnSrc = 0;
 
-  var nextId = 0;
-  var lightIsGreen = true;
-  var greenPct = cfg.greenPct;
-  var cycleStart = 0;
-  var lastSpawn = -Infinity;
-  var spawnSrc = 0;
+  let autoMode = true;
+  let autoVal = greenPct;
+  let autoDir = -1;
 
-  var autoMode = true;
-  var autoVal = greenPct;
-  var autoDir = -1;
-
-  var deliveries = [];
-  var stalledFrames = 0;
-  var totalFrames = 0;
-  var spawnBlockedTicks = 0;
+  const deliveries = [];
+  let stalledFrames = 0;
+  let totalFrames = 0;
+  let spawnBlockedTicks = 0;
 
   // ---- helpers ----
 
+  function moveCar(car, segment, slotIdx) {
+    const s = segs[segment];
+    car.segment = segment;
+    car.slot = slotIdx;
+    car.targetD = s.slotD[slotIdx];
+  }
+
   function makeCar(segment, slotIdx, scale) {
-    var s = scale != null ? scale : getScale();
-    var shape = SHAPES[nextId % SHAPES.length];
-    var shapeMul = SHAPE_W[shape] || 1;
-    var slotD = getSlotD(segment, slotIdx);
+    const s = scale != null ? scale : getScale();
+    const shape = SHAPES[nextId % SHAPES.length];
+    const shapeMul = SHAPE_W[shape] || 1;
+    const slotD = segs[segment].slotD[slotIdx] || 0;
     return {
       id: nextId++,
       segment: segment,
       slot: slotIdx,
-      d: slotD,
       targetD: slotD,
       speed: 0,
       scale: s,
@@ -114,47 +135,25 @@ export function createSimulation(overrides, scaleFn) {
     };
   }
 
-  function getSlotD(segment, slotIdx) {
-    if (segment === 'highway') return hwySlotD[slotIdx] || 0;
-    if (segment === 'ramp') return rampSlotD[slotIdx] || 0;
-    if (segment === 'exit') return exitSlotD[slotIdx] || 0;
-    if (segment === 'cont') return contSlotD[slotIdx] || 0;
-    return 0;
-  }
-
-  function getSlots(segment) {
-    if (segment === 'highway') return hwySlots;
-    if (segment === 'ramp') return rampSlots;
-    if (segment === 'exit') return exitSlots;
-    if (segment === 'cont') return contSlots;
-    return null;
-  }
-
-  function getSegLen(segment) {
-    if (segment === 'highway') return cfg.lenHwy;
-    if (segment === 'ramp') return cfg.lenRamp;
-    if (segment === 'exit') return cfg.lenExit;
-    if (segment === 'cont') return cfg.lenCont;
-    return 0;
-  }
-
   function allCars() {
-    var result = [];
-    var segments = [hwySlots, rampSlots, exitSlots, contSlots];
-    for (var s = 0; s < segments.length; s++) {
-      for (var i = 0; i < segments[s].length; i++) {
-        if (segments[s][i]) result.push(segments[s][i]);
+    const result = [];
+    const segNames = ['highway', 'ramp', 'exit', 'cont'];
+    for (let s = 0; s < segNames.length; s++) {
+      const slots = segs[segNames[s]].slots;
+      for (let i = 0; i < slots.length; i++) {
+        if (slots[i]) result.push(slots[i]);
       }
     }
     return result;
   }
 
   function totalCars() {
-    var count = 0;
-    var segments = [hwySlots, rampSlots, exitSlots, contSlots];
-    for (var s = 0; s < segments.length; s++) {
-      for (var i = 0; i < segments[s].length; i++) {
-        if (segments[s][i]) count++;
+    let count = 0;
+    const segNames = ['highway', 'ramp', 'exit', 'cont'];
+    for (let s = 0; s < segNames.length; s++) {
+      const slots = segs[segNames[s]].slots;
+      for (let i = 0; i < slots.length; i++) {
+        if (slots[i]) count++;
       }
     }
     return count;
@@ -171,7 +170,7 @@ export function createSimulation(overrides, scaleFn) {
   function tickLight(now) {
     if (greenPct >= 100) { lightIsGreen = true; return; }
     if (greenPct <= 0) { lightIsGreen = false; return; }
-    var elapsed = (now - cycleStart) % cfg.cycleTotal;
+    const elapsed = (now - cycleStart) % cfg.cycleTotal;
     lightIsGreen = elapsed < cfg.cycleTotal * greenPct / 100;
   }
 
@@ -185,35 +184,30 @@ export function createSimulation(overrides, scaleFn) {
 
   // ---- segment advancement ----
 
-  function advanceSegment(slots, slotDArr, segLen, opts) {
-    opts = opts || {};
-    // Process from the end (highest slot) to start, so each car
-    // sees the already-advanced state of the car ahead.
-    for (var i = slots.length - 1; i >= 0; i--) {
-      var car = slots[i];
+  function advanceSegment(seg) {
+    const { slots, slotD, len, hasGate, fadePastGate, fadeFullLen } = seg;
+
+    for (let i = slots.length - 1; i >= 0; i--) {
+      const car = slots[i];
       if (!car) continue;
 
       // Gate check — exit segment only
-      if (opts.hasGate && !lightIsGreen && !car.pastGate) {
+      if (hasGate && !lightIsGreen && !car.pastGate) {
         if (i >= cfg.gateSlot) {
-          // Car is at or past the gate slot but hasn't been marked past gate
-          // (placed here manually or reached gate during red) — stop
           car.speed = 0;
-          car.targetD = slotDArr[i];
-          car.d = car.targetD;
+          moveCar(car, car.segment, i);
           car.color = carColor(car);
           continue;
         }
       }
 
       // Try to advance to next slot
-      var nextSlot = i + 1;
+      const nextSlot = i + 1;
       if (nextSlot < slots.length && slots[nextSlot] === null) {
         // Gate blocking: can't advance past gateSlot if light is red
-        if (opts.hasGate && !lightIsGreen && !car.pastGate && nextSlot > cfg.gateSlot) {
+        if (hasGate && !lightIsGreen && !car.pastGate && nextSlot > cfg.gateSlot) {
           car.speed = 0;
-          car.targetD = slotDArr[i];
-          car.d = car.targetD;
+          moveCar(car, car.segment, i);
           car.color = carColor(car);
           continue;
         }
@@ -221,32 +215,30 @@ export function createSimulation(overrides, scaleFn) {
         // Move forward
         slots[i] = null;
         slots[nextSlot] = car;
-        car.slot = nextSlot;
-        car.targetD = slotDArr[nextSlot];
+        moveCar(car, car.segment, nextSlot);
         car.speed = 3.5;
 
         // Mark as past gate when crossing the gate slot
-        if (opts.hasGate && nextSlot > cfg.gateSlot) {
+        if (hasGate && nextSlot > cfg.gateSlot) {
           car.pastGate = true;
         }
       } else {
         // Can't advance — stopped
         car.speed = 0;
-        car.targetD = slotDArr[i];
+        moveCar(car, car.segment, i);
       }
 
       // Fade for exit (past gate) and cont (full length)
-      if (opts.fadePastGate && car.pastGate) {
-        var gatePos = slotDArr[cfg.gateSlot] || 0;
-        var fadeLen = segLen - gatePos;
+      if (fadePastGate && car.pastGate) {
+        const gatePos = slotD[cfg.gateSlot] || 0;
+        const fadeLen = len - gatePos;
         car.opacity = fadeLen > 0 ? Math.max(0, 1 - (car.targetD - gatePos) / fadeLen) : 0;
-      } else if (opts.fadeFullLen) {
-        car.opacity = segLen > 0 ? Math.max(0, 1 - car.targetD / segLen) : 0;
+      } else if (fadeFullLen) {
+        car.opacity = len > 0 ? Math.max(0, 1 - car.targetD / len) : 0;
       } else {
         car.opacity = 1;
       }
 
-      car.d = car.targetD;
       car.color = carColor(car);
     }
   }
@@ -254,28 +246,25 @@ export function createSimulation(overrides, scaleFn) {
   // ---- transitions ----
 
   function tryHwyToExit() {
-    var lastHwy = cfg.slotsHwy - 1;
-    var car = hwySlots[lastHwy];
+    const hwy = segs.highway;
+    const lastHwy = hwy.slots.length - 1;
+    const car = hwy.slots[lastHwy];
     if (!car) return;
 
     // Prefer exit ramp
-    if (exitSlots[0] === null) {
-      hwySlots[lastHwy] = null;
-      car.segment = 'exit';
-      car.slot = 0;
-      car.targetD = exitSlotD[0];
+    if (segs.exit.slots[0] === null) {
+      hwy.slots[lastHwy] = null;
+      moveCar(car, 'exit', 0);
       car.pastGate = false;
-      exitSlots[0] = car;
+      segs.exit.slots[0] = car;
       return;
     }
 
     // Continuation (only when light is green — prevents bypass during red)
-    if (lightIsGreen && contSlots[0] === null) {
-      hwySlots[lastHwy] = null;
-      car.segment = 'cont';
-      car.slot = 0;
-      car.targetD = contSlotD[0];
-      contSlots[0] = car;
+    if (lightIsGreen && segs.cont.slots[0] === null) {
+      hwy.slots[lastHwy] = null;
+      moveCar(car, 'cont', 0);
+      segs.cont.slots[0] = car;
       return;
     }
 
@@ -284,17 +273,17 @@ export function createSimulation(overrides, scaleFn) {
   }
 
   function tryRampMerge() {
-    var lastRamp = cfg.slotsRamp - 1;
-    var car = rampSlots[lastRamp];
+    const ramp = segs.ramp;
+    const hwy = segs.highway;
+    const lastRamp = ramp.slots.length - 1;
+    const car = ramp.slots[lastRamp];
     if (!car) return;
 
     // Merge into highway at mergeSlot if empty
-    if (hwySlots[cfg.mergeSlot] === null) {
-      rampSlots[lastRamp] = null;
-      car.segment = 'highway';
-      car.slot = cfg.mergeSlot;
-      car.targetD = hwySlotD[cfg.mergeSlot];
-      hwySlots[cfg.mergeSlot] = car;
+    if (hwy.slots[cfg.mergeSlot] === null) {
+      ramp.slots[lastRamp] = null;
+      moveCar(car, 'highway', cfg.mergeSlot);
+      hwy.slots[cfg.mergeSlot] = car;
     } else {
       car.speed = 0;
     }
@@ -306,26 +295,26 @@ export function createSimulation(overrides, scaleFn) {
     if (totalCars() >= cfg.maxCars) return { kind: 'capped' };
     if (now - lastSpawn < cfg.spawnMs) return { kind: 'cooldown' };
 
-    var spawned = false;
+    let spawned = false;
 
     // Alternate preferred source
-    var src = spawnSrc;
+    const src = spawnSrc;
     spawnSrc = 1 - spawnSrc;
 
     if (src === 0) {
-      if (hwySlots[0] === null) {
-        hwySlots[0] = makeCar('highway', 0);
+      if (segs.highway.slots[0] === null) {
+        segs.highway.slots[0] = makeCar('highway', 0);
         spawned = true;
-      } else if (rampSlots[0] === null) {
-        rampSlots[0] = makeCar('ramp', 0);
+      } else if (segs.ramp.slots[0] === null) {
+        segs.ramp.slots[0] = makeCar('ramp', 0);
         spawned = true;
       }
     } else {
-      if (rampSlots[0] === null) {
-        rampSlots[0] = makeCar('ramp', 0);
+      if (segs.ramp.slots[0] === null) {
+        segs.ramp.slots[0] = makeCar('ramp', 0);
         spawned = true;
-      } else if (hwySlots[0] === null) {
-        hwySlots[0] = makeCar('highway', 0);
+      } else if (segs.highway.slots[0] === null) {
+        segs.highway.slots[0] = makeCar('highway', 0);
         spawned = true;
       }
     }
@@ -342,12 +331,13 @@ export function createSimulation(overrides, scaleFn) {
   // ---- removal ----
 
   function removeDelivered(now) {
-    var removedIds = [];
+    const removedIds = [];
 
     // Exit: remove cars at last slot (delivered) or fully faded
-    var lastExit = cfg.slotsExit - 1;
-    for (var i = lastExit; i >= 0; i--) {
-      var ec = exitSlots[i];
+    const exitSlots = segs.exit.slots;
+    const lastExit = exitSlots.length - 1;
+    for (let i = lastExit; i >= 0; i--) {
+      const ec = exitSlots[i];
       if (!ec) continue;
       if (i === lastExit || ec.opacity <= 0.01) {
         removedIds.push(ec.id);
@@ -357,9 +347,10 @@ export function createSimulation(overrides, scaleFn) {
     }
 
     // Cont: remove cars at last slot or fully faded
-    var lastCont = cfg.slotsCont - 1;
-    for (var j = lastCont; j >= 0; j--) {
-      var cc = contSlots[j];
+    const contSlots = segs.cont.slots;
+    const lastCont = contSlots.length - 1;
+    for (let j = lastCont; j >= 0; j--) {
+      const cc = contSlots[j];
       if (!cc) continue;
       if (j === lastCont || cc.opacity <= 0.01) {
         removedIds.push(cc.id);
@@ -378,20 +369,20 @@ export function createSimulation(overrides, scaleFn) {
     tickLight(now);
 
     // 1. Remove delivered
-    var removedIds = removeDelivered(now);
+    const removedIds = removeDelivered(now);
 
     // 2. Advance continuation (downstream first — frees slots)
-    advanceSegment(contSlots, contSlotD, cfg.lenCont, { fadeFullLen: true });
+    advanceSegment(segs.cont);
 
     // 3. Highway → exit/cont transition (before exit advancement,
     //    so a full exit causes overflow to cont)
     tryHwyToExit();
 
     // 4. Advance exit
-    advanceSegment(exitSlots, exitSlotD, cfg.lenExit, { hasGate: true, fadePastGate: true });
+    advanceSegment(segs.exit);
 
     // 5. Advance highway
-    advanceSegment(hwySlots, hwySlotD, cfg.lenHwy);
+    advanceSegment(segs.highway);
 
     // 6. Try transition again (after highway advancement freed the lead car)
     tryHwyToExit();
@@ -400,13 +391,13 @@ export function createSimulation(overrides, scaleFn) {
     tryRampMerge();
 
     // 8. Advance ramp
-    advanceSegment(rampSlots, rampSlotD, cfg.lenRamp);
+    advanceSegment(segs.ramp);
 
     // 9. Try merge again
     tryRampMerge();
 
     // 10. Spawn
-    var spawn = trySpawn(now);
+    const spawn = trySpawn(now);
     if (spawn.kind === 'blocked') {
       spawnBlockedTicks++;
     } else if (spawn.kind !== 'cooldown') {
@@ -414,20 +405,20 @@ export function createSimulation(overrides, scaleFn) {
     }
 
     // Stats
-    var cutoff = now - 5000;
+    const cutoff = now - 5000;
     while (deliveries.length > 0 && deliveries[0] < cutoff) deliveries.shift();
-    var throughput = Math.round(deliveries.length * 12);
+    const throughput = Math.round(deliveries.length * 12);
 
-    var all = allCars();
-    var stalledCount = 0;
-    for (var s = 0; s < all.length; s++) {
+    const all = allCars();
+    let stalledCount = 0;
+    for (let s = 0; s < all.length; s++) {
       if (all[s].speed < 0.15 && all[s].segment !== 'cont') stalledCount++;
     }
     if (stalledCount > 0) stalledFrames++;
 
-    var stallPct = totalFrames > 0 ? Math.round(stalledFrames / totalFrames * 100) : 0;
+    const stallPct = totalFrames > 0 ? Math.round(stalledFrames / totalFrames * 100) : 0;
 
-    var status;
+    let status;
     if (spawnBlockedTicks >= cfg.spawnBlockedThreshold) {
       status = { level: 'blocked', msg: 'Traffic backed up to the on-ramp \u2014 no new cars can enter' };
     } else if (stalledCount > 3) {
@@ -461,27 +452,31 @@ export function createSimulation(overrides, scaleFn) {
     setCycleStart: function (t) { cycleStart = t; },
     setLastSpawn: function (t) { lastSpawn = t; },
     addCar: function (segment, slotIdx, speed, scale) {
-      var slots = getSlots(segment);
-      if (!slots) {
+      const seg = segs[segment];
+      if (!seg) {
         throw new Error('unknown segment ' + segment);
       }
-      if (slotIdx < 0 || slotIdx >= slots.length) {
+      if (slotIdx < 0 || slotIdx >= seg.slots.length) {
         throw new Error('invalid slot ' + slotIdx + ' for segment ' + segment);
       }
-      if (slots[slotIdx] !== null) {
+      if (seg.slots[slotIdx] !== null) {
         throw new Error('slot ' + slotIdx + ' on ' + segment + ' is occupied');
       }
-      var car = makeCar(segment, slotIdx, scale);
+      const car = makeCar(segment, slotIdx, scale);
       if (speed != null) car.speed = speed;
-      slots[slotIdx] = car;
+      seg.slots[slotIdx] = car;
       return car;
     },
     getSlots: function (segment) {
-      var slots = getSlots(segment);
-      if (!slots) throw new Error('unknown segment ' + segment);
-      return slots.slice();
+      const seg = segs[segment];
+      if (!seg) throw new Error('unknown segment ' + segment);
+      return seg.slots.slice();
     },
-    getSlotD: getSlotD,
+    getSlotD: function (segment, slotIdx) {
+      const seg = segs[segment];
+      if (!seg) return 0;
+      return seg.slotD[slotIdx] || 0;
+    },
     cfg: cfg,
   };
 }
