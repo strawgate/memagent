@@ -720,6 +720,33 @@ mod tests {
     }
 
     #[test]
+    fn escaped_key_decode_across_simd_boundary() {
+        // Pad so the \u002e escape straddles the 64-byte SIMD block boundary.
+        // With 58 spaces: {"a starts at offset 58, so \ is at 61 and `e` at 66,
+        // meaning the escape spans both block 0 (bytes 0..63) and block 1 (64..).
+        let padding = " ".repeat(58);
+        let input = alloc::format!("{}{{\"a\\u002eb\":1}}\n", padding);
+        let config = ScanConfig {
+            wanted_fields: vec![FieldSpec {
+                name: "a.b".to_string(),
+                aliases: vec![],
+            }],
+            extract_all: false,
+            line_field_name: None,
+            validate_utf8: false,
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input.as_bytes(), &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        assert!(
+            row.iter().any(|(k, v)| k == "a.b" && v == "int:1"),
+            "escaped key \\u002e must decode to '.' across SIMD boundary"
+        );
+    }
+
+    #[test]
     fn ndjson_two_lines() {
         let buf = b"{\"a\":\"x\"}\n{\"b\":\"y\"}\n";
         let config = ScanConfig::default();

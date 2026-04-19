@@ -143,6 +143,13 @@ downstream (see issue #410).
 The `body` line-capture column is **not** decoded — it stores the original raw
 line verbatim.
 
+### Escaped-key normalization
+
+JSON Unicode escapes in object keys (e.g., `\u002e`) are decoded before field
+name matching.  A wanted field `a.b` matches both `"a.b"` and `"a\u002eb"` in
+source JSON.  This normalization applies to all standard JSON escape sequences
+(`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, `\uXXXX`).
+
 ### Batch reuse
 
 `Scanner` can be reused across batches. Each call to `scan()` or
