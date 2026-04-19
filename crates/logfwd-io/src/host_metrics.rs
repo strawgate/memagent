@@ -135,6 +135,8 @@ const WINDOWS_FAMILIES: &[SignalFamily] = &[
     SignalFamily::Authz,
 ];
 
+const DEFAULT_MAX_PROCESS_ROWS_PER_POLL: usize = 1024;
+
 fn target_signal_families(target: HostMetricsTarget) -> &'static [SignalFamily] {
     match target {
         HostMetricsTarget::Linux => LINUX_FAMILIES,
@@ -163,7 +165,8 @@ pub struct HostMetricsConfig {
     /// Upper bound on process rows emitted per collection cycle.
     ///
     /// This cap is applied after family budgeting to prevent unbounded memory
-    /// growth when hosts expose very large process tables.
+    /// growth when hosts expose very large process tables. The default is 1024;
+    /// `0` also means "use the default".
     pub max_process_rows_per_poll: usize,
 }
 
@@ -176,7 +179,7 @@ impl Default for HostMetricsConfig {
             enabled_families: None,
             emit_signal_rows: true,
             max_rows_per_poll: 256,
-            max_process_rows_per_poll: 1024,
+            max_process_rows_per_poll: DEFAULT_MAX_PROCESS_ROWS_PER_POLL,
         }
     }
 }
@@ -708,8 +711,9 @@ impl HostMetricsCommon {
             return 0;
         }
 
-        let mut procs = BinaryHeap::with_capacity(limit);
-        for (pid, process) in self.system.processes() {
+        let processes = self.system.processes();
+        let mut procs = BinaryHeap::with_capacity(limit.min(processes.len()));
+        for (pid, process) in processes {
             let selected = SelectedProcess {
                 pid: pid.as_u32(),
                 process,
@@ -1103,7 +1107,7 @@ impl HostMetricsInput {
     pub fn new(
         name: impl Into<String>,
         target: HostMetricsTarget,
-        cfg: HostMetricsConfig,
+        mut cfg: HostMetricsConfig,
     ) -> io::Result<Self> {
         let name = name.into();
         let host_platform = current_host_platform().as_str().ok_or_else(|| {
@@ -1123,6 +1127,9 @@ impl HostMetricsInput {
                     host_platform
                 ),
             ));
+        }
+        if cfg.max_process_rows_per_poll == 0 {
+            cfg.max_process_rows_per_poll = DEFAULT_MAX_PROCESS_ROWS_PER_POLL;
         }
 
         let control = ControlState {
@@ -2086,6 +2093,42 @@ mod tests {
         assert!(
             snapshot_count <= 3,
             "max_process_rows_per_poll should cap process rows, got {snapshot_count}"
+        );
+    }
+
+    #[test]
+    fn zero_max_process_rows_per_poll_uses_runtime_default() {
+        let mut input = HostMetricsInput::new(
+            "sensor",
+            host_target(),
+            HostMetricsConfig {
+                enabled_families: Some(vec!["process".to_string()]),
+                emit_signal_rows: false,
+                max_rows_per_poll: usize::MAX,
+                max_process_rows_per_poll: 0,
+                ..HostMetricsConfig::default()
+            },
+        )
+        .expect("host metrics input should construct");
+
+        let events = input.poll().expect("poll should succeed");
+        let batch = first_batch(&events);
+
+        let families = string_col(batch, "signal_family");
+        let kinds = string_col(batch, "event_kind");
+        let snapshot_count = families
+            .iter()
+            .zip(kinds.iter())
+            .filter(|(_, kind)| kind.as_deref() == Some("snapshot"))
+            .filter(|(family, _)| family.as_deref() == Some("process"))
+            .count();
+        assert!(
+            snapshot_count > 0,
+            "expected default process cap to leave process rows enabled"
+        );
+        assert!(
+            snapshot_count <= DEFAULT_MAX_PROCESS_ROWS_PER_POLL,
+            "default process cap should apply when runtime config is 0, got {snapshot_count}"
         );
     }
 

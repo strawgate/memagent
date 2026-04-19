@@ -392,6 +392,7 @@ async fn handle_otap_request(
                 .into_response()
         }
         Err(mpsc::TrySendError::Full(_)) => {
+            record_error(state.stats.as_ref());
             store_health_event(&state.health, ReceiverHealthEvent::Backpressure);
             (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -1161,9 +1162,16 @@ mod tests {
 
     #[test]
     fn receiver_returns_429_when_channel_full() {
-        let receiver = OtapReceiver::new_with_capacity("test-429", "127.0.0.1:0", 1)
-            .expect("bind should succeed");
+        let stats = Arc::new(ComponentStats::new());
+        let receiver = OtapReceiver::new_with_capacity_and_stats(
+            "test-429",
+            "127.0.0.1:0",
+            1,
+            Some(Arc::clone(&stats)),
+        )
+        .expect("bind should succeed");
         let addr = receiver.local_addr();
+        wait_for_server(addr);
 
         let logs_ipc = serialize_batch_to_ipc(&make_logs_batch());
         let proto = encode_batch_arrow_records(1, &[(PAYLOAD_TYPE_LOGS, &logs_ipc)]);
@@ -1191,6 +1199,7 @@ mod tests {
         };
         assert_eq!(status, 429, "expected 429, got {status}");
         assert_eq!(receiver.health(), ComponentHealth::Degraded);
+        assert_eq!(stats.errors(), 1);
 
         // Drain so the receiver is valid.
         let _ = receiver.try_recv_all();
