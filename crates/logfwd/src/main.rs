@@ -1336,19 +1336,32 @@ fn validate_known_columns_read_only(
         return Ok(());
     };
 
+    // SELECT * expands to whatever the engine provides — skip validation.
+    let analyzer = transform.analyzer();
+    if analyzer.uses_select_star {
+        return Ok(());
+    }
+
     let scan_config = transform.scan_config();
     if scan_config.extract_all {
         return Ok(());
     }
+
+    let known: std::collections::HashSet<&str> =
+        known_columns.iter().copied().collect();
 
     let mut unknown: Vec<String> = scan_config
         .wanted_fields
         .iter()
         .map(|field| field.name.as_str())
         .filter(|column| {
-            !known_columns
-                .iter()
-                .any(|known| known.eq_ignore_ascii_case(column))
+            // Strip table qualifier (e.g. "logs.level" -> "level").
+            let bare = match column.rfind('.') {
+                Some(pos) => &column[pos + 1..],
+                None => column,
+            };
+            // Lowercase before lookup — known_columns is all-lowercase.
+            !known.contains(bare.to_lowercase().as_str())
         })
         .map(str::to_owned)
         .collect();
