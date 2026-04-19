@@ -41,7 +41,7 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | `InputSource` implementations must define `health()` explicitly; no optimistic trait default | Compilation + code review |
 | `InputSource` trait-shape changes must pass cross-workspace compile checks for turmoil tests and bench binaries (`cargo test -p logfwd --features turmoil --test turmoil_sim --no-run`, `cargo build -p logfwd-bench --bin framed_input_profile`) | CI/local verification checklist |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
-| **No raw payload injection (source-metadata seams).** Source metadata must never be written into raw input bytes. `_source_path`, `_source_id`, UDP sender identity, and future source descriptors must be attached from sidecar metadata after scan, before SQL, or exposed through cold-path enrichment tables. This targets source-metadata injection seams such as file-tailing metadata injection; it does not ban raw byte buffers in HTTP integration test request bodies. | CI guard script (`python3 scripts/check_no_raw_payload_injection.py`) + code review |
+| **No raw payload injection.** Source metadata must never be written into raw input bytes. `_source_path`, `_source_id`, `_input`, UDP sender identity, and future source descriptors must be attached from sidecar metadata after scan, before SQL, or exposed through cold-path enrichment tables. The CI guard scans Rust crate code for legacy injection helpers/toggles and raw byte writes of guarded source metadata fields. | CI guard script (`python3 scripts/check_no_raw_payload_injection.py`) + code review |
 
 ## logfwd-diagnostics
 

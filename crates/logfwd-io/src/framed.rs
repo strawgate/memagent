@@ -1515,7 +1515,18 @@ mod tests {
         );
 
         let events = framed.poll().unwrap();
-        assert_eq!(collect_data(events), b"{\"msg\":\"hello\"}\n");
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            InputEvent::Data {
+                bytes,
+                source_id: Some(actual_sid),
+                ..
+            } => {
+                assert_eq!(bytes.as_slice(), b"{\"msg\":\"hello\"}\n");
+                assert_eq!(*actual_sid, sid);
+            }
+            _ => panic!("expected data event with preserved source_id"),
+        }
     }
 
     #[test]

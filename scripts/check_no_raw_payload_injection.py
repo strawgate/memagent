@@ -16,7 +16,7 @@ INJECTION_HELPER_PATTERN = re.compile(
 )
 SOURCE_PATH_SUPPORT_PATTERN = re.compile(r"\bsupports_source_path_injection\s*\(")
 RAW_SOURCE_LITERAL_WRITE_PATTERN = re.compile(
-    r'extend_from_slice\(\s*b"(?:[^"\\]|\\.)*_source_',
+    r'extend_from_slice\(\s*b"(?:[^"\\]|\\.)*(?:_source_|_input)',
     re.MULTILINE,
 )
 
@@ -48,7 +48,7 @@ def find_expansions() -> list[str]:
 
         if RAW_SOURCE_LITERAL_WRITE_PATTERN.search(text):
             violations.append(
-                f"{rel}: raw byte write of '_source_' field found"
+                f"{rel}: raw byte write of source metadata field found"
             )
 
     return violations

@@ -86,6 +86,7 @@ const IO_CPU_CHANNEL_CAPACITY: usize = 4;
 fn flush_buf(
     buf: &mut bytes::BytesMut,
     row_origins: &mut Vec<RowOriginSpan>,
+    pending_row_origin: &mut Option<PendingRowOrigin>,
     buffered_source_paths: &mut HashMap<SourceId, String>,
     source: &dyn logfwd_io::input::InputSource,
     tx: &mpsc::Sender<IoWorkItem>,
@@ -96,8 +97,14 @@ fn flush_buf(
 ) -> bool {
     if buf.is_empty() {
         row_origins.clear();
+        *pending_row_origin = None;
         buffered_source_paths.clear();
         return true;
+    }
+    if source_metadata_plan.has_any() {
+        finalize_pending_row_origin(row_origins, pending_row_origin);
+    } else {
+        *pending_row_origin = None;
     }
     let data = buf.split().freeze();
     let checkpoints = source.checkpoint_data();
@@ -194,7 +201,7 @@ fn capture_source_path(
     }
 }
 
-#[cfg(not(feature = "turmoil"))]
+#[cfg(all(test, not(feature = "turmoil")))]
 fn scanner_ready_row_count(bytes: &[u8]) -> usize {
     let mut rows = 0usize;
     let mut line_start = 0usize;
@@ -225,6 +232,24 @@ fn scanner_ready_row_count(bytes: &[u8]) -> usize {
 }
 
 #[cfg(not(feature = "turmoil"))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct PendingRowOrigin {
+    source_id: Option<SourceId>,
+    input_name: Arc<str>,
+    has_content: bool,
+}
+
+#[cfg(not(feature = "turmoil"))]
+fn scanner_line_has_content(bytes: &[u8]) -> bool {
+    let line_end = if bytes.last().copied() == Some(b'\r') {
+        bytes.len().saturating_sub(1)
+    } else {
+        bytes.len()
+    };
+    line_end > 0
+}
+
+#[cfg(not(feature = "turmoil"))]
 fn append_row_origin(
     row_origins: &mut Vec<RowOriginSpan>,
     source_id: Option<SourceId>,
@@ -246,6 +271,64 @@ fn append_row_origin(
         input_name: Arc::clone(input_name),
         rows,
     });
+}
+
+#[cfg(not(feature = "turmoil"))]
+fn append_data_row_origins(
+    row_origins: &mut Vec<RowOriginSpan>,
+    pending_row_origin: &mut Option<PendingRowOrigin>,
+    source_id: Option<SourceId>,
+    input_name: &Arc<str>,
+    bytes: &[u8],
+) {
+    if bytes.is_empty() {
+        return;
+    }
+
+    let mut line_start = 0usize;
+    for newline in memchr::memchr_iter(b'\n', bytes) {
+        let segment_has_content = scanner_line_has_content(&bytes[line_start..newline]);
+        let origin = pending_row_origin
+            .take()
+            .unwrap_or_else(|| PendingRowOrigin {
+                source_id,
+                input_name: Arc::clone(input_name),
+                has_content: false,
+            });
+        if origin.has_content || segment_has_content {
+            append_row_origin(row_origins, origin.source_id, &origin.input_name, 1);
+        }
+        line_start = newline + 1;
+    }
+
+    let tail = &bytes[line_start..];
+    if !tail.is_empty() {
+        let tail_has_content = scanner_line_has_content(tail);
+        match pending_row_origin {
+            Some(origin) => {
+                origin.has_content |= tail_has_content;
+            }
+            None => {
+                *pending_row_origin = Some(PendingRowOrigin {
+                    source_id,
+                    input_name: Arc::clone(input_name),
+                    has_content: tail_has_content,
+                });
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "turmoil"))]
+fn finalize_pending_row_origin(
+    row_origins: &mut Vec<RowOriginSpan>,
+    pending_row_origin: &mut Option<PendingRowOrigin>,
+) {
+    if let Some(origin) = pending_row_origin.take()
+        && origin.has_content
+    {
+        append_row_origin(row_origins, origin.source_id, &origin.input_name, 1);
+    }
 }
 
 #[cfg(not(feature = "turmoil"))]
@@ -459,6 +542,7 @@ fn io_worker_loop(
     source_metadata_plan: SourceMetadataPlan,
 ) {
     let mut buffered_since: Option<Instant> = None;
+    let mut pending_row_origin: Option<PendingRowOrigin> = None;
     let mut last_bp_warn: Option<Instant> = None;
     let mut consecutive_poll_failures: u32 = 0;
     let mut adaptive_poll =
@@ -526,11 +610,12 @@ fn io_worker_loop(
                                     source_id,
                                 );
                             }
-                            append_row_origin(
+                            append_data_row_origins(
                                 &mut input.row_origins,
+                                &mut pending_row_origin,
                                 source_id,
                                 &input_name,
-                                scanner_ready_row_count(&bytes),
+                                &bytes,
                             );
                         }
                         input.buf.extend_from_slice(&bytes);
@@ -542,6 +627,7 @@ fn io_worker_loop(
                             if !flush_buf(
                                 &mut input.buf,
                                 &mut input.row_origins,
+                                &mut pending_row_origin,
                                 &mut input.source_paths,
                                 &*input.source,
                                 &tx,
@@ -561,6 +647,7 @@ fn io_worker_loop(
                         if !flush_buf(
                             &mut input.buf,
                             &mut input.row_origins,
+                            &mut pending_row_origin,
                             &mut input.source_paths,
                             &*input.source,
                             &tx,
@@ -645,6 +732,7 @@ fn io_worker_loop(
             if !flush_buf(
                 &mut input.buf,
                 &mut input.row_origins,
+                &mut pending_row_origin,
                 &mut input.source_paths,
                 &*input.source,
                 &tx,
@@ -663,6 +751,11 @@ fn io_worker_loop(
     // Use blocking_send (not shutdown-aware) because shutdown is already
     // cancelled and we want to deliver remaining data to the CPU worker.
     if !input.buf.is_empty() {
+        if source_metadata_plan.has_any() {
+            finalize_pending_row_origin(&mut input.row_origins, &mut pending_row_origin);
+        } else {
+            let _ = pending_row_origin.take();
+        }
         let data = input.buf.split().freeze();
         let checkpoints = input.source.checkpoint_data();
         let source_paths = if source_metadata_plan.has_source_path {
@@ -1055,6 +1148,71 @@ mod tests {
     }
 
     #[test]
+    fn row_origins_count_split_line_once() {
+        let input_name: Arc<str> = Arc::from("file");
+        let mut row_origins = Vec::new();
+        let mut pending = None;
+        let source_id = Some(SourceId(5));
+
+        append_data_row_origins(
+            &mut row_origins,
+            &mut pending,
+            source_id,
+            &input_name,
+            b"{\"msg\":\"hel",
+        );
+        assert!(row_origins.is_empty());
+
+        append_data_row_origins(
+            &mut row_origins,
+            &mut pending,
+            source_id,
+            &input_name,
+            b"lo\"}\n{\"msg\":\"next\"}\n",
+        );
+        finalize_pending_row_origin(&mut row_origins, &mut pending);
+
+        let mut scanner = Scanner::new(logfwd_core::scan_config::ScanConfig::default());
+        let batch = scanner
+            .scan(Bytes::from_static(
+                b"{\"msg\":\"hello\"}\n{\"msg\":\"next\"}\n",
+            ))
+            .expect("scan");
+        let rows_from_origins = row_origins.iter().map(|span| span.rows).sum::<usize>();
+        assert_eq!(rows_from_origins, batch.num_rows());
+        assert_eq!(row_origins.len(), 1);
+        assert_eq!(row_origins[0].source_id, source_id);
+        assert_eq!(row_origins[0].rows, 2);
+    }
+
+    #[test]
+    fn row_origins_finalize_partial_line_on_flush() {
+        let input_name: Arc<str> = Arc::from("file");
+        let mut row_origins = Vec::new();
+        let mut pending = None;
+        let source_id = Some(SourceId(9));
+
+        append_data_row_origins(
+            &mut row_origins,
+            &mut pending,
+            source_id,
+            &input_name,
+            b"{\"msg\":\"partial\"}",
+        );
+        finalize_pending_row_origin(&mut row_origins, &mut pending);
+
+        let mut scanner = Scanner::new(logfwd_core::scan_config::ScanConfig::default());
+        let batch = scanner
+            .scan(Bytes::from_static(b"{\"msg\":\"partial\"}"))
+            .expect("scan");
+        assert_eq!(
+            row_origins.iter().map(|span| span.rows).sum::<usize>(),
+            batch.num_rows()
+        );
+        assert_eq!(row_origins[0].source_id, source_id);
+    }
+
+    #[test]
     fn source_paths_by_id_filters_to_buffered_source_ids() {
         let row_origins = vec![RowOriginSpan {
             source_id: Some(SourceId(2)),
@@ -1105,6 +1263,43 @@ mod tests {
                 (SourceId(7), PathBuf::from("/var/log/configured.log")),
                 (SourceId(8), PathBuf::from("/var/log/other.log")),
             ]
+        }
+    }
+
+    struct SplitLineSource {
+        emitted: bool,
+    }
+
+    impl logfwd_io::input::InputSource for SplitLineSource {
+        fn poll(&mut self) -> std::io::Result<Vec<InputEvent>> {
+            if self.emitted {
+                return Ok(Vec::new());
+            }
+            self.emitted = true;
+            Ok(vec![
+                InputEvent::Data {
+                    bytes: b"{\"msg\":\"hel".to_vec(),
+                    source_id: Some(SourceId(7)),
+                    accounted_bytes: 11,
+                },
+                InputEvent::Data {
+                    bytes: b"lo\"}\n{\"msg\":\"next\"}\n".to_vec(),
+                    source_id: Some(SourceId(7)),
+                    accounted_bytes: 21,
+                },
+            ])
+        }
+
+        fn name(&self) -> &'static str {
+            "split-line-source"
+        }
+
+        fn health(&self) -> logfwd_types::diagnostics::ComponentHealth {
+            logfwd_types::diagnostics::ComponentHealth::Healthy
+        }
+
+        fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
+            vec![(SourceId(7), PathBuf::from("/var/log/split.log"))]
         }
     }
 
@@ -1162,6 +1357,64 @@ mod tests {
             Some("/var/log/configured.log")
         );
         assert!(!chunk.source_paths.contains_key(&SourceId(8)));
+    }
+
+    #[test]
+    fn io_worker_counts_split_line_origin_once() {
+        let (tx, mut rx) = mpsc::channel(IO_CPU_CHANNEL_CAPACITY);
+        let shutdown = CancellationToken::new();
+        let stats = Arc::new(logfwd_types::diagnostics::ComponentStats::new_with_health(
+            logfwd_types::diagnostics::ComponentHealth::Starting,
+        ));
+        let input = InputState {
+            source: Box::new(SplitLineSource { emitted: false }),
+            buf: bytes::BytesMut::new(),
+            row_origins: Vec::new(),
+            source_paths: HashMap::new(),
+            stats,
+        };
+        let meter = opentelemetry::global::meter("io_worker_split_line_origin");
+        let metrics = Arc::new(PipelineMetrics::new("test", "SELECT * FROM logs", &meter));
+        let worker_shutdown = shutdown.clone();
+
+        let handle = std::thread::spawn(move || {
+            io_worker_loop(
+                input,
+                Arc::from("configured-input"),
+                tx,
+                metrics,
+                worker_shutdown,
+                usize::MAX,
+                Duration::ZERO,
+                Duration::from_millis(1),
+                0,
+                SourceMetadataPlan {
+                    has_source_id: true,
+                    has_input: true,
+                    has_source_path: true,
+                },
+            );
+        });
+
+        let item = rx.blocking_recv().expect("io worker item");
+        shutdown.cancel();
+        drop(rx);
+        handle.join().expect("io worker exits");
+
+        let IoWorkItem::Bytes(chunk) = item else {
+            panic!("expected byte chunk");
+        };
+        assert_eq!(
+            chunk.bytes.as_ref(),
+            b"{\"msg\":\"hello\"}\n{\"msg\":\"next\"}\n"
+        );
+        assert_eq!(chunk.row_origins.len(), 1);
+        assert_eq!(chunk.row_origins[0].source_id, Some(SourceId(7)));
+        assert_eq!(chunk.row_origins[0].rows, 2);
+        assert_eq!(
+            chunk.source_paths.get(&SourceId(7)).map(String::as_str),
+            Some("/var/log/split.log")
+        );
     }
 
     #[test]

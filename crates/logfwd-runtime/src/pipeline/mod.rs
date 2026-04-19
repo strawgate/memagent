@@ -113,6 +113,7 @@ struct InputTransform {
     source_metadata_plan: SourceMetadataPlan,
 }
 
+/// Consecutive scanned rows that came from the same input/source metadata.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RowOriginSpan {
     pub source_id: Option<SourceId>,
