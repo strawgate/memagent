@@ -1,4 +1,5 @@
 #![allow(deprecated)]
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]

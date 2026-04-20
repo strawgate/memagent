@@ -64,7 +64,6 @@ BOX_DYN_ERROR = re.compile(
 SIGNATURE_HEAD = re.compile(r"^\s*(?:pub\b[^;{]*?)?\bfn\b|^\s*(?:pub\b[^;{]*?)?\btype\b")
 
 PUB_TRAIT_OPEN = re.compile(r"^\s*pub(?:\([^)]*\))?\s+(?:unsafe\s+)?trait\b[^{;]*\{")
-TRAIT_OR_IMPL_OPEN = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:unsafe\s+)?(?:trait|impl)\b[^{;]*\{")
 
 
 def relpath(path: Path) -> str:

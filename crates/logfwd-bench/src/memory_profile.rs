@@ -19,7 +19,7 @@
 //!   --batch     batch size in lines (default: 10000)
 
 #![allow(deprecated)] // Benchmarks use sync OutputSink; migration tracked separately.
-
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 use std::alloc::System;
 use std::fmt::Write as _;

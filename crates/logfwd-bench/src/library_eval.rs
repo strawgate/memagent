@@ -8,6 +8,7 @@
 //!
 //! Run: `cargo run --release --bin library-eval -p logfwd-bench`
 
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

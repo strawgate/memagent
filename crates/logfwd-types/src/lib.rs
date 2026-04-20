@@ -4,7 +4,6 @@
 //! heavy I/O or transform dependencies. Includes pure state-machine types
 //! (pipeline) and lock-free diagnostic counters.
 #![warn(missing_docs)]
-#![warn(clippy::print_stdout, clippy::print_stderr)]
 
 extern crate alloc;
 

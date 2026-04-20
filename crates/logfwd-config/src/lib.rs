@@ -6,7 +6,6 @@
 //! - **Advanced** (multiple pipelines): top-level `pipelines` map.
 //!
 //! Environment variables in values are expanded using `${VAR}` syntax.
-#![warn(clippy::print_stdout, clippy::print_stderr)]
 
 mod compat;
 mod env;

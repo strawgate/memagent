@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::time::Instant;
 
 use logfwd_bench::generators::cloudtrail::gen_cloudtrail_batch_with_profile;

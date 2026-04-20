@@ -11,7 +11,7 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Only deps: memchr + wide | CI dependency allowlist check |
 | No panics | `clippy::unwrap_used`, `clippy::panic`, `clippy::indexing_slicing` = deny |
 | Every public item documented | `#![warn(missing_docs)]` at crate root |
-| No stdout/stderr writes | `#![warn(clippy::print_stdout, clippy::print_stderr)]` at crate root |
+| No stdout/stderr writes | `clippy::print_stdout`, `clippy::print_stderr` = warn workspace-wide; no `#![allow]` opt-out |
 | Proof-bearing core modules stay Kani-covered | CI Kani job + `dev-docs/VERIFICATION.md` inventory |
 | No IO, no threads, no async | Structural (no_std removes the APIs) |
 
@@ -32,7 +32,7 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Shared pure state-machine and diagnostics value semantics live here | Architecture |
 | Lock-free stats storage may live alongside pure value modules, but not inside them | Code review |
 | Every public item documented | `#![warn(missing_docs)]` at crate root |
-| No stdout/stderr writes | `#![warn(clippy::print_stdout, clippy::print_stderr)]` at crate root |
+| No stdout/stderr writes | `clippy::print_stdout`, `clippy::print_stderr` = warn workspace-wide; no `#![allow]` opt-out |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
 ## logfwd-config
@@ -42,7 +42,7 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | YAML schema parsing and validation only — no I/O, no transforms | Architecture |
 | Parse-don't-validate: `Result<TypedConfig, ConfigError>`, never `bool` validators | Code review |
 | Every public enum carries `#[non_exhaustive]` unless the closed set is genuinely stable | Code review |
-| No stdout/stderr writes | `#![warn(clippy::print_stdout, clippy::print_stderr)]` at crate root |
+| No stdout/stderr writes | `clippy::print_stdout`, `clippy::print_stderr` = warn workspace-wide; no `#![allow]` opt-out |
 | **TODO:** enable `#![warn(missing_docs)]` once the ~280 existing schema gaps are documented (tracked separately; do not regress new public items) | Code review for now |
 
 ## logfwd-io

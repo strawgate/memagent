@@ -1,3 +1,7 @@
+//! CLI bootstrap: user-facing stderr output (banners, version info, SIGHUP
+//! warnings) is intentional and intentionally not routed through `tracing`.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

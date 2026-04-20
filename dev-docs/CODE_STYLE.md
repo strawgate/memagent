@@ -55,18 +55,21 @@ overrides — adjust the workspace config instead.
 - **`dbg!` is forbidden.** `clippy::dbg_macro = deny` workspace-wide.
 - **`large_enum_variant`** is warn workspace-wide. New enum variants
   whose stack size dwarfs the others should be boxed or refactored.
+- **`print_stdout` / `print_stderr`** are warn workspace-wide.
+  Observability must go through `tracing`, not stdout/stderr. Crates
+  that legitimately print (the `logfwd` binary, benchmark harnesses,
+  the standalone eBPF sensor, the runtime CLI-bootstrap module) opt
+  out with a file-level `#![allow(clippy::print_stdout, clippy::print_stderr)]`
+  at the crate root plus a one-line comment explaining why.
+- **`missing_docs`** is warn at the crate root for stable-surface
+  crates (`logfwd-core`, `logfwd-types`). `logfwd-config` has ~280
+  pre-existing schema-field gaps and is not yet gated on this; new
+  public items must still carry doc comments by review.
 - **overflow-checks** are enabled in release builds.
 
-### Per-crate lint additions
-
-Stable-surface crates carry additional crate-root lints beyond the
-workspace defaults:
-
-| Crate | Extra lints | Purpose |
-|---|---|---|
-| `logfwd-core` | `#![warn(missing_docs)]`, `#![warn(clippy::print_stdout, clippy::print_stderr)]` | Stable proven kernel; observability via return values, not stdout. |
-| `logfwd-types` | `#![warn(missing_docs)]`, `#![warn(clippy::print_stdout, clippy::print_stderr)]` | Stable cross-crate types. |
-| `logfwd-config` | `#![warn(clippy::print_stdout, clippy::print_stderr)]` | Config parsing should never write to stdout/stderr. (`missing_docs` deferred — see CRATE_RULES.md.) |
+All lint levels live at the workspace root or as file-level
+`#![allow]` opt-outs. Per-crate `[lints.clippy]` tables in individual
+`Cargo.toml` files are not permitted — they fragment the lint story.
 
 ### Boundary guards (CI scripts)
 

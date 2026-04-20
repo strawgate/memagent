@@ -20,6 +20,7 @@
 //!   --memory N           Memory limit per container (default: 1g, Docker mode only)
 //!   --profile DIR        Write CPU flamegraph + memory profile to DIR
 //!   --dhat-binary PATH   logfwd binary built with --features dhat-heap
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 mod agents;
 mod blackhole;

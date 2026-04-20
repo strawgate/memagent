@@ -26,6 +26,7 @@
 //!   3. `iterations` — encode loop count (e.g. 5000)
 //!   4. `encoder`    — `manual` | `generated_fast`
 //!   5. `svg_path`   — output flamegraph SVG path
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use std::fs::File;
 use std::hint::black_box;

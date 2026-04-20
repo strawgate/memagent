@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::fs::File;
 use std::hint::black_box;
 use std::path::PathBuf;

@@ -14,6 +14,7 @@
 //! Optional env vars:
 //!   LOGFWD_HTTP_BENCH_DURATION_SECS=6
 //!   LOGFWD_HTTP_BENCH_CONCURRENCY=8,32
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use std::convert::Infallible;
 use std::io::Read as _;

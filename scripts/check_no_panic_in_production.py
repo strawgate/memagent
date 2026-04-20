@@ -71,8 +71,6 @@ EXT_TEST_MOD = re.compile(
     re.MULTILINE,
 )
 
-MOD_OR_FN_OPEN = re.compile(r"\b(?:mod|fn|impl)\b[^;{]*\{")
-
 ALLOW_MARKER = "// ALLOW-PANIC:"
 
 
@@ -178,19 +176,22 @@ def find_violations_in_file(path: Path, is_all_test: bool) -> list[str]:
 
         opens = stripped_line.count("{")
         closes = stripped_line.count("}")
-        opens_scope = bool(MOD_OR_FN_OPEN.search(stripped_line))
-
-        if pending_test_attr and opens_scope:
-            test_scope_stack.append(depth)
 
         # A test attribute can sit above a signature that rustfmt wraps
         # across multiple lines (e.g., `#[tokio::test]\nasync fn foo(\n
-        # args,\n) -> Result<…> {`). Keep the pending flag alive across
-        # continuation lines and only clear it when the declaration
-        # terminates (`{` opens the scope, or `;` ends a non-scope item
-        # such as a trait-method signature or an extern `mod foo;`).
-        if pending_test_attr and ("{" in stripped_line or ";" in stripped_line):
-            pending_test_attr = False
+        # args,\n) -> Result<…>\nwhere\n    T: Clone,\n{`). The `{` that
+        # opens the scope may land on a line with no `fn`/`mod`/`impl`
+        # keyword. Match on the brace alone:
+        #   * `{` present → the pending attr annotates this scope; push.
+        #   * `;` present without `{` → non-scope item (trait method
+        #     signature or extern `mod foo;`); discard the pending attr.
+        #   * neither → continuation line; keep the flag alive.
+        if pending_test_attr:
+            if "{" in stripped_line:
+                test_scope_stack.append(depth)
+                pending_test_attr = False
+            elif ";" in stripped_line:
+                pending_test_attr = False
 
         depth += opens
 

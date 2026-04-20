@@ -2,6 +2,8 @@
 //!
 //! All generators accept a `seed` parameter for reproducible output. Given the
 //! same `(count, seed)` pair, every call returns byte-identical results.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+// Bench harnesses print reports to stdout/stderr.
 
 use std::sync::Arc;
 
