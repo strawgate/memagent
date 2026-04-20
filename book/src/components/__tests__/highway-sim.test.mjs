@@ -93,19 +93,21 @@ describe('car spawning', function () {
     assert.equal(sim.getCars().length, 1, 'should not have spawned twice');
   });
 
-  it('alternates between highway and ramp sources', function () {
-    var sim = createSimulation({ spawnMs: 10, maxCars: 10 }, fixedScale(1));
+  it('offsets highway and ramp spawns', function () {
+    var sim = createSimulation({ spawnMs: 100, maxCars: 10 }, fixedScale(1));
     sim.exitAuto();
-    sim.tick(100);
+
+    // First tick: highway fires immediately, ramp is offset by half spawnMs
+    sim.tick(200);
     var cars = sim.getCars();
-    assert.equal(cars.length, 1);
+    assert.equal(cars.length, 1, 'only highway should spawn on first tick');
     assert.equal(cars[0].segment, 'highway');
 
-    sim.tick(200);
+    // At +150ms (half spawnMs offset) ramp fires, highway still on cooldown
+    sim.tick(350);
     cars = sim.getCars();
-    assert.equal(cars.length, 2);
-    var segments = cars.map(function (c) { return c.segment; }).sort();
-    assert.ok(segments.indexOf('ramp') >= 0, 'second spawn should be ramp');
+    var segments = cars.map(function (c) { return c.segment; });
+    assert.ok(segments.indexOf('ramp') >= 0, 'ramp should have spawned by now');
   });
 
   it('respects maxCars', function () {
@@ -320,15 +322,19 @@ describe('traffic light gate', function () {
       greenPct: 0, cycleTotal: 100, spawnMs: 99999,
     }, fixedScale(1));
     sim.setCycleStart(0);
+    sim.setLastSpawn(0);
     sim.exitAuto();
     // Fill exit
     for (var i = 0; i < 6; i++) sim.addCar('exit', i);
     // Car on highway at the end
-    sim.addCar('highway', 14);
+    var stuck = sim.addCar('highway', 14);
     sim.tick(100);
     var hwyCars = sim.getCars().filter(function (c) { return c.segment === 'highway'; });
     assert.ok(hwyCars.length > 0, 'car should still be on highway');
-    assert.equal(hwyCars[0].speed, 0, 'highway car should be stopped');
+    // Find the car we placed at slot 14
+    var stuckCar = hwyCars.find(function (c) { return c.id === stuck.id; });
+    assert.ok(stuckCar, 'original car should still exist');
+    assert.equal(stuckCar.speed, 0, 'highway car should be stopped');
   });
 });
 

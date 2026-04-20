@@ -843,7 +843,9 @@ mod tests {
     use std::time::Instant;
 
     use arrow::record_batch::RecordBatch;
-    use logfwd_config::{Format, OutputConfig, OutputConfigV2, OutputType};
+    use logfwd_config::{
+        CompressionFormat, Format, OtlpProtocol, OutputConfig, OutputConfigV2, OutputType,
+    };
     use logfwd_core::scan_config::ScanConfig;
     use logfwd_diagnostics::diagnostics::ComponentStats;
     use logfwd_output::{
@@ -901,8 +903,8 @@ mod tests {
             name: Some("otel".to_string()),
             output_type: OutputType::Otlp,
             endpoint: Some("http://localhost:4318".to_string()),
-            protocol: Some("http".to_string()),
-            compression: Some("zstd".to_string()),
+            protocol: Some(OtlpProtocol::Http),
+            compression: Some(CompressionFormat::Zstd),
             ..Default::default()
         };
         let typed = OutputConfigV2::from(&cfg);
@@ -1158,7 +1160,7 @@ input:
       field: seq
     event_created_unix_nano_field: event_created_unix_nano
 output:
-  type: null
+  type: "null"
 "#;
         let config = logfwd_config::Config::load_str(yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
@@ -1530,7 +1532,7 @@ input:
       stream_id: emitter-0
 transform: "SELECT nonexistent_col FROM logs"
 output:
-  type: null
+  type: "null"
 "#;
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];

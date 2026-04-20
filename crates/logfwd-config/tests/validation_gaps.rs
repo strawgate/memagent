@@ -992,7 +992,7 @@ pipelines:
       - name: out1
         type: stdout
       - name: out1
-        type: null
+        type: "null"
 "#;
 
     let output_err = Config::load_str(duplicate_output_yaml)

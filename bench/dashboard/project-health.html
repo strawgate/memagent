@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#10243a">
+  <title>Project Health - FastForward</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7"></script>
+</head>
+<body>
+<div class="container">
+  <div class="breadcrumb">
+    <a href="index.html">Dashboard</a><span class="sep">/</span>Project Health
+  </div>
+
+  <header class="hero">
+    <p class="eyebrow">repository health</p>
+    <h1>Project Health</h1>
+    <p class="lede">Track FastForward’s repository signal over time: community adoption, backlog shape, delivery speed, CI stability, and codebase growth.</p>
+    <div class="hero-tags">
+      <span>octo11y metrics</span><span>bench-data history</span><span>repo trendlines</span>
+    </div>
+  </header>
+
+  <nav class="nav-pills">
+    <a href="index.html">Overview</a>
+    <a href="competitive.html">Competitive</a>
+    <a href="development.html">Development</a>
+    <a href="project-health.html" class="active">Project Health</a>
+  </nav>
+
+  <div id="loading" class="loading">Loading project health data...</div>
+  <div id="empty" class="empty-state" style="display:none">
+    No project health history yet. Run the <code>Project Health</code> workflow once to populate <code>bench-data</code>.
+  </div>
+  <div id="content" style="display:none">
+    <div class="tracking-cards" id="headline-cards"></div>
+
+    <div class="section">
+      <h2>Trend Overview</h2>
+      <div class="chart-grid">
+        <div class="card">
+          <h3>Community</h3>
+          <canvas id="community-chart"></canvas>
+        </div>
+        <div class="card">
+          <h3>Backlog</h3>
+          <canvas id="backlog-chart"></canvas>
+        </div>
+        <div class="card">
+          <h3>Delivery</h3>
+          <canvas id="delivery-chart"></canvas>
+        </div>
+        <div class="card">
+          <h3>Codebase Scale</h3>
+          <canvas id="codebase-chart"></canvas>
+        </div>
+        <div class="card">
+          <h3>Weekly Activity</h3>
+          <canvas id="activity-chart"></canvas>
+        </div>
+        <div class="card" id="languages-card">
+          <h3>Latest Language Breakdown</h3>
+          <canvas id="languages-chart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>Latest Snapshot</h2>
+      <div class="card table-card">
+        <table id="snapshot-table">
+          <thead>
+            <tr>
+              <th>Metric</th>
+              <th class="numeric">Latest</th>
+              <th class="numeric">Previous</th>
+              <th class="numeric">Delta</th>
+            </tr>
+          </thead>
+          <tbody id="snapshot-body"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { fetchBenchSeries } from "./o11y-client.js";
+
+const METRICS = [
+  "stars",
+  "forks",
+  "watchers",
+  "open-issues",
+  "open-prs",
+  "contributors",
+  "releases",
+  "workflow-success-pct",
+  "weekly-commits",
+  "weekly-additions",
+  "weekly-deletions",
+  "avg-issue-close-days",
+  "avg-pr-merge-hours",
+  "total_lines_of_code",
+  "rust_lines_of_code",
+  "rust_crate_count",
+  "cargo_dependency_count",
+  "ci_build_duration_seconds",
+  "lang_bytes_Rust",
+  "lang_bytes_TOML",
+  "lang_bytes_TypeScript",
+  "lang_bytes_JavaScript",
+];
+
+const LABELS = {
+  stars: "Stars",
+  forks: "Forks",
+  watchers: "Watchers",
+  "open-issues": "Open issues",
+  "open-prs": "Open PRs",
+  contributors: "Contributors",
+  releases: "Releases",
+  "workflow-success-pct": "Workflow success",
+  "weekly-commits": "Weekly commits",
+  "weekly-additions": "Weekly additions",
+  "weekly-deletions": "Weekly deletions",
+  "avg-issue-close-days": "Avg issue close",
+  "avg-pr-merge-hours": "Avg PR merge",
+  total_lines_of_code: "Total LOC",
+  rust_lines_of_code: "Rust LOC",
+  rust_crate_count: "Rust crates",
+  cargo_dependency_count: "Cargo dependencies",
+  ci_build_duration_seconds: "CI build time",
+  lang_bytes_Rust: "Rust",
+  lang_bytes_TOML: "TOML",
+  lang_bytes_TypeScript: "TypeScript",
+  lang_bytes_JavaScript: "JavaScript",
+};
+
+const DIRECTIONS = {
+  stars: "up",
+  forks: "up",
+  watchers: "up",
+  contributors: "up",
+  releases: "up",
+  "workflow-success-pct": "up",
+  "weekly-commits": "up",
+  "weekly-additions": "up",
+  total_lines_of_code: "up",
+  rust_lines_of_code: "up",
+  rust_crate_count: "up",
+  "open-issues": "down",
+  "open-prs": "down",
+  "avg-issue-close-days": "down",
+  "avg-pr-merge-hours": "down",
+  cargo_dependency_count: "down",
+  ci_build_duration_seconds: "down",
+  "weekly-deletions": "down",
+};
+
+const COLORS = {
+  blue: "#2563eb",
+  green: "#10b981",
+  orange: "#f97316",
+  purple: "#7c3aed",
+  red: "#ef4444",
+  slate: "#64748b",
+  amber: "#d97706",
+};
+
+function isDark() {
+  return window.matchMedia("(prefers-color-scheme: dark)").matches;
+}
+
+function chartDefaults() {
+  const dark = isDark();
+  Chart.defaults.color = dark ? "#8b949e" : "#656d76";
+  Chart.defaults.borderColor = dark ? "#30363d" : "#d0d7de";
+}
+
+function gridColor() {
+  return isDark() ? "#30363d" : "#e5e7eb";
+}
+
+function pickSeries(doc) {
+  if (!doc || typeof doc !== "object" || !doc.series || typeof doc.series !== "object") return [];
+  const entries = Object.values(doc.series);
+  if (entries.length === 0) return [];
+  const first = entries[0];
+  if (!first || typeof first !== "object" || !Array.isArray(first.points)) return [];
+  return first.points.filter((point) => point && point.timestamp && Number.isFinite(point.value));
+}
+
+function latestPoint(points) {
+  return points.length ? points[points.length - 1] : null;
+}
+
+function previousPoint(points) {
+  return points.length > 1 ? points[points.length - 2] : null;
+}
+
+function formatCompact(value) {
+  return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+}
+
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) return "--";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx += 1;
+  }
+  return `${value.toFixed(value >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
+}
+
+function formatMetric(metric, value) {
+  if (!Number.isFinite(value)) return "--";
+  if (metric.startsWith("lang_bytes_")) return formatBytes(value);
+  if (metric === "workflow-success-pct") return `${value.toFixed(1)}%`;
+  if (metric === "avg-pr-merge-hours") return `${value.toFixed(1)}h`;
+  if (metric === "avg-issue-close-days") return `${value.toFixed(1)}d`;
+  if (metric === "ci_build_duration_seconds") return value >= 60 ? `${(value / 60).toFixed(1)} min` : `${Math.round(value)} s`;
+  if (metric.includes("lines_of_code") || metric.includes("weekly-")) return formatCompact(value);
+  return Number.isInteger(value) ? value.toLocaleString("en") : value.toFixed(1);
+}
+
+function deltaClass(metric, delta) {
+  if (!Number.isFinite(delta) || delta === 0) return "delta-flat";
+  const direction = DIRECTIONS[metric] || "up";
+  const improved = direction === "up" ? delta > 0 : delta < 0;
+  return improved ? "delta-good" : "delta-bad";
+}
+
+function formatDelta(metric, latest, previous) {
+  if (!Number.isFinite(latest) || !Number.isFinite(previous)) return { text: "--", className: "delta-flat" };
+  const delta = latest - previous;
+  if (delta === 0) return { text: "0", className: "delta-flat" };
+  const sign = delta > 0 ? "+" : "";
+  const text = metric.startsWith("lang_bytes_")
+    ? `${sign}${formatBytes(delta)}`
+    : `${sign}${formatMetric(metric, delta)}`;
+  return { text, className: deltaClass(metric, delta) };
+}
+
+function lineSeries(pointsByMetric, metric) {
+  return (pointsByMetric[metric] || []).map((point) => point.value);
+}
+
+function labelsFrom(pointsByMetric, ...metricNames) {
+  const first = metricNames.map((name) => pointsByMetric[name] || []).find((points) => points.length > 0) || [];
+  return first.map((point) => new Date(point.timestamp).toLocaleDateString("en", { month: "short", day: "numeric" }));
+}
+
+function latestValue(pointsByMetric, metric) {
+  return latestPoint(pointsByMetric[metric] || [])?.value;
+}
+
+function latestHealthPoint(pointsByMetric) {
+  const allPoints = Object.values(pointsByMetric).flat();
+  if (allPoints.length === 0) return null;
+  return allPoints.reduce((latest, point) =>
+    !latest || new Date(point.timestamp) > new Date(latest.timestamp) ? point : latest,
+  null);
+}
+
+function renderTrackingCards(pointsByMetric) {
+  const latestRun = latestHealthPoint(pointsByMetric);
+  const cards = [
+    {
+      label: "Latest Health Run",
+      value: latestRun ? new Date(latestRun.timestamp).toLocaleDateString("en", { month: "short", day: "numeric" }) : "--",
+      subtitle: latestRun?.run_id ? `run ${latestRun.run_id}` : "waiting for first aggregate run",
+    },
+    {
+      label: "Stars",
+      value: formatMetric("stars", latestValue(pointsByMetric, "stars")),
+      subtitle: "community adoption",
+    },
+    {
+      label: "Open Issues",
+      value: formatMetric("open-issues", latestValue(pointsByMetric, "open-issues")),
+      subtitle: "current backlog",
+    },
+    {
+      label: "Workflow Success",
+      value: formatMetric("workflow-success-pct", latestValue(pointsByMetric, "workflow-success-pct")),
+      subtitle: "recent GitHub Actions pass rate",
+    },
+    {
+      label: "Rust Crates",
+      value: formatMetric("rust_crate_count", latestValue(pointsByMetric, "rust_crate_count")),
+      subtitle: "workspace members tracked",
+    },
+    {
+      label: "Total LOC",
+      value: formatMetric("total_lines_of_code", latestValue(pointsByMetric, "total_lines_of_code")),
+      subtitle: `${formatMetric("ci_build_duration_seconds", latestValue(pointsByMetric, "ci_build_duration_seconds"))} average CI build`,
+    },
+  ];
+
+  document.getElementById("headline-cards").innerHTML = cards.map((card) => `
+    <div class="tracking-card">
+      <span class="label">${card.label}</span>
+      <span class="value">${card.value}</span>
+      <span class="subtitle">${card.subtitle}</span>
+    </div>
+  `).join("");
+}
+
+function renderSnapshot(pointsByMetric) {
+  const rows = [
+    "stars",
+    "forks",
+    "watchers",
+    "open-issues",
+    "open-prs",
+    "workflow-success-pct",
+    "avg-pr-merge-hours",
+    "avg-issue-close-days",
+    "weekly-commits",
+    "weekly-additions",
+    "weekly-deletions",
+    "total_lines_of_code",
+    "rust_lines_of_code",
+    "rust_crate_count",
+    "cargo_dependency_count",
+    "ci_build_duration_seconds",
+  ];
+  document.getElementById("snapshot-body").innerHTML = rows.map((metric) => {
+    const points = pointsByMetric[metric] || [];
+    const latest = latestPoint(points)?.value;
+    const previous = previousPoint(points)?.value;
+    const delta = formatDelta(metric, latest, previous);
+    return `
+      <tr>
+        <td>${LABELS[metric] || metric}</td>
+        <td class="numeric">${formatMetric(metric, latest)}</td>
+        <td class="numeric">${formatMetric(metric, previous)}</td>
+        <td class="numeric ${delta.className}">${delta.text}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function buildLineChart(canvasId, labels, datasets, extraOptions = {}) {
+  new Chart(document.getElementById(canvasId), {
+    type: "line",
+    data: { labels, datasets },
+    options: {
+      responsive: true,
+      interaction: { mode: "index", intersect: false },
+      plugins: { legend: { position: "bottom" } },
+      scales: {
+        x: { grid: { color: gridColor() } },
+        y: { grid: { color: gridColor() }, beginAtZero: true },
+      },
+      ...extraOptions,
+    },
+  });
+}
+
+async function main() {
+  chartDefaults();
+
+  const seriesDocs = await Promise.all(METRICS.map((metric) => fetchBenchSeries(metric)));
+
+  const pointsByMetric = Object.fromEntries(
+    METRICS.map((metric, idx) => [metric, pickSeries(seriesDocs[idx])]),
+  );
+
+  const hasHealthData = Object.values(pointsByMetric).some((points) => points.length > 0);
+  document.getElementById("loading").style.display = "none";
+
+  if (!hasHealthData) {
+    document.getElementById("empty").style.display = "";
+    return;
+  }
+
+  document.getElementById("content").style.display = "";
+  renderTrackingCards(pointsByMetric);
+  renderSnapshot(pointsByMetric);
+
+  buildLineChart("community-chart", labelsFrom(pointsByMetric, "stars", "forks", "watchers"), [
+    { label: "Stars", data: lineSeries(pointsByMetric, "stars"), borderColor: COLORS.blue, backgroundColor: "rgba(37,99,235,0.12)", tension: 0.3, fill: false },
+    { label: "Forks", data: lineSeries(pointsByMetric, "forks"), borderColor: COLORS.purple, backgroundColor: "rgba(124,58,237,0.12)", tension: 0.3, fill: false },
+    { label: "Watchers", data: lineSeries(pointsByMetric, "watchers"), borderColor: COLORS.green, backgroundColor: "rgba(16,185,129,0.12)", tension: 0.3, fill: false },
+  ]);
+
+  buildLineChart("backlog-chart", labelsFrom(pointsByMetric, "open-issues", "open-prs"), [
+    { label: "Open issues", data: lineSeries(pointsByMetric, "open-issues"), borderColor: COLORS.red, backgroundColor: "rgba(239,68,68,0.12)", tension: 0.3, fill: false },
+    { label: "Open PRs", data: lineSeries(pointsByMetric, "open-prs"), borderColor: COLORS.orange, backgroundColor: "rgba(249,115,22,0.12)", tension: 0.3, fill: false },
+  ]);
+
+  buildLineChart("delivery-chart", labelsFrom(pointsByMetric, "workflow-success-pct", "avg-pr-merge-hours"), [
+    { label: "Workflow success %", data: lineSeries(pointsByMetric, "workflow-success-pct"), borderColor: COLORS.green, yAxisID: "y", tension: 0.3, fill: false },
+    { label: "Avg PR merge hours", data: lineSeries(pointsByMetric, "avg-pr-merge-hours"), borderColor: COLORS.blue, yAxisID: "y1", tension: 0.3, fill: false },
+    { label: "Avg issue close days", data: lineSeries(pointsByMetric, "avg-issue-close-days"), borderColor: COLORS.purple, yAxisID: "y1", tension: 0.3, fill: false },
+  ], {
+    scales: {
+      x: { grid: { color: gridColor() } },
+      y: { grid: { color: gridColor() }, beginAtZero: true, position: "left", title: { display: true, text: "%" } },
+      y1: { grid: { display: false }, beginAtZero: true, position: "right", title: { display: true, text: "hours / days" } },
+    },
+  });
+
+  buildLineChart("codebase-chart", labelsFrom(pointsByMetric, "total_lines_of_code", "rust_lines_of_code"), [
+    { label: "Total LOC", data: lineSeries(pointsByMetric, "total_lines_of_code"), borderColor: COLORS.blue, yAxisID: "y", tension: 0.3, fill: false },
+    { label: "Rust LOC", data: lineSeries(pointsByMetric, "rust_lines_of_code"), borderColor: COLORS.green, yAxisID: "y", tension: 0.3, fill: false },
+    { label: "Dependencies", data: lineSeries(pointsByMetric, "cargo_dependency_count"), borderColor: COLORS.orange, yAxisID: "y1", tension: 0.3, fill: false },
+    { label: "Crates", data: lineSeries(pointsByMetric, "rust_crate_count"), borderColor: COLORS.purple, yAxisID: "y1", tension: 0.3, fill: false },
+  ], {
+    scales: {
+      x: { grid: { color: gridColor() } },
+      y: { grid: { color: gridColor() }, beginAtZero: true, position: "left", title: { display: true, text: "lines" } },
+      y1: { grid: { display: false }, beginAtZero: true, position: "right", title: { display: true, text: "count" } },
+    },
+  });
+
+  new Chart(document.getElementById("activity-chart"), {
+    type: "bar",
+    data: {
+      labels: labelsFrom(pointsByMetric, "weekly-commits", "weekly-additions"),
+      datasets: [
+        { label: "Weekly commits", data: lineSeries(pointsByMetric, "weekly-commits"), backgroundColor: "rgba(37,99,235,0.7)", borderColor: COLORS.blue, yAxisID: "y" },
+        { label: "Weekly additions", data: lineSeries(pointsByMetric, "weekly-additions"), type: "line", borderColor: COLORS.green, backgroundColor: "rgba(16,185,129,0.1)", yAxisID: "y1", tension: 0.3 },
+        { label: "Weekly deletions", data: lineSeries(pointsByMetric, "weekly-deletions"), type: "line", borderColor: COLORS.red, backgroundColor: "rgba(239,68,68,0.1)", yAxisID: "y1", tension: 0.3 },
+      ],
+    },
+    options: {
+      responsive: true,
+      interaction: { mode: "index", intersect: false },
+      plugins: { legend: { position: "bottom" } },
+      scales: {
+        x: { grid: { color: gridColor() } },
+        y: { grid: { color: gridColor() }, beginAtZero: true, position: "left", title: { display: true, text: "commits" } },
+        y1: { grid: { display: false }, beginAtZero: true, position: "right", title: { display: true, text: "lines" } },
+      },
+    },
+  });
+
+  const languageMetrics = [
+    "lang_bytes_Rust",
+    "lang_bytes_TOML",
+    "lang_bytes_TypeScript",
+    "lang_bytes_JavaScript",
+  ].filter((metric) => Number.isFinite(latestValue(pointsByMetric, metric)));
+
+  if (languageMetrics.length === 0) {
+    document.getElementById("languages-card").insertAdjacentHTML("beforeend", '<p class="info-note">Language metrics appear after the first successful project health run.</p>');
+    document.getElementById("languages-chart").style.display = "none";
+  } else {
+    new Chart(document.getElementById("languages-chart"), {
+      type: "doughnut",
+      data: {
+        labels: languageMetrics.map((metric) => LABELS[metric]),
+        datasets: [{
+          data: languageMetrics.map((metric) => latestValue(pointsByMetric, metric)),
+          backgroundColor: [COLORS.blue, COLORS.orange, COLORS.green, COLORS.purple],
+          borderWidth: 1,
+        }],
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { position: "bottom" },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => `${ctx.label}: ${formatBytes(ctx.raw)}`,
+            },
+          },
+        },
+      },
+    });
+  }
+}
+
+main();
+</script>
+</body>
+</html>

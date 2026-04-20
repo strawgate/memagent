@@ -3,6 +3,6 @@ input:
 transform: |
   SELECT * FROM logs
 output:
-  type: null
+  type: "null"
 server:
   diagnostics: 127.0.0.1:9090

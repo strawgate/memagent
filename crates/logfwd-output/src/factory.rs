@@ -4,7 +4,7 @@ use std::time::Duration;
 
 #[cfg(test)]
 use logfwd_config::OutputConfig;
-use logfwd_config::{Format, OutputConfigV2, TlsClientConfig};
+use logfwd_config::{CompressionFormat, Format, OtlpProtocol, OutputConfigV2, TlsClientConfig};
 use logfwd_types::diagnostics::ComponentStats;
 
 use crate::arrow_ipc_sink::ArrowIpcSinkFactory;
@@ -16,7 +16,7 @@ use crate::json_lines::JsonLinesSinkFactory;
 use crate::loki::LokiSinkFactory;
 use crate::metadata::Compression;
 use crate::null::NullSinkFactory;
-use crate::otlp_sink::{OtlpProtocol, OtlpSinkFactory};
+use crate::otlp_sink::OtlpSinkFactory;
 use crate::sink::SinkFactory;
 use crate::stdout::{StdoutFormat, StdoutSinkFactory};
 use crate::tcp_sink::TcpSinkFactory;
@@ -95,7 +95,7 @@ pub(crate) fn build_sink_factory(
     stats: Arc<ComponentStats>,
 ) -> Result<Arc<dyn SinkFactory>, OutputError> {
     if cfg.output_type == logfwd_config::OutputType::File
-        && let Some(compression) = cfg.compression.as_deref()
+        && let Some(compression) = cfg.compression
     {
         return Err(OutputError::Construction(format!(
             "output '{name}': file does not support '{compression}' compression"
@@ -126,18 +126,25 @@ pub fn build_sink_factory_v2(
                 .as_ref()
                 .map_or("logs", String::as_str)
                 .to_string();
-            let compress = match cfg.compression.as_deref() {
-                Some("gzip") => true,
-                Some("none") | None => false,
+            let compress = match cfg.compression {
+                Some(CompressionFormat::Gzip) => true,
+                Some(CompressionFormat::None) | None => false,
                 Some(other) => {
                     return Err(OutputError::Construction(format!(
-                        "output '{name}': elasticsearch does not support '{other}' compression (use 'gzip' or omit)"
+                        "output '{name}': elasticsearch does not support '{other}' compression (use 'gzip', 'none', or omit)"
                     )));
                 }
             };
-            let request_mode = match cfg.request_mode.as_deref() {
-                Some("streaming") => ElasticsearchRequestMode::Streaming,
-                _ => ElasticsearchRequestMode::Buffered,
+            let request_mode = match cfg.request_mode {
+                Some(ElasticsearchRequestMode::Streaming) => ElasticsearchRequestMode::Streaming,
+                Some(ElasticsearchRequestMode::Buffered) | None => {
+                    ElasticsearchRequestMode::Buffered
+                }
+                Some(other) => {
+                    return Err(OutputError::Construction(format!(
+                        "output '{name}': unsupported elasticsearch request_mode '{other}' (use 'buffered', 'streaming', or omit)"
+                    )));
+                }
             };
             let factory = ElasticsearchSinkFactory::new_with_client(
                 name.to_string(),
@@ -183,15 +190,14 @@ pub fn build_sink_factory_v2(
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!("output '{name}': arrow_ipc requires 'endpoint'"))
             })?;
-            let compression = match cfg.compression.as_deref() {
-                Some("zstd") => Compression::Zstd,
-                Some("none") => Compression::None,
+            let compression = match cfg.compression {
+                Some(CompressionFormat::Zstd) => Compression::Zstd,
+                Some(CompressionFormat::None) | None => Compression::None,
                 Some(other) => {
                     return Err(OutputError::Construction(format!(
                         "output '{name}': arrow_ipc does not support '{other}' compression (use 'zstd', 'none', or omit)"
                     )));
                 }
-                None => Compression::None,
             };
             let factory = ArrowIpcSinkFactory::new(
                 name.to_string(),
@@ -210,10 +216,10 @@ pub fn build_sink_factory_v2(
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!("output '{name}': http requires 'endpoint'"))
             })?;
-            let compression = match cfg.compression.as_deref() {
-                Some("zstd") => Compression::Zstd,
-                Some("gzip") => Compression::Gzip,
-                Some("none") | None => Compression::None,
+            let compression = match cfg.compression {
+                Some(CompressionFormat::Zstd) => Compression::Zstd,
+                Some(CompressionFormat::Gzip) => Compression::Gzip,
+                Some(CompressionFormat::None) | None => Compression::None,
                 Some(other) => {
                     return Err(OutputError::Construction(format!(
                         "output '{name}': unknown HTTP compression '{other}' (expected 'zstd', 'gzip', or 'none')"
@@ -244,19 +250,19 @@ pub fn build_sink_factory_v2(
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!("output '{name}': OTLP requires 'endpoint'"))
             })?;
-            let protocol = match cfg.protocol.as_deref() {
-                Some("grpc") => OtlpProtocol::Grpc,
-                Some("http") | None => OtlpProtocol::Http,
+            let protocol = match cfg.protocol {
+                Some(OtlpProtocol::Grpc) => OtlpProtocol::Grpc,
+                Some(OtlpProtocol::Http) | None => OtlpProtocol::Http,
                 Some(other) => {
                     return Err(OutputError::Construction(format!(
-                        "output '{name}': unknown OTLP protocol '{other}' (expected 'http' or 'grpc')"
+                        "output '{name}': unsupported OTLP protocol '{other}' (use 'http', 'grpc', or omit)"
                     )));
                 }
             };
-            let compression = match cfg.compression.as_deref() {
-                Some("zstd") => Compression::Zstd,
-                Some("gzip") => Compression::Gzip,
-                Some("none") | None => Compression::None,
+            let compression = match cfg.compression {
+                Some(CompressionFormat::Zstd) => Compression::Zstd,
+                Some(CompressionFormat::Gzip) => Compression::Gzip,
+                Some(CompressionFormat::None) | None => Compression::None,
                 Some(other) => {
                     return Err(OutputError::Construction(format!(
                         "output '{name}': unknown OTLP compression '{other}' (expected 'zstd', 'gzip', or 'none')"
@@ -383,7 +389,9 @@ mod tests {
     use std::fs;
     use std::sync::Arc;
 
-    use logfwd_config::{OutputConfig, OutputConfigV2, OutputType, StdoutOutputConfig};
+    use logfwd_config::{
+        CompressionFormat, OutputConfig, OutputConfigV2, OutputType, StdoutOutputConfig,
+    };
     use logfwd_types::diagnostics::ComponentStats;
 
     #[test]
@@ -391,7 +399,7 @@ mod tests {
         let cfg = OutputConfig {
             output_type: OutputType::ArrowIpc,
             endpoint: Some("http://localhost:4318/v1/logs".to_string()),
-            compression: Some("none".to_string()),
+            compression: Some(CompressionFormat::None),
             ..Default::default()
         };
 

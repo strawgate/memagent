@@ -1,8 +1,13 @@
 # Source Metadata Zero-Copy Plan
 
-> **Status:** Active
+> **Status:** Historical
 > **Date:** 2026-04-19
 > **Context:** Source metadata zero-copy migration plan after fan-out research and profiling.
+> The active contract now lives in
+> `source-metadata-attachment-perf-2026-04-19.md`: `source_metadata: none` is
+> the default, `fastforward` attaches internal `__source_id`, public styles
+> (`ecs`/`beats`, `otel`, `vector`) attach normal columns, and SQL does not
+> prune or hide metadata columns.
 
 ## Summary
 
@@ -12,17 +17,26 @@ paths, sender addresses, input names, and future source descriptors travel as
 sidecar/source metadata and are materialized only when assembling the Arrow
 table that SQL sees.
 
-The target architecture should be:
+The active target architecture is:
 
 1. carry row-origin metadata beside scanner-ready bytes;
 2. scan the original payload bytes unchanged;
 3. attach source metadata as Arrow columns after scan and before SQL;
 4. keep descriptive source details in a cold-path `sources` enrichment table;
-5. preserve `_source_path` as an opt-in compatibility SQL column when
-   `source_metadata: true` is set on the input.
+5. attach nothing by default; use `source_metadata: fastforward` for internal
+   `__source_id`, or public styles (`ecs`/`beats`, `otel`, `vector`) for
+   normal metadata columns;
+6. keep SQL unsurprising: no hidden widening, pruning, or legacy metadata
+   compatibility in the SQL stage;
+7. drop known FastForward internal columns such as `__source_id` at user-facing
+   output boundaries unless SQL aliases them to public names.
 
 This keeps the scanner payload zero-copy, preserves multi-file batching, and
 avoids paying for long path strings on rows that do not need source metadata.
+
+The remaining sections are retained as historical notes from the superseded
+proposal. Any `_source_path`, `_source_id`, `_input`, or `source_metadata: true`
+references below describe the old design, not the current contract.
 
 ## Current Behavior Before This Migration
 
@@ -87,8 +101,8 @@ Obsolete pieces:
 - The old implementation lived before the current crate split.
 - It used older `StringBuilder` loops; the current `StringViewBuilder`
   constant-block pattern is a better starting point for string metadata.
-- It did not fully preserve current `_source_path` compatibility for
-  `SELECT *`, joins, and explicit projections.
+- It did not fully preserve scoped `_source_path` references for joins and
+  explicit projections.
 
 `origin/copilot/add-resource-column-injection` is separate prior art. Its
 resource-column idea was later reimplemented in current `Scanner::with_resource_attrs`
@@ -100,13 +114,14 @@ mixed-source batches.
 
 Keep these user-visible behaviors:
 
-- `_source_path` remains a SQL-visible compatibility column for file-backed
-  inputs.
-- Existing `_source_path` projections, filters, joins, and wildcard
-  projections work when the input explicitly enables `source_metadata: true`.
-- `SELECT *` exposes legacy `_source_path` when the input explicitly enables
-  `source_metadata: true`, without also widening results with newer metadata
-  columns such as `_source_id` or `_input`.
+- `_source_path` remains a SQL-visible source metadata column for file-backed
+  inputs when explicitly referenced.
+- Existing `_source_path` projections, filters, and joins work when the input
+  explicitly enables `source_metadata: true`.
+- `SELECT *` remains narrow. It does not expose `_source_path`, `_source_id`,
+  `_input`, or future metadata columns unless they are explicitly projected.
+  Metadata attached only for filters, joins, or expressions is pruned from the
+  transform output.
 - Outputs serialize selected metadata columns as normal log fields.
 - OTLP keeps `_source_path` as a LogRecord attribute unless the user explicitly
   maps it elsewhere.
@@ -236,11 +251,10 @@ source metadata table after the migration.
 1. Use `QueryAnalyzer::source_metadata_plan()` to choose source metadata
    columns. Attach them only when the input has `source_metadata: true`:
 
-   - `_source_path` for explicit references and legacy `SELECT *`
-     compatibility
+   - `_source_path` for explicit references
    - `_source_id` for explicit references
    - `_input` for explicit references
-   - conservative wildcard-except behavior
+   - no output metadata for wildcard projection or wildcard EXCEPT lists
 
 2. Add `SourcesTable` to `logfwd-transform`.
 
@@ -383,8 +397,9 @@ Required correctness tests:
 - Post-scan attachment rejects mismatched span row counts.
 - `_source_path`, `_source_id`, and `_input` are visible for explicit
   projection, filter, and join only when input source metadata is enabled.
-- `SELECT *` preserves legacy `_source_path` compatibility but does not
-  implicitly include `_source_id` or `_input`.
+- `SELECT *` remains narrow and does not implicitly include `_source_path`,
+  `_source_id`, `_input`, or future source metadata, even when those columns
+  were attached to evaluate filters or joins.
 - Existing `_source_path` Kubernetes join still works.
 - New `sources` join works.
 - `k8s_path` refreshes from source snapshots.
@@ -427,8 +442,7 @@ fail on any source metadata raw-byte write.
 
 - Add Arrow attach helper.
 - Attach `_source_id` only when source metadata is enabled and SQL needs it.
-- Attach `_source_path` for compatibility only when source metadata is enabled
-  and SQL needs it.
+- Attach `_source_path` only when source metadata is enabled and SQL needs it.
 - Prove current `_source_path` examples still work.
 
 ### Phase 3: cold source registry

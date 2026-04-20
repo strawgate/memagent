@@ -92,6 +92,41 @@ impl fmt::Display for InputType {
     }
 }
 
+/// Controls which source metadata columns are attached to scanned records.
+///
+/// `none` is the default and disables attachment. `fastforward` emits the
+/// internal `__source_id` handle. `ecs` emits ECS/Beats `file.path` and accepts
+/// the serde alias `beats`. `otel` emits `log.file.path`. `vector` emits
+/// `file`. Values serialize and parse as `snake_case`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceMetadataStyle {
+    /// Do not attach source metadata columns.
+    #[default]
+    None,
+    /// Attach FastForward internal metadata (`__source_id`).
+    Fastforward,
+    /// Attach ECS/Beats-style public metadata columns.
+    #[serde(alias = "beats")]
+    Ecs,
+    /// Attach OpenTelemetry-style public metadata columns.
+    Otel,
+    /// Attach Vector-style public metadata columns.
+    Vector,
+}
+
+impl fmt::Display for SourceMetadataStyle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => f.write_str("none"),
+            Self::Fastforward => f.write_str("fastforward"),
+            Self::Ecs => f.write_str("ecs"),
+            Self::Otel => f.write_str("otel"),
+            Self::Vector => f.write_str("vector"),
+        }
+    }
+}
+
 /// OTLP protobuf decode strategy for OTLP inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -156,17 +191,72 @@ impl<'de> Deserialize<'de> for OutputType {
                     E::unknown_variant(v, compat::supported_output_type_names_for_errors())
                 })
             }
-
-            fn visit_unit<E: serde::de::Error>(self) -> Result<OutputType, E> {
-                Ok(OutputType::Null)
-            }
-
-            fn visit_none<E: serde::de::Error>(self) -> Result<OutputType, E> {
-                Ok(OutputType::Null)
-            }
         }
 
         d.deserialize_any(V)
+    }
+}
+
+/// Request-body compression configured for output sinks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum CompressionFormat {
+    /// Do not compress request bodies.
+    None,
+    /// Compress request bodies with gzip.
+    Gzip,
+    /// Compress request bodies with zstd.
+    Zstd,
+}
+
+impl fmt::Display for CompressionFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CompressionFormat::None => f.write_str("none"),
+            CompressionFormat::Gzip => f.write_str("gzip"),
+            CompressionFormat::Zstd => f.write_str("zstd"),
+        }
+    }
+}
+
+/// OTLP transport protocol configured for OTLP outputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum OtlpProtocol {
+    /// Send OTLP data over HTTP.
+    Http,
+    /// Send OTLP data over gRPC.
+    Grpc,
+}
+
+impl fmt::Display for OtlpProtocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OtlpProtocol::Http => f.write_str("http"),
+            OtlpProtocol::Grpc => f.write_str("grpc"),
+        }
+    }
+}
+
+/// Elasticsearch bulk request construction mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum ElasticsearchRequestMode {
+    /// Build the Elasticsearch bulk request body in memory before sending.
+    Buffered,
+    /// Stream Elasticsearch bulk request body chunks while sending.
+    Streaming,
+}
+
+impl fmt::Display for ElasticsearchRequestMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ElasticsearchRequestMode::Buffered => f.write_str("buffered"),
+            ElasticsearchRequestMode::Streaming => f.write_str("streaming"),
+        }
     }
 }
 
@@ -378,10 +468,10 @@ pub struct HostMetricsInputConfig {
     /// Glob patterns for process names to exclude.
     #[serde(default, deserialize_with = "deserialize_option_vec_strict_string")]
     pub exclude_process_names: Option<Vec<String>>,
-    /// Specific event types to enable (e.g., `["process_exec", "tcp_connect"]`).
+    /// Event types to enable for `linux_ebpf_sensor` inputs (e.g., `["exec", "tcp_connect"]`).
     #[serde(default, deserialize_with = "deserialize_option_vec_strict_string")]
     pub include_event_types: Option<Vec<String>>,
-    /// Specific event types to disable.
+    /// Event types to disable for `linux_ebpf_sensor` inputs. Excludes take precedence over includes.
     #[serde(default, deserialize_with = "deserialize_option_vec_strict_string")]
     pub exclude_event_types: Option<Vec<String>>,
     /// Ring buffer size in kilobytes.
@@ -508,12 +598,13 @@ pub struct InputConfig {
     pub format: Option<Format>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub sql: Option<String>,
-    /// Attach source metadata columns (`_source_id`, `_input`, `_source_path`) when SQL requests them.
+    /// Source metadata attachment style.
     ///
-    /// Disabled by default because source metadata requires per-row origin
-    /// tracking and may materialize high-cardinality strings such as paths.
+    /// `none` is the default. `fastforward` attaches only the internal
+    /// `__source_id` handle. Public styles attach normal source metadata
+    /// columns using that schema's naming convention.
     #[serde(default)]
-    pub source_metadata: bool,
+    pub source_metadata: SourceMetadataStyle,
     #[serde(flatten)]
     pub type_config: InputTypeConfig,
 }
@@ -605,7 +696,7 @@ pub struct FileTypeConfig {
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub max_open_files: Option<usize>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
-    pub glob_rescan_interval_ms: Option<PositiveMillis>,
+    pub glob_rescan_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -767,9 +858,9 @@ pub struct OutputConfig {
     pub name: Option<String>,
     pub output_type: OutputType,
     pub endpoint: Option<String>,
-    pub protocol: Option<String>,
-    pub compression: Option<String>,
-    pub request_mode: Option<String>,
+    pub protocol: Option<OtlpProtocol>,
+    pub compression: Option<CompressionFormat>,
+    pub request_mode: Option<ElasticsearchRequestMode>,
     pub format: Option<Format>,
     pub path: Option<String>,
     pub index: Option<String>,
@@ -805,24 +896,72 @@ pub struct OutputConfig {
     pub write_schema_on_connect: Option<bool>,
 }
 
+/// Deserializes an output config by trying V2 (typed) first, falling back to V1
+/// (legacy flat). The source map is consumed into owned YAML value pairs so it
+/// can be replayed for each schema attempt, then both parse errors are reported
+/// together when neither schema matches.
+fn deserialize_output_with_fallback<'de, D, T>(
+    deserializer: D,
+    from_v2: impl FnOnce(OutputConfigV2) -> T,
+    from_v1: impl FnOnce(OutputConfigV1) -> T,
+) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::value::MapDeserializer;
+
+    struct OutputMapVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for OutputMapVisitor {
+        type Value = Vec<(serde_yaml_ng::Value, serde_yaml_ng::Value)>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an output configuration mapping")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let mut entries = Vec::with_capacity(map.size_hint().unwrap_or(0));
+            while let Some(entry) =
+                map.next_entry::<serde_yaml_ng::Value, serde_yaml_ng::Value>()?
+            {
+                entries.push(entry);
+            }
+            Ok(entries)
+        }
+    }
+
+    let entries: Vec<(serde_yaml_ng::Value, serde_yaml_ng::Value)> =
+        deserializer.deserialize_map(OutputMapVisitor)?;
+
+    // Try the V2 typed schema first via a replayed map deserializer.
+    let v2_error = {
+        let de = MapDeserializer::new(entries.clone().into_iter());
+        match OutputConfigV2::deserialize(de) {
+            Ok(v2) => return Ok(from_v2(v2)),
+            Err(error) => error,
+        }
+    };
+
+    // Fall back to the V1 flat schema.
+    let de = MapDeserializer::new(entries.into_iter());
+    OutputConfigV1::deserialize(de)
+        .map(from_v1)
+        .map_err(|v1_error| {
+            serde::de::Error::custom(format!(
+                "invalid output config; v2 parse error: {v2_error}; legacy parse error: {v1_error}"
+            ))
+        })
+}
+
 impl<'de> Deserialize<'de> for OutputConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let value = serde_yaml_ng::Value::deserialize(deserializer)?;
-        let v2_error = match OutputConfigV2::deserialize(value.clone()) {
-            Ok(v2) => return Ok(v2.into()),
-            Err(error) => error,
-        };
-
-        OutputConfigV1::deserialize(value)
-            .map(OutputConfig::from)
-            .map_err(|v1_error| {
-                serde::de::Error::custom(format!(
-                    "invalid output config; v2 parse error: {v2_error}; legacy parse error: {v1_error}"
-                ))
-            })
+        deserialize_output_with_fallback(deserializer, OutputConfig::from, OutputConfig::from)
     }
 }
 
@@ -835,8 +974,8 @@ impl From<&OutputConfig> for OutputConfigV2 {
             OutputType::Otlp => OutputConfigV2::Otlp(OtlpOutputConfig {
                 name: config.name.clone(),
                 endpoint: config.endpoint.clone(),
-                protocol: config.protocol.clone(),
-                compression: config.compression.clone(),
+                protocol: config.protocol,
+                compression: config.compression,
                 auth: config.auth.clone(),
                 tls: config.tls.clone(),
                 headers: config.headers.clone(),
@@ -850,15 +989,15 @@ impl From<&OutputConfig> for OutputConfigV2 {
             OutputType::Http => OutputConfigV2::Http(HttpOutputConfig {
                 name: config.name.clone(),
                 endpoint: config.endpoint.clone(),
-                compression: config.compression.clone(),
+                compression: config.compression,
                 format: config.format.clone(),
                 auth: config.auth.clone(),
             }),
             OutputType::Elasticsearch => OutputConfigV2::Elasticsearch(ElasticsearchOutputConfig {
                 name: config.name.clone(),
                 endpoint: config.endpoint.clone(),
-                compression: config.compression.clone(),
-                request_mode: config.request_mode.clone(),
+                compression: config.compression,
+                request_mode: config.request_mode,
                 index: config.index.clone().or_else(|| config.path.clone()),
                 auth: config.auth.clone(),
                 tls: config.tls.clone(),
@@ -886,7 +1025,7 @@ impl From<&OutputConfig> for OutputConfigV2 {
             OutputType::Parquet => OutputConfigV2::Parquet(ParquetOutputConfig {
                 name: config.name.clone(),
                 path: config.path.clone(),
-                compression: config.compression.clone(),
+                compression: config.compression,
                 format: config.format.clone(),
             }),
             OutputType::Null => OutputConfigV2::Null(NullOutputConfig {
@@ -903,7 +1042,7 @@ impl From<&OutputConfig> for OutputConfigV2 {
             OutputType::ArrowIpc => OutputConfigV2::ArrowIpc(ArrowIpcOutputConfig {
                 name: config.name.clone(),
                 endpoint: config.endpoint.clone(),
-                compression: config.compression.clone(),
+                compression: config.compression,
                 auth: config.auth.clone(),
                 host: config.host.clone(),
                 port: config.port,
@@ -925,12 +1064,12 @@ pub struct OutputConfigV1 {
     pub output_type: OutputType,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub endpoint: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub protocol: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub compression: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub request_mode: Option<String>,
+    #[serde(default)]
+    pub protocol: Option<OtlpProtocol>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
+    #[serde(default)]
+    pub request_mode: Option<ElasticsearchRequestMode>,
     pub format: Option<Format>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub path: Option<String>,
@@ -1160,20 +1299,11 @@ impl<'de> Deserialize<'de> for OutputConfigEntry {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = serde_yaml_ng::Value::deserialize(deserializer)?;
-        let v2_error = match OutputConfigV2::deserialize(value.clone()) {
-            Ok(config) => return Ok(OutputConfigEntry::from(config)),
-            Err(error) => error,
-        };
-
-        OutputConfigV1::deserialize(value)
-            .map(OutputConfig::from)
-            .map(OutputConfigEntry::from)
-            .map_err(|v1_error| {
-                serde::de::Error::custom(format!(
-                    "invalid output config; v2 parse error: {v2_error}; legacy parse error: {v1_error}"
-                ))
-            })
+        deserialize_output_with_fallback(
+            deserializer,
+            OutputConfigEntry::from,
+            |v1: OutputConfigV1| OutputConfigEntry::from(OutputConfig::from(v1)),
+        )
     }
 }
 
@@ -1184,10 +1314,10 @@ pub struct OtlpOutputConfig {
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub endpoint: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub protocol: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub compression: Option<String>,
+    #[serde(default)]
+    pub protocol: Option<OtlpProtocol>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
     #[serde(default)]
     pub auth: Option<AuthConfig>,
     #[serde(default)]
@@ -1240,8 +1370,8 @@ pub struct HttpOutputConfig {
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub endpoint: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub compression: Option<String>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
     pub format: Option<Format>,
     #[serde(default)]
     pub auth: Option<AuthConfig>,
@@ -1268,10 +1398,10 @@ pub struct ElasticsearchOutputConfig {
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub endpoint: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub compression: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub request_mode: Option<String>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
+    #[serde(default)]
+    pub request_mode: Option<ElasticsearchRequestMode>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub index: Option<String>,
     #[serde(default)]
@@ -1393,8 +1523,8 @@ pub struct ParquetOutputConfig {
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub path: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub compression: Option<String>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
     pub format: Option<Format>,
 }
 
@@ -1455,8 +1585,8 @@ pub struct ArrowIpcOutputConfig {
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub endpoint: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub compression: Option<String>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
     #[serde(default)]
     pub auth: Option<AuthConfig>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]

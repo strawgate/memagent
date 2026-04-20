@@ -14,7 +14,7 @@ use super::discovery::FileDiscovery;
 use super::glob::expand_glob_patterns;
 use super::identity::ByteOffset;
 use super::reader::FileReader;
-use super::state::backoff_transition;
+use super::state::{backoff_transition, shutdown_should_emit_eof};
 
 /// Events emitted by the tailer.
 #[non_exhaustive]
@@ -262,6 +262,71 @@ impl FileTailer {
         Ok(events)
     }
 
+    /// Perform a terminal poll during runtime shutdown.
+    ///
+    /// Normal idle EOF is intentionally delayed until sustained idle so a
+    /// still-growing file does not flush partial records too early. Shutdown is
+    /// terminal for the current runtime, so this bypasses the poll-interval and
+    /// idle-window gates for files that are already tracked: read any available
+    /// bytes once, then emit EOF for every active file so framing can flush
+    /// no-newline remainders. Shutdown intentionally does not rescan globs,
+    /// because graceful drain should not discover unrelated new files.
+    pub fn poll_shutdown(&mut self) -> io::Result<Vec<TailEvent>> {
+        let mut events = Vec::new();
+        let (_, mut had_error) = self.discovery.drain_events();
+
+        had_error |= self.discovery.detect_changes(&mut self.reader, &mut events);
+        had_error |= self.reader.read_all(&mut events);
+        suppress_source_less_shutdown_eof(&mut events);
+        let (cleanup_had_error, mut eof_targets) = self
+            .discovery
+            .cleanup_deleted_for_shutdown(&mut self.reader, &mut events);
+        had_error |= cleanup_had_error;
+        eof_targets.extend(self.shutdown_eof_targets());
+
+        for (path, source_id) in eof_targets {
+            events.push(TailEvent::EndOfFile { path, source_id });
+        }
+
+        self.last_poll = Instant::now();
+        self.last_poll_signal = PollCadenceSignal {
+            had_data: self.reader.last_read_had_data,
+            hit_read_budget: self.reader.last_read_hit_budget,
+        };
+        self.adaptive_poll.observe_signal(self.last_poll_signal);
+        self.reader.evict_lru(self.config.max_open_files);
+        self.update_error_backoff(had_error);
+
+        Ok(events)
+    }
+
+    fn shutdown_eof_targets(&self) -> Vec<(PathBuf, Option<SourceId>)> {
+        let active = self.reader.files.iter().filter_map(|(path, tailed)| {
+            let file_size = tailed.file.metadata().ok()?.len();
+            let already_emitted = tailed.eof_state.has_emitted();
+            if already_emitted || !shutdown_should_emit_eof(tailed.offset, file_size) {
+                return None;
+            }
+            let source_id = nonzero_source_id(tailed.identity.source_id())?;
+            Some((path.clone(), Some(source_id)))
+        });
+
+        let evicted = self.reader.evicted_offsets.values().filter_map(|evicted| {
+            let file_size = std::fs::metadata(&evicted.path).ok()?.len();
+            let already_emitted = evicted.eof_state.has_emitted();
+            // Evicted files are not reopened during shutdown, so offset > size
+            // means a truncation happened while the file was evicted.  Do not
+            // flush stale pre-truncation framed state in that case.
+            if already_emitted || evicted.offset != file_size {
+                return None;
+            }
+            let source_id = nonzero_source_id(evicted.source_id)?;
+            Some((evicted.path.clone(), Some(source_id)))
+        });
+
+        active.chain(evicted).collect()
+    }
+
     pub fn health(&self) -> ComponentHealth {
         self.health
     }
@@ -343,6 +408,22 @@ impl FileTailer {
     pub fn file_paths(&self) -> Vec<(SourceId, PathBuf)> {
         self.reader.file_paths()
     }
+}
+
+fn suppress_source_less_shutdown_eof(events: &mut Vec<TailEvent>) {
+    events.retain(|event| {
+        !matches!(
+            event,
+            TailEvent::EndOfFile {
+                source_id: None,
+                ..
+            }
+        )
+    });
+}
+
+fn nonzero_source_id(source_id: SourceId) -> Option<SourceId> {
+    (source_id != SourceId(0)).then_some(source_id)
 }
 
 #[cfg(test)]
