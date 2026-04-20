@@ -177,12 +177,10 @@ impl K8sPathTable {
 
     /// Parse CRI log paths and update the table.
     pub fn update_from_paths(&self, paths: &[String]) {
-        let mut entries = Vec::new();
-        for path in paths {
-            if let Some(entry) = parse_cri_log_path(path) {
-                entries.push(entry);
-            }
-        }
+        let mut entries: Vec<_> = paths
+            .iter()
+            .filter_map(|path| parse_cri_log_path(path))
+            .collect();
         entries.sort_by(|a, b| {
             (&a.namespace, &a.pod_name, &a.pod_uid, &a.container_name).cmp(&(
                 &b.namespace,
