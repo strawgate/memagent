@@ -2010,6 +2010,22 @@ mod tests {
 
     #[test]
     fn first_poll_emits_network_data() {
+        // Some CI / container environments expose no network interfaces to
+        // `sysinfo::Networks` (e.g., sandboxes without `/proc/net/*`). Probe
+        // directly ahead of the sensor run and skip when no interfaces are
+        // visible — that way the assertion below still catches a regression
+        // where the sensor drops `network_interface` on hosts that DO have
+        // interfaces, rather than silently passing in every environment.
+        let mut probe = sysinfo::Networks::new_with_refreshed_list();
+        probe.refresh(true);
+        if probe.iter().next().is_none() {
+            eprintln!(
+                "skipping first_poll_emits_network_data: sysinfo reports no \
+                 network interfaces in this environment"
+            );
+            return;
+        }
+
         let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
@@ -2026,19 +2042,9 @@ mod tests {
         std::thread::sleep(Duration::from_millis(2));
 
         let events = input.poll().expect("second poll with data");
-        // Some CI / container environments expose no network interfaces to
-        // `sysinfo::Networks`. The sensor still emits a batch (signal rows,
-        // overhead rows), but every `network_interface` cell is null. Accept
-        // either "no events" or "no interfaces named" as container-valid and
-        // only assert when the host reported at least one interface.
-        if events.is_empty() {
-            return;
-        }
+        assert!(!events.is_empty(), "network poll should produce a batch");
         let batch = first_batch(&events);
         let ifaces = string_col(batch, "network_interface");
-        if ifaces.iter().all(Option::is_none) {
-            return;
-        }
         assert!(
             ifaces.iter().any(|v| v.is_some()),
             "network snapshot rows should have network_interface set"

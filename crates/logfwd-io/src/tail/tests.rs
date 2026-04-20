@@ -18,16 +18,30 @@ fn create_test_stats() -> Arc<ComponentStats> {
 /// `has_metadata_indicating_deletion` depends on that behavior; some sandbox
 /// and overlay filesystems keep `nlink` at 1. Tests that rely on seeing a
 /// deleted file call this and skip when the platform can't report the signal.
+///
+/// The probe touches the filesystem; cache the result in a `OnceLock` so it
+/// runs at most once per test process.
 #[cfg(unix)]
 fn filesystem_tracks_nlink_after_unlink() -> bool {
     use std::os::unix::fs::MetadataExt;
+    use std::sync::OnceLock;
 
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("nlink-probe");
-    fs::write(&path, b"x").expect("write probe");
-    let file = File::open(&path).expect("open probe");
-    fs::remove_file(&path).expect("unlink probe");
-    file.metadata().map(|m| m.nlink() == 0).unwrap_or(false)
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("nlink-probe");
+        fs::write(&path, b"x").expect("write probe");
+        let file = File::open(&path).expect("open probe");
+        fs::remove_file(&path).expect("unlink probe");
+        let tracks = file.metadata().map(|m| m.nlink() == 0).unwrap_or(false);
+        if !tracks {
+            eprintln!(
+                "filesystem_tracks_nlink_after_unlink: platform keeps nlink>0 \
+                 after unlink; deletion-dependent tail tests will skip"
+            );
+        }
+        tracks
+    })
 }
 
 fn poll_until<F>(

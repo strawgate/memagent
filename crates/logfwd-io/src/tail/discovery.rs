@@ -692,6 +692,10 @@ mod tests {
         // Root bypasses UNIX permission checks, so the open would succeed and
         // this test could not observe an error. Skip when we'd be masked out.
         if fs::read(&path).is_ok() {
+            eprintln!(
+                "skipping rescan_globs_reports_open_file_error_for_unreadable_file: \
+                 running as root (or equivalent) so `chmod 000` does not deny the open"
+            );
             return;
         }
 
