@@ -1127,7 +1127,7 @@ output:
         let pipeline = cfg.pipelines.values().next().unwrap();
         let input = &pipeline.inputs[0];
         match &input.type_config {
-            crate::InputTypeConfig::LinuxEbpfSensor(s) => {
+            InputTypeConfig::LinuxEbpfSensor(s) => {
                 let sensor = s.sensor.as_ref().unwrap();
                 assert_eq!(
                     sensor.include_event_types.as_ref().unwrap(),
@@ -1474,6 +1474,17 @@ output:
         assert!(
             msg.contains("invalid output config"),
             "unquoted type: null must be rejected: {msg}"
+        );
+    }
+
+    #[test]
+    fn empty_output_type_with_endpoint_is_rejected() {
+        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type:\n  endpoint: https://collector:4318\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid output config"),
+            "empty output type with endpoint must be rejected before it can become the null sink: {msg}"
         );
     }
 

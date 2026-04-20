@@ -546,6 +546,18 @@ Write records to Parquet files.
 |-------|------|----------|-------------|
 | `path` | string | Yes | Destination file path. |
 
+### `null` output
+
+Drop records intentionally for tests and benchmark baselines. The type value must
+be quoted as a YAML string; unquoted `type: null` is YAML's null value and is
+rejected. Null outputs do not accept sink-specific fields such as `endpoint`,
+`format`, `auth`, `tls`, retry, or batch controls.
+
+```yaml
+output:
+  type: "null"
+```
+
 ---
 
 ## Output types

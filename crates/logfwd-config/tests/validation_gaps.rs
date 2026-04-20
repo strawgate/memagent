@@ -1005,6 +1005,46 @@ pipelines:
 }
 
 #[test]
+fn issue_2349_reject_null_output_endpoint() {
+    let yaml = r#"
+input:
+  type: file
+  path: /tmp/x.log
+output:
+  type: "null"
+  endpoint: https://collector:4318
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("pipeline 'default' output '#0'")
+            && err.contains("null output does not support 'endpoint'"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn issue_2349_reject_named_null_output_format() {
+    let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+    outputs:
+      - name: discard
+        type: "null"
+        format: json
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("pipeline 'test' output 'discard'")
+            && err.contains("null output does not support 'format'"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn issue_2035_reject_file_output_when_parent_directory_missing() {
     let missing_parent = unique_temp_dir("missing-parent").join("child");
     let out_path = missing_parent.join("out.ndjson");

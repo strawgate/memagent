@@ -1,7 +1,7 @@
 use crate::types::{
     CompressionFormat, Config, ConfigError, ElasticsearchRequestMode, EnrichmentConfig, Format,
     GeneratorAttributeValueConfig, GeneratorProfileConfig, InputType, InputTypeConfig,
-    JournaldBackendConfig, OutputType, PIPELINE_WORKERS_MAX,
+    JournaldBackendConfig, OutputConfig, OutputType, PIPELINE_WORKERS_MAX,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -20,6 +20,82 @@ fn validation_message(error: ConfigError) -> String {
         ConfigError::Io(error) => error.to_string(),
         ConfigError::Yaml(error) => error.to_string(),
     }
+}
+
+fn null_output_unsupported_field(output: &OutputConfig) -> Option<&'static str> {
+    if output.endpoint.is_some() {
+        return Some("endpoint");
+    }
+    if output.protocol.is_some() {
+        return Some("protocol");
+    }
+    if output.compression.is_some() {
+        return Some("compression");
+    }
+    if output.request_mode.is_some() {
+        return Some("request_mode");
+    }
+    if output.format.is_some() {
+        return Some("format");
+    }
+    if output.path.is_some() {
+        return Some("path");
+    }
+    if output.index.is_some() {
+        return Some("index");
+    }
+    if output.auth.is_some() {
+        return Some("auth");
+    }
+    if output.tenant_id.is_some() {
+        return Some("tenant_id");
+    }
+    if output.static_labels.is_some() {
+        return Some("static_labels");
+    }
+    if output.label_columns.is_some() {
+        return Some("label_columns");
+    }
+    if output.tls.is_some() {
+        return Some("tls");
+    }
+    if output.headers.is_some() {
+        return Some("headers");
+    }
+    if output.retry_attempts.is_some() {
+        return Some("retry_attempts");
+    }
+    if output.retry_initial_backoff_ms.is_some() {
+        return Some("retry_initial_backoff_ms");
+    }
+    if output.retry_max_backoff_ms.is_some() {
+        return Some("retry_max_backoff_ms");
+    }
+    if output.request_timeout_ms.is_some() {
+        return Some("request_timeout_ms");
+    }
+    if output.batch_size.is_some() {
+        return Some("batch_size");
+    }
+    if output.batch_timeout_ms.is_some() {
+        return Some("batch_timeout_ms");
+    }
+    if output.host.is_some() {
+        return Some("host");
+    }
+    if output.port.is_some() {
+        return Some("port");
+    }
+    if output.write_legacy_ipc_format.is_some() {
+        return Some("write_legacy_ipc_format");
+    }
+    if output.buffer_size_bytes.is_some() {
+        return Some("buffer_size_bytes");
+    }
+    if output.write_schema_on_connect.is_some() {
+        return Some("write_schema_on_connect");
+    }
+    None
 }
 
 impl Config {
@@ -817,7 +893,13 @@ impl Config {
                                 )));
                             }
                         }
-                        OutputType::Null => {}
+                        OutputType::Null => {
+                            if let Some(field) = null_output_unsupported_field(&output) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' output '{label}': null output does not support '{field}'; remove the field"
+                                )));
+                            }
+                        }
                         OutputType::Tcp | OutputType::Udp => {
                             if output.endpoint.is_none() {
                                 return Err(ConfigError::Validation(format!(
@@ -2750,7 +2832,7 @@ pipelines:
           cert_file: /tmp/server.crt
           key_file: /tmp/server.key
     outputs:
-      - type: null
+      - type: "null"
 "#;
         Config::load_str(yaml).expect("tcp tls cert+key should validate");
     }
@@ -2766,7 +2848,7 @@ pipelines:
         tls:
           cert_file: /tmp/server.crt
     outputs:
-      - type: null
+      - type: "null"
 "#;
         let err = Config::load_str(partial).unwrap_err().to_string();
         assert!(
@@ -2785,7 +2867,7 @@ pipelines:
           key_file: /tmp/server.key
           client_ca_file: /tmp/ca.crt
     outputs:
-      - type: null
+      - type: "null"
 "#;
         let err = Config::load_str(mtls).unwrap_err().to_string();
         assert!(
