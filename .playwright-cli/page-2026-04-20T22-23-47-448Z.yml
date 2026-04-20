@@ -1,0 +1,466 @@
+- generic [ref=e1]:
+  - link "Skip to main content" [ref=e2] [cursor=pointer]:
+    - /url: "#main-content"
+  - main [ref=e3]:
+    - generic [ref=e4]:
+      - link "o11ykit" [ref=e5] [cursor=pointer]:
+        - /url: /o11ykit/
+        - img [ref=e6]
+        - text: o11ykit
+      - navigation "Primary" [ref=e7]:
+        - link "OtlpKit" [ref=e8] [cursor=pointer]:
+          - /url: /o11ykit/otlpkit-docs/
+        - link "TSDB Engine" [ref=e9] [cursor=pointer]:
+          - /url: /o11ykit/tsdb-engine/
+        - link "Octo11y" [ref=e10] [cursor=pointer]:
+          - /url: /o11ykit/octo11y/
+        - link "Benchkit" [ref=e11] [cursor=pointer]:
+          - /url: /o11ykit/benchkit/
+        - link "GitHub" [ref=e12] [cursor=pointer]:
+          - /url: https://github.com/strawgate/o11ykit
+    - generic [ref=e13]:
+      - paragraph [ref=e14]: o11ytsdb engine
+      - heading "A time-series database that runs in your browser." [level=1] [ref=e15]:
+        - text: A time-series database
+        - text: that runs in your browser.
+      - paragraph [ref=e16]: Gorilla-style XOR-delta compression. Three pluggable storage backends. A scan query engine with aggregation, grouping, and rate computation. Generate millions of data points below and query them in real time.
+      - generic [ref=e17]:
+        - link "Launch Live Demo ↓" [ref=e18] [cursor=pointer]:
+          - /url: "#section-dataset"
+        - link "Learn How It Works" [ref=e19] [cursor=pointer]:
+          - /url: learn/
+        - link "Browse Source" [ref=e20] [cursor=pointer]:
+          - /url: https://github.com/strawgate/o11ykit/tree/main/packages/o11ytsdb
+      - generic "Key stats" [ref=e21]:
+        - generic [ref=e22]: 1.2M pts/sec OTLP ingest
+        - generic [ref=e23]: 57× compression on constant gauges
+        - generic [ref=e24]: 28–80× WASM encode speedup
+        - generic [ref=e25]: Zero external dependencies
+        - generic [ref=e26]: ~4 KB WASM binary
+    - generic [ref=e27]:
+      - heading "Load a Dataset" [level=2] [ref=e28]
+      - paragraph [ref=e29]: Choose a pre-built scenario or generate custom data. Everything runs in your browser — no server, no network, no latency.
+      - tablist [ref=e30]:
+        - tab "Scenarios" [selected] [ref=e31] [cursor=pointer]
+        - tab "Custom Generator" [ref=e32] [cursor=pointer]
+      - tabpanel "Scenarios" [ref=e33]:
+        - generic [ref=e34]:
+          - button "🛒 E-Commerce Platform Web traffic, latency percentiles, error rates, and checkout flow across a global fleet of services. http_requests_total request_latency_p99_ms error_rate cart_events_total active_sessions checkout_total 960 series · 7,200,000 pts · 10s interval ✓ 7,200,000 pts in 838 ms · 2× compression · 54.99 MB" [ref=e68] [cursor=pointer]:
+            - generic [ref=e36]: 🛒
+            - generic [ref=e37]: E-Commerce Platform
+            - generic [ref=e38]: Web traffic, latency percentiles, error rates, and checkout flow across a global fleet of services.
+            - generic [ref=e39]:
+              - generic [ref=e40]: http_requests_total
+              - generic [ref=e41]: request_latency_p99_ms
+              - generic [ref=e42]: error_rate
+              - generic [ref=e43]: cart_events_total
+              - generic [ref=e44]: active_sessions
+              - generic [ref=e45]: checkout_total
+            - generic [ref=e46]: 960 series · 7,200,000 pts · 10s interval
+            - generic [ref=e69]: ✓ 7,200,000 pts in 838 ms · 2× compression · 54.99 MB
+          - button "☸️ Kubernetes Cluster CPU, memory, pod restarts, and network I/O across namespaces, nodes, and pods. cpu_usage_cores memory_usage_bytes pod_restart_total network_rx_bytes network_tx_bytes 1,440 series · 8,640,000 pts · 15s interval" [ref=e47] [cursor=pointer]:
+            - generic [ref=e48]: ☸️
+            - generic [ref=e49]: Kubernetes Cluster
+            - generic [ref=e50]: CPU, memory, pod restarts, and network I/O across namespaces, nodes, and pods.
+            - generic [ref=e51]:
+              - generic [ref=e52]: cpu_usage_cores
+              - generic [ref=e53]: memory_usage_bytes
+              - generic [ref=e54]: pod_restart_total
+              - generic [ref=e55]: network_rx_bytes
+              - generic [ref=e56]: network_tx_bytes
+            - generic [ref=e57]: 1,440 series · 8,640,000 pts · 15s interval
+          - button "⚙️ Custom Generator Choose your own series count, points, data pattern, and sample interval. Full control over the generated dataset. Open Generator →" [ref=e58] [cursor=pointer]:
+            - generic [ref=e59]: ⚙️
+            - generic [ref=e60]: Custom Generator
+            - generic [ref=e61]: Choose your own series count, points, data pattern, and sample interval. Full control over the generated dataset.
+            - generic [ref=e62]: Open Generator →
+    - generic [ref=e70]:
+      - heading "What would you like to explore?" [level=2] [ref=e71]
+      - paragraph [ref=e72]: Your dataset is loaded and ready. Choose a path — you can always switch later.
+      - generic [ref=e73]:
+        - button "💾 Explore Storage See how millions of data points are compressed and organized in memory. Compare three storage backends side-by-side. Inspect individual compressed chunks byte-by-byte. Start Exploring →" [active] [ref=e74] [cursor=pointer]:
+          - generic [ref=e75]: 💾
+          - heading "Explore Storage" [level=3] [ref=e76]
+          - paragraph [ref=e77]: See how millions of data points are compressed and organized in memory. Compare three storage backends side-by-side. Inspect individual compressed chunks byte-by-byte.
+          - generic [ref=e78]: Start Exploring →
+        - button "🔍 Explore Queries Write queries against your live dataset. Filter by labels, aggregate across series, compute rates and percentiles, and see results charted in real time. Open Query Lab →" [ref=e79] [cursor=pointer]:
+          - generic [ref=e80]: 🔍
+          - heading "Explore Queries" [level=3] [ref=e81]
+          - paragraph [ref=e82]: Write queries against your live dataset. Filter by labels, aggregate across series, compute rates and percentiles, and see results charted in real time.
+          - generic [ref=e83]: Open Query Lab →
+    - generic [ref=e84]:
+      - navigation "Explorer navigation" [ref=e85]:
+        - button "💾 Storage" [ref=e86] [cursor=pointer]
+        - button "🔍 Query Lab" [ref=e87] [cursor=pointer]
+      - heading "Storage Explorer" [level=2] [ref=e88]
+      - generic [ref=e89]:
+        - generic [ref=e90]:
+          - generic [ref=e91]: 7,200,000
+          - generic [ref=e92]: Total points
+        - generic [ref=e93]:
+          - generic [ref=e94]: "960"
+          - generic [ref=e95]: Series
+        - generic [ref=e96]:
+          - generic [ref=e97]: 54.99 MB
+          - generic [ref=e98]: Memory used
+        - generic [ref=e99]:
+          - generic [ref=e100]: 2.0×
+          - generic [ref=e101]: Compression ratio
+        - generic [ref=e102]:
+          - generic [ref=e103]: 838 ms
+          - generic [ref=e104]: Ingest time
+        - generic [ref=e105]:
+          - generic [ref=e106]: 8.6M pts/s
+          - generic [ref=e107]: Ingest rate
+        - generic [ref=e108]:
+          - generic [ref=e109]: "971"
+          - generic [ref=e110]: Total chunks
+        - generic [ref=e111]:
+          - generic [ref=e112]: "11"
+          - generic [ref=e113]: Frozen (compressed)
+      - paragraph [ref=e114]:
+        - text: Each row is a series. Frozen compressed chunks are
+        - generic [ref=e115]: frozen
+        - text: and the active write buffer is
+        - generic [ref=e116]: hot
+        - text: . Click any chunk to inspect it.
+      - generic [ref=e117]:
+        - generic [ref=e118]:
+          - generic [ref=e119]:
+            - generic [ref=e120]: http_requests_total
+            - generic [ref=e121]: 160 series · 1,200,000 pts · 18.26 MB
+          - generic [ref=e122]:
+            - generic [ref=e123]:
+              - generic [ref=e124]:
+                - generic [ref=e125]:
+                  - generic [ref=e126]: region=us-east-1
+                  - generic [ref=e127]: service=web
+                  - generic [ref=e128]: endpoint=/home
+                - generic [ref=e129]: 7,500 pts · 62.6 KB · 11 chunks + hot
+              - generic [ref=e130]:
+                - 'generic "Chunk 0: 640 pts, 5.0 KB, 2.0× compression" [ref=e131] [cursor=pointer]':
+                  - generic: "640"
+                - 'generic "Chunk 1: 640 pts, 5.0 KB, 2.0× compression" [ref=e132] [cursor=pointer]':
+                  - generic: "640"
+                - 'generic "Chunk 2: 640 pts, 4.9 KB, 2.0× compression" [ref=e133] [cursor=pointer]':
+                  - generic: "640"
+                - 'generic "Chunk 3: 640 pts, 5.0 KB, 2.0× compression" [ref=e134] [cursor=pointer]':
+                  - generic: "640"
+                - 'generic "Chunk 4: 640 pts, 5.0 KB, 2.0× compression" [ref=e135] [cursor=pointer]':
+                  - generic: "640"
+                - 'generic "Chunk 5: 640 pts, 4.9 KB, 2.0× compression" [ref=e136] [cursor=pointer]':
+                  - generic: "640"
+                - 'generic "Chunk 6: 640 pts, 5.1 KB, 2.0× compression" [ref=e137] [cursor=pointer]':
+                  - generic: "640"
+                - 'generic "Chunk 7: 640 pts, 5.1 KB, 2.0× compression" [ref=e138] [cursor=pointer]':
+                  - generic: "640"
+                - 'generic "Chunk 8: 640 pts, 5.0 KB, 2.0× compression" [ref=e139] [cursor=pointer]':
+                  - generic: "640"
+                - 'generic "Chunk 9: 640 pts, 5.3 KB, 1.9× compression" [ref=e140] [cursor=pointer]':
+                  - generic: "640"
+                - 'generic "Chunk 10: 640 pts, 5.2 KB, 1.9× compression" [ref=e141] [cursor=pointer]':
+                  - generic: "640"
+                - 'generic "Hot buffer: 460 pts, 7.2 KB (uncompressed)" [ref=e142] [cursor=pointer]':
+                  - generic: "460"
+            - generic [ref=e143]:
+              - generic [ref=e144]:
+                - generic [ref=e145]:
+                  - generic [ref=e146]: region=us-east-1
+                  - generic [ref=e147]: service=web
+                  - generic [ref=e148]: endpoint=/search
+                - generic [ref=e149]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e151] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e152]:
+              - generic [ref=e153]:
+                - generic [ref=e154]:
+                  - generic [ref=e155]: region=us-east-1
+                  - generic [ref=e156]: service=web
+                  - generic [ref=e157]: endpoint=/cart
+                - generic [ref=e158]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e160] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e161]:
+              - generic [ref=e162]:
+                - generic [ref=e163]:
+                  - generic [ref=e164]: region=us-east-1
+                  - generic [ref=e165]: service=web
+                  - generic [ref=e166]: endpoint=/checkout
+                - generic [ref=e167]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e169] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e170]:
+              - generic [ref=e171]:
+                - generic [ref=e172]:
+                  - generic [ref=e173]: region=us-east-1
+                  - generic [ref=e174]: service=api
+                  - generic [ref=e175]: endpoint=/home
+                - generic [ref=e176]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e178] [cursor=pointer]':
+                - generic: "7500"
+          - button "Show 155 more series…" [ref=e179] [cursor=pointer]
+        - generic [ref=e180]:
+          - generic [ref=e181]:
+            - generic [ref=e182]: request_latency_p99_ms
+            - generic [ref=e183]: 160 series · 1,200,000 pts · 18.31 MB
+          - generic [ref=e184]:
+            - generic [ref=e185]:
+              - generic [ref=e186]:
+                - generic [ref=e187]:
+                  - generic [ref=e188]: region=us-east-1
+                  - generic [ref=e189]: service=web
+                  - generic [ref=e190]: endpoint=/home
+                - generic [ref=e191]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e193] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e194]:
+              - generic [ref=e195]:
+                - generic [ref=e196]:
+                  - generic [ref=e197]: region=us-east-1
+                  - generic [ref=e198]: service=web
+                  - generic [ref=e199]: endpoint=/search
+                - generic [ref=e200]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e202] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e203]:
+              - generic [ref=e204]:
+                - generic [ref=e205]:
+                  - generic [ref=e206]: region=us-east-1
+                  - generic [ref=e207]: service=web
+                  - generic [ref=e208]: endpoint=/cart
+                - generic [ref=e209]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e211] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e212]:
+              - generic [ref=e213]:
+                - generic [ref=e214]:
+                  - generic [ref=e215]: region=us-east-1
+                  - generic [ref=e216]: service=web
+                  - generic [ref=e217]: endpoint=/checkout
+                - generic [ref=e218]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e220] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e221]:
+              - generic [ref=e222]:
+                - generic [ref=e223]:
+                  - generic [ref=e224]: region=us-east-1
+                  - generic [ref=e225]: service=api
+                  - generic [ref=e226]: endpoint=/home
+                - generic [ref=e227]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e229] [cursor=pointer]':
+                - generic: "7500"
+          - button "Show 155 more series…" [ref=e230] [cursor=pointer]
+        - generic [ref=e231]:
+          - generic [ref=e232]:
+            - generic [ref=e233]: error_rate
+            - generic [ref=e234]: 160 series · 1,200,000 pts · 18.31 MB
+          - generic [ref=e235]:
+            - generic [ref=e236]:
+              - generic [ref=e237]:
+                - generic [ref=e238]:
+                  - generic [ref=e239]: region=us-east-1
+                  - generic [ref=e240]: service=web
+                  - generic [ref=e241]: endpoint=/home
+                - generic [ref=e242]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e244] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e245]:
+              - generic [ref=e246]:
+                - generic [ref=e247]:
+                  - generic [ref=e248]: region=us-east-1
+                  - generic [ref=e249]: service=web
+                  - generic [ref=e250]: endpoint=/search
+                - generic [ref=e251]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e253] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e254]:
+              - generic [ref=e255]:
+                - generic [ref=e256]:
+                  - generic [ref=e257]: region=us-east-1
+                  - generic [ref=e258]: service=web
+                  - generic [ref=e259]: endpoint=/cart
+                - generic [ref=e260]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e262] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e263]:
+              - generic [ref=e264]:
+                - generic [ref=e265]:
+                  - generic [ref=e266]: region=us-east-1
+                  - generic [ref=e267]: service=web
+                  - generic [ref=e268]: endpoint=/checkout
+                - generic [ref=e269]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e271] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e272]:
+              - generic [ref=e273]:
+                - generic [ref=e274]:
+                  - generic [ref=e275]: region=us-east-1
+                  - generic [ref=e276]: service=api
+                  - generic [ref=e277]: endpoint=/home
+                - generic [ref=e278]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e280] [cursor=pointer]':
+                - generic: "7500"
+          - button "Show 155 more series…" [ref=e281] [cursor=pointer]
+        - generic [ref=e282]:
+          - generic [ref=e283]:
+            - generic [ref=e284]: cart_events_total
+            - generic [ref=e285]: 160 series · 1,200,000 pts · 18.31 MB
+          - generic [ref=e286]:
+            - generic [ref=e287]:
+              - generic [ref=e288]:
+                - generic [ref=e289]:
+                  - generic [ref=e290]: region=us-east-1
+                  - generic [ref=e291]: service=web
+                  - generic [ref=e292]: endpoint=/home
+                - generic [ref=e293]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e295] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e296]:
+              - generic [ref=e297]:
+                - generic [ref=e298]:
+                  - generic [ref=e299]: region=us-east-1
+                  - generic [ref=e300]: service=web
+                  - generic [ref=e301]: endpoint=/search
+                - generic [ref=e302]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e304] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e305]:
+              - generic [ref=e306]:
+                - generic [ref=e307]:
+                  - generic [ref=e308]: region=us-east-1
+                  - generic [ref=e309]: service=web
+                  - generic [ref=e310]: endpoint=/cart
+                - generic [ref=e311]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e313] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e314]:
+              - generic [ref=e315]:
+                - generic [ref=e316]:
+                  - generic [ref=e317]: region=us-east-1
+                  - generic [ref=e318]: service=web
+                  - generic [ref=e319]: endpoint=/checkout
+                - generic [ref=e320]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e322] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e323]:
+              - generic [ref=e324]:
+                - generic [ref=e325]:
+                  - generic [ref=e326]: region=us-east-1
+                  - generic [ref=e327]: service=api
+                  - generic [ref=e328]: endpoint=/home
+                - generic [ref=e329]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e331] [cursor=pointer]':
+                - generic: "7500"
+          - button "Show 155 more series…" [ref=e332] [cursor=pointer]
+        - generic [ref=e333]:
+          - generic [ref=e334]:
+            - generic [ref=e335]: active_sessions
+            - generic [ref=e336]: 160 series · 1,200,000 pts · 18.31 MB
+          - generic [ref=e337]:
+            - generic [ref=e338]:
+              - generic [ref=e339]:
+                - generic [ref=e340]:
+                  - generic [ref=e341]: region=us-east-1
+                  - generic [ref=e342]: service=web
+                  - generic [ref=e343]: endpoint=/home
+                - generic [ref=e344]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e346] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e347]:
+              - generic [ref=e348]:
+                - generic [ref=e349]:
+                  - generic [ref=e350]: region=us-east-1
+                  - generic [ref=e351]: service=web
+                  - generic [ref=e352]: endpoint=/search
+                - generic [ref=e353]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e355] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e356]:
+              - generic [ref=e357]:
+                - generic [ref=e358]:
+                  - generic [ref=e359]: region=us-east-1
+                  - generic [ref=e360]: service=web
+                  - generic [ref=e361]: endpoint=/cart
+                - generic [ref=e362]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e364] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e365]:
+              - generic [ref=e366]:
+                - generic [ref=e367]:
+                  - generic [ref=e368]: region=us-east-1
+                  - generic [ref=e369]: service=web
+                  - generic [ref=e370]: endpoint=/checkout
+                - generic [ref=e371]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e373] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e374]:
+              - generic [ref=e375]:
+                - generic [ref=e376]:
+                  - generic [ref=e377]: region=us-east-1
+                  - generic [ref=e378]: service=api
+                  - generic [ref=e379]: endpoint=/home
+                - generic [ref=e380]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e382] [cursor=pointer]':
+                - generic: "7500"
+          - button "Show 155 more series…" [ref=e383] [cursor=pointer]
+        - generic [ref=e384]:
+          - generic [ref=e385]:
+            - generic [ref=e386]: checkout_total
+            - generic [ref=e387]: 160 series · 1,200,000 pts · 18.31 MB
+          - generic [ref=e388]:
+            - generic [ref=e389]:
+              - generic [ref=e390]:
+                - generic [ref=e391]:
+                  - generic [ref=e392]: region=us-east-1
+                  - generic [ref=e393]: service=web
+                  - generic [ref=e394]: endpoint=/home
+                - generic [ref=e395]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e397] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e398]:
+              - generic [ref=e399]:
+                - generic [ref=e400]:
+                  - generic [ref=e401]: region=us-east-1
+                  - generic [ref=e402]: service=web
+                  - generic [ref=e403]: endpoint=/search
+                - generic [ref=e404]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e406] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e407]:
+              - generic [ref=e408]:
+                - generic [ref=e409]:
+                  - generic [ref=e410]: region=us-east-1
+                  - generic [ref=e411]: service=web
+                  - generic [ref=e412]: endpoint=/cart
+                - generic [ref=e413]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e415] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e416]:
+              - generic [ref=e417]:
+                - generic [ref=e418]:
+                  - generic [ref=e419]: region=us-east-1
+                  - generic [ref=e420]: service=web
+                  - generic [ref=e421]: endpoint=/checkout
+                - generic [ref=e422]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e424] [cursor=pointer]':
+                - generic: "7500"
+            - generic [ref=e425]:
+              - generic [ref=e426]:
+                - generic [ref=e427]:
+                  - generic [ref=e428]: region=us-east-1
+                  - generic [ref=e429]: service=api
+                  - generic [ref=e430]: endpoint=/home
+                - generic [ref=e431]: 7,500 pts · 117.2 KB · 0 chunks + hot
+              - 'generic "Hot buffer: 7500 pts, 117.2 KB (uncompressed)" [ref=e433] [cursor=pointer]':
+                - generic: "7500"
+          - button "Show 155 more series…" [ref=e434] [cursor=pointer]
+    - paragraph [ref=e64]:
+      - text: Part of the
+      - link "o11ykit" [ref=e65] [cursor=pointer]:
+        - /url: /o11ykit/
+      - text: platform ·
+      - link "OtlpKit Docs" [ref=e66] [cursor=pointer]:
+        - /url: /o11ykit/otlpkit-docs/
+      - text: ·
+      - link "GitHub" [ref=e67] [cursor=pointer]:
+        - /url: https://github.com/strawgate/o11ykit
