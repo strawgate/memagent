@@ -32,10 +32,10 @@ pub use types::{
     HttpTypeConfig, InputConfig, InputType, InputTypeConfig, JournaldBackendConfig,
     JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sPathConfig,
     LokiOutputConfig, NullOutputConfig, OtlpOutputConfig, OtlpProtobufDecodeModeConfig,
-    OtlpProtocol, OtlpTypeConfig, OutputConfig, OutputConfigV2, OutputType,
-    ParquetOutputConfig, PipelineConfig, S3InputConfig, S3TypeConfig, SensorTypeConfig,
-    ServerConfig, SocketOutputConfig, SourceMetadataStyle, StaticEnrichmentConfig,
-    StdoutOutputConfig, StorageConfig, TcpTypeConfig, UdpTypeConfig,
+    OtlpProtocol, OtlpTypeConfig, OutputConfig, OutputConfigV2, OutputType, ParquetOutputConfig,
+    PipelineConfig, S3InputConfig, S3TypeConfig, SensorTypeConfig, ServerConfig,
+    SocketOutputConfig, SourceMetadataStyle, StaticEnrichmentConfig, StdoutOutputConfig,
+    StorageConfig, TcpTypeConfig, UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 
@@ -3256,7 +3256,10 @@ format: json
                     panic!("{} output should parse as v2: {err}", path.display())
                 });
                 let flat = OutputConfig::deserialize(output_value.clone()).unwrap_or_else(|err| {
-                    panic!("{} output should normalize to flat shape: {err}", path.display())
+                    panic!(
+                        "{} output should normalize to flat shape: {err}",
+                        path.display()
+                    )
                 });
                 assert_eq!(OutputConfig::from(v2), flat, "{}", path.display());
                 checked += 1;

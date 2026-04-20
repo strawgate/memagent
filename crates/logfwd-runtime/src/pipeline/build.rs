@@ -4,11 +4,9 @@ use std::time::Duration;
 
 use opentelemetry::metrics::Meter;
 
-use logfwd_config::{
-    Format, InputTypeConfig, OutputConfigV2, PipelineConfig, SourceMetadataStyle,
-};
 #[cfg(feature = "datafusion")]
 use logfwd_config::{EnrichmentConfig, GeoDatabaseFormat};
+use logfwd_config::{Format, InputTypeConfig, OutputConfigV2, PipelineConfig, SourceMetadataStyle};
 use logfwd_diagnostics::diagnostics::PipelineMetrics;
 use logfwd_io::checkpoint::{
     CheckpointStore, FileCheckpointStore, SourceCheckpoint, default_data_dir,
@@ -685,8 +683,7 @@ fn build_output_factory_from_config(
     let output_type_str = output_cfg.output_type().to_string();
     let output_stats = metrics.add_output(&output_name, &output_type_str);
 
-    build_sink_factory(&output_name, output_cfg, base_path, output_stats)
-        .map_err(|e| e.to_string())
+    build_sink_factory(&output_name, output_cfg, base_path, output_stats).map_err(|e| e.to_string())
 }
 
 fn should_open_checkpoint_store(checkpoint_dir: &Path, has_explicit_data_dir: bool) -> bool {

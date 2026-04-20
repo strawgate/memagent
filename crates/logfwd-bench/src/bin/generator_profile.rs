@@ -80,7 +80,9 @@ fn print_help() {
     println!("  --lines N       row count for most generators (default: {DEFAULT_LINES})");
     println!("  --iterations N  iterations per generator (default: {DEFAULT_ITERATIONS})");
     println!("  --seed N        base seed (default: {DEFAULT_SEED})");
-    println!("  --only NAME     run one case (cloudtrail_audit | envoy_access | infra_mixed | app_minimal | infra_wide)");
+    println!(
+        "  --only NAME     run one case (cloudtrail_audit | envoy_access | infra_mixed | app_minimal | infra_wide)"
+    );
 }
 
 fn main() {
