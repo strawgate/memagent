@@ -2994,6 +2994,7 @@ dependencies = [
  "chrono",
  "criterion",
  "logfwd-arrow",
+ "logfwd-lint-attrs",
  "logfwd-test-utils",
  "memchr",
  "memmap2",
@@ -3091,6 +3092,11 @@ dependencies = [
 [[package]]
 name = "logfwd-lint-attrs"
 version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "logfwd-otap-proto"

@@ -123,3 +123,159 @@ fn prepend_marker(marker: &str, item: TokenStream) -> TokenStream {
     out.extend(item);
     out
 }
+
+// ---------------------------------------------------------------------------
+// Compile-time verification linkage attributes
+// ---------------------------------------------------------------------------
+
+use quote::{format_ident, quote};
+use syn::{
+    ItemFn, LitStr, MetaNameValue, Token,
+    parse::{Parse, ParseStream},
+    parse_macro_input,
+    punctuated::Punctuated,
+};
+
+struct VerifiedArgs {
+    kani: Option<LitStr>,
+    proptest: Option<LitStr>,
+}
+
+impl Parse for VerifiedArgs {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let pairs = Punctuated::<MetaNameValue, Token![,]>::parse_terminated(input)?;
+        let mut kani = None;
+        let mut proptest = None;
+
+        for pair in pairs {
+            if pair.path.is_ident("kani") {
+                match pair.value {
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(value),
+                        ..
+                    }) => {
+                        kani = Some(value);
+                    }
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            pair,
+                            "expected string literal: kani = \"verify_name\"",
+                        ));
+                    }
+                }
+            } else if pair.path.is_ident("proptest") {
+                match pair.value {
+                    syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(value),
+                        ..
+                    }) => {
+                        proptest = Some(value);
+                    }
+                    _ => {
+                        return Err(syn::Error::new_spanned(
+                            pair,
+                            "expected string literal: proptest = \"test_name\"",
+                        ));
+                    }
+                }
+            } else {
+                return Err(syn::Error::new_spanned(
+                    pair.path,
+                    "unsupported key, expected `kani` or `proptest`",
+                ));
+            }
+        }
+
+        if kani.is_none() && proptest.is_none() {
+            return Err(syn::Error::new(
+                input.span(),
+                "expected at least one linkage: kani = \"...\" or proptest = \"...\"",
+            ));
+        }
+
+        Ok(Self { kani, proptest })
+    }
+}
+
+/// Marks a function as proof-verified.
+///
+/// `#[verified(kani = "verify_function_name")]` emits a compile-time check
+/// under `cfg(kani)` that references `self::verification::<proof_name>`.
+/// If the proof function does not exist, compilation fails at the annotation site.
+///
+/// Also accepts `proptest = "test_name"` to emit a `#[cfg(test)]` doc-marker
+/// for xtask/structural tooling.
+#[proc_macro_attribute]
+pub fn verified(args: TokenStream, item: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(args as VerifiedArgs);
+    let function = parse_macro_input!(item as ItemFn);
+    let function_name = function.sig.ident.clone();
+    let marker_ident = format_ident!("__verified_marker_{}", function_name);
+
+    let kani_assertion = if let Some(kani_name) = args.kani {
+        let kani_proof = format_ident!("{}", kani_name.value());
+        quote! {
+            #[cfg(kani)]
+            #[doc(hidden)]
+            #[allow(non_upper_case_globals)]
+            const #marker_ident: () = {
+                let _proof: fn() = self::verification::#kani_proof;
+            };
+        }
+    } else {
+        quote! {}
+    };
+
+    let proptest_marker = if let Some(test_name) = args.proptest {
+        let value = test_name.value();
+        quote! {
+            #[cfg(test)]
+            #[doc(hidden)]
+            const _: &str = concat!("proptest:", #value);
+        }
+    } else {
+        quote! {}
+    };
+
+    TokenStream::from(quote! {
+        #function
+        #kani_assertion
+        #proptest_marker
+    })
+}
+
+/// Marker attribute for functions that process untrusted input.
+///
+/// Emits a hidden const marker for xtask/lint tooling. No runtime effect.
+#[proc_macro_attribute]
+pub fn trust_boundary(_args: TokenStream, item: TokenStream) -> TokenStream {
+    let function = parse_macro_input!(item as ItemFn);
+    let function_name = function.sig.ident.clone();
+    let marker_ident = format_ident!("__trust_boundary_marker_{}", function_name);
+
+    TokenStream::from(quote! {
+        #function
+        #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
+        const #marker_ident: &str = concat!("trust_boundary:", stringify!(#function_name));
+    })
+}
+
+/// Marker attribute for explicit exemptions from proof linkage checks.
+///
+/// Documents that a function intentionally lacks a Kani proof (e.g.,
+/// internal helpers, decode paths where proptest provides coverage).
+/// No runtime effect.
+#[proc_macro_attribute]
+pub fn allow_unproven(_args: TokenStream, item: TokenStream) -> TokenStream {
+    let function = parse_macro_input!(item as ItemFn);
+    let function_name = function.sig.ident.clone();
+    let marker_ident = format_ident!("__allow_unproven_marker_{}", function_name);
+
+    TokenStream::from(quote! {
+        #function
+        #[doc(hidden)]
+        #[allow(non_upper_case_globals)]
+        const #marker_ident: &str = concat!("allow_unproven:", stringify!(#function_name));
+    })
+}
