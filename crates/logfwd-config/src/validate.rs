@@ -1391,7 +1391,7 @@ fn canonical_listen_addr_key(transport: &str, listen: &str) -> Result<Option<Str
     };
     let port = port_str
         .parse::<u16>()
-        .map_err(|_| validation_error(format!("'{listen}' has an invalid port '{port_str}'")))?;
+        .map_err(|_e| validation_error(format!("'{listen}' has an invalid port '{port_str}'")))?;
     if port == 0 {
         return Ok(None);
     }
@@ -1584,7 +1584,7 @@ pub fn validate_host_port(addr: &str) -> Result<(), ConfigError> {
                 "'{addr}' has an empty IPv6 address inside brackets"
             )));
         }
-        inner.parse::<std::net::Ipv6Addr>().map_err(|_| {
+        inner.parse::<std::net::Ipv6Addr>().map_err(|_e| {
             validation_error(format!(
                 "'{addr}' contains a non-IPv6 value inside brackets"
             ))
@@ -1636,7 +1636,7 @@ pub fn validate_host_port(addr: &str) -> Result<(), ConfigError> {
 
     port_str
         .parse::<u16>()
-        .map_err(|_| validation_error(format!("'{addr}' has an invalid port '{port_str}'")))?;
+        .map_err(|_e| validation_error(format!("'{addr}' has an invalid port '{port_str}'")))?;
     Ok(())
 }
 
@@ -1752,11 +1752,11 @@ mod validate_host_port_tests {
         // Double closing bracket — [::1]]:4317 is malformed
         assert!(host_port_error("[::1]]:4317").contains("missing a port"));
         // Path-like host rejected (#1461)
-        assert!(host_port_error("foo/bar:4317").contains("/"));
+        assert!(host_port_error("foo/bar:4317").contains('/'));
         // Unmatched closing bracket rejected (#1461)
-        assert!(host_port_error("foo]:4317").contains("]"));
+        assert!(host_port_error("foo]:4317").contains(']'));
         // Unmatched opening bracket rejected (#2060)
-        assert!(host_port_error("foo[bar:4317").contains("["));
+        assert!(host_port_error("foo[bar:4317").contains('['));
     }
 
     #[test]
@@ -1810,7 +1810,7 @@ fn validate_endpoint_url(endpoint: &str) -> Result<(), ConfigError> {
     let safe = redact_url(endpoint);
 
     let parsed = Url::parse(endpoint)
-        .map_err(|_| validation_error(format!("endpoint '{safe}' is not a valid URL")))?;
+        .map_err(|_e| validation_error(format!("endpoint '{safe}' is not a valid URL")))?;
 
     if !parsed.username().is_empty() || parsed.password().is_some() {
         return Err(validation_error(format!(
@@ -2009,7 +2009,7 @@ mod feedback_loop_tests {
 
     #[test]
     fn file_output_same_as_input_rejected() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   looping:
     inputs:
@@ -2019,7 +2019,7 @@ pipelines:
       - type: file
         path: /tmp/logfwd-feedback-test.log
         format: json
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -2030,7 +2030,7 @@ pipelines:
 
     #[test]
     fn file_output_different_from_input_allowed() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   ok:
     inputs:
@@ -2040,13 +2040,13 @@ pipelines:
       - type: file
         path: /tmp/logfwd-output.log
         format: json
-"#;
+";
         Config::load_str(yaml).expect("different input/output paths should be allowed");
     }
 
     #[test]
     fn file_output_same_as_input_rejected_after_lexical_normalization() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   looping:
     inputs:
@@ -2056,7 +2056,7 @@ pipelines:
       - type: file
         path: tmp/./app.log
         format: json
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -2504,7 +2504,7 @@ mod validate_otlp_options_tests {
 
     #[test]
     fn otlp_accepts_new_options() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2523,13 +2523,13 @@ pipelines:
           X-Custom: value
         tls:
           insecure_skip_verify: true
-"#;
+";
         Config::load_str(yaml).expect("otlp options should be accepted");
     }
 
     #[test]
     fn non_otlp_rejects_new_options() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2538,7 +2538,7 @@ pipelines:
     outputs:
       - type: stdout
         retry_attempts: 3
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err().to_string();
         assert!(
             err.contains("unknown field") && err.contains("retry_attempts"),
@@ -2548,7 +2548,7 @@ pipelines:
 
     #[test]
     fn elasticsearch_accepts_tls_and_request_timeout_ms() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2560,13 +2560,13 @@ pipelines:
         request_timeout_ms: 5000
         tls:
           insecure_skip_verify: true
-"#;
+";
         Config::load_str(yaml).expect("elasticsearch should accept tls and request_timeout_ms");
     }
 
     #[test]
     fn loki_accepts_tls_and_request_timeout_ms() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2578,13 +2578,13 @@ pipelines:
         request_timeout_ms: 5000
         tls:
           insecure_skip_verify: true
-"#;
+";
         Config::load_str(yaml).expect("loki should accept tls and request_timeout_ms");
     }
 
     #[test]
     fn elasticsearch_rejects_zero_request_timeout_ms() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2594,14 +2594,14 @@ pipelines:
       - type: elasticsearch
         endpoint: https://localhost:9200
         request_timeout_ms: 0
-"#;
+";
         // Now rejected at parse time via PositiveMillis.
         let _ = Config::load_str(yaml).expect_err("zero request_timeout_ms should be rejected");
     }
 
     #[test]
     fn otlp_rejects_zero_request_timeout_ms() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2611,14 +2611,14 @@ pipelines:
       - type: otlp
         endpoint: http://localhost:4317
         request_timeout_ms: 0
-"#;
+";
         // Now rejected at parse time via PositiveMillis.
         let _ = Config::load_str(yaml).expect_err("zero request_timeout_ms should be rejected");
     }
 
     #[test]
     fn otlp_rejects_zero_batch_timeout_ms() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2628,14 +2628,14 @@ pipelines:
       - type: otlp
         endpoint: http://localhost:4317
         batch_timeout_ms: 0
-"#;
+";
         // Now rejected at parse time via PositiveMillis.
         let _ = Config::load_str(yaml).expect_err("zero batch_timeout_ms should be rejected");
     }
 
     #[test]
     fn otlp_rejects_initial_backoff_exceeding_max() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2646,7 +2646,7 @@ pipelines:
         endpoint: http://localhost:4317
         retry_initial_backoff_ms: 5000
         retry_max_backoff_ms: 1000
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err().to_string();
         assert!(
             err.contains("retry_initial_backoff_ms") && err.contains("retry_max_backoff_ms"),
@@ -2656,7 +2656,7 @@ pipelines:
 
     #[test]
     fn arrow_ipc_accepts_batch_size() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2666,7 +2666,7 @@ pipelines:
       - type: arrow_ipc
         endpoint: http://localhost:9000
         batch_size: 512
-"#;
+";
         Config::load_str(yaml).expect("arrow_ipc should accept batch_size");
     }
 

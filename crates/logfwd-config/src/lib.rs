@@ -351,7 +351,7 @@ output:
         fs::write(&path, b"not-a-directory").expect("write temp file");
 
         let yaml = format!(
-            r#"
+            r"
 input:
   type: file
   path: /var/log/test.log
@@ -359,7 +359,7 @@ output:
   type: stdout
 storage:
   data_dir: {}
-"#,
+",
             path.display()
         );
 
@@ -399,14 +399,14 @@ output:
 
     #[test]
     fn otlp_input_accepts_experimental_protobuf_decode_mode() {
-        let yaml = r#"
+        let yaml = r"
 input:
   type: otlp
   listen: 127.0.0.1:4318
   protobuf_decode_mode: projected_fallback
 output:
   type: stdout
-"#;
+";
         let cfg =
             Config::load_str(yaml).expect("otlp input with protobuf_decode_mode should parse");
         let pipe = &cfg.pipelines["default"];
@@ -419,14 +419,14 @@ output:
 
     #[test]
     fn otlp_input_rejects_resource_prefix() {
-        let yaml = r#"
+        let yaml = r"
 input:
   type: otlp
   listen: 127.0.0.1:4318
   resource_prefix: resource.attributes.
 output:
   type: stdout
-"#;
+";
         let err = Config::load_str(yaml).expect_err("resource_prefix is no longer supported");
         let msg = err.to_string();
         assert!(
@@ -437,14 +437,14 @@ output:
 
     #[test]
     fn non_otlp_input_rejects_protobuf_decode_mode() {
-        let yaml = r#"
+        let yaml = r"
 input:
   type: file
   path: /var/log/app.log
   protobuf_decode_mode: projected_fallback
 output:
   type: stdout
-"#;
+";
         let err = Config::load_str(yaml).expect_err("protobuf_decode_mode must be otlp-only");
         let msg = err.to_string();
         assert!(
@@ -868,14 +868,14 @@ output:
         let validation_cases = [("read_buf_size", 0), ("per_file_read_budget_bytes", 0)];
         for (field, value) in validation_cases {
             let yaml = format!(
-                r#"
+                r"
 input:
   type: file
   path: /tmp/test.log
   {field}: {value}
 output:
   type: stdout
-"#
+"
             );
             let err = Config::load_str(&yaml).unwrap_err().to_string();
             assert!(
@@ -885,14 +885,14 @@ output:
         }
 
         // Duration field (poll_interval_ms) is rejected at parse time via PositiveMillis.
-        let yaml = r#"
+        let yaml = r"
 input:
   type: file
   path: /tmp/test.log
   poll_interval_ms: 0
 output:
   type: stdout
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err().to_string();
         assert!(
             err.contains("invalid value") || err.contains("positive"),
@@ -937,14 +937,14 @@ output:
         for (in_type, extra) in inputs {
             for field in fields {
                 let yaml = format!(
-                    r#"
+                    r"
 input:
   type: {in_type}
   {extra}
   {field}
 output:
   type: stdout
-"#
+"
                 );
                 let err = Config::load_str(&yaml).unwrap_err().to_string();
                 let field_name = field.split(':').next().unwrap();
@@ -979,14 +979,14 @@ output:
 
     #[test]
     fn arrow_ipc_rejects_format_override() {
-        let yaml = r#"
+        let yaml = r"
 input:
   type: arrow_ipc
   listen: 0.0.0.0:4319
   format: raw
 output:
   type: stdout
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err().to_string();
         assert!(
             err.contains("'format' is not supported for arrow_ipc inputs"),
@@ -1955,7 +1955,7 @@ pipelines:
 
     #[test]
     fn enrichment_static_config_accepted() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   app:
     inputs:
@@ -1969,7 +1969,7 @@ pipelines:
         labels:
           dc: us-east-1
           team: platform
-"#;
+";
         let cfg = Config::load_str(yaml).expect("static enrichment should parse");
         let pipe = &cfg.pipelines["app"];
         assert_eq!(pipe.enrichment.len(), 1);
@@ -2892,7 +2892,7 @@ pipelines:
 
     #[test]
     fn non_elasticsearch_output_rejects_index() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2902,7 +2902,7 @@ pipelines:
       - type: otlp
         endpoint: http://localhost:4317
         index: my-index
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains("index"),
@@ -2912,7 +2912,7 @@ pipelines:
 
     #[test]
     fn non_otlp_output_rejects_protocol() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2922,7 +2922,7 @@ pipelines:
       - type: elasticsearch
         endpoint: http://localhost:9200
         protocol: grpc
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains("protocol"),
@@ -2932,7 +2932,7 @@ pipelines:
 
     #[test]
     fn stdout_output_rejects_compression() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2941,7 +2941,7 @@ pipelines:
     outputs:
       - type: stdout
         compression: zstd
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains("compression"),
@@ -2971,7 +2971,7 @@ pipelines:
 
     #[test]
     fn stdout_output_rejects_path() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2980,7 +2980,7 @@ pipelines:
     outputs:
       - type: stdout
         path: /tmp/out.log
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains("path"),
@@ -3013,7 +3013,7 @@ output:
 
     #[test]
     fn non_loki_output_rejects_tenant_id() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -3022,7 +3022,7 @@ pipelines:
     outputs:
       - type: stdout
         tenant_id: my-tenant
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -3033,7 +3033,7 @@ pipelines:
 
     #[test]
     fn non_loki_output_rejects_static_labels() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -3043,7 +3043,7 @@ pipelines:
       - type: stdout
         static_labels:
           env: prod
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -3098,7 +3098,7 @@ pipelines:
 
     #[test]
     fn non_loki_output_rejects_label_columns() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -3108,7 +3108,7 @@ pipelines:
       - type: stdout
         label_columns:
           - container_name
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -3201,7 +3201,7 @@ pipelines:
     /// accepted and would fail at runtime.
     #[test]
     fn arrow_ipc_output_rejects_gzip_compression() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -3211,7 +3211,7 @@ pipelines:
       - type: arrow_ipc
         endpoint: http://localhost:4317
         compression: gzip
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -3223,7 +3223,7 @@ pipelines:
 
     #[test]
     fn arrow_ipc_output_accepts_none_compression() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -3233,7 +3233,7 @@ pipelines:
       - type: arrow_ipc
         endpoint: http://localhost:4317
         compression: none
-"#;
+";
         Config::load_str(yaml).expect("arrow_ipc output should accept none compression");
     }
 

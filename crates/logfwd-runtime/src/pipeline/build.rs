@@ -158,7 +158,7 @@ impl Pipeline {
                                                     .map(|db| Arc::new(db) as Arc<dyn crate::transform::enrichment::GeoDatabase>)
                                                     .map_err(|e| e.to_string())
                                             }
-                                            _ => Err(format!("unsupported geo database format for reload: {:?}", fmt)),
+                                            _ => Err(format!("unsupported geo database format for reload: {fmt:?}")),
                                         }
                                     })
                                     .await;
@@ -513,7 +513,7 @@ impl Pipeline {
                 for table in &enrichment_tables {
                     transform
                         .add_enrichment_table(Arc::clone(table))
-                        .map_err(|e| format!("input '{}': enrichment error: {e}", input_name))?;
+                        .map_err(|e| format!("input '{input_name}': enrichment error: {e}"))?;
                 }
             }
 

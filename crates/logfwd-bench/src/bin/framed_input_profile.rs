@@ -70,7 +70,7 @@ fn main() {
         "- Flamegraph: {}",
         cli.flamegraph
             .as_ref()
-            .map_or("not requested".to_string(), |p| p.display().to_string())
+            .map_or_else(|| "not requested".to_string(), |p| p.display().to_string())
     );
     println!();
     println!("## Baseline stage timings\n");

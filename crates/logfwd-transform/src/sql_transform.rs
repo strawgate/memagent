@@ -15,7 +15,8 @@ use logfwd_core::scan_config::ScanConfig;
 use logfwd_types::field_names;
 
 use crate::cast_udf::{FloatCastUdf, IntCastUdf};
-use crate::{QueryAnalyzer, TransformError, conflict_schema, enrichment, udf};
+use crate::{QueryAnalyzer, TransformError, enrichment, udf};
+use logfwd_arrow::conflict_schema;
 
 /// Manages a DataFusion context, compiles and caches plans, executes SQL
 /// transforms against Arrow RecordBatches.

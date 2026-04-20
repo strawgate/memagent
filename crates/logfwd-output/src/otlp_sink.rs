@@ -1665,7 +1665,7 @@ fn encode_key_value_bool(buf: &mut Vec<u8>, field_number: u32, key: &[u8], value
 /// [N bytes: protobuf message]
 /// ```
 fn write_grpc_frame(buf: &mut Vec<u8>, payload: &[u8], compressed: bool) -> io::Result<()> {
-    let len = u32::try_from(payload.len()).map_err(|_| {
+    let len = u32::try_from(payload.len()).map_err(|_e| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             "gRPC message payload must be < 4 GiB",

@@ -1998,7 +1998,7 @@ mod tests {
         let batch = first_batch(&events);
         let pids = u32_col_optional(batch, "process_pid");
         assert!(
-            pids.iter().any(|v| v.is_some()),
+            pids.iter().any(std::option::Option::is_some),
             "process snapshot rows should have process_pid set"
         );
         let kinds = string_col(batch, "event_kind");
@@ -2032,7 +2032,7 @@ mod tests {
             let batch = first_batch(&events);
             let ifaces = string_col(batch, "network_interface");
             assert!(
-                ifaces.iter().any(|v| v.is_some()),
+                ifaces.iter().any(std::option::Option::is_some),
                 "network snapshot rows should have network_interface set"
             );
         }

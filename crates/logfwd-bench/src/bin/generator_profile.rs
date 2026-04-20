@@ -129,8 +129,7 @@ fn main() {
     ];
 
     println!(
-        "batch-generator-profile lines={} iterations={} seed={} wide_rows={}",
-        lines, iterations, seed, wide_rows
+        "batch-generator-profile lines={lines} iterations={iterations} seed={seed} wide_rows={wide_rows}"
     );
 
     for case in cases {

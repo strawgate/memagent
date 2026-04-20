@@ -809,7 +809,7 @@ fn no_panic_random_bytes() {
         .to_vec();
     let mut simd = Scanner::new(ScanConfig::default());
     let _batch = simd
-        .scan_detached(Bytes::from(input.clone()))
+        .scan_detached(Bytes::from(input))
         .expect("scan should not fail on valid UTF-8");
 }
 

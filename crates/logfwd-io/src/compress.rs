@@ -113,7 +113,7 @@ impl ChunkCompressor {
 }
 
 fn check_wire_size(name: &str, size: usize) -> io::Result<u32> {
-    u32::try_from(size).map_err(|_| {
+    u32::try_from(size).map_err(|_e| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
             format!("{name} {size} exceeds u32::MAX"),

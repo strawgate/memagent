@@ -1404,29 +1404,26 @@ mod proptests {
                         sending.entry(source).or_default().push(s);
                     }
                     Action::Ack { source } => {
-                        if let Some(queue) = sending.get_mut(&source) {
-                            if !queue.is_empty() {
+                        if let Some(queue) = sending.get_mut(&source)
+                            && !queue.is_empty() {
                                 let s = queue.remove(0);
                                 running.apply_ack(s.ack());
                             }
-                        }
                     }
                     Action::Fail { source } => {
-                        if let Some(queue) = sending.get_mut(&source) {
-                            if !queue.is_empty() {
+                        if let Some(queue) = sending.get_mut(&source)
+                            && !queue.is_empty() {
                                 let s = queue.remove(0);
                                 let requeued = s.fail();
                                 queue.push(running.begin_send(requeued));
                             }
-                        }
                     }
                     Action::Reject { source } => {
-                        if let Some(queue) = sending.get_mut(&source) {
-                            if !queue.is_empty() {
+                        if let Some(queue) = sending.get_mut(&source)
+                            && !queue.is_empty() {
                                 let s = queue.remove(0);
                                 running.apply_ack(s.reject());
                             }
-                        }
                     }
                 }
             }
@@ -1625,12 +1622,12 @@ mod proptests {
                         sending.entry(source).or_default().push(s);
                     }
                     Action::Ack { source } => {
-                        if let Some(queue) = sending.get_mut(&source) {
-                            if !queue.is_empty() {
+                        if let Some(queue) = sending.get_mut(&source)
+                            && !queue.is_empty() {
                                 let s = queue.remove(0);
                                 let advance = running.apply_ack(s.ack());
-                                if advance.advanced {
-                                    if let Some(cp) = advance.checkpoint {
+                                if advance.advanced
+                                    && let Some(cp) = advance.checkpoint {
                                         let prev = max_committed
                                             .get(&u64::from(source))
                                             .copied()
@@ -1642,26 +1639,23 @@ mod proptests {
                                         );
                                         max_committed.insert(u64::from(source), cp);
                                     }
-                                }
                             }
-                        }
                     }
                     Action::Fail { source } => {
-                        if let Some(queue) = sending.get_mut(&source) {
-                            if !queue.is_empty() {
+                        if let Some(queue) = sending.get_mut(&source)
+                            && !queue.is_empty() {
                                 let s = queue.remove(0);
                                 let requeued = s.fail();
                                 queue.push(running.begin_send(requeued));
                             }
-                        }
                     }
                     Action::Reject { source } => {
-                        if let Some(queue) = sending.get_mut(&source) {
-                            if !queue.is_empty() {
+                        if let Some(queue) = sending.get_mut(&source)
+                            && !queue.is_empty() {
                                 let s = queue.remove(0);
                                 let advance = running.apply_ack(s.reject());
-                                if advance.advanced {
-                                    if let Some(cp) = advance.checkpoint {
+                                if advance.advanced
+                                    && let Some(cp) = advance.checkpoint {
                                         let prev = max_committed
                                             .get(&u64::from(source))
                                             .copied()
@@ -1673,9 +1667,7 @@ mod proptests {
                                         );
                                         max_committed.insert(u64::from(source), cp);
                                     }
-                                }
                             }
-                        }
                     }
                 }
             }

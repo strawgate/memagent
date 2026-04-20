@@ -318,7 +318,7 @@ impl BatchPlan {
     }
 
     fn alloc_handle(&self) -> Result<FieldHandle, PlanError> {
-        let idx = u32::try_from(self.fields.len()).map_err(|_| PlanError::TooManyFields {
+        let idx = u32::try_from(self.fields.len()).map_err(|_e| PlanError::TooManyFields {
             count: self.fields.len(),
         })?;
         Ok(FieldHandle(idx))

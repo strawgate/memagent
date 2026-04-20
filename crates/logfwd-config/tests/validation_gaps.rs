@@ -45,13 +45,13 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
 
 #[test]
 fn config_deserialization_error_includes_simple_layout_field_path() {
-    let yaml = r#"
+    let yaml = r"
 input:
   type: generator
 output:
   type: stdout
   batch_size: not-a-number
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -67,7 +67,7 @@ output:
 
 #[test]
 fn config_deserialization_error_includes_pipeline_field_path() {
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   app:
     workers: not-a-number
@@ -75,7 +75,7 @@ pipelines:
       - type: generator
     outputs:
       - type: stdout
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -96,13 +96,13 @@ pipelines:
 
 #[test]
 fn raw_yaml_number_for_string_field_is_rejected() {
-    let yaml = r#"
+    let yaml = r"
 input:
   type: file
   path: 123
 output:
   type: stdout
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -117,7 +117,7 @@ output:
 
 #[test]
 fn raw_yaml_bool_for_string_field_is_rejected() {
-    let yaml = r#"
+    let yaml = r"
 input:
   type: http
   listen: 127.0.0.1:8080
@@ -125,7 +125,7 @@ input:
     path: true
 output:
   type: stdout
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -140,7 +140,7 @@ output:
 
 #[test]
 fn raw_yaml_bool_for_numeric_field_is_rejected() {
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   app:
     workers: true
@@ -148,7 +148,7 @@ pipelines:
       - type: generator
     outputs:
       - type: stdout
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -163,7 +163,7 @@ pipelines:
 
 #[test]
 fn raw_yaml_float_for_integer_field_is_rejected() {
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   app:
     workers: 1.5
@@ -171,7 +171,7 @@ pipelines:
       - type: generator
     outputs:
       - type: stdout
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -186,7 +186,7 @@ pipelines:
 
 #[test]
 fn raw_yaml_number_for_bool_field_is_rejected() {
-    let yaml = r#"
+    let yaml = r"
 input:
   type: http
   listen: 127.0.0.1:8080
@@ -194,7 +194,7 @@ input:
     strict_path: 1
 output:
   type: stdout
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -209,13 +209,13 @@ output:
 
 #[test]
 fn top_level_dotted_yaml_key_is_rejected_as_unknown_field() {
-    let yaml = r#"
+    let yaml = r"
 server.log_level: debug
 input:
   type: generator
 output:
   type: stdout
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -275,7 +275,7 @@ fn env_generator_attribute_values_remain_strings() {
     let _count = EnvVarGuard::set("LOGFWD_ISSUE_1855_GENERATOR_COUNT", "7");
     let _enabled = EnvVarGuard::set("LOGFWD_ISSUE_1855_GENERATOR_ENABLED", "true");
 
-    let yaml = r#"
+    let yaml = r"
 input:
   type: generator
   generator:
@@ -285,7 +285,7 @@ input:
       enabled: ${LOGFWD_ISSUE_1855_GENERATOR_ENABLED}
 output:
   type: stdout
-"#;
+";
 
     let config = Config::load_str(yaml).expect("generator attributes should parse");
     let input = &config.pipelines["default"].inputs[0];
@@ -314,13 +314,13 @@ fn env_expansion_preserves_yaml_hash_content() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855", "/var/log/my app #1.log");
 
-    let yaml = r#"
+    let yaml = r"
 input:
   type: file
   path: ${LOGFWD_ISSUE_1855}
 output:
   type: stdout
-"#;
+";
 
     let config = Config::load_str(yaml).expect("config should parse after env expansion");
     let input = &config.pipelines["default"].inputs[0];
@@ -337,13 +337,13 @@ fn effective_yaml_preserves_yaml_hash_content() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_EFFECTIVE", "/var/log/my app #1.log");
 
-    let yaml = r#"
+    let yaml = r"
 input:
   type: file
   path: ${LOGFWD_ISSUE_1855_EFFECTIVE}
 output:
   type: stdout
-"#;
+";
 
     let expanded =
         Config::expand_env_yaml_str(yaml).expect("YAML-aware env expansion should succeed");
@@ -367,7 +367,7 @@ fn env_numeric_string_is_parsed_by_typed_schema() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_WORKERS", "4");
 
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   test:
     workers: ${LOGFWD_ISSUE_1855_WORKERS}
@@ -375,7 +375,7 @@ pipelines:
       - type: generator
     outputs:
       - type: stdout
-"#;
+";
 
     let config = Config::load_str(yaml).expect("config should parse env-backed numeric string");
     assert_eq!(config.pipelines["test"].workers, Some(4));
@@ -395,7 +395,7 @@ fn env_bool_string_is_parsed_by_typed_schema() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_STRICT_PATH", "false");
 
-    let yaml = r#"
+    let yaml = r"
 input:
   type: http
   listen: 127.0.0.1:8080
@@ -403,7 +403,7 @@ input:
     strict_path: ${LOGFWD_ISSUE_1855_STRICT_PATH}
 output:
   type: stdout
-"#;
+";
 
     let config = Config::load_str(yaml).expect("config should parse env-backed bool");
     let input = &config.pipelines["default"].inputs[0];
@@ -422,7 +422,7 @@ fn env_bool_string_is_parsed_by_shared_tls_schema() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_TLS_SKIP_VERIFY", "true");
 
-    let yaml = r#"
+    let yaml = r"
 input:
   type: generator
 output:
@@ -430,7 +430,7 @@ output:
   endpoint: http://127.0.0.1:4318
   tls:
     insecure_skip_verify: ${LOGFWD_ISSUE_1855_TLS_SKIP_VERIFY}
-"#;
+";
 
     let config = Config::load_str(yaml).expect("config should parse env-backed TLS bool");
     let logfwd_config::OutputConfigV2::Otlp(output) = &config.pipelines["default"].outputs[0]
@@ -495,13 +495,13 @@ fn tagged_unquoted_env_expansion_preserves_string_scalars() {
 
     // Env substitution already produces string data; the explicit string tag
     // should preserve that behavior.
-    let yaml = r#"
+    let yaml = r"
 input:
   type: file
   path: !str ${LOGFWD_ISSUE_1855_TAGGED_UNQUOTED}
 output:
   type: stdout
-"#;
+";
 
     let config = Config::load_str(yaml).expect("tagged unquoted env-backed string should parse");
     let input = &config.pipelines["default"].inputs[0];
@@ -515,13 +515,13 @@ output:
 
 #[test]
 fn explicit_string_yaml_tag_preserves_string_field() {
-    let yaml = r#"
+    let yaml = r"
 input:
   type: file
   path: !!str 123
 output:
   type: stdout
-"#;
+";
 
     let config = Config::load_str(yaml).expect("explicit string tag should parse as string");
     let input = &config.pipelines["default"].inputs[0];
@@ -573,14 +573,14 @@ output:
 
 #[test]
 fn custom_yaml_tag_for_mapping_key_is_rejected() {
-    let yaml = r#"
+    let yaml = r"
 input:
   type: generator
 output:
   type: stdout
 resource_attrs:
   !custom key: value
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -640,13 +640,13 @@ pipelines:
 
 #[test]
 fn plain_scalar_apostrophe_is_not_treated_as_quote_boundary() {
-    let yaml = r#"
+    let yaml = r"
 input:
   type: file
   path: /var/log/it's.log
 output:
   type: stdout
-"#;
+";
 
     let config = Config::load_str(yaml).expect("plain scalar apostrophe should parse");
     let input = &config.pipelines["default"].inputs[0];
@@ -690,7 +690,7 @@ pipelines:
 
 #[test]
 fn single_quoted_yaml_escape_survives_env_expansion() {
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   test:
     resource_attrs:
@@ -699,7 +699,7 @@ pipelines:
       - type: generator
     outputs:
       - type: stdout
-"#;
+";
 
     let config = Config::load_str(yaml).expect("single-quoted escape should parse");
 
@@ -715,7 +715,7 @@ fn env_expanded_mapping_key_collision_is_rejected() {
     let _env_a = EnvVarGuard::set("LOGFWD_ISSUE_1855_KEY_A", "prod");
     let _env_b = EnvVarGuard::set("LOGFWD_ISSUE_1855_KEY_B", "prod");
 
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   test:
     resource_attrs:
@@ -725,7 +725,7 @@ pipelines:
       - type: generator
     outputs:
       - type: stdout
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
 
@@ -740,14 +740,14 @@ fn env_expansion_applies_to_mapping_keys() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_PIPELINE", "from-env");
 
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   ${LOGFWD_ISSUE_1855_PIPELINE}:
     inputs:
       - type: generator
     outputs:
       - type: stdout
-"#;
+";
 
     let config = Config::load_str(yaml).expect("config should parse env-backed mapping key");
     assert!(config.pipelines.contains_key("from-env"));
@@ -755,7 +755,7 @@ pipelines:
 
 #[test]
 fn issue_1856_allow_same_listen_address_for_different_transports() {
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   p1:
     inputs:
@@ -769,14 +769,14 @@ pipelines:
         listen: 0.0.0.0:9000
     outputs:
       - type: stdout
-"#;
+";
 
     Config::load_str(yaml).expect("tcp and udp should share an address because transports differ");
 }
 
 #[test]
 fn issue_1856_reject_duplicate_listen_addresses_for_same_transport() {
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   p1:
     inputs:
@@ -790,7 +790,7 @@ pipelines:
         listen: 0.0.0.0:09000
     outputs:
       - type: stdout
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -826,7 +826,7 @@ pipelines:
 
 #[test]
 fn issue_1856_allow_duplicate_ephemeral_port_zero_for_same_transport() {
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   p1:
     inputs:
@@ -840,14 +840,14 @@ pipelines:
         listen: 127.0.0.1:0
     outputs:
       - type: stdout
-"#;
+";
 
     Config::load_str(yaml).expect("port 0 asks the OS for distinct ephemeral ports");
 }
 
 #[test]
 fn issue_1857_reject_duplicate_file_output_paths_across_pipelines() {
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   p1:
     inputs:
@@ -861,7 +861,7 @@ pipelines:
     outputs:
       - type: file
         path: /tmp/shared.log
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -875,7 +875,7 @@ fn issue_1857_reject_relative_and_absolute_file_output_aliases() {
     let base = std::env::current_dir().expect("current dir should be available");
     let absolute = base.join("logs/shared.log");
     let yaml = format!(
-        r#"
+        r"
 pipelines:
   p1:
     inputs:
@@ -889,7 +889,7 @@ pipelines:
     outputs:
       - type: file
         path: {}
-"#,
+",
         absolute.display()
     );
 
@@ -903,7 +903,7 @@ pipelines:
 #[test]
 fn issue_1857_reject_relative_glob_input_matching_relative_output() {
     let base = std::env::current_dir().expect("current dir should be available");
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   test:
     inputs:
@@ -912,7 +912,7 @@ pipelines:
     outputs:
       - type: file
         path: logs/app.log
-"#;
+";
 
     let err = Config::load_str_with_base_path(yaml, Some(&base))
         .unwrap_err()
@@ -926,7 +926,7 @@ pipelines:
 
 #[test]
 fn issue_1858_reject_workers_above_max_bound() {
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   test:
     workers: 5000
@@ -934,7 +934,7 @@ pipelines:
       - type: generator
     outputs:
       - type: stdout
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -945,7 +945,7 @@ pipelines:
 
 #[test]
 fn issue_1862_reject_tcp_udp_output_formats() {
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   test:
     inputs:
@@ -954,7 +954,7 @@ pipelines:
       - type: tcp
         endpoint: localhost:9001
         format: json
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -965,7 +965,7 @@ pipelines:
 
 #[test]
 fn issue_1920_reject_duplicate_named_inputs_and_outputs_in_pipeline() {
-    let duplicate_input_yaml = r#"
+    let duplicate_input_yaml = r"
 pipelines:
   test:
     inputs:
@@ -976,7 +976,7 @@ pipelines:
         path: /var/log/test.log
     outputs:
       - type: stdout
-"#;
+";
 
     let input_err = Config::load_str(duplicate_input_yaml)
         .unwrap_err()
@@ -1050,7 +1050,7 @@ fn issue_2035_reject_file_output_when_parent_directory_missing() {
     let missing_parent = unique_temp_dir("missing-parent").join("child");
     let out_path = missing_parent.join("out.ndjson");
     let yaml = format!(
-        r#"
+        r"
 pipelines:
   test:
     inputs:
@@ -1058,7 +1058,7 @@ pipelines:
     outputs:
       - type: file
         path: {}
-"#,
+",
         out_path.display()
     );
 
@@ -1073,7 +1073,7 @@ pipelines:
 fn issue_2035_reject_relative_file_output_when_base_parent_directory_missing() {
     let base = unique_temp_dir("relative-base");
     fs::create_dir_all(&base).expect("base dir should be created");
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   test:
     inputs:
@@ -1081,7 +1081,7 @@ pipelines:
     outputs:
       - type: file
         path: missing/out.ndjson
-"#;
+";
 
     let err = Config::load_str_with_base_path(yaml, Some(&base))
         .unwrap_err()
@@ -1102,7 +1102,7 @@ fn issue_2035_reject_file_output_when_parent_path_is_file() {
     fs::write(&parent_file, b"not a directory").expect("parent file should be written");
     let out_path = parent_file.join("out.ndjson");
     let yaml = format!(
-        r#"
+        r"
 pipelines:
   test:
     inputs:
@@ -1110,7 +1110,7 @@ pipelines:
     outputs:
       - type: file
         path: {}
-"#,
+",
         out_path.display()
     );
 
@@ -1138,7 +1138,7 @@ fn issue_2035_reject_file_output_when_parent_directory_is_read_only() {
 
     let out_path = dir.join("out.ndjson");
     let yaml = format!(
-        r#"
+        r"
 pipelines:
   test:
     inputs:
@@ -1146,7 +1146,7 @@ pipelines:
     outputs:
       - type: file
         path: {}
-"#,
+",
         out_path.display()
     );
 
@@ -1174,7 +1174,7 @@ fn issue_2035_reject_file_output_when_existing_file_is_read_only() {
     fs::set_permissions(&out_path, readonly_perms).expect("setting read-only should succeed");
 
     let yaml = format!(
-        r#"
+        r"
 pipelines:
   test:
     inputs:
@@ -1182,7 +1182,7 @@ pipelines:
     outputs:
       - type: file
         path: {}
-"#,
+",
         out_path.display()
     );
 
@@ -1207,7 +1207,7 @@ fn issue_2035_reject_file_output_when_existing_path_is_directory() {
     let out_path = dir.join("capture.ndjson");
     fs::create_dir_all(&out_path).expect("output directory should be created");
     let yaml = format!(
-        r#"
+        r"
 pipelines:
   test:
     inputs:
@@ -1215,7 +1215,7 @@ pipelines:
     outputs:
       - type: file
         path: {}
-"#,
+",
         out_path.display()
     );
 
@@ -1234,7 +1234,7 @@ fn issue_2035_accept_file_output_when_parent_directory_is_writable() {
     fs::create_dir_all(&dir).expect("temp dir should be created");
     let out_path = dir.join("out.ndjson");
     let yaml = format!(
-        r#"
+        r"
 pipelines:
   test:
     inputs:
@@ -1242,7 +1242,7 @@ pipelines:
     outputs:
       - type: file
         path: {}
-"#,
+",
         out_path.display()
     );
 
@@ -1281,7 +1281,7 @@ pipelines:
 
 #[test]
 fn issue_1957_reject_loki_static_and_dynamic_label_collisions() {
-    let yaml = r#"
+    let yaml = r"
 pipelines:
   test:
     inputs:
@@ -1295,7 +1295,7 @@ pipelines:
           app: my-service
         label_columns:
           - app
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -1306,7 +1306,7 @@ pipelines:
 
 #[test]
 fn issue_1958_generator_record_profile_preserves_null_attribute_values() {
-    let yaml = r#"
+    let yaml = r"
 input:
   type: generator
   generator:
@@ -1315,20 +1315,20 @@ input:
       deleted_at: null
 output:
   type: stdout
-"#;
+";
 
     Config::load_str(yaml).expect("generator null attributes should remain supported");
 }
 
 #[test]
 fn issue_2060_reject_unmatched_opening_bracket_in_host_port() {
-    let yaml = r#"
+    let yaml = r"
 input:
   type: udp
   listen: foo[bar:4317
 output:
   type: stdout
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(err.contains("unmatched '['"), "unexpected error: {err}");
@@ -1336,14 +1336,14 @@ output:
 
 #[test]
 fn issue_2062_reject_sensor_max_rows_per_poll_zero() {
-    let yaml = r#"
+    let yaml = r"
 input:
   type: host_metrics
   sensor:
     max_rows_per_poll: 0
 output:
   type: stdout
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -1354,14 +1354,14 @@ output:
 
 #[test]
 fn issue_2178_reject_otlp_max_recv_message_size_bytes_zero() {
-    let yaml = r#"
+    let yaml = r"
 input:
   type: otlp
   listen: 127.0.0.1:4318
   max_recv_message_size_bytes: 0
 output:
   type: stdout
-"#;
+";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(

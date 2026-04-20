@@ -320,9 +320,8 @@ fn build_struct_array(
     mut asn: Int64Builder,
     mut org: StringBuilder,
 ) -> StructArray {
-    let fields = match geo_result_type() {
-        DataType::Struct(f) => f,
-        _ => unreachable!(),
+    let DataType::Struct(fields) = geo_result_type() else {
+        unreachable!()
     };
     let arrays: Vec<ArrayRef> = vec![
         Arc::new(country_code.finish()),
@@ -339,9 +338,8 @@ fn build_struct_array(
 
 /// Convert a single `GeoResult` into a DataFusion `ScalarValue::Struct`.
 fn geo_result_to_scalar(result: Option<&GeoResult>) -> DfResult<datafusion::common::ScalarValue> {
-    let fields = match geo_result_type() {
-        DataType::Struct(f) => f,
-        _ => unreachable!(),
+    let DataType::Struct(fields) = geo_result_type() else {
+        unreachable!()
     };
 
     let utf8 = |v: Option<&String>| datafusion::common::ScalarValue::Utf8(v.cloned());

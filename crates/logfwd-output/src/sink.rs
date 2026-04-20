@@ -566,7 +566,7 @@ impl SinkFactory for OnceAsyncFactory {
         let mut guard = self
             .inner
             .lock()
-            .map_err(|_| io::Error::other("OnceAsyncFactory mutex poisoned"))?;
+            .map_err(|_e| io::Error::other("OnceAsyncFactory mutex poisoned"))?;
         match guard.take() {
             Some(s) => Ok(s),
             None => Err(io::Error::other(

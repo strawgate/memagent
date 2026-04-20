@@ -109,7 +109,7 @@ pub(crate) fn write_json_string(out: &mut Vec<u8>, v: &str) -> io::Result<()> {
             b'\n' => out.extend_from_slice(b"\\n"),
             b'\r' => out.extend_from_slice(b"\\r"),
             b'\t' => out.extend_from_slice(b"\\t"),
-            b => Write::write_fmt(out, format_args!("\\u{:04x}", b))?,
+            b => Write::write_fmt(out, format_args!("\\u{b:04x}"))?,
         }
         start += rel_pos + 1;
     }

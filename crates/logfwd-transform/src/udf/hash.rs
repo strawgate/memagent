@@ -127,8 +127,7 @@ impl ScalarUDFImpl for HashUdf {
                     }
                     _ => {
                         return Err(datafusion::error::DataFusionError::Execution(format!(
-                            "hash() expected string argument, got {:?}",
-                            dt
+                            "hash() expected string argument, got {dt:?}"
                         )));
                     }
                 };

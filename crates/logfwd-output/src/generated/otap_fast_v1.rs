@@ -21,7 +21,7 @@ fn varint_field_len(field_number: u32, value: u64) -> usize {
 /// Compute `next_pos + len` with overflow and bounds checks.
 fn checked_end(next_pos: usize, len: u64, data_len: usize) -> io::Result<usize> {
     let len = usize::try_from(len)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "field length exceeds address space"))?;
+        .map_err(|_e| io::Error::new(io::ErrorKind::InvalidData, "field length exceeds address space"))?;
     let end = next_pos
         .checked_add(len)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "field length overflow"))?;

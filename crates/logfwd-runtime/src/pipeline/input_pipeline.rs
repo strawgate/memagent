@@ -596,7 +596,7 @@ fn source_path_metadata_array(
         let (block, len) = if let Some(&(block, len)) = blocks.get(&source_id) {
             (block, len)
         } else {
-            let len = u32::try_from(value.len()).map_err(|_| {
+            let len = u32::try_from(value.len()).map_err(|_e| {
                 ArrowError::InvalidArgumentError(
                     "source metadata string is too large for Utf8View".to_string(),
                 )

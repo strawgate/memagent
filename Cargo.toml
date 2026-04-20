@@ -133,7 +133,6 @@ unnested_or_patterns = "allow"
 unreadable_literal = "allow"
 single_match_else = "allow"
 manual_let_else = "allow"
-uninlined_format_args = "allow"
 too_many_lines = "allow"
 match_same_arms = "allow"
 similar_names = "allow"
@@ -153,6 +152,17 @@ print_stderr = "warn"
 let_underscore_future = "deny"
 await_holding_lock = "warn"
 await_holding_refcell_ref = "warn"
+# ----- easy-win additions -----
+# Tier 1: modernization, auto-fixable.
+uninlined_format_args = "warn"
+redundant_else = "warn"
+semicolon_if_nothing_returned = "warn"
+# Tier 2: catches real bugs with low fallout.
+map_err_ignore = "warn"
+implicit_clone = "warn"
+needless_for_each = "warn"
+or_fun_call = "warn"
+checked_conversions = "warn"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

@@ -156,7 +156,7 @@ fn convert_otlp_timestamp(raw: u64, field_name: &str) -> Result<Option<i64>, Inp
     if raw == 0 {
         return Ok(None);
     }
-    let converted = i64::try_from(raw).map_err(|_| {
+    let converted = i64::try_from(raw).map_err(|_e| {
         InputError::Receiver(format!(
             "invalid OTLP {field_name}: value {raw} exceeds signed 64-bit nanosecond range"
         ))
@@ -601,7 +601,7 @@ pub(super) fn write_f64_to_buf(out: &mut Vec<u8>, d: f64) {
         return;
     }
     // Use the standard formatter here; non-finite values are handled above.
-    let _ = write!(out, "{}", d);
+    let _ = write!(out, "{d}");
 }
 
 pub(super) fn write_json_string_field(out: &mut Vec<u8>, key: &str, value: &str) {

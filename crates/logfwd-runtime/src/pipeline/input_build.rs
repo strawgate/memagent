@@ -44,8 +44,7 @@ fn make_format(
         Format::Raw => FormatDecoder::passthrough(Arc::clone(stats)),
         unsupported => {
             return Err(format!(
-                "input '{name}': format {:?} is not supported for {:?} inputs",
-                unsupported, input_type
+                "input '{name}': format {unsupported:?} is not supported for {input_type:?} inputs"
             ));
         }
     };
@@ -58,14 +57,12 @@ fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> 
             if !matches!(format, Format::Json) =>
         {
             return Err(format!(
-                "input '{name}': format {:?} is not supported for {:?} inputs (expected json)",
-                format, input_type
+                "input '{name}': format {format:?} is not supported for {input_type:?} inputs (expected json)"
             ));
         }
         InputType::Http if !matches!(format, Format::Json | Format::Raw) => {
             return Err(format!(
-                "input '{name}': format {:?} is not supported for {:?} inputs (expected json or raw)",
-                format, input_type
+                "input '{name}': format {format:?} is not supported for {input_type:?} inputs (expected json or raw)"
             ));
         }
         InputType::Stdin
@@ -75,8 +72,7 @@ fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> 
             ) =>
         {
             return Err(format!(
-                "input '{name}': format {:?} is not supported for {:?} inputs (expected cri, auto, json, or raw)",
-                format, input_type
+                "input '{name}': format {format:?} is not supported for {input_type:?} inputs (expected cri, auto, json, or raw)"
             ));
         }
         _ => {}
@@ -266,7 +262,7 @@ pub(super) fn build_input_state(
                                 Some(s) if s.eq_ignore_ascii_case("now") => {
                                     std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
-                                        .map_err(|_| {
+                                        .map_err(|_e| {
                                             format!("input '{name}': system clock is before Unix epoch, cannot resolve timestamp.start=\"now\"")
                                         })?
                                         .as_millis() as i64
