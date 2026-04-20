@@ -261,6 +261,30 @@ Rules of thumb when designing a public (or `pub(crate)`) function or type:
   cost across a crate boundary outweighs the call-site overhead (see
   compile-time notes in `ARCHITECTURE.md`).
 
+## Output Config Schema
+
+Output configuration has exactly one user-facing shape: the tagged enum
+`OutputConfigV2` (`#[serde(tag = "type", rename_all = "snake_case")]`) in
+`crates/logfwd-config/src/types.rs`. The flat `OutputConfig` struct is an
+in-memory normalized view; it is not a deserialization target any more.
+
+- **Don't add shared fields to `OutputConfig`.** Every output knob lives
+  on the typed variant it applies to (`ElasticsearchOutputConfig`,
+  `LokiOutputConfig`, `ArrowIpcOutputConfig`, …). `deny_unknown_fields`
+  on each variant rejects the field on every other type for free.
+- **New output types are new V2 variants**, not new fields on the flat
+  struct. Add the variant struct, extend the V2 enum, extend the two
+  `From` matches, and the runtime picks it up through `build_sink_factory`.
+- **No V1 fallback path.** There used to be a legacy-flat-shape replay
+  deserializer; it is gone. If a new YAML shape has to be supported,
+  extend V2 directly.
+- **Avoid cross-output validators in `validate.rs`.** They ran before the
+  V2-only cutover and caught `tenant_id` on a stdout output, etc. V2's
+  strict schemas now reject those at parse time with a clearer
+  `unknown field ...` error. New validators should assert genuine
+  inter-field relationships on a single variant, not cross-variant
+  exclusion.
+
 ## Comments
 
 - **Doc comments (`///`) on all public items.** Describe behavior, not just the name.

@@ -12,6 +12,29 @@ When you add, rename, or remove config fields:
 - Related task pages that show examples (`book/src/content/docs/getting-started/`, `book/src/content/docs/deployment/`).
 - Validation and negative tests for invalid configs.
 
+### Output schema is V2-only
+
+`OutputConfig` (the flat struct) is the in-memory view used by the runtime,
+but YAML deserialization goes through `OutputConfigV2` (the typed
+`#[serde(tag = "type")]` enum) exclusively. There is no legacy flat-shape
+deserializer — if your PR introduces a new output type, it lives entirely
+as a new `OutputConfigV2` variant with its own typed struct:
+
+- Add the variant struct (`FooOutputConfig`) alongside the existing typed
+  configs in `crates/logfwd-config/src/types.rs`, with
+  `#[serde(deny_unknown_fields)]`.
+- Add the variant to `OutputConfigV2` and to the `From<OutputConfigV2> for
+  OutputConfig` / `From<&OutputConfig> for OutputConfigV2` matches.
+- Do **not** reintroduce shared "flat" fields — a knob that only applies to
+  one output belongs on that variant's typed struct, not on `OutputConfig`.
+  `deny_unknown_fields` will then reject the field on every other variant
+  for free.
+- Cross-output validation messages ("X is only supported for Y outputs")
+  used to live in `validate.rs`; those are unreachable from YAML now
+  because V2 rejects the field at parse time with `unknown field ...`.
+  Don't write new cross-output validators unless you also have a non-YAML
+  caller that can construct the invalid shape.
+
 ## Pipeline behavior changes
 
 When scan, transform, batching, or output semantics change:
