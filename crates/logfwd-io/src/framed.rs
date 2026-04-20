@@ -74,6 +74,7 @@ pub struct FramedInput {
     /// across polls without allocating.
     spare_buf: Vec<u8>,
     stats: Arc<ComponentStats>,
+    last_raw_had_payload: bool,
 }
 
 impl FramedInput {
@@ -89,10 +90,14 @@ impl FramedInput {
             out_buf: Vec::with_capacity(64 * 1024),
             spare_buf: Vec::with_capacity(64 * 1024),
             stats,
+            last_raw_had_payload: false,
         }
     }
 
     fn process_raw_events(&mut self, raw_events: Vec<InputEvent>) -> Vec<InputEvent> {
+        self.last_raw_had_payload = raw_events
+            .iter()
+            .any(|event| matches!(event, InputEvent::Data { .. } | InputEvent::Batch { .. }));
         if raw_events.is_empty() {
             return vec![];
         }
@@ -395,7 +400,9 @@ impl InputSource for FramedInput {
     }
 
     fn get_cadence(&self) -> InputCadence {
-        self.inner.get_cadence()
+        let mut cadence = self.inner.get_cadence();
+        cadence.signal.had_data |= self.last_raw_had_payload;
+        cadence
     }
 
     /// Return checkpoint offsets from the Kani-proven CheckpointTracker.
@@ -645,6 +652,27 @@ mod tests {
                 adaptive_fast_polls_max: 7,
             }
         );
+    }
+
+    #[test]
+    fn framed_input_reports_raw_shutdown_payload_when_output_is_empty() {
+        let stats = make_stats();
+        let source = MockSource::new(vec![]).with_shutdown_events(vec![vec![InputEvent::Data {
+            bytes: b"partial".to_vec(),
+            source_id: Some(SourceId(1)),
+            accounted_bytes: 7,
+        }]]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
+            stats,
+        );
+
+        let events = framed
+            .poll_shutdown()
+            .expect("shutdown poll should succeed");
+        assert!(events.is_empty());
+        assert!(framed.get_cadence().signal.had_data);
     }
 
     #[test]

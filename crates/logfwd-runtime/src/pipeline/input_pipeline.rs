@@ -82,9 +82,29 @@ const SHUTDOWN_DRAIN_PROGRESS_LOG_INTERVAL_ROUNDS: usize = 64;
 const MAX_SHUTDOWN_POLL_ROUNDS: usize = 4096;
 
 #[cfg(not(feature = "turmoil"))]
-fn should_repoll_shutdown(events: &[InputEvent], is_finished: bool) -> bool {
-    if is_finished || events.is_empty() {
+fn should_repoll_shutdown(
+    events: &[InputEvent],
+    is_finished: bool,
+    had_source_payload: bool,
+) -> bool {
+    if is_finished {
         return false;
+    }
+    if events
+        .iter()
+        .any(|event| matches!(event, InputEvent::EndOfFile { source_id: None }))
+    {
+        return false;
+    }
+    if events.is_empty() {
+        return had_source_payload;
+    }
+    if had_source_payload
+        && !events
+            .iter()
+            .any(|event| matches!(event, InputEvent::Data { .. } | InputEvent::Batch { .. }))
+    {
+        return true;
     }
     events.iter().any(|event| {
         let payload_source_id = match event {
@@ -99,7 +119,7 @@ fn should_repoll_shutdown(events: &[InputEvent], is_finished: bool) -> bool {
             matches!(
                 event,
                 InputEvent::EndOfFile { source_id }
-                    if source_id.is_none() || *source_id == payload_source_id
+                    if *source_id == payload_source_id
             )
         })
     })
@@ -735,8 +755,12 @@ fn io_worker_loop(
             loop {
                 match input.source.poll_shutdown() {
                     Ok(events) => {
-                        let should_repoll =
-                            should_repoll_shutdown(&events, input.source.is_finished());
+                        let cadence = input.source.get_cadence();
+                        let should_repoll = should_repoll_shutdown(
+                            &events,
+                            input.source.is_finished(),
+                            cadence.signal.had_data,
+                        );
                         if !process_io_events(
                             &mut input,
                             &input_name,
@@ -1208,7 +1232,7 @@ mod tests {
             },
         ];
 
-        assert!(should_repoll_shutdown(&events, false));
+        assert!(should_repoll_shutdown(&events, false, false));
     }
 
     #[test]
@@ -1224,7 +1248,7 @@ mod tests {
             },
         ];
 
-        assert!(!should_repoll_shutdown(&events, false));
+        assert!(!should_repoll_shutdown(&events, false, false));
     }
 
     #[test]
@@ -1238,7 +1262,21 @@ mod tests {
             InputEvent::EndOfFile { source_id: None },
         ];
 
-        assert!(!should_repoll_shutdown(&events, false));
+        assert!(!should_repoll_shutdown(&events, false, true));
+    }
+
+    #[test]
+    fn shutdown_repoll_continues_for_empty_framed_output_after_source_payload() {
+        assert!(should_repoll_shutdown(&[], false, true));
+    }
+
+    #[test]
+    fn shutdown_repoll_continues_for_eof_only_output_after_source_payload() {
+        let events = vec![InputEvent::EndOfFile {
+            source_id: Some(SourceId(2)),
+        }];
+
+        assert!(should_repoll_shutdown(&events, false, true));
     }
 
     #[test]
