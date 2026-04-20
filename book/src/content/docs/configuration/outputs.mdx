@@ -34,7 +34,7 @@ POST newline-delimited JSON to any HTTP endpoint. Each Arrow RecordBatch is seri
 output:
   type: http
   endpoint: https://logging-service:9200
-  compression: zstd    # zstd | none
+  compression: zstd    # zstd | gzip | none
   auth:
     headers:
       X-API-Key: "${API_KEY}"
@@ -43,7 +43,7 @@ output:
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `endpoint` | string | Yes | — | Full URL to POST logs to |
-| `compression` | string | No | none | `zstd` or `none` |
+| `compression` | enum | No | none | `zstd`, `gzip`, or `none`; invalid values are rejected while parsing config |
 | `auth` | object | No | — | Bearer token or custom headers |
 
 </TabItem>
@@ -88,8 +88,8 @@ Streaming mode is experimental and currently requires `compression: none`. Use `
 |-------|------|----------|---------|-------------|
 | `endpoint` | string | Yes | — | Elasticsearch URL |
 | `index` | string | No | `logs` | Target index name |
-| `compression` | string | No | none | `gzip` or `none` |
-| `request_mode` | string | No | `buffered` | `buffered` or experimental `streaming` (streaming currently requires `compression: none`) |
+| `compression` | enum | No | none | `gzip` or `none`; `zstd` is rejected for Elasticsearch by validation |
+| `request_mode` | enum | No | `buffered` | `buffered` or experimental `streaming`; invalid values are rejected while parsing config (streaming currently requires `compression: none`) |
 | `auth` | object | No | — | Bearer token or custom headers |
 
 Bulk payloads are split before they exceed `5242880` bytes (5 MiB). That limit is internal and is not a YAML field.

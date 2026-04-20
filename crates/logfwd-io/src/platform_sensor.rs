@@ -35,6 +35,7 @@ struct PodEbpfConfig(EbpfConfig);
 unsafe impl aya::Pod for PodEbpfConfig {}
 
 use crate::input::{InputEvent, InputSource};
+use crate::platform_sensor_filter::is_event_type_enabled;
 
 /// Tracefs paths to probe for the sched_process_exit format file.
 /// Some systems mount tracefs at `/sys/kernel/tracing`, others at
@@ -561,6 +562,8 @@ impl PlatformSensorInput {
         max_events: usize,
         self_tgid: u32,
         filter_self: bool,
+        include_event_types: Option<&[String]>,
+        exclude_event_types: Option<&[String]>,
     ) -> io::Result<Option<InputEvent>> {
         let events_map = ebpf.map_mut("EVENTS").ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotFound, "EVENTS ring buffer map not found")
@@ -605,7 +608,9 @@ impl PlatformSensorInput {
                 continue;
             }
 
-            if let Some(row) = parse_event(ptr, len, header, mono_to_wall_offset_ns) {
+            if let Some(row) = parse_event(ptr, len, header, mono_to_wall_offset_ns)
+                && is_event_type_enabled(row.event_kind, include_event_types, exclude_event_types)
+            {
                 rows.push(row);
             }
         }
@@ -970,6 +975,8 @@ impl InputSource for PlatformSensorInput {
                     config.max_events_per_poll,
                     self_tgid,
                     config.filter_self,
+                    config.include_event_types.as_deref(),
+                    config.exclude_event_types.as_deref(),
                 );
                 self.state = SensorState::Running {
                     schema,

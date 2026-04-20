@@ -39,9 +39,8 @@ jobs:
       # ── Lines of code (via tokei) ──
       - name: Count lines of code
         run: |
-          curl -sL https://github.com/XAMPPRocky/tokei/releases/latest/download/tokei-x86_64-unknown-linux-gnu.tar.gz \
-            | tar xz -C /usr/local/bin
-          JSON=$(tokei --output json)
+          cargo install --locked tokei --version 14.0.0 --root /tmp/tokei
+          JSON=$(/tmp/tokei/bin/tokei --output json)
           echo "TOTAL_LOC=$(echo "$JSON" | jq '.Total.code')" >> "$GITHUB_ENV"
           echo "RUST_LOC=$(echo "$JSON" | jq '.Rust.code // 0')" >> "$GITHUB_ENV"
 
@@ -66,7 +65,7 @@ jobs:
       # ── Rust crate count (workspace members) ──
       - name: Count Rust crates
         run: |
-          CRATE_COUNT=$(grep -c 'crates/' Cargo.toml || echo 0)
+          CRATE_COUNT=$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')
           echo "CRATE_COUNT=$CRATE_COUNT" >> "$GITHUB_ENV"
 
       - uses: strawgate/octo11y/actions/emit-metric@main-dist

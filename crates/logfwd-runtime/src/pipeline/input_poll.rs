@@ -21,6 +21,55 @@ use super::submit::{scan_and_transform_for_send, transform_direct_batch_for_send
 #[cfg(feature = "turmoil")]
 use super::{ChannelMsg, InputState, InputTransform};
 
+#[cfg(feature = "turmoil")]
+const SHUTDOWN_DRAIN_PROGRESS_LOG_INTERVAL_ROUNDS: usize = 64;
+#[cfg(feature = "turmoil")]
+const MAX_SHUTDOWN_POLL_ROUNDS: usize = 4096;
+
+#[cfg(feature = "turmoil")]
+fn should_repoll_shutdown(
+    events: &[InputEvent],
+    is_finished: bool,
+    had_source_payload: bool,
+) -> bool {
+    if is_finished {
+        return false;
+    }
+    if events
+        .iter()
+        .any(|event| matches!(event, InputEvent::EndOfFile { source_id: None }))
+    {
+        return false;
+    }
+    if events.is_empty() {
+        return had_source_payload;
+    }
+    if had_source_payload
+        && !events
+            .iter()
+            .any(|event| matches!(event, InputEvent::Data { .. } | InputEvent::Batch { .. }))
+    {
+        return true;
+    }
+    events.iter().any(|event| {
+        let payload_source_id = match event {
+            InputEvent::Data { source_id, .. } | InputEvent::Batch { source_id, .. } => *source_id,
+            InputEvent::Rotated { .. }
+            | InputEvent::Truncated { .. }
+            | InputEvent::EndOfFile { .. } => {
+                return false;
+            }
+        };
+        !events.iter().any(|event| {
+            matches!(
+                event,
+                InputEvent::EndOfFile { source_id }
+                    if *source_id == payload_source_id
+            )
+        })
+    })
+}
+
 #[inline]
 #[cfg(any(feature = "turmoil", test, kani))]
 const fn should_flush_buffer(
@@ -34,6 +83,68 @@ const fn should_flush_buffer(
         batch_target_bytes
     };
     buffered_len >= safe_target || (buffered_len > 0 && timeout_elapsed)
+}
+
+#[cfg(feature = "turmoil")]
+async fn send_channel_msg(
+    tx: &tokio::sync::mpsc::Sender<ChannelMsg>,
+    msg: ChannelMsg,
+) -> Result<(), tokio::sync::mpsc::error::SendError<ChannelMsg>> {
+    tx.send(msg).await
+}
+
+#[cfg(feature = "turmoil")]
+#[allow(clippy::too_many_arguments)]
+async fn process_input_events(
+    input: &mut InputState,
+    transform: &mut InputTransform,
+    tx: &tokio::sync::mpsc::Sender<ChannelMsg>,
+    metrics: &PipelineMetrics,
+    input_index: usize,
+    events: Vec<InputEvent>,
+    buffered_since: &mut Option<tokio::time::Instant>,
+) -> bool {
+    for event in events {
+        match event {
+            InputEvent::Data { bytes, .. } => {
+                input.buf.extend_from_slice(&bytes);
+            }
+            InputEvent::Batch { batch, .. } => {
+                if !input.buf.is_empty() {
+                    if let Some(msg) =
+                        scan_and_transform_for_send(input, transform, metrics, input_index).await
+                    {
+                        if send_channel_msg(tx, msg).await.is_err() {
+                            return false;
+                        }
+                    }
+                    *buffered_since = None;
+                }
+
+                if let Some(msg) =
+                    transform_direct_batch_for_send(input, transform, metrics, input_index, batch)
+                        .await
+                {
+                    if send_channel_msg(tx, msg).await.is_err() {
+                        return false;
+                    }
+                }
+            }
+            InputEvent::Rotated { .. } => {
+                input.stats.inc_rotations();
+            }
+            InputEvent::Truncated { .. } => {
+                // Treat truncation as a rotation-equivalent rewind signal
+                // for existing dashboards that chart a single restart counter.
+                input.stats.inc_rotations();
+            }
+            InputEvent::EndOfFile { .. } => {}
+        }
+    }
+    if buffered_since.is_none() && !input.buf.is_empty() {
+        *buffered_since = Some(tokio::time::Instant::now());
+    }
+    true
 }
 
 /// Async input loop for simulation testing.
@@ -64,6 +175,61 @@ pub(super) async fn async_input_poll_loop(
                 input.stats.health(),
                 HealthTransitionEvent::ShutdownRequested,
             ));
+            let mut shutdown_poll_rounds = 0usize;
+            loop {
+                match input.source.poll_shutdown() {
+                    Ok(events) => {
+                        let cadence = input.source.get_cadence();
+                        let should_repoll = should_repoll_shutdown(
+                            &events,
+                            input.source.is_finished(),
+                            cadence.signal.had_data,
+                        );
+                        if !process_input_events(
+                            &mut input,
+                            &mut transform,
+                            &tx,
+                            &metrics,
+                            input_index,
+                            events,
+                            &mut buffered_since,
+                        )
+                        .await
+                        {
+                            break 'poll_loop;
+                        }
+                        if !should_repoll {
+                            break;
+                        }
+                        shutdown_poll_rounds = shutdown_poll_rounds.saturating_add(1);
+                        if shutdown_poll_rounds
+                            .is_multiple_of(SHUTDOWN_DRAIN_PROGRESS_LOG_INTERVAL_ROUNDS)
+                        {
+                            tracing::warn!(
+                                input = input.source.name(),
+                                rounds = shutdown_poll_rounds,
+                                "input.shutdown_drain_still_active"
+                            );
+                        }
+                        if shutdown_poll_rounds >= MAX_SHUTDOWN_POLL_ROUNDS {
+                            tracing::error!(
+                                input = input.source.name(),
+                                rounds = shutdown_poll_rounds,
+                                "input.shutdown_drain_aborted_hard_limit"
+                            );
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            input = input.source.name(),
+                            error = %e,
+                            "input.shutdown_poll_error"
+                        );
+                        break;
+                    }
+                }
+            }
             break;
         }
 
@@ -100,57 +266,18 @@ pub(super) async fn async_input_poll_loop(
                 metrics.inc_cadence_idle_sleep();
                 tokio::time::sleep(poll_interval).await;
             }
-        } else {
-            for event in events {
-                match event {
-                    InputEvent::Data { bytes, .. } => {
-                        input.buf.extend_from_slice(&bytes);
-                    }
-                    InputEvent::Batch { batch, .. } => {
-                        if !input.buf.is_empty() {
-                            if let Some(msg) = scan_and_transform_for_send(
-                                &mut input,
-                                &mut transform,
-                                &metrics,
-                                input_index,
-                            )
-                            .await
-                            {
-                                if tx.send(msg).await.is_err() {
-                                    break 'poll_loop;
-                                }
-                            }
-                            buffered_since = None;
-                        }
-
-                        if let Some(msg) = transform_direct_batch_for_send(
-                            &mut input,
-                            &mut transform,
-                            &metrics,
-                            input_index,
-                            batch,
-                        )
-                        .await
-                        {
-                            if tx.send(msg).await.is_err() {
-                                break 'poll_loop;
-                            }
-                        }
-                    }
-                    InputEvent::Rotated { .. } => {
-                        input.stats.inc_rotations();
-                    }
-                    InputEvent::Truncated { .. } => {
-                        // Treat truncation as a rotation-equivalent rewind signal
-                        // for existing dashboards that chart a single restart counter.
-                        input.stats.inc_rotations();
-                    }
-                    InputEvent::EndOfFile { .. } => {}
-                }
-            }
-            if buffered_since.is_none() && !input.buf.is_empty() {
-                buffered_since = Some(tokio::time::Instant::now());
-            }
+        } else if !process_input_events(
+            &mut input,
+            &mut transform,
+            &tx,
+            &metrics,
+            input_index,
+            events,
+            &mut buffered_since,
+        )
+        .await
+        {
+            break 'poll_loop;
         }
 
         if input.source.is_finished() {

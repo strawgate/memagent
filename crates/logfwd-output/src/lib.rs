@@ -30,6 +30,7 @@ pub use error::OutputError;
 pub use factory::build_sink_factory_v2;
 pub use file_sink::{FileSink, FileSinkFactory};
 pub use json_lines::{JsonLinesSink, JsonLinesSinkFactory};
+pub use logfwd_config::OtlpProtocol;
 pub use loki::{LokiSink, LokiSinkFactory};
 pub use metadata::{BatchMetadata, Compression};
 pub use null::{NullSink, NullSinkFactory};
@@ -39,7 +40,7 @@ pub use otap_sink::{
     decode_batch_status_generated_fast, encode_batch_arrow_records,
     encode_batch_arrow_records_generated_fast,
 };
-pub use otlp_sink::{OtlpProtocol, OtlpSink, OtlpSinkFactory};
+pub use otlp_sink::{OtlpSink, OtlpSinkFactory};
 pub use sink::{
     AsyncFanoutFactory, AsyncFanoutSink, OnceAsyncFactory, SendResult, Sink, SinkFactory,
 };

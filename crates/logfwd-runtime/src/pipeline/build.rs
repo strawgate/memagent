@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use opentelemetry::metrics::Meter;
 
+use logfwd_config::{CompressionFormat, Format, InputTypeConfig, OutputConfigV2, PipelineConfig};
 #[cfg(feature = "datafusion")]
 use logfwd_config::{EnrichmentConfig, GeoDatabaseFormat};
-use logfwd_config::{Format, InputTypeConfig, OutputConfigV2, PipelineConfig};
 use logfwd_diagnostics::diagnostics::PipelineMetrics;
 use logfwd_io::checkpoint::{
     CheckpointStore, FileCheckpointStore, SourceCheckpoint, default_data_dir,
@@ -566,7 +566,7 @@ impl Pipeline {
             build_output_factory_from_config(
                 0,
                 output_cfg.typed(),
-                output_cfg.compression.as_deref(),
+                output_cfg.compression,
                 base_path,
                 &mut metrics,
             )?
@@ -576,7 +576,7 @@ impl Pipeline {
                 factories.push(build_output_factory_from_config(
                     i,
                     output_cfg.typed(),
-                    output_cfg.compression.as_deref(),
+                    output_cfg.compression,
                     base_path,
                     &mut metrics,
                 )?);
@@ -649,7 +649,7 @@ impl Pipeline {
 fn build_output_factory_from_config(
     index: usize,
     output_cfg: &OutputConfigV2,
-    legacy_file_compression: Option<&str>,
+    legacy_file_compression: Option<CompressionFormat>,
     base_path: Option<&Path>,
     metrics: &mut PipelineMetrics,
 ) -> Result<Arc<dyn SinkFactory>, String> {
@@ -691,7 +691,8 @@ fn should_open_checkpoint_store(checkpoint_dir: &Path, has_explicit_data_dir: bo
 mod tests {
     use super::*;
     use logfwd_config::{
-        InputConfig, InputTypeConfig, OutputConfig, OutputConfigV2, OutputType, StdoutOutputConfig,
+        CompressionFormat, InputConfig, InputTypeConfig, OutputConfig, OutputConfigV2, OutputType,
+        StdoutOutputConfig,
     };
 
     fn minimal_input(path: String) -> InputConfig {
@@ -763,7 +764,7 @@ mod tests {
             OutputConfig {
                 output_type: OutputType::File,
                 path: Some(dir.path().join("out.log").display().to_string()),
-                compression: Some("gzip".to_string()),
+                compression: Some(CompressionFormat::Gzip),
                 ..Default::default()
             }
             .into(),

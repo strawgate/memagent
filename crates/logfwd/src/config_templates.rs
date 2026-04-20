@@ -113,7 +113,7 @@ pub(crate) const OUTPUT_TEMPLATES: &[OutputTemplate] = &[
         id: "null",
         label: "null sink (drop data)",
         description: "Discard all logs. Useful for benchmarking or dry runs.",
-        snippet: "output:\n  type: null\n",
+        snippet: "output:\n  type: \"null\"\n",
     },
 ];
 

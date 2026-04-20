@@ -2,6 +2,6 @@ input:
   type: tcp
   listen: 127.0.0.1:15140
 output:
-  type: null
+  type: "null"
 server:
   diagnostics: 127.0.0.1:9091

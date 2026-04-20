@@ -10,6 +10,8 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | `#![forbid(unsafe_code)]` | Compiler. Cannot be overridden with `#[allow]`. |
 | Only deps: memchr + wide | CI dependency allowlist check |
 | No panics | `clippy::unwrap_used`, `clippy::panic`, `clippy::indexing_slicing` = deny |
+| Every public item documented | `#![warn(missing_docs)]` at crate root |
+| No stdout/stderr writes | `clippy::print_stdout`, `clippy::print_stderr` = warn workspace-wide; no `#![allow]` opt-out |
 | Proof-bearing core modules stay Kani-covered | CI Kani job + `dev-docs/VERIFICATION.md` inventory |
 | No IO, no threads, no async | Structural (no_std removes the APIs) |
 
@@ -29,7 +31,19 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 |------|-------------|
 | Shared pure state-machine and diagnostics value semantics live here | Architecture |
 | Lock-free stats storage may live alongside pure value modules, but not inside them | Code review |
+| Every public item documented | `#![warn(missing_docs)]` at crate root |
+| No stdout/stderr writes | `clippy::print_stdout`, `clippy::print_stderr` = warn workspace-wide; no `#![allow]` opt-out |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
+
+## logfwd-config
+
+| Rule | Enforcement |
+|------|-------------|
+| YAML schema parsing and validation only — no I/O, no transforms | Architecture |
+| Parse-don't-validate: `Result<TypedConfig, ConfigError>`, never `bool` validators | Code review |
+| Every public enum carries `#[non_exhaustive]` unless the closed set is genuinely stable | Code review |
+| No stdout/stderr writes | `clippy::print_stdout`, `clippy::print_stderr` = warn workspace-wide; no `#![allow]` opt-out |
+| **TODO:** enable `#![warn(missing_docs)]` once the ~280 existing schema gaps are documented (tracked separately; do not regress new public items) | Code review for now |
 
 ## logfwd-io
 
@@ -68,6 +82,8 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Uses core for encoding (OTLP protobuf) | Architecture |
 | Transport is separate from serialization | Convention |
 | Deps: core + arrow + ureq/reqwest | Cargo.toml |
+| No `panic!`/`todo!`/`unimplemented!` in production paths | CI script: `python3 scripts/check_no_panic_in_production.py` (test modules and `// ALLOW-PANIC: <reason>` lines are exempt) |
+| Public errors are `thiserror` enums, not `Box<dyn Error>` | CI script: `python3 scripts/check_no_box_dyn_error.py` |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
 ## logfwd-runtime
@@ -77,6 +93,8 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Owns async pipeline orchestration, worker pool, and processor chain | Architecture |
 | Domain logic stays in lower crates when a pure seam exists | Code review |
 | Feature forwarding must preserve `datafusion` and `turmoil` behavior for downstream `logfwd` users | Compilation |
+| No `panic!`/`todo!`/`unimplemented!` in production paths | CI script: `python3 scripts/check_no_panic_in_production.py` (test modules and `// ALLOW-PANIC: <reason>` lines are exempt) |
+| Public errors are `thiserror` enums, not `Box<dyn Error>` | CI script: `python3 scripts/check_no_box_dyn_error.py` |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
 ## logfwd (binary / facade)

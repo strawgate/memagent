@@ -276,6 +276,7 @@ java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/Pip
 Models the pure tail reducer behavior extracted in `crates/logfwd-io/src/tail/state.rs`:
 
 - EOF emission thresholding (`eof_emitted` + idle streak)
+- graceful-shutdown EOF gating (`fileOffset >= fileSize`)
 - EOF reset on data/truncate paths
 - error backoff growth/cap/reset (`consecutive_error_polls`, `backoff_ms`)
 
@@ -285,6 +286,8 @@ Models the pure tail reducer behavior extracted in `crates/logfwd-io/src/tail/st
 |----------|------|-------------|
 | `EofEmissionRequiresThreshold` | Safety | EOF emit transition only occurs once idle threshold is reached |
 | `DataResetsEofState` | Safety | data transition always clears EOF state and idle streak |
+| `ShutdownEofRequiresCaughtUp` | Safety | shutdown EOF may bypass idle threshold only when the tracked offset has caught up to current file size |
+| `ShutdownBehindSuppressesEof` | Safety | shutdown must suppress terminal EOF while unread file bytes remain |
 | `BackoffZeroIffNoErrors` | Safety | backoff state is cleared exactly when error streak is zero |
 | `BackoffDelayConsistent` | Safety | backoff delay follows the bounded exponential schedule |
 

@@ -6,16 +6,18 @@ from __future__ import annotations
 import argparse
 import copy
 import difflib
-import re
 import subprocess
 import sys
 from pathlib import Path
 
+from otlp_proto import parse_proto_fields, vendored_proto_root
+
 
 REPO = Path(__file__).resolve().parents[1]
 OUT = REPO / "crates" / "logfwd-io" / "src" / "otlp_receiver" / "projection" / "generated.rs"
-PROTO_VERSION = "v1.8.0"
-PROTO_ROOT = REPO / "crates" / "logfwd-io" / "codegen" / "opentelemetry-proto" / PROTO_VERSION
+PROTO_BASE = REPO / "crates" / "logfwd-io" / "codegen" / "opentelemetry-proto"
+PROTO_ROOT = vendored_proto_root(PROTO_BASE)
+PROTO_VERSION = PROTO_ROOT.name
 PROTO_FILES = [
     PROTO_ROOT / "opentelemetry" / "proto" / "collector" / "logs" / "v1" / "logs_service.proto",
     PROTO_ROOT / "opentelemetry" / "proto" / "logs" / "v1" / "logs.proto",
@@ -40,25 +42,6 @@ ACTION_TO_VARIANT = {
 ANY_VALUE_UNSUPPORTED_REASONS = {
     "array_value": "AnyValue::ArrayValue",
     "kvlist_value": "AnyValue::KvListValue",
-}
-
-PROTO_TYPE_TO_WIRE = {
-    "bool": "varint",
-    "int32": "varint",
-    "int64": "varint",
-    "uint32": "varint",
-    "uint64": "varint",
-    "sint32": "varint",
-    "sint64": "varint",
-    "fixed32": "fixed32",
-    "sfixed32": "fixed32",
-    "fixed64": "fixed64",
-    "sfixed64": "fixed64",
-    "float": "fixed32",
-    "double": "fixed64",
-    "string": "len",
-    "bytes": "len",
-    "SeverityNumber": "varint",
 }
 
 PROTO_TYPE_TO_ANY_KIND = {
@@ -165,74 +148,8 @@ PROJECTION_SPEC = {
     ],
 }
 
-FIELD_RE = re.compile(
-    r"^\s*(?:(repeated)\s+)?([.\w]+)\s+([A-Za-z_]\w*)\s*=\s*(\d+)\s*(?:\[[^\]]*\])?\s*;"
-)
-MESSAGE_RE = re.compile(r"^\s*message\s+([A-Za-z_]\w*)\s*\{")
-ONEOF_RE = re.compile(r"^\s*oneof\s+([A-Za-z_]\w*)\s*\{")
-
-
-def short_proto_type(proto_type: str) -> str:
-    return proto_type.rsplit(".", 1)[-1]
-
-
-def proto_wire_for(proto_type: str) -> str:
-    short_type = short_proto_type(proto_type)
-    if short_type in PROTO_TYPE_TO_WIRE:
-        return PROTO_TYPE_TO_WIRE[short_type]
-    return "len"
-
-
-def parse_proto_fields() -> dict[str, dict[str, dict]]:
-    messages: dict[str, dict[str, dict]] = {}
-    for path in PROTO_FILES:
-        if not path.exists():
-            raise FileNotFoundError(f"vendored OTLP proto file missing: {path}")
-
-        current_message: str | None = None
-        in_oneof: str | None = None
-        for raw_line in path.read_text().splitlines():
-            line = raw_line.split("//", 1)[0].strip()
-            if not line:
-                continue
-
-            if current_message is None:
-                message_match = MESSAGE_RE.match(line)
-                if message_match:
-                    current_message = message_match.group(1)
-                    messages.setdefault(current_message, {})
-                    continue
-                continue
-
-            oneof_match = ONEOF_RE.match(line)
-            if oneof_match:
-                in_oneof = oneof_match.group(1)
-                continue
-
-            field_match = FIELD_RE.match(line)
-            if field_match:
-                repeated, proto_type, field_name, number = field_match.groups()
-                messages[current_message][field_name] = {
-                    "name": field_name,
-                    "number": int(number),
-                    "wire": proto_wire_for(proto_type),
-                    "proto_type": short_proto_type(proto_type),
-                    "repeated": repeated is not None,
-                    "oneof": in_oneof,
-                }
-                continue
-
-            if "}" in line:
-                if in_oneof is not None:
-                    in_oneof = None
-                else:
-                    current_message = None
-
-    return messages
-
-
 def enrich_spec_from_proto(spec: dict) -> dict:
-    proto_messages = parse_proto_fields()
+    proto_messages = parse_proto_fields(PROTO_FILES)
     enriched = copy.deepcopy(spec)
     for message in enriched["messages"]:
         name = message["name"]
@@ -329,7 +246,7 @@ def validate_spec(spec: dict) -> None:
     if any_value.get("oneof") != "value":
         raise ValueError("AnyValue policy must document the value oneof")
 
-    proto_messages = parse_proto_fields()
+    proto_messages = parse_proto_fields(PROTO_FILES)
     any_value_fields = proto_messages.get("AnyValue", {})
     policy_any_value_fields = {field["name"] for field in any_value["fields"]}
     for field_name, field in any_value_fields.items():
@@ -378,10 +295,11 @@ def render_any_value_decoder(spec: dict) -> str:
         name = field["name"]
         kind = field.get("kind")
         invalid = f"invalid wire type for AnyValue.{name}"
-        match field["action"], kind, field["wire"]:
-            case "project", "string", "len":
-                arms.append(
-                    f"""            ({number}, WireField::Len(bytes)) => {{
+        action = field["action"]
+        wire = field["wire"]
+        if action == "project" and kind == "string" and wire == "len":
+            arms.append(
+                f"""            ({number}, WireField::Len(bytes)) => {{
                 out = Some(WireAny::String(super::require_utf8(
                     bytes,
                     "invalid UTF-8 AnyValue string",
@@ -390,59 +308,59 @@ def render_any_value_decoder(spec: dict) -> str:
             ({number}, _) => {{
                 return Err(ProjectionError::Invalid("{invalid}"));
             }}"""
-                )
-            case "project", "bool", "varint":
-                arms.append(
-                    f"""            ({number}, WireField::Varint(value)) => {{
+            )
+        elif action == "project" and kind == "bool" and wire == "varint":
+            arms.append(
+                f"""            ({number}, WireField::Varint(value)) => {{
                 out = Some(WireAny::Bool(value != 0));
             }}
             ({number}, _) => {{
                 return Err(ProjectionError::Invalid("{invalid}"));
             }}"""
-                )
-            case "project", "int", "varint":
-                arms.append(
-                    f"""            ({number}, WireField::Varint(value)) => {{
+            )
+        elif action == "project" and kind == "int" and wire == "varint":
+            arms.append(
+                f"""            ({number}, WireField::Varint(value)) => {{
                 out = Some(WireAny::Int(value as i64));
             }}
             ({number}, _) => {{
                 return Err(ProjectionError::Invalid("{invalid}"));
             }}"""
-                )
-            case "project", "double", "fixed64":
-                arms.append(
-                    f"""            ({number}, WireField::Fixed64(value)) => {{
+            )
+        elif action == "project" and kind == "double" and wire == "fixed64":
+            arms.append(
+                f"""            ({number}, WireField::Fixed64(value)) => {{
                 out = Some(WireAny::Double(f64::from_bits(value)));
             }}
             ({number}, _) => {{
                 return Err(ProjectionError::Invalid("{invalid}"));
             }}"""
-                )
-            case "project", "bytes", "len":
-                arms.append(
-                    f"""            ({number}, WireField::Len(bytes)) => {{
+            )
+        elif action == "project" and kind == "bytes" and wire == "len":
+            arms.append(
+                f"""            ({number}, WireField::Len(bytes)) => {{
                 out = Some(WireAny::Bytes(bytes));
             }}
             ({number}, _) => {{
                 return Err(ProjectionError::Invalid("{invalid}"));
             }}"""
-                )
-            case "unsupported", _, "len":
-                reason = ANY_VALUE_UNSUPPORTED_REASONS.get(name, f"AnyValue::{name}")
-                arms.append(
-                    f"""            ({number}, WireField::Len(_)) => {{
+            )
+        elif action == "unsupported" and wire == "len":
+            reason = ANY_VALUE_UNSUPPORTED_REASONS.get(name, f"AnyValue::{name}")
+            arms.append(
+                f"""            ({number}, WireField::Len(_)) => {{
                 out = None;
                 unsupported = Some("{reason}");
             }}
             ({number}, _) => {{
                 return Err(ProjectionError::Invalid("{invalid}"));
             }}"""
-                )
-            case _:
-                raise ValueError(
-                    f"unsupported AnyValue codegen mapping for field {name}: "
-                    f"action={field['action']} kind={kind} wire={field['wire']}"
-                )
+            )
+        else:
+            raise ValueError(
+                f"unsupported AnyValue codegen mapping for field {name}: "
+                f"action={field['action']} kind={kind} wire={field['wire']}"
+            )
 
     arms_text = "\n".join(arms)
     return f"""pub(super) fn decode_any_value_wire(value: &[u8]) -> Result<Option<WireAny<'_>>, ProjectionError> {{
@@ -548,12 +466,116 @@ def render_core_constant_drift_tests(spec: dict) -> str:
     return "\n".join(lines)
 
 
+def render_generated_test_vectors(spec: dict) -> str:
+    message_kinds = ", ".join(f"MessageKind::{message['name']}" for message in spec["messages"])
+    unsupported_anyvalue_numbers = ", ".join(
+        str(field["number"]) for field in any_value_fields(spec) if field["action"] == "unsupported"
+    )
+    return f"""fn sample_field_for_wire(number: u32, wire: WireKind) -> Vec<u8> {{
+    let mut out = Vec::new();
+    push_varint(&mut out, (u64::from(number) << 3) | u64::from(wire_id(wire)));
+    match wire {{
+        WireKind::Varint => push_varint(&mut out, 1),
+        WireKind::Fixed64 => out.extend_from_slice(&1u64.to_le_bytes()),
+        WireKind::Len => {{
+            push_varint(&mut out, 1);
+            out.push(0);
+        }}
+        WireKind::StartGroup => {{
+            push_varint(
+                &mut out,
+                (u64::from(number) << 3) | u64::from(wire_id(WireKind::EndGroup)),
+            );
+        }}
+        WireKind::EndGroup => {{}}
+        WireKind::Fixed32 => out.extend_from_slice(&1u32.to_le_bytes()),
+    }}
+    out
+}}
+
+fn push_varint(out: &mut Vec<u8>, mut value: u64) {{
+    while value >= 0x80 {{
+        out.push(((value & 0x7f) as u8) | 0x80);
+        value >>= 7;
+    }}
+    out.push(value as u8);
+}}
+
+fn wire_id(wire: WireKind) -> u8 {{
+    match wire {{
+        WireKind::Varint => 0,
+        WireKind::Fixed64 => 1,
+        WireKind::Len => 2,
+        WireKind::StartGroup => 3,
+        WireKind::EndGroup => 4,
+        WireKind::Fixed32 => 5,
+    }}
+}}
+
+fn all_messages() -> &'static [MessageKind] {{
+    &[{message_kinds}]
+}}
+
+fn wrong_wires(expected: WireKind) -> [WireKind; 5] {{
+    match expected {{
+        WireKind::Varint => [
+            WireKind::Fixed64,
+            WireKind::Len,
+            WireKind::StartGroup,
+            WireKind::EndGroup,
+            WireKind::Fixed32,
+        ],
+        WireKind::Fixed64 => [
+            WireKind::Varint,
+            WireKind::Len,
+            WireKind::StartGroup,
+            WireKind::EndGroup,
+            WireKind::Fixed32,
+        ],
+        WireKind::Len => [
+            WireKind::Varint,
+            WireKind::Fixed64,
+            WireKind::StartGroup,
+            WireKind::EndGroup,
+            WireKind::Fixed32,
+        ],
+        WireKind::StartGroup => [
+            WireKind::Varint,
+            WireKind::Fixed64,
+            WireKind::Len,
+            WireKind::EndGroup,
+            WireKind::Fixed32,
+        ],
+        WireKind::EndGroup => [
+            WireKind::Varint,
+            WireKind::Fixed64,
+            WireKind::Len,
+            WireKind::StartGroup,
+            WireKind::Fixed32,
+        ],
+        WireKind::Fixed32 => [
+            WireKind::Varint,
+            WireKind::Fixed64,
+            WireKind::Len,
+            WireKind::StartGroup,
+            WireKind::EndGroup,
+        ],
+    }}
+}}
+
+fn unsupported_anyvalue_field_numbers() -> &'static [u32] {{
+    &[{unsupported_anyvalue_numbers}]
+}}
+"""
+
+
 def render(spec: dict) -> str:
     tables = render_field_tables(spec)
     any_value_decoder = render_any_value_decoder(spec)
     key_value_decoder = render_key_value_decoder(spec)
     lookup_field = render_lookup_field(spec)
     core_constant_drift_tests = render_core_constant_drift_tests(spec)
+    generated_test_vectors = render_generated_test_vectors(spec)
     return f"""// @generated by scripts/generate_otlp_projection.py; DO NOT EDIT.
 // spec: {spec["name"]} v{spec["version"]}; opentelemetry-proto {spec["proto_version"]}
 
@@ -803,6 +825,8 @@ mod generated_tests {{
     use super::*;
     use super::super::otlp;
 
+{generated_test_vectors}
+
     #[test]
     fn generated_anyvalue_table_covers_all_current_oneof_fields() {{
         let fields = fields_for(MessageKind::AnyValue);
@@ -873,6 +897,112 @@ mod generated_tests {{
         let bytes = [10, 3, b'k', b'e', b'y'];
         let value = decode_key_value_wire(&bytes).expect("generated KeyValue should decode");
         assert!(value.is_none());
+    }}
+
+    #[test]
+    fn generated_known_fields_reject_wrong_wire_types() {{
+        for &message in all_messages() {{
+            for rule in fields_for(message) {{
+                for wrong_wire in wrong_wires(rule.expected_wire) {{
+                    let payload = sample_field_for_wire(rule.number, wrong_wire);
+                    let err = scan_message(&payload, message)
+                        .expect_err("known field wrong wire should be invalid");
+                    assert!(
+                        matches!(err, ProjectionError::Invalid(_)),
+                        "message={{message:?}} field={{}} wrong_wire={{wrong_wire:?}} err={{err:?}}",
+                        rule.name
+                    );
+                }}
+            }}
+        }}
+    }}
+
+    #[test]
+    fn generated_ignored_fields_accept_expected_wire() {{
+        for &message in all_messages() {{
+            for rule in fields_for(message) {{
+                if rule.action != ProjectionAction::Ignore {{
+                    continue;
+                }}
+                let payload = sample_field_for_wire(rule.number, rule.expected_wire);
+                scan_message(&payload, message)
+                    .expect("ignored field with expected wire should be accepted");
+            }}
+        }}
+    }}
+
+    #[test]
+    fn generated_ignored_fields_reject_wrong_wire() {{
+        for &message in all_messages() {{
+            for rule in fields_for(message) {{
+                if rule.action != ProjectionAction::Ignore {{
+                    continue;
+                }}
+                for wrong_wire in wrong_wires(rule.expected_wire) {{
+                    let payload = sample_field_for_wire(rule.number, wrong_wire);
+                    let err = scan_message(&payload, message)
+                        .expect_err("ignored field wrong wire should be invalid");
+                    assert!(
+                        matches!(err, ProjectionError::Invalid(_)),
+                        "message={{message:?}} field={{}} wrong_wire={{wrong_wire:?}} err={{err:?}}",
+                        rule.name
+                    );
+                }}
+            }}
+        }}
+    }}
+
+    #[test]
+    fn generated_anyvalue_unsupported_shapes_trigger_fallback() {{
+        for &field_number in unsupported_anyvalue_field_numbers() {{
+            let payload = sample_field_for_wire(field_number, WireKind::Len);
+            let err = scan_message(&payload, MessageKind::AnyValue)
+                .expect_err("unsupported AnyValue shape should request fallback");
+            assert!(matches!(err, ProjectionError::Unsupported(_)));
+            let err = match decode_any_value_wire(&payload) {{
+                Ok(_) => panic!("unsupported AnyValue decoder shape should request fallback"),
+                Err(err) => err,
+            }};
+            assert!(matches!(err, ProjectionError::Unsupported(_)));
+        }}
+    }}
+
+    #[test]
+    fn generated_anyvalue_oneof_terminal_unsupported_drives_fallback() {{
+        let projected = sample_field_for_wire(otlp::ANY_VALUE_STRING_VALUE, WireKind::Len);
+        for &field_number in unsupported_anyvalue_field_numbers() {{
+            let unsupported = sample_field_for_wire(field_number, WireKind::Len);
+
+            let mut unsupported_then_projected = unsupported.clone();
+            unsupported_then_projected.extend_from_slice(&projected);
+            let value = decode_any_value_wire(&unsupported_then_projected)
+                .expect("terminal projected oneof should decode");
+            assert!(matches!(value, Some(WireAny::String(_))));
+
+            let mut projected_then_unsupported = projected.clone();
+            projected_then_unsupported.extend_from_slice(&unsupported);
+            let err = match decode_any_value_wire(&projected_then_unsupported) {{
+                Ok(_) => panic!("terminal unsupported oneof should request fallback"),
+                Err(err) => err,
+            }};
+            assert!(matches!(err, ProjectionError::Unsupported(_)));
+        }}
+    }}
+
+    #[test]
+    fn generated_security_malformed_wire_corpus_is_rejected() {{
+        let malformed_cases: &[&[u8]] = &[
+            &[0x0a, 0x02, 0x01],
+            &[0x08, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02],
+            &[0x53, 0x64],
+            &[0x0b, 0x13],
+            &[0x0c],
+        ];
+        for bytes in malformed_cases {{
+            let err = classify_projection_support(bytes)
+                .expect_err("malformed protobuf bytes must be rejected");
+            assert!(matches!(err, ProjectionError::Invalid(_)));
+        }}
     }}
 }}
 """
