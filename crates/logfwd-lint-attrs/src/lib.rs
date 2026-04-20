@@ -12,11 +12,13 @@
 //!
 //! # Available attributes
 //!
-//! | Attribute | Lint | Asserts |
-//! |---|---|---|
-//! | `#[hot_path]` | `hot_path_no_alloc` | No heap allocation in the function body. |
-//! | `#[cancel_safe]` | `cancel_safe_no_lock_across_await` | No `std::sync::MutexGuard`, `parking_lot` guard, `RwLock{Read,Write}Guard`, `RefCell::borrow{,_mut}` guard, or `tokio::sync::MutexGuard` live across `.await`. |
-//! | `#[no_panic]` | `no_panic_in_body` | No direct `panic!`/`todo!`/`unimplemented!`/`unreachable!` macros, no `.unwrap()`/`.expect()`, and no slice/array indexing in the function body. |
+//! | Attribute | Lint | Target | Asserts |
+//! |---|---|---|---|
+//! | `#[hot_path]` | `hot_path_no_alloc` | fn | No heap allocation in the function body. |
+//! | `#[cancel_safe]` | `cancel_safe_no_lock_across_await` | async fn | No `MutexGuard`/`RwLock*Guard`/`RefCell` ref (std, parking_lot, tokio::sync, lock_api) live across `.await` per MIR coroutine layout. |
+//! | `#[no_panic]` | `no_panic_in_body` | fn | No direct panic macros, no `.unwrap()`/`.expect()`, and no slice/array indexing in the function body. |
+//! | `#[pure]` | `pure_no_side_effects` | fn | No IO (`std::fs`/`std::net`/stdio), no env/process/thread, no clocks, no `static mut` access, no `rand::*`. Shallow check. |
+//! | `#[owned_by_actor]` | `owned_by_actor_no_spawn_capture` | struct / enum | Values of the tagged type never cross into `tokio::spawn`/`spawn_blocking`/`spawn_local` or `std::thread::spawn` closures. |
 //!
 //! # Runtime behavior
 //!
@@ -70,6 +72,47 @@ pub fn cancel_safe(_attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn no_panic(_attr: TokenStream, item: TokenStream) -> TokenStream {
     prepend_marker("__logfwd_no_panic__", item)
+}
+
+/// Mark a function as pure (no observable side effects).
+///
+/// The `pure_no_side_effects` dylint lint flags calls in the function
+/// body to IO (`std::fs`, `std::net`, `std::io::stdin`/`stdout`/`stderr`),
+/// process/env/thread APIs (`std::env`, `std::process`, `std::thread`),
+/// clocks (`Instant::now`, `SystemTime::now`), `std::os::*`, and access
+/// to any `static mut`. Random-number sources from `rand::*` are also
+/// flagged.
+///
+/// Like `#[no_panic]`, the check is shallow — functions called from the
+/// body are not inspected. Use on small computational helpers
+/// (parsers, encoders, state transitions) that must be deterministic
+/// and side-effect-free for testability and verification.
+#[proc_macro_attribute]
+pub fn pure(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    prepend_marker("__logfwd_pure__", item)
+}
+
+/// Mark a type as owned by a single actor (task/thread).
+///
+/// The `owned_by_actor_no_spawn_capture` dylint lint flags
+/// `tokio::spawn`, `tokio::task::spawn_blocking`, `tokio::task::spawn_local`,
+/// and `std::thread::spawn` call sites whose closure captures a value
+/// whose type carries this attribute. The attribute goes on the type
+/// definition (`struct`/`enum`), not on a function.
+///
+/// Use this to keep single-ownership actor boundaries explicit:
+/// checkpoint-store state, input-source session state, connection
+/// pools that aren't designed to be shared, etc. Instead of relying on
+/// `!Send` bounds (which can be hard to read on trait objects), the
+/// attribute + lint makes the contract visible at the type definition
+/// and catches captures at spawn call sites mechanically.
+///
+/// Note: this lint only detects captures in inline closures and async
+/// blocks passed directly to spawn; it does not track stored futures
+/// that are later passed to spawn.
+#[proc_macro_attribute]
+pub fn owned_by_actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
+    prepend_marker("__logfwd_owned_by_actor__", item)
 }
 
 fn prepend_marker(marker: &str, item: TokenStream) -> TokenStream {

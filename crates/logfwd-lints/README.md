@@ -22,29 +22,54 @@ cargo dylint --path crates/logfwd-lints -- --workspace
 
 ## Lints
 
-| Lint | Level | What it flags |
-|---|---|---|
-| `hot_path_no_alloc` | warn | Heap allocations inside a function marked `#[logfwd_lint_attrs::hot_path]` — `Box::new`, `Vec::new`/`with_capacity`, `String::from`, `.to_string()`, `.to_vec()`, `.to_owned()`, `.clone()` on heap types, `.collect::<Vec/String/HashMap>()`, `format!`, `vec![]`, `Arc::new`, `Rc::new`, `HashMap::new`/`with_capacity`, `HashSet::new`/`with_capacity`. |
-| `cancel_safe_no_lock_across_await` | warn | Lock guards held across a `.await` point inside a function marked `#[logfwd_lint_attrs::cancel_safe]` — `std::sync::MutexGuard`/`RwLockReadGuard`/`RwLockWriteGuard`, `parking_lot` variants, `lock_api` generic guards, `tokio::sync::MutexGuard`/`OwnedMutexGuard`/`RwLock(Owned)?{Read,Write}Guard`, `core::cell::Ref`/`RefMut`. A dropped future — common in `tokio::select!` branches — leaks the guard until scope unwinds. |
-| `no_panic_in_body` | warn | Direct `panic!`/`todo!`/`unimplemented!`/`unreachable!`/`assert*!` macros, `.unwrap()`/`.expect()`, or slice/array indexing inside a function marked `#[logfwd_lint_attrs::no_panic]`. Does **not** perform transitive reachability analysis — functions called from the body are not inspected. |
+| Lint | Level | Target | What it flags |
+|---|---|---|---|
+| `hot_path_no_alloc` | warn | `#[hot_path]` fn | Heap allocations — `Box::new`, `Vec::new`/`with_capacity`, `String::from`, `.to_string()`, `.to_vec()`, `.to_owned()`, `.clone()` on heap types, `.collect::<Vec/String/HashMap>()`, `format!`, `vec![]`, `Arc::new`, `Rc::new`, `HashMap::new`/`with_capacity`, `HashSet::new`/`with_capacity`. |
+| `cancel_safe_no_lock_across_await` | warn | `#[cancel_safe]` async fn | Lock guards held across a `.await` via MIR `coroutine_witnesses` — `std::sync::MutexGuard`/`RwLockReadGuard`/`RwLockWriteGuard`, `parking_lot` variants, `lock_api` generic guards, `tokio::sync::MutexGuard`/`OwnedMutexGuard`/`RwLock(Owned)?{Read,Write}Guard`, `core::cell::Ref`/`RefMut`. Same mechanism clippy's `await_holding_lock` uses; the dylint version is scoped to tagged fns so the contract is visible in the source. |
+| `no_panic_in_body` | warn | `#[no_panic]` fn | Direct `panic!`/`todo!`/`unimplemented!`/`unreachable!`/`assert*!` macros, `.unwrap()`/`.expect()`, or slice/array indexing. Shallow — no transitive reachability. |
+| `pure_no_side_effects` | warn | `#[pure]` fn | IO (`std::fs`, `std::net`, stdio), env/process/thread APIs, clocks (`Instant::now`, `SystemTime::now`), `rand::*` / `rand_core::*` / `rand_chacha::*` / `rand_xoshiro::*`, `std::ptr::read`/`write`, and access to any `static mut`. Shallow check. |
+| `owned_by_actor_no_spawn_capture` | warn | `#[owned_by_actor]` struct/enum | `tokio::spawn`/`spawn_blocking`/`spawn_local`/`std::thread::spawn` calls whose closure captures a value of the tagged type (directly or via `Adt` generic args / `Ref` / `RawPtr` / tuple components). Current implementation also fires on legitimate ownership-transfer moves; see *Known limitations* below. |
 
 ## Related workspace-wide clippy lints
 
 The dylint lints above run alongside these clippy lints that provide
 a broader safety net (all enforced workspace-wide via root `Cargo.toml`):
 
-- `clippy::await_holding_lock` (warn) — same lock-across-await check as
-  `cancel_safe_no_lock_across_await`, but scoped to every async fn in
-  the workspace. The dylint version adds targeted, documented assertions
-  via the `#[cancel_safe]` attribute.
+- `clippy::await_holding_lock` (warn) — same MIR-based lock-across-await
+  check as `cancel_safe_no_lock_across_await`, scoped to every async fn
+  in the workspace. The dylint version adds targeted, documented
+  assertions via the `#[cancel_safe]` attribute.
 - `clippy::await_holding_refcell_ref` (warn) — same for `RefCell` refs.
+- `clippy::large_futures` (warn) — flags async fns whose generated
+  future is unexpectedly large; expensive if awaited in a `select!`
+  branch since each branch must be pinned.
 - `clippy::dbg_macro` (deny), `clippy::undocumented_unsafe_blocks` (deny),
   `clippy::let_underscore_future` (deny).
 
-## How to tag a function
+## Known limitations
+
+- **`owned_by_actor_no_spawn_capture`** fires on any capture into a
+  spawn closure, including legitimate ownership-transfer moves. This
+  makes the lint a good fit for types whose single-actor lifecycle is
+  born-and-died-inside-one-task, but over-aggressive for types whose
+  idiomatic handoff is "move into a spawned worker." Distinguishing
+  `move`-by-value from shared capture requires inspecting the closure
+  upvar capture kind (`ByValue` vs `ByRef`) and is roadmapped.
+- **`pure_no_side_effects`** and **`no_panic_in_body`** are shallow —
+  they flag direct calls in the tagged function body, not calls
+  reached transitively through other functions. Use these on small
+  audited helpers; pair with documented call-graph review for larger
+  guarantees.
+- **`cancel_safe_no_lock_across_await`** uses the same MIR mechanism
+  as clippy's `await_holding_lock`, so they agree on the lock set. The
+  scoping difference is the point: the dylint version lets you opt
+  functions out of the clippy warn via `#[allow(clippy::await_holding_lock)]`
+  while still keeping the strict check on tagged `#[cancel_safe]` fns.
+
+## How to tag a function or type
 
 ```rust
-use logfwd_lint_attrs::{hot_path, cancel_safe, no_panic};
+use logfwd_lint_attrs::{hot_path, cancel_safe, no_panic, pure, owned_by_actor};
 
 #[hot_path]
 fn scan_line(buf: &[u8]) -> usize {
@@ -63,6 +88,23 @@ async fn select_loop(rx: &mut Receiver<Msg>) -> Option<Msg> {
 fn parse_header(b: &[u8]) -> Option<u32> {
     // `b[0]` would fire `no_panic_in_body` (indexing can panic).
     b.first().map(|&x| u32::from(x))
+}
+
+#[pure]
+fn checksum(bytes: &[u8]) -> u64 {
+    // `std::time::Instant::now()` would fire `pure_no_side_effects`.
+    bytes.iter().fold(0u64, |acc, &b| acc.wrapping_add(u64::from(b)))
+}
+
+#[owned_by_actor]
+struct DiagnosticsHandle { /* … */ }
+
+fn hand_off(handle: DiagnosticsHandle) {
+    tokio::spawn(async move {
+        // capture of DiagnosticsHandle into spawn — fires
+        // `owned_by_actor_no_spawn_capture`.
+        let _ = handle;
+    });
 }
 ```
 
@@ -92,11 +134,13 @@ Future lints for which this scaffolding makes the cost ~50-100 lines
 each:
 
 - `#[checkpoint_ordered]` — encode the checkpoint-store protocol
-  (flush happens-before persist; recovery reads before flush).
-- `#[owned_by_actor]` — mark a type that must not cross task boundaries
-  without an explicit handoff.
-- `#[pure]` — no observable side effects, no IO, no globals.
-- MIR-based `cancel_safe` check — the current implementation uses HIR
-  binding scopes, which can miss some guard lifetimes that clippy's
-  MIR-based `await_holding_lock` catches. A MIR-scoped version would
-  supersede the current lint.
+  (flush happens-before persist; recovery reads before flush). Needs
+  domain-specific state-machine encoding.
+- Refine `owned_by_actor_no_spawn_capture` to distinguish capture
+  kind (`ByValue` `move` vs `ByRef` shared) so legitimate ownership
+  transfers don't fire.
+- `#[deterministic]` — no time, no rand, no env. Subset of `#[pure]`
+  that ignores stdio but still bans non-deterministic sources.
+- `#[must_not_await_on(cancel_unsafe_futures)]` — configurable list
+  of known-cancel-unsafe futures (e.g., `AsyncReadExt::read`); fire
+  if a `#[cancel_safe]` fn awaits on any of them.
