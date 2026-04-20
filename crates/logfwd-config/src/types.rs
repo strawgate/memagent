@@ -861,24 +861,72 @@ pub struct OutputConfig {
     pub write_schema_on_connect: Option<bool>,
 }
 
+/// Deserializes an output config by trying V2 (typed) first, falling back to V1
+/// (legacy flat). Uses a visitor to consume the map from the original
+/// deserializer, preserving YAML source locations for error messages instead of
+/// round-tripping through an intermediate `serde_yaml_ng::Value`.
+fn deserialize_output_with_fallback<'de, D, T>(
+    deserializer: D,
+    from_v2: impl FnOnce(OutputConfigV2) -> T,
+    from_v1: impl FnOnce(OutputConfigV1) -> T,
+) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::value::MapDeserializer;
+
+    struct OutputMapVisitor;
+
+    impl<'de> serde::de::Visitor<'de> for OutputMapVisitor {
+        type Value = Vec<(serde_yaml_ng::Value, serde_yaml_ng::Value)>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an output configuration mapping")
+        }
+
+        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>,
+        {
+            let mut entries = Vec::with_capacity(map.size_hint().unwrap_or(0));
+            while let Some(entry) =
+                map.next_entry::<serde_yaml_ng::Value, serde_yaml_ng::Value>()?
+            {
+                entries.push(entry);
+            }
+            Ok(entries)
+        }
+    }
+
+    let entries: Vec<(serde_yaml_ng::Value, serde_yaml_ng::Value)> =
+        deserializer.deserialize_map(OutputMapVisitor)?;
+
+    // Try the V2 typed schema first via a replayed map deserializer.
+    let v2_error = {
+        let de = MapDeserializer::new(entries.clone().into_iter());
+        match OutputConfigV2::deserialize(de) {
+            Ok(v2) => return Ok(from_v2(v2)),
+            Err(error) => error,
+        }
+    };
+
+    // Fall back to the V1 flat schema.
+    let de = MapDeserializer::new(entries.into_iter());
+    OutputConfigV1::deserialize(de)
+        .map(from_v1)
+        .map_err(|v1_error| {
+            serde::de::Error::custom(format!(
+                "invalid output config; v2 parse error: {v2_error}; legacy parse error: {v1_error}"
+            ))
+        })
+}
+
 impl<'de> Deserialize<'de> for OutputConfig {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        let value = serde_yaml_ng::Value::deserialize(deserializer)?;
-        let v2_error = match OutputConfigV2::deserialize(value.clone()) {
-            Ok(v2) => return Ok(v2.into()),
-            Err(error) => error,
-        };
-
-        OutputConfigV1::deserialize(value)
-            .map(OutputConfig::from)
-            .map_err(|v1_error| {
-                serde::de::Error::custom(format!(
-                    "invalid output config; v2 parse error: {v2_error}; legacy parse error: {v1_error}"
-                ))
-            })
+        deserialize_output_with_fallback(deserializer, OutputConfig::from, OutputConfig::from)
     }
 }
 
@@ -1216,20 +1264,11 @@ impl<'de> Deserialize<'de> for OutputConfigEntry {
     where
         D: serde::Deserializer<'de>,
     {
-        let value = serde_yaml_ng::Value::deserialize(deserializer)?;
-        let v2_error = match OutputConfigV2::deserialize(value.clone()) {
-            Ok(config) => return Ok(OutputConfigEntry::from(config)),
-            Err(error) => error,
-        };
-
-        OutputConfigV1::deserialize(value)
-            .map(OutputConfig::from)
-            .map(OutputConfigEntry::from)
-            .map_err(|v1_error| {
-                serde::de::Error::custom(format!(
-                    "invalid output config; v2 parse error: {v2_error}; legacy parse error: {v1_error}"
-                ))
-            })
+        deserialize_output_with_fallback(
+            deserializer,
+            OutputConfigEntry::from,
+            |v1: OutputConfigV1| OutputConfigEntry::from(OutputConfig::from(v1)),
+        )
     }
 }
 
