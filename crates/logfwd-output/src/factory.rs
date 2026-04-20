@@ -26,7 +26,7 @@ fn build_http_client_builder(
     request_timeout_ms: Option<logfwd_config::PositiveMillis>,
 ) -> Result<reqwest::ClientBuilder, OutputError> {
     let mut client_builder = reqwest::Client::builder()
-        .timeout(request_timeout_ms.map_or(Duration::from_millis(30_000), Into::into))
+        .timeout(request_timeout_ms.map_or(Duration::from_secs(30), Into::into))
         .pool_max_idle_per_host(64);
 
     if let Some(tls) = tls {
