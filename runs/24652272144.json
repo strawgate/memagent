@@ -1,0 +1,218 @@
+{
+  "agents": [
+    "ff",
+    "filebeat",
+    "otelcol",
+    "vector",
+    "vlagent"
+  ],
+  "commit": "a86fa3a81b44124530eaaccf1ccce9924106d25b",
+  "date": "2026-04-20T08:21:32Z",
+  "id": "24652272144",
+  "scenario_names": [
+    "filter",
+    "json_parse",
+    "passthrough"
+  ],
+  "scenarios": {
+    "filter": {
+      "ff": {
+        "avg_lps": 0,
+        "avg_max_cpu": 0.0,
+        "avg_max_rss": 0,
+        "avg_ms": 300037,
+        "iterations": 3,
+        "lines_done": 0,
+        "lps": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "mode": "binary",
+        "stddev_ms": 13
+      },
+      "filebeat": {
+        "avg_lps": 33891,
+        "avg_max_cpu": 112.0,
+        "avg_max_rss": 141773482,
+        "avg_ms": 289430,
+        "iterations": 3,
+        "lines_done": 9809006,
+        "lps": [
+          34970.869746150645,
+          35437.0398713234,
+          31406.933576827203
+        ],
+        "mode": "binary",
+        "stddev_ms": 9403
+      },
+      "otelcol": {
+        "avg_lps": 0,
+        "avg_max_cpu": 0.0,
+        "avg_max_rss": 0,
+        "avg_ms": 300033,
+        "iterations": 3,
+        "lines_done": 0,
+        "lps": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "mode": "binary",
+        "stddev_ms": 16
+      },
+      "vector": {
+        "avg_lps": 157391,
+        "avg_max_cpu": 174.0,
+        "avg_max_rss": 230617088,
+        "avg_ms": 63536,
+        "iterations": 3,
+        "lines_done": 10000000,
+        "lps": [
+          157549.7857322914,
+          156555.77299412916,
+          158072.7767063956
+        ],
+        "mode": "binary",
+        "stddev_ms": 312
+      }
+    },
+    "json_parse": {
+      "ff": {
+        "avg_lps": 0,
+        "avg_max_cpu": 0.0,
+        "avg_max_rss": 0,
+        "avg_ms": 300035,
+        "iterations": 3,
+        "lines_done": 0,
+        "lps": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "mode": "binary",
+        "stddev_ms": 5
+      },
+      "filebeat": {
+        "avg_lps": 48754,
+        "avg_max_cpu": 109.0,
+        "avg_max_rss": 141643776,
+        "avg_ms": 300067,
+        "iterations": 3,
+        "lines_done": 14629546,
+        "lps": [
+          40695.42614346414,
+          55441.47248586968,
+          50126.04019822504
+        ],
+        "mode": "binary",
+        "stddev_ms": 7
+      },
+      "otelcol": {
+        "avg_lps": 0,
+        "avg_max_cpu": 0.0,
+        "avg_max_rss": 0,
+        "avg_ms": 300047,
+        "iterations": 3,
+        "lines_done": 0,
+        "lps": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "mode": "binary",
+        "stddev_ms": 22
+      },
+      "vector": {
+        "avg_lps": 218696,
+        "avg_max_cpu": 209.0,
+        "avg_max_rss": 236178090,
+        "avg_ms": 91451,
+        "iterations": 3,
+        "lines_done": 20000000,
+        "lps": [
+          217672.85945951828,
+          220322.5522164449,
+          218107.26515300226
+        ],
+        "mode": "binary",
+        "stddev_ms": 592
+      }
+    },
+    "passthrough": {
+      "ff": {
+        "avg_lps": 0,
+        "avg_max_cpu": 0.0,
+        "avg_max_rss": 0,
+        "avg_ms": 300063,
+        "iterations": 3,
+        "lines_done": 0,
+        "lps": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "mode": "binary",
+        "stddev_ms": 5
+      },
+      "filebeat": {
+        "avg_lps": 45215,
+        "avg_max_cpu": 110.66666666666667,
+        "avg_max_rss": 140982954,
+        "avg_ms": 300075,
+        "iterations": 3,
+        "lines_done": 13567795,
+        "lps": [
+          44158.414290713365,
+          46406.62738929914,
+          45078.878439893095
+        ],
+        "mode": "binary",
+        "stddev_ms": 18
+      },
+      "otelcol": {
+        "avg_lps": 0,
+        "avg_max_cpu": 0.0,
+        "avg_max_rss": 0,
+        "avg_ms": 300030,
+        "iterations": 3,
+        "lines_done": 0,
+        "lps": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "mode": "binary",
+        "stddev_ms": 3
+      },
+      "vector": {
+        "avg_lps": 253107,
+        "avg_max_cpu": 163.0,
+        "avg_max_rss": 235058517,
+        "avg_ms": 79018,
+        "iterations": 3,
+        "lines_done": 20000000,
+        "lps": [
+          251287.85023244124,
+          253219.04713672563,
+          254835.50368237303
+        ],
+        "mode": "binary",
+        "stddev_ms": 555
+      },
+      "vlagent": {
+        "avg_lps": 18038,
+        "avg_max_cpu": 104.0,
+        "avg_max_rss": 119885824,
+        "avg_ms": 59159,
+        "iterations": 1,
+        "lines_done": 1067095,
+        "lps": [
+          18037.74573606721
+        ],
+        "mode": "binary",
+        "stddev_ms": 0
+      }
+    }
+  }
+}
