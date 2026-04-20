@@ -74,9 +74,9 @@ impl FormatDecoder {
 
     /// Create a passthrough processor for JSON input.
     ///
-    /// Lines are forwarded verbatim, but any non-empty line that does not begin
-    /// with `{` (i.e. is not a JSON object) increments the `parse_errors`
-    /// counter so data-quality issues are surfaced in diagnostics.
+    /// Lines are forwarded verbatim, but any non-empty line that is not a
+    /// syntactically valid JSON object increments the `parse_errors` counter so
+    /// data-quality issues are surfaced in diagnostics.
     pub fn passthrough_json(stats: Arc<ComponentStats>) -> Self {
         Self::PassthroughJson { stats }
     }
@@ -213,10 +213,10 @@ impl FormatDecoder {
 
 /// Count non-JSON lines in `chunk` and increment the parse-error counter.
 ///
-/// A line is considered a JSON object if, after stripping leading ASCII
-/// whitespace (`' '`, `'\t'`, `'\r'`), it begins with `{`.  Empty lines
-/// are ignored.  Lines are forwarded to `out` unchanged — this function
-/// only updates the counter.
+/// Empty lines are ignored. Non-empty lines are considered valid only when
+/// they start with `{` after ASCII leading whitespace and are syntactically
+/// valid JSON objects. Lines are forwarded unchanged — this function only
+/// updates the counter.
 fn count_json_parse_errors(chunk: &[u8], stats: &ComponentStats) {
     let mut pos = 0;
     while pos < chunk.len() {
@@ -226,13 +226,28 @@ fn count_json_parse_errors(chunk: &[u8], stats: &ComponentStats) {
             let first_nonws = line
                 .iter()
                 .position(|&b| !matches!(b, b' ' | b'\t' | b'\r'));
-            let is_json_obj = first_nonws.is_some_and(|p| line[p] == b'{');
-            if !is_json_obj {
+            let is_valid_json_obj = first_nonws.is_some_and(|start| {
+                line[start] == b'{' && is_valid_json_object_syntax(&line[start..])
+            });
+            if !is_valid_json_obj {
                 stats.inc_parse_errors(1);
             }
         }
         pos = eol + 1;
     }
+}
+
+/// Validate that `line` is exactly one syntactically valid JSON value.
+///
+/// This is used only for lines that already pass the cheap `{` prefix gate in
+/// `format: json`. We intentionally deserialize into `IgnoredAny` to avoid
+/// allocating value trees while still catching malformed object syntax.
+fn is_valid_json_object_syntax(line: &[u8]) -> bool {
+    let mut deserializer = serde_json::Deserializer::from_slice(line);
+    if <serde::de::IgnoredAny as serde::Deserialize>::deserialize(&mut deserializer).is_err() {
+        return false;
+    }
+    deserializer.end().is_ok()
 }
 
 /// Extract JSON messages from CRI-formatted lines, handling P/F merging.
@@ -895,6 +910,83 @@ mod tests {
                 .load(std::sync::atomic::Ordering::Relaxed),
             2,
             "two non-JSON lines must increment parse_errors by 2"
+        );
+    }
+
+    #[test]
+    fn passthrough_json_truncated_string_counts_error() {
+        let stats = make_stats();
+        let mut proc = FormatDecoder::passthrough_json(Arc::clone(&stats));
+        let input = b"{\"level\":\"ERROR\",\"message\":\"\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(
+            out, input,
+            "malformed line must still be forwarded verbatim"
+        );
+        assert_eq!(
+            stats
+                .parse_errors_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "truncated string must increment parse_errors"
+        );
+    }
+
+    #[test]
+    fn passthrough_json_truncated_object_counts_error() {
+        let stats = make_stats();
+        let mut proc = FormatDecoder::passthrough_json(Arc::clone(&stats));
+        let input = b"{\"level\":\"ERROR\",\"message\":\"boom\"\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(
+            out, input,
+            "malformed line must still be forwarded verbatim"
+        );
+        assert_eq!(
+            stats
+                .parse_errors_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "truncated object must increment parse_errors"
+        );
+    }
+
+    #[test]
+    fn passthrough_json_invalid_literal_counts_error() {
+        let stats = make_stats();
+        let mut proc = FormatDecoder::passthrough_json(Arc::clone(&stats));
+        let input = b"{\"ok\":tru}\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(
+            out, input,
+            "malformed line must still be forwarded verbatim"
+        );
+        assert_eq!(
+            stats
+                .parse_errors_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "invalid literal must increment parse_errors"
+        );
+    }
+
+    #[test]
+    fn passthrough_json_mixed_batch_counts_all_invalid_lines() {
+        let stats = make_stats();
+        let mut proc = FormatDecoder::passthrough_json(Arc::clone(&stats));
+        let input = b"\n{\"ok\":true}\nnot json at all\n{\"level\":\"ERROR\",\"message\":\"\n{\"ok\":tru}\n";
+        let mut out = Vec::new();
+        proc.process_lines(input, &mut out);
+        assert_eq!(out, input, "all lines must be forwarded verbatim");
+        assert_eq!(
+            stats
+                .parse_errors_total
+                .load(std::sync::atomic::Ordering::Relaxed),
+            3,
+            "batch should count non-JSON and malformed object lines only"
         );
     }
 
