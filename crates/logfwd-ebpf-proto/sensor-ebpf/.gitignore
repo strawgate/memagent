@@ -1,2 +1,0 @@
-# sensor-ebpf-kern builds separately (nightly + bpfel-unknown-none target)
-target/

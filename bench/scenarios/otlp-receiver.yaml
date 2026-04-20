@@ -1,7 +1,0 @@
-input:
-  type: otlp
-  listen: 127.0.0.1:14318
-output:
-  type: null
-server:
-  diagnostics: 127.0.0.1:9091

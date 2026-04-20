@@ -1,5 +1,0 @@
-target/
-.git/
-*.o
-profile.json.gz
-bench/

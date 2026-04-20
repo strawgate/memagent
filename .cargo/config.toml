@@ -1,8 +1,0 @@
-# [build]
-# rustc-wrapper = "sccache"
-
-# Deny common mistakes in all builds (not just CI).
-[target.'cfg(all())']
-rustflags = [
-    "-Dclippy::dbg_macro",
-]
