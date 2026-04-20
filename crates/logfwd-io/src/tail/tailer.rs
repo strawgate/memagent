@@ -314,6 +314,9 @@ impl FileTailer {
         let evicted = self.reader.evicted_offsets.values().filter_map(|evicted| {
             let file_size = std::fs::metadata(&evicted.path).ok()?.len();
             let already_emitted = evicted.eof_state.has_emitted();
+            // Evicted files are not reopened during shutdown, so offset > size
+            // means a truncation happened while the file was evicted.  Do not
+            // flush stale pre-truncation framed state in that case.
             if already_emitted || evicted.offset != file_size {
                 return None;
             }
