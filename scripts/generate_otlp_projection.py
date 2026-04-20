@@ -378,10 +378,11 @@ def render_any_value_decoder(spec: dict) -> str:
         name = field["name"]
         kind = field.get("kind")
         invalid = f"invalid wire type for AnyValue.{name}"
-        match field["action"], kind, field["wire"]:
-            case "project", "string", "len":
-                arms.append(
-                    f"""            ({number}, WireField::Len(bytes)) => {{
+        action = field["action"]
+        wire = field["wire"]
+        if action == "project" and kind == "string" and wire == "len":
+            arms.append(
+                f"""            ({number}, WireField::Len(bytes)) => {{
                 out = Some(WireAny::String(super::require_utf8(
                     bytes,
                     "invalid UTF-8 AnyValue string",
@@ -390,59 +391,59 @@ def render_any_value_decoder(spec: dict) -> str:
             ({number}, _) => {{
                 return Err(ProjectionError::Invalid("{invalid}"));
             }}"""
-                )
-            case "project", "bool", "varint":
-                arms.append(
-                    f"""            ({number}, WireField::Varint(value)) => {{
+            )
+        elif action == "project" and kind == "bool" and wire == "varint":
+            arms.append(
+                f"""            ({number}, WireField::Varint(value)) => {{
                 out = Some(WireAny::Bool(value != 0));
             }}
             ({number}, _) => {{
                 return Err(ProjectionError::Invalid("{invalid}"));
             }}"""
-                )
-            case "project", "int", "varint":
-                arms.append(
-                    f"""            ({number}, WireField::Varint(value)) => {{
+            )
+        elif action == "project" and kind == "int" and wire == "varint":
+            arms.append(
+                f"""            ({number}, WireField::Varint(value)) => {{
                 out = Some(WireAny::Int(value as i64));
             }}
             ({number}, _) => {{
                 return Err(ProjectionError::Invalid("{invalid}"));
             }}"""
-                )
-            case "project", "double", "fixed64":
-                arms.append(
-                    f"""            ({number}, WireField::Fixed64(value)) => {{
+            )
+        elif action == "project" and kind == "double" and wire == "fixed64":
+            arms.append(
+                f"""            ({number}, WireField::Fixed64(value)) => {{
                 out = Some(WireAny::Double(f64::from_bits(value)));
             }}
             ({number}, _) => {{
                 return Err(ProjectionError::Invalid("{invalid}"));
             }}"""
-                )
-            case "project", "bytes", "len":
-                arms.append(
-                    f"""            ({number}, WireField::Len(bytes)) => {{
+            )
+        elif action == "project" and kind == "bytes" and wire == "len":
+            arms.append(
+                f"""            ({number}, WireField::Len(bytes)) => {{
                 out = Some(WireAny::Bytes(bytes));
             }}
             ({number}, _) => {{
                 return Err(ProjectionError::Invalid("{invalid}"));
             }}"""
-                )
-            case "unsupported", _, "len":
-                reason = ANY_VALUE_UNSUPPORTED_REASONS.get(name, f"AnyValue::{name}")
-                arms.append(
-                    f"""            ({number}, WireField::Len(_)) => {{
+            )
+        elif action == "unsupported" and wire == "len":
+            reason = ANY_VALUE_UNSUPPORTED_REASONS.get(name, f"AnyValue::{name}")
+            arms.append(
+                f"""            ({number}, WireField::Len(_)) => {{
                 out = None;
                 unsupported = Some("{reason}");
             }}
             ({number}, _) => {{
                 return Err(ProjectionError::Invalid("{invalid}"));
             }}"""
-                )
-            case _:
-                raise ValueError(
-                    f"unsupported AnyValue codegen mapping for field {name}: "
-                    f"action={field['action']} kind={kind} wire={field['wire']}"
-                )
+            )
+        else:
+            raise ValueError(
+                f"unsupported AnyValue codegen mapping for field {name}: "
+                f"action={field['action']} kind={kind} wire={field['wire']}"
+            )
 
     arms_text = "\n".join(arms)
     return f"""pub(super) fn decode_any_value_wire(value: &[u8]) -> Result<Option<WireAny<'_>>, ProjectionError> {{
