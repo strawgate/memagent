@@ -460,6 +460,7 @@ impl Pipeline {
     ///   HTTP sends, flush_interval can't fire on this worker. Goes away
     ///   when ureq is replaced with an async HTTP client.
     /// - self.inputs.drain(..) makes this method non-reentrant.
+    #[logfwd_lint_attrs::cancel_safe]
     pub async fn run_async(&mut self, shutdown: &CancellationToken) -> io::Result<()> {
         self.validate_batch_settings()?;
         assert_eq!(
@@ -867,7 +868,8 @@ mod tests {
 
     use arrow::record_batch::RecordBatch;
     use logfwd_config::{
-        CompressionFormat, Format, OtlpProtocol, OutputConfig, OutputConfigV2, OutputType,
+        CompressionFormat, Format, OtlpOutputConfig, OtlpProtocol, OutputConfigV2,
+        StdoutOutputConfig,
     };
     use logfwd_core::scan_config::ScanConfig;
     use logfwd_diagnostics::diagnostics::ComponentStats;
@@ -906,15 +908,12 @@ mod tests {
 
     #[test]
     fn test_build_sink_factory_stdout() {
-        let cfg = OutputConfig {
+        let cfg = OutputConfigV2::Stdout(StdoutOutputConfig {
             name: Some("test".to_string()),
-            output_type: OutputType::Stdout,
             format: Some(Format::Json),
-            ..Default::default()
-        };
-        let typed = OutputConfigV2::from(&cfg);
+        });
         let factory =
-            build_sink_factory("test", &typed, None, Arc::new(ComponentStats::new())).unwrap();
+            build_sink_factory("test", &cfg, None, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "test");
         let sink = factory.create().expect("create should succeed");
         assert_eq!(sink.name(), "test");
@@ -922,29 +921,25 @@ mod tests {
 
     #[test]
     fn test_build_sink_factory_otlp() {
-        let cfg = OutputConfig {
+        let cfg = OutputConfigV2::Otlp(OtlpOutputConfig {
             name: Some("otel".to_string()),
-            output_type: OutputType::Otlp,
             endpoint: Some("http://localhost:4318".to_string()),
             protocol: Some(OtlpProtocol::Http),
             compression: Some(CompressionFormat::Zstd),
             ..Default::default()
-        };
-        let typed = OutputConfigV2::from(&cfg);
+        });
         let factory =
-            build_sink_factory("otel", &typed, None, Arc::new(ComponentStats::new())).unwrap();
+            build_sink_factory("otel", &cfg, None, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "otel");
     }
 
     #[test]
     fn test_build_sink_factory_missing_endpoint() {
-        let cfg = OutputConfig {
+        let cfg = OutputConfigV2::Otlp(OtlpOutputConfig {
             name: Some("bad".to_string()),
-            output_type: OutputType::Otlp,
             ..Default::default()
-        };
-        let typed = OutputConfigV2::from(&cfg);
-        let result = build_sink_factory("bad", &typed, None, Arc::new(ComponentStats::new()));
+        });
+        let result = build_sink_factory("bad", &cfg, None, Arc::new(ComponentStats::new()));
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("endpoint"), "got: {err}");

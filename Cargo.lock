@@ -3160,6 +3160,7 @@ dependencies = [
  "logfwd-core",
  "logfwd-diagnostics",
  "logfwd-io",
+ "logfwd-lint-attrs",
  "logfwd-output",
  "logfwd-test-utils",
  "logfwd-transform",

@@ -106,6 +106,7 @@ fn is_conflict_struct(fields: &Fields) -> bool {
 ///
 /// Use this as a cheap pre-check before calling [`normalize_conflict_columns`] to avoid
 /// an unnecessary `RecordBatch::clone()` when the batch has no conflict columns.
+#[logfwd_lint_attrs::no_panic]
 pub fn has_conflict_struct_columns(schema: &Schema) -> bool {
     schema
         .fields()

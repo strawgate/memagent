@@ -331,16 +331,16 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 
 | Module | What it does | Verification |
 |--------|-------------|-------------|
-| `structural.rs` | Escape detection, quote classification, SIMD structural detection | Kani exhaustive (9 proofs) + proptest (SIMD ≡ scalar) |
+| `structural.rs` | Escape detection, quote classification, SIMD structural detection | Kani exhaustive (6 proofs) + proptest (SIMD ≡ scalar) |
 | `structural_iter.rs` | Streaming structural position iterator, including space-only `next_non_space` semantics where tab/CR remain non-space | Kani exhaustive (3 proofs) |
-| `framer.rs` | Newline framing, line boundary detection | Kani exhaustive + oracle (4 proofs) |
-| `reassembler.rs` | CRI partial line reassembly (P/F merging) | Kani exhaustive (8 proofs) |
+| `framer.rs` | Newline framing, line boundary detection | Kani exhaustive + oracle (6 proofs) |
+| `reassembler.rs` | CRI partial line reassembly (P/F merging) | Kani exhaustive (9 proofs) |
 | `byte_search.rs` | Proven byte search (find_byte, rfind_byte) | Kani exhaustive + oracle (3 proofs) |
 | `scanner.rs` | Scanner-to-builder protocol (`ScanBuilder`, `BuilderState`) | Kani bounded (4 proofs) + property-based protocol coverage |
-| `json_scanner.rs` | Streaming JSON field scanner via bitmask iteration, including escaped key/value decoding, CRLF normalization, and JSON whitespace boundary regressions | Kani bounded (5 proofs) + proptest oracle + compliance regressions |
+| `json_scanner.rs` | Streaming JSON field scanner via bitmask iteration, including escaped key/value decoding, CRLF normalization, and JSON whitespace boundary regressions | Kani bounded (10 proofs) + proptest oracle + compliance regressions |
 | `scan_config.rs` | `parse_int_fast`, `parse_float_fast`, `ScanConfig` | Kani exhaustive (2 proofs) |
-| `cri.rs` | CRI log parsing + partial line reassembly | Kani exhaustive (8 proofs) |
-| `otlp.rs` | Protobuf wire format + OTLP encoding + timestamp parsing | Kani mixed exhaustive + bounded (30 proofs incl. 3 contract verifications) |
+| `cri.rs` | CRI log parsing + partial line reassembly | Kani exhaustive (19 proofs) |
+| `otlp.rs` | Protobuf wire format + OTLP encoding + timestamp parsing | Kani mixed exhaustive + bounded (37 proofs incl. 3 contract verifications + 4 compositional stubs) |
 | `pipeline/lifecycle.rs` | Pipeline state machine (ordered ACK, drain, shutdown) | Kani exhaustive (16 proofs) + proptest + **TLA+** |
 | `logfwd-runtime/pipeline/health.rs` | Pipeline component-health transition reducer (`observed`, bounded startup poll failure escalation, shutdown) | Kani exhaustive (6 proofs) + unit tests + proptest sequence checks |
 | `pipeline/batch.rs` | BatchTicket typestate (ack/nack/fail/reject) | Kani exhaustive (5 proofs) + compile-time |
@@ -367,7 +367,7 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `logfwd-io/framed.rs` | Per-source framing/remainder checkpoint boundary (`overflow_tainted`, EOF remainder flush, source-scoped EOF semantics, idle source-state reclamation) | Unit tests (remainder carry/overflow, per-source isolation, EOF flush + checkpoint advancement contracts, complete-state reclamation and CRI partial retention) |
 | `logfwd-io/tail/verification.rs` | File tailer pure reducers for EOF emission + shutdown EOF gating + error backoff (`eof_model_transition`, `shutdown_should_emit_eof`, `backoff_transition`) | Kani (8 proofs: EOF at-most-once thresholding, reset semantics, two-poll/repeat cycle, shutdown caught-up gating, backoff cap/reset/monotonicity) + proptest (state reducer invariants in `tail/state.rs`) + **TLA+** (`tla/TailLifecycle.tla`) |
 | `logfwd-io/segment.rs` | Checkpoint segment envelope read/write/recovery (`LCHK` header/footer, checksum, replay plan) | Unit tests for panic/OOM/silent-mask hardening (unsupported-version, permission-denied I/O surfacing, write/read size-bound parity, recovery error semantics) |
-| `logfwd-runtime/pipeline/checkpoint_policy.rs` | Typed delivery outcome -> checkpoint disposition mapping plus bounded ordered-commit seam model (`Ack`, `Reject`, `Hold`) | Kani exhaustive/bounded (6 proofs: outcome mapping, hold no-advance, ack/reject terminal equivalence, mixed-sequence monotonicity/no-gap jumps) + unit tests + proptest ordered sequence invariants |
+| `logfwd-runtime/pipeline/checkpoint_policy.rs` | Typed delivery outcome -> checkpoint disposition mapping plus bounded ordered-commit seam model (`Ack`, `Reject`, `Hold`) | Kani exhaustive/bounded (3 proofs: outcome mapping, hold no-advance, ack/reject terminal equivalence) + unit tests + proptest ordered sequence invariants |
 | `logfwd-runtime/pipeline/checkpoint_io.rs` | Final checkpoint flush retry window (`MAX_ATTEMPTS`, retry/no-retry boundary, retryable error classification, stop-on-success behavior) | Kani (3 proofs: zero/one-attempt no-retry, retry-window equivalence, retryable error classification) + unit tests + proptest retry-window equivalence checks + async retry behavior tests |
 | `logfwd-runtime/pipeline/input_poll.rs` | Turmoil input-loop flush predicate (`should_flush_buffer`) for byte-batch/timeout emission policy | Kani (3 proofs: empty-buffer no-flush, timeout gate semantics, predicate equivalence) + unit tests + proptest policy equivalence |
 | `logfwd-runtime/worker_pool/health.rs` | Pool idle-phase insertion + worker-slot aggregation policy | Kani exhaustive (3 proofs) + unit tests + proptest aggregation checks |
