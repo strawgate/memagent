@@ -296,6 +296,14 @@ mod tests {
     use arrow::array::StringArray;
     use arrow::datatypes::{DataType, Field, Schema};
     use logfwd_types::diagnostics::ComponentStats;
+    use proptest::prelude::*;
+
+    mod arrow_test_utils {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../logfwd-test-utils/src/arrow.rs"
+        ));
+    }
 
     fn make_sink() -> JsonLinesSink {
         let client = Arc::new(
@@ -444,6 +452,43 @@ mod tests {
             sink.batch_buf.is_empty(),
             "buf should be cleared between calls"
         );
+    }
+
+    proptest! {
+        #[test]
+        fn ndjson_lines_are_valid_json(batch in arrow_test_utils::arb_record_batch()) {
+            let mut sink = make_sink();
+            sink.serialize_batch(&batch).expect("serialize_batch must succeed");
+
+            let output = String::from_utf8(sink.batch_buf.clone()).expect("ndjson should be utf8");
+            let lines = output.lines().collect::<Vec<_>>();
+            prop_assert_eq!(lines.len(), batch.num_rows());
+
+            for line in lines {
+                let value: serde_json::Value = serde_json::from_str(line).expect("line must be valid json");
+                prop_assert!(value.is_object(), "each ndjson line must be a JSON object");
+            }
+        }
+
+        #[test]
+        fn ndjson_no_embedded_newlines(batch in arrow_test_utils::arb_record_batch()) {
+            let mut sink = make_sink();
+            sink.serialize_batch(&batch).expect("serialize_batch must succeed");
+
+            let newline_count = sink.batch_buf.iter().filter(|b| **b == b'\n').count();
+            prop_assert_eq!(newline_count, batch.num_rows(), "expected exactly one newline delimiter per row");
+
+            let mut lines = sink.batch_buf.split(|b| *b == b'\n').peekable();
+            while let Some(line) = lines.next() {
+                if line.is_empty() {
+                    prop_assert!(lines.peek().is_none(), "only trailing newline can produce empty segment");
+                    continue;
+                }
+
+                prop_assert!(!line.contains(&b'\n'), "ndjson line must not contain raw newline bytes");
+                serde_json::from_slice::<serde_json::Value>(line).expect("line must parse as JSON");
+            }
+        }
     }
 
     #[test]
