@@ -34,7 +34,9 @@ pub mod client;
 pub mod decompress;
 pub mod sqs;
 
+use std::collections::HashMap;
 use std::io;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, mpsc};
 
@@ -126,6 +128,8 @@ pub struct S3InputSettings {
     pub compression_override: Option<Compression>,
     /// `ListObjectsV2` polling interval in milliseconds.
     pub poll_interval_ms: u64,
+    /// Whether to track current object keys for `InputSource::source_paths()` snapshots.
+    pub should_expose_source_paths: bool,
 }
 
 impl std::fmt::Debug for S3InputSettings {
@@ -149,6 +153,10 @@ impl std::fmt::Debug for S3InputSettings {
             .field("visibility_timeout_secs", &self.visibility_timeout_secs)
             .field("compression_override", &self.compression_override)
             .field("poll_interval_ms", &self.poll_interval_ms)
+            .field(
+                "should_expose_source_paths",
+                &self.should_expose_source_paths,
+            )
             .finish()
     }
 }
@@ -173,6 +181,7 @@ impl S3InputSettings {
         visibility_timeout_secs: Option<u32>,
         compression_override: Option<Compression>,
         poll_interval_ms: Option<u64>,
+        should_expose_source_paths: bool,
     ) -> Result<Self, String> {
         let access_key_id = access_key_id
             .or_else(|| std::env::var("AWS_ACCESS_KEY_ID").ok())
@@ -219,6 +228,7 @@ impl S3InputSettings {
                 .max(MIN_SQS_VISIBILITY_TIMEOUT_SECS),
             compression_override,
             poll_interval_ms: poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS).max(1),
+            should_expose_source_paths,
         })
     }
 }
@@ -232,6 +242,9 @@ pub struct S3Input {
     health: Arc<AtomicU8>,
     is_running: Arc<AtomicBool>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
+    should_expose_source_paths: bool,
+    active_source_paths: HashMap<SourceId, PathBuf>,
+    poll_source_paths: HashMap<SourceId, PathBuf>,
 }
 
 // ── Internal types ─────────────────────────────────────────────────────────
@@ -241,9 +254,20 @@ struct ChunkPayload {
     accounted_bytes: u64,
     /// S3 key hashed to SourceId so FramedInput maintains per-object parser state.
     source_id: SourceId,
+    /// S3 object key for source metadata. Present on the first chunk of an
+    /// object when public source path snapshots are configured.
+    source_path: Option<String>,
     /// When true, this signals end-of-file for the source_id so that
     /// FramedInput flushes any trailing partial line.
     is_eof: bool,
+}
+
+#[derive(Clone, Copy)]
+struct FetchOptions {
+    part_size: u64,
+    max_fetches: usize,
+    compression_override: Option<Compression>,
+    should_expose_source_paths: bool,
 }
 
 /// A unit of work: one S3 object to fetch.
@@ -328,6 +352,7 @@ impl S3Input {
         let visibility_timeout = settings.visibility_timeout_secs;
         let poll_interval_ms = settings.poll_interval_ms;
         let compression_override = settings.compression_override;
+        let should_expose_source_paths = settings.should_expose_source_paths;
         let bucket = settings.bucket.clone();
         let prefix = settings.prefix.clone();
         let start_after_init = settings.start_after.clone();
@@ -430,6 +455,7 @@ impl S3Input {
                         part_size,
                         max_fetches,
                         compression_override,
+                        should_expose_source_paths,
                         Arc::clone(&is_running_bg),
                         Arc::clone(&health_bg),
                         name_bg.clone(),
@@ -452,6 +478,9 @@ impl S3Input {
             health,
             is_running,
             thread_handle: Some(handle),
+            should_expose_source_paths,
+            active_source_paths: HashMap::new(),
+            poll_source_paths: HashMap::new(),
         })
     }
 }
@@ -462,6 +491,7 @@ impl InputSource for S3Input {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
         let mut events = Vec::with_capacity(MAX_DRAIN_PER_POLL);
         let mut drained = 0usize;
+        self.poll_source_paths.clear();
         let Some(ref rx) = self.rx else {
             return Ok(events);
         };
@@ -470,6 +500,20 @@ impl InputSource for S3Input {
                 break;
             };
             drained += 1;
+            if self.should_expose_source_paths {
+                if let Some(source_path) = payload.source_path {
+                    self.active_source_paths
+                        .entry(payload.source_id)
+                        .or_insert_with(|| PathBuf::from(source_path));
+                }
+                if (!payload.bytes.is_empty() || payload.is_eof)
+                    && let Some(source_path) = self.active_source_paths.get(&payload.source_id)
+                {
+                    self.poll_source_paths
+                        .entry(payload.source_id)
+                        .or_insert_with(|| source_path.clone());
+                }
+            }
             // Only emit Data when there are actual bytes — EOF-only markers
             // carry empty bytes and sending them would cause the checkpoint
             // tracker to panic on `n_bytes == 0`.
@@ -484,6 +528,7 @@ impl InputSource for S3Input {
                 events.push(InputEvent::EndOfFile {
                     source_id: Some(payload.source_id),
                 });
+                self.active_source_paths.remove(&payload.source_id);
             }
         }
         Ok(events)
@@ -495,6 +540,13 @@ impl InputSource for S3Input {
 
     fn health(&self) -> ComponentHealth {
         ComponentHealth::from_repr(self.health.load(Ordering::Relaxed))
+    }
+
+    fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
+        self.poll_source_paths
+            .iter()
+            .map(|(source_id, path)| (*source_id, path.clone()))
+            .collect()
     }
 }
 
@@ -660,8 +712,7 @@ async fn run_list_discovery(
     let mut in_flight: std::collections::HashSet<String> = std::collections::HashSet::new();
     // Per-key failure counter. Keys exceeding MAX_KEY_FAILURES are promoted
     // to completed_set so the watermark cursor can advance past them.
-    let mut failure_counts: std::collections::HashMap<String, u32> =
-        std::collections::HashMap::new();
+    let mut failure_counts: HashMap<String, u32> = HashMap::new();
 
     while is_running.load(Ordering::Relaxed) {
         let mut continuation: Option<String> = None;
@@ -824,6 +875,7 @@ async fn run_orchestrator(
     part_size: u64,
     max_fetches: usize,
     compression_override: Option<Compression>,
+    should_expose_source_paths: bool,
     is_running: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
     name: String,
@@ -836,6 +888,12 @@ async fn run_orchestrator(
     // share the same SourceId and corrupt FramedInput state.
     let fetching_keys: Arc<tokio::sync::Mutex<std::collections::HashSet<String>>> =
         Arc::new(tokio::sync::Mutex::new(std::collections::HashSet::new()));
+    let fetch_options = FetchOptions {
+        part_size,
+        max_fetches,
+        compression_override,
+        should_expose_source_paths,
+    };
 
     while is_running.load(Ordering::Relaxed) {
         let work = tokio::select! {
@@ -916,9 +974,7 @@ async fn run_orchestrator(
                     Arc::clone(&s3),
                     &work.key,
                     work.size,
-                    part_size,
-                    max_fetches,
-                    compression_override,
+                    fetch_options,
                     out_tx.clone(),
                 )
                 .await
@@ -1020,16 +1076,14 @@ async fn fetch_object(
     s3: Arc<S3Client>,
     key: &str,
     mut size: u64,
-    part_size: u64,
-    max_fetches: usize,
-    compression_override: Option<Compression>,
+    options: FetchOptions,
     out_tx: mpsc::SyncSender<ChunkPayload>,
 ) -> io::Result<()> {
     use tokio::io::AsyncReadExt;
 
     // If size is unknown (0 from SQS notification) or no compression override,
     // issue a HEAD to discover metadata (content-encoding, content-type, size).
-    let (content_encoding, content_type) = if compression_override.is_none() || size == 0 {
+    let (content_encoding, content_type) = if options.compression_override.is_none() || size == 0 {
         match s3.head_object_metadata(key).await {
             Ok(meta) => {
                 if size == 0 {
@@ -1046,13 +1100,13 @@ async fn fetch_object(
         (None, None)
     };
 
-    let compression = compression_override.unwrap_or_else(|| {
+    let compression = options.compression_override.unwrap_or_else(|| {
         detect_compression(key, content_encoding.as_deref(), content_type.as_deref())
     });
 
     // Uncompressed objects with known size: parallel range-GET streaming.
     if compression == Compression::None && size > 0 {
-        return fetch_parallel_stream(s3, key, size, part_size, max_fetches, out_tx).await;
+        return fetch_parallel_stream(s3, key, size, options, out_tx).await;
     }
 
     // Compressed (or unknown-size): single GET → streaming decompress → chunks.
@@ -1082,6 +1136,7 @@ async fn fetch_object(
                             bytes: Vec::new(),
                             accounted_bytes: 0,
                             source_id,
+                            source_path: None,
                             is_eof: true,
                         };
                         let tx = out_tx.clone();
@@ -1101,7 +1156,8 @@ async fn fetch_object(
         // Only charge accounted_bytes on the first chunk to avoid inflation.
         // Use the S3 wire size (from HEAD / SQS notification) rather than
         // decompressed bytes so bandwidth metrics reflect actual transfer.
-        let ab = if first {
+        let is_first_chunk = first;
+        let ab = if is_first_chunk {
             first = false;
             size
         } else {
@@ -1116,6 +1172,11 @@ async fn fetch_object(
             bytes: buf[..filled].to_vec(),
             accounted_bytes: ab,
             source_id,
+            source_path: if options.should_expose_source_paths && is_first_chunk {
+                Some(key.to_string())
+            } else {
+                None
+            },
             is_eof: eof_reached,
         };
         let tx = out_tx.clone();
@@ -1138,6 +1199,7 @@ async fn fetch_object(
             bytes: Vec::new(),
             accounted_bytes: 0,
             source_id,
+            source_path: None,
             is_eof: true,
         };
         let tx = out_tx.clone();
@@ -1158,8 +1220,7 @@ async fn fetch_parallel_stream(
     s3: Arc<S3Client>,
     key: &str,
     size: u64,
-    part_size: u64,
-    max_fetches: usize,
+    options: FetchOptions,
     out_tx: mpsc::SyncSender<ChunkPayload>,
 ) -> io::Result<()> {
     use futures_util::{StreamExt, stream};
@@ -1170,7 +1231,7 @@ async fn fetch_parallel_stream(
     let mut ranges: Vec<(u64, u64)> = Vec::new();
     let mut offset: u64 = 0;
     while offset < size {
-        let end = (offset + part_size - 1).min(size - 1);
+        let end = (offset + options.part_size - 1).min(size - 1);
         ranges.push((offset, end));
         offset = end + 1;
     }
@@ -1180,6 +1241,7 @@ async fn fetch_parallel_stream(
             bytes: Vec::new(),
             accounted_bytes: 0,
             source_id,
+            source_path: None,
             is_eof: true,
         };
         let send_result = tokio::task::spawn_blocking(move || out_tx.send(payload))
@@ -1213,7 +1275,7 @@ async fn fetch_parallel_stream(
                 Err(last_err.expect("last_err is Some when all attempts fail"))
             }
         })
-        .buffered(max_fetches.max(1));
+        .buffered(options.max_fetches.max(1));
 
     // Deliver pre-loaded parts in order, chunking into OUTPUT_CHUNK_SIZE.
     let mut first_chunk = true;
@@ -1226,6 +1288,7 @@ async fn fetch_parallel_stream(
                         bytes: Vec::new(),
                         accounted_bytes: 0,
                         source_id,
+                        source_path: None,
                         is_eof: true,
                     };
                     let tx = out_tx.clone();
@@ -1239,7 +1302,8 @@ async fn fetch_parallel_stream(
         let mut pos = 0;
         while pos < data.len() {
             let end = (pos + OUTPUT_CHUNK_SIZE).min(data.len());
-            let ab = if first_chunk {
+            let is_first_chunk = first_chunk;
+            let ab = if is_first_chunk {
                 first_chunk = false;
                 size
             } else {
@@ -1249,6 +1313,11 @@ async fn fetch_parallel_stream(
                 bytes: data[pos..end].to_vec(),
                 accounted_bytes: ab,
                 source_id,
+                source_path: if options.should_expose_source_paths && is_first_chunk {
+                    Some(key.to_string())
+                } else {
+                    None
+                },
                 is_eof: false,
             };
             let tx = out_tx.clone();
@@ -1267,6 +1336,7 @@ async fn fetch_parallel_stream(
         bytes: Vec::new(),
         accounted_bytes: 0,
         source_id,
+        source_path: None,
         is_eof: true,
     };
     let tx = out_tx.clone();
@@ -1301,9 +1371,16 @@ pub async fn fetch_parallel_stream_bench(
     let (tx, rx) = mpsc::sync_channel::<ChunkPayload>(16);
     let key_owned = key.to_string();
     let s3c = Arc::clone(&s3);
-    let handle = tokio::spawn(async move {
-        fetch_parallel_stream(s3c, &key_owned, size, part_size, max_fetches, tx).await
-    });
+    let options = FetchOptions {
+        part_size,
+        max_fetches,
+        compression_override: None,
+        should_expose_source_paths: false,
+    };
+    let handle =
+        tokio::spawn(
+            async move { fetch_parallel_stream(s3c, &key_owned, size, options, tx).await },
+        );
     let mut total = 0usize;
     while let Ok(chunk) = rx.recv() {
         total += chunk.bytes.len();
@@ -1378,4 +1455,147 @@ async fn fetch_parallel_buffered(
         out.extend_from_slice(&part);
     }
     Ok(out.freeze())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_input(rx: mpsc::Receiver<ChunkPayload>, should_expose_source_paths: bool) -> S3Input {
+        S3Input {
+            name: "s3-test".to_string(),
+            rx: Some(rx),
+            health: Arc::new(AtomicU8::new(ComponentHealth::Healthy.as_repr())),
+            is_running: Arc::new(AtomicBool::new(true)),
+            thread_handle: None,
+            should_expose_source_paths,
+            active_source_paths: HashMap::new(),
+            poll_source_paths: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn poll_exposes_current_object_key_as_source_path_when_enabled() {
+        let (tx, rx) = mpsc::sync_channel(2);
+        let key = "logs/app/2026-04-20.json";
+        let source_id = source_id_from_key(key);
+        tx.send(ChunkPayload {
+            bytes: b"{\"msg\":\"hello\"}\n".to_vec(),
+            accounted_bytes: 16,
+            source_id,
+            source_path: Some(key.to_string()),
+            is_eof: false,
+        })
+        .expect("send chunk");
+
+        let mut input = test_input(rx, true);
+        let events = input.poll().expect("poll");
+        assert_eq!(events.len(), 1);
+        let InputEvent::Data {
+            source_id: event_source_id,
+            ..
+        } = &events[0]
+        else {
+            panic!("expected data event");
+        };
+        assert_eq!(*event_source_id, Some(source_id));
+
+        let paths = input.source_paths();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].0, source_id);
+        assert_eq!(paths[0].1, PathBuf::from(key));
+    }
+
+    #[test]
+    fn poll_keeps_s3_source_path_only_for_active_and_current_sources() {
+        let (tx, rx) = mpsc::sync_channel(2);
+        let key = "logs/app/split.json";
+        let source_id = source_id_from_key(key);
+        tx.send(ChunkPayload {
+            bytes: b"{\"part\":1}\n".to_vec(),
+            accounted_bytes: 11,
+            source_id,
+            source_path: Some(key.to_string()),
+            is_eof: false,
+        })
+        .expect("send first chunk");
+
+        let mut input = test_input(rx, true);
+        input.poll().expect("poll first chunk");
+        assert!(input.active_source_paths.contains_key(&source_id));
+
+        tx.send(ChunkPayload {
+            bytes: b"{\"part\":2}\n".to_vec(),
+            accounted_bytes: 0,
+            source_id,
+            source_path: None,
+            is_eof: true,
+        })
+        .expect("send final chunk");
+        input.poll().expect("poll final chunk");
+
+        let paths = input.source_paths();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].0, source_id);
+        assert_eq!(paths[0].1, PathBuf::from(key));
+        assert!(!input.active_source_paths.contains_key(&source_id));
+
+        input.poll().expect("empty poll clears current snapshot");
+        assert!(input.source_paths().is_empty());
+    }
+
+    #[test]
+    fn poll_exposes_source_path_for_eof_only_flush_when_active() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let key = "logs/app/partial-without-newline.json";
+        let source_id = source_id_from_key(key);
+        tx.send(ChunkPayload {
+            bytes: Vec::new(),
+            accounted_bytes: 0,
+            source_id,
+            source_path: None,
+            is_eof: true,
+        })
+        .expect("send eof");
+
+        let mut input = test_input(rx, true);
+        input
+            .active_source_paths
+            .insert(source_id, PathBuf::from(key));
+        let events = input.poll().expect("poll eof");
+        assert_eq!(events.len(), 1);
+        let InputEvent::EndOfFile {
+            source_id: eof_source_id,
+        } = events[0]
+        else {
+            panic!("expected eof event");
+        };
+        assert_eq!(eof_source_id, Some(source_id));
+
+        let paths = input.source_paths();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].0, source_id);
+        assert_eq!(paths[0].1, PathBuf::from(key));
+        assert!(!input.active_source_paths.contains_key(&source_id));
+    }
+
+    #[test]
+    fn poll_does_not_track_s3_source_paths_when_disabled() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let key = "logs/app/no-metadata.json";
+        let source_id = source_id_from_key(key);
+        tx.send(ChunkPayload {
+            bytes: b"{\"msg\":\"hello\"}\n".to_vec(),
+            accounted_bytes: 16,
+            source_id,
+            source_path: Some(key.to_string()),
+            is_eof: false,
+        })
+        .expect("send chunk");
+
+        let mut input = test_input(rx, false);
+        input.poll().expect("poll");
+        assert!(input.source_paths().is_empty());
+        assert!(input.active_source_paths.is_empty());
+    }
 }

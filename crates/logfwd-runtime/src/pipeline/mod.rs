@@ -51,8 +51,26 @@ use logfwd_output::SinkFactory;
 use logfwd_output::build_sink_factory_v2;
 use logfwd_output::{BatchMetadata, OnceAsyncFactory};
 use logfwd_types::pipeline::{PipelineMachine, Running, SourceId};
-use logfwd_types::source_metadata::SourceMetadataPlan;
+use logfwd_types::source_metadata::{SourceMetadataPlan, SourcePathColumn};
 use tokio_util::sync::CancellationToken;
+
+fn source_metadata_style_source_path(
+    style: logfwd_config::SourceMetadataStyle,
+) -> SourcePathColumn {
+    match style {
+        logfwd_config::SourceMetadataStyle::Ecs => SourcePathColumn::Ecs,
+        logfwd_config::SourceMetadataStyle::Otel => SourcePathColumn::Otel,
+        logfwd_config::SourceMetadataStyle::Vector => SourcePathColumn::Vector,
+        logfwd_config::SourceMetadataStyle::None
+        | logfwd_config::SourceMetadataStyle::Fastforward => SourcePathColumn::None,
+    }
+}
+
+fn source_metadata_style_needs_source_paths(style: logfwd_config::SourceMetadataStyle) -> bool {
+    source_metadata_style_source_path(style)
+        .to_column_name()
+        .is_some()
+}
 
 // ---------------------------------------------------------------------------
 // block_in_place shim for simulation

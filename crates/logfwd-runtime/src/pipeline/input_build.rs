@@ -3,8 +3,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bytes::BytesMut;
-#[cfg(test)]
-use logfwd_config::SourceMetadataStyle;
 use logfwd_config::{
     Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorProfileConfig,
     HostMetricsInputConfig, HttpMethodConfig, InputConfig, InputType, InputTypeConfig,
@@ -662,6 +660,7 @@ pub(super) fn build_input_state(
                     s3_cfg
                         .poll_interval_ms
                         .map(logfwd_config::PositiveMillis::get),
+                    super::source_metadata_style_needs_source_paths(cfg.source_metadata),
                 )
                 .map_err(|e| format!("input '{name}': {e}"))?;
 
@@ -772,6 +771,7 @@ pub(super) fn otlp_uses_structured_ingress(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use logfwd_config::SourceMetadataStyle;
 
     #[test]
     fn http_input_accepts_json_and_raw_formats() {
