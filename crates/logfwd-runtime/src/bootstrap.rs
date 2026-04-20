@@ -587,8 +587,7 @@ fn build_meter_provider(
         let interval_secs = config
             .server
             .metrics_interval_secs
-            .map(|v| v.get())
-            .unwrap_or(60);
+            .map_or(60, logfwd_config::PositiveSecs::get);
 
         let otlp_exporter = opentelemetry_otlp::MetricExporter::builder()
             .with_http()
