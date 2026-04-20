@@ -2010,20 +2010,31 @@ mod tests {
 
     #[test]
     fn first_poll_emits_network_data() {
-        // Some CI / container environments expose no network interfaces
-        // (e.g., sandboxes without `/proc/net/*`). Use an OS-level probe
-        // that is independent of `sysinfo` so the skip guard and the code
-        // under test do not share a common failure mode. Binding a UDP
-        // socket to the wildcard address succeeds only when the kernel has
-        // a usable network stack; connecting to a routable address further
-        // proves a non-loopback interface exists.
+        // Skip when the precondition the sensor relies on isn't met. Two
+        // independent checks, combined conservatively (skip if *either*
+        // rules out real interfaces):
+        //
+        // 1. `UdpSocket::bind(...).connect("192.0.2.1:1")` — probes whether
+        //    the kernel has a usable network stack at all. Cheap, OS-level,
+        //    catches "no network" sandboxes without touching /proc.
+        // 2. `sysinfo::Networks::new_with_refreshed_list()` — probes the
+        //    exact source the sensor reads. Some sandboxes grant sockets
+        //    but not `/proc/net/*`, so UDP can succeed while sysinfo stays
+        //    empty; guarding on sysinfo too keeps the test from silently
+        //    depending on an unmet precondition and re-hitting the original
+        //    "network_interface is null everywhere" failure.
         //
         // Silent skip — `print_stderr` is a workspace-level warn and the
         // other portability skips in this PR stay silent too.
-        let has_net_iface = std::net::UdpSocket::bind("0.0.0.0:0")
+        let kernel_net_ok = std::net::UdpSocket::bind("0.0.0.0:0")
             .and_then(|s| s.connect("192.0.2.1:1"))
             .is_ok();
-        if !has_net_iface {
+        if !kernel_net_ok {
+            return;
+        }
+        let mut iface_probe = sysinfo::Networks::new_with_refreshed_list();
+        iface_probe.refresh(true);
+        if iface_probe.iter().next().is_none() {
             return;
         }
 
