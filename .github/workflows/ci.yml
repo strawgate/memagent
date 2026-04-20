@@ -351,7 +351,7 @@ jobs:
   #   kani-core:      logfwd-core (97 proofs, heaviest — structural/otlp unwinds)
   #   kani-arrow:     logfwd-arrow (27 proofs, needs --lib flag)
   #   kani-periphery: remaining 6 crates (107 proofs, lightweight)
-  # Each shard uses kissat solver and --jobs 2 for intra-crate parallelism.
+  # Each shard uses kissat solver and --jobs 4 for intra-crate parallelism.
   # -------------------------------------------------------------------------
   kani-core:
     name: Kani proofs (core)
@@ -362,6 +362,8 @@ jobs:
       (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v6
 
@@ -375,7 +377,7 @@ jobs:
         with:
           args: >-
             --solver kissat
-            --jobs 2
+            --jobs 4
             --output-format terse
             -Z function-contracts
             -Z mem-predicates
@@ -391,6 +393,8 @@ jobs:
       (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v6
 
@@ -406,7 +410,7 @@ jobs:
         with:
           args: >-
             --solver kissat
-            --jobs 2
+            --jobs 4
             --output-format terse
             -Z function-contracts
             -Z mem-predicates
@@ -423,6 +427,8 @@ jobs:
       (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v6
 
@@ -436,7 +442,7 @@ jobs:
         with:
           args: >-
             --solver kissat
-            --jobs 2
+            --jobs 4
             --output-format terse
             -Z function-contracts
             -Z mem-predicates
