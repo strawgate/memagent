@@ -348,7 +348,7 @@ impl ElasticsearchSink {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "ES bulk error: all {} items rejected. First error: {}",
+                    "ES bulk error: all {} items rejected. Errors: {}",
                     result.permanent_errors.len(),
                     result.permanent_errors.join("; ")
                 ),
@@ -684,30 +684,40 @@ impl ElasticsearchSink {
                 )
             }
             SendAttempt::RetryAfter {
-                mut pending_rows,
+                pending_rows,
                 rejections,
                 accepted_rows,
                 delay,
             } => {
-                pending_rows.extend(right_rows);
-                SendAttempt::RetryAfter {
-                    pending_rows,
-                    rejections,
-                    accepted_rows,
-                    delay,
-                }
+                let right_result = self
+                    .send_batch_inner(&right, metadata, right_rows, depth + 1)
+                    .await;
+                Self::merge_split_attempts(
+                    SendAttempt::RetryAfter {
+                        pending_rows,
+                        rejections: Self::prefix_rejections("left split rejected", rejections),
+                        accepted_rows,
+                        delay,
+                    },
+                    Self::label_attempt_rejections("right split rejected", right_result),
+                )
             }
             SendAttempt::IoError {
-                mut pending_rows,
+                pending_rows,
                 rejections,
                 error,
             } => {
-                pending_rows.extend(right_rows);
-                SendAttempt::IoError {
-                    pending_rows,
-                    rejections,
-                    error,
-                }
+                let right_result = self
+                    .send_batch_inner(&right, metadata, right_rows, depth + 1)
+                    .await;
+                Self::merge_split_attempts(
+                    SendAttempt::IoError {
+                        pending_rows,
+                        rejections: Self::prefix_rejections("left split rejected", rejections),
+                        error,
+                    },
+                    Self::label_attempt_rejections("right split rejected", right_result),
+                )
             }
         }
     }
@@ -837,7 +847,7 @@ impl ElasticsearchSink {
                 SendAttempt::IoError {
                     pending_rows: right_rows,
                     rejections: right_rejections,
-                    ..
+                    error: right_error,
                 },
             ) => {
                 pending_rows.extend(right_rows);
@@ -845,7 +855,7 @@ impl ElasticsearchSink {
                 SendAttempt::IoError {
                     pending_rows,
                     rejections,
-                    error,
+                    error: Self::combine_io_errors(error, "right split IO error", right_error),
                 }
             }
             (
@@ -935,6 +945,10 @@ impl ElasticsearchSink {
                 delay,
             },
         }
+    }
+
+    fn combine_io_errors(left: io::Error, right_prefix: &str, right: io::Error) -> io::Error {
+        io::Error::new(left.kind(), format!("{left}; {right_prefix}: {right}"))
     }
 
     /// Convert permanent ES rejections from `Err` to `Ok(Rejected)` so they
@@ -3128,6 +3142,121 @@ mod tests {
         );
         left_mock.assert_async().await;
         right_mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn split_left_retry_right_ok_attempts_right_and_retries_only_left() {
+        use crate::sink::Sink;
+
+        let mut server = mockito::Server::new_async().await;
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec!["left-row", "right-row"]))],
+        )
+        .expect("test batch should be valid");
+        let metadata = zero_metadata();
+
+        let mut sizing_sink = ElasticsearchSink::new(
+            "test".to_string(),
+            test_es_config(&server.url(), "logs", usize::MAX),
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::default()),
+        );
+        sizing_sink
+            .serialize_batch(&batch, &metadata)
+            .expect("full batch should serialize");
+        let full_len = sizing_sink.batch_buf.len();
+        sizing_sink
+            .serialize_batch(&batch.slice(0, 1), &metadata)
+            .expect("left half should serialize");
+        let left_len = sizing_sink.batch_buf.len();
+        let left_body = String::from_utf8(sizing_sink.batch_buf.clone()).expect("utf8 body");
+        sizing_sink
+            .serialize_batch(&batch.slice(1, 1), &metadata)
+            .expect("right half should serialize");
+        let right_len = sizing_sink.batch_buf.len();
+        let split_threshold = left_len.max(right_len) + 1;
+        assert!(full_len > split_threshold);
+
+        let left_fail_mock = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::Regex("left-row".to_string()))
+            .with_status(429)
+            .with_body("too many requests")
+            .expect(1)
+            .create_async()
+            .await;
+        let right_ok_mock = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::Regex("right-row".to_string()))
+            .with_status(200)
+            .with_body(r#"{"took":1,"errors":false,"items":[{"index":{"status":201}}]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+        let left_retry_ok_mock = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::Exact(left_body))
+            .with_status(200)
+            .with_body(r#"{"took":1,"errors":false,"items":[{"index":{"status":201}}]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut sink = ElasticsearchSink::new(
+            "test".to_string(),
+            test_es_config(&server.url(), "logs", split_threshold),
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::default()),
+        );
+
+        let first = sink.send_batch(&batch, &metadata).await;
+        assert!(
+            matches!(first, crate::sink::SendResult::RetryAfter(_)),
+            "expected retry after left half failure, got {first:?}"
+        );
+        let second = sink.send_batch(&batch, &metadata).await;
+        assert!(
+            matches!(second, crate::sink::SendResult::Ok),
+            "expected Ok after subset retry of left half, got {second:?}"
+        );
+
+        left_fail_mock.assert_async().await;
+        right_ok_mock.assert_async().await;
+        left_retry_ok_mock.assert_async().await;
+    }
+
+    #[test]
+    fn merge_both_io_errors_keeps_right_error_context() {
+        let result = ElasticsearchSink::merge_split_attempts(
+            SendAttempt::IoError {
+                pending_rows: vec![0],
+                rejections: Vec::new(),
+                error: io::Error::other("left unavailable"),
+            },
+            SendAttempt::IoError {
+                pending_rows: vec![1],
+                rejections: Vec::new(),
+                error: io::Error::other("right unavailable"),
+            },
+        );
+
+        match result {
+            SendAttempt::IoError {
+                pending_rows,
+                error,
+                ..
+            } => {
+                assert_eq!(pending_rows, vec![0, 1]);
+                let message = error.to_string();
+                assert!(message.contains("left unavailable"), "got: {message}");
+                assert!(message.contains("right unavailable"), "got: {message}");
+            }
+            _ => panic!("expected IoError"),
+        }
     }
 
     // -----------------------------------------------------------------------

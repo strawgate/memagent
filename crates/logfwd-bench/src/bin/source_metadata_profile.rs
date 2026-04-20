@@ -3,6 +3,8 @@
 //! Run:
 //! `cargo run -p logfwd-bench --release --bin source_metadata_profile -- --rows 50000 --sources 300 --iterations 200`
 
+#![allow(clippy::print_stdout)]
+
 use std::alloc::System;
 use std::collections::HashMap;
 use std::sync::Arc;
