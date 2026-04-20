@@ -862,9 +862,9 @@ pub struct OutputConfig {
 }
 
 /// Deserializes an output config by trying V2 (typed) first, falling back to V1
-/// (legacy flat). Uses a visitor to consume the map from the original
-/// deserializer, preserving YAML source locations for error messages instead of
-/// round-tripping through an intermediate `serde_yaml_ng::Value`.
+/// (legacy flat). The source map is consumed into owned YAML value pairs so it
+/// can be replayed for each schema attempt, then both parse errors are reported
+/// together when neither schema matches.
 fn deserialize_output_with_fallback<'de, D, T>(
     deserializer: D,
     from_v2: impl FnOnce(OutputConfigV2) -> T,
