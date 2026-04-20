@@ -86,9 +86,6 @@ fn null_output_unsupported_field(output: &OutputConfig) -> Option<&'static str> 
     if output.port.is_some() {
         return Some("port");
     }
-    if output.write_legacy_ipc_format.is_some() {
-        return Some("write_legacy_ipc_format");
-    }
     if output.buffer_size_bytes.is_some() {
         return Some("buffer_size_bytes");
     }
