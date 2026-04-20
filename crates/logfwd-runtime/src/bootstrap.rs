@@ -11,6 +11,8 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+use logfwd_config::PositiveSecs;
+
 use crate::pipeline::Pipeline;
 
 /// Error returned while constructing or running the runtime orchestration shell.
@@ -587,8 +589,7 @@ fn build_meter_provider(
         let interval_secs = config
             .server
             .metrics_interval_secs
-            .map(|v| v.get())
-            .unwrap_or(60);
+            .map_or(60, PositiveSecs::get);
 
         let otlp_exporter = opentelemetry_otlp::MetricExporter::builder()
             .with_http()
