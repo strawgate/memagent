@@ -95,6 +95,24 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Benchmark-only dependencies stay isolated here unless also used by production or test crates | Cargo.toml + dependency review |
 | Source metadata benchmarks must keep raw JSON metadata injection only as a historical comparison baseline, never as production guidance | Code review |
 
+## logfwd-lint-attrs
+
+| Rule | Enforcement |
+|------|-------------|
+| Proc-macro crate only. Exports attribute markers (`#[hot_path]` today, `#[cancel_safe]` / `#[no_panic]` / `#[checkpoint_ordered]` planned) consumed by the dylint lint library | Architecture |
+| All attributes must be compile-time no-ops: the function/item behaves identically with or without the attribute | Code review |
+| May not depend on any other logfwd crate | Cargo.toml |
+
+## logfwd-lints
+
+| Rule | Enforcement |
+|------|-------------|
+| Excluded from the main workspace (`Cargo.toml` `exclude` list). Pins its own rustc nightly via `rust-toolchain` and links against `rustc-private` crates | Workspace config |
+| Dylint library — compiled as `cdylib`, invoked via `cargo dylint` (wrapped by `just dylint`) | Architecture |
+| Every lint that expects a source-level marker looks for the marker the corresponding attribute in `logfwd-lint-attrs` emits (e.g., `#[doc = "__logfwd_hot_path__"]`), because proc-macro attributes are stripped before HIR | Code review |
+| Every new lint adds an entry to the lint table in `dev-docs/CODE_STYLE.md` → *Semantic lints (dylint)* and to `crates/logfwd-lints/README.md` | Code review |
+| CI integration via `just dylint` (not yet on mandatory path — see roadmap) | `justfile` |
+
 ## logfwd-runtime
 
 | Rule | Enforcement |

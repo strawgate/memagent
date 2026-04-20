@@ -134,6 +134,13 @@ test:
 test-all:
     LOGFWD_DISABLE_DEFAULT_CHECKPOINTS=1 cargo nextest run --workspace --profile ci
 
+# Run semantic lints via dylint (hot_path_no_alloc, and any future
+# semantic lints defined in crates/logfwd-lints/).
+# Requires: cargo install --locked cargo-dylint dylint-link
+#           rustup toolchain install nightly-2025-09-18 --component llvm-tools-preview --component rustc-dev
+dylint:
+    cargo dylint --path crates/logfwd-lints -- --workspace
+
 # Run required Kani formal verification proofs for production crates
 # Requires: cargo install --locked kani-verifier && cargo kani setup
 kani:

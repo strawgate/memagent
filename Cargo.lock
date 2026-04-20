@@ -2898,6 +2898,7 @@ dependencies = [
  "arrow",
  "bytes",
  "logfwd-core",
+ "logfwd-lint-attrs",
  "logfwd-types",
  "proptest",
  "serial_test",
@@ -3086,6 +3087,10 @@ dependencies = [
  "xxhash-rust",
  "zstd",
 ]
+
+[[package]]
+name = "logfwd-lint-attrs"
+version = "0.1.0"
 
 [[package]]
 name = "logfwd-otap-proto"

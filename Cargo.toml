@@ -16,6 +16,7 @@ members = [
     "crates/logfwd-bench",
     "crates/logfwd-competitive-bench",
     "crates/logfwd-test-utils",
+    "crates/logfwd-lint-attrs",
     "crates/logfwd-ebpf-proto",
     "crates/logfwd-ebpf-proto/sensor-ebpf",
     "crates/logfwd-ebpf-proto/sensor-ebpf/sensor-ebpf-common",
@@ -25,6 +26,10 @@ members = [
 # It is intentionally excluded from the workspace.
 exclude = [
     "crates/logfwd-ebpf-proto/sensor-ebpf/sensor-ebpf-kern",
+    # logfwd-lints pins a specific rustc nightly and links against
+    # rustc-private crates. It is invoked via `cargo dylint`, not the
+    # regular workspace build.
+    "crates/logfwd-lints",
 ]
 # default-members: crates that compile without datafusion (~30s vs ~3min).
 # Bare `cargo check/clippy` uses these. Use `--workspace` or `-p logfwd`
