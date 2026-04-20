@@ -2,17 +2,18 @@
 // Highway backpressure animation — multi-route layout.
 // Two sources feed a highway; all cars exit via a ramp with a traffic light.
 // When the exit backs up, it cascades: exit → highway → on-ramp.
-// Logic lives in highway-sim.mjs; this file is UI/rendering only.
+// Logic lives in graph/engine modules; this file is UI/rendering only.
+import { PATHS } from './highway-graph.mjs';
 ---
 
 <div class="hw" id="highway-bp">
   <div class="hw-scene">
     <svg class="hw-svg" viewBox="0 0 800 300" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
       <defs>
-        <path id="hw-path-ramp" d="M 30,255 C 30,235 180,100 220,100" fill="none" />
-        <path id="hw-path-hwy" d="M 30,100 L 560,100" fill="none" />
-        <path id="hw-path-exit" d="M 560,100 C 600,100 730,175 730,255" fill="none" />
-        <path id="hw-path-cont" d="M 560,100 L 775,100" fill="none" />
+        <path id="hw-path-ramp" d={PATHS.ramp} fill="none" />
+        <path id="hw-path-hwy" d={PATHS.highway} fill="none" />
+        <path id="hw-path-exit" d={PATHS.exit} fill="none" />
+        <path id="hw-path-cont" d={PATHS.cont} fill="none" />
       </defs>
 
       <!-- Highway road surface (full width including continuation) -->
@@ -29,12 +30,12 @@
       </g>
 
       <!-- On-ramp road surface -->
-      <path d="M 30,255 C 30,235 180,100 220,100" fill="none" stroke="var(--hw-road)" stroke-width="28" stroke-linecap="round" />
-      <path d="M 30,255 C 30,235 180,100 220,100" fill="none" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="6,8" />
+      <path d={PATHS.ramp} fill="none" stroke="var(--hw-road)" stroke-width="28" stroke-linecap="round" />
+      <path d={PATHS.ramp} fill="none" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="6,8" />
 
       <!-- Exit ramp road surface -->
-      <path d="M 560,100 C 600,100 730,175 730,255" fill="none" stroke="var(--hw-road)" stroke-width="28" stroke-linecap="round" />
-      <path d="M 560,100 C 600,100 730,175 730,255" fill="none" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="6,8" />
+      <path d={PATHS.exit} fill="none" stroke="var(--hw-road)" stroke-width="28" stroke-linecap="round" />
+      <path d={PATHS.exit} fill="none" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="6,8" />
 
       <!-- Fork marker -->
       <line x1="560" y1="84" x2="560" y2="116" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.35" />
