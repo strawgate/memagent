@@ -21,7 +21,7 @@ where
         type Value = Vec<T>;
 
         fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-            formatter.write_str("a mapping or a sequence of mappings")
+            formatter.write_str("a value or a sequence of values")
         }
 
         fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>

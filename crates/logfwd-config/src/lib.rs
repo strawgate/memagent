@@ -3001,23 +3001,29 @@ format: json
             (
                 "type: otlp\nendpoint: http://localhost:4318/v1/logs\nprotocol: websocket\n",
                 "websocket",
+                &["http", "grpc"][..],
             ),
             (
                 "type: otlp\nendpoint: http://localhost:4318/v1/logs\ncompression: lz4\n",
                 "lz4",
+                &["gzip", "zstd", "none"][..],
             ),
             (
                 "type: elasticsearch\nendpoint: http://localhost:9200\nrequest_mode: fancy\n",
                 "fancy",
+                &["buffered", "streaming"][..],
             ),
         ];
 
-        for (yaml, bad_value) in cases {
+        for (yaml, bad_value, expected_variants) in cases {
             let err = serde_yaml_ng::from_str::<OutputConfigV2>(yaml).unwrap_err();
             let msg = err.to_string();
             assert!(
-                msg.contains(bad_value) && msg.contains("unknown variant"),
-                "expected enum parse rejection for {bad_value}: {msg}"
+                msg.contains(bad_value)
+                    && expected_variants
+                        .iter()
+                        .all(|variant| msg.contains(variant)),
+                "expected enum parse rejection mentioning {bad_value} and valid variants {expected_variants:?}: {msg}"
             );
         }
     }
