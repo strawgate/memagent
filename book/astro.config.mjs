@@ -74,6 +74,7 @@ export default defineConfig({
           items: [
             { label: "Contributing", slug: "development/contributing" },
             { label: "Benchmarking", slug: "development/benchmarking" },
+            { label: "Project Health", slug: "development/project-health" },
           ],
         },
       ],

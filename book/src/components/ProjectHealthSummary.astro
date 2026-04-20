@@ -1,0 +1,288 @@
+---
+interface Props {
+  title?: string;
+  description?: string;
+  showDocsLink?: boolean;
+}
+
+const {
+  title = "Project Health at a Glance",
+  description = "Live repository metrics from FastForward's octo11y-backed health workflow.",
+  showDocsLink = false,
+} = Astro.props;
+
+const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+const dashboardHref = `${base}/bench/project-health.html`;
+const docsHref = `${base}/development/project-health/`;
+---
+
+<section
+  class="ph-summary"
+  data-source-base="https://raw.githubusercontent.com/strawgate/fastforward/bench-data/data/series"
+  data-dashboard-href={dashboardHref}
+  data-docs-href={docsHref}
+>
+  <div class="ph-summary-head">
+    <div>
+      <h2>{title}</h2>
+      <p>{description}</p>
+    </div>
+    <div class="ph-summary-actions">
+      {showDocsLink && (
+        <a class="ph-summary-link" href={docsHref}>
+          Read the docs
+        </a>
+      )}
+      <a class="ph-summary-link ph-summary-link-primary" href={dashboardHref}>
+        Open full dashboard
+      </a>
+    </div>
+  </div>
+
+  <div class="ph-summary-grid">
+    <article class="ph-card" data-metric="workflow-success-pct" data-label="Workflow success">
+      <span class="ph-card-label">Workflow success</span>
+      <strong class="ph-card-value">—</strong>
+      <span class="ph-card-delta">Loading…</span>
+    </article>
+    <article class="ph-card" data-metric="open-issues" data-label="Open issues">
+      <span class="ph-card-label">Open issues</span>
+      <strong class="ph-card-value">—</strong>
+      <span class="ph-card-delta">Loading…</span>
+    </article>
+    <article class="ph-card" data-metric="open-prs" data-label="Open PRs">
+      <span class="ph-card-label">Open PRs</span>
+      <strong class="ph-card-value">—</strong>
+      <span class="ph-card-delta">Loading…</span>
+    </article>
+    <article class="ph-card" data-metric="stars" data-label="Stars">
+      <span class="ph-card-label">Stars</span>
+      <strong class="ph-card-value">—</strong>
+      <span class="ph-card-delta">Loading…</span>
+    </article>
+    <article class="ph-card" data-metric="rust_crate_count" data-label="Rust crates">
+      <span class="ph-card-label">Rust crates</span>
+      <strong class="ph-card-value">—</strong>
+      <span class="ph-card-delta">Loading…</span>
+    </article>
+    <article class="ph-card" data-metric="total_lines_of_code" data-label="Total LOC">
+      <span class="ph-card-label">Total LOC</span>
+      <strong class="ph-card-value">—</strong>
+      <span class="ph-card-delta">Loading…</span>
+    </article>
+  </div>
+</section>
+
+<style is:global>
+  .ph-summary {
+    margin: 2rem 0 0;
+    padding: 1rem 1.1rem 1.15rem;
+    border: 1px solid var(--sl-color-hairline);
+    border-radius: 12px;
+    background:
+      linear-gradient(135deg, color-mix(in srgb, var(--sl-color-accent) 10%, var(--sl-color-bg)) 0%, var(--sl-color-bg-sidebar) 100%);
+  }
+
+  .ph-summary-head {
+    display: flex;
+    gap: 1rem;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 1rem;
+  }
+
+  .ph-summary-head h2 {
+    margin: 0;
+    font-size: 1.05rem;
+  }
+
+  .ph-summary-head p {
+    margin: 0.25rem 0 0;
+    color: var(--sl-color-gray-3);
+    font-size: 0.8rem;
+    line-height: 1.5;
+    max-width: 44rem;
+  }
+
+  .ph-summary-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    justify-content: flex-end;
+  }
+
+  .ph-summary-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.45rem 0.8rem;
+    border-radius: 999px;
+    border: 1px solid var(--sl-color-hairline);
+    color: var(--sl-color-text);
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-decoration: none;
+    background: var(--sl-color-bg-sidebar);
+  }
+
+  .ph-summary-link:hover {
+    border-color: var(--sl-color-accent);
+    background: color-mix(in srgb, var(--sl-color-accent) 8%, var(--sl-color-bg-sidebar));
+  }
+
+  .ph-summary-link-primary {
+    border-color: color-mix(in srgb, var(--sl-color-accent) 55%, var(--sl-color-hairline));
+  }
+
+  .ph-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+
+  .ph-card {
+    min-width: 0;
+    padding: 0.8rem 0.9rem 0.85rem;
+    border-radius: 10px;
+    border: 1px solid var(--sl-color-hairline);
+    background: color-mix(in srgb, var(--sl-color-bg-sidebar) 92%, white 8%);
+  }
+
+  .ph-card-label {
+    display: block;
+    color: var(--sl-color-gray-3);
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+  }
+
+  .ph-card-value {
+    display: block;
+    margin-top: 0.4rem;
+    color: var(--sl-color-text);
+    font-size: 1.2rem;
+    line-height: 1.1;
+  }
+
+  .ph-card-delta {
+    display: block;
+    margin-top: 0.35rem;
+    color: var(--sl-color-gray-3);
+    font-size: 0.72rem;
+    line-height: 1.35;
+  }
+
+  .ph-card-delta.good { color: #1d9b63; }
+  .ph-card-delta.bad { color: #d34b4b; }
+  .ph-card-delta.flat { color: var(--sl-color-gray-3); }
+
+  @media (max-width: 1100px) {
+    .ph-summary-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 800px) {
+    .ph-summary {
+      padding: 0.9rem;
+    }
+
+    .ph-summary-head {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .ph-summary-actions {
+      justify-content: flex-start;
+    }
+
+    .ph-summary-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 520px) {
+    .ph-summary-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
+
+<script>
+  (function () {
+    const roots = Array.from(document.querySelectorAll(".ph-summary[data-source-base]"));
+    if (roots.length === 0) return;
+
+    const config = {
+      "workflow-success-pct": { direction: "up", format: "percent" },
+      "open-issues": { direction: "down", format: "integer" },
+      "open-prs": { direction: "down", format: "integer" },
+      stars: { direction: "up", format: "integer" },
+      rust_crate_count: { direction: "up", format: "integer" },
+      total_lines_of_code: { direction: "up", format: "compact" },
+    };
+
+    function getFirstSeries(doc) {
+      if (!doc || typeof doc !== "object" || !doc.series || typeof doc.series !== "object") return [];
+      const first = Object.values(doc.series)[0];
+      return first && typeof first === "object" && Array.isArray(first.points) ? first.points : [];
+    }
+
+    function formatValue(metric, value) {
+      if (!Number.isFinite(value)) return "—";
+      if (config[metric]?.format === "percent") return `${value.toFixed(1)}%`;
+      if (config[metric]?.format === "compact") {
+        return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value);
+      }
+      return Number.isInteger(value) ? value.toLocaleString("en") : value.toFixed(1);
+    }
+
+    function deltaText(metric, latest, previous) {
+      if (!Number.isFinite(latest) || !Number.isFinite(previous)) {
+        return { text: "Waiting for another data point", klass: "flat" };
+      }
+      const delta = latest - previous;
+      if (delta === 0) return { text: "No change from previous run", klass: "flat" };
+      const improved = (config[metric]?.direction || "up") === "up" ? delta > 0 : delta < 0;
+      const sign = delta > 0 ? "+" : "";
+      return {
+        text: `${sign}${formatValue(metric, delta)} vs previous run`,
+        klass: improved ? "good" : "bad",
+      };
+    }
+
+    async function init(root) {
+      if (root.dataset.loaded === "true") return;
+      root.dataset.loaded = "true";
+      const cards = Array.from(root.querySelectorAll(".ph-card[data-metric]"));
+      const sourceBase = root.dataset.sourceBase.replace(/\/$/, "");
+
+      await Promise.all(cards.map(async (card) => {
+        const metric = card.dataset.metric;
+        const valueEl = card.querySelector(".ph-card-value");
+        const deltaEl = card.querySelector(".ph-card-delta");
+        try {
+          const response = await fetch(`${sourceBase}/${metric}.json`);
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const doc = await response.json();
+          const points = getFirstSeries(doc);
+          const latest = points.at(-1)?.value;
+          const previous = points.at(-2)?.value;
+          valueEl.textContent = formatValue(metric, latest);
+          const delta = deltaText(metric, latest, previous);
+          deltaEl.textContent = delta.text;
+          deltaEl.classList.remove("good", "bad", "flat");
+          deltaEl.classList.add(delta.klass);
+        } catch {
+          valueEl.textContent = "—";
+          deltaEl.textContent = "Project health data not available yet";
+          deltaEl.classList.remove("good", "bad");
+          deltaEl.classList.add("flat");
+        }
+      }));
+    }
+
+    roots.forEach(init);
+  })();
+</script>

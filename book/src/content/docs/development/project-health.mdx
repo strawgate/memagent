@@ -1,0 +1,39 @@
+---
+title: "Project Health"
+description: "Repository-level health metrics for FastForward"
+---
+
+import ProjectHealthSummary from "../../../components/ProjectHealthSummary.astro";
+
+export const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+# Project Health
+
+FastForward publishes repository-level health metrics alongside its benchmark and diagnostics surfaces. This gives us a lightweight way to track delivery quality, backlog shape, and codebase growth over time.
+
+<ProjectHealthSummary
+  title="Live project health summary"
+  description="These cards are sourced from the octo11y-backed Project Health workflow and read from the repository's bench-data branch."
+/>
+
+## What this tracks
+
+- **Community signal** — stars and watchers
+- **Backlog shape** — open issues and PRs
+- **Delivery health** — workflow success rate
+- **Codebase scale** — Rust crate count and total lines of code
+
+## Full dashboard
+
+For trends, comparisons, and the full metric set, open the <a href={`${base}/bench/project-health.html`}>Project Health dashboard</a>.
+
+## Data flow
+
+The `Project Health` GitHub Actions workflow collects:
+
+- GitHub repository stats via octo11y `repo-stats`
+- codebase size via `tokei`
+- workspace crate count and dependency count from the Rust workspace
+- average CI build duration from recent workflow history
+
+Those metrics are written to `bench-data`, aggregated into series JSON, and then rendered both here and in the full `/bench/` dashboard.
