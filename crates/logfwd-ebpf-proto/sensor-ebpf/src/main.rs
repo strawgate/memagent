@@ -34,8 +34,11 @@ struct PodEbpfConfig(EbpfConfig);
 // SAFETY: EbpfConfig is repr(C), Copy, and contains only primitive types (u32).
 unsafe impl aya::Pod for PodEbpfConfig {}
 
-const SCHED_PROCESS_EXIT_TRACEPOINT_FORMAT_PATH: &str =
-    "/sys/kernel/tracing/events/sched/sched_process_exit/format";
+/// Tracefs paths to probe for the sched_process_exit format file.
+const SCHED_PROCESS_EXIT_FORMAT_PATHS: &[&str] = &[
+    "/sys/kernel/tracing/events/sched/sched_process_exit/format",
+    "/sys/kernel/debug/tracing/events/sched/sched_process_exit/format",
+];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -804,11 +807,42 @@ fn find_exit_code_offset() -> Result<u32, Box<dyn std::error::Error>> {
 }
 
 fn find_sched_process_exit_group_dead_offset() -> Result<Option<u32>, Box<dyn std::error::Error>> {
-    let format_text = std::fs::read_to_string(SCHED_PROCESS_EXIT_TRACEPOINT_FORMAT_PATH)?;
-    Ok(parse_tracepoint_field_offset(&format_text, "group_dead"))
+    let format_text = read_tracepoint_format()?;
+    let Some(field) = parse_tracepoint_field(&format_text, "group_dead") else {
+        return Ok(None);
+    };
+    if field.size == 0 || field.size > 4 {
+        eprintln!(
+            "  WARNING: sched_process_exit.group_dead has unexpected size {}; disabling",
+            field.size
+        );
+        return Ok(None);
+    }
+    if field.size != 1 {
+        eprintln!(
+            "  NOTE: sched_process_exit.group_dead size is {} (not 1); reading as u8 from first byte",
+            field.size
+        );
+    }
+    Ok(Some(field.offset))
 }
 
-fn parse_tracepoint_field_offset(format_text: &str, field_name: &str) -> Option<u32> {
+fn read_tracepoint_format() -> Result<String, Box<dyn std::error::Error>> {
+    for path in SCHED_PROCESS_EXIT_FORMAT_PATHS {
+        match std::fs::read_to_string(path) {
+            Ok(text) => return Ok(text),
+            Err(e) => eprintln!("  tracefs path {path} unavailable: {e}"),
+        }
+    }
+    Err("failed to read sched_process_exit tracepoint format from any tracefs path".into())
+}
+
+struct TracepointField {
+    offset: u32,
+    size: u32,
+}
+
+fn parse_tracepoint_field(format_text: &str, field_name: &str) -> Option<TracepointField> {
     for line in format_text.lines() {
         let trimmed = line.trim();
         if !trimmed.starts_with("field:") || !trimmed.contains("offset:") {
@@ -828,17 +862,20 @@ fn parse_tracepoint_field_offset(format_text: &str, field_name: &str) -> Option<
         if actual_name != field_name {
             continue;
         }
-        let Some(offset_str) = trimmed
+        let offset = trimmed
             .split("offset:")
             .nth(1)
-            .and_then(|offset| offset.split(';').next())
+            .and_then(|o| o.split(';').next())
             .map(str::trim)
-        else {
-            continue;
-        };
-        if let Ok(offset) = offset_str.parse::<u32>() {
-            return Some(offset);
-        }
+            .and_then(|s| s.parse::<u32>().ok())?;
+        let size = trimmed
+            .split("size:")
+            .nth(1)
+            .and_then(|s| s.split(';').next())
+            .map(str::trim)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        return Some(TracepointField { offset, size });
     }
     None
 }
