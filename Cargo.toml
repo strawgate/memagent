@@ -64,6 +64,7 @@ clap_complete = "4.5"
 clap_complete_nushell = "4.6"
 config = { version = "0.15.22", default-features = false }
 arrow-json = "58"
+parquet = { version = "58", features = ["zstd"] }
 datafusion = { version = "53", default-features = false, features = [
     "sql",
     "string_expressions",
