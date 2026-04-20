@@ -96,7 +96,7 @@ fn poll_until_lines(
     let text = String::from_utf8_lossy(&raw);
     text.lines()
         .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
+        .map(std::string::ToString::to_string)
         .collect()
 }
 
@@ -125,7 +125,7 @@ fn poll_until_match(input: &mut dyn InputSource, needle: &str, timeout: Duration
             return text
                 .lines()
                 .filter(|l| !l.is_empty())
-                .map(|l| l.to_string())
+                .map(std::string::ToString::to_string)
                 .collect();
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -133,7 +133,7 @@ fn poll_until_match(input: &mut dyn InputSource, needle: &str, timeout: Duration
     let text = String::from_utf8_lossy(&all_bytes);
     text.lines()
         .filter(|l| !l.is_empty())
-        .map(|l| l.to_string())
+        .map(std::string::ToString::to_string)
         .collect()
 }
 
@@ -230,8 +230,7 @@ fn subprocess_entries_contain_standard_fields() {
         .filter(|v: &serde_json::Value| {
             v.get("syslog_identifier")
                 .and_then(|s| s.as_str())
-                .map(|s| s == tag)
-                .unwrap_or(false)
+                .is_some_and(|s| s == tag)
         })
         .collect();
 
@@ -375,8 +374,7 @@ fn subprocess_exclude_units_filters() {
                         .and_then(|u| u.as_str())
                         .map(String::from)
                 })
-                .map(|u| u == "ssh.service")
-                .unwrap_or(false)
+                .is_some_and(|u| u == "ssh.service")
         })
         .collect();
 
@@ -535,8 +533,7 @@ fn native_entries_contain_standard_fields() {
         .filter(|v: &serde_json::Value| {
             v.get("syslog_identifier")
                 .and_then(|s| s.as_str())
-                .map(|s| s == tag)
-                .unwrap_or(false)
+                .is_some_and(|s| s == tag)
         })
         .collect();
 

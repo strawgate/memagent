@@ -73,6 +73,7 @@ fn flush_current_sender(
             bytes,
             source_id: Some(source_id),
             accounted_bytes,
+            cri_metadata: None,
         });
     }
 }

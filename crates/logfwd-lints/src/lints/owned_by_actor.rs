@@ -143,6 +143,17 @@ fn spawn_call_with_closure<'tcx>(
         ExprKind::MethodCall(method, _recv, args, _span) => {
             let name = method.ident.name.as_str();
             if name == "spawn" || name == "spawn_blocking" || name == "spawn_local" {
+                // Resolve the method's DefId and verify it belongs to
+                // tokio or std::thread to avoid false positives from
+                // unrelated APIs that happen to have a `.spawn()` method.
+                let method_def_id =
+                    cx.typeck_results().type_dependent_def_id(expr.hir_id)?;
+                let method_path = cx.get_def_path(method_def_id);
+                let crate_name = method_path.first().map(Symbol::as_str);
+                let is_spawn_api = matches!(crate_name, Some("tokio" | "std"));
+                if !is_spawn_api {
+                    return None;
+                }
                 return args
                     .last()
                     .map(|arg| (format!("<runtime>::{name}"), arg));
@@ -194,6 +205,9 @@ fn visit_ty<'tcx>(
                     return Some(reason);
                 }
             }
+            // Pop so sibling branches in tuples/other ADTs can revisit
+            // this type independently (e.g. two `Vec<T>` fields).
+            visited.pop();
             None
         }
         TyKind::Ref(_, inner, _) | TyKind::RawPtr(inner, _) => {

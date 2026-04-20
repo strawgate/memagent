@@ -37,6 +37,7 @@ impl InputSource for ChannelInputSource {
                     bytes: data,
                     source_id: Some(self.source_id),
                     accounted_bytes,
+                    cri_metadata: None,
                 }])
             }
             None => Ok(vec![]),

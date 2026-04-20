@@ -211,8 +211,7 @@ impl ScalarUDFImpl for JsonExtractUdf {
 
         if args.args.len() != 2 {
             return Err(DataFusionError::Execution(format!(
-                "{}() expects exactly two arguments",
-                udf_name
+                "{udf_name}() expects exactly two arguments"
             )));
         }
 

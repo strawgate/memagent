@@ -771,6 +771,7 @@ impl InputSource for GeneratorInput {
                 bytes: out,
                 source_id: None,
                 accounted_bytes,
+                cri_metadata: None,
             });
             remaining = remaining.saturating_sub(chunk as u64);
             if self.done {
@@ -1217,7 +1218,7 @@ mod tests {
                 batch_size,
                 total_events: total,
                 events_per_sec: 0, // unlimited
-                timestamp: ts_config.clone(),
+                timestamp: ts_config,
                 profile: GeneratorProfile::Logs,
                 complexity: GeneratorComplexity::Simple,
                 message_template: None,
@@ -2347,7 +2348,7 @@ mod tests {
                     counter,
                     &ts_config,
                     GeneratorComplexity::Simple,
-                    message_template.map(|s| s.as_bytes()),
+                    message_template.map(str::as_bytes),
                 )
                 .expect("valid counter");
                 write_log_fields_json(&mut json_buf, &fields);

@@ -26,7 +26,7 @@ use super::projection::ProjectionError;
 
 pub(super) fn decompress_zstd(body: &[u8], max_body_size: usize) -> Result<Vec<u8>, InputError> {
     let decoder = zstd::Decoder::new(body)
-        .map_err(|_| InputError::Receiver("zstd decompression failed".to_string()))?;
+        .map_err(|_e| InputError::Receiver("zstd decompression failed".to_string()))?;
     read_decompressed_body(
         decoder,
         body.len(),
@@ -167,13 +167,10 @@ fn decode_otlp_logs_json(body: &[u8], resource_prefix: &str) -> Result<Vec<u8>, 
     let root: serde_json::Value = sonic_rs::from_slice(body)
         .map_err(|e| InputError::Receiver(format!("invalid JSON: {e}")))?;
 
-    let resource_logs = match root.get("resourceLogs").and_then(|v| v.as_array()) {
-        Some(arr) => arr,
-        None => {
-            return Err(InputError::Receiver(
-                "missing required field 'resourceLogs' in OTLP JSON payload".to_string(),
-            ));
-        }
+    let Some(resource_logs) = root.get("resourceLogs").and_then(|v| v.as_array()) else {
+        return Err(InputError::Receiver(
+            "missing required field 'resourceLogs' in OTLP JSON payload".to_string(),
+        ));
     };
 
     let mut out = Vec::new();

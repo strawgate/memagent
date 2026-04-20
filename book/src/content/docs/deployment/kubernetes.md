@@ -29,9 +29,10 @@ A ready-to-use manifest is provided at `deploy/daemonset.yml`.
 :::note[CRI field requirement]
 In the file-input example below, `_stream` is only present when the input is
 parsed as CRI (`format: cri`). The `_timestamp` column is present here because
-CRI parsing injects it for this example, but `_timestamp` may also be provided
-by other inputs or formats. If you switch to a different input format and these
-columns are not available, remove them or update the query accordingly.
+CRI parsing attaches it as sidecar metadata for this example, but `_timestamp`
+may also be provided by other inputs or formats. If you switch to a different
+input format and these columns are not available, remove them or update the
+query accordingly.
 :::
 
 ### Minimal DaemonSet

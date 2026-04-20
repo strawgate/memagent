@@ -29,6 +29,7 @@ impl MockSource {
                     bytes: chunk.to_vec(),
                     source_id: None,
                     accounted_bytes: chunk.len() as u64,
+                    cri_metadata: None,
                 }]
             })
             .collect();

@@ -20,7 +20,6 @@ use rustc_hir::{Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::mir::CoroutineLayout;
 use rustc_middle::ty::TyKind;
-use rustc_span::Symbol;
 
 use crate::lints::util::has_doc_marker;
 
@@ -174,6 +173,3 @@ fn guard_type_name(cx: &LateContext<'_>, def_id: DefId) -> Option<String> {
     }
 }
 
-// Keep Symbol import reachable without warning when/if we add more helpers.
-#[allow(dead_code)]
-const _: fn(Symbol) = |_| {};

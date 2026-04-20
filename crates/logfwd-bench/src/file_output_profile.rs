@@ -120,7 +120,7 @@ fn fmt_bytes(bytes: u64) -> String {
     } else if bytes >= 1024 {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     }
 }
 
@@ -493,7 +493,7 @@ fn run_cpu(
     let total_bytes = bytes_per_batch * num_batches as u64;
 
     println!("### Results\n");
-    println!("  Elapsed:     {:.2?}", elapsed);
+    println!("  Elapsed:     {elapsed:.2?}");
     println!(
         "  Throughput:  {}",
         fmt_throughput(total_rows, total_bytes, elapsed)

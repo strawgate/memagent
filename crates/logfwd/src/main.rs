@@ -833,7 +833,7 @@ async fn cmd_blast(mut args: BlastArgs) -> Result<(), CliError> {
         args.batch_lines
     );
     match args.duration_secs {
-        Some(duration) => println!("duration={}s", duration),
+        Some(duration) => println!("duration={duration}s"),
         None => println!("duration=until-stopped (Ctrl-C)"),
     }
     if let Some(endpoint) = &args.endpoint {
@@ -878,7 +878,7 @@ async fn cmd_devour(args: DevourArgs) -> Result<(), CliError> {
     println!("dropping all received data (blackhole mode)");
     println!("diagnostics={}", args.diagnostics_addr);
     if let Some(duration) = args.duration_secs {
-        println!("duration={}s", duration);
+        println!("duration={duration}s");
     }
 
     let generated = logfwd_runtime::generated_cli::build_devour_generated_config(
@@ -947,10 +947,10 @@ fn maybe_prompt_blast_setup(args: &mut BlastArgs) -> Result<(), CliError> {
 
     args.workers = prompt_text("Workers", &args.workers.to_string())?
         .parse::<usize>()
-        .map_err(|_| CliError::Config("Workers must be a positive integer".to_owned()))?;
+        .map_err(|_e| CliError::Config("Workers must be a positive integer".to_owned()))?;
     args.batch_lines = prompt_text("Batch lines", &args.batch_lines.to_string())?
         .parse::<usize>()
-        .map_err(|_| CliError::Config("Batch lines must be a positive integer".to_owned()))?;
+        .map_err(|_e| CliError::Config("Batch lines must be a positive integer".to_owned()))?;
     let duration_default = args
         .duration_secs
         .map(|v| v.to_string())
@@ -962,7 +962,7 @@ fn maybe_prompt_blast_setup(args: &mut BlastArgs) -> Result<(), CliError> {
     args.duration_secs = if duration_raw.trim().is_empty() {
         None
     } else {
-        Some(duration_raw.parse::<u64>().map_err(|_| {
+        Some(duration_raw.parse::<u64>().map_err(|_e| {
             CliError::Config("Duration seconds must be a positive integer".to_owned())
         })?)
     };
@@ -1550,7 +1550,7 @@ const GENERATOR_LOGS_SIMPLE_COLUMNS: &[&str] = &[
     "status",
 ];
 
-/// Internal columns injected by the CRI format decoder (`_timestamp`,
+/// Internal columns attached from CRI sidecar metadata (`_timestamp`,
 /// `_stream`) plus the plain-text fallback field (`body`).
 const CRI_INTERNAL_COLUMNS: &[&str] = &["_timestamp", "_stream", "body"];
 
@@ -1594,7 +1594,7 @@ fn known_input_columns_read_only(
             }
         }
         // File/stdin inputs with an explicit CRI format have known internal
-        // columns injected by the format decoder. JSON body keys are dynamic,
+        // columns attached from the CRI sidecar. JSON body keys are dynamic,
         // so we only validate `_`-prefixed names.
         InputTypeConfig::File(_) | InputTypeConfig::Stdin(_) => {
             match input_cfg.format.as_ref() {
@@ -1911,11 +1911,11 @@ fn validate_pipeline_read_only(
             for table in &enrichment_tables {
                 transform
                     .add_enrichment_table(Arc::clone(table))
-                    .map_err(|e| format!("input '{}': enrichment error: {e}", input_name))?;
+                    .map_err(|e| format!("input '{input_name}': enrichment error: {e}"))?;
             }
         }
         validate_transform_probe_read_only(&mut transform)
-            .map_err(|e| format!("input '{}': {e}", input_name))?;
+            .map_err(|e| format!("input '{input_name}': {e}"))?;
     }
 
     Ok(())
@@ -1944,8 +1944,7 @@ fn validate_input_format_read_only(
                 "validate_input_format_read_only: unhandled input type {other:?} for input {name}"
             );
             return Err(format!(
-                "input '{name}': type {:?} is not yet supported in read-only validation",
-                other
+                "input '{name}': type {other:?} is not yet supported in read-only validation"
             ));
         }
     };
@@ -1955,8 +1954,7 @@ fn validate_input_format_read_only(
     }
 
     Err(format!(
-        "input '{name}': format {:?} is not supported for {:?} inputs",
-        format, input_type
+        "input '{name}': format {format:?} is not supported for {input_type:?} inputs"
     ))
 }
 

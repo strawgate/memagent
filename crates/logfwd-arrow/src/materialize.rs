@@ -323,8 +323,7 @@ mod tests {
         let new_schema = Arc::new(Schema::new_with_metadata(fields, schema_meta));
 
         // Rebuild batch with metadata
-        let batch_with_meta =
-            RecordBatch::try_new(new_schema.clone(), batch.columns().to_vec()).unwrap();
+        let batch_with_meta = RecordBatch::try_new(new_schema, batch.columns().to_vec()).unwrap();
 
         let owned = detach(&batch_with_meta);
 

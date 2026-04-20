@@ -70,7 +70,7 @@ fn main() {
         "- Flamegraph: {}",
         cli.flamegraph
             .as_ref()
-            .map_or("not requested".to_string(), |p| p.display().to_string())
+            .map_or_else(|| "not requested".to_string(), |p| p.display().to_string())
     );
     println!();
     println!("## Baseline stage timings\n");
@@ -138,7 +138,7 @@ fn main() {
         "4. Keep source metadata out of FramedInput entirely; attach it after scan from row-origin sidecars so source bytes are never rewritten."
     );
     println!(
-        "5. Defer deeper CRI tuning until after the owned-input fast path lands; in the current baseline, CRI spends most of its extra time in parsing and JSON shaping rather than HashMap bookkeeping."
+        "5. Keep CRI metadata in sidecars and packed `StringView` blocks; the next broad copy wins are still the owned-input fast path and runtime buffer handoff."
     );
 }
 
@@ -355,6 +355,7 @@ impl MockSource {
                     bytes: chunk.clone(),
                     source_id,
                     accounted_bytes: chunk.len() as u64,
+                    cri_metadata: None,
                 }]
             })
             .collect();

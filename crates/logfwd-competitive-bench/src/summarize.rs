@@ -211,7 +211,7 @@ fn fmt_rate(lines: u64, ms: u64) -> String {
     } else if lps >= 1_000.0 {
         format!("{:.1}K lines/sec", lps / 1_000.0)
     } else {
-        format!("{:.0} lines/sec", lps)
+        format!("{lps:.0} lines/sec")
     }
 }
 
@@ -226,7 +226,7 @@ fn fmt_bytes(bytes: u64) -> String {
     } else if bytes >= 1024 {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     }
 }
 

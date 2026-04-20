@@ -105,12 +105,15 @@ pub fn pure(_attr: TokenStream, item: TokenStream) -> TokenStream {
 /// pools that aren't designed to be shared, etc. Instead of relying on
 /// `!Send` bounds (which can be hard to read on trait objects), the
 /// attribute + lint makes the contract visible at the type definition
-/// and catches every illegal capture mechanically.
+/// and catches captures at spawn call sites mechanically.
+///
+/// Note: this lint only detects captures in inline closures and async
+/// blocks passed directly to spawn; it does not track stored futures
+/// that are later passed to spawn.
 #[proc_macro_attribute]
 pub fn owned_by_actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
     prepend_marker("__logfwd_owned_by_actor__", item)
 }
-
 
 fn prepend_marker(marker: &str, item: TokenStream) -> TokenStream {
     let attr: TokenStream = format!("#[doc = \"{marker}\"]")

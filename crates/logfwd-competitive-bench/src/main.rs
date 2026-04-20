@@ -625,7 +625,7 @@ fn fmt_rate(lines: usize, ms: u64) -> String {
     } else if lps >= 1_000.0 {
         format!("{:.0}K lines/sec", lps / 1_000.0)
     } else {
-        format!("{:.0} lines/sec", lps)
+        format!("{lps:.0} lines/sec")
     }
 }
 

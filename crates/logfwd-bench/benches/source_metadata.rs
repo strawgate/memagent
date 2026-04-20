@@ -258,7 +258,7 @@ fn append_metadata_views_current(
             let (block, len) = if let Some(&(block, len)) = blocks.get(value) {
                 (block, len)
             } else {
-                let len = u32::try_from(value.len()).map_err(|_| {
+                let len = u32::try_from(value.len()).map_err(|_e| {
                     ArrowError::InvalidArgumentError(
                         "benchmark metadata string exceeds Utf8View limit".to_string(),
                     )

@@ -3,8 +3,6 @@
 //! Takes a user's SQL string, analyzes it at startup, compiles a DataFusion
 //! execution plan, and executes it against Arrow RecordBatches from the scanner.
 
-pub use logfwd_arrow::conflict_schema;
-
 pub mod enrichment;
 pub mod error;
 pub mod udf;

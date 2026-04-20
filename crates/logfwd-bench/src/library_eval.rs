@@ -460,8 +460,7 @@ async fn main() {
     let json_payload: Vec<u8> = (0..1000)
         .flat_map(|i| {
             format!(
-                r#"{{"timestamp":"2026-04-05T22:00:00Z","level":"info","message":"benchmark log line {}","host":"bench"}}"#,
-                i
+                r#"{{"timestamp":"2026-04-05T22:00:00Z","level":"info","message":"benchmark log line {i}","host":"bench"}}"#
             )
             .into_bytes()
             .into_iter()

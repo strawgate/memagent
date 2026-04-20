@@ -238,13 +238,12 @@ fn sonic_rs_parse(data: &[u8], ndjson: &mut Vec<u8>) -> arrow::record_batch::Rec
         if line.is_empty() {
             continue;
         }
-        if let Ok(val) = sonic_rs::from_slice::<sonic_rs::Value>(line) {
-            if val.is_object() {
-                if let Ok(s) = sonic_rs::to_string(&val) {
-                    ndjson.extend_from_slice(s.as_bytes());
-                    ndjson.push(b'\n');
-                }
-            }
+        if let Ok(val) = sonic_rs::from_slice::<sonic_rs::Value>(line)
+            && val.is_object()
+            && let Ok(s) = sonic_rs::to_string(&val)
+        {
+            ndjson.extend_from_slice(s.as_bytes());
+            ndjson.push(b'\n');
         }
     }
 

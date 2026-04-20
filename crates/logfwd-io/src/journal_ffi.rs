@@ -226,7 +226,7 @@ impl Journal {
     pub fn open_directory(path: &str, flags: i32) -> io::Result<Self> {
         let lib = Arc::new(LibSystemd::load()?);
         let c_path = CString::new(path)
-            .map_err(|_| io::Error::other("journal directory path contains null byte"))?;
+            .map_err(|_e| io::Error::other("journal directory path contains null byte"))?;
         let mut handle: *mut SdJournal = ptr::null_mut();
         // SAFETY: `c_path` is a valid NUL-terminated C string. `handle` pointer
         // is valid for the duration of this call.
@@ -252,7 +252,7 @@ impl Journal {
             io::Error::other("sd_journal_open_namespace not available (requires systemd >= 245)")
         })?;
         let c_ns = CString::new(namespace)
-            .map_err(|_| io::Error::other("journal namespace contains null byte"))?;
+            .map_err(|_e| io::Error::other("journal namespace contains null byte"))?;
         let mut handle: *mut SdJournal = ptr::null_mut();
         // SAFETY: `c_ns` is a valid NUL-terminated C string. `handle` pointer
         // is valid for the duration of this call.
@@ -312,7 +312,7 @@ impl Journal {
     /// Seek to the entry after the given cursor.
     pub fn seek_cursor(&mut self, cursor: &str) -> io::Result<()> {
         let c_cursor =
-            CString::new(cursor).map_err(|_| io::Error::other("cursor contains null byte"))?;
+            CString::new(cursor).map_err(|_e| io::Error::other("cursor contains null byte"))?;
         // SAFETY: `self.handle` is valid. `c_cursor` is a valid NUL-terminated
         // C string that remains live for the duration of this call.
         let ret = unsafe { (self.lib.seek_cursor)(self.handle, c_cursor.as_ptr()) };
@@ -351,7 +351,7 @@ impl Journal {
     /// still exists or if the journal positioned on the next closest entry.
     pub fn test_cursor(&mut self, cursor: &str) -> io::Result<bool> {
         let c_cursor =
-            CString::new(cursor).map_err(|_| io::Error::other("cursor contains null byte"))?;
+            CString::new(cursor).map_err(|_e| io::Error::other("cursor contains null byte"))?;
         // SAFETY: `self.handle` is valid. `c_cursor` is a valid NUL-terminated
         // C string that remains live for the duration of this call.
         let ret = unsafe { (self.lib.test_cursor)(self.handle, c_cursor.as_ptr()) };
@@ -368,7 +368,7 @@ impl Journal {
     /// present in the current entry.
     pub fn get_data(&mut self, field: &str) -> io::Result<Option<&[u8]>> {
         let c_field =
-            CString::new(field).map_err(|_| io::Error::other("field name contains null byte"))?;
+            CString::new(field).map_err(|_e| io::Error::other("field name contains null byte"))?;
         let mut data: *const u8 = ptr::null();
         let mut len: usize = 0;
         // SAFETY: `sd_journal_get_data` writes a pointer to internal buffer

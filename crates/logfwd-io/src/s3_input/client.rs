@@ -171,9 +171,9 @@ impl S3Client {
     fn object_signing_path(&self, key: &str) -> String {
         let encoded = url_encode_path(key);
         if self.path_style {
-            format!("/{}/{}", self.bucket, encoded)
+            format!("/{}/{encoded}", self.bucket)
         } else {
-            format!("/{}", encoded)
+            format!("/{encoded}")
         }
     }
 
@@ -250,14 +250,13 @@ impl S3Client {
 
         let canonical_headers: String = headers.iter().fold(String::new(), |mut s, (k, v)| {
             use std::fmt::Write;
-            let _ = writeln!(s, "{}:{}", k, v);
+            let _ = writeln!(s, "{k}:{v}");
             s
         });
         let signed_headers: String = headers.keys().cloned().collect::<Vec<_>>().join(";");
 
         let canonical_request = format!(
-            "{}\n{}\n{}\n{}\n{}\n{}",
-            method, path, query, canonical_headers, signed_headers, body_sha256
+            "{method}\n{path}\n{query}\n{canonical_headers}\n{signed_headers}\n{body_sha256}"
         );
 
         let credential_scope = format!("{date}/{}/{service}/aws4_request", self.region);

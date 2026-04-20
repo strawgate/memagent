@@ -357,11 +357,12 @@ impl ColumnarBatchBuilder {
                 buffer_len: self.string_buf.len(),
                 value_len: value.len(),
             })?;
-        let offset = u32::try_from(raw_offset).map_err(|_| BuilderError::StringBufferOverflow {
-            buffer_len: self.string_buf.len(),
-            value_len: value.len(),
-        })?;
-        let len = u32::try_from(value.len()).map_err(|_| BuilderError::StringBufferOverflow {
+        let offset =
+            u32::try_from(raw_offset).map_err(|_e| BuilderError::StringBufferOverflow {
+                buffer_len: self.string_buf.len(),
+                value_len: value.len(),
+            })?;
+        let len = u32::try_from(value.len()).map_err(|_e| BuilderError::StringBufferOverflow {
             buffer_len: self.string_buf.len(),
             value_len: value.len(),
         })?;
@@ -418,11 +419,12 @@ impl ColumnarBatchBuilder {
                 buffer_len: self.string_buf.len(),
                 value_len: value.len(),
             })?;
-        let offset = u32::try_from(raw_offset).map_err(|_| BuilderError::StringBufferOverflow {
-            buffer_len: self.string_buf.len(),
-            value_len: value.len(),
-        })?;
-        let len = u32::try_from(value.len()).map_err(|_| BuilderError::StringBufferOverflow {
+        let offset =
+            u32::try_from(raw_offset).map_err(|_e| BuilderError::StringBufferOverflow {
+                buffer_len: self.string_buf.len(),
+                value_len: value.len(),
+            })?;
+        let len = u32::try_from(value.len()).map_err(|_e| BuilderError::StringBufferOverflow {
             buffer_len: self.string_buf.len(),
             value_len: value.len(),
         })?;
@@ -475,11 +477,12 @@ impl ColumnarBatchBuilder {
             });
         }
         let raw_offset = ptr - base;
-        let offset = u32::try_from(raw_offset).map_err(|_| BuilderError::StringBufferOverflow {
-            buffer_len: self.original_buf.len(),
-            value_len: value.len(),
-        })?;
-        let len = u32::try_from(value.len()).map_err(|_| BuilderError::StringBufferOverflow {
+        let offset =
+            u32::try_from(raw_offset).map_err(|_e| BuilderError::StringBufferOverflow {
+                buffer_len: self.original_buf.len(),
+                value_len: value.len(),
+            })?;
+        let len = u32::try_from(value.len()).map_err(|_e| BuilderError::StringBufferOverflow {
             buffer_len: self.original_buf.len(),
             value_len: value.len(),
         })?;
