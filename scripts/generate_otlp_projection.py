@@ -4,16 +4,24 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import difflib
-import json
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[1]
-SPEC = REPO / "crates" / "logfwd-io" / "codegen" / "otlp_projection_v1.schema.json"
 OUT = REPO / "crates" / "logfwd-io" / "src" / "otlp_receiver" / "projection" / "generated.rs"
+PROTO_VERSION = "v1.8.0"
+PROTO_ROOT = REPO / "crates" / "logfwd-io" / "codegen" / "opentelemetry-proto" / PROTO_VERSION
+PROTO_FILES = [
+    PROTO_ROOT / "opentelemetry" / "proto" / "collector" / "logs" / "v1" / "logs_service.proto",
+    PROTO_ROOT / "opentelemetry" / "proto" / "logs" / "v1" / "logs.proto",
+    PROTO_ROOT / "opentelemetry" / "proto" / "resource" / "v1" / "resource.proto",
+    PROTO_ROOT / "opentelemetry" / "proto" / "common" / "v1" / "common.proto",
+]
 
 WIRE_TO_VARIANT = {
     "varint": "WireKind::Varint",
@@ -25,12 +33,42 @@ WIRE_TO_VARIANT = {
 ACTION_TO_VARIANT = {
     "project": "ProjectionAction::Project",
     "descend": "ProjectionAction::Descend",
+    "ignore": "ProjectionAction::Ignore",
     "unsupported": "ProjectionAction::Unsupported",
 }
 
 ANY_VALUE_UNSUPPORTED_REASONS = {
     "array_value": "AnyValue::ArrayValue",
     "kvlist_value": "AnyValue::KvListValue",
+}
+
+PROTO_TYPE_TO_WIRE = {
+    "bool": "varint",
+    "int32": "varint",
+    "int64": "varint",
+    "uint32": "varint",
+    "uint64": "varint",
+    "sint32": "varint",
+    "sint64": "varint",
+    "fixed32": "fixed32",
+    "sfixed32": "fixed32",
+    "fixed64": "fixed64",
+    "sfixed64": "fixed64",
+    "float": "fixed32",
+    "double": "fixed64",
+    "string": "len",
+    "bytes": "len",
+    "SeverityNumber": "varint",
+}
+
+PROTO_TYPE_TO_ANY_KIND = {
+    "string": "string",
+    "bool": "bool",
+    "int64": "int",
+    "double": "double",
+    "ArrayValue": "array",
+    "KeyValueList": "kvlist",
+    "bytes": "bytes",
 }
 
 MESSAGE_TO_OTLP_PREFIX = {
@@ -44,9 +82,213 @@ MESSAGE_TO_OTLP_PREFIX = {
     "AnyValue": "ANY_VALUE",
 }
 
+PROJECTION_SPEC = {
+    "name": "otlp_projection",
+    "version": 1,
+    "proto_version": PROTO_VERSION,
+    "messages": [
+        {
+            "name": "ExportLogsServiceRequest",
+            "fields": [
+                {"name": "resource_logs", "action": "descend", "message": "ResourceLogs"},
+            ],
+        },
+        {
+            "name": "ResourceLogs",
+            "fields": [
+                {"name": "resource", "action": "descend", "message": "Resource"},
+                {"name": "scope_logs", "action": "descend", "message": "ScopeLogs"},
+                {"name": "schema_url", "action": "ignore"},
+            ],
+        },
+        {
+            "name": "Resource",
+            "fields": [
+                {"name": "attributes", "action": "descend", "message": "KeyValue"},
+                {"name": "dropped_attributes_count", "action": "ignore"},
+                {"name": "entity_refs", "action": "ignore"},
+            ],
+        },
+        {
+            "name": "ScopeLogs",
+            "fields": [
+                {"name": "scope", "action": "descend", "message": "InstrumentationScope"},
+                {"name": "log_records", "action": "descend", "message": "LogRecord"},
+                {"name": "schema_url", "action": "ignore"},
+            ],
+        },
+        {
+            "name": "InstrumentationScope",
+            "fields": [
+                {"name": "name", "action": "project"},
+                {"name": "version", "action": "project"},
+                {"name": "attributes", "action": "ignore"},
+                {"name": "dropped_attributes_count", "action": "ignore"},
+            ],
+        },
+        {
+            "name": "LogRecord",
+            "fields": [
+                {"name": "time_unix_nano", "action": "project"},
+                {"name": "severity_number", "action": "project"},
+                {"name": "severity_text", "action": "project"},
+                {"name": "body", "action": "descend", "message": "AnyValue"},
+                {"name": "attributes", "action": "descend", "message": "KeyValue"},
+                {"name": "dropped_attributes_count", "action": "ignore"},
+                {"name": "flags", "action": "project"},
+                {"name": "trace_id", "action": "project"},
+                {"name": "span_id", "action": "project"},
+                {"name": "observed_time_unix_nano", "action": "project"},
+                {"name": "event_name", "action": "ignore"},
+            ],
+        },
+        {
+            "name": "KeyValue",
+            "fields": [
+                {"name": "key", "action": "project"},
+                {"name": "value", "action": "descend", "message": "AnyValue"},
+            ],
+        },
+        {
+            "name": "AnyValue",
+            "oneof": "value",
+            "fields": [
+                {"name": "string_value", "action": "project", "kind": "string"},
+                {"name": "bool_value", "action": "project", "kind": "bool"},
+                {"name": "int_value", "action": "project", "kind": "int"},
+                {"name": "double_value", "action": "project", "kind": "double"},
+                {"name": "array_value", "action": "unsupported", "kind": "array"},
+                {"name": "kvlist_value", "action": "unsupported", "kind": "kvlist"},
+                {"name": "bytes_value", "action": "project", "kind": "bytes"},
+            ],
+        },
+    ],
+}
 
-def load_spec() -> dict:
-    return json.loads(SPEC.read_text())
+FIELD_RE = re.compile(
+    r"^\s*(?:(repeated)\s+)?([.\w]+)\s+([A-Za-z_]\w*)\s*=\s*(\d+)\s*(?:\[[^\]]*\])?\s*;"
+)
+MESSAGE_RE = re.compile(r"^\s*message\s+([A-Za-z_]\w*)\s*\{")
+ONEOF_RE = re.compile(r"^\s*oneof\s+([A-Za-z_]\w*)\s*\{")
+
+
+def short_proto_type(proto_type: str) -> str:
+    return proto_type.rsplit(".", 1)[-1]
+
+
+def proto_wire_for(proto_type: str) -> str:
+    short_type = short_proto_type(proto_type)
+    if short_type in PROTO_TYPE_TO_WIRE:
+        return PROTO_TYPE_TO_WIRE[short_type]
+    return "len"
+
+
+def parse_proto_fields() -> dict[str, dict[str, dict]]:
+    messages: dict[str, dict[str, dict]] = {}
+    for path in PROTO_FILES:
+        if not path.exists():
+            raise FileNotFoundError(f"vendored OTLP proto file missing: {path}")
+
+        current_message: str | None = None
+        in_oneof: str | None = None
+        for raw_line in path.read_text().splitlines():
+            line = raw_line.split("//", 1)[0].strip()
+            if not line:
+                continue
+
+            if current_message is None:
+                message_match = MESSAGE_RE.match(line)
+                if message_match:
+                    current_message = message_match.group(1)
+                    messages.setdefault(current_message, {})
+                    continue
+                continue
+
+            oneof_match = ONEOF_RE.match(line)
+            if oneof_match:
+                in_oneof = oneof_match.group(1)
+                continue
+
+            field_match = FIELD_RE.match(line)
+            if field_match:
+                repeated, proto_type, field_name, number = field_match.groups()
+                messages[current_message][field_name] = {
+                    "name": field_name,
+                    "number": int(number),
+                    "wire": proto_wire_for(proto_type),
+                    "proto_type": short_proto_type(proto_type),
+                    "repeated": repeated is not None,
+                    "oneof": in_oneof,
+                }
+                continue
+
+            if "}" in line:
+                if in_oneof is not None:
+                    in_oneof = None
+                else:
+                    current_message = None
+
+    return messages
+
+
+def enrich_spec_from_proto(spec: dict) -> dict:
+    proto_messages = parse_proto_fields()
+    enriched = copy.deepcopy(spec)
+    for message in enriched["messages"]:
+        name = message["name"]
+        proto_fields = proto_messages.get(name)
+        if proto_fields is None:
+            raise ValueError(f"{name} missing from vendored OTLP proto files")
+
+        for field in message["fields"]:
+            field_name = field["name"]
+            proto_field = proto_fields.get(field_name)
+            if proto_field is None:
+                raise ValueError(f"{name}.{field_name} missing from vendored OTLP proto files")
+
+            policy_number = field.get("number")
+            if policy_number is not None and policy_number != proto_field["number"]:
+                raise ValueError(
+                    f"{name}.{field_name} number mismatch: policy={policy_number} "
+                    f"proto={proto_field['number']}"
+                )
+
+            policy_wire = field.get("wire")
+            if policy_wire is not None and policy_wire != proto_field["wire"]:
+                raise ValueError(
+                    f"{name}.{field_name} wire mismatch: policy={policy_wire} "
+                    f"proto={proto_field['wire']}"
+                )
+
+            expected_message = field.get("message")
+            if expected_message is not None and expected_message != proto_field["proto_type"]:
+                raise ValueError(
+                    f"{name}.{field_name} child mismatch: policy={expected_message} "
+                    f"proto={proto_field['proto_type']}"
+                )
+
+            expected_kind = field.get("kind")
+            if expected_kind is not None:
+                proto_kind = PROTO_TYPE_TO_ANY_KIND.get(proto_field["proto_type"])
+                if expected_kind != proto_kind:
+                    raise ValueError(
+                        f"{name}.{field_name} kind mismatch: policy={expected_kind} "
+                        f"proto={proto_kind}"
+                    )
+
+            field["number"] = proto_field["number"]
+            field["wire"] = proto_field["wire"]
+            field["proto_type"] = proto_field["proto_type"]
+            if proto_field["oneof"] is not None:
+                field["oneof"] = proto_field["oneof"]
+
+        policy_fields = {field["name"] for field in message["fields"]}
+        for field_name in sorted(set(proto_fields) - policy_fields):
+            raise ValueError(
+                f"{name}.{field_name} missing from projection policy; "
+                "classify it as project, descend, ignore, or unsupported"
+            )
+    return enriched
 
 
 def validate_spec(spec: dict) -> None:
@@ -54,7 +296,7 @@ def validate_spec(spec: dict) -> None:
     for message in spec["messages"]:
         name = message["name"]
         if name not in MESSAGE_TO_OTLP_PREFIX:
-            raise ValueError(f"OTLP projection schema has no core-constant prefix for {name}")
+            raise ValueError(f"OTLP projection policy has no core-constant prefix for {name}")
 
         seen_numbers: set[int] = set()
         seen_names: set[str] = set()
@@ -83,9 +325,16 @@ def validate_spec(spec: dict) -> None:
 
     any_value = messages.get("AnyValue")
     if any_value is None:
-        raise ValueError("AnyValue message missing from OTLP projection schema")
+        raise ValueError("AnyValue message missing from OTLP projection policy")
     if any_value.get("oneof") != "value":
-        raise ValueError("AnyValue schema must document the value oneof")
+        raise ValueError("AnyValue policy must document the value oneof")
+
+    proto_messages = parse_proto_fields()
+    any_value_fields = proto_messages.get("AnyValue", {})
+    policy_any_value_fields = {field["name"] for field in any_value["fields"]}
+    for field_name, field in any_value_fields.items():
+        if field.get("oneof") == "value" and field_name not in policy_any_value_fields:
+            raise ValueError(f"AnyValue oneof field {field_name} missing from projection policy")
 
 
 def rust_ident(name: str) -> str:
@@ -119,7 +368,7 @@ def any_value_fields(spec: dict) -> list[dict]:
     for message in spec["messages"]:
         if message["name"] == "AnyValue":
             return message["fields"]
-    raise ValueError("AnyValue message missing from OTLP projection schema")
+    raise ValueError("AnyValue message missing from OTLP projection policy")
 
 
 def render_any_value_decoder(spec: dict) -> str:
@@ -220,7 +469,7 @@ def message_fields(spec: dict, message_name: str) -> list[dict]:
     for message in spec["messages"]:
         if message["name"] == message_name:
             return message["fields"]
-    raise ValueError(f"{message_name} message missing from OTLP projection schema")
+    raise ValueError(f"{message_name} message missing from OTLP projection policy")
 
 
 def render_key_value_decoder(spec: dict) -> str:
@@ -289,9 +538,11 @@ def render_core_constant_drift_tests(spec: dict) -> str:
     for message in spec["messages"]:
         message_name = message["name"]
         for field in message["fields"]:
+            if field["action"] == "ignore":
+                continue
             lines.append(
                 f"        assert_eq!({rust_ident(message_name)}_FIELDS"
-                f".iter().find(|f| f.name == \"{field['name']}\").expect(\"schema field\").number, "
+                f".iter().find(|f| f.name == \"{field['name']}\").expect(\"projection field\").number, "
                 f"otlp::{otlp_const_name(message_name, field['name'])});"
             )
     return "\n".join(lines)
@@ -304,7 +555,7 @@ def render(spec: dict) -> str:
     lookup_field = render_lookup_field(spec)
     core_constant_drift_tests = render_core_constant_drift_tests(spec)
     return f"""// @generated by scripts/generate_otlp_projection.py; DO NOT EDIT.
-// spec: {spec["name"]} v{spec["version"]}
+// spec: {spec["name"]} v{spec["version"]}; opentelemetry-proto {spec["proto_version"]}
 
 use super::{{ProjectionError, WireAny, WireField}};
 
@@ -322,6 +573,7 @@ pub(super) enum WireKind {{
 pub(super) enum ProjectionAction {{
     Project,
     Descend,
+    Ignore,
     Unsupported,
 }}
 
@@ -569,7 +821,7 @@ mod generated_tests {{
     }}
 
     #[test]
-    fn generated_schema_field_numbers_match_core_otlp_constants() {{
+    fn generated_projection_field_numbers_match_core_otlp_constants() {{
 {core_constant_drift_tests}
     }}
 
@@ -675,7 +927,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    spec = load_spec()
+    spec = enrich_spec_from_proto(copy.deepcopy(PROJECTION_SPEC))
     validate_spec(spec)
     rendered = format_rust(render(spec))
     if args.check:
