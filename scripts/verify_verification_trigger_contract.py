@@ -201,7 +201,14 @@ def extract_paths_filter_entries(ci_text: str, filter_name: str) -> set[str]:
     return entries
 
 
-KANI_JOB_NAMES = ["kani", "kani-core", "kani-arrow", "kani-periphery"]
+KANI_JOB_NAMES = [
+    "kani",
+    "kani-core",
+    "kani-arrow",
+    "kani-periphery",
+    "kani-runtime-types",
+    "kani-io-output",
+]
 
 
 def _extract_kani_crates_from_block(kani_block: list[str]) -> set[str]:

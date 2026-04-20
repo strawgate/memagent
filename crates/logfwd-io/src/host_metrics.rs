@@ -2010,6 +2010,23 @@ mod tests {
 
     #[test]
     fn first_poll_emits_network_data() {
+        // Skip only when the exact precondition the sensor relies on isn't
+        // met: `sysinfo::Networks` has to enumerate at least one interface,
+        // because that's the source the sensor reads. An earlier revision
+        // also gated on `UdpSocket::connect("192.0.2.1:1")`, but that
+        // over-skips — network-isolated containers with usable loopback
+        // interfaces fail the route probe even though sysinfo would still
+        // populate `network_interface`, quietly bypassing the assertion
+        // exactly where this portability test matters most.
+        //
+        // Silent skip — `print_stderr` is a workspace-level warn and the
+        // other portability skips in this PR stay silent too.
+        let mut iface_probe = sysinfo::Networks::new_with_refreshed_list();
+        iface_probe.refresh(true);
+        if iface_probe.iter().next().is_none() {
+            return;
+        }
+
         let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),

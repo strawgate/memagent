@@ -689,6 +689,16 @@ mod tests {
         perms.set_mode(0o000);
         fs::set_permissions(&path, perms).expect("chmod 000");
 
+        // Root bypasses UNIX permission checks, so the open would succeed and
+        // this test could not observe an error. Skip when we'd be masked out.
+        // (Deliberately silent: this module's source is substring-scanned by
+        // `test_tail_uses_tracing_not_eprintln`, which forbids `eprintln!`
+        // anywhere — including test bodies — so a diagnostic here would fail
+        // the convention check in CI.)
+        if fs::read(&path).is_ok() {
+            return;
+        }
+
         let pattern = format!("{}/**/*.log", dir.path().display());
         let (watcher, rx) = test_watcher();
         let mut discovery = FileDiscovery {

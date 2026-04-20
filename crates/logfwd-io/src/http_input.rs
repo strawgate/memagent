@@ -297,6 +297,7 @@ impl InputSource for HttpInput {
                 accounted_bytes: all.len() as u64,
                 bytes: all,
                 source_id: None,
+                cri_metadata: None,
             }]);
         }
 
@@ -332,6 +333,7 @@ impl InputSource for HttpInput {
             bytes: all,
             source_id: None,
             accounted_bytes,
+            cri_metadata: None,
         }])
     }
 

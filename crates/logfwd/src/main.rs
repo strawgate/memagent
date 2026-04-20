@@ -1550,7 +1550,7 @@ const GENERATOR_LOGS_SIMPLE_COLUMNS: &[&str] = &[
     "status",
 ];
 
-/// Internal columns injected by the CRI format decoder (`_timestamp`,
+/// Internal columns attached from CRI sidecar metadata (`_timestamp`,
 /// `_stream`) plus the plain-text fallback field (`body`).
 const CRI_INTERNAL_COLUMNS: &[&str] = &["_timestamp", "_stream", "body"];
 
@@ -1594,7 +1594,7 @@ fn known_input_columns_read_only(
             }
         }
         // File/stdin inputs with an explicit CRI format have known internal
-        // columns injected by the format decoder. JSON body keys are dynamic,
+        // columns attached from the CRI sidecar. JSON body keys are dynamic,
         // so we only validate `_`-prefixed names.
         InputTypeConfig::File(_) | InputTypeConfig::Stdin(_) => {
             match input_cfg.format.as_ref() {

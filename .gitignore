@@ -31,3 +31,9 @@ error.log
 **/cloud-artifacts/
 .codex/
 scripts/__pycache__/
+
+# TLC model checker scratch artifacts (traces, states/)
+tla/*_TTrace_*.tla
+tla/*_TTrace_*.bin
+tla/states/
+states/

@@ -522,6 +522,7 @@ impl InputSource for S3Input {
                     bytes: payload.bytes,
                     source_id: Some(payload.source_id),
                     accounted_bytes: payload.accounted_bytes,
+                    cri_metadata: None,
                 });
             }
             if payload.is_eof {

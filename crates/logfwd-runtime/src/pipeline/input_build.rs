@@ -550,6 +550,7 @@ pub(super) fn build_input_state(
                     buf: BytesMut::with_capacity(64 * 1024),
                     row_origins: Vec::new(),
                     source_paths: HashMap::new(),
+                    cri_metadata: logfwd_io::input::CriMetadata::default(),
                     stats,
                 });
             }
@@ -581,6 +582,7 @@ pub(super) fn build_input_state(
                 buf: BytesMut::with_capacity(64 * 1024),
                 row_origins: Vec::new(),
                 source_paths: HashMap::new(),
+                cri_metadata: logfwd_io::input::CriMetadata::default(),
                 stats,
             });
         }
@@ -613,6 +615,7 @@ pub(super) fn build_input_state(
                 buf: BytesMut::with_capacity(64 * 1024),
                 row_origins: Vec::new(),
                 source_paths: HashMap::new(),
+                cri_metadata: logfwd_io::input::CriMetadata::default(),
                 stats,
             });
         }
@@ -682,6 +685,7 @@ pub(super) fn build_input_state(
                     buf: BytesMut::with_capacity(4 * 1024 * 1024),
                     row_origins: Vec::new(),
                     source_paths: HashMap::new(),
+                    cri_metadata: logfwd_io::input::CriMetadata::default(),
                     stats,
                 });
             }
@@ -733,6 +737,7 @@ pub(super) fn build_input_state(
         buf: BytesMut::with_capacity(buf_cap),
         row_origins: Vec::new(),
         source_paths: HashMap::new(),
+        cri_metadata: logfwd_io::input::CriMetadata::default(),
         stats,
     })
 }

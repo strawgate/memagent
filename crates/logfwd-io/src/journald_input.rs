@@ -269,6 +269,7 @@ impl InputSource for JournaldInput {
                         bytes: line,
                         source_id: None,
                         accounted_bytes: len as u64,
+                        cri_metadata: None,
                     });
                     if lines_read >= MAX_LINES_PER_POLL || total_bytes >= MAX_BYTES_PER_POLL {
                         break;

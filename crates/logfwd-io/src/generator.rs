@@ -771,6 +771,7 @@ impl InputSource for GeneratorInput {
                 bytes: out,
                 source_id: None,
                 accounted_bytes,
+                cri_metadata: None,
             });
             remaining = remaining.saturating_sub(chunk as u64);
             if self.done {

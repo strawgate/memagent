@@ -32,6 +32,17 @@ pub const TIMESTAMP_AT: &str = "@timestamp";
 /// Alternative timestamp column used by some pipelines.
 pub const TIMESTAMP_UNDERSCORE: &str = "_timestamp";
 
+/// CRI stream column (`stdout` / `stderr`) attached by the input pipeline.
+///
+/// # Examples
+///
+/// ```
+/// use logfwd_types::field_names;
+///
+/// assert_eq!(field_names::CRI_STREAM, "_stream");
+/// ```
+pub const CRI_STREAM: &str = "_stream";
+
 // ---------------------------------------------------------------------------
 // Severity / Level
 // ---------------------------------------------------------------------------

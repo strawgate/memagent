@@ -1,0 +1,84 @@
+name: Run TLC
+description: |
+  Set up a JDK, fetch and cache tla2tools.jar, and run TLC against a spec with
+  the given config.  Used by the PR TLC jobs and the nightly thorough run so
+  both share one place for JVM flags, jar version, and caching.
+
+inputs:
+  tla-file:
+    description: Path (from repo root) to the TLA+ spec file (e.g. tla/MCPipelineMachine.tla).
+    required: true
+  config:
+    description: Path (from repo root) to the TLC config file.
+    required: true
+  mode:
+    description: "'check' to invoke tlc2.TLC directly, 'coverage' to invoke scripts/verify_tla_coverage.py."
+    required: false
+    default: check
+  tla-tools-version:
+    description: tlaplus release tag to download (keep in sync with justfile tla-setup).
+    required: false
+    default: v1.8.0
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Java
+      uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: '21'
+
+    - name: Cache tla2tools.jar
+      id: tla-jar-cache
+      uses: actions/cache@v5
+      with:
+        path: /tmp/tla/tla2tools.jar
+        key: tla2tools-${{ inputs.tla-tools-version }}
+
+    - name: Download tla2tools.jar
+      if: steps.tla-jar-cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.tla-tools-version }}
+      run: |
+        mkdir -p /tmp/tla
+        # Harden against transient GitHub Releases flakes: retry on any
+        # error up to 5 times with a 2s base delay, cap each attempt at
+        # 60s of connect + 180s total, and fail cleanly on HTTP errors.
+        curl -fsSL \
+          --retry 5 \
+          --retry-delay 2 \
+          --retry-all-errors \
+          --connect-timeout 15 \
+          --max-time 180 \
+          "https://github.com/tlaplus/tlaplus/releases/download/${VERSION}/tla2tools.jar" \
+          -o /tmp/tla/tla2tools.jar
+
+    - name: Set up Python (coverage mode only)
+      if: inputs.mode == 'coverage'
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.11"
+
+    - name: Run TLC
+      shell: bash
+      env:
+        JAR: /tmp/tla/tla2tools.jar
+        TLA_FILE: ${{ inputs.tla-file }}
+        CFG: ${{ inputs.config }}
+        MODE: ${{ inputs.mode }}
+      run: |
+        set -euo pipefail
+        case "$MODE" in
+          check)
+            exec java -XX:+UseParallelGC -cp "$JAR" tlc2.TLC "$TLA_FILE" -config "$CFG" -workers auto
+            ;;
+          coverage)
+            exec python3 scripts/verify_tla_coverage.py --jar "$JAR" --tla-file "$TLA_FILE" --config "$CFG"
+            ;;
+          *)
+            echo "run-tlc: unknown mode '$MODE' (expected 'check' or 'coverage')" >&2
+            exit 2
+            ;;
+        esac

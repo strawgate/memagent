@@ -367,99 +367,91 @@ mod verification {
         tag
     }
 
-    /// Row count never decreases within a batch and resets on begin_batch.
+    /// Compound invariant proof over the full RowLifecycle state machine.
     ///
-    /// 8-step sequence: begin_batch + 3×(begin_row+end_row) + finish = 8.
-    /// Invariant oracle verified after every step.
+    /// Replaces four previous harnesses that each drove the same 8-step
+    /// symbolic action sequence through `symbolic_action` and checked a
+    /// single invariant apiece:
+    ///
+    ///   - row_count_monotonic: begin_batch resets to 0, end_row +1,
+    ///     begin_row and finish_batch preserve the count.
+    ///   - written_bits_reset_on_begin_row: `*written_bits_mut() == 0`
+    ///     after every begin_row, even if the previous row dirtied it.
+    ///   - state_always_valid: `check_invariants` holds at every step.
+    ///   - line_written_reset_on_begin_row: `line_written_this_row()`
+    ///     is false after begin_row, sticks to true after set_line_written.
+    ///
+    /// Fusing them amortises CBMC/solver startup across a single harness
+    /// instead of four.  The invariants are independent properties of the
+    /// same symbolic execution, so checking them together is a sound
+    /// superset (anything the fused proof catches was caught by one of
+    /// the originals, and vice versa).  The 8-step bound matches the
+    /// strongest of the four source proofs; the 7-step sequences the
+    /// other three used are prefixes of the 8-step action space.
     #[kani::proof]
     #[kani::solver(kissat)]
     #[kani::unwind(10)] // 8 iterations + 2 margin
-    fn verify_row_count_monotonic() {
+    fn verify_row_lifecycle_compound_invariants() {
         let mut lc = RowLifecycle::new();
         let mut prev_count: u32 = 0;
-
-        for _ in 0..8 {
-            let tag = symbolic_action(&mut lc);
-            check_invariants(&lc);
-            let count = lc.row_count();
-
-            if tag == 0 {
-                // begin_batch resets to 0.
-                assert_eq!(count, 0, "begin_batch must reset row_count");
-                prev_count = 0;
-            } else if tag == 3 {
-                // end_row increments by exactly 1.
-                assert_eq!(count, prev_count + 1, "end_row must increment by 1");
-                prev_count = count;
-            } else {
-                // begin_row (1) and finish_batch (2) preserve row_count.
-                assert_eq!(count, prev_count, "non-row actions preserve count");
-            }
-        }
-
-        kani::cover!(prev_count > 0, "at least one row completed");
-        kani::cover!(prev_count > 2, "three+ rows completed");
-    }
-
-    /// written_bits is zero at the start of every row, even after prior
-    /// rows wrote non-zero bits.
-    ///
-    /// 7-step sequence: enough for 2+ full row cycles with dirty bits.
-    #[kani::proof]
-    #[kani::solver(kissat)]
-    #[kani::unwind(9)] // 7 iterations + 2 margin
-    fn verify_written_bits_reset_on_begin_row() {
-        let mut lc = RowLifecycle::new();
-        let mut begin_row_seen = false;
-
-        for _ in 0..7 {
-            let tag = symbolic_action(&mut lc);
-            check_invariants(&lc);
-
-            if tag == 1 {
-                // begin_row just fired → bits must be zero.
-                assert_eq!(
-                    *lc.written_bits_mut(),
-                    0,
-                    "written_bits must be zero after begin_row"
-                );
-                // Simulate field writes in this row.
-                *lc.written_bits_mut() = kani::any();
-                begin_row_seen = true;
-            }
-        }
-
-        kani::cover!(begin_row_seen, "begin_row was exercised");
-        kani::cover!(lc.row_count() > 1, "multiple rows completed");
-        kani::cover!(lc.state() == BuilderState::Idle, "returned to Idle");
-    }
-
-    /// State machine only reaches valid states via the invariant oracle.
-    ///
-    /// 7-step sequence exercises all transitions.
-    #[kani::proof]
-    #[kani::solver(kissat)]
-    #[kani::unwind(9)] // 7 iterations + 2 margin
-    fn verify_state_always_valid() {
-        let mut lc = RowLifecycle::new();
         let mut saw_begin_batch = false;
         let mut saw_begin_row = false;
         let mut saw_end_row = false;
         let mut saw_finish_batch = false;
 
-        for _ in 0..7 {
+        for _ in 0..8 {
             let tag = symbolic_action(&mut lc);
+            // state_always_valid: check_invariants holds after every step.
             check_invariants(&lc);
+            let count = lc.row_count();
 
             match tag {
-                0 => saw_begin_batch = true,
-                1 => saw_begin_row = true,
-                2 => saw_finish_batch = true,
-                3 => saw_end_row = true,
-                _ => {} // tag is bounded by assume() in symbolic_action
+                0 => {
+                    saw_begin_batch = true;
+                    // row_count_monotonic: begin_batch resets to 0.
+                    assert_eq!(count, 0, "begin_batch must reset row_count");
+                    prev_count = 0;
+                }
+                1 => {
+                    saw_begin_row = true;
+                    // row_count_monotonic: begin_row preserves count.
+                    assert_eq!(count, prev_count, "begin_row preserves count");
+                    // written_bits_reset_on_begin_row.
+                    assert_eq!(
+                        *lc.written_bits_mut(),
+                        0,
+                        "written_bits must be zero after begin_row"
+                    );
+                    // line_written_reset_on_begin_row.
+                    assert!(
+                        !lc.line_written_this_row(),
+                        "line_written must be false after begin_row"
+                    );
+                    // Simulate field writes + line write so the next
+                    // begin_row sees non-zero state that must be reset.
+                    *lc.written_bits_mut() = kani::any();
+                    lc.set_line_written();
+                    assert!(lc.line_written_this_row(), "set_line_written must stick");
+                }
+                2 => {
+                    saw_finish_batch = true;
+                    // row_count_monotonic: finish_batch preserves count.
+                    assert_eq!(count, prev_count, "finish_batch preserves count");
+                }
+                3 => {
+                    saw_end_row = true;
+                    // row_count_monotonic: end_row +1.
+                    assert_eq!(count, prev_count + 1, "end_row must increment by 1");
+                    prev_count = count;
+                }
+                _ => {} // bounded by assume() in symbolic_action
             }
         }
 
+        // Combined coverage from all four source proofs.
+        kani::cover!(prev_count > 0, "at least one row completed");
+        kani::cover!(prev_count > 2, "three+ rows completed");
+        kani::cover!(saw_begin_row, "begin_row was exercised");
         kani::cover!(lc.state() == BuilderState::Idle, "reached Idle");
         kani::cover!(lc.state() == BuilderState::InBatch, "reached InBatch");
         kani::cover!(lc.state() == BuilderState::InRow, "reached InRow");
@@ -467,31 +459,5 @@ mod verification {
             saw_begin_batch && saw_begin_row && saw_end_row && saw_finish_batch,
             "all four transitions exercised"
         );
-    }
-
-    /// line_written_this_row resets on begin_row and persists through end_row.
-    #[kani::proof]
-    #[kani::solver(kissat)]
-    #[kani::unwind(9)] // 7 iterations + 2 margin
-    fn verify_line_written_reset_on_begin_row() {
-        let mut lc = RowLifecycle::new();
-
-        for _ in 0..7 {
-            let tag = symbolic_action(&mut lc);
-            check_invariants(&lc);
-
-            if tag == 1 {
-                // begin_row resets line_written flag.
-                assert!(
-                    !lc.line_written_this_row(),
-                    "line_written must be false after begin_row"
-                );
-                // Simulate writing a line.
-                lc.set_line_written();
-                assert!(lc.line_written_this_row(), "set_line_written must stick");
-            }
-        }
-
-        kani::cover!(lc.row_count() > 0, "at least one row completed");
     }
 }

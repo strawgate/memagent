@@ -17,10 +17,9 @@ use logfwd_types::pipeline::{PipelineMachine, SourceId};
 use logfwd_types::source_metadata::SourceMetadataPlan;
 
 use super::input_build::build_input_state;
-use super::{
-    InputTransform, Pipeline, source_metadata_style_needs_source_paths,
-    source_metadata_style_source_path,
-};
+#[cfg(not(feature = "turmoil"))]
+use super::source_metadata_style_source_path;
+use super::{InputTransform, Pipeline, source_metadata_style_needs_source_paths};
 
 // ── Pipeline defaults ──────────────────────────────────────────────────
 /// Default output worker count when `pipelines.<name>.workers` is unset.

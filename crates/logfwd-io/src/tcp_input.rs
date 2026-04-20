@@ -775,6 +775,7 @@ impl InputSource for TcpInput {
                     bytes,
                     source_id: Some(self.clients[i].source_id),
                     accounted_bytes,
+                    cri_metadata: None,
                 }
             })
         }));
@@ -816,6 +817,7 @@ impl InputSource for TcpInput {
                         bytes: tail,
                         source_id: Some(client.source_id),
                         accounted_bytes,
+                        cri_metadata: None,
                     });
                 }
                 events.push(InputEvent::EndOfFile {
@@ -1540,6 +1542,7 @@ mod tests {
             bytes,
             source_id,
             accounted_bytes,
+            ..
         } = &events[0]
         {
             let text = String::from_utf8_lossy(bytes);

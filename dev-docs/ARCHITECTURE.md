@@ -84,7 +84,8 @@ with per-source remainder tracking. It handles three formats:
   partial lines across reads via per-source remainder buffers.
 - **Cri**: Kubernetes container log format. Parses timestamp,
   stream, flags, message. Reassembles P (partial) lines into complete
-  messages. Injects `_timestamp` and `_stream` as JSON fields.
+  messages. Emits `_timestamp` and `_stream` as sidecar metadata for
+  post-scan Arrow column attachment; the payload JSON is not rewritten.
 - **Text/Raw**: Passes lines through verbatim. Line capture into `body` is
   controlled by scanner `line_field_name`.
 
@@ -184,11 +185,18 @@ Implements `ScanBuilder`. Stores `(offset, len)` views into the input
 - `Scanner::scan_detached(Bytes) → RecordBatch` — self-contained
   `StringArray`, buffer can be freed. For persistence/compression.
 
-### 6. Transform: RecordBatch → RecordBatch
+### 6. Metadata attach and transform: RecordBatch → RecordBatch
 
 ```
-RecordBatch → SqlTransform::execute_blocking() → RecordBatch
+RecordBatch → sidecar attach/replace → SqlTransform::execute_blocking() → RecordBatch
 ```
+
+Before SQL execution, the runtime attaches sidecar metadata as Arrow columns on
+the scanned `RecordBatch`. Source metadata is appended/replaced according to
+the configured source metadata style. CRI `_timestamp` and `_stream` are
+appended or replaced from the CRI sidecar; rows without CRI values preserve any
+existing payload columns and otherwise materialize as nulls. This stage is the
+only place CRI metadata becomes columns.
 
 **SqlTransform** (`logfwd-transform/src/lib.rs`) runs user SQL via
 DataFusion. Each batch is registered as a `"logs"` MemTable, the SQL
@@ -277,6 +285,7 @@ loop {
 
 fn flush_batch(buf):
     batch = scanner.scan(buf)        // classify + scan + build
+    batch = attach_sidecars(batch)   // source metadata + CRI columns
     batch = transform.execute(batch) // SQL
     output.send_batch(batch)         // serialize + send
 ```
@@ -309,10 +318,11 @@ Target (zero-copy for 99% passthrough path — #608):
   tailer reads → BytesMut → freeze() → Bytes             (no copy)
   FramedInput: Bytes::slice() for line ranges             (no copy)
   Passthrough format: emit Bytes slice directly           (no copy)
-  CRI format: metadata injection requires rewrite         [COPY 1: unavoidable]
+  CRI format: sidecar metadata, message JSON not rewritten
   pipeline: scan_buf.extend_from_slice(&bytes)            [COPY 2: SIMD contiguity]
   Scanner receives Bytes directly                 (no copy)
   StreamingBuilder stores views → RecordBatch             (zero-copy)
+  sidecar attach/replace appends Arrow columns before SQL
   Bytes dropped when RecordBatch is consumed
 ```
 
