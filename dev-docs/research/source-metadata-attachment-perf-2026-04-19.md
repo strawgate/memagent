@@ -38,12 +38,11 @@ PR #2317 landed the sidecar spine:
   `UInt64`.
 - Public styles materialize source paths as normal columns: `file.path` for
   ECS/Beats, `log.file.path` for OTel, and `file` for Vector.
-- Public source path styles are currently accepted only for file inputs because
-  only file tailing exposes a source path snapshot. S3 hashes object keys into
-  `SourceId`, but it does not yet expose key/path snapshots. This guard avoids
-  replacing a payload `file.path` column with null metadata for
-  UDP/TCP/stdin/S3/structured inputs that do not yet provide public source
-  descriptors.
+- Public source path styles are accepted only for inputs that expose path
+  snapshots. File tailing exposes filesystem paths. S3 exposes object keys when
+  a public style is configured. This guard avoids replacing a payload
+  `file.path` column with null metadata for UDP/TCP/stdin/structured inputs
+  that do not yet provide public source descriptors.
 - SQL no longer prunes metadata after execution. Internal visibility is handled
   by known internal-column output filtering, not by SQL-stage magic.
 - Output boundaries drop known internal columns such as `__source_id` across
@@ -68,7 +67,7 @@ still thin. The hot path currently pays for:
 | File tail | Stable file `SourceId`; `source_paths()` returns active path map | `fastforward`: `__source_id`; public styles: `file.path`, `log.file.path`, or `file`; future `sources` rows with file path and parsed Kubernetes fields | Replace ad hoc `source_paths()` with a richer snapshot; avoid full path snapshots when only `__source_id` is requested |
 | UDP | Sender-scoped `SourceId` from `recv_from()` | `fastforward`: `__source_id`; cleartext peer address only by explicit future public style/config | Add cold `sources` descriptor for peer endpoint if/when configured; benchmark high sender cardinality |
 | TCP | Per-connection `SourceId` | `fastforward`: `__source_id`; peer/local address should be explicit metadata, not default payload fields | Decide descriptor retention after disconnect; avoid unbounded per-connection source tables |
-| S3 | Object/key-derived `SourceId` | `fastforward`: `__source_id`; future public URI/path columns by selected style | Add snapshot API for object key/URI; handle multipart sub-source IDs deterministically |
+| S3 | Object/key-derived `SourceId`; optional current-poll object-key snapshots for public styles | `fastforward`: `__source_id`; public styles: object key in the selected path column | Consider whether future URI-style descriptors should include bucket/endpoint; handle multipart sub-source IDs deterministically if introduced |
 | Stdin | No stable external source; finite stream | No metadata by default; future public stream descriptor only by explicit style/config | No path work needed |
 | Generator | No external source by default | Optional synthetic source descriptors only for benchmark/debug configs | Keep default cheap |
 | OTLP receiver | Structured `RecordBatch`, currently no source identity | Future sender/resource source id only if a source contract is defined | Preserve incoming OTLP attributes as payload/resource data, not source metadata |

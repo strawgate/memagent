@@ -39,10 +39,18 @@ ACTION_TO_VARIANT = {
     "unsupported": "ProjectionAction::Unsupported",
 }
 
-ANY_VALUE_UNSUPPORTED_REASONS = {
-    "array_value": "AnyValue::ArrayValue",
-    "kvlist_value": "AnyValue::KvListValue",
-}
+OTLP_PLANNED_FIELDS = [
+    ("timestamp", "TIMESTAMP", "Int64"),
+    ("observed_timestamp", "OBSERVED_TIMESTAMP", "Int64"),
+    ("severity", "SEVERITY", "Utf8View"),
+    ("severity_number", "SEVERITY_NUMBER", "Int64"),
+    ("body", "BODY", "Utf8View"),
+    ("trace_id", "TRACE_ID", "Utf8View"),
+    ("span_id", "SPAN_ID", "Utf8View"),
+    ("flags", "FLAGS", "Int64"),
+    ("scope_name", "SCOPE_NAME", "Utf8View"),
+    ("scope_version", "SCOPE_VERSION", "Utf8View"),
+]
 
 PROTO_TYPE_TO_ANY_KIND = {
     "string": "string",
@@ -140,9 +148,21 @@ PROJECTION_SPEC = {
                 {"name": "bool_value", "action": "project", "kind": "bool"},
                 {"name": "int_value", "action": "project", "kind": "int"},
                 {"name": "double_value", "action": "project", "kind": "double"},
-                {"name": "array_value", "action": "unsupported", "kind": "array"},
-                {"name": "kvlist_value", "action": "unsupported", "kind": "kvlist"},
+                {"name": "array_value", "action": "project", "kind": "array"},
+                {"name": "kvlist_value", "action": "project", "kind": "kvlist"},
                 {"name": "bytes_value", "action": "project", "kind": "bytes"},
+            ],
+        },
+        {
+            "name": "ArrayValue",
+            "fields": [
+                {"name": "values", "action": "descend", "message": "AnyValue"},
+            ],
+        },
+        {
+            "name": "KeyValueList",
+            "fields": [
+                {"name": "values", "action": "descend", "message": "KeyValue"},
             ],
         },
     ],
@@ -212,9 +232,6 @@ def validate_spec(spec: dict) -> None:
     messages = {message["name"]: message for message in spec["messages"]}
     for message in spec["messages"]:
         name = message["name"]
-        if name not in MESSAGE_TO_OTLP_PREFIX:
-            raise ValueError(f"OTLP projection policy has no core-constant prefix for {name}")
-
         seen_numbers: set[int] = set()
         seen_names: set[str] = set()
         for field in message["fields"]:
@@ -278,6 +295,21 @@ def render_field_tables(spec: dict) -> str:
                 "},"
             )
         chunks.append("];\n")
+    return "\n".join(chunks)
+
+
+def render_field_number_constants(spec: dict) -> str:
+    chunks = ["#[allow(dead_code)]", "pub(super) mod field_numbers {"]
+    for message in spec["messages"]:
+        message_name = message["name"]
+        if message_name not in MESSAGE_TO_OTLP_PREFIX:
+            continue
+        for field in message["fields"]:
+            chunks.append(
+                f"    pub(crate) const {otlp_const_name(message_name, field['name'])}: u32 = "
+                f"{field['number']};"
+            )
+    chunks.append("}")
     return "\n".join(chunks)
 
 
@@ -345,12 +377,19 @@ def render_any_value_decoder(spec: dict) -> str:
                 return Err(ProjectionError::Invalid("{invalid}"));
             }}"""
             )
-        elif action == "unsupported" and wire == "len":
-            reason = ANY_VALUE_UNSUPPORTED_REASONS.get(name, f"AnyValue::{name}")
+        elif action == "project" and kind == "array" and wire == "len":
             arms.append(
-                f"""            ({number}, WireField::Len(_)) => {{
-                out = None;
-                unsupported = Some("{reason}");
+                f"""            ({number}, WireField::Len(bytes)) => {{
+                out = Some(WireAny::ArrayRaw(bytes));
+            }}
+            ({number}, _) => {{
+                return Err(ProjectionError::Invalid("{invalid}"));
+            }}"""
+            )
+        elif action == "project" and kind == "kvlist" and wire == "len":
+            arms.append(
+                f"""            ({number}, WireField::Len(bytes)) => {{
+                out = Some(WireAny::KvListRaw(bytes));
             }}
             ({number}, _) => {{
                 return Err(ProjectionError::Invalid("{invalid}"));
@@ -365,7 +404,6 @@ def render_any_value_decoder(spec: dict) -> str:
     arms_text = "\n".join(arms)
     return f"""pub(super) fn decode_any_value_wire(value: &[u8]) -> Result<Option<WireAny<'_>>, ProjectionError> {{
     let mut out = None;
-    let mut unsupported = None;
     super::for_each_field(value, |field, field_value| {{
         match (field, field_value) {{
 {arms_text}
@@ -373,11 +411,6 @@ def render_any_value_decoder(spec: dict) -> str:
         }}
         Ok(())
     }})?;
-    if let Some(reason) = unsupported
-        && out.is_none()
-    {{
-        return Err(ProjectionError::Unsupported(reason));
-    }}
     Ok(out)
 }}
 """
@@ -456,7 +489,7 @@ def render_core_constant_drift_tests(spec: dict) -> str:
     for message in spec["messages"]:
         message_name = message["name"]
         for field in message["fields"]:
-            if field["action"] == "ignore":
+            if field["action"] == "ignore" or message_name not in MESSAGE_TO_OTLP_PREFIX:
                 continue
             lines.append(
                 f"        assert_eq!({rust_ident(message_name)}_FIELDS"
@@ -468,8 +501,8 @@ def render_core_constant_drift_tests(spec: dict) -> str:
 
 def render_generated_test_vectors(spec: dict) -> str:
     message_kinds = ", ".join(f"MessageKind::{message['name']}" for message in spec["messages"])
-    unsupported_anyvalue_numbers = ", ".join(
-        str(field["number"]) for field in any_value_fields(spec) if field["action"] == "unsupported"
+    complex_anyvalue_numbers = ", ".join(
+        str(field["number"]) for field in any_value_fields(spec) if field["kind"] in {"array", "kvlist"}
     )
     return f"""fn sample_field_for_wire(number: u32, wire: WireKind) -> Vec<u8> {{
     let mut out = Vec::new();
@@ -563,23 +596,372 @@ fn wrong_wires(expected: WireKind) -> [WireKind; 5] {{
     }}
 }}
 
-fn unsupported_anyvalue_field_numbers() -> &'static [u32] {{
-    &[{unsupported_anyvalue_numbers}]
+fn complex_anyvalue_field_numbers() -> &'static [u32] {{
+    &[{complex_anyvalue_numbers}]
 }}
 """
 
 
+def render_planned_handle_builder() -> str:
+    handle_fields = "\n".join(
+        f"    pub(super) {field_name}: FieldHandle,"
+        for field_name, _field_const, _kind in OTLP_PLANNED_FIELDS
+    )
+    handle_bindings = "\n".join(
+        "        "
+        f"{field_name}: plan"
+        f".declare_planned(field_names::{field_const}, FieldKind::{kind})"
+        '.expect("duplicate planned field"),'
+        for field_name, field_const, kind in OTLP_PLANNED_FIELDS
+    )
+    return f"""pub(super) struct OtlpFieldHandles {{
+{handle_fields}
+}}
+
+pub(super) fn build_otlp_plan() -> (BatchPlan, OtlpFieldHandles) {{
+    let mut plan = BatchPlan::new();
+    let handles = OtlpFieldHandles {{
+{handle_bindings}
+    }};
+    (plan, handles)
+}}
+"""
+
+
+def render_wire_any_field_kind(spec: dict) -> str:
+    kind_to_field_kind = {
+        "string": "FieldKind::Utf8View",
+        "bool": "FieldKind::Bool",
+        "int": "FieldKind::Int64",
+        "double": "FieldKind::Float64",
+        "bytes": "FieldKind::Utf8View",
+        "array": "FieldKind::Utf8View",
+        "kvlist": "FieldKind::Utf8View",
+    }
+    variant_by_kind = {
+        "string": "String",
+        "bool": "Bool",
+        "int": "Int",
+        "double": "Double",
+        "bytes": "Bytes",
+        "array": "ArrayRaw",
+        "kvlist": "KvListRaw",
+    }
+    arms = []
+    for field in any_value_fields(spec):
+        if field["action"] != "project":
+            continue
+        kind = field["kind"]
+        variant = variant_by_kind[kind]
+        field_kind = kind_to_field_kind[kind]
+        arms.append(f"        WireAny::{variant}(_) => {field_kind},")
+    return f"""pub(super) fn wire_any_field_kind(value: &WireAny<'_>) -> FieldKind {{
+    match value {{
+{chr(10).join(arms)}
+    }}
+}}
+"""
+
+
+def render_wire_any_appenders(spec: dict) -> str:
+    kinds = {
+        field["kind"]
+        for field in any_value_fields(spec)
+        if field["action"] == "project"
+    }
+    expected_kinds = {"string", "bool", "int", "double", "bytes", "array", "kvlist"}
+    if kinds != expected_kinds:
+        raise ValueError(
+            "AnyValue projection kinds drifted; update generated appender mapping: "
+            f"expected={sorted(expected_kinds)} got={sorted(kinds)}"
+        )
+
+    return """pub(super) fn write_wire_any(
+    builder: &mut ColumnarBatchBuilder,
+    handle: FieldHandle,
+    value: WireAny<'_>,
+    scratch: &mut WireScratch,
+    string_storage: StringStorage,
+) -> Result<(), ProjectionError> {
+    match value {
+        WireAny::String(value) => super::write_wire_str(builder, handle, value, string_storage)?,
+        WireAny::Bool(value) => builder.write_bool(handle, value),
+        WireAny::Int(value) => builder.write_i64(handle, value),
+        WireAny::Double(value) => builder.write_f64(handle, value),
+        WireAny::Bytes(value) => super::write_hex_field(builder, handle, value, &mut scratch.hex)?,
+        WireAny::ArrayRaw(value) => {
+            super::write_wire_any_complex_json(builder, handle, WireAny::ArrayRaw(value), scratch)?;
+        }
+        WireAny::KvListRaw(value) => {
+            super::write_wire_any_complex_json(builder, handle, WireAny::KvListRaw(value), scratch)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn write_wire_any_as_string(
+    builder: &mut ColumnarBatchBuilder,
+    handle: FieldHandle,
+    value: WireAny<'_>,
+    scratch: &mut WireScratch,
+    string_storage: StringStorage,
+) -> Result<(), ProjectionError> {
+    match value {
+        WireAny::String(value) => super::write_wire_str(builder, handle, value, string_storage)?,
+        WireAny::Bool(true) => {
+            builder
+                .write_str_bytes(handle, b\"true\")
+                .map_err(|e| ProjectionError::Batch(e.to_string()))?;
+        }
+        WireAny::Bool(false) => {
+            builder
+                .write_str_bytes(handle, b\"false\")
+                .map_err(|e| ProjectionError::Batch(e.to_string()))?;
+        }
+        WireAny::Int(value) => {
+            scratch.decimal.clear();
+            let mut buf = itoa::Buffer::new();
+            scratch.decimal.extend_from_slice(buf.format(value).as_bytes());
+            builder
+                .write_str_bytes(handle, &scratch.decimal)
+                .map_err(|e| ProjectionError::Batch(e.to_string()))?;
+        }
+        WireAny::Double(value) => {
+            scratch.decimal.clear();
+            let mut buf = ryu::Buffer::new();
+            scratch.decimal.extend_from_slice(buf.format(value).as_bytes());
+            builder
+                .write_str_bytes(handle, &scratch.decimal)
+                .map_err(|e| ProjectionError::Batch(e.to_string()))?;
+        }
+        WireAny::Bytes(value) => super::write_hex_field(builder, handle, value, &mut scratch.hex)?,
+        WireAny::ArrayRaw(value) => {
+            super::write_wire_any_complex_json(builder, handle, WireAny::ArrayRaw(value), scratch)?;
+        }
+        WireAny::KvListRaw(value) => {
+            super::write_wire_any_complex_json(builder, handle, WireAny::KvListRaw(value), scratch)?;
+        }
+    }
+    Ok(())
+}
+"""
+
+
+def render_wire_any_json_writer(spec: dict) -> str:
+    kinds = {
+        field["kind"]
+        for field in any_value_fields(spec)
+        if field["action"] == "project"
+    }
+    expected_kinds = {"string", "bool", "int", "double", "bytes", "array", "kvlist"}
+    if kinds != expected_kinds:
+        raise ValueError(
+            "AnyValue projection kinds drifted; update generated JSON writer mapping: "
+            f"expected={sorted(expected_kinds)} got={sorted(kinds)}"
+        )
+
+    array_value_fields = {field["name"]: field for field in message_fields(spec, "ArrayValue")}
+    kvlist_value_fields = {field["name"]: field for field in message_fields(spec, "KeyValueList")}
+    key_value_fields = {field["name"]: field for field in message_fields(spec, "KeyValue")}
+    array_values_number = array_value_fields["values"]["number"]
+    kvlist_values_number = kvlist_value_fields["values"]["number"]
+    key_number = key_value_fields["key"]["number"]
+    value_number = key_value_fields["value"]["number"]
+
+    return """/// Maximum nesting depth for recursive AnyValue JSON serialization.
+/// Protects against stack overflow from deeply nested ArrayValue/KvListValue payloads.
+pub(super) const MAX_ANY_VALUE_DEPTH: usize = 64;
+
+pub(super) fn write_wire_any_json(
+    value: WireAny<'_>,
+    out: &mut Vec<u8>,
+    scratch: &mut WireScratch,
+) -> Result<(), ProjectionError> {
+    write_wire_any_json_depth(value, out, scratch, 0)
+}
+
+pub(super) fn write_wire_any_json_depth(
+    value: WireAny<'_>,
+    out: &mut Vec<u8>,
+    scratch: &mut WireScratch,
+    depth: usize,
+) -> Result<(), ProjectionError> {
+    if depth > MAX_ANY_VALUE_DEPTH {
+        return Err(ProjectionError::Invalid(
+            "AnyValue nesting depth exceeds limit",
+        ));
+    }
+    match value {
+        WireAny::String(value) => {
+            out.push(b'\"');
+            super::write_json_escaped_bytes(out, value);
+            out.push(b'\"');
+        }
+        WireAny::Bool(value) => out.extend_from_slice(if value { b\"true\" } else { b\"false\" }),
+        WireAny::Int(value) => {
+            scratch.decimal.clear();
+            let mut buf = itoa::Buffer::new();
+            scratch.decimal.extend_from_slice(buf.format(value).as_bytes());
+            out.extend_from_slice(&scratch.decimal);
+        }
+        WireAny::Double(value) => {
+            if value.is_finite() {
+                scratch.decimal.clear();
+                let mut buf = ryu::Buffer::new();
+                scratch.decimal.extend_from_slice(buf.format(value).as_bytes());
+                out.extend_from_slice(&scratch.decimal);
+            } else if value.is_nan() {
+                out.extend_from_slice(b\"\\\"NaN\\\"\");
+            } else if value.is_sign_positive() {
+                out.extend_from_slice(b\"\\\"inf\\\"\");
+            } else {
+                out.extend_from_slice(b\"\\\"-inf\\\"\");
+            }
+        }
+        WireAny::Bytes(value) => {
+            out.push(b'\"');
+            super::write_hex_to_buf(out, value);
+            out.push(b'\"');
+        }
+        WireAny::ArrayRaw(value) => write_array_value_json(value, out, scratch, depth)?,
+        WireAny::KvListRaw(value) => write_kvlist_value_json(value, out, scratch, depth)?,
+    }
+    Ok(())
+}
+
+pub(super) fn write_array_value_json(
+    array_value: &[u8],
+    out: &mut Vec<u8>,
+    scratch: &mut WireScratch,
+    depth: usize,
+) -> Result<(), ProjectionError> {
+    out.push(b'[');
+    let mut first = true;
+    super::for_each_field(array_value, |field, field_value| {
+        if field != __ARRAY_VALUES_FIELD__ {
+            return Ok(());
+        }
+        let WireField::Len(any_value) = field_value else {
+            return Err(ProjectionError::Invalid(
+                "invalid wire type for ArrayValue.values",
+            ));
+        };
+        if !first {
+            out.push(b',');
+        }
+        first = false;
+        if let Some(value) = decode_any_value_wire(any_value)? {
+            write_wire_any_json_depth(value, out, scratch, depth + 1)?;
+        } else {
+            out.extend_from_slice(b"null");
+        }
+        Ok(())
+    })?;
+    out.push(b']');
+    Ok(())
+}
+
+pub(super) fn write_kvlist_value_json(
+    kvlist_value: &[u8],
+    out: &mut Vec<u8>,
+    scratch: &mut WireScratch,
+    depth: usize,
+) -> Result<(), ProjectionError> {
+    out.push(b'[');
+    let mut first = true;
+    super::for_each_field(kvlist_value, |field, field_value| {
+        if field != __KVLIST_VALUES_FIELD__ {
+            return Ok(());
+        }
+        let WireField::Len(kv) = field_value else {
+            return Err(ProjectionError::Invalid(
+                "invalid wire type for KeyValueList.values",
+            ));
+        };
+        if !first {
+            out.push(b',');
+        }
+        first = false;
+        write_key_value_json(kv, out, scratch, depth)?;
+        Ok(())
+    })?;
+    out.push(b']');
+    Ok(())
+}
+
+pub(super) fn write_key_value_json(
+    kv: &[u8],
+    out: &mut Vec<u8>,
+    scratch: &mut WireScratch,
+    depth: usize,
+) -> Result<(), ProjectionError> {
+    let mut key = &[][..];
+    let mut value = None;
+    super::for_each_field(kv, |field, field_value| {
+        match (field, field_value) {
+            (__KEY_VALUE_KEY_FIELD__, WireField::Len(bytes)) => {
+                key = super::require_utf8(bytes, "invalid UTF-8 attribute key")?;
+            }
+            (__KEY_VALUE_KEY_FIELD__, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for KeyValue.key",
+                ));
+            }
+            (__KEY_VALUE_VALUE_FIELD__, WireField::Len(bytes)) => {
+                value = decode_any_value_wire(bytes)?;
+            }
+            (__KEY_VALUE_VALUE_FIELD__, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for KeyValue.value",
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    })?;
+
+    out.extend_from_slice(b"{\\"k\\":\\"");
+    super::write_json_escaped_bytes(out, key);
+    out.extend_from_slice(b"\\",\\"v\\":");
+    if let Some(value) = value {
+        write_wire_any_json_depth(value, out, scratch, depth + 1)?;
+    } else {
+        out.extend_from_slice(b"null");
+    }
+    out.push(b'}');
+    Ok(())
+}
+""".replace("__ARRAY_VALUES_FIELD__", str(array_values_number)).replace(
+        "__KVLIST_VALUES_FIELD__", str(kvlist_values_number)
+    ).replace("__KEY_VALUE_KEY_FIELD__", str(key_number)).replace(
+        "__KEY_VALUE_VALUE_FIELD__", str(value_number)
+    )
+
+
 def render(spec: dict) -> str:
+    field_number_constants = render_field_number_constants(spec)
     tables = render_field_tables(spec)
     any_value_decoder = render_any_value_decoder(spec)
     key_value_decoder = render_key_value_decoder(spec)
     lookup_field = render_lookup_field(spec)
     core_constant_drift_tests = render_core_constant_drift_tests(spec)
     generated_test_vectors = render_generated_test_vectors(spec)
+    planned_handle_builder = render_planned_handle_builder()
+    wire_any_field_kind = render_wire_any_field_kind(spec)
+    wire_any_appenders = render_wire_any_appenders(spec)
+    wire_any_json_writer = render_wire_any_json_writer(spec)
+    message_variants = "\n    ".join(message["name"] + "," for message in spec["messages"])
+    fields_for_arms = "\n        ".join(
+        f"MessageKind::{message['name']} => {rust_ident(message['name'])}_FIELDS,"
+        for message in spec["messages"]
+    )
     return f"""// @generated by scripts/generate_otlp_projection.py; DO NOT EDIT.
 // spec: {spec["name"]} v{spec["version"]}; opentelemetry-proto {spec["proto_version"]}
 
-use super::{{ProjectionError, WireAny, WireField}};
+use super::{{ProjectionError, StringStorage, WireAny, WireField, WireScratch}};
+use logfwd_arrow::columnar::builder::ColumnarBatchBuilder;
+use logfwd_arrow::columnar::plan::{{BatchPlan, FieldHandle, FieldKind}};
+use logfwd_types::field_names;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum WireKind {{
@@ -599,16 +981,10 @@ pub(super) enum ProjectionAction {{
     Unsupported,
 }}
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MessageKind {{
-    ExportLogsServiceRequest,
-    ResourceLogs,
-    Resource,
-    ScopeLogs,
-    InstrumentationScope,
-    LogRecord,
-    KeyValue,
-    AnyValue,
+    {message_variants}
 }}
 
 #[derive(Clone, Copy, Debug)]
@@ -622,18 +998,13 @@ pub(super) struct FieldRule {{
     pub(super) child: Option<MessageKind>,
 }}
 
+{field_number_constants}
+
 {tables}
 #[allow(dead_code)]
 pub(super) fn fields_for(message: MessageKind) -> &'static [FieldRule] {{
     match message {{
-        MessageKind::ExportLogsServiceRequest => EXPORTLOGSSERVICEREQUEST_FIELDS,
-        MessageKind::ResourceLogs => RESOURCELOGS_FIELDS,
-        MessageKind::Resource => RESOURCE_FIELDS,
-        MessageKind::ScopeLogs => SCOPELOGS_FIELDS,
-        MessageKind::InstrumentationScope => INSTRUMENTATIONSCOPE_FIELDS,
-        MessageKind::LogRecord => LOGRECORD_FIELDS,
-        MessageKind::KeyValue => KEYVALUE_FIELDS,
-        MessageKind::AnyValue => ANYVALUE_FIELDS,
+        {fields_for_arms}
     }}
 }}
 
@@ -641,8 +1012,12 @@ pub(super) fn classify_projection_support(input: &[u8]) -> Result<(), Projection
     scan_message(input, MessageKind::ExportLogsServiceRequest)
 }}
 
+{planned_handle_builder}
 {any_value_decoder}
 {key_value_decoder}
+{wire_any_field_kind}
+{wire_any_appenders}
+{wire_any_json_writer}
 fn scan_message(input: &[u8], message: MessageKind) -> Result<(), ProjectionError> {{
     if message == MessageKind::AnyValue {{
         return scan_any_value(input);
@@ -823,7 +1198,7 @@ fn read_varint(input: &mut &[u8]) -> Result<u64, ProjectionError> {{
 #[cfg(test)]
 mod generated_tests {{
     use super::*;
-    use super::super::otlp;
+    use logfwd_core::otlp;
 
 {generated_test_vectors}
 
@@ -831,9 +1206,75 @@ mod generated_tests {{
     fn generated_anyvalue_table_covers_all_current_oneof_fields() {{
         let fields = fields_for(MessageKind::AnyValue);
         assert_eq!(fields.len(), 7);
-        assert!(fields.iter().any(|f| f.name == "array_value" && f.action == ProjectionAction::Unsupported));
-        assert!(fields.iter().any(|f| f.name == "kvlist_value" && f.action == ProjectionAction::Unsupported));
+        assert!(fields.iter().any(|f| f.name == "array_value" && f.action == ProjectionAction::Project));
+        assert!(fields.iter().any(|f| f.name == "kvlist_value" && f.action == ProjectionAction::Project));
         assert!(fields.iter().any(|f| f.name == "bytes_value" && f.action == ProjectionAction::Project));
+    }}
+
+    #[test]
+    fn generated_wire_any_field_kind_matches_variant_policy() {{
+        assert_eq!(wire_any_field_kind(&WireAny::String(b"s")), FieldKind::Utf8View);
+        assert_eq!(wire_any_field_kind(&WireAny::Bool(true)), FieldKind::Bool);
+        assert_eq!(wire_any_field_kind(&WireAny::Int(42)), FieldKind::Int64);
+        assert_eq!(wire_any_field_kind(&WireAny::Double(42.5)), FieldKind::Float64);
+        assert_eq!(wire_any_field_kind(&WireAny::Bytes(b"b")), FieldKind::Utf8View);
+        assert_eq!(wire_any_field_kind(&WireAny::ArrayRaw(&[])), FieldKind::Utf8View);
+        assert_eq!(wire_any_field_kind(&WireAny::KvListRaw(&[])), FieldKind::Utf8View);
+    }}
+
+    #[test]
+    fn generated_wire_any_json_handles_scalar_and_complex_variants() {{
+        let mut scratch = WireScratch::default();
+        let cases: &[(WireAny<'_>, &[u8])] = &[
+            (WireAny::String(br#"a"b"#), br#""a\\"b""#),
+            (WireAny::Bool(true), b"true"),
+            (WireAny::Int(-42), b"-42"),
+            (WireAny::Double(12.5), b"12.5"),
+            (WireAny::Bytes(&[0xde, 0xad]), br#""dead""#),
+            (WireAny::ArrayRaw(&[]), b"[]"),
+            (WireAny::KvListRaw(&[]), b"[]"),
+        ];
+
+        for &(value, expected) in cases {{
+            let mut out = Vec::new();
+            write_wire_any_json(value, &mut out, &mut scratch)
+                .expect("generated JSON writer should handle projected variant");
+            assert_eq!(out, expected);
+        }}
+    }}
+
+    #[test]
+    fn generated_complex_json_writers_handle_nested_messages() {{
+        let mut scratch = WireScratch::default();
+        let any_string = [10, 1, b'x'];
+        let array = [10, 3, 10, 1, b'x'];
+        let kv = [10, 1, b'k', 18, 3, 10, 1, b'v'];
+        let kvlist = [10, 8, 10, 1, b'k', 18, 3, 10, 1, b'v'];
+
+        let mut out = Vec::new();
+        write_array_value_json(&array, &mut out, &mut scratch, 0)
+            .expect("generated array JSON writer should decode repeated AnyValue");
+        assert_eq!(out, br#"["x"]"#);
+
+        out.clear();
+        write_key_value_json(&kv, &mut out, &mut scratch, 0)
+            .expect("generated key value JSON writer should decode KeyValue");
+        assert_eq!(out, br#"{{"k":"k","v":"v"}}"#);
+
+        out.clear();
+        write_kvlist_value_json(&kvlist, &mut out, &mut scratch, 0)
+            .expect("generated kvlist JSON writer should decode repeated KeyValue");
+        assert_eq!(out, br#"[{{"k":"k","v":"v"}}]"#);
+
+        out.clear();
+        write_wire_any_json(WireAny::ArrayRaw(&array), &mut out, &mut scratch)
+            .expect("generated AnyValue JSON writer should dispatch arrays");
+        assert_eq!(out, br#"["x"]"#);
+
+        out.clear();
+        write_wire_any_json(WireAny::String(&any_string[2..]), &mut out, &mut scratch)
+            .expect("generated AnyValue JSON writer should keep scalar dispatch");
+        assert_eq!(out, br#""x""#);
     }}
 
     #[test]
@@ -860,13 +1301,10 @@ mod generated_tests {{
     }}
 
     #[test]
-    fn generated_decode_anyvalue_terminal_unsupported_requests_fallback() {{
+    fn generated_decode_anyvalue_terminal_complex_keeps_last_oneof_value() {{
         let bytes = [10, 2, b'o', b'k', 42, 0];
-        let err = match decode_any_value_wire(&bytes) {{
-            Ok(_) => panic!("terminal unsupported oneof should request fallback"),
-            Err(err) => err,
-        }};
-        assert!(matches!(err, ProjectionError::Unsupported(_)));
+        let value = decode_any_value_wire(&bytes).expect("terminal oneof should decode");
+        assert!(matches!(value, Some(WireAny::ArrayRaw(_))));
     }}
 
     #[test]
@@ -953,39 +1391,40 @@ mod generated_tests {{
     }}
 
     #[test]
-    fn generated_anyvalue_unsupported_shapes_trigger_fallback() {{
-        for &field_number in unsupported_anyvalue_field_numbers() {{
+    fn generated_anyvalue_complex_shapes_are_projected() {{
+        for &field_number in complex_anyvalue_field_numbers() {{
             let payload = sample_field_for_wire(field_number, WireKind::Len);
-            let err = scan_message(&payload, MessageKind::AnyValue)
-                .expect_err("unsupported AnyValue shape should request fallback");
-            assert!(matches!(err, ProjectionError::Unsupported(_)));
-            let err = match decode_any_value_wire(&payload) {{
-                Ok(_) => panic!("unsupported AnyValue decoder shape should request fallback"),
-                Err(err) => err,
-            }};
-            assert!(matches!(err, ProjectionError::Unsupported(_)));
+            scan_message(&payload, MessageKind::AnyValue)
+                .expect("complex AnyValue shape should classify for projection");
+            let value = decode_any_value_wire(&payload)
+                .expect("complex AnyValue should decode");
+            assert!(matches!(
+                value,
+                Some(WireAny::ArrayRaw(_)) | Some(WireAny::KvListRaw(_))
+            ));
         }}
     }}
 
     #[test]
-    fn generated_anyvalue_oneof_terminal_unsupported_drives_fallback() {{
+    fn generated_anyvalue_oneof_last_value_wins_for_complex_and_primitive() {{
         let projected = sample_field_for_wire(otlp::ANY_VALUE_STRING_VALUE, WireKind::Len);
-        for &field_number in unsupported_anyvalue_field_numbers() {{
-            let unsupported = sample_field_for_wire(field_number, WireKind::Len);
+        for &field_number in complex_anyvalue_field_numbers() {{
+            let complex = sample_field_for_wire(field_number, WireKind::Len);
 
-            let mut unsupported_then_projected = unsupported.clone();
-            unsupported_then_projected.extend_from_slice(&projected);
-            let value = decode_any_value_wire(&unsupported_then_projected)
+            let mut complex_then_projected = complex.clone();
+            complex_then_projected.extend_from_slice(&projected);
+            let value = decode_any_value_wire(&complex_then_projected)
                 .expect("terminal projected oneof should decode");
             assert!(matches!(value, Some(WireAny::String(_))));
 
-            let mut projected_then_unsupported = projected.clone();
-            projected_then_unsupported.extend_from_slice(&unsupported);
-            let err = match decode_any_value_wire(&projected_then_unsupported) {{
-                Ok(_) => panic!("terminal unsupported oneof should request fallback"),
-                Err(err) => err,
-            }};
-            assert!(matches!(err, ProjectionError::Unsupported(_)));
+            let mut projected_then_complex = projected.clone();
+            projected_then_complex.extend_from_slice(&complex);
+            let value = decode_any_value_wire(&projected_then_complex)
+                .expect("terminal complex oneof should decode");
+            assert!(matches!(
+                value,
+                Some(WireAny::ArrayRaw(_)) | Some(WireAny::KvListRaw(_))
+            ));
         }}
     }}
 

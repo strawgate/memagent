@@ -1126,7 +1126,6 @@ fn cmd_wizard() -> Result<(), CliError> {
         let uc = &USE_CASE_TEMPLATES[uc_idx];
         println!("{}selected{}: {}", green(), reset(), uc.title);
         println!();
-        // TODO: support multiline SQL input (currently single-line via read_line)
         let sql = prompt_text(
             "SQL transform (blank = keep the preset default)",
             uc.transform,
@@ -1151,7 +1150,6 @@ fn cmd_wizard() -> Result<(), CliError> {
             &output_descs,
         )?;
 
-        // TODO: support multiline SQL input (currently single-line via read_line)
         let sql = prompt_text(
             "Optional SQL transform (blank = SELECT * FROM logs)",
             "SELECT * FROM logs",
@@ -3111,7 +3109,7 @@ input:
   path: /var/log/*.log
   format: cri
 output:
-  type: null
+  type: "null"
 transform: |
   SELECT _timestampp FROM logs
 "#;
@@ -3131,7 +3129,7 @@ input:
   path: /var/log/*.log
   format: cri
 output:
-  type: null
+  type: "null"
 transform: |
   SELECT _timestamp, _stream, body FROM logs
 "#;
@@ -3151,7 +3149,7 @@ input:
   path: /var/log/*.log
   format: cri
 output:
-  type: null
+  type: "null"
 transform: |
   SELECT level, msg, custom_field FROM logs
 "#;
@@ -3171,7 +3169,7 @@ input:
   path: /var/log/*.log
   format: json
 output:
-  type: null
+  type: "null"
 transform: |
   SELECT custom_field FROM logs
 "#;
@@ -3191,7 +3189,7 @@ input:
   path: /var/log/*.log
   format: cri
 output:
-  type: null
+  type: "null"
 enrichment:
   - type: static
     table_name: labels
@@ -3215,7 +3213,7 @@ input:
   type: file
   path: /var/log/*.log
 output:
-  type: null
+  type: "null"
 transform: |
   SELECT _unknown_col FROM logs
 "#;

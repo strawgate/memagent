@@ -4,22 +4,23 @@ use std::time::Duration;
 
 use opentelemetry::metrics::Meter;
 
-use logfwd_config::{
-    CompressionFormat, Format, InputTypeConfig, OutputConfigV2, PipelineConfig, SourceMetadataStyle,
-};
 #[cfg(feature = "datafusion")]
 use logfwd_config::{EnrichmentConfig, GeoDatabaseFormat};
+use logfwd_config::{Format, InputTypeConfig, OutputConfigV2, PipelineConfig, SourceMetadataStyle};
 use logfwd_diagnostics::diagnostics::PipelineMetrics;
 use logfwd_io::checkpoint::{
     CheckpointStore, FileCheckpointStore, SourceCheckpoint, default_data_dir,
 };
-use logfwd_output::{AsyncFanoutFactory, SinkFactory, build_sink_factory_v2};
+use logfwd_output::{AsyncFanoutFactory, SinkFactory, build_sink_factory};
 use logfwd_types::field_names;
 use logfwd_types::pipeline::{PipelineMachine, SourceId};
-use logfwd_types::source_metadata::{SourceMetadataPlan, SourcePathColumn};
+use logfwd_types::source_metadata::SourceMetadataPlan;
 
 use super::input_build::build_input_state;
-use super::{InputTransform, Pipeline};
+use super::{
+    InputTransform, Pipeline, source_metadata_style_needs_source_paths,
+    source_metadata_style_source_path,
+};
 
 // ── Pipeline defaults ──────────────────────────────────────────────────
 /// Default output worker count when `pipelines.<name>.workers` is unset.
@@ -37,26 +38,12 @@ pub(crate) const DEFAULT_CHECKPOINT_FLUSH_INTERVAL: Duration = Duration::from_se
 /// Default maximum time to wait for worker-pool drain before cancellation.
 pub(crate) const DEFAULT_POOL_DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
 
-fn source_metadata_style_source_path(style: SourceMetadataStyle) -> SourcePathColumn {
-    match style {
-        SourceMetadataStyle::Ecs => SourcePathColumn::Ecs,
-        SourceMetadataStyle::Otel => SourcePathColumn::Otel,
-        SourceMetadataStyle::Vector => SourcePathColumn::Vector,
-        SourceMetadataStyle::None | SourceMetadataStyle::Fastforward => SourcePathColumn::None,
-    }
-}
-
-fn source_metadata_style_needs_source_paths(style: SourceMetadataStyle) -> bool {
-    source_metadata_style_source_path(style)
-        .to_column_name()
-        .is_some()
-}
-
 fn input_type_exposes_public_source_paths(type_config: &InputTypeConfig) -> bool {
-    // Keep this list tied to InputSource::source_paths() implementations. S3
-    // derives SourceId from object keys, but does not yet expose key/path
-    // snapshots for public path metadata columns.
-    matches!(type_config, InputTypeConfig::File(_))
+    // Keep this list tied to InputSource::source_paths() implementations.
+    matches!(
+        type_config,
+        InputTypeConfig::File(_) | InputTypeConfig::S3(_)
+    )
 }
 
 impl Pipeline {
@@ -565,7 +552,7 @@ impl Pipeline {
                 return Err(format!(
                     "pipeline '{name}' input '{input_name}': source_metadata style {} requires \
                      source paths, but input type {} does not expose public source path snapshots; \
-                     currently only file inputs support public source path metadata styles",
+                     currently only file and s3 inputs support public source path metadata styles",
                     input_cfg.source_metadata,
                     input_cfg.input_type()
                 ));
@@ -582,18 +569,10 @@ impl Pipeline {
                 SourceMetadataPlan::default()
             };
             #[cfg(not(feature = "turmoil"))]
-            let source_metadata_plan =
-                if input_cfg.source_metadata == SourceMetadataStyle::Fastforward {
-                    SourceMetadataPlan {
-                        has_source_id: true,
-                        source_path: source_metadata_style_source_path(input_cfg.source_metadata),
-                    }
-                } else {
-                    SourceMetadataPlan {
-                        has_source_id: false,
-                        source_path: source_metadata_style_source_path(input_cfg.source_metadata),
-                    }
-                };
+            let source_metadata_plan = SourceMetadataPlan {
+                has_source_id: input_cfg.source_metadata == SourceMetadataStyle::Fastforward,
+                source_path: source_metadata_style_source_path(input_cfg.source_metadata),
+            };
 
             input_transforms.push(InputTransform {
                 scanner,
@@ -616,20 +595,13 @@ impl Pipeline {
         // Build output sink factory → pool.
         let factory: Arc<dyn SinkFactory> = if config.outputs.len() == 1 {
             let output_cfg = &config.outputs[0];
-            build_output_factory_from_config(
-                0,
-                output_cfg.typed(),
-                output_cfg.compression,
-                base_path,
-                &mut metrics,
-            )?
+            build_output_factory_from_config(0, output_cfg.typed(), base_path, &mut metrics)?
         } else {
             let mut factories: Vec<Arc<dyn SinkFactory>> = Vec::new();
             for (i, output_cfg) in config.outputs.iter().enumerate() {
                 factories.push(build_output_factory_from_config(
                     i,
                     output_cfg.typed(),
-                    output_cfg.compression,
                     base_path,
                     &mut metrics,
                 )?);
@@ -702,7 +674,6 @@ impl Pipeline {
 fn build_output_factory_from_config(
     index: usize,
     output_cfg: &OutputConfigV2,
-    legacy_file_compression: Option<CompressionFormat>,
     base_path: Option<&Path>,
     metrics: &mut PipelineMetrics,
 ) -> Result<Arc<dyn SinkFactory>, String> {
@@ -712,16 +683,7 @@ fn build_output_factory_from_config(
     let output_type_str = output_cfg.output_type().to_string();
     let output_stats = metrics.add_output(&output_name, &output_type_str);
 
-    if matches!(output_cfg, OutputConfigV2::File(_))
-        && let Some(compression) = legacy_file_compression
-    {
-        return Err(format!(
-            "output '{output_name}': file does not support '{compression}' compression"
-        ));
-    }
-
-    build_sink_factory_v2(&output_name, output_cfg, base_path, output_stats)
-        .map_err(|e| e.to_string())
+    build_sink_factory(&output_name, output_cfg, base_path, output_stats).map_err(|e| e.to_string())
 }
 
 fn should_open_checkpoint_store(checkpoint_dir: &Path, has_explicit_data_dir: bool) -> bool {
@@ -744,9 +706,9 @@ fn should_open_checkpoint_store(checkpoint_dir: &Path, has_explicit_data_dir: bo
 mod tests {
     use super::*;
     use logfwd_config::{
-        CompressionFormat, InputConfig, InputTypeConfig, OutputConfig, OutputConfigV2, OutputType,
-        StdoutOutputConfig,
+        InputConfig, InputTypeConfig, OutputConfig, OutputConfigV2, OutputType, StdoutOutputConfig,
     };
+    use logfwd_types::source_metadata::SourcePathColumn;
 
     fn minimal_input(path: String) -> InputConfig {
         InputConfig {
@@ -804,32 +766,6 @@ mod tests {
 
         Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
             .expect("native typed output entry should build");
-    }
-
-    #[test]
-    fn from_config_preserves_legacy_output_factory_rejections() {
-        let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("test.log");
-        std::fs::write(&log_path, b"{\"msg\":\"hello\"}\n").unwrap();
-
-        let mut config = minimal_config(log_path.display().to_string());
-        config.outputs = vec![
-            OutputConfig {
-                output_type: OutputType::File,
-                path: Some(dir.path().join("out.log").display().to_string()),
-                compression: Some(CompressionFormat::Gzip),
-                ..Default::default()
-            }
-            .into(),
-        ];
-
-        let err = Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
-            .err()
-            .expect("legacy file compression should still be rejected");
-        assert!(
-            err.contains("file does not support 'gzip' compression"),
-            "unexpected error: {err}"
-        );
     }
 
     #[test]
@@ -984,8 +920,8 @@ mod tests {
     }
 
     #[test]
-    fn public_source_path_style_rejects_s3_until_keys_are_exposed() {
-        let mut config = PipelineConfig {
+    fn public_source_path_style_allows_s3_key_snapshots() {
+        let config = PipelineConfig {
             inputs: vec![InputConfig {
                 name: Some("s3-in".to_string()),
                 format: Some(Format::Json),
@@ -999,14 +935,14 @@ mod tests {
                         prefix: None,
                         sqs_queue_url: None,
                         start_after: None,
-                        access_key_id: None,
-                        secret_access_key: None,
+                        access_key_id: Some("test-key".to_string()),
+                        secret_access_key: Some("test-secret".to_string()),
                         session_token: None,
                         part_size_bytes: None,
                         max_concurrent_fetches: None,
                         max_concurrent_objects: None,
                         visibility_timeout_secs: None,
-                        compression: None,
+                        compression: Some("invalid-test-compression".to_string()),
                         poll_interval_ms: None,
                     },
                 }),
@@ -1023,19 +959,10 @@ mod tests {
 
         let err = Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
             .err()
-            .expect("S3 does not yet expose public source path snapshots");
-        assert!(
-            err.contains("does not expose public source path snapshots"),
-            "unexpected error: {err}"
-        );
-
-        config.inputs[0].source_metadata = SourceMetadataStyle::Fastforward;
-        let err = Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
-            .err()
-            .expect("non-public S3 source identity should reach S3 build validation");
+            .expect("S3 public source path style should reach S3 build validation");
         assert!(
             err.contains("S3 input requires the 's3' feature")
-                || err.contains("failed to create S3 input"),
+                || err.contains("unknown S3 compression value 'invalid-test-compression'"),
             "unexpected error: {err}"
         );
     }

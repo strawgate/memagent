@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Library evaluation benchmarks for I/O component refactor (issue #1283).
 //!
 //! Compares:
@@ -7,8 +8,6 @@
 //! 4. `async-compression` write path — streaming compress throughput
 //!
 //! Run: `cargo run --release --bin library-eval -p logfwd-bench`
-
-#![allow(clippy::print_stdout, clippy::print_stderr)]
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

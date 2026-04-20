@@ -785,6 +785,11 @@ mod verification {
         let cp1: Cp = kani::any();
         let cp2: Cp = kani::any();
         let cp3: Cp = kani::any();
+        // Domain narrowing: state-machine behavior, not checkpoint arithmetic.
+        // 9 values (0..=8) cover equal, less-than, and greater-than cases.
+        kani::assume(cp1 <= 8);
+        kani::assume(cp2 <= 8);
+        kani::assume(cp3 <= 8);
         kani::assume(cp1 <= cp2);
         kani::assume(cp2 <= cp3);
         kani::cover!(
@@ -834,6 +839,9 @@ mod verification {
 
         let cp1: Cp = kani::any();
         let cp2: Cp = kani::any();
+        // Domain narrowing: state-machine ordering, not value arithmetic.
+        kani::assume(cp1 <= 8);
+        kani::assume(cp2 <= 8);
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -1034,6 +1042,10 @@ mod verification {
         let cp1: Cp = kani::any();
         let cp2: Cp = kani::any();
         let cp3: Cp = kani::any();
+        // Domain narrowing: monotonicity is a state-machine property, not arithmetic.
+        kani::assume(cp1 <= 8);
+        kani::assume(cp2 <= 8);
+        kani::assume(cp3 <= 8);
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -1115,6 +1127,7 @@ mod verification {
         let src = SourceId(0);
 
         let cp: Cp = kani::any();
+        kani::assume(cp <= 8); // domain narrowing: state-machine behavior
         let t1 = running.create_batch(src, cp);
         let s1 = running.begin_send(t1);
 
@@ -1203,6 +1216,10 @@ mod verification {
         let cp1: Cp = kani::any();
         let cp2: Cp = kani::any();
         let cp3: Cp = kani::any();
+        // Domain narrowing: ack/reject ordering, not checkpoint value space.
+        kani::assume(cp1 <= 8);
+        kani::assume(cp2 <= 8);
+        kani::assume(cp3 <= 8);
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);

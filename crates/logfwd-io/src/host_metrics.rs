@@ -326,14 +326,14 @@ struct SensorRow {
     disk_io_write_total_bytes: Option<u64>,
 }
 
+// Control files are operator-tunable runtime state, not a fixed schema. Tolerate
+// unknown fields so operators can stage new knobs or leave stale ones behind
+// (for example `emit_heartbeat`, which became a no-op) without the reader
+// aborting mid-poll.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ControlFileConfig {
     generation: Option<u64>,
     enabled_families: Option<Vec<String>>,
-    // Deprecated no-op retained for backward-compatible control files.
-    #[allow(dead_code)]
-    emit_heartbeat: Option<bool>,
     emit_signal_rows: Option<bool>,
 }
 
@@ -1727,6 +1727,53 @@ mod tests {
     }
 
     #[test]
+    fn control_file_ignores_unknown_keys() {
+        let (_dir, control_path) = tempfiles::control_file_path();
+
+        let mut input = HostMetricsInput::new(
+            "sensor",
+            host_target(),
+            HostMetricsConfig {
+                control_path: Some(control_path.clone()),
+                control_reload_interval: Duration::from_millis(1),
+                poll_interval: Duration::from_secs(60),
+                enabled_families: Some(vec!["process".to_string()]),
+                ..HostMetricsConfig::default()
+            },
+        )
+        .expect("host target should be valid");
+
+        // Startup poll primes the reload loop.
+        assert_eq!(input.poll().expect("startup poll").len(), 1);
+
+        // Control file carries a stale key (emit_heartbeat became a no-op) alongside
+        // live keys — the reader must ignore the unknown key rather than abort.
+        tempfiles::write_control_file(
+            &control_path,
+            serde_json::json!({
+                "generation": 7,
+                "enabled_families": ["process"],
+                "emit_signal_rows": true,
+                "emit_heartbeat": true,
+            }),
+        );
+        std::thread::sleep(Duration::from_millis(2));
+
+        let events = input.poll().expect("reload poll should succeed");
+        assert_eq!(events.len(), 1);
+        let batch = first_batch(&events);
+        let kinds = string_col(batch, "event_kind");
+        assert!(
+            kinds
+                .iter()
+                .any(|v| v.as_deref() == Some("control_reload_applied")),
+            "stale control-file key must not block reload"
+        );
+        let generations = u64_col(batch, "control_generation");
+        assert!(generations.iter().all(|g| *g == 7));
+    }
+
+    #[test]
     fn control_reload_same_generation_and_values_is_noop() {
         let (_dir, control_path) = tempfiles::control_file_path();
 
@@ -2283,142 +2330,6 @@ mod tests {
             61,
             "schema should have 14 base + 47 telemetry columns"
         );
-    }
-
-    #[test]
-    #[ignore] // interactive data audit — run with --ignored
-    fn data_audit_dump_two_cycles() {
-        let now_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
-        let mut input = HostMetricsInput::new(
-            "audit",
-            host_target(),
-            HostMetricsConfig {
-                enabled_families: Some(vec![
-                    "process".to_string(),
-                    "network".to_string(),
-                    "file".to_string(),
-                ]),
-                emit_signal_rows: true,
-                poll_interval: Duration::from_millis(50),
-                max_rows_per_poll: 32,
-                ..HostMetricsConfig::default()
-            },
-        )
-        .expect("host target");
-
-        // --- Cycle 1: startup ---
-        let events = input.poll().expect("startup poll");
-        assert_eq!(events.len(), 1);
-        let batch = first_batch(&events);
-        eprintln!("\n=== CYCLE 1 (startup) ===");
-        eprintln!("rows: {}, cols: {}", batch.num_rows(), batch.num_columns());
-
-        let ts = u64_col(batch, "timestamp_unix_nano");
-        for t in &ts {
-            let secs = t / 1_000_000_000;
-            assert!(
-                secs >= now_secs - 5 && secs <= now_secs + 5,
-                "timestamp out of range: {secs} vs now {now_secs}"
-            );
-        }
-
-        let fams = string_col(batch, "event_family");
-        let kinds = string_col(batch, "event_kind");
-        let mut fk: std::collections::HashMap<String, usize> = Default::default();
-        for (f, k) in fams.iter().zip(kinds.iter()) {
-            let key = format!(
-                "{}/{}",
-                f.as_deref().unwrap_or("?"),
-                k.as_deref().unwrap_or("?")
-            );
-            *fk.entry(key).or_default() += 1;
-        }
-        eprintln!("event_family/event_kind distribution:");
-        let mut pairs: Vec<_> = fk.iter().collect();
-        pairs.sort_by(|a, b| b.1.cmp(a.1));
-        for (key, count) in &pairs {
-            eprintln!("  {key}: {count}");
-        }
-
-        let pids = u32_col_optional(batch, "process_pid");
-        let names = string_col(batch, "process_name");
-        eprintln!("\nSample processes (first 5 with data):");
-        let mut shown = 0;
-        for i in 0..batch.num_rows() {
-            if pids[i].is_some() {
-                let mem_idx = batch
-                    .schema()
-                    .index_of("process_memory_bytes")
-                    .expect("col");
-                let mem_arr = batch
-                    .column(mem_idx)
-                    .as_any()
-                    .downcast_ref::<UInt64Array>()
-                    .expect("u64");
-                let mem_kb = if mem_arr.is_null(i) {
-                    0
-                } else {
-                    mem_arr.value(i) / 1024
-                };
-                eprintln!(
-                    "  pid={} name={:?} mem={}KB",
-                    pids[i].unwrap_or(0),
-                    names[i].as_deref().unwrap_or("?"),
-                    mem_kb,
-                );
-                shown += 1;
-                if shown >= 5 {
-                    break;
-                }
-            }
-        }
-
-        let ifaces = string_col(batch, "network_interface");
-        let net_rows: Vec<_> = ifaces.iter().filter(|i| i.is_some()).collect();
-        eprintln!("\nnetwork rows: {}", net_rows.len());
-        for i in 0..batch.num_rows() {
-            if let Some(ref iface) = ifaces[i] {
-                let rx_idx = batch
-                    .schema()
-                    .index_of("network_received_total_bytes")
-                    .expect("col");
-                let rx_arr = batch
-                    .column(rx_idx)
-                    .as_any()
-                    .downcast_ref::<UInt64Array>()
-                    .expect("u64");
-                let rx = if rx_arr.is_null(i) {
-                    0
-                } else {
-                    rx_arr.value(i)
-                };
-                eprintln!("  iface={iface} rx_total={}KB", rx / 1024);
-            }
-        }
-
-        // --- Cycle 2: after interval ---
-        std::thread::sleep(Duration::from_millis(60));
-        let events2 = input.poll().expect("second poll");
-        if events2.is_empty() {
-            eprintln!("\n=== CYCLE 2: empty ===");
-        } else {
-            let batch2 = first_batch(&events2);
-            eprintln!(
-                "\n=== CYCLE 2 (periodic) ===\nrows: {}, cols: {}",
-                batch2.num_rows(),
-                batch2.num_columns()
-            );
-            assert_eq!(
-                batch.schema(),
-                batch2.schema(),
-                "schema must be stable across cycles"
-            );
-        }
-        eprintln!("\n=== DATA AUDIT COMPLETE ===");
     }
 
     #[test]

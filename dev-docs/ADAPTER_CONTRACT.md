@@ -197,6 +197,11 @@ Source metadata belongs to the table assembly boundary, not to transport bytes.
   enrichment tables such as `sources`.
 - Runtime should not pay this cost by default. Config-driven inputs must opt in
   with a non-`none` `source_metadata` style.
+- Inputs that support public source path styles must expose only bounded
+  current-source snapshots through `InputSource::source_paths()`: file inputs
+  use filesystem paths and S3 inputs use object keys. Inputs without such
+  snapshots must reject public path styles instead of materializing null
+  metadata columns.
 - SQL has no hidden-source-column behavior. `SELECT *` returns the columns in
   the Arrow table. User-facing sinks drop known FastForward internal fields
   such as `__source_id` by default, and public styles such as ECS/Beats, OTel,

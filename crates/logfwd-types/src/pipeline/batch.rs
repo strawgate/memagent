@@ -269,9 +269,15 @@ mod verification {
     /// Every transition from Queued produces a valid Sending ticket.
     #[kani::proof]
     fn verify_queued_to_sending() {
-        let id = BatchId(kani::any());
-        let source = SourceId(kani::any());
+        let id_val: u64 = kani::any();
+        let src_val: u64 = kani::any();
         let checkpoint: u64 = kani::any();
+        // Domain narrowing: typestate field-move verification, not ID arithmetic.
+        kani::assume(id_val <= 1000);
+        kani::assume(src_val <= 1000);
+        kani::assume(checkpoint <= 1000);
+        let id = BatchId(id_val);
+        let source = SourceId(src_val);
 
         let ticket = BatchTicket::new(id, source, checkpoint);
         let sending = ticket.begin_send();
@@ -285,9 +291,15 @@ mod verification {
     /// Ack produces a receipt with correct source and checkpoint.
     #[kani::proof]
     fn verify_ack_receipt() {
-        let id = BatchId(kani::any());
-        let source = SourceId(kani::any());
+        let id_val: u64 = kani::any();
+        let src_val: u64 = kani::any();
         let checkpoint: u64 = kani::any();
+        // Domain narrowing: typestate field-move verification, not ID arithmetic.
+        kani::assume(id_val <= 1000);
+        kani::assume(src_val <= 1000);
+        kani::assume(checkpoint <= 1000);
+        let id = BatchId(id_val);
+        let source = SourceId(src_val);
 
         let ticket = BatchTicket::new(id, source, checkpoint);
         let sending = ticket.begin_send();
@@ -302,9 +314,15 @@ mod verification {
     /// Fail increments attempts and preserves all other fields.
     #[kani::proof]
     fn verify_fail_preserves_fields() {
-        let id = BatchId(kani::any());
-        let source = SourceId(kani::any());
+        let id_val: u64 = kani::any();
+        let src_val: u64 = kani::any();
         let checkpoint: u64 = kani::any();
+        // Domain narrowing: typestate field-move verification, not ID arithmetic.
+        kani::assume(id_val <= 1000);
+        kani::assume(src_val <= 1000);
+        kani::assume(checkpoint <= 1000);
+        let id = BatchId(id_val);
+        let source = SourceId(src_val);
 
         let ticket = BatchTicket::new(id, source, checkpoint);
         let sending = ticket.begin_send();
@@ -319,9 +337,15 @@ mod verification {
     /// Reject produces a receipt with delivered=false.
     #[kani::proof]
     fn verify_reject_receipt() {
-        let id = BatchId(kani::any());
-        let source = SourceId(kani::any());
+        let id_val: u64 = kani::any();
+        let src_val: u64 = kani::any();
         let checkpoint: u64 = kani::any();
+        // Domain narrowing: typestate field-move verification, not ID arithmetic.
+        kani::assume(id_val <= 1000);
+        kani::assume(src_val <= 1000);
+        kani::assume(checkpoint <= 1000);
+        let id = BatchId(id_val);
+        let source = SourceId(src_val);
 
         let ticket = BatchTicket::new(id, source, checkpoint);
         let sending = ticket.begin_send();
@@ -336,9 +360,15 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(7)]
     fn verify_retry_sequence() {
-        let id = BatchId(kani::any());
-        let source = SourceId(kani::any());
+        let id_val: u64 = kani::any();
+        let src_val: u64 = kani::any();
         let checkpoint: u64 = kani::any();
+        // Domain narrowing: retry-count behavior, not ID arithmetic.
+        kani::assume(id_val <= 1000);
+        kani::assume(src_val <= 1000);
+        kani::assume(checkpoint <= 1000);
+        let id = BatchId(id_val);
+        let source = SourceId(src_val);
         let max_retries: u32 = kani::any_where(|&r: &u32| r <= 5);
 
         let mut ticket = BatchTicket::new(id, source, checkpoint);

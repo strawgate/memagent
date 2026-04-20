@@ -265,7 +265,8 @@ mod tests {
     use std::future::Future;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
-    use std::time::Duration;
+    use std::thread::ThreadId;
+    use std::time::{Duration, Instant};
 
     struct CountingWorker {
         processed: usize,
@@ -305,6 +306,19 @@ mod tests {
 
         fn process(&mut self, (): Self::Job) -> Result<Self::Output, Self::Error> {
             Ok(self.worker_id)
+        }
+    }
+
+    struct ThreadIdentityWorker;
+
+    impl BlockingWorker for ThreadIdentityWorker {
+        type Job = ();
+        type Output = (ThreadId, Option<String>);
+        type Error = ();
+
+        fn process(&mut self, (): Self::Job) -> Result<Self::Output, Self::Error> {
+            let current = thread::current();
+            Ok((current.id(), current.name().map(str::to_owned)))
         }
     }
 
@@ -464,7 +478,12 @@ mod tests {
         for i in 0..32usize {
             let stage = Arc::clone(&stage);
             handles.push(thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(10);
                 loop {
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out waiting for submit slot"
+                    );
                     match stage.try_submit(i) {
                         Ok(result) => return block_on(result.recv()).expect("result"),
                         Err(BlockingStageSubmitError::Full) => thread::yield_now(),
@@ -495,6 +514,79 @@ mod tests {
         assert_ne!(
             first_worker, second_worker,
             "round-robin dispatch should use both workers"
+        );
+    }
+
+    #[test]
+    fn dropping_result_receiver_does_not_leak_outstanding_capacity() {
+        let total_seen = Arc::new(AtomicUsize::new(0));
+        let stage = BoundedBlockingStage::new(1, 1, |_| CountingWorker {
+            processed: 0,
+            total_seen: Arc::clone(&total_seen),
+        })
+        .expect("stage should build");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        for _ in 0..64usize {
+            loop {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out submitting dropped-receiver jobs"
+                );
+                match stage.try_submit(1) {
+                    Ok(result) => {
+                        drop(result);
+                        break;
+                    }
+                    Err(BlockingStageSubmitError::Full) => thread::yield_now(),
+                    Err(other) => panic!("unexpected submit error while probing leak: {other:?}"),
+                }
+            }
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "timed out submitting final verification job"
+            );
+            match stage.try_submit(1) {
+                Ok(result) => {
+                    let output = block_on(result.recv()).expect("final output should complete");
+                    assert!(output >= 2, "worker should continue processing jobs");
+                    break;
+                }
+                Err(BlockingStageSubmitError::Full) => thread::yield_now(),
+                Err(other) => panic!("unexpected submit error after dropped receivers: {other:?}"),
+            }
+        }
+
+        assert_eq!(
+            total_seen.load(Ordering::Relaxed),
+            65,
+            "all dropped-receiver jobs should still be processed without leaking permits"
+        );
+    }
+
+    #[test]
+    fn jobs_run_on_dedicated_worker_threads_not_submitter_threads() {
+        let stage =
+            BoundedBlockingStage::new(1, 1, |_| ThreadIdentityWorker).expect("stage should build");
+        let submitter = thread::current();
+        let submitter_id = submitter.id();
+
+        let (worker_id, worker_name) =
+            block_on(stage.try_submit(()).expect("submit").recv()).expect("result should succeed");
+
+        assert_ne!(
+            worker_id, submitter_id,
+            "CPU job must execute on dedicated blocking-stage worker thread"
+        );
+        assert!(
+            worker_name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("blocking-stage-")),
+            "worker thread should use blocking-stage thread namespace"
         );
     }
 }
