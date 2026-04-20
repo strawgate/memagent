@@ -1112,6 +1112,24 @@ pub struct StdoutOutputConfig {
 ///
 /// File compression is intentionally not part of the typed schema; unknown
 /// fields are rejected during deserialization.
+///
+/// ```
+/// use logfwd_config::{Config, OutputConfigV2};
+///
+/// let cfg = Config::load_str(r#"
+/// input:
+///   type: generator
+/// output:
+///   type: file
+///   path: ./out.ndjson
+/// "#)
+/// .expect("file output should parse");
+///
+/// assert!(matches!(
+///     &cfg.pipelines["default"].outputs[0],
+///     OutputConfigV2::File(_)
+/// ));
+/// ```
 pub struct FileOutputConfig {
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub name: Option<String>,

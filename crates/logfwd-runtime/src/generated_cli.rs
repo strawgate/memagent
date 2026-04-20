@@ -1,9 +1,9 @@
 use std::fmt::Write as _;
 
 use logfwd_config::{
-    ArrowIpcOutputConfig, AuthConfig, Config, ElasticsearchOutputConfig, FileOutputConfig,
-    LokiOutputConfig, NullOutputConfig, OtlpOutputConfig, OutputConfigV2, OutputType,
-    SocketOutputConfig, StdoutOutputConfig,
+    ArrowIpcOutputConfig, AuthConfig, Config, ElasticsearchOutputConfig, LokiOutputConfig,
+    NullOutputConfig, OtlpOutputConfig, OutputConfigV2, OutputType, SocketOutputConfig,
+    StdoutOutputConfig,
 };
 
 /// Fully rendered generated config plus its validated in-memory config.
@@ -67,7 +67,10 @@ pub fn resolve_blast_output_config(
     auth_bearer_token: Option<&str>,
     auth_header: &[String],
 ) -> Result<OutputConfigV2, String> {
-    if matches!(output_type, OutputType::Http | OutputType::Parquet) {
+    if matches!(
+        output_type,
+        OutputType::Http | OutputType::Parquet | OutputType::File
+    ) {
         return Err(format!("unsupported blast destination '{output_type}'"));
     }
 
@@ -119,7 +122,6 @@ pub fn resolve_blast_output_config(
             ..Default::default()
         }),
         OutputType::Stdout => OutputConfigV2::Stdout(StdoutOutputConfig::default()),
-        OutputType::File => OutputConfigV2::File(FileOutputConfig::default()),
         OutputType::Null => OutputConfigV2::Null(NullOutputConfig::default()),
         OutputType::Tcp => OutputConfigV2::Tcp(SocketOutputConfig {
             endpoint,
@@ -310,7 +312,7 @@ mod tests {
 
     #[test]
     fn resolve_blast_output_config_rejects_unimplemented_destinations() {
-        for output_type in [OutputType::Http, OutputType::Parquet] {
+        for output_type in [OutputType::Http, OutputType::Parquet, OutputType::File] {
             let err =
                 resolve_blast_output_config(output_type.clone(), Some("http://example"), None, &[])
                     .expect_err("unimplemented blast destination should be rejected");
