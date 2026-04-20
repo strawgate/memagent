@@ -156,7 +156,7 @@ fn resolve_generated_columns(batch: &RecordBatch) -> GeneratedRowRefs<'_> {
             span_id_col = Some(arr);
             continue;
         }
-        attrs.push((name.to_string(), arr));
+        attrs.push((name.clone(), arr));
     }
 
     GeneratedRowRefs {

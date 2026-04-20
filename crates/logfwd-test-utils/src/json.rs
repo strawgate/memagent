@@ -32,7 +32,7 @@ pub fn arb_json_string() -> impl Strategy<Value = String> {
 /// Generate a simple JSON value (no nested objects — avoids recursive types).
 pub fn arb_json_value_simple() -> impl Strategy<Value = String> {
     prop_oneof![
-        40 => arb_json_string().prop_map(|s| format!("\"{}\"", s)),
+        40 => arb_json_string().prop_map(|s| format!("\"{s}\"")),
         20 => (-1_000_000i64..1_000_000).prop_map(|n| n.to_string()),
         10 => (-1.0e6f64..1.0e6).prop_filter("finite", |f| f.is_finite())
             .prop_map(|f| format!("{f}")),
@@ -40,7 +40,7 @@ pub fn arb_json_value_simple() -> impl Strategy<Value = String> {
         5 => Just("null".to_string()),
         15 => prop::collection::vec(
             prop_oneof![
-                arb_json_string().prop_map(|s| format!("\"{}\"", s)),
+                arb_json_string().prop_map(|s| format!("\"{s}\"")),
                 (-100i64..100).prop_map(|n| n.to_string()),
                 Just("null".to_string()),
             ],
@@ -60,7 +60,7 @@ pub fn arb_flat_object(
     .prop_map(|fields| {
         let pairs: Vec<String> = fields
             .into_iter()
-            .map(|(k, v)| format!("\"{}\":{}", k, v))
+            .map(|(k, v)| format!("\"{k}\":{v}"))
             .collect();
         format!("{{{}}}", pairs.join(","))
     })

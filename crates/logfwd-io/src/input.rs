@@ -999,7 +999,7 @@ mod tests {
         // disconnected channel. The main loop drains MAX chunks, the post-limit
         // probe consumes the (MAX+1)th, and the follow-up terminal check must
         // detect the disconnected channel and emit synthetic EOF.
-        let messages = (0..(STDIN_MAX_SHUTDOWN_EVENTS + 1))
+        let messages = (0..=STDIN_MAX_SHUTDOWN_EVENTS)
             .map(|i| StdinMessage::Data(format!("chunk-{i}\n").into_bytes()))
             .collect();
         let mut input = stdin_from_messages(messages);

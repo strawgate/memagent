@@ -241,10 +241,9 @@ impl HttpEnrichProcessor {
                         .take(limit.saturating_add(1))
                         .read_to_string(&mut buf)
                     {
-                        Ok(n) if n as u64 > limit => LookupResult::Error(format!(
-                            "response body exceeds {} byte limit",
-                            limit
-                        )),
+                        Ok(n) if n as u64 > limit => {
+                            LookupResult::Error(format!("response body exceeds {limit} byte limit"))
+                        }
                         Ok(_) if buf.trim().is_empty() => LookupResult::Miss,
                         Ok(_) => {
                             let trimmed = buf.trim_start();

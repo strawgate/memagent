@@ -565,9 +565,8 @@ fn entry_to_json(
         if field_bytes.len() > MAX_BINARY_FIELD_SIZE {
             continue;
         }
-        let eq_pos = match memchr::memchr(b'=', field_bytes) {
-            Some(p) => p,
-            None => continue,
+        let Some(eq_pos) = memchr::memchr(b'=', field_bytes) else {
+            continue;
         };
         fields.push((
             field_bytes[..eq_pos].to_vec(),
@@ -837,19 +836,16 @@ fn subprocess_reader_loop(
         health.store(HEALTH_OK, Ordering::Release);
         tracing::info!("journalctl started (pid={})", child.id());
 
-        let stdout = match child.stdout.take() {
-            Some(stdout) => stdout,
-            None => {
-                tracing::error!("journalctl stdout not captured");
-                child_pid.store(0, Ordering::Release);
-                let _ = child.kill();
-                let _ = child.wait();
-                health.store(HEALTH_DEGRADED, Ordering::Release);
-                if !backoff_or_stop(&running) {
-                    return;
-                }
-                continue;
+        let Some(stdout) = child.stdout.take() else {
+            tracing::error!("journalctl stdout not captured");
+            child_pid.store(0, Ordering::Release);
+            let _ = child.kill();
+            let _ = child.wait();
+            health.store(HEALTH_DEGRADED, Ordering::Release);
+            if !backoff_or_stop(&running) {
+                return;
             }
+            continue;
         };
 
         // Drain stderr so it doesn't block.
@@ -1381,7 +1377,7 @@ mod tests {
     fn json_escape_control_chars() {
         let mut buf = Vec::new();
         json_escape_into(&mut buf, &[0x00, 0x1f]);
-        assert_eq!(String::from_utf8(buf).unwrap(), r#"\u0000\u001f"#);
+        assert_eq!(String::from_utf8(buf).unwrap(), r"\u0000\u001f");
     }
 
     // ── backend selection ─────────────────────────────────────────────

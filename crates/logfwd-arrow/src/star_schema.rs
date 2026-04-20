@@ -1827,8 +1827,7 @@ fn unpivot_attrs_to_flat(
             ATTR_TYPE_STR => {}
             _ => {
                 return Err(ArrowError::SchemaError(format!(
-                    "unsupported column type: {}",
-                    type_tag
+                    "unsupported column type: {type_tag}"
                 )));
             }
         }
@@ -2385,8 +2384,8 @@ mod tests {
             .as_any()
             .downcast_ref::<BooleanArray>()
             .expect("scope.enabled bool");
-        assert_eq!(scope_enabled.value(0), true);
-        assert_eq!(scope_enabled.value(1), true);
+        assert!(scope_enabled.value(0));
+        assert!(scope_enabled.value(1));
 
         let scope_rank = roundtrip
             .column(
@@ -3463,7 +3462,7 @@ mod tests {
             }
         }
         assert!(
-            status_values.iter().any(|value| *value == Some("200")),
+            status_values.contains(&Some("200")),
             "status=200 (from int child) must appear in log_attrs, got: {:?}",
             status_values
                 .iter()
@@ -3471,9 +3470,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(
-            status_values
-                .iter()
-                .any(|value| *value == Some("NOT_FOUND")),
+            status_values.contains(&Some("NOT_FOUND")),
             "status=NOT_FOUND (from str child) must appear in log_attrs"
         );
     }

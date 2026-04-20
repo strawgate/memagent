@@ -945,43 +945,43 @@ mod tests {
         let mut out = Vec::new();
 
         // Simple escapes
-        decode_json_escapes(br#"hello"#, &mut out);
+        decode_json_escapes(br"hello", &mut out);
         assert_eq!(&out, b"hello");
 
         decode_json_escapes(br#"say \"hi\""#, &mut out);
         assert_eq!(&out, b"say \"hi\"");
 
-        decode_json_escapes(br#"a\\b"#, &mut out);
+        decode_json_escapes(br"a\\b", &mut out);
         assert_eq!(&out, b"a\\b");
 
-        decode_json_escapes(br#"a\/b"#, &mut out);
+        decode_json_escapes(br"a\/b", &mut out);
         assert_eq!(&out, b"a/b");
 
-        decode_json_escapes(br#"a\nb\tc"#, &mut out);
+        decode_json_escapes(br"a\nb\tc", &mut out);
         assert_eq!(&out, b"a\nb\tc");
 
-        decode_json_escapes(br#"\b\f"#, &mut out);
+        decode_json_escapes(br"\b\f", &mut out);
         assert_eq!(&out, &[0x08, 0x0C]);
 
         // Unicode escape
-        decode_json_escapes(br#"\u0041"#, &mut out);
+        decode_json_escapes(br"\u0041", &mut out);
         assert_eq!(&out, b"A");
 
         // Multi-byte unicode
-        decode_json_escapes(br#"\u00e9"#, &mut out);
+        decode_json_escapes(br"\u00e9", &mut out);
         assert_eq!(&out, "é".as_bytes());
 
         // Surrogate pair
-        decode_json_escapes(br#"\uD83D\uDE00"#, &mut out);
+        decode_json_escapes(br"\uD83D\uDE00", &mut out);
         assert_eq!(&out, "😀".as_bytes());
 
         // Truncated escape at end — pass through
-        decode_json_escapes(br#"abc\"#, &mut out);
-        assert_eq!(&out, br#"abc\"#);
+        decode_json_escapes(br"abc\", &mut out);
+        assert_eq!(&out, br"abc\");
 
         // Unknown escape letter — pass through backslash
-        decode_json_escapes(br#"\x"#, &mut out);
-        assert_eq!(&out, br#"\x"#);
+        decode_json_escapes(br"\x", &mut out);
+        assert_eq!(&out, br"\x");
     }
 
     #[test]
@@ -1081,9 +1081,9 @@ mod tests {
         for _ in 0..35 {
             buf_str.push_str("{\"x\":");
         }
-        buf_str.push_str("1");
+        buf_str.push('1');
         for _ in 0..35 {
-            buf_str.push_str("}");
+            buf_str.push('}');
         }
         buf_str.push_str(",\"b\":2}");
 
@@ -1149,9 +1149,9 @@ mod tests {
         for _ in 0..32 {
             buf_str.push_str("{\"x\":");
         }
-        buf_str.push_str("1");
+        buf_str.push('1');
         for _ in 0..32 {
-            buf_str.push_str("}");
+            buf_str.push('}');
         }
         buf_str.push_str(",\"b\":2}");
 

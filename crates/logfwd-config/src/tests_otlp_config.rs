@@ -40,7 +40,7 @@ pipelines:
                 assert_eq!(tls.cert_file.as_deref(), Some("/path/to/cert"));
                 assert_eq!(tls.key_file.as_deref(), Some("/path/to/key"));
                 assert_eq!(tls.client_ca_file.as_deref(), Some("/path/to/ca"));
-                assert_eq!(tls.require_client_auth, true);
+                assert!(tls.require_client_auth);
             }
             _ => panic!("Expected OTLP input config"),
         }

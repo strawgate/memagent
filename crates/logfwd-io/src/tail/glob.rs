@@ -31,7 +31,7 @@ pub(super) fn glob_root(pattern: &str) -> PathBuf {
             PathBuf::from(trimmed)
         }
     } else {
-        let parent = Path::new(prefix).parent().unwrap_or(Path::new(""));
+        let parent = Path::new(prefix).parent().unwrap_or_else(|| Path::new(""));
         if parent.as_os_str().is_empty() {
             PathBuf::from(".")
         } else {

@@ -214,7 +214,7 @@ impl StdoutSink {
                 if !col.is_null(row) {
                     let ts = safe_col_to_string(col, row);
                     // Show just the time portion if it's a full ISO timestamp.
-                    let short = ts.find('T').map_or(ts.as_ref(), |i| &ts[i + 1..]);
+                    let short = ts.find('T').map_or_else(|| ts.as_ref(), |i| &ts[i + 1..]);
                     if self.color {
                         self.buf.extend_from_slice(b"\x1b[2m");
                     }
@@ -242,7 +242,7 @@ impl StdoutSink {
                         self.buf.extend_from_slice(color.as_bytes());
                     }
                     // Pad to 5 chars for alignment.
-                    write!(self.buf, "{:<5}", level)?;
+                    write!(self.buf, "{level:<5}")?;
                     if self.color {
                         self.buf.extend_from_slice(b"\x1b[0m");
                     }

@@ -109,6 +109,56 @@ just fuzz scanner 300        # fuzz a target for 300s (nightly)
 > subsequent CI runs (for example, after pushing a commit or rerunning CI):
 > `miri`, macOS tests, and the deeper TLA/TLC sweeps.
 
+## Test filtering and proptest regressions
+
+Common loops when iterating on a single test or investigating a
+proptest failure:
+
+```bash
+# Run one test by pattern (matches test name substring).
+cargo nextest run -p logfwd-core --lib scanner::handles_empty_line
+
+# Run all tests in a module.
+cargo nextest run -p logfwd-arrow --lib scanner::
+
+# Raise proptest case count for a suspected edge case. The default
+# is 256; use 10_000+ when you think a rare shape is being missed.
+PROPTEST_CASES=10000 cargo nextest run -p logfwd-arrow --lib
+
+# Re-run a minimized regression that was pinned into a regression file.
+# `crates/*/proptest-regressions/` holds previously-shrunk failing seeds;
+# proptest reads them automatically when the matching test runs.
+cargo nextest run -p logfwd-arrow --lib scanner::round_trip
+```
+
+Turmoil tests use deterministic seeds: set `TURMOIL_SEED=<N>` to
+reproduce a scenario from a failing CI run.
+
+## Reading criterion benchmark output
+
+`just bench` writes HTML + JSON under `target/criterion/`. A quick
+cheat sheet for the files you'll actually care about:
+
+| File | Purpose |
+|---|---|
+| `target/criterion/report/index.html` | Top-level summary across all benchmarks in the run. |
+| `target/criterion/<bench>/<param>/report/index.html` | Per-case detail: median, confidence interval, violin plot, raw iterations. |
+| `target/criterion/<bench>/<param>/change/estimates.json` | Change vs previous run — `mean.point_estimate` is the percent delta. |
+| `target/criterion/<bench>/<param>/new/sample.json` | Raw sample timings for the current run. Load this if you want to compute a custom statistic. |
+
+Rules of thumb when reading results:
+
+- **Ignore single-run noise under ~2%.** Criterion's noise floor on
+  typical workstation hardware is 1–3 %; changes within that band are
+  usually scheduler jitter, not regressions.
+- **Check the confidence interval** (p5–p95 band on the violin plot).
+  A wide band means high variance — re-run with `--warm-up-time 5
+  --measurement-time 10` for more stable numbers.
+- **For perf PRs**, quote `mean.point_estimate` from
+  `change/estimates.json` in the PR body, plus the 95 % CI. Don't
+  paste the HTML into the PR — link the relevant section of the
+  markdown report (`just bench` generates one alongside the HTML).
+
 ## DataFusion in Dev vs Release
 
 `logfwd` now has a feature-gated SQL engine:

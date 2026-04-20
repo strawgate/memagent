@@ -214,26 +214,19 @@ impl HttpInput {
         let handle = std::thread::Builder::new()
             .name("http-input".into())
             .spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread()
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(_) => {
-                        health_for_server
-                            .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
-                        return;
-                    }
+                else {
+                    health_for_server.store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
+                    return;
                 };
 
                 runtime.block_on(async move {
-                    let listener = match tokio::net::TcpListener::from_std(std_listener) {
-                        Ok(listener) => listener,
-                        Err(_) => {
-                            health_for_server
-                                .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
-                            return;
-                        }
+                    let Ok(listener) = tokio::net::TcpListener::from_std(std_listener) else {
+                        health_for_server
+                            .store(ComponentHealth::Failed.as_repr(), Ordering::Relaxed);
+                        return;
                     };
 
                     let app = axum::Router::new()
@@ -542,7 +535,7 @@ fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusC
     let Some(value) = headers.get(CONTENT_ENCODING) else {
         return Ok(None);
     };
-    let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?.trim();
+    let parsed = value.to_str().map_err(|_e| StatusCode::BAD_REQUEST)?.trim();
     if parsed.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
     }
@@ -626,7 +619,7 @@ fn is_supported_content_encoding(content_encoding: &str) -> bool {
 
 fn decompress_zstd(body: &[u8], max_request_body_size: usize) -> Result<Vec<u8>, InputError> {
     let decoder = zstd::Decoder::new(body)
-        .map_err(|_| InputError::Receiver("zstd decompression failed".to_string()))?;
+        .map_err(|_e| InputError::Receiver("zstd decompression failed".to_string()))?;
     read_decompressed_body(
         decoder,
         body.len(),

@@ -839,7 +839,7 @@ fn build_string_array_validated(
     if dense {
         // Dense fast path: skip per-row branch check.
         for &(_, sref) in facts {
-            let off = i32::try_from(values.len()).map_err(|_| MaterializeError::OffsetOverflow)?;
+            let off = i32::try_from(values.len()).map_err(|_e| MaterializeError::OffsetOverflow)?;
             offsets.push(off);
             let bytes = read_str_bytes(original_buf, generated_buf, original_len, sref)?;
             values.extend_from_slice(bytes);
@@ -856,7 +856,7 @@ fn build_string_array_validated(
         }
         // Second pass: build offsets and values in row order.
         for entry in &last_fact_for_row {
-            let off = i32::try_from(values.len()).map_err(|_| MaterializeError::OffsetOverflow)?;
+            let off = i32::try_from(values.len()).map_err(|_e| MaterializeError::OffsetOverflow)?;
             offsets.push(off);
             if let Some(fi) = entry {
                 let sref = facts[*fi].1;
@@ -868,7 +868,7 @@ fn build_string_array_validated(
             }
         }
     }
-    let final_off = i32::try_from(values.len()).map_err(|_| MaterializeError::OffsetOverflow)?;
+    let final_off = i32::try_from(values.len()).map_err(|_e| MaterializeError::OffsetOverflow)?;
     offsets.push(final_off);
 
     // Validate UTF-8 for all string bytes (covers both original_buf and

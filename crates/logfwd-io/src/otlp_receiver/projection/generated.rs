@@ -966,7 +966,7 @@ fn consume_fixed(input: &mut &[u8], len: usize, msg: &'static str) -> Result<(),
 
 fn consume_len<'a>(input: &mut &'a [u8]) -> Result<&'a [u8], ProjectionError> {
     let len = usize::try_from(read_varint(input)?)
-        .map_err(|_| ProjectionError::Invalid("protobuf length exceeds usize"))?;
+        .map_err(|_e| ProjectionError::Invalid("protobuf length exceeds usize"))?;
     if input.len() < len {
         return Err(ProjectionError::Invalid("truncated length-delimited field"));
     }
@@ -1039,7 +1039,7 @@ fn decode_field_number(key: u64) -> Result<u32, ProjectionError> {
             "protobuf field number out of range",
         ));
     }
-    u32::try_from(field).map_err(|_| ProjectionError::Invalid("protobuf field number overflow"))
+    u32::try_from(field).map_err(|_e| ProjectionError::Invalid("protobuf field number overflow"))
 }
 
 fn read_varint(input: &mut &[u8]) -> Result<u64, ProjectionError> {

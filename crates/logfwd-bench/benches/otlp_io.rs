@@ -71,32 +71,24 @@ fn build_fixture(profile: OtlpFixtureProfile) -> FixtureData {
     assert_encode_paths_match(&projected_fallback_batch, profile.name);
     let zstd_payload =
         zstd::encode_all(otlp_data.payload.as_slice(), 1).expect("fixture should zstd compress");
-    let mut projected_batch = None;
-    let mut projected_view_batch = None;
-    if !profile.has_complex_any {
-        let wire_batch =
-            decode_protobuf_to_batch_projected_detached_experimental(&otlp_data.payload)
-                .expect("experimental wire decoder should decode primitive fixture");
-        assert_batch_matches(&prost_reference_batch, &wire_batch, profile.name);
-        assert_encode_paths_match(&wire_batch, profile.name);
-        let view_batch = decode_protobuf_bytes_to_batch_projected_only_experimental(
-            otlp_data.payload_bytes.clone(),
-        )
-        .expect("experimental wire view decoder should decode primitive fixture");
-        let detached_view_batch = logfwd_arrow::materialize::detach(&view_batch);
-        assert_batch_matches(&prost_reference_batch, &detached_view_batch, profile.name);
-        assert_encode_paths_match(&view_batch, profile.name);
-        projected_batch = Some(wire_batch);
-        projected_view_batch = Some(view_batch);
-    }
+    let wire_batch = decode_protobuf_to_batch_projected_detached_experimental(&otlp_data.payload)
+        .expect("experimental wire decoder should decode fixture");
+    assert_batch_matches(&prost_reference_batch, &wire_batch, profile.name);
+    assert_encode_paths_match(&wire_batch, profile.name);
+    let view_batch =
+        decode_protobuf_bytes_to_batch_projected_only_experimental(otlp_data.payload_bytes.clone())
+            .expect("experimental wire view decoder should decode fixture");
+    let detached_view_batch = logfwd_arrow::materialize::detach(&view_batch);
+    assert_batch_matches(&prost_reference_batch, &detached_view_batch, profile.name);
+    assert_encode_paths_match(&view_batch, profile.name);
     FixtureData {
         profile,
         payload: otlp_data.payload,
         payload_bytes: otlp_data.payload_bytes,
         zstd_payload,
         production_batch,
-        projected_batch,
-        projected_view_batch,
+        projected_batch: Some(wire_batch),
+        projected_view_batch: Some(view_batch),
         projected_fallback_batch,
     }
 }
@@ -286,34 +278,30 @@ fn bench_decode_materialize(c: &mut Criterion) {
             },
         );
 
-        if !fixture.profile.has_complex_any {
-            group.bench_with_input(
-                BenchmarkId::new("projected_detached_to_batch", fixture.profile.name),
-                &fixture.payload,
-                |b, payload| {
-                    b.iter(|| {
-                        let batch =
-                            decode_protobuf_to_batch_projected_detached_experimental(payload)
-                                .expect("experimental wire decoder should decode fixture");
-                        std::hint::black_box(batch.num_rows());
-                    });
-                },
-            );
+        group.bench_with_input(
+            BenchmarkId::new("projected_detached_to_batch", fixture.profile.name),
+            &fixture.payload,
+            |b, payload| {
+                b.iter(|| {
+                    let batch = decode_protobuf_to_batch_projected_detached_experimental(payload)
+                        .expect("experimental wire decoder should decode fixture");
+                    std::hint::black_box(batch.num_rows());
+                });
+            },
+        );
 
-            group.bench_with_input(
-                BenchmarkId::new("projected_view_to_batch", fixture.profile.name),
-                &fixture.payload_bytes,
-                |b, payload| {
-                    b.iter(|| {
-                        let batch = decode_protobuf_bytes_to_batch_projected_only_experimental(
-                            payload.clone(),
-                        )
-                        .expect("experimental wire view decoder should decode fixture");
-                        std::hint::black_box(batch.num_rows());
-                    });
-                },
-            );
-        }
+        group.bench_with_input(
+            BenchmarkId::new("projected_view_to_batch", fixture.profile.name),
+            &fixture.payload_bytes,
+            |b, payload| {
+                b.iter(|| {
+                    let batch =
+                        decode_protobuf_bytes_to_batch_projected_only_experimental(payload.clone())
+                            .expect("experimental wire view decoder should decode fixture");
+                    std::hint::black_box(batch.num_rows());
+                });
+            },
+        );
     }
 
     group.finish();
@@ -585,41 +573,37 @@ fn bench_end_to_end(c: &mut Criterion) {
             },
         );
 
-        if !fixture.profile.has_complex_any {
-            group.bench_with_input(
-                BenchmarkId::new(
-                    "projected_detached_to_handwritten_encode",
-                    fixture.profile.name,
-                ),
-                &fixture.payload,
-                |b, payload| {
-                    let mut sink = make_otlp_sink(Compression::None);
-                    b.iter(|| {
-                        let batch =
-                            decode_protobuf_to_batch_projected_detached_experimental(payload)
-                                .expect("experimental wire decoder should decode fixture");
-                        sink.encode_batch(&batch, &metadata);
-                        std::hint::black_box(sink.encoded_payload().len());
-                    });
-                },
-            );
+        group.bench_with_input(
+            BenchmarkId::new(
+                "projected_detached_to_handwritten_encode",
+                fixture.profile.name,
+            ),
+            &fixture.payload,
+            |b, payload| {
+                let mut sink = make_otlp_sink(Compression::None);
+                b.iter(|| {
+                    let batch = decode_protobuf_to_batch_projected_detached_experimental(payload)
+                        .expect("experimental wire decoder should decode fixture");
+                    sink.encode_batch(&batch, &metadata);
+                    std::hint::black_box(sink.encoded_payload().len());
+                });
+            },
+        );
 
-            group.bench_with_input(
-                BenchmarkId::new("projected_view_to_handwritten_encode", fixture.profile.name),
-                &fixture.payload_bytes,
-                |b, payload| {
-                    let mut sink = make_otlp_sink(Compression::None);
-                    b.iter(|| {
-                        let batch = decode_protobuf_bytes_to_batch_projected_only_experimental(
-                            payload.clone(),
-                        )
-                        .expect("experimental wire view decoder should decode fixture");
-                        sink.encode_batch(&batch, &metadata);
-                        std::hint::black_box(sink.encoded_payload().len());
-                    });
-                },
-            );
-        }
+        group.bench_with_input(
+            BenchmarkId::new("projected_view_to_handwritten_encode", fixture.profile.name),
+            &fixture.payload_bytes,
+            |b, payload| {
+                let mut sink = make_otlp_sink(Compression::None);
+                b.iter(|| {
+                    let batch =
+                        decode_protobuf_bytes_to_batch_projected_only_experimental(payload.clone())
+                            .expect("experimental wire view decoder should decode fixture");
+                    sink.encode_batch(&batch, &metadata);
+                    std::hint::black_box(sink.encoded_payload().len());
+                });
+            },
+        );
     }
 
     group.finish();

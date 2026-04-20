@@ -331,8 +331,7 @@ impl ElasticsearchSink {
                     result
                         .permanent_errors
                         .first()
-                        .map(String::as_str)
-                        .unwrap_or("retryable item failure")
+                        .map_or("retryable item failure", String::as_str)
                 ),
             ));
         }
@@ -1159,7 +1158,7 @@ impl ElasticsearchSink {
         let next_capacity = chunk.capacity().max(min_capacity);
         let body = std::mem::replace(chunk, Vec::with_capacity(next_capacity));
         tx.blocking_send(Ok(body))
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "ES body receiver dropped"))
+            .map_err(|_e| io::Error::new(io::ErrorKind::BrokenPipe, "ES body receiver dropped"))
     }
 
     fn serialize_batch_streaming(
@@ -1572,10 +1571,8 @@ impl ElasticsearchSinkFactory {
         let client = client_builder.build().map_err(io::Error::other)?;
 
         let endpoint = endpoint.trim_end_matches('/').to_string();
-        let bulk_url = format!(
-            "{}/_bulk?filter_path=errors,took,items.*.error,items.*.status",
-            endpoint
-        );
+        let bulk_url =
+            format!("{endpoint}/_bulk?filter_path=errors,took,items.*.error,items.*.status");
 
         // Pre-compute the action line bytes once so serialize_batch doesn't have
         // to allocate a String on every call.
