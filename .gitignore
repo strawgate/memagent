@@ -15,6 +15,7 @@ book/.astro/
 .DS_Store
 crates/logfwd-io/src/dashboard-dist/
 .playwright-mcp/
+.playwright-cli/
 *.env
 .env
 es-flamegraph.svg

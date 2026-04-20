@@ -157,7 +157,7 @@ fn flush_buf(
     }
     let data = buf.split().freeze();
     let checkpoints = source.checkpoint_data();
-    let source_paths = if source_metadata_plan.has_source_path {
+    let source_paths = if source_metadata_plan.has_source_path() {
         std::mem::take(buffered_source_paths)
     } else {
         buffered_source_paths.clear();
@@ -200,7 +200,7 @@ fn process_io_events(
     pending_row_origin: &mut Option<PendingRowOrigin>,
     source_metadata_plan: SourceMetadataPlan,
 ) -> bool {
-    let source_path_snapshot = if source_metadata_plan.has_source_path {
+    let source_path_snapshot = if source_metadata_plan.has_source_path() {
         input.source.source_paths()
     } else {
         Vec::new()
@@ -212,7 +212,7 @@ fn process_io_events(
                 bytes, source_id, ..
             } => {
                 if source_metadata_plan.has_any() {
-                    if source_metadata_plan.has_source_path {
+                    if source_metadata_plan.has_source_path() {
                         capture_source_path(
                             &mut input.source_paths,
                             &source_path_snapshot,
@@ -278,7 +278,7 @@ fn process_io_events(
                 } else {
                     Vec::new()
                 };
-                let source_paths = if source_metadata_plan.has_source_path {
+                let source_paths = if source_metadata_plan.has_source_path() {
                     source_paths_by_id(&source_path_snapshot, &row_origins)
                 } else {
                     HashMap::new()
@@ -546,7 +546,7 @@ fn source_metadata_for_batch(
         )));
     }
 
-    let mut columns = Vec::with_capacity(3);
+    let mut columns = Vec::with_capacity(2);
     if plan.has_source_id {
         let mut builder = UInt64Builder::with_capacity(batch.num_rows());
         for span in row_origins {
@@ -564,19 +564,10 @@ fn source_metadata_for_batch(
         });
     }
 
-    if plan.has_input {
-        let array = input_metadata_array(batch.num_rows(), row_origins)?;
-        columns.push(MetadataColumn {
-            name: field_names::INPUT,
-            data_type: DataType::Utf8View,
-            array,
-        });
-    }
-
-    if plan.has_source_path {
+    if let Some(source_path_column) = plan.source_path.to_column_name() {
         let array = source_path_metadata_array(batch.num_rows(), row_origins, source_paths)?;
         columns.push(MetadataColumn {
-            name: field_names::SOURCE_PATH,
+            name: source_path_column,
             data_type: DataType::Utf8View,
             array,
         });
@@ -586,72 +577,57 @@ fn source_metadata_for_batch(
 }
 
 #[cfg(not(feature = "turmoil"))]
-fn input_metadata_array(
-    num_rows: usize,
-    row_origins: &[RowOriginSpan],
-) -> Result<ArrayRef, ArrowError> {
-    let mut builder = StringViewBuilder::new();
-    let mut blocks: HashMap<String, (u32, u32)> = HashMap::new();
-    for span in row_origins {
-        append_metadata_views(
-            &mut builder,
-            &mut blocks,
-            Some(span.input_name.as_ref()),
-            span.rows,
-        )?;
-    }
-    finish_string_metadata_array(builder, num_rows)
-}
-
-#[cfg(not(feature = "turmoil"))]
 fn source_path_metadata_array(
     num_rows: usize,
     row_origins: &[RowOriginSpan],
     source_paths: &HashMap<SourceId, String>,
 ) -> Result<ArrayRef, ArrowError> {
     let mut builder = StringViewBuilder::new();
-    let mut blocks: HashMap<String, (u32, u32)> = HashMap::new();
+    let mut blocks: HashMap<SourceId, (u32, u32)> = HashMap::new();
     for span in row_origins {
-        let value = span
-            .source_id
-            .and_then(|sid| source_paths.get(&sid).map(String::as_str));
-        append_metadata_views(&mut builder, &mut blocks, value, span.rows)?;
+        let Some(source_id) = span.source_id else {
+            append_null_metadata_views(&mut builder, span.rows);
+            continue;
+        };
+        let Some(value) = source_paths.get(&source_id).map(String::as_str) else {
+            append_null_metadata_views(&mut builder, span.rows);
+            continue;
+        };
+        let (block, len) = if let Some(&(block, len)) = blocks.get(&source_id) {
+            (block, len)
+        } else {
+            let len = u32::try_from(value.len()).map_err(|_| {
+                ArrowError::InvalidArgumentError(
+                    "source metadata string is too large for Utf8View".to_string(),
+                )
+            })?;
+            let block = builder.append_block(Buffer::from(value.as_bytes().to_vec()));
+            blocks.insert(source_id, (block, len));
+            (block, len)
+        };
+        append_block_metadata_views(&mut builder, block, len, span.rows)?;
     }
     finish_string_metadata_array(builder, num_rows)
 }
 
 #[cfg(not(feature = "turmoil"))]
-fn append_metadata_views(
+fn append_block_metadata_views(
     builder: &mut StringViewBuilder,
-    blocks: &mut HashMap<String, (u32, u32)>,
-    value: Option<&str>,
+    block: u32,
+    len: u32,
     rows: usize,
 ) -> Result<(), ArrowError> {
-    match value {
-        Some(value) => {
-            let (block, len) = if let Some(&(block, len)) = blocks.get(value) {
-                (block, len)
-            } else {
-                let len = u32::try_from(value.len()).map_err(|_| {
-                    ArrowError::InvalidArgumentError(
-                        "source metadata string is too large for Utf8View".to_string(),
-                    )
-                })?;
-                let block = builder.append_block(Buffer::from(value.as_bytes().to_vec()));
-                blocks.insert(value.to_owned(), (block, len));
-                (block, len)
-            };
-            for _ in 0..rows {
-                builder.try_append_view(block, 0, len)?;
-            }
-        }
-        None => {
-            for _ in 0..rows {
-                builder.append_null();
-            }
-        }
+    for _ in 0..rows {
+        builder.try_append_view(block, 0, len)?;
     }
     Ok(())
+}
+
+#[cfg(not(feature = "turmoil"))]
+fn append_null_metadata_views(builder: &mut StringViewBuilder, rows: usize) {
+    for _ in 0..rows {
+        builder.append_null();
+    }
 }
 
 #[cfg(not(feature = "turmoil"))]
@@ -921,7 +897,7 @@ fn io_worker_loop(
         }
         let data = input.buf.split().freeze();
         let checkpoints = input.source.checkpoint_data();
-        let source_paths = if source_metadata_plan.has_source_path {
+        let source_paths = if source_metadata_plan.has_source_path() {
             std::mem::take(&mut input.source_paths)
         } else {
             input.source_paths.clear();
@@ -983,6 +959,12 @@ fn cpu_worker_loop(
             return;
         }
     };
+
+    /// After this many consecutive transform errors with no successes, escalate
+    /// to ERROR with guidance — the SQL likely references columns the input
+    /// format does not produce.
+    const CONSECUTIVE_TRANSFORM_ERROR_ESCALATION: u32 = 10;
+    let mut consecutive_transform_errors: u32 = 0;
 
     while let Some(item) = rx.blocking_recv() {
         let (batch, checkpoints, queued_at, input_index, scan_ns) = match item {
@@ -1065,15 +1047,31 @@ fn cpu_worker_loop(
 
         let t1 = Instant::now();
         let result = match rt.block_on(transform.transform.execute(batch)) {
-            Ok(r) => r,
+            Ok(r) => {
+                consecutive_transform_errors = 0;
+                r
+            }
             Err(e) => {
                 metrics.inc_transform_error();
                 metrics.inc_dropped_batch();
-                tracing::warn!(
-                    input = transform.input_name.as_str(),
-                    error = %e,
-                    "cpu_worker: transform error (batch dropped)"
-                );
+                consecutive_transform_errors = consecutive_transform_errors.saturating_add(1);
+                if consecutive_transform_errors == CONSECUTIVE_TRANSFORM_ERROR_ESCALATION {
+                    tracing::error!(
+                        input = transform.input_name.as_str(),
+                        error = %e,
+                        consecutive_errors = consecutive_transform_errors,
+                        "cpu_worker: {consecutive_transform_errors} consecutive transform errors \
+                         with no successes — verify that the SQL column names match the input format \
+                         (e.g. CRI produces _timestamp, _stream, and JSON body keys; \
+                         generator/logs/simple produces timestamp, level, message, etc.)"
+                    );
+                } else {
+                    tracing::warn!(
+                        input = transform.input_name.as_str(),
+                        error = %e,
+                        "cpu_worker: transform error (batch dropped)"
+                    );
+                }
                 continue;
             }
         };
@@ -1212,7 +1210,7 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use bytes::Bytes;
     use logfwd_arrow::Scanner;
-    use logfwd_types::source_metadata::SourceMetadataPlan;
+    use logfwd_types::source_metadata::{SourceMetadataPlan, SourcePathColumn};
     use proptest::prelude::*;
 
     // --- InputPipelineManager integration tests ---
@@ -1311,8 +1309,7 @@ mod tests {
             &source_paths,
             SourceMetadataPlan {
                 has_source_id: true,
-                has_input: true,
-                has_source_path: true,
+                source_path: SourcePathColumn::Ecs,
             },
         )
         .expect("metadata attach should succeed");
@@ -1327,17 +1324,8 @@ mod tests {
         assert_eq!(source_id.value(1), 10);
         assert_eq!(source_id.value(2), 11);
 
-        let input = out
-            .column_by_name(field_names::INPUT)
-            .expect("input column")
-            .as_any()
-            .downcast_ref::<StringViewArray>()
-            .expect("input type");
-        assert_eq!(input.value(0), "pods");
-        assert_eq!(input.value(2), "pods");
-
         let source_path = out
-            .column_by_name(field_names::SOURCE_PATH)
+            .column_by_name(field_names::ECS_FILE_PATH)
             .expect("source path column")
             .as_any()
             .downcast_ref::<StringViewArray>()
@@ -1688,8 +1676,7 @@ mod tests {
                 0,
                 SourceMetadataPlan {
                     has_source_id: true,
-                    has_input: true,
-                    has_source_path: true,
+                    source_path: SourcePathColumn::Ecs,
                 },
             );
         });
@@ -1744,8 +1731,7 @@ mod tests {
                 0,
                 SourceMetadataPlan {
                     has_source_id: true,
-                    has_input: true,
-                    has_source_path: true,
+                    source_path: SourcePathColumn::Ecs,
                 },
             );
         });
@@ -1802,8 +1788,7 @@ mod tests {
                 0,
                 SourceMetadataPlan {
                     has_source_id: true,
-                    has_input: true,
-                    has_source_path: true,
+                    source_path: SourcePathColumn::Ecs,
                 },
             );
         });
@@ -1863,8 +1848,7 @@ mod tests {
                 0,
                 SourceMetadataPlan {
                     has_source_id: true,
-                    has_input: true,
-                    has_source_path: true,
+                    source_path: SourcePathColumn::Ecs,
                 },
             );
         });
@@ -1923,8 +1907,7 @@ mod tests {
                 0,
                 SourceMetadataPlan {
                     has_source_id: true,
-                    has_input: true,
-                    has_source_path: true,
+                    source_path: SourcePathColumn::Ecs,
                 },
             );
         });
@@ -1957,7 +1940,7 @@ mod tests {
     #[test]
     fn source_metadata_attach_replaces_payload_reserved_column() {
         let schema = Arc::new(Schema::new(vec![Field::new(
-            field_names::SOURCE_PATH,
+            field_names::ECS_FILE_PATH,
             DataType::Utf8,
             true,
         )]));
@@ -1978,7 +1961,7 @@ mod tests {
             &row_origins,
             &source_paths,
             SourceMetadataPlan {
-                has_source_path: true,
+                source_path: SourcePathColumn::Ecs,
                 ..SourceMetadataPlan::default()
             },
         )
@@ -1986,7 +1969,7 @@ mod tests {
 
         assert_eq!(out.num_columns(), 1);
         let source_path = out
-            .column_by_name(field_names::SOURCE_PATH)
+            .column_by_name(field_names::ECS_FILE_PATH)
             .expect("source path column")
             .as_any()
             .downcast_ref::<StringViewArray>()
@@ -2019,9 +2002,10 @@ mod tests {
     }
 
     #[test]
-    fn source_path_attached_before_sql_is_queryable() {
+    fn public_source_path_attached_before_sql_is_queryable() {
         let mut transform =
-            crate::transform::SqlTransform::new("SELECT _source_path, msg FROM logs").expect("sql");
+            crate::transform::SqlTransform::new(r#"SELECT "file.path", msg FROM logs"#)
+                .expect("sql");
         let mut scanner = Scanner::new(transform.scan_config());
         let scanned = scanner
             .scan(Bytes::from_static(b"{\"msg\":\"hello\"}\n"))
@@ -2037,7 +2021,10 @@ mod tests {
             scanned,
             &row_origins,
             &source_paths,
-            transform.analyzer().source_metadata_plan(),
+            SourceMetadataPlan {
+                has_source_id: false,
+                source_path: SourcePathColumn::Ecs,
+            },
         )
         .expect("attach");
 
@@ -2049,7 +2036,7 @@ mod tests {
             .block_on(transform.execute(attached))
             .expect("transform should see source path");
         let source_path = result
-            .column_by_name(field_names::SOURCE_PATH)
+            .column_by_name(field_names::ECS_FILE_PATH)
             .expect("source path column")
             .as_any()
             .downcast_ref::<StringViewArray>()
@@ -2058,7 +2045,48 @@ mod tests {
     }
 
     #[test]
-    fn select_star_preserves_legacy_source_path_without_new_metadata() {
+    fn select_star_includes_public_source_metadata_style_columns() {
+        let mut transform = crate::transform::SqlTransform::new(
+            r#"SELECT * FROM logs WHERE "file.path" = '/var/log/pods/ns_pod_uid/c/0.log'"#,
+        )
+        .expect("sql");
+        let mut scanner = Scanner::new(transform.scan_config());
+        let scanned = scanner
+            .scan(Bytes::from_static(b"{\"msg\":\"hello\"}\n"))
+            .expect("scan");
+        let row_origins = vec![RowOriginSpan {
+            source_id: Some(SourceId(99)),
+            input_name: Arc::from("pods"),
+            rows: 1,
+        }];
+        let source_paths =
+            HashMap::from([(SourceId(99), "/var/log/pods/ns_pod_uid/c/0.log".to_string())]);
+        let attached = source_metadata_for_batch(
+            scanned,
+            &row_origins,
+            &source_paths,
+            SourceMetadataPlan {
+                has_source_id: false,
+                source_path: SourcePathColumn::Ecs,
+            },
+        )
+        .expect("attach");
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        let result = rt
+            .block_on(transform.execute(attached))
+            .expect("transform should filter on source metadata");
+
+        assert_eq!(result.num_rows(), 1);
+        assert!(result.column_by_name(field_names::ECS_FILE_PATH).is_some());
+        assert!(result.column_by_name("msg").is_some());
+    }
+
+    #[test]
+    fn select_star_does_not_attach_source_metadata() {
         let mut transform = crate::transform::SqlTransform::new("SELECT * FROM logs").expect("sql");
         let mut scanner = Scanner::new(transform.scan_config());
         let scanned = scanner
@@ -2085,25 +2113,15 @@ mod tests {
             .expect("runtime");
         let result = rt
             .block_on(transform.execute(attached))
-            .expect("transform should preserve legacy source metadata");
-
-        let source_path = result
-            .column_by_name(field_names::SOURCE_PATH)
-            .expect("source path column")
-            .as_any()
-            .downcast_ref::<StringViewArray>()
-            .expect("source path type");
+            .expect("transform should keep wildcard projection narrow");
 
         assert!(result.column_by_name(field_names::SOURCE_ID).is_none());
-        assert!(result.column_by_name(field_names::INPUT).is_none());
-        assert_eq!(source_path.value(0), "/var/log/pods/ns_pod_uid/c/0.log");
     }
 
     #[test]
     fn explicit_projection_preserves_new_source_metadata_columns() {
         let mut transform =
-            crate::transform::SqlTransform::new("SELECT msg, _source_id, _input FROM logs")
-                .expect("sql");
+            crate::transform::SqlTransform::new("SELECT msg, __source_id FROM logs").expect("sql");
         let mut scanner = Scanner::new(transform.scan_config());
         let scanned = scanner
             .scan(Bytes::from_static(b"{\"msg\":\"hello\"}\n"))
@@ -2117,7 +2135,10 @@ mod tests {
             scanned,
             &row_origins,
             &HashMap::new(),
-            transform.analyzer().source_metadata_plan(),
+            SourceMetadataPlan {
+                has_source_id: true,
+                source_path: SourcePathColumn::None,
+            },
         )
         .expect("attach");
 
@@ -2135,15 +2156,7 @@ mod tests {
             .as_any()
             .downcast_ref::<UInt64Array>()
             .expect("source id type");
-        let input = result
-            .column_by_name(field_names::INPUT)
-            .expect("input column")
-            .as_any()
-            .downcast_ref::<StringViewArray>()
-            .expect("input type");
-
         assert_eq!(source_id.value(0), 99);
-        assert_eq!(input.value(0), "pods");
     }
 
     #[cfg(not(feature = "turmoil"))]

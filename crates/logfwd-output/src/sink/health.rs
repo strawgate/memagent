@@ -274,6 +274,11 @@ mod tests {
     }
 }
 
+// NOTE: This Kani verification module follows the same per-event-variant proof
+// pattern as `crates/logfwd-io/src/receiver_health.rs`. Both verify a
+// `reduce_*_health(ComponentHealth, Event) -> ComponentHealth` reducer with one
+// proof per event variant. They are NOT merged because they are different
+// compilation units with distinct event enums and transition tables.
 #[cfg(kani)]
 mod verification {
     use super::{OutputHealthEvent, aggregate_fanout_health, reduce_output_health};

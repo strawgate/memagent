@@ -4,20 +4,23 @@ use std::time::Duration;
 
 use opentelemetry::metrics::Meter;
 
-use logfwd_config::{CompressionFormat, Format, InputTypeConfig, OutputConfigV2, PipelineConfig};
 #[cfg(feature = "datafusion")]
 use logfwd_config::{EnrichmentConfig, GeoDatabaseFormat};
+use logfwd_config::{Format, InputTypeConfig, OutputConfigV2, PipelineConfig, SourceMetadataStyle};
 use logfwd_diagnostics::diagnostics::PipelineMetrics;
 use logfwd_io::checkpoint::{
     CheckpointStore, FileCheckpointStore, SourceCheckpoint, default_data_dir,
 };
-use logfwd_output::{AsyncFanoutFactory, SinkFactory, build_sink_factory_v2};
+use logfwd_output::{AsyncFanoutFactory, SinkFactory, build_sink_factory};
 use logfwd_types::field_names;
 use logfwd_types::pipeline::{PipelineMachine, SourceId};
 use logfwd_types::source_metadata::SourceMetadataPlan;
 
 use super::input_build::build_input_state;
-use super::{InputTransform, Pipeline};
+use super::{
+    InputTransform, Pipeline, source_metadata_style_needs_source_paths,
+    source_metadata_style_source_path,
+};
 
 // ── Pipeline defaults ──────────────────────────────────────────────────
 /// Default output worker count when `pipelines.<name>.workers` is unset.
@@ -34,6 +37,14 @@ pub(crate) const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const DEFAULT_CHECKPOINT_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 /// Default maximum time to wait for worker-pool drain before cancellation.
 pub(crate) const DEFAULT_POOL_DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn input_type_exposes_public_source_paths(type_config: &InputTypeConfig) -> bool {
+    // Keep this list tied to InputSource::source_paths() implementations.
+    matches!(
+        type_config,
+        InputTypeConfig::File(_) | InputTypeConfig::S3(_)
+    )
+}
 
 impl Pipeline {
     /// Construct a pipeline from parsed YAML config.
@@ -514,32 +525,53 @@ impl Pipeline {
                 scan_config.line_field_name = Some(field_names::BODY.to_string());
             }
             let scanner = logfwd_arrow::scanner::Scanner::new(scan_config);
-            #[cfg(not(feature = "turmoil"))]
-            let requested_source_metadata_plan = transform.analyzer().source_metadata_plan();
             let explicit_source_metadata_plan =
                 transform.analyzer().explicit_source_metadata_plan();
-            if explicit_source_metadata_plan.has_any() && !input_cfg.source_metadata {
+            if explicit_source_metadata_plan.has_any()
+                && input_cfg.source_metadata == SourceMetadataStyle::None
+            {
                 return Err(format!(
                     "pipeline '{name}' input '{input_name}': SQL references source metadata \
-                     columns (_source_id, _input, or _source_path), but source_metadata is disabled; \
-                     set source_metadata: true on this input"
+                     columns such as __source_id, but source_metadata is disabled; \
+                     set source_metadata: fastforward on this input"
                 ));
             }
-            let source_metadata_plan = if input_cfg.source_metadata {
-                #[cfg(feature = "turmoil")]
-                {
+            if explicit_source_metadata_plan.has_source_id
+                && input_cfg.source_metadata != SourceMetadataStyle::Fastforward
+            {
+                return Err(format!(
+                    "pipeline '{name}' input '{input_name}': SQL references internal source \
+                     metadata column __source_id, but source_metadata is configured as {}; \
+                     set source_metadata: fastforward on this input",
+                    input_cfg.source_metadata
+                ));
+            }
+            if source_metadata_style_needs_source_paths(input_cfg.source_metadata)
+                && !input_type_exposes_public_source_paths(&input_cfg.type_config)
+            {
+                return Err(format!(
+                    "pipeline '{name}' input '{input_name}': source_metadata style {} requires \
+                     source paths, but input type {} does not expose public source path snapshots; \
+                     currently only file and s3 inputs support public source path metadata styles",
+                    input_cfg.source_metadata,
+                    input_cfg.input_type()
+                ));
+            }
+            #[cfg(feature = "turmoil")]
+            let source_metadata_plan = {
+                if input_cfg.source_metadata != SourceMetadataStyle::None {
                     return Err(format!(
                         "pipeline '{name}' input '{input_name}': source_metadata is not \
                          supported when built with the turmoil feature; the turmoil input path \
                          does not attach source metadata before SQL"
                     ));
                 }
-                #[cfg(not(feature = "turmoil"))]
-                {
-                    requested_source_metadata_plan
-                }
-            } else {
                 SourceMetadataPlan::default()
+            };
+            #[cfg(not(feature = "turmoil"))]
+            let source_metadata_plan = SourceMetadataPlan {
+                has_source_id: input_cfg.source_metadata == SourceMetadataStyle::Fastforward,
+                source_path: source_metadata_style_source_path(input_cfg.source_metadata),
             };
 
             input_transforms.push(InputTransform {
@@ -563,20 +595,13 @@ impl Pipeline {
         // Build output sink factory → pool.
         let factory: Arc<dyn SinkFactory> = if config.outputs.len() == 1 {
             let output_cfg = &config.outputs[0];
-            build_output_factory_from_config(
-                0,
-                output_cfg.typed(),
-                output_cfg.compression,
-                base_path,
-                &mut metrics,
-            )?
+            build_output_factory_from_config(0, output_cfg.typed(), base_path, &mut metrics)?
         } else {
             let mut factories: Vec<Arc<dyn SinkFactory>> = Vec::new();
             for (i, output_cfg) in config.outputs.iter().enumerate() {
                 factories.push(build_output_factory_from_config(
                     i,
                     output_cfg.typed(),
-                    output_cfg.compression,
                     base_path,
                     &mut metrics,
                 )?);
@@ -649,7 +674,6 @@ impl Pipeline {
 fn build_output_factory_from_config(
     index: usize,
     output_cfg: &OutputConfigV2,
-    legacy_file_compression: Option<CompressionFormat>,
     base_path: Option<&Path>,
     metrics: &mut PipelineMetrics,
 ) -> Result<Arc<dyn SinkFactory>, String> {
@@ -659,16 +683,7 @@ fn build_output_factory_from_config(
     let output_type_str = output_cfg.output_type().to_string();
     let output_stats = metrics.add_output(&output_name, &output_type_str);
 
-    if matches!(output_cfg, OutputConfigV2::File(_))
-        && let Some(compression) = legacy_file_compression
-    {
-        return Err(format!(
-            "output '{output_name}': file does not support '{compression}' compression"
-        ));
-    }
-
-    build_sink_factory_v2(&output_name, output_cfg, base_path, output_stats)
-        .map_err(|e| e.to_string())
+    build_sink_factory(&output_name, output_cfg, base_path, output_stats).map_err(|e| e.to_string())
 }
 
 fn should_open_checkpoint_store(checkpoint_dir: &Path, has_explicit_data_dir: bool) -> bool {
@@ -691,16 +706,16 @@ fn should_open_checkpoint_store(checkpoint_dir: &Path, has_explicit_data_dir: bo
 mod tests {
     use super::*;
     use logfwd_config::{
-        CompressionFormat, InputConfig, InputTypeConfig, OutputConfig, OutputConfigV2, OutputType,
-        StdoutOutputConfig,
+        InputConfig, InputTypeConfig, OutputConfig, OutputConfigV2, OutputType, StdoutOutputConfig,
     };
+    use logfwd_types::source_metadata::SourcePathColumn;
 
     fn minimal_input(path: String) -> InputConfig {
         InputConfig {
             name: Some("input".to_string()),
             format: Some(Format::Json),
             sql: None,
-            source_metadata: false,
+            source_metadata: SourceMetadataStyle::None,
             type_config: InputTypeConfig::File(logfwd_config::FileTypeConfig {
                 path,
                 poll_interval_ms: None,
@@ -751,32 +766,6 @@ mod tests {
 
         Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
             .expect("native typed output entry should build");
-    }
-
-    #[test]
-    fn from_config_preserves_legacy_output_factory_rejections() {
-        let dir = tempfile::tempdir().unwrap();
-        let log_path = dir.path().join("test.log");
-        std::fs::write(&log_path, b"{\"msg\":\"hello\"}\n").unwrap();
-
-        let mut config = minimal_config(log_path.display().to_string());
-        config.outputs = vec![
-            OutputConfig {
-                output_type: OutputType::File,
-                path: Some(dir.path().join("out.log").display().to_string()),
-                compression: Some(CompressionFormat::Gzip),
-                ..Default::default()
-            }
-            .into(),
-        ];
-
-        let err = Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
-            .err()
-            .expect("legacy file compression should still be rejected");
-        assert!(
-            err.contains("file does not support 'gzip' compression"),
-            "unexpected error: {err}"
-        );
     }
 
     #[test]
@@ -843,7 +832,7 @@ mod tests {
         std::fs::write(&log_path, b"{\"msg\":\"hello\"}\n").unwrap();
 
         let mut config = minimal_config(log_path.display().to_string());
-        config.transform = Some("SELECT _source_path FROM logs".to_string());
+        config.transform = Some("SELECT __source_id FROM logs".to_string());
 
         let err = Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
             .err()
@@ -861,8 +850,8 @@ mod tests {
         std::fs::write(&log_path, b"{\"msg\":\"hello\"}\n").unwrap();
 
         let mut config = minimal_config(log_path.display().to_string());
-        config.inputs[0].source_metadata = true;
-        config.transform = Some("SELECT _source_path FROM logs".to_string());
+        config.inputs[0].source_metadata = SourceMetadataStyle::Fastforward;
+        config.transform = Some("SELECT __source_id FROM logs".to_string());
 
         let pipeline =
             Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
@@ -870,29 +859,132 @@ mod tests {
         assert!(
             pipeline.input_transforms[0]
                 .source_metadata_plan
-                .has_source_path
+                .has_source_id
         );
     }
 
     #[test]
-    fn source_metadata_enabled_select_star_preserves_legacy_source_path_only() {
+    fn public_source_metadata_style_rejects_explicit_source_id() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("test.log");
         std::fs::write(&log_path, b"{\"msg\":\"hello\"}\n").unwrap();
 
         let mut config = minimal_config(log_path.display().to_string());
-        config.inputs[0].source_metadata = true;
+        config.inputs[0].source_metadata = SourceMetadataStyle::Ecs;
+        config.transform = Some("SELECT __source_id FROM logs".to_string());
+
+        let err = Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
+            .err()
+            .expect("public metadata style should reject internal source id");
+        assert!(
+            err.contains("source_metadata is configured as ecs"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn public_source_path_style_rejects_inputs_without_source_paths() {
+        let mut config = PipelineConfig {
+            inputs: vec![InputConfig {
+                name: Some("udp-in".to_string()),
+                format: Some(Format::Json),
+                sql: None,
+                source_metadata: SourceMetadataStyle::Ecs,
+                type_config: InputTypeConfig::Udp(logfwd_config::UdpTypeConfig {
+                    listen: "127.0.0.1:0".to_string(),
+                    max_message_size_bytes: None,
+                    so_rcvbuf: None,
+                }),
+            }],
+            transform: None,
+            outputs: vec![minimal_output().into()],
+            enrichment: Vec::new(),
+            resource_attrs: Default::default(),
+            workers: None,
+            batch_target_bytes: None,
+            batch_timeout_ms: None,
+            poll_interval_ms: None,
+        };
+
+        let err = Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
+            .err()
+            .expect("public source path style should require path-capable input");
+        assert!(
+            err.contains("does not expose public source path snapshots"),
+            "unexpected error: {err}"
+        );
+
+        config.inputs[0].source_metadata = SourceMetadataStyle::Fastforward;
+        Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
+            .expect("fastforward source id style does not require source paths");
+    }
+
+    #[test]
+    fn public_source_path_style_allows_s3_key_snapshots() {
+        let config = PipelineConfig {
+            inputs: vec![InputConfig {
+                name: Some("s3-in".to_string()),
+                format: Some(Format::Json),
+                sql: None,
+                source_metadata: SourceMetadataStyle::Ecs,
+                type_config: InputTypeConfig::S3(logfwd_config::S3TypeConfig {
+                    s3: logfwd_config::S3InputConfig {
+                        bucket: "logs".to_string(),
+                        region: None,
+                        endpoint: None,
+                        prefix: None,
+                        sqs_queue_url: None,
+                        start_after: None,
+                        access_key_id: Some("test-key".to_string()),
+                        secret_access_key: Some("test-secret".to_string()),
+                        session_token: None,
+                        part_size_bytes: None,
+                        max_concurrent_fetches: None,
+                        max_concurrent_objects: None,
+                        visibility_timeout_secs: None,
+                        compression: Some("invalid-test-compression".to_string()),
+                        poll_interval_ms: None,
+                    },
+                }),
+            }],
+            transform: None,
+            outputs: vec![minimal_output().into()],
+            enrichment: Vec::new(),
+            resource_attrs: Default::default(),
+            workers: None,
+            batch_target_bytes: None,
+            batch_timeout_ms: None,
+            poll_interval_ms: None,
+        };
+
+        let err = Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
+            .err()
+            .expect("S3 public source path style should reach S3 build validation");
+        assert!(
+            err.contains("S3 input requires the 's3' feature")
+                || err.contains("unknown S3 compression value 'invalid-test-compression'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn fastforward_source_metadata_attaches_source_id_for_select_star() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        std::fs::write(&log_path, b"{\"msg\":\"hello\"}\n").unwrap();
+
+        let mut config = minimal_config(log_path.display().to_string());
+        config.inputs[0].source_metadata = SourceMetadataStyle::Fastforward;
 
         let pipeline =
             Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
-                .expect("SELECT * should preserve legacy source path compatibility");
+                .expect("SELECT * should build without source metadata columns");
 
         assert_eq!(
             pipeline.input_transforms[0].source_metadata_plan,
             SourceMetadataPlan {
-                has_source_id: false,
-                has_input: false,
-                has_source_path: true,
+                has_source_id: true,
+                source_path: SourcePathColumn::None,
             }
         );
     }

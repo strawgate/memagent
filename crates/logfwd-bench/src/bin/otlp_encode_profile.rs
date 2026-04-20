@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! CPU-profile harness for the Arrow→OTLP encoder.
 //!
 //! Runs `encode_batch` / `encode_batch_generated_fast` in a tight loop while
@@ -26,8 +27,6 @@
 //!   3. `iterations` — encode loop count (e.g. 5000)
 //!   4. `encoder`    — `manual` | `generated_fast`
 //!   5. `svg_path`   — output flamegraph SVG path
-#![allow(clippy::print_stdout, clippy::print_stderr)]
-
 use std::fs::File;
 use std::hint::black_box;
 use std::path::PathBuf;

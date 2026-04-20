@@ -16,6 +16,7 @@ members = [
     "crates/logfwd-bench",
     "crates/logfwd-competitive-bench",
     "crates/logfwd-test-utils",
+    "crates/logfwd-lint-attrs",
     "crates/logfwd-ebpf-proto",
     "crates/logfwd-ebpf-proto/sensor-ebpf",
     "crates/logfwd-ebpf-proto/sensor-ebpf/sensor-ebpf-common",
@@ -25,6 +26,10 @@ members = [
 # It is intentionally excluded from the workspace.
 exclude = [
     "crates/logfwd-ebpf-proto/sensor-ebpf/sensor-ebpf-kern",
+    # logfwd-lints pins a specific rustc nightly and links against
+    # rustc-private crates. It is invoked via `cargo dylint`, not the
+    # regular workspace build.
+    "crates/logfwd-lints",
 ]
 # default-members: crates that compile without datafusion (~30s vs ~3min).
 # Bare `cargo check/clippy` uses these. Use `--workspace` or `-p logfwd`
@@ -85,6 +90,7 @@ tracing-opentelemetry = "0.32"
 turmoil = "0.7"
 walkdir = "2"
 smallvec = { version = "1", features = ["union"] }
+stats_alloc = "0.1"
 thiserror = { version = "2", default-features = false }
 url = "2"
 anyhow = "1"
@@ -120,7 +126,7 @@ cast_precision_loss = "allow"
 cast_lossless = "allow"
 inline_always = "allow"
 needless_pass_by_value = "allow"
-return_self_not_must_use = "allow"
+return_self_not_must_use = "warn"
 struct_excessive_bools = "allow"
 wildcard_imports = "allow"
 unnested_or_patterns = "allow"
@@ -144,6 +150,9 @@ dbg_macro = "deny"
 large_enum_variant = "warn"
 print_stdout = "warn"
 print_stderr = "warn"
+let_underscore_future = "deny"
+await_holding_lock = "warn"
+await_holding_refcell_ref = "warn"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

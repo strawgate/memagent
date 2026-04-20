@@ -68,12 +68,19 @@ mod kani_proofs {
     use crate::worker_pool::types::DeliveryOutcome;
 
     // -----------------------------------------------------------------------
-    // Proof 1: Dispatch always sends to a valid index, spawns, or waits.
-    // The item is NEVER silently dropped.
+    // Proof 1: Consolidated dispatch invariants — item is never dropped,
+    // SentToIndex picks the FIRST HasSpace worker, SpawnNew only fires
+    // when no HasSpace exists, and WaitOnFront only at capacity.
+    //
+    // Replaces the former 4 separate proofs:
+    // - verify_dispatch_never_drops_item
+    // - verify_dispatch_picks_first_available
+    // - verify_spawn_only_when_no_space
+    // - verify_wait_only_at_capacity
     // -----------------------------------------------------------------------
     #[kani::proof]
     #[kani::unwind(6)]
-    fn verify_dispatch_never_drops_item() {
+    fn verify_dispatch_invariants() {
         const MAX_N: usize = 4;
         let n: usize = kani::any();
         kani::assume(n <= MAX_N);
@@ -85,6 +92,11 @@ mod kani_proofs {
         kani::assume(n <= max_workers);
 
         let states: [ChannelState; MAX_N] = kani::any();
+        let has_space = states[..n].iter().any(|&s| s == ChannelState::HasSpace);
+        let active = states[..n]
+            .iter()
+            .filter(|&&s| s != ChannelState::Closed)
+            .count();
 
         let outcome = dispatch_step(&states[..n], max_workers);
 
@@ -101,127 +113,34 @@ mod kani_proofs {
             matches!(outcome, DispatchOutcome::WaitOnFront),
             "WaitOnFront path reachable"
         );
-
-        match outcome {
-            DispatchOutcome::SentToIndex(i) => {
-                // Must be a valid index.
-                assert!(i < n);
-                // Must point to a non-closed, non-full slot.
-                assert_eq!(states[i], ChannelState::HasSpace);
-            }
-            DispatchOutcome::SpawnNew => {
-                // Must be under the limit.
-                let active = states[..n]
-                    .iter()
-                    .filter(|&&s| s != ChannelState::Closed)
-                    .count();
-                assert!(active < max_workers);
-                // No HasSpace worker exists (else we'd have sent to it).
-                assert!(!states[..n].iter().any(|&s| s == ChannelState::HasSpace));
-            }
-            DispatchOutcome::WaitOnFront => {
-                // Must be at the limit.
-                let active = states[..n]
-                    .iter()
-                    .filter(|&&s| s != ChannelState::Closed)
-                    .count();
-                assert_eq!(active, max_workers);
-                // No HasSpace worker exists.
-                assert!(!states[..n].iter().any(|&s| s == ChannelState::HasSpace));
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Proof 2: SentToIndex always picks the FIRST HasSpace worker (MRU-first).
-    // -----------------------------------------------------------------------
-    #[kani::proof]
-    #[kani::unwind(6)]
-    fn verify_dispatch_picks_first_available() {
-        const MAX_N: usize = 4;
-        let n: usize = kani::any();
-        kani::assume(n > 0 && n <= MAX_N);
-
-        let max_workers: usize = kani::any();
-        kani::assume(max_workers >= n);
-
-        let states: [ChannelState; MAX_N] = kani::any();
-
-        let outcome = dispatch_step(&states[..n], max_workers);
-
-        // Guard: confirm MRU path (SentToIndex) is reachable under these inputs.
-        kani::cover!(
-            matches!(outcome, DispatchOutcome::SentToIndex(_)),
-            "SentToIndex reachable in picks_first proof"
-        );
-
-        if let DispatchOutcome::SentToIndex(i) = outcome {
-            // All workers before i must be Full or Closed.
-            for j in 0..i {
-                assert_ne!(states[j], ChannelState::HasSpace);
-            }
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // Proof 3: SpawnNew only fires when no HasSpace worker exists.
-    // -----------------------------------------------------------------------
-    #[kani::proof]
-    #[kani::unwind(6)]
-    fn verify_spawn_only_when_no_space() {
-        const MAX_N: usize = 4;
-        let n: usize = kani::any();
-        kani::assume(n <= MAX_N);
-
-        let max_workers: usize = kani::any();
-        kani::assume(max_workers >= 1 && max_workers <= 8);
-        kani::assume(n <= max_workers);
-
-        let states: [ChannelState; MAX_N] = kani::any();
-        let has_space = states[..n].iter().any(|&s| s == ChannelState::HasSpace);
-
-        let outcome = dispatch_step(&states[..n], max_workers);
-
-        // Guard: both branches (has_space / no_space) must be reachable.
         kani::cover!(has_space, "has_space=true path exercised");
         kani::cover!(!has_space, "has_space=false path exercised");
 
-        if has_space {
-            // Must send to an existing worker, not spawn.
-            assert!(!matches!(outcome, DispatchOutcome::SpawnNew));
+        match outcome {
+            DispatchOutcome::SentToIndex(i) => {
+                // Must be a valid index pointing to a HasSpace slot.
+                assert!(i < n);
+                assert_eq!(states[i], ChannelState::HasSpace);
+                // Must be the FIRST HasSpace worker (MRU-first ordering).
+                for j in 0..i {
+                    assert_ne!(states[j], ChannelState::HasSpace);
+                }
+            }
+            DispatchOutcome::SpawnNew => {
+                // Must be under the limit with no HasSpace worker.
+                assert!(active < max_workers);
+                assert!(!has_space);
+            }
+            DispatchOutcome::WaitOnFront => {
+                // Must be at capacity with no HasSpace worker.
+                assert_eq!(active, max_workers);
+                assert!(!has_space);
+            }
         }
-    }
 
-    // -----------------------------------------------------------------------
-    // Proof 4: WaitOnFront only fires when active == max_workers.
-    // -----------------------------------------------------------------------
-    #[kani::proof]
-    #[kani::unwind(6)]
-    fn verify_wait_only_at_capacity() {
-        const MAX_N: usize = 4;
-        let n: usize = kani::any();
-        kani::assume(n <= MAX_N);
-
-        let max_workers: usize = kani::any();
-        kani::assume(max_workers >= 1 && max_workers <= 4);
-        kani::assume(n <= max_workers);
-
-        let states: [ChannelState; MAX_N] = kani::any();
-        let active = states[..n]
-            .iter()
-            .filter(|&&s| s != ChannelState::Closed)
-            .count();
-
-        let outcome = dispatch_step(&states[..n], max_workers);
-
-        // Guard: WaitOnFront must be reachable (not vacuously avoided).
-        kani::cover!(
-            matches!(outcome, DispatchOutcome::WaitOnFront),
-            "WaitOnFront reachable in wait_only_at_capacity proof"
-        );
-
-        if matches!(outcome, DispatchOutcome::WaitOnFront) {
-            assert_eq!(active, max_workers);
+        // HasSpace → never SpawnNew (subsumed from former proof 3)
+        if has_space {
+            assert!(!matches!(outcome, DispatchOutcome::SpawnNew));
         }
     }
 

@@ -130,6 +130,7 @@ impl FormatDecoder {
     ///
     /// Used to create per-source format processors so that stateful formats
     /// (CRI P/F aggregation) do not cross-contaminate between sources.
+    #[must_use]
     pub fn new_instance(&self) -> Self {
         match self {
             Self::Passthrough { stats } => Self::Passthrough {

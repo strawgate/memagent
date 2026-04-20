@@ -130,17 +130,20 @@ pub const DEFAULT_RESOURCE_PREFIX: &str = "resource.attributes.";
 pub const LEGACY_RESOURCE_PREFIX: &str = "_resource_";
 
 // ---------------------------------------------------------------------------
-// Internal columns
+// Source metadata columns
 // ---------------------------------------------------------------------------
 
-/// Stable row-level source identity assigned by the input layer.
-pub const SOURCE_ID: &str = "_source_id";
+/// FastForward row-level source identity assigned by the input layer.
+pub const SOURCE_ID: &str = "__source_id";
 
-/// Configured input name for the row source.
-pub const INPUT: &str = "_input";
+/// ECS/Beats-style source file path column.
+pub const ECS_FILE_PATH: &str = "file.path";
 
-/// File source path compatibility column.
-pub const SOURCE_PATH: &str = "_source_path";
+/// OpenTelemetry log semantic convention source file path column.
+pub const OTEL_LOG_FILE_PATH: &str = "log.file.path";
+
+/// Vector legacy file-source path column.
+pub const VECTOR_FILE: &str = "file";
 
 // ---------------------------------------------------------------------------
 // Type-conflict struct children (Arrow schema)
@@ -164,4 +167,13 @@ pub const CONFLICT_CHILDREN: &[&str] = &["int", "float", "str", "bool"];
 /// ```
 pub fn matches_any(name: &str, canonical: &str, variants: &[&str]) -> bool {
     name == canonical || variants.contains(&name)
+}
+
+/// Return true when `name` is owned by FastForward internals.
+///
+/// This intentionally matches only known internal columns. User payloads can
+/// legitimately contain double-underscore fields such as GraphQL `__typename`,
+/// and output filtering must not drop them by prefix.
+pub fn is_internal_column(name: &str) -> bool {
+    matches!(name, SOURCE_ID)
 }

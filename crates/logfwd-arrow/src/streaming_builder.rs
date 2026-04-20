@@ -17,6 +17,7 @@ use arrow::buffer::{Buffer, NullBuffer};
 use arrow::datatypes::{DataType, Field, Fields, Schema};
 use arrow::error::ArrowError;
 use arrow::record_batch::{RecordBatch, RecordBatchOptions};
+use logfwd_lint_attrs::hot_path;
 
 use logfwd_core::scan_config::{parse_float_fast, parse_int_fast};
 use logfwd_core::scanner::BuilderState;
@@ -245,11 +246,13 @@ impl StreamingBuilder {
         self.line_views.clear();
     }
 
+    #[hot_path]
     #[inline(always)]
     pub fn begin_row(&mut self) {
         self.lifecycle.begin_row();
     }
 
+    #[hot_path]
     #[inline(always)]
     pub fn end_row(&mut self) {
         self.lifecycle.end_row();

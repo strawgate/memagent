@@ -955,8 +955,8 @@ pipelines:
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
-        err.contains("tcp output does not support 'format'"),
-        "unexpected error: {err}"
+        err.contains("unknown field") && err.contains("format"),
+        "tcp output should reject format at parse time: {err}"
     );
 }
 
@@ -1001,6 +1001,44 @@ pipelines:
     assert!(
         output_err.contains("duplicate output name 'out1'"),
         "unexpected error: {output_err}"
+    );
+}
+
+#[test]
+fn issue_2349_reject_null_output_endpoint() {
+    let yaml = r#"
+input:
+  type: file
+  path: /tmp/x.log
+output:
+  type: "null"
+  endpoint: https://collector:4318
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("unknown field") && err.contains("endpoint"),
+        "null output should reject endpoint at parse time: {err}"
+    );
+}
+
+#[test]
+fn issue_2349_reject_named_null_output_format() {
+    let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+    outputs:
+      - name: discard
+        type: "null"
+        format: json
+"#;
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("unknown field") && err.contains("format"),
+        "null output should reject format at parse time: {err}"
     );
 }
 

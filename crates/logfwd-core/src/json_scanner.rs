@@ -1583,6 +1583,7 @@ mod verification {
     /// If result < end, the byte at result is NOT whitespace.
     #[kani::proof]
     #[kani::unwind(17)]
+    #[kani::solver(cadical)]
     fn verify_skip_whitespace() {
         let buf: [u8; 16] = kani::any();
         let start: usize = kani::any();
@@ -1607,6 +1608,7 @@ mod verification {
     /// All bytes before result are NOT delimiters.
     #[kani::proof]
     #[kani::unwind(17)]
+    #[kani::solver(cadical)]
     fn verify_skip_bare_value() {
         let buf: [u8; 16] = kani::any();
         let start: usize = kani::any();
@@ -1644,6 +1646,7 @@ mod verification {
     /// is_json_delimiter covers all JSON value delimiters exhaustively.
     /// Checks every byte value: only the 7 expected delimiters return true.
     #[kani::proof]
+    #[kani::solver(cadical)]
     fn verify_is_json_delimiter_exhaustive() {
         let b: u8 = kani::any();
         let result = is_json_delimiter(b);
@@ -1665,7 +1668,7 @@ mod verification {
     /// focuses on local crash-freedom and bounds without exploding the search.
     #[kani::proof]
     #[kani::unwind(10)]
-    #[kani::solver(kissat)]
+    #[kani::solver(cadical)]
     fn verify_skip_nested_bounds() {
         let buf: [u8; 8] = kani::any();
         let pos: usize = kani::any();

@@ -48,11 +48,29 @@ use logfwd_io::tail::ByteOffset;
 #[cfg(feature = "turmoil")]
 use logfwd_output::SinkFactory;
 #[cfg(test)]
-use logfwd_output::build_sink_factory_v2;
+use logfwd_output::build_sink_factory;
 use logfwd_output::{BatchMetadata, OnceAsyncFactory};
 use logfwd_types::pipeline::{PipelineMachine, Running, SourceId};
-use logfwd_types::source_metadata::SourceMetadataPlan;
+use logfwd_types::source_metadata::{SourceMetadataPlan, SourcePathColumn};
 use tokio_util::sync::CancellationToken;
+
+fn source_metadata_style_source_path(
+    style: logfwd_config::SourceMetadataStyle,
+) -> SourcePathColumn {
+    match style {
+        logfwd_config::SourceMetadataStyle::Ecs => SourcePathColumn::Ecs,
+        logfwd_config::SourceMetadataStyle::Otel => SourcePathColumn::Otel,
+        logfwd_config::SourceMetadataStyle::Vector => SourcePathColumn::Vector,
+        logfwd_config::SourceMetadataStyle::None
+        | logfwd_config::SourceMetadataStyle::Fastforward => SourcePathColumn::None,
+    }
+}
+
+fn source_metadata_style_needs_source_paths(style: logfwd_config::SourceMetadataStyle) -> bool {
+    source_metadata_style_source_path(style)
+        .to_column_name()
+        .is_some()
+}
 
 // ---------------------------------------------------------------------------
 // block_in_place shim for simulation
@@ -185,6 +203,7 @@ impl Pipeline {
     /// Replace the output sink with an async sink implementation.
     ///
     /// Wraps the sink in a single-worker pool via [`OnceAsyncFactory`].
+    #[must_use]
     pub fn with_sink(mut self, sink: Box<dyn logfwd_output::Sink>) -> Self {
         let name = self.name.clone();
         let factory = Arc::new(OnceAsyncFactory::new(name, sink));
@@ -196,6 +215,7 @@ impl Pipeline {
     ///
     /// Each new input gets its own passthrough `Scanner + SqlTransform` pair
     /// (`SELECT * FROM logs`) to keep `input_transforms` in sync with `inputs`.
+    #[must_use]
     pub fn with_input(mut self, name: &str, source: Box<dyn InputSource>) -> Self {
         let stats = Arc::new(ComponentStats::new_with_health(ComponentHealth::Starting));
         self.inputs.push(InputState {
@@ -221,6 +241,7 @@ impl Pipeline {
     }
 
     /// Replace the checkpoint store. Useful for injecting an in-memory store in tests.
+    #[must_use]
     pub fn with_checkpoint_store(mut self, store: Box<dyn CheckpointStore>) -> Self {
         self.checkpoint_store = Some(store);
         self
@@ -233,6 +254,7 @@ impl Pipeline {
     /// Panics if `processor.is_stateful()` returns `true`. Stateful processors
     /// require deferred-ACK checkpointing support that is not yet implemented
     /// (tracked in #1404). Register only stateless processors until then.
+    #[must_use]
     pub fn with_processor(mut self, processor: Box<dyn Processor>) -> Self {
         assert!(
             !processor.is_stateful(),
@@ -251,6 +273,7 @@ impl Pipeline {
     ///
     /// Panics if any processor in `processors` returns `is_stateful() == true`.
     /// See [`with_processor`](Self::with_processor) for details.
+    #[must_use]
     pub fn with_processors(mut self, processors: Vec<Box<dyn Processor>>) -> Self {
         for p in &processors {
             assert!(
@@ -437,6 +460,7 @@ impl Pipeline {
     ///   HTTP sends, flush_interval can't fire on this worker. Goes away
     ///   when ureq is replaced with an async HTTP client.
     /// - self.inputs.drain(..) makes this method non-reentrant.
+    #[logfwd_lint_attrs::cancel_safe]
     pub async fn run_async(&mut self, shutdown: &CancellationToken) -> io::Result<()> {
         self.validate_batch_settings()?;
         assert_eq!(
@@ -891,7 +915,7 @@ mod tests {
         };
         let typed = OutputConfigV2::from(&cfg);
         let factory =
-            build_sink_factory_v2("test", &typed, None, Arc::new(ComponentStats::new())).unwrap();
+            build_sink_factory("test", &typed, None, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "test");
         let sink = factory.create().expect("create should succeed");
         assert_eq!(sink.name(), "test");
@@ -909,7 +933,7 @@ mod tests {
         };
         let typed = OutputConfigV2::from(&cfg);
         let factory =
-            build_sink_factory_v2("otel", &typed, None, Arc::new(ComponentStats::new())).unwrap();
+            build_sink_factory("otel", &typed, None, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "otel");
     }
 
@@ -921,7 +945,7 @@ mod tests {
             ..Default::default()
         };
         let typed = OutputConfigV2::from(&cfg);
-        let result = build_sink_factory_v2("bad", &typed, None, Arc::new(ComponentStats::new()));
+        let result = build_sink_factory("bad", &typed, None, Arc::new(ComponentStats::new()));
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("endpoint"), "got: {err}");

@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Profile each stage of the full pipeline: read → scan → transform → encode → "send"
 //! Run with: cargo run -p logfwd-bench --release --bin e2e-profile
 

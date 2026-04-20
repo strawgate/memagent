@@ -23,7 +23,9 @@
 //! URI, TIMESTAMP_ISO8601, DATE, TIME, LOGLEVEL, HOSTNAME, EMAILADDRESS.
 
 use std::any::Any;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use arrow::array::{Array, ArrayRef, AsArray, StringBuilder, StructArray};
 use arrow::datatypes::{DataType, Field, Fields};
@@ -39,12 +41,23 @@ use crate::udf::bounded_lru::BoundedLruCache;
 // Grok pattern compilation (via grok crate)
 // ---------------------------------------------------------------------------
 
+/// Threshold above which a single `match_against()` call is considered slow.
+/// Normal regex matches complete in microseconds; 10ms indicates likely
+/// catastrophic backtracking against the fancy-regex engine's internal limits.
+const SLOW_MATCH_THRESHOLD: Duration = Duration::from_millis(10);
+
+/// After the first slow-match warning, subsequent warnings are emitted every
+/// this many slow matches to avoid log spam.
+const SLOW_MATCH_LOG_INTERVAL: u64 = 100;
+
 /// A compiled grok pattern: the grok Pattern for matching + ordered field names
 /// for Arrow schema construction.
 #[derive(Debug)]
 struct CompiledGrok {
     pattern: grok::Pattern,
     field_names: Vec<String>,
+    /// Original pattern string, retained for diagnostic logging.
+    original_pattern: Arc<str>,
 }
 
 const GROK_CACHE_CAPACITY: usize = 128;
@@ -68,6 +81,7 @@ fn compile_grok(pattern: &str) -> Result<CompiledGrok, crate::TransformError> {
     Ok(CompiledGrok {
         pattern: compiled,
         field_names,
+        original_pattern: Arc::from(pattern),
     })
 }
 
@@ -87,6 +101,9 @@ pub struct GrokUdf {
     /// calls with different patterns.  Keying by pattern string handles multiple
     /// patterns correctly while still avoiding recompilation across batches.
     grok_cache: Mutex<BoundedGrokCache>,
+    /// Cumulative count of match_against() calls that exceeded
+    /// [`SLOW_MATCH_THRESHOLD`]. Used to throttle warning logs.
+    slow_match_count: AtomicU64,
 }
 
 impl std::fmt::Debug for GrokUdf {
@@ -130,6 +147,7 @@ impl GrokUdf {
                 Volatility::Immutable,
             ),
             grok_cache: Mutex::new(BoundedGrokCache::new(GROK_CACHE_CAPACITY)),
+            slow_match_count: AtomicU64::new(0),
         }
     }
 
@@ -160,6 +178,39 @@ impl GrokUdf {
         }
         cache.insert(pattern.to_owned(), Arc::clone(&compiled));
         Ok(compiled)
+    }
+
+    /// Run `match_against` and record timing. If the match exceeds
+    /// [`SLOW_MATCH_THRESHOLD`], bump the slow-match counter and emit a
+    /// throttled warning about a slow match. This detects elapsed-time slow
+    /// matches only; it does not directly detect whether fancy-regex hit a
+    /// backtracking limit or swallowed an internal error.
+    #[inline]
+    fn timed_match_against<'a>(
+        &self,
+        compiled: &'a CompiledGrok,
+        text: &'a str,
+    ) -> Option<grok::Matches<'a>> {
+        let start = Instant::now();
+        let result = compiled.pattern.match_against(text);
+        let elapsed = start.elapsed();
+
+        if elapsed > SLOW_MATCH_THRESHOLD {
+            let count = self.slow_match_count.fetch_add(1, Ordering::Relaxed) + 1;
+            if count == 1 || count.is_multiple_of(SLOW_MATCH_LOG_INTERVAL) {
+                tracing::warn!(
+                    grok_pattern = %compiled.original_pattern,
+                    elapsed = ?elapsed,
+                    slow_match_total = count,
+                    "grok: regex match exceeded {}ms — possible catastrophic backtracking. \
+                     The grok() UDF uses the fancy-regex engine which silently returns NULL \
+                     when backtracking limits are exceeded. Consider simplifying the pattern \
+                     or using regexp_extract() which uses a guaranteed-linear-time engine.",
+                    SLOW_MATCH_THRESHOLD.as_millis(),
+                );
+            }
+        }
+        result
     }
 }
 
@@ -283,9 +334,10 @@ impl ScalarUDFImpl for GrokUdf {
                             }
                             // NOTE: the grok crate uses fancy-regex internally.
                             // If matching exceeds fancy-regex backtracking limits,
-                            // `match_against` currently reports None. We treat this
-                            // exactly like a non-match and return NULL captures.
-                            match compiled.pattern.match_against(strings.value(row)) {
+                            // `match_against` returns None (error swallowed).
+                            // timed_match_against() can help surface potentially
+                            // pathological matches by logging when a match is slow.
+                            match self.timed_match_against(&compiled, strings.value(row)) {
                                 Some(matches) => {
                                     for (i, name) in compiled.field_names.iter().enumerate() {
                                         match matches.get(name) {
@@ -311,7 +363,7 @@ impl ScalarUDFImpl for GrokUdf {
                                 }
                                 continue;
                             }
-                            match compiled.pattern.match_against(strings.value(row)) {
+                            match self.timed_match_against(&compiled, strings.value(row)) {
                                 Some(matches) => {
                                     for (i, name) in compiled.field_names.iter().enumerate() {
                                         match matches.get(name) {
@@ -337,7 +389,7 @@ impl ScalarUDFImpl for GrokUdf {
                                 }
                                 continue;
                             }
-                            match compiled.pattern.match_against(strings.value(row)) {
+                            match self.timed_match_against(&compiled, strings.value(row)) {
                                 Some(matches) => {
                                     for (i, name) in compiled.field_names.iter().enumerate() {
                                         match matches.get(name) {
@@ -393,7 +445,7 @@ impl ScalarUDFImpl for GrokUdf {
                 };
                 let matches = raw
                     .as_deref()
-                    .and_then(|s| compiled.pattern.match_against(s));
+                    .and_then(|s| self.timed_match_against(&compiled, s));
 
                 let fields: Vec<Field> = compiled
                     .field_names

@@ -134,6 +134,13 @@ test:
 test-all:
     LOGFWD_DISABLE_DEFAULT_CHECKPOINTS=1 cargo nextest run --workspace --profile ci
 
+# Run semantic lints via dylint (hot_path_no_alloc, and any future
+# semantic lints defined in crates/logfwd-lints/).
+# Requires: cargo install --locked cargo-dylint dylint-link
+#           rustup toolchain install nightly-2025-09-18 --component llvm-tools-preview --component rustc-dev
+dylint:
+    cargo dylint --path crates/logfwd-lints -- --workspace
+
 # Run required Kani formal verification proofs for production crates
 # Requires: cargo install --locked kani-verifier && cargo kani setup
 kani:
@@ -586,6 +593,14 @@ bench-otlp-io *ARGS:
 # Run OTLP I/O benchmarks with fast local iteration settings.
 bench-otlp-io-fast *ARGS:
     cargo bench -p logfwd-bench --bench otlp_io -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
+
+# Run source metadata attachment benchmarks.
+bench-source-metadata *ARGS:
+    cargo bench -p logfwd-bench --bench source_metadata -- {{ARGS}}
+
+# Run source metadata attachment benchmarks with fast local iteration settings.
+bench-source-metadata-fast *ARGS:
+    cargo bench -p logfwd-bench --bench source_metadata -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
 
 # Profile OTLP decode/encode CPU with the normal allocator (flamegraph, per-mode timings).
 profile-otlp-io *ARGS:

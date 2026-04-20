@@ -153,6 +153,7 @@ impl OtlpSink {
     /// The default is the canonical `body` field. Use this builder when a
     /// pipeline stores the primary log message under a different string column.
     #[inline]
+    #[must_use]
     pub fn with_message_field(mut self, message_field: String) -> Self {
         self.message_field = message_field;
         self
@@ -958,6 +959,10 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, message_field: &str) -> Bat
 
     for (idx, field) in schema.fields().iter().enumerate() {
         let col_name = field.name().as_str();
+        if field_names::is_internal_column(col_name) {
+            excluded[idx] = true;
+            continue;
+        }
         let field_name = col_name;
         match field_name {
             name if field_names::matches_any(

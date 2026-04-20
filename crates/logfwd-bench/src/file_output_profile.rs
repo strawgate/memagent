@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! CPU and memory profiler for the file output hot path.
 //!
 //! Isolates the JSON serialization + file I/O cost of `FileSink` / `StdoutSink`
@@ -18,8 +19,6 @@
 //!   --batches N                 (default: 500)
 //!   --batch-size N              (default: 10000)
 //!   --output DIR                (default: /tmp/logfwd-file-profile)
-
-#![allow(clippy::print_stdout, clippy::print_stderr)]
 use std::io::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

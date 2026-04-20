@@ -43,6 +43,10 @@ now stays focused on startup/CLI/bootstrap concerns.
 HTTP endpoints, readiness/status shaping, stderr/span buffering, and the
 generated `dashboard.html` asset served by diagnostics).
 
+`logfwd-bench` is not in the production data path. It owns Criterion benchmarks
+and profiling binaries used to measure scanner, pipeline, output, and source
+metadata behavior under representative cardinality and allocation pressure.
+
 ## Data flow
 
 ### 1. Reading: bytes enter the system
@@ -88,7 +92,7 @@ with per-source remainder tracking. It handles three formats:
 output (4096 lines, 64KB stack), no heap, Kani-proven. It returns byte
 ranges into the input buffer — zero-copy.
 
-**CriReassembler** (`logfwd-core/src/aggregator.rs`):
+**CriReassembler** (`logfwd-core/src/reassembler.rs`):
 zero-copy for F-only lines (99% of traffic), copies only for P+F
 reassembly. Kani-proven.
 

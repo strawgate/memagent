@@ -67,6 +67,14 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Must not depend on runtime orchestration crates (`logfwd-runtime`, `logfwd-output`) | Cargo dependency graph + review |
 | Kani seams for readiness policy and stderr escaping stay tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
+## logfwd-config-wasm
+
+| Rule | Enforcement |
+|------|-------------|
+| WASM bindings for the config validator; must expose the same parsing/validation surface as `logfwd-config` so browser and Node.js hosts reject invalid YAML with identical diagnostics | Architecture |
+| Allowed deps: `logfwd-config`, `wasm-bindgen`, `serde`, `serde_json`, `js-sys` | Cargo.toml + review |
+| Must not depend on runtime, I/O, or transform crates — the validator is pure-config parsing | Cargo dependency graph + review |
+
 ## logfwd-transform
 
 | Rule | Enforcement |
@@ -82,9 +90,36 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Uses core for encoding (OTLP protobuf) | Architecture |
 | Transport is separate from serialization | Convention |
 | Deps: core + arrow + ureq/reqwest | Cargo.toml |
+| User-facing sinks drop only known FastForward internal columns such as `__source_id`; user payload fields that merely start with `__` must be preserved | Unit/integration tests + code review |
 | No `panic!`/`todo!`/`unimplemented!` in production paths | CI script: `python3 scripts/check_no_panic_in_production.py` (test modules and `// ALLOW-PANIC: <reason>` lines are exempt) |
 | Public errors are `thiserror` enums, not `Box<dyn Error>` | CI script: `python3 scripts/check_no_box_dyn_error.py` |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
+
+## logfwd-bench
+
+| Rule | Enforcement |
+|------|-------------|
+| Owns Criterion benchmarks and standalone profiling binaries for scanner, pipeline, output, and source metadata performance | Cargo.toml + just recipes |
+| Benchmark-only dependencies stay isolated here unless also used by production or test crates | Cargo.toml + dependency review |
+| Source metadata benchmarks must keep raw JSON metadata injection only as a historical comparison baseline, never as production guidance | Code review |
+
+## logfwd-lint-attrs
+
+| Rule | Enforcement |
+|------|-------------|
+| Proc-macro crate only. Exports attribute markers (`#[hot_path]` today, `#[cancel_safe]` / `#[no_panic]` / `#[checkpoint_ordered]` planned) consumed by the dylint lint library | Architecture |
+| All attributes must be compile-time no-ops: the function/item behaves identically with or without the attribute | Code review |
+| May not depend on any other logfwd crate | Cargo.toml |
+
+## logfwd-lints
+
+| Rule | Enforcement |
+|------|-------------|
+| Excluded from the main workspace (`Cargo.toml` `exclude` list). Pins its own rustc nightly via `rust-toolchain` and links against `rustc-private` crates | Workspace config |
+| Dylint library — compiled as `cdylib`, invoked via `cargo dylint` (wrapped by `just dylint`) | Architecture |
+| Every lint that expects a source-level marker looks for the marker the corresponding attribute in `logfwd-lint-attrs` emits (e.g., `#[doc = "__logfwd_hot_path__"]`), because proc-macro attributes are stripped before HIR | Code review |
+| Every new lint adds an entry to the lint table in `dev-docs/CODE_STYLE.md` → *Semantic lints (dylint)* and to `crates/logfwd-lints/README.md` | Code review |
+| CI integration via `just dylint` (not yet on mandatory path — see roadmap) | `justfile` |
 
 ## logfwd-runtime
 

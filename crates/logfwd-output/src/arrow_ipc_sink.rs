@@ -19,6 +19,7 @@ use logfwd_types::diagnostics::ComponentStats;
 use super::sink::{SendResult, Sink, SinkFactory};
 use super::{BatchMetadata, Compression};
 use crate::http_classify::{DEFAULT_RETRY_AFTER_SECS, parse_retry_after};
+use crate::internal_columns::project_external_batch;
 
 /// Content-Type for uncompressed Arrow IPC stream.
 const CONTENT_TYPE_ARROW: &str = "application/vnd.apache.arrow.stream";
@@ -75,6 +76,14 @@ impl ArrowIpcSink {
         if batch.num_rows() == 0 {
             return Ok(());
         }
+
+        let external_batch = project_external_batch(batch).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Arrow IPC internal column projection failed: {e}"),
+            )
+        })?;
+        let batch = external_batch.as_ref().unwrap_or(batch);
 
         let mut writer =
             StreamWriter::try_new(&mut self.ipc_buf, &batch.schema()).map_err(|e| {
@@ -362,6 +371,7 @@ mod tests {
     use super::*;
     use arrow::array::{Float64Array, Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::ipc::reader::StreamReader;
 
     fn make_test_batch() -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
@@ -494,6 +504,44 @@ mod tests {
             sink.ipc_buf.capacity() >= prior_capacity,
             "IPC reusable capacity should be restored after send"
         );
+    }
+
+    #[test]
+    fn sink_serialization_drops_internal_columns() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("__source_id", DataType::Int64, true),
+            Field::new("__typename", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("hello")])),
+                Arc::new(Int64Array::from(vec![Some(7)])),
+                Arc::new(StringArray::from(vec![Some("LogEvent")])),
+            ],
+        )
+        .expect("valid batch");
+        let config = Arc::new(ArrowIpcSinkConfig {
+            endpoint: "http://localhost:9999".to_string(),
+            compression: Compression::None,
+            headers: Vec::new(),
+        });
+        let stats = Arc::new(ComponentStats::new());
+        let client = reqwest::Client::new();
+        let mut sink = ArrowIpcSink::new("test".to_string(), config, client, stats);
+
+        sink.serialize_batch(&batch).expect("serialize batch");
+
+        let cursor = io::Cursor::new(sink.ipc_buf.as_slice());
+        let mut reader = StreamReader::try_new(cursor, None).expect("stream reader");
+        let decoded = reader
+            .next()
+            .expect("one batch")
+            .expect("valid decoded batch");
+        assert!(decoded.column_by_name("message").is_some());
+        assert!(decoded.column_by_name("__source_id").is_none());
+        assert!(decoded.column_by_name("__typename").is_some());
     }
 
     #[tokio::test]

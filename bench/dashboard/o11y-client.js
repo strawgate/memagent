@@ -1,13 +1,14 @@
 import {
   fetchIndex,
   fetchRun,
+  fetchSeries,
   rawUrl,
 } from "https://cdn.jsdelivr.net/npm/@benchkit/chart@0.2.3/dist/fetch.js/+esm";
 import { trendChartDataset } from "https://cdn.jsdelivr.net/npm/@benchkit/adapters@0.2.3/dist/chartjs.js/+esm";
 
 export const benchDataSource = {
   owner: "strawgate",
-  repo: "memagent",
+  repo: "fastforward",
   branch: "bench-data",
 };
 
@@ -52,6 +53,14 @@ export async function fetchBenchRun(runId, signal) {
   // Fall back to the benchkit convention in case the layout changes.
   try {
     return await fetchRun(benchDataSource, runId, signal);
+  } catch {
+    return null;
+  }
+}
+
+export async function fetchBenchSeries(metric, signal) {
+  try {
+    return await fetchSeries(benchDataSource, metric, signal);
   } catch {
     return null;
   }

@@ -762,8 +762,11 @@ mod verification {
     // The proofs verify state-machine behavior (ordering, drain, advance),
     // not checkpoint arithmetic. u8 gives 256 symbolic values — sufficient
     // for coverage — while avoiding the SAT explosion that u64 causes in
-    // BTreeMap reasoning (verify_dropped_ticket_does_not_block took 54 min
-    // with u64 vs <1s with u8).
+    // BTreeMap reasoning.
+    //
+    // Individual proofs further bound checkpoints to small ranges (e.g.,
+    // <= 4) when the full u8 domain causes solver timeouts. This is safe
+    // because the proofs test state-machine transitions, not value ranges.
     //
     // TLA+ no-impact: PipelineMachine.tla models checkpoints as opaque
     // values. This cfg(kani)-only alias narrows only the Rust proof input
@@ -782,6 +785,11 @@ mod verification {
         let cp1: Cp = kani::any();
         let cp2: Cp = kani::any();
         let cp3: Cp = kani::any();
+        // Domain narrowing: state-machine behavior, not checkpoint arithmetic.
+        // 9 values (0..=8) cover equal, less-than, and greater-than cases.
+        kani::assume(cp1 <= 8);
+        kani::assume(cp2 <= 8);
+        kani::assume(cp3 <= 8);
         kani::assume(cp1 <= cp2);
         kani::assume(cp2 <= cp3);
         kani::cover!(
@@ -831,6 +839,9 @@ mod verification {
 
         let cp1: Cp = kani::any();
         let cp2: Cp = kani::any();
+        // Domain narrowing: state-machine ordering, not value arithmetic.
+        kani::assume(cp1 <= 8);
+        kani::assume(cp2 <= 8);
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -936,10 +947,17 @@ mod verification {
             PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(0);
 
+        // Bound checkpoints to <= 4 to keep SAT tractable. The proof
+        // verifies ordering logic, not value ranges — 5 distinct values
+        // cover equal, less-than, and greater-than cases.
         let cp1: Cp = kani::any();
+        kani::assume(cp1 <= 4);
         let cp2: Cp = kani::any();
+        kani::assume(cp2 <= 4);
         let cp3: Cp = kani::any();
+        kani::assume(cp3 <= 4);
         let cp4: Cp = kani::any();
+        kani::assume(cp4 <= 4);
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -1024,6 +1042,10 @@ mod verification {
         let cp1: Cp = kani::any();
         let cp2: Cp = kani::any();
         let cp3: Cp = kani::any();
+        // Domain narrowing: monotonicity is a state-machine property, not arithmetic.
+        kani::assume(cp1 <= 8);
+        kani::assume(cp2 <= 8);
+        kani::assume(cp3 <= 8);
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -1105,6 +1127,7 @@ mod verification {
         let src = SourceId(0);
 
         let cp: Cp = kani::any();
+        kani::assume(cp <= 8); // domain narrowing: state-machine behavior
         let t1 = running.create_batch(src, cp);
         let s1 = running.begin_send(t1);
 
@@ -1193,6 +1216,10 @@ mod verification {
         let cp1: Cp = kani::any();
         let cp2: Cp = kani::any();
         let cp3: Cp = kani::any();
+        // Domain narrowing: ack/reject ordering, not checkpoint value space.
+        kani::assume(cp1 <= 8);
+        kani::assume(cp2 <= 8);
+        kani::assume(cp3 <= 8);
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -1301,7 +1328,9 @@ mod verification {
         let src = SourceId(0);
 
         let cp1: Cp = kani::any();
+        kani::assume(cp1 <= 4);
         let cp2: Cp = kani::any();
+        kani::assume(cp2 <= 4);
 
         // Create batch 1 — then DROP the Queued ticket (simulates scan error)
         let _dropped = running.create_batch(src, cp1);

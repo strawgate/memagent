@@ -304,37 +304,45 @@ fn write_any_value_json(value: &AnyValue, out: &mut Vec<u8>) -> bool {
     }
 }
 
+/// Write a JSON-escaped string including surrounding double quotes.
+///
+/// Optimized for the common case of mostly-ASCII log content: scans for runs
+/// of safe bytes and writes them in bulk via `extend_from_slice`, avoiding
+/// per-character `char` decoding overhead. Multi-byte UTF-8 sequences are safe
+/// (RFC 8259 only requires escaping 0x00-0x1f, `"`, and `\`), so we iterate
+/// at the byte level.
 fn write_json_escaped_string(out: &mut Vec<u8>, value: &str) {
     out.push(b'"');
-    for ch in value.chars() {
-        match ch {
-            '"' => out.extend_from_slice(b"\\\""),
-            '\\' => out.extend_from_slice(b"\\\\"),
-            '\u{08}' => out.extend_from_slice(b"\\b"),
-            '\u{0C}' => out.extend_from_slice(b"\\f"),
-            '\n' => out.extend_from_slice(b"\\n"),
-            '\r' => out.extend_from_slice(b"\\r"),
-            '\t' => out.extend_from_slice(b"\\t"),
-            c if c <= '\u{1F}' => {
-                write_control_escape(out, c as u32);
+    let bytes = value.as_bytes();
+    let mut last_escape = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        let escape: Option<&[u8]> = match b {
+            b'"' => Some(b"\\\""),
+            b'\\' => Some(b"\\\\"),
+            0x08 => Some(b"\\b"),
+            0x0C => Some(b"\\f"),
+            b'\n' => Some(b"\\n"),
+            b'\r' => Some(b"\\r"),
+            b'\t' => Some(b"\\t"),
+            0x00..=0x1f => {
+                // Flush safe run, then write \u00XX inline.
+                out.extend_from_slice(&bytes[last_escape..i]);
+                out.extend_from_slice(b"\\u00");
+                out.push(HEX_DIGITS[(b >> 4) as usize]);
+                out.push(HEX_DIGITS[(b & 0x0f) as usize]);
+                last_escape = i + 1;
+                continue;
             }
-            c => {
-                let mut buf = [0u8; 4];
-                let encoded = c.encode_utf8(&mut buf);
-                out.extend_from_slice(encoded.as_bytes());
-            }
+            _ => None,
+        };
+        if let Some(esc) = escape {
+            out.extend_from_slice(&bytes[last_escape..i]);
+            out.extend_from_slice(esc);
+            last_escape = i + 1;
         }
     }
+    out.extend_from_slice(&bytes[last_escape..]);
     out.push(b'"');
-}
-
-fn write_control_escape(out: &mut Vec<u8>, code: u32) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    out.extend_from_slice(b"\\u");
-    out.push(HEX[((code >> 12) & 0x0f) as usize]);
-    out.push(HEX[((code >> 8) & 0x0f) as usize]);
-    out.push(HEX[((code >> 4) & 0x0f) as usize]);
-    out.push(HEX[(code & 0x0f) as usize]);
 }
 
 fn append_hex_field(
@@ -356,8 +364,22 @@ pub(super) fn parse_protojson_i64(value: &serde_json::Value) -> Option<i64> {
     if let Some(n) = value.as_u64() {
         return i64::try_from(n).ok();
     }
-    if let Some(n) = value.as_number() {
-        return parse_protojson_i64_str(&n.to_string());
+    // Protojson allows fractional representations of integers (e.g. "1.0e2"
+    // for 100). When the direct integer accessors fail, try f64 truncation
+    // before falling back to string parsing to avoid a `to_string()` heap
+    // allocation on the hot path.
+    //
+    // We must bounds-check *before* the `as i64` cast because `f as i64`
+    // saturates for out-of-range values and the round-trip check would then
+    // pass for boundary values (e.g. `9.223372036854776e18` rounds to the
+    // same f64 as `i64::MAX`).
+    if let Some(f) = value.as_f64() {
+        #[allow(clippy::float_cmp)]
+        if f.fract() == 0.0 && f >= i64::MIN as f64 && f < i64::MAX as f64 {
+            return Some(f as i64);
+        }
+        // Value has a fractional part or is out of i64 range — fall through
+        // to the string path which validates integrality.
     }
     if let Some(s) = value.as_str() {
         return parse_protojson_i64_str(s);
@@ -372,8 +394,16 @@ pub(super) fn parse_protojson_u64(value: &serde_json::Value) -> Option<u64> {
     if let Some(s) = value.as_str() {
         return parse_protojson_u64_str(s);
     }
-    if let Some(n) = value.as_number() {
-        return parse_protojson_u64_str(&n.to_string());
+    // Same as parse_protojson_i64: bounds-check before `as u64` to avoid
+    // saturating casts at boundary values.
+    if let Some(f) = value.as_f64() {
+        #[allow(clippy::float_cmp)]
+        if f.fract() == 0.0 && f >= 0.0 && f < u64::MAX as f64 {
+            return Some(f as u64);
+        }
+        // Value has a fractional part or is out of u64 range — not a
+        // valid protojson integer representation when arriving as a JSON
+        // number.
     }
     None
 }

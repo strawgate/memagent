@@ -448,6 +448,9 @@ pub fn build_col_infos(batch: &RecordBatch) -> Vec<ColInfo> {
     let mut infos: Vec<ColInfo> = Vec::new();
 
     for (col_idx, field) in schema.fields().iter().enumerate() {
+        if field_names::is_internal_column(field.name()) {
+            continue;
+        }
         match field.data_type() {
             DataType::Struct(child_fields) if is_conflict_struct(child_fields) => {
                 // Struct conflict column: one ColInfo, variants = child fields.
@@ -506,7 +509,7 @@ pub fn build_col_infos(batch: &RecordBatch) -> Vec<ColInfo> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{Int64Array, StructArray};
+    use arrow::array::{ArrayRef, Int64Array, StringArray, StructArray};
     use arrow::datatypes::{Field, Fields, Schema};
     use std::sync::Arc;
 
@@ -549,5 +552,29 @@ mod tests {
 
         assert!(is_null(&batch, &bad_flat, 0));
         assert!(get_array(&batch, &bad_flat).is_none());
+    }
+
+    #[test]
+    fn build_col_infos_skips_internal_columns() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("msg", DataType::Utf8, true),
+            Field::new("__source_id", DataType::Int64, true),
+            Field::new("__typename", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["hello"])) as ArrayRef,
+                Arc::new(Int64Array::from(vec![7])) as ArrayRef,
+                Arc::new(StringArray::from(vec!["LogEvent"])) as ArrayRef,
+            ],
+        )
+        .expect("valid batch");
+
+        let infos = build_col_infos(&batch);
+
+        assert_eq!(infos.len(), 2);
+        assert_eq!(infos[0].field_name, "msg");
+        assert_eq!(infos[1].field_name, "__typename");
     }
 }

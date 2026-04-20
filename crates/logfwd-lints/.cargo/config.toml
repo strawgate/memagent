@@ -1,0 +1,6 @@
+# dylint-link renames the output cdylib to
+# `liblogfwd_lints@<toolchain>.so`, which is the naming convention
+# cargo-dylint scans for. Without this, the build succeeds but
+# cargo-dylint cannot locate the library.
+[target.'cfg(all())']
+rustflags = ["-C", "linker=dylint-link"]

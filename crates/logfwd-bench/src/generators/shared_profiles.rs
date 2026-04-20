@@ -133,36 +133,43 @@ impl CloudTrailProfile {
         }
     }
 
+    #[must_use]
     pub fn with_account_count(mut self, account_count: usize) -> Self {
         self.account_count = account_count.max(1);
         self
     }
 
+    #[must_use]
     pub fn with_account_tenure(mut self, account_tenure: usize) -> Self {
         self.account_tenure = account_tenure.max(1);
         self
     }
 
+    #[must_use]
     pub fn with_principal_count(mut self, principal_count: usize) -> Self {
         self.principal_count = principal_count.max(1);
         self
     }
 
+    #[must_use]
     pub fn with_principal_tenure(mut self, principal_tenure: usize) -> Self {
         self.principal_tenure = principal_tenure.max(1);
         self
     }
 
+    #[must_use]
     pub fn with_service_mix(mut self, service_mix: CloudTrailServiceMix) -> Self {
         self.service_mix = service_mix;
         self
     }
 
+    #[must_use]
     pub fn with_region_mix(mut self, region_mix: CloudTrailRegionMix) -> Self {
         self.region_mix = region_mix;
         self
     }
 
+    #[must_use]
     pub fn with_optional_field_density(mut self, optional_field_density: u8) -> Self {
         self.optional_field_density = optional_field_density.min(100);
         self
