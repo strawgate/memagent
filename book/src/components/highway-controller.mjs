@@ -25,7 +25,6 @@ import { angleAt, EXIT_GATE_S, pointAt } from './highway-graph.mjs';
   const engine = createHighwayEngine({
     greenPct: 80,
   });
-  engine.setCycleStart(Date.now());
 
   (function positionLight() {
     const p = pointAt('exit', EXIT_GATE_S);
@@ -188,7 +187,6 @@ import { angleAt, EXIT_GATE_S, pointAt } from './highway-graph.mjs';
   slider.addEventListener('touchstart', exitAuto);
 
   seedCars();
-  engine.setLastSpawn(Date.now());
 
   if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
     updateFrame(engine.tick(Date.now()));

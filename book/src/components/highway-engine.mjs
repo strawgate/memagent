@@ -291,6 +291,8 @@ export function createHighwayEngine(overrides) {
     tick(now) {
       if (lastNow == null) {
         lastNow = now;
+        cycleStart = now;
+        lastSpawnAt = now;
         tickLight(now);
         return snapshot(now);
       }
