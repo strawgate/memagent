@@ -2010,18 +2010,20 @@ mod tests {
 
     #[test]
     fn first_poll_emits_network_data() {
-        // Some CI / container environments expose no network interfaces to
-        // `sysinfo::Networks` (e.g., sandboxes without `/proc/net/*`). Probe
-        // directly ahead of the sensor run and skip when no interfaces are
-        // visible — that way the assertion below still catches a regression
-        // where the sensor drops `network_interface` on hosts that DO have
-        // interfaces, rather than silently passing in every environment.
-        let mut probe = sysinfo::Networks::new_with_refreshed_list();
-        probe.refresh(true);
-        if probe.iter().next().is_none() {
+        // Some CI / container environments expose no network interfaces
+        // (e.g., sandboxes without `/proc/net/*`). Use an OS-level probe
+        // that is independent of `sysinfo` so the skip guard and the code
+        // under test do not share a common failure mode. Binding a UDP
+        // socket to the wildcard address succeeds only when the kernel has
+        // a usable network stack; connecting to a routable address further
+        // proves a non-loopback interface exists.
+        let has_net_iface = std::net::UdpSocket::bind("0.0.0.0:0")
+            .and_then(|s| s.connect("192.0.2.1:1"))
+            .is_ok();
+        if !has_net_iface {
             eprintln!(
-                "skipping first_poll_emits_network_data: sysinfo reports no \
-                 network interfaces in this environment"
+                "skipping first_poll_emits_network_data: OS reports no \
+                 non-loopback network interface"
             );
             return;
         }
