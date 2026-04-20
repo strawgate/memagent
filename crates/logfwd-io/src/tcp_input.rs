@@ -394,6 +394,17 @@ impl TcpInput {
                 ),
             )
         })?;
+        let has_client_ca_file = opts
+            .client_ca_file
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|path| !path.is_empty());
+        if has_client_ca_file && !opts.require_client_auth {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "tcp.tls.client_ca_file requires tcp.tls.require_client_auth: true",
+            ));
+        }
         let builder = ServerConfig::builder();
         let builder = if opts.require_client_auth {
             let client_ca_file = opts
@@ -1385,6 +1396,41 @@ mod tests {
             err.to_string()
                 .contains("require_client_auth requires tcp.tls.client_ca_file"),
             "error should identify missing tcp.tls.client_ca_file: {err}"
+        );
+    }
+
+    #[test]
+    fn mtls_listener_rejects_client_ca_when_auth_disabled() {
+        let certified = generate_simple_self_signed(vec!["localhost".into()])
+            .expect("test cert generation should succeed");
+        let (tmp, cert_file, key_file) = write_tls_files(
+            &certified.cert.pem(),
+            &certified.signing_key.serialize_pem(),
+        );
+        let ca_path = tmp.path().join("client-ca.crt");
+        fs::write(&ca_path, certified.cert.pem()).expect("client CA file should be written");
+
+        let err = match TcpInput::with_options(
+            "mtls-test",
+            "127.0.0.1:0",
+            TcpInputOptions {
+                tls: Some(TcpInputTlsOptions {
+                    cert_file,
+                    key_file,
+                    client_ca_file: Some(ca_path.to_string_lossy().to_string()),
+                    require_client_auth: false,
+                }),
+                ..Default::default()
+            },
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        ) {
+            Ok(_) => panic!("client CA without client auth must fail startup"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("client_ca_file requires tcp.tls.require_client_auth: true"),
+            "error should identify disabled client auth: {err}"
         );
     }
 
