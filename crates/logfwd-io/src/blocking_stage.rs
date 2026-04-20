@@ -497,4 +497,45 @@ mod tests {
             "round-robin dispatch should use both workers"
         );
     }
+
+    #[test]
+    fn dropping_result_receiver_does_not_leak_outstanding_capacity() {
+        let total_seen = Arc::new(AtomicUsize::new(0));
+        let stage = BoundedBlockingStage::new(1, 1, |_| CountingWorker {
+            processed: 0,
+            total_seen: Arc::clone(&total_seen),
+        })
+        .expect("stage should build");
+
+        for _ in 0..64usize {
+            loop {
+                match stage.try_submit(1) {
+                    Ok(result) => {
+                        drop(result);
+                        break;
+                    }
+                    Err(BlockingStageSubmitError::Full) => thread::yield_now(),
+                    Err(other) => panic!("unexpected submit error while probing leak: {other:?}"),
+                }
+            }
+        }
+
+        loop {
+            match stage.try_submit(1) {
+                Ok(result) => {
+                    let output = block_on(result.recv()).expect("final output should complete");
+                    assert!(output >= 2, "worker should continue processing jobs");
+                    break;
+                }
+                Err(BlockingStageSubmitError::Full) => thread::yield_now(),
+                Err(other) => panic!("unexpected submit error after dropped receivers: {other:?}"),
+            }
+        }
+
+        assert_eq!(
+            total_seen.load(Ordering::Relaxed),
+            65,
+            "all dropped-receiver jobs should still be processed without leaking permits"
+        );
+    }
 }

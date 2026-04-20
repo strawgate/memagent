@@ -7,15 +7,13 @@
 //! so the receiver can fall back to the prost decoder.
 
 use std::fmt;
-use std::io::Write as _;
 
 use arrow::buffer::Buffer;
 use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
 use logfwd_arrow::columnar::builder::ColumnarBatchBuilder;
-use logfwd_arrow::columnar::plan::{BatchPlan, FieldHandle, FieldKind};
+use logfwd_arrow::columnar::plan::{FieldHandle, FieldKind};
 use logfwd_core::otlp;
-use logfwd_types::field_names;
 
 use crate::InputError;
 
@@ -66,6 +64,8 @@ enum WireAny<'a> {
     Int(i64),
     Double(f64),
     Bytes(&'a [u8]),
+    ArrayRaw(&'a [u8]),
+    KvListRaw(&'a [u8]),
 }
 
 #[derive(Clone, Copy)]
@@ -73,19 +73,6 @@ enum StringStorage {
     Decoded,
     #[cfg(any(feature = "otlp-research", test))]
     InputView,
-}
-
-struct OtlpFieldHandles {
-    timestamp: FieldHandle,
-    observed_timestamp: FieldHandle,
-    severity: FieldHandle,
-    severity_number: FieldHandle,
-    body: FieldHandle,
-    trace_id: FieldHandle,
-    span_id: FieldHandle,
-    flags: FieldHandle,
-    scope_name: FieldHandle,
-    scope_version: FieldHandle,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -144,7 +131,7 @@ pub(super) fn classify_projected_fallback_support(body: &[u8]) -> Result<(), Pro
 #[cfg(any(feature = "otlp-research", test))]
 pub struct ProjectedOtlpDecoder {
     builder: ColumnarBatchBuilder,
-    handles: OtlpFieldHandles,
+    handles: generated::OtlpFieldHandles,
     scratch: WireScratch,
     resource_prefix: String,
 }
@@ -153,7 +140,7 @@ pub struct ProjectedOtlpDecoder {
 impl ProjectedOtlpDecoder {
     /// Create a reusable decoder with the given resource attribute prefix.
     pub fn new(resource_prefix: &str) -> Self {
-        let (plan, handles) = build_otlp_plan();
+        let (plan, handles) = generated::build_otlp_plan();
         Self {
             builder: ColumnarBatchBuilder::new(plan),
             handles,
@@ -220,44 +207,6 @@ impl ProjectedOtlpDecoder {
     }
 }
 
-/// Build a `BatchPlan` with all canonical OTLP log fields declared as planned.
-fn build_otlp_plan() -> (BatchPlan, OtlpFieldHandles) {
-    let mut plan = BatchPlan::new();
-    let handles = OtlpFieldHandles {
-        timestamp: plan
-            .declare_planned(field_names::TIMESTAMP, FieldKind::Int64)
-            .expect("duplicate planned field"),
-        observed_timestamp: plan
-            .declare_planned(field_names::OBSERVED_TIMESTAMP, FieldKind::Int64)
-            .expect("duplicate planned field"),
-        severity: plan
-            .declare_planned(field_names::SEVERITY, FieldKind::Utf8View)
-            .expect("duplicate planned field"),
-        severity_number: plan
-            .declare_planned(field_names::SEVERITY_NUMBER, FieldKind::Int64)
-            .expect("duplicate planned field"),
-        body: plan
-            .declare_planned(field_names::BODY, FieldKind::Utf8View)
-            .expect("duplicate planned field"),
-        trace_id: plan
-            .declare_planned(field_names::TRACE_ID, FieldKind::Utf8View)
-            .expect("duplicate planned field"),
-        span_id: plan
-            .declare_planned(field_names::SPAN_ID, FieldKind::Utf8View)
-            .expect("duplicate planned field"),
-        flags: plan
-            .declare_planned(field_names::FLAGS, FieldKind::Int64)
-            .expect("duplicate planned field"),
-        scope_name: plan
-            .declare_planned(field_names::SCOPE_NAME, FieldKind::Utf8View)
-            .expect("duplicate planned field"),
-        scope_version: plan
-            .declare_planned(field_names::SCOPE_VERSION, FieldKind::Utf8View)
-            .expect("duplicate planned field"),
-    };
-    (plan, handles)
-}
-
 fn decode_projected_otlp_logs_inner(
     body: &[u8],
     backing: Bytes,
@@ -270,7 +219,7 @@ fn decode_projected_otlp_logs_inner(
         ));
     }
 
-    let (plan, fields) = build_otlp_plan();
+    let (plan, fields) = generated::build_otlp_plan();
     let mut builder = ColumnarBatchBuilder::new(plan);
     builder.begin_batch();
     if !backing.is_empty() {
@@ -309,6 +258,7 @@ fn decode_projected_otlp_logs_inner(
 struct WireScratch {
     hex: Vec<u8>,
     decimal: Vec<u8>,
+    json: Vec<u8>,
     resource_key: Vec<u8>,
     attr_ranges: Vec<(usize, usize)>,
     attr_field_cache: Vec<AttrFieldCache>,
@@ -322,7 +272,7 @@ struct AttrFieldCache {
 
 fn decode_resource_logs_wire(
     builder: &mut ColumnarBatchBuilder,
-    fields: &OtlpFieldHandles,
+    fields: &generated::OtlpFieldHandles,
     scratch: &mut WireScratch,
     resource_prefix: &str,
     resource_logs: &[u8],
@@ -416,7 +366,7 @@ fn collect_resource_attrs<'a>(
 
 fn decode_scope_logs_wire(
     builder: &mut ColumnarBatchBuilder,
-    fields: &OtlpFieldHandles,
+    fields: &generated::OtlpFieldHandles,
     scratch: &mut WireScratch,
     resource_attrs: &[(FieldHandle, WireAny<'_>)],
     scope_logs: &[u8],
@@ -494,7 +444,7 @@ fn merge_scope_wire<'a>(
 
 fn decode_log_record_wire(
     builder: &mut ColumnarBatchBuilder,
-    fields: &OtlpFieldHandles,
+    fields: &generated::OtlpFieldHandles,
     scratch: &mut WireScratch,
     resource_attrs: &[(FieldHandle, WireAny<'_>)],
     scope_fields: ScopeFields<'_>,
@@ -704,7 +654,9 @@ fn resolve_record_attr_field(
 /// Map a `WireAny` variant to a `FieldKind` for dynamic field resolution.
 fn wire_any_field_kind(value: &WireAny<'_>) -> FieldKind {
     match value {
-        WireAny::String(_) | WireAny::Bytes(_) => FieldKind::Utf8View,
+        WireAny::String(_) | WireAny::Bytes(_) | WireAny::ArrayRaw(_) | WireAny::KvListRaw(_) => {
+            FieldKind::Utf8View
+        }
         WireAny::Bool(_) => FieldKind::Bool,
         WireAny::Int(_) => FieldKind::Int64,
         WireAny::Double(_) => FieldKind::Float64,
@@ -752,6 +704,12 @@ fn write_wire_any(
         WireAny::Int(value) => builder.write_i64(handle, value),
         WireAny::Double(value) => builder.write_f64(handle, value),
         WireAny::Bytes(value) => write_hex_field(builder, handle, value, &mut scratch.hex)?,
+        WireAny::ArrayRaw(value) => {
+            write_wire_any_complex_json(builder, handle, WireAny::ArrayRaw(value), scratch)?;
+        }
+        WireAny::KvListRaw(value) => {
+            write_wire_any_complex_json(builder, handle, WireAny::KvListRaw(value), scratch)?;
+        }
     }
     Ok(())
 }
@@ -777,21 +735,215 @@ fn write_wire_any_as_string(
         }
         WireAny::Int(value) => {
             scratch.decimal.clear();
-            write!(scratch.decimal, "{value}").expect("writing to Vec cannot fail");
+            let mut buf = itoa::Buffer::new();
+            scratch
+                .decimal
+                .extend_from_slice(buf.format(value).as_bytes());
             builder
                 .write_str_bytes(handle, &scratch.decimal)
                 .map_err(|e| ProjectionError::Batch(e.to_string()))?;
         }
         WireAny::Double(value) => {
             scratch.decimal.clear();
-            write!(scratch.decimal, "{value}").expect("writing to Vec cannot fail");
+            let mut buf = ryu::Buffer::new();
+            scratch
+                .decimal
+                .extend_from_slice(buf.format(value).as_bytes());
             builder
                 .write_str_bytes(handle, &scratch.decimal)
                 .map_err(|e| ProjectionError::Batch(e.to_string()))?;
         }
         WireAny::Bytes(value) => write_hex_field(builder, handle, value, &mut scratch.hex)?,
+        WireAny::ArrayRaw(value) => {
+            write_wire_any_complex_json(builder, handle, WireAny::ArrayRaw(value), scratch)?;
+        }
+        WireAny::KvListRaw(value) => {
+            write_wire_any_complex_json(builder, handle, WireAny::KvListRaw(value), scratch)?;
+        }
     }
     Ok(())
+}
+
+fn write_wire_any_complex_json(
+    builder: &mut ColumnarBatchBuilder,
+    handle: FieldHandle,
+    value: WireAny<'_>,
+    scratch: &mut WireScratch,
+) -> Result<(), ProjectionError> {
+    let mut json = std::mem::take(&mut scratch.json);
+    json.clear();
+    write_wire_any_json(value, &mut json, scratch)?;
+    builder
+        .write_str_bytes(handle, &json)
+        .map_err(|e| ProjectionError::Batch(e.to_string()))?;
+    scratch.json = json;
+    Ok(())
+}
+
+fn write_wire_any_json(
+    value: WireAny<'_>,
+    out: &mut Vec<u8>,
+    scratch: &mut WireScratch,
+) -> Result<(), ProjectionError> {
+    match value {
+        WireAny::String(value) => {
+            out.push(b'"');
+            write_json_escaped_bytes(out, value);
+            out.push(b'"');
+        }
+        WireAny::Bool(value) => out.extend_from_slice(if value { b"true" } else { b"false" }),
+        WireAny::Int(value) => {
+            scratch.decimal.clear();
+            let mut buf = itoa::Buffer::new();
+            scratch
+                .decimal
+                .extend_from_slice(buf.format(value).as_bytes());
+            out.extend_from_slice(&scratch.decimal);
+        }
+        WireAny::Double(value) => {
+            if value.is_finite() {
+                scratch.decimal.clear();
+                let mut buf = ryu::Buffer::new();
+                scratch
+                    .decimal
+                    .extend_from_slice(buf.format(value).as_bytes());
+                out.extend_from_slice(&scratch.decimal);
+            } else {
+                out.push(b'"');
+                write_json_escaped_bytes(out, value.to_string().as_bytes());
+                out.push(b'"');
+            }
+        }
+        WireAny::Bytes(value) => {
+            out.push(b'"');
+            write_hex_to_buf(out, value);
+            out.push(b'"');
+        }
+        WireAny::ArrayRaw(value) => write_array_value_json(value, out, scratch)?,
+        WireAny::KvListRaw(value) => write_kvlist_value_json(value, out, scratch)?,
+    }
+    Ok(())
+}
+
+fn write_array_value_json(
+    array_value: &[u8],
+    out: &mut Vec<u8>,
+    scratch: &mut WireScratch,
+) -> Result<(), ProjectionError> {
+    out.push(b'[');
+    let mut first = true;
+    for_each_field(array_value, |field, field_value| {
+        if field != 1 {
+            return Ok(());
+        }
+        let WireField::Len(any_value) = field_value else {
+            return Err(ProjectionError::Invalid(
+                "invalid wire type for ArrayValue.values",
+            ));
+        };
+        if !first {
+            out.push(b',');
+        }
+        first = false;
+        if let Some(value) = decode_any_value_wire(any_value)? {
+            write_wire_any_json(value, out, scratch)?;
+        } else {
+            out.extend_from_slice(b"null");
+        }
+        Ok(())
+    })?;
+    out.push(b']');
+    Ok(())
+}
+
+fn write_kvlist_value_json(
+    kvlist_value: &[u8],
+    out: &mut Vec<u8>,
+    scratch: &mut WireScratch,
+) -> Result<(), ProjectionError> {
+    out.push(b'[');
+    let mut first = true;
+    for_each_field(kvlist_value, |field, field_value| {
+        if field != 1 {
+            return Ok(());
+        }
+        let WireField::Len(kv) = field_value else {
+            return Err(ProjectionError::Invalid(
+                "invalid wire type for KeyValueList.values",
+            ));
+        };
+        if !first {
+            out.push(b',');
+        }
+        first = false;
+        write_key_value_json(kv, out, scratch)?;
+        Ok(())
+    })?;
+    out.push(b']');
+    Ok(())
+}
+
+fn write_key_value_json(
+    kv: &[u8],
+    out: &mut Vec<u8>,
+    scratch: &mut WireScratch,
+) -> Result<(), ProjectionError> {
+    let mut key = &[][..];
+    let mut value = None;
+    for_each_field(kv, |field, field_value| {
+        match (field, field_value) {
+            (otlp::KEY_VALUE_KEY, WireField::Len(bytes)) => {
+                key = require_utf8(bytes, "invalid UTF-8 attribute key")?;
+            }
+            (otlp::KEY_VALUE_KEY, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for KeyValue.key",
+                ));
+            }
+            (otlp::KEY_VALUE_VALUE, WireField::Len(bytes)) => {
+                value = decode_any_value_wire(bytes)?;
+            }
+            (otlp::KEY_VALUE_VALUE, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for KeyValue.value",
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    })?;
+
+    out.extend_from_slice(b"{\"k\":\"");
+    write_json_escaped_bytes(out, key);
+    out.extend_from_slice(b"\",\"v\":");
+    if let Some(value) = value {
+        write_wire_any_json(value, out, scratch)?;
+    } else {
+        out.extend_from_slice(b"null");
+    }
+    out.push(b'}');
+    Ok(())
+}
+
+fn write_json_escaped_bytes(out: &mut Vec<u8>, value: &[u8]) {
+    for &b in value {
+        match b {
+            b'"' => out.extend_from_slice(br#"\""#),
+            b'\\' => out.extend_from_slice(br"\\"),
+            b'\n' => out.extend_from_slice(br"\n"),
+            b'\r' => out.extend_from_slice(br"\r"),
+            b'\t' => out.extend_from_slice(br"\t"),
+            0x08 => out.extend_from_slice(br"\b"),
+            0x0c => out.extend_from_slice(br"\f"),
+            0x00..=0x1f => {
+                out.extend_from_slice(br"\u00");
+                let hex = b"0123456789abcdef";
+                out.push(hex[(b >> 4) as usize]);
+                out.push(hex[(b & 0x0f) as usize]);
+            }
+            _ => out.push(b),
+        }
+    }
 }
 
 fn write_wire_str(
@@ -982,6 +1134,7 @@ fn read_varint(input: &mut &[u8]) -> Result<u64, ProjectionError> {
 mod tests {
     use std::sync::Arc;
 
+    use logfwd_types::field_names;
     use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
     use opentelemetry_proto::tonic::common::v1::{
@@ -1033,6 +1186,63 @@ mod tests {
                 ..Default::default()
             }],
         }
+    }
+
+    #[test]
+    fn generated_otlp_plan_declares_expected_planned_fields() {
+        let (plan, handles) = generated::build_otlp_plan();
+
+        assert_eq!(
+            plan.lookup(field_names::TIMESTAMP)
+                .expect("timestamp handle should exist"),
+            handles.timestamp
+        );
+        assert_eq!(
+            plan.lookup(field_names::OBSERVED_TIMESTAMP)
+                .expect("observed timestamp handle should exist"),
+            handles.observed_timestamp
+        );
+        assert_eq!(
+            plan.lookup(field_names::SEVERITY)
+                .expect("severity handle should exist"),
+            handles.severity
+        );
+        assert_eq!(
+            plan.lookup(field_names::SEVERITY_NUMBER)
+                .expect("severity number handle should exist"),
+            handles.severity_number
+        );
+        assert_eq!(
+            plan.lookup(field_names::BODY)
+                .expect("body handle should exist"),
+            handles.body
+        );
+        assert_eq!(
+            plan.lookup(field_names::TRACE_ID)
+                .expect("trace id handle should exist"),
+            handles.trace_id
+        );
+        assert_eq!(
+            plan.lookup(field_names::SPAN_ID)
+                .expect("span id handle should exist"),
+            handles.span_id
+        );
+        assert_eq!(
+            plan.lookup(field_names::FLAGS)
+                .expect("flags handle should exist"),
+            handles.flags
+        );
+        assert_eq!(
+            plan.lookup(field_names::SCOPE_NAME)
+                .expect("scope name handle should exist"),
+            handles.scope_name
+        );
+        assert_eq!(
+            plan.lookup(field_names::SCOPE_VERSION)
+                .expect("scope version handle should exist"),
+            handles.scope_version
+        );
+        assert_eq!(plan.num_planned(), 10);
     }
 
     #[test]
@@ -1579,16 +1789,9 @@ mod tests {
     }
 
     #[test]
-    fn projected_nested_kvlist_anyvalue_requests_fallback() {
+    fn projected_nested_kvlist_anyvalue_matches_prost_conversion() {
         let request = nested_kvlist_request();
-        let payload = request.encode_to_vec();
-
-        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
-            .expect_err("kvlist AnyValue should fall back to prost");
-        assert!(
-            matches!(err, ProjectionError::Unsupported(_)),
-            "expected unsupported fallback reason, got {err:?}"
-        );
+        assert_projected_matches_prost(&request);
     }
 
     #[test]
@@ -1806,7 +2009,7 @@ mod tests {
     }
 
     #[test]
-    fn projected_complex_anyvalue_requests_fallback() {
+    fn projected_complex_anyvalue_matches_prost_conversion() {
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
                 scope_logs: vec![ScopeLogs {
@@ -1823,14 +2026,7 @@ mod tests {
                 ..Default::default()
             }],
         };
-        let payload = request.encode_to_vec();
-
-        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
-            .expect_err("array AnyValue should fall back to prost");
-        assert!(
-            matches!(err, ProjectionError::Unsupported(_)),
-            "expected unsupported fallback reason, got {err:?}"
-        );
+        assert_projected_matches_prost(&request);
     }
 
     // ── Multi-resource/scope container tests ──────────────────────────
@@ -2344,10 +2540,10 @@ mod tests {
         );
     }
 
-    // ── Unsupported-but-valid AnyValue tests ──────────────────────────
+    // ── Complex AnyValue projection tests ─────────────────────────────
 
     #[test]
-    fn projected_kvlist_attribute_requests_unsupported_fallback() {
+    fn projected_kvlist_attribute_is_projected_as_json() {
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
                 scope_logs: vec![ScopeLogs {
@@ -2369,16 +2565,15 @@ mod tests {
             }],
         };
         let payload = request.encode_to_vec();
-        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
-            .expect_err("kvlist attribute should trigger unsupported");
-        assert!(
-            matches!(err, ProjectionError::Unsupported(_)),
-            "expected unsupported, got {err:?}"
-        );
+        let expected = crate::otlp_receiver::decode_protobuf_to_batch_prost_reference(&payload)
+            .expect("prost should decode kvlist attribute fixture");
+        let actual = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect("kvlist attribute should decode in projection");
+        assert_batches_match(&expected, &actual);
     }
 
     #[test]
-    fn projected_array_attribute_requests_unsupported_fallback() {
+    fn projected_array_attribute_is_projected_as_json() {
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
                 scope_logs: vec![ScopeLogs {
@@ -2400,16 +2595,15 @@ mod tests {
             }],
         };
         let payload = request.encode_to_vec();
-        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
-            .expect_err("array attribute should trigger unsupported");
-        assert!(
-            matches!(err, ProjectionError::Unsupported(_)),
-            "expected unsupported, got {err:?}"
-        );
+        let expected = crate::otlp_receiver::decode_protobuf_to_batch_prost_reference(&payload)
+            .expect("prost should decode array attribute fixture");
+        let actual = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect("array attribute should decode in projection");
+        assert_batches_match(&expected, &actual);
     }
 
     #[test]
-    fn projected_kvlist_body_requests_unsupported_fallback() {
+    fn projected_kvlist_body_is_projected_as_json() {
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
                 scope_logs: vec![ScopeLogs {
@@ -2427,44 +2621,59 @@ mod tests {
             }],
         };
         let payload = request.encode_to_vec();
-        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
-            .expect_err("kvlist body should trigger unsupported");
-        assert!(
-            matches!(err, ProjectionError::Unsupported(_)),
-            "expected unsupported, got {err:?}"
-        );
+        let expected = crate::otlp_receiver::decode_protobuf_to_batch_prost_reference(&payload)
+            .expect("prost should decode kvlist body fixture");
+        let actual = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect("kvlist body should decode in projection");
+        assert_batches_match(&expected, &actual);
     }
 
     #[test]
-    fn projected_fallback_for_kvlist_attr_matches_prost() {
-        let request = ExportLogsServiceRequest {
-            resource_logs: vec![ResourceLogs {
-                scope_logs: vec![ScopeLogs {
-                    log_records: vec![LogRecord {
-                        body: Some(any_string("fallback body")),
-                        attributes: vec![KeyValue {
-                            key: "nested".into(),
-                            value: Some(AnyValue {
-                                value: Some(Value::KvlistValue(KeyValueList {
-                                    values: vec![kv_string("inner", "value")],
-                                })),
-                            }),
+    fn projected_body_anyvalue_shapes_match_prost_conversion() {
+        let bodies = [
+            any_string("body"),
+            AnyValue {
+                value: Some(Value::BoolValue(true)),
+            },
+            AnyValue {
+                value: Some(Value::IntValue(-42)),
+            },
+            AnyValue {
+                value: Some(Value::DoubleValue(0.0)),
+            },
+            AnyValue {
+                value: Some(Value::DoubleValue(12.5)),
+            },
+            AnyValue {
+                value: Some(Value::BytesValue(vec![0xde, 0xad, 0xbe, 0xef])),
+            },
+            AnyValue {
+                value: Some(Value::ArrayValue(ArrayValue {
+                    values: vec![any_string("a"), any_string("b")],
+                })),
+            },
+            AnyValue {
+                value: Some(Value::KvlistValue(KeyValueList {
+                    values: vec![kv_string("k", "v")],
+                })),
+            },
+        ];
+
+        for body in bodies {
+            let request = ExportLogsServiceRequest {
+                resource_logs: vec![ResourceLogs {
+                    scope_logs: vec![ScopeLogs {
+                        log_records: vec![LogRecord {
+                            body: Some(body),
+                            ..Default::default()
                         }],
                         ..Default::default()
                     }],
                     ..Default::default()
                 }],
-                ..Default::default()
-            }],
-        };
-        let payload = request.encode_to_vec();
-        let expected = crate::otlp_receiver::decode_protobuf_to_batch_prost_reference(&payload)
-            .expect("prost reference should decode kvlist attribute fixture");
-        let actual = crate::otlp_receiver::decode_protobuf_bytes_to_batch_projected_experimental(
-            Bytes::from(payload),
-        )
-        .expect("fallback should produce a batch for kvlist attribute");
-        assert_batches_match(&expected, &actual);
+            };
+            assert_projected_matches_prost(&request);
+        }
     }
 
     #[test]
@@ -2495,12 +2704,12 @@ mod tests {
         let actual = crate::otlp_receiver::decode_protobuf_bytes_to_batch_projected_experimental(
             Bytes::from(payload),
         )
-        .expect("fallback should produce a batch for array attribute");
+        .expect("projected fallback path should produce a batch for array attribute");
         assert_batches_match(&expected, &actual);
     }
 
     #[test]
-    fn projected_mixed_primitive_and_unsupported_attrs_requests_fallback() {
+    fn projected_mixed_primitive_and_complex_attrs_match_prost() {
         let request = ExportLogsServiceRequest {
             resource_logs: vec![ResourceLogs {
                 scope_logs: vec![ScopeLogs {
@@ -2527,14 +2736,13 @@ mod tests {
         };
         let payload = request.encode_to_vec();
 
-        // Projection alone should return Unsupported
-        let err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
-            .expect_err("mixed attrs with kvlist should trigger unsupported");
-        assert!(matches!(err, ProjectionError::Unsupported(_)));
+        let direct = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+            .expect("mixed attrs with kvlist should decode in projection");
 
-        // Fallback should produce prost-equivalent result
         let expected = crate::otlp_receiver::decode_protobuf_to_batch_prost_reference(&payload)
             .expect("prost should decode mixed attrs");
+        assert_batches_match(&expected, &direct);
+
         let actual = crate::otlp_receiver::decode_protobuf_bytes_to_batch_projected_experimental(
             Bytes::from(payload),
         )
@@ -2559,9 +2767,9 @@ mod tests {
     }
 
     #[test]
-    fn projected_fallback_unsupported_plus_malformed_wire_remains_error() {
-        // Unsupported semantic cases may fall back to prost, but malformed wire
-        // must still fail after fallback instead of being treated as valid data.
+    fn projected_complex_anyvalue_plus_malformed_wire_remains_error() {
+        // Complex AnyValue payloads are projected, but malformed trailing wire
+        // must still fail instead of being treated as valid data.
         let mut any_val = Vec::new();
         encode_len_field(
             &mut any_val,
@@ -2590,8 +2798,8 @@ mod tests {
 
         let projection_err =
             decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
-                .expect_err("projection should request fallback before prost sees malformed tail");
-        assert!(matches!(projection_err, ProjectionError::Unsupported(_)));
+                .expect_err("projection should reject malformed trailing wire");
+        assert!(matches!(projection_err, ProjectionError::Invalid(_)));
 
         let fallback_err =
             crate::otlp_receiver::decode_protobuf_bytes_to_batch_projected_experimental(

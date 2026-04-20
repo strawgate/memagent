@@ -39,10 +39,18 @@ ACTION_TO_VARIANT = {
     "unsupported": "ProjectionAction::Unsupported",
 }
 
-ANY_VALUE_UNSUPPORTED_REASONS = {
-    "array_value": "AnyValue::ArrayValue",
-    "kvlist_value": "AnyValue::KvListValue",
-}
+OTLP_PLANNED_FIELDS = [
+    ("timestamp", "TIMESTAMP", "Int64"),
+    ("observed_timestamp", "OBSERVED_TIMESTAMP", "Int64"),
+    ("severity", "SEVERITY", "Utf8View"),
+    ("severity_number", "SEVERITY_NUMBER", "Int64"),
+    ("body", "BODY", "Utf8View"),
+    ("trace_id", "TRACE_ID", "Utf8View"),
+    ("span_id", "SPAN_ID", "Utf8View"),
+    ("flags", "FLAGS", "Int64"),
+    ("scope_name", "SCOPE_NAME", "Utf8View"),
+    ("scope_version", "SCOPE_VERSION", "Utf8View"),
+]
 
 PROTO_TYPE_TO_ANY_KIND = {
     "string": "string",
@@ -140,9 +148,21 @@ PROJECTION_SPEC = {
                 {"name": "bool_value", "action": "project", "kind": "bool"},
                 {"name": "int_value", "action": "project", "kind": "int"},
                 {"name": "double_value", "action": "project", "kind": "double"},
-                {"name": "array_value", "action": "unsupported", "kind": "array"},
-                {"name": "kvlist_value", "action": "unsupported", "kind": "kvlist"},
+                {"name": "array_value", "action": "project", "kind": "array"},
+                {"name": "kvlist_value", "action": "project", "kind": "kvlist"},
                 {"name": "bytes_value", "action": "project", "kind": "bytes"},
+            ],
+        },
+        {
+            "name": "ArrayValue",
+            "fields": [
+                {"name": "values", "action": "descend", "message": "AnyValue"},
+            ],
+        },
+        {
+            "name": "KeyValueList",
+            "fields": [
+                {"name": "values", "action": "descend", "message": "KeyValue"},
             ],
         },
     ],
@@ -212,9 +232,6 @@ def validate_spec(spec: dict) -> None:
     messages = {message["name"]: message for message in spec["messages"]}
     for message in spec["messages"]:
         name = message["name"]
-        if name not in MESSAGE_TO_OTLP_PREFIX:
-            raise ValueError(f"OTLP projection policy has no core-constant prefix for {name}")
-
         seen_numbers: set[int] = set()
         seen_names: set[str] = set()
         for field in message["fields"]:
@@ -345,12 +362,19 @@ def render_any_value_decoder(spec: dict) -> str:
                 return Err(ProjectionError::Invalid("{invalid}"));
             }}"""
             )
-        elif action == "unsupported" and wire == "len":
-            reason = ANY_VALUE_UNSUPPORTED_REASONS.get(name, f"AnyValue::{name}")
+        elif action == "project" and kind == "array" and wire == "len":
             arms.append(
-                f"""            ({number}, WireField::Len(_)) => {{
-                out = None;
-                unsupported = Some("{reason}");
+                f"""            ({number}, WireField::Len(bytes)) => {{
+                out = Some(WireAny::ArrayRaw(bytes));
+            }}
+            ({number}, _) => {{
+                return Err(ProjectionError::Invalid("{invalid}"));
+            }}"""
+            )
+        elif action == "project" and kind == "kvlist" and wire == "len":
+            arms.append(
+                f"""            ({number}, WireField::Len(bytes)) => {{
+                out = Some(WireAny::KvListRaw(bytes));
             }}
             ({number}, _) => {{
                 return Err(ProjectionError::Invalid("{invalid}"));
@@ -365,7 +389,6 @@ def render_any_value_decoder(spec: dict) -> str:
     arms_text = "\n".join(arms)
     return f"""pub(super) fn decode_any_value_wire(value: &[u8]) -> Result<Option<WireAny<'_>>, ProjectionError> {{
     let mut out = None;
-    let mut unsupported = None;
     super::for_each_field(value, |field, field_value| {{
         match (field, field_value) {{
 {arms_text}
@@ -373,11 +396,6 @@ def render_any_value_decoder(spec: dict) -> str:
         }}
         Ok(())
     }})?;
-    if let Some(reason) = unsupported
-        && out.is_none()
-    {{
-        return Err(ProjectionError::Unsupported(reason));
-    }}
     Ok(out)
 }}
 """
@@ -456,7 +474,7 @@ def render_core_constant_drift_tests(spec: dict) -> str:
     for message in spec["messages"]:
         message_name = message["name"]
         for field in message["fields"]:
-            if field["action"] == "ignore":
+            if field["action"] == "ignore" or message_name not in MESSAGE_TO_OTLP_PREFIX:
                 continue
             lines.append(
                 f"        assert_eq!({rust_ident(message_name)}_FIELDS"
@@ -468,8 +486,8 @@ def render_core_constant_drift_tests(spec: dict) -> str:
 
 def render_generated_test_vectors(spec: dict) -> str:
     message_kinds = ", ".join(f"MessageKind::{message['name']}" for message in spec["messages"])
-    unsupported_anyvalue_numbers = ", ".join(
-        str(field["number"]) for field in any_value_fields(spec) if field["action"] == "unsupported"
+    complex_anyvalue_numbers = ", ".join(
+        str(field["number"]) for field in any_value_fields(spec) if field["kind"] in {"array", "kvlist"}
     )
     return f"""fn sample_field_for_wire(number: u32, wire: WireKind) -> Vec<u8> {{
     let mut out = Vec::new();
@@ -563,8 +581,34 @@ fn wrong_wires(expected: WireKind) -> [WireKind; 5] {{
     }}
 }}
 
-fn unsupported_anyvalue_field_numbers() -> &'static [u32] {{
-    &[{unsupported_anyvalue_numbers}]
+fn complex_anyvalue_field_numbers() -> &'static [u32] {{
+    &[{complex_anyvalue_numbers}]
+}}
+"""
+
+
+def render_planned_handle_builder() -> str:
+    handle_fields = "\n".join(
+        f"    pub(super) {field_name}: FieldHandle,"
+        for field_name, _field_const, _kind in OTLP_PLANNED_FIELDS
+    )
+    handle_bindings = "\n".join(
+        "        "
+        f"{field_name}: plan"
+        f".declare_planned(field_names::{field_const}, FieldKind::{kind})"
+        '.expect("duplicate planned field"),'
+        for field_name, field_const, kind in OTLP_PLANNED_FIELDS
+    )
+    return f"""pub(super) struct OtlpFieldHandles {{
+{handle_fields}
+}}
+
+pub(super) fn build_otlp_plan() -> (BatchPlan, OtlpFieldHandles) {{
+    let mut plan = BatchPlan::new();
+    let handles = OtlpFieldHandles {{
+{handle_bindings}
+    }};
+    (plan, handles)
 }}
 """
 
@@ -576,10 +620,18 @@ def render(spec: dict) -> str:
     lookup_field = render_lookup_field(spec)
     core_constant_drift_tests = render_core_constant_drift_tests(spec)
     generated_test_vectors = render_generated_test_vectors(spec)
+    planned_handle_builder = render_planned_handle_builder()
+    message_variants = "\n    ".join(message["name"] + "," for message in spec["messages"])
+    fields_for_arms = "\n        ".join(
+        f"MessageKind::{message['name']} => {rust_ident(message['name'])}_FIELDS,"
+        for message in spec["messages"]
+    )
     return f"""// @generated by scripts/generate_otlp_projection.py; DO NOT EDIT.
 // spec: {spec["name"]} v{spec["version"]}; opentelemetry-proto {spec["proto_version"]}
 
 use super::{{ProjectionError, WireAny, WireField}};
+use logfwd_arrow::columnar::plan::{{BatchPlan, FieldHandle, FieldKind}};
+use logfwd_types::field_names;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum WireKind {{
@@ -599,16 +651,10 @@ pub(super) enum ProjectionAction {{
     Unsupported,
 }}
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MessageKind {{
-    ExportLogsServiceRequest,
-    ResourceLogs,
-    Resource,
-    ScopeLogs,
-    InstrumentationScope,
-    LogRecord,
-    KeyValue,
-    AnyValue,
+    {message_variants}
 }}
 
 #[derive(Clone, Copy, Debug)]
@@ -626,14 +672,7 @@ pub(super) struct FieldRule {{
 #[allow(dead_code)]
 pub(super) fn fields_for(message: MessageKind) -> &'static [FieldRule] {{
     match message {{
-        MessageKind::ExportLogsServiceRequest => EXPORTLOGSSERVICEREQUEST_FIELDS,
-        MessageKind::ResourceLogs => RESOURCELOGS_FIELDS,
-        MessageKind::Resource => RESOURCE_FIELDS,
-        MessageKind::ScopeLogs => SCOPELOGS_FIELDS,
-        MessageKind::InstrumentationScope => INSTRUMENTATIONSCOPE_FIELDS,
-        MessageKind::LogRecord => LOGRECORD_FIELDS,
-        MessageKind::KeyValue => KEYVALUE_FIELDS,
-        MessageKind::AnyValue => ANYVALUE_FIELDS,
+        {fields_for_arms}
     }}
 }}
 
@@ -641,6 +680,7 @@ pub(super) fn classify_projection_support(input: &[u8]) -> Result<(), Projection
     scan_message(input, MessageKind::ExportLogsServiceRequest)
 }}
 
+{planned_handle_builder}
 {any_value_decoder}
 {key_value_decoder}
 fn scan_message(input: &[u8], message: MessageKind) -> Result<(), ProjectionError> {{
@@ -831,8 +871,8 @@ mod generated_tests {{
     fn generated_anyvalue_table_covers_all_current_oneof_fields() {{
         let fields = fields_for(MessageKind::AnyValue);
         assert_eq!(fields.len(), 7);
-        assert!(fields.iter().any(|f| f.name == "array_value" && f.action == ProjectionAction::Unsupported));
-        assert!(fields.iter().any(|f| f.name == "kvlist_value" && f.action == ProjectionAction::Unsupported));
+        assert!(fields.iter().any(|f| f.name == "array_value" && f.action == ProjectionAction::Project));
+        assert!(fields.iter().any(|f| f.name == "kvlist_value" && f.action == ProjectionAction::Project));
         assert!(fields.iter().any(|f| f.name == "bytes_value" && f.action == ProjectionAction::Project));
     }}
 
@@ -860,13 +900,10 @@ mod generated_tests {{
     }}
 
     #[test]
-    fn generated_decode_anyvalue_terminal_unsupported_requests_fallback() {{
+    fn generated_decode_anyvalue_terminal_complex_keeps_last_oneof_value() {{
         let bytes = [10, 2, b'o', b'k', 42, 0];
-        let err = match decode_any_value_wire(&bytes) {{
-            Ok(_) => panic!("terminal unsupported oneof should request fallback"),
-            Err(err) => err,
-        }};
-        assert!(matches!(err, ProjectionError::Unsupported(_)));
+        let value = decode_any_value_wire(&bytes).expect("terminal oneof should decode");
+        assert!(matches!(value, Some(WireAny::ArrayRaw(_))));
     }}
 
     #[test]
@@ -953,39 +990,40 @@ mod generated_tests {{
     }}
 
     #[test]
-    fn generated_anyvalue_unsupported_shapes_trigger_fallback() {{
-        for &field_number in unsupported_anyvalue_field_numbers() {{
+    fn generated_anyvalue_complex_shapes_are_projected() {{
+        for &field_number in complex_anyvalue_field_numbers() {{
             let payload = sample_field_for_wire(field_number, WireKind::Len);
-            let err = scan_message(&payload, MessageKind::AnyValue)
-                .expect_err("unsupported AnyValue shape should request fallback");
-            assert!(matches!(err, ProjectionError::Unsupported(_)));
-            let err = match decode_any_value_wire(&payload) {{
-                Ok(_) => panic!("unsupported AnyValue decoder shape should request fallback"),
-                Err(err) => err,
-            }};
-            assert!(matches!(err, ProjectionError::Unsupported(_)));
+            scan_message(&payload, MessageKind::AnyValue)
+                .expect("complex AnyValue shape should classify for projection");
+            let value = decode_any_value_wire(&payload)
+                .expect("complex AnyValue should decode");
+            assert!(matches!(
+                value,
+                Some(WireAny::ArrayRaw(_)) | Some(WireAny::KvListRaw(_))
+            ));
         }}
     }}
 
     #[test]
-    fn generated_anyvalue_oneof_terminal_unsupported_drives_fallback() {{
+    fn generated_anyvalue_oneof_last_value_wins_for_complex_and_primitive() {{
         let projected = sample_field_for_wire(otlp::ANY_VALUE_STRING_VALUE, WireKind::Len);
-        for &field_number in unsupported_anyvalue_field_numbers() {{
-            let unsupported = sample_field_for_wire(field_number, WireKind::Len);
+        for &field_number in complex_anyvalue_field_numbers() {{
+            let complex = sample_field_for_wire(field_number, WireKind::Len);
 
-            let mut unsupported_then_projected = unsupported.clone();
-            unsupported_then_projected.extend_from_slice(&projected);
-            let value = decode_any_value_wire(&unsupported_then_projected)
+            let mut complex_then_projected = complex.clone();
+            complex_then_projected.extend_from_slice(&projected);
+            let value = decode_any_value_wire(&complex_then_projected)
                 .expect("terminal projected oneof should decode");
             assert!(matches!(value, Some(WireAny::String(_))));
 
-            let mut projected_then_unsupported = projected.clone();
-            projected_then_unsupported.extend_from_slice(&unsupported);
-            let err = match decode_any_value_wire(&projected_then_unsupported) {{
-                Ok(_) => panic!("terminal unsupported oneof should request fallback"),
-                Err(err) => err,
-            }};
-            assert!(matches!(err, ProjectionError::Unsupported(_)));
+            let mut projected_then_complex = projected.clone();
+            projected_then_complex.extend_from_slice(&complex);
+            let value = decode_any_value_wire(&projected_then_complex)
+                .expect("terminal complex oneof should decode");
+            assert!(matches!(
+                value,
+                Some(WireAny::ArrayRaw(_)) | Some(WireAny::KvListRaw(_))
+            ));
         }}
     }}
 
