@@ -28,6 +28,7 @@ pub(super) struct EvictedFile {
     pub(super) identity: FileIdentity,
     pub(super) comparison_fingerprint: u64,
     pub(super) fingerprint_len: u64,
+    pub(super) eof_state: EofState,
     pub(super) offset: u64,
     pub(super) path: PathBuf,
     pub(super) source_id: SourceId,
@@ -146,6 +147,7 @@ impl FileReader {
         let mut stored_identity = identity.clone();
         let mut stored_comparison_fingerprint = identity.fingerprint;
         let mut stored_fingerprint_len = fingerprint_len;
+        let mut stored_eof_state = EofState::default();
         let offset = if let Some(evicted) = evicted {
             if evicted_matches_open_file(
                 &evicted,
@@ -157,6 +159,7 @@ impl FileReader {
                 stored_identity = evicted.identity.clone();
                 stored_comparison_fingerprint = evicted.comparison_fingerprint;
                 stored_fingerprint_len = evicted.fingerprint_len;
+                stored_eof_state = evicted.eof_state;
                 if evicted.offset > file_size {
                     tracing::warn!(
                         path = %path.display(),
@@ -197,7 +200,7 @@ impl FileReader {
                 file,
                 offset,
                 last_read: Instant::now(),
-                eof_state: EofState::default(),
+                eof_state: stored_eof_state,
             },
         );
 
@@ -433,6 +436,7 @@ impl FileReader {
                             identity: tailed.identity,
                             comparison_fingerprint: tailed.comparison_fingerprint,
                             fingerprint_len: tailed.fingerprint_len,
+                            eof_state: tailed.eof_state,
                             offset: tailed.offset,
                             path,
                             source_id,
@@ -600,6 +604,7 @@ mod tests {
                 },
                 comparison_fingerprint: 0,
                 fingerprint_len: 0,
+                eof_state: EofState::default(),
                 offset: 7,
                 path: path.clone(),
                 source_id: SourceId(0),
@@ -632,6 +637,7 @@ mod tests {
                 },
                 comparison_fingerprint: 123,
                 fingerprint_len: 3,
+                eof_state: EofState::default(),
                 offset: 4,
                 path: path.clone(),
                 source_id: SourceId(99),
@@ -668,6 +674,7 @@ mod tests {
                 },
                 comparison_fingerprint: 123,
                 fingerprint_len: 3,
+                eof_state: EofState::default(),
                 offset: 2,
                 path: path.clone(),
                 source_id: SourceId(99),
@@ -704,6 +711,7 @@ mod tests {
                 },
                 comparison_fingerprint: 123,
                 fingerprint_len: 3,
+                eof_state: EofState::default(),
                 offset: 2,
                 path: path.clone(),
                 source_id: SourceId(99),
@@ -948,6 +956,7 @@ mod tests {
                 comparison_fingerprint: identity.fingerprint,
                 identity,
                 fingerprint_len: 3,
+                eof_state: EofState::default(),
                 offset: 999,
                 path: path.clone(),
                 source_id,
@@ -987,6 +996,7 @@ mod tests {
                 comparison_fingerprint: identity.fingerprint,
                 identity,
                 fingerprint_len: 6,
+                eof_state: EofState::default(),
                 offset: 10,
                 path: path.clone(),
                 source_id,
@@ -1031,6 +1041,7 @@ mod tests {
                 },
                 comparison_fingerprint: 999,
                 fingerprint_len: 6,
+                eof_state: EofState::default(),
                 offset: 5,
                 path: path.clone(),
                 source_id: SourceId(5),
@@ -1248,6 +1259,7 @@ mod tests {
                 },
                 comparison_fingerprint: 3,
                 fingerprint_len: 3,
+                eof_state: EofState::default(),
                 offset: 7,
                 path: PathBuf::from("other.log"),
                 source_id: SourceId(1),

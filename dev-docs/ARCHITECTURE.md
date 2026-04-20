@@ -316,6 +316,73 @@ Target (zero-copy for 99% passthrough path — #608):
   Bytes dropped when RecordBatch is consumed
 ```
 
+## Data-Oriented Design
+
+The pipeline is structured for the CPU, not for object-oriented
+convenience. This is not a stylistic choice — it is a load-bearing
+architectural commitment.
+
+- **Struct-of-Arrays (SoA) is the default representation.** Arrow
+  `RecordBatch` is literally SoA. The scanner, builders, SQL transform,
+  and OTLP encoder all operate on contiguous per-column buffers, not
+  row objects. When adding a new per-record piece of data (a parsed
+  timestamp, a source tag, a flag), the default answer is "another
+  column," not "another field on a row struct."
+- **Hot fields stay contiguous; cold fields go to a side table.**
+  Per-source metadata that is not used in the scan/transform loop
+  (source paths, file handles, receiver identity) lives in sidecar
+  tables keyed by `SourceId`, not inline with payload bytes.
+- **No `LinkedList`, no per-record boxing in hot paths.** Cache locality
+  dominates runtime at our throughputs. `Vec<T>` with explicit capacity
+  hints, `SmallVec` for small bounded collections, `Bytes` slices for
+  shared byte views. `Box<[T]>` instead of `Vec<T>` when the length is
+  fixed after construction.
+- **Arena allocation at boundaries where it helps.** Short-lived
+  per-batch object graphs (parse nodes, intermediate Arrow builders)
+  that currently allocate per-record are candidates for arena or bump
+  allocation. See `logfwd-arrow/src/columnar/` for the existing pattern.
+- **No raw payload injection (see `CRATE_RULES.md` → `logfwd-io`).** The
+  no-raw-injection rule is a data-layout rule: source metadata travels
+  in a sidecar, not in the payload buffer. This is the architectural
+  manifestation of SoA.
+
+## Compile time as a quality attribute
+
+Build time is a first-class quality attribute, not an aesthetic
+concern. Long compile cycles degrade every iteration of every
+contributor and agent, compound across CI, and actively harm code
+quality because they discourage small-step verification. The
+`default-members` / `--workspace` split (`~30s` vs `~3min`) is the
+explicit recognition of this — it is load-bearing for iteration speed.
+
+Practical rules:
+
+- **Prefer `&dyn Trait` at crate seams where monomorphization cost is
+  real.** At internal call sites generics are usually the right default
+  (static dispatch, inlining). Across crate boundaries where the callee
+  is instantiated for many distinct caller types, `dyn Trait` can be
+  the right trade. Default to generics, reach for `dyn` when the
+  compile-time cost is observable.
+- **Gate heavy dependencies behind Cargo features.** DataFusion,
+  reqwest, large proc-macro crates. The `datafusion` feature on
+  `logfwd-runtime` and the `logfwd-transform` default-members exclusion
+  exist for this reason — replicate the pattern for future heavy
+  dependencies.
+- **Split crates along natural seams.** Parallel compilation is cheap;
+  monolithic crates are not. When a crate grows to the point where
+  touching one module forces the whole thing to rebuild, split it.
+- **Avoid `build.rs` unless genuinely required.** `build.rs` serializes
+  compilation and invalidates caches aggressively.
+- **Reserve proc macros for cases `macro_rules!` cannot handle.** Proc
+  macros pull in syn/quote and extend compile time per crate that uses
+  them.
+- **Use `cargo --timings` when investigating slow builds.** Find the
+  actual long pole before refactoring.
+
+The WASM build target (`logfwd-config-wasm`) makes this discipline
+non-optional: heavy dependencies leak across the boundary and inflate
+the WASM artifact.
+
 ## Verification strategy
 
 Each pipeline layer has appropriate verification. See `dev-docs/VERIFICATION.md` for tool

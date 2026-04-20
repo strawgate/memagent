@@ -3,9 +3,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use logfwd_types::pipeline::SourceId;
+
 use super::glob::expand_glob_patterns;
 use super::identity::{FileIdentity, identify_file};
 use super::reader::FileReader;
+use super::state::shutdown_should_emit_eof;
 use super::tailer::TailEvent;
 
 fn mark_watch_dir_result(path: &Path, result: io::Result<()>) -> bool {
@@ -178,30 +181,79 @@ impl FileDiscovery {
         events: &mut Vec<TailEvent>,
     ) -> bool {
         let mut had_error = false;
-        let deleted: Vec<PathBuf> = reader
-            .files
-            .iter()
-            .filter(|(_, tailed)| {
-                tailed
-                    .file
-                    .metadata()
-                    .ok()
-                    .is_none_or(|m| has_metadata_indicating_deletion(&m))
-            })
-            .map(|(path, _)| path.clone())
-            .collect();
+        let deleted = deleted_paths(reader);
         for path in &deleted {
             let source_id = reader.source_id_for_path(path);
             had_error |= reader.drain_file(path, source_id, events);
             reader.files.remove(path);
             reader.evicted_offsets.remove(path);
         }
+        self.forget_deleted_watch_paths(&deleted);
+        had_error
+    }
+
+    pub(super) fn cleanup_deleted_for_shutdown(
+        &mut self,
+        reader: &mut FileReader,
+        events: &mut Vec<TailEvent>,
+    ) -> (bool, Vec<(PathBuf, Option<SourceId>)>) {
+        let mut had_error = false;
+        let mut eof_targets = Vec::new();
+        let deleted = deleted_paths(reader);
+        let mut drained_deleted = Vec::new();
+
+        for path in &deleted {
+            let pre_drain_source_id = reader.source_id_for_path(path);
+            had_error |= reader.drain_file(path, pre_drain_source_id, events);
+            let post_drain_source_id = reader.source_id_for_path(path);
+            let should_remove = match reader.files.get(path) {
+                Some(tailed) => match tailed.file.metadata().map(|meta| meta.len()) {
+                    Ok(file_size) => {
+                        let is_caught_up = shutdown_should_emit_eof(tailed.offset, file_size);
+                        if is_caught_up
+                            && post_drain_source_id.is_some()
+                            && !tailed.eof_state.has_emitted()
+                        {
+                            eof_targets.push((path.clone(), post_drain_source_id));
+                        }
+                        is_caught_up
+                    }
+                    Err(_) => true,
+                },
+                None => true,
+            };
+            if should_remove {
+                drained_deleted.push(path.clone());
+                reader.files.remove(path);
+                reader.evicted_offsets.remove(path);
+            }
+        }
+        self.forget_deleted_watch_paths(&drained_deleted);
+
+        (had_error, eof_targets)
+    }
+
+    fn forget_deleted_watch_paths(&mut self, deleted: &[PathBuf]) {
         if !self.glob_patterns.is_empty() && !deleted.is_empty() {
             let deleted_set: HashSet<&PathBuf> = deleted.iter().collect();
             self.watch_paths.retain(|p| !deleted_set.contains(p));
         }
-        had_error
     }
+}
+
+fn deleted_paths(reader: &FileReader) -> Vec<PathBuf> {
+    reader
+        .files
+        .iter()
+        .filter(|(_, tailed)| {
+            tailed
+                .file
+                .metadata()
+                .ok()
+                .is_none_or(|m| has_metadata_indicating_deletion(&m))
+        })
+        .map(|(path, _)| path.clone())
+        .collect()
 }
 
 #[cfg(unix)]
@@ -256,6 +308,7 @@ mod tests {
 
     use super::super::identity::FileIdentity;
     use super::super::reader::{EvictedFile, FileReader, TailedFile};
+    use super::super::state::EofState;
     use super::super::tailer::{TailConfig, TailEvent};
     use super::*;
 
@@ -324,6 +377,7 @@ mod tests {
                 },
                 comparison_fingerprint: 333,
                 fingerprint_len: 1024,
+                eof_state: EofState::default(),
                 offset: 7,
                 path: path.clone(),
                 source_id: SourceId(123),
@@ -553,7 +607,7 @@ mod tests {
                 file,
                 offset: 2048,
                 last_read: Instant::now(),
-                eof_state: super::super::state::EofState::default(),
+                eof_state: EofState::default(),
             },
         );
 

@@ -396,8 +396,8 @@ Send log records as OTLP protobuf to an OpenTelemetry collector.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `endpoint` | string | Yes | — | Full collector URL, e.g. `http://otel-collector:4317` (gRPC) or `http://otel-collector:4318/v1/logs` (HTTP). |
-| `protocol` | string | No | `http` | `http` or `grpc`. |
-| `compression` | string | No | none | `zstd`, `gzip`, or `none` for the request body. |
+| `protocol` | enum | No | `http` | `http` or `grpc`. Invalid values are rejected while parsing config. |
+| `compression` | enum | No | none | `zstd`, `gzip`, or `none` for the request body. Invalid values are rejected while parsing config. |
 
 ```yaml
 output:
@@ -416,7 +416,7 @@ lands.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Full URL, e.g. `http://ingest.example.com/logs`. |
-| `compression` | string | No | Reserved for future use. |
+| `compression` | enum | No | Reserved for future use. Recognized values are `zstd`, `gzip`, and `none`; the HTTP output itself is still not yet supported. |
 
 ```yaml
 output:
@@ -446,8 +446,8 @@ Ship to Elasticsearch via the Bulk API.
 |-------|------|----------|---------|-------------|
 | `endpoint` | string | Yes | — | Elasticsearch base URL. |
 | `index` | string | No | `logs` | Target index name. Must not be empty, and must not contain Elasticsearch-reserved characters or prefixes. |
-| `compression` | string | No | `none` | `gzip` or `none`. |
-| `request_mode` | string | No | `buffered` | `buffered` or `streaming`. `streaming` currently requires `compression: none`. |
+| `compression` | enum | No | `none` | `gzip` or `none`. `zstd` is rejected for Elasticsearch by validation. |
+| `request_mode` | enum | No | `buffered` | `buffered` or `streaming`. Invalid values are rejected while parsing config; `streaming` currently requires `compression: none`. |
 | `request_timeout_ms` | integer | No | `30000` | HTTP request timeout in milliseconds. Must be >= 1 when set. |
 | `tls` | object | No | — | Optional TLS client options (`ca_file`, `cert_file`, `key_file`, `insecure_skip_verify`) for HTTPS endpoints. |
 | `auth` | object | No | — | Optional bearer token or custom headers for HTTP auth. |

@@ -248,6 +248,13 @@ The file path is:
   while still providing a bounded flush path for trailing partial lines.
 - Fresh data resets both the poll streak and idle timer, allowing a later
   `EndOfFile` signal after a new sustained no-data period.
+- Graceful shutdown is a terminal lifecycle event, not a transient stall. During
+  shutdown, file input may bypass the normal idle EOF gate for already tracked
+  active files, perform one bounded read, and emit `EndOfFile` only for files
+  whose tracked offset has caught up to the current file size so `FramedInput`
+  can flush per-source remainders before the runtime drains input channels.
+- Shutdown drain must not discover unrelated new glob matches; it drains active
+  files and pending watcher transitions.
 - Tailer watcher/file I/O error bursts that trigger poll backoff should surface
   as `degraded` control-plane health, and a later clean poll should recover the
   file input to `healthy`.

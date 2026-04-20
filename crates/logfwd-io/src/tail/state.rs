@@ -40,6 +40,14 @@ pub(super) fn eof_model_transition(
     )
 }
 
+/// Return whether shutdown may emit terminal EOF for a tracked file.
+///
+/// Shutdown EOF intentionally bypasses the normal idle threshold, but only
+/// after the tracked read offset has caught up to the observed file size.
+pub(super) fn shutdown_should_emit_eof(offset: u64, file_size: u64) -> bool {
+    offset >= file_size
+}
+
 /// Mutable wrapper around the pure EOF reducer and idle timer.
 #[derive(Clone, Copy, Debug, Default)]
 pub(super) struct EofState {
@@ -48,6 +56,11 @@ pub(super) struct EofState {
 }
 
 impl EofState {
+    /// Return whether EOF has already been emitted for the current idle streak.
+    pub(super) fn has_emitted(&self) -> bool {
+        self.model.emitted
+    }
+
     /// Reset EOF state when new data arrives.
     pub(super) fn on_data(&mut self) {
         self.model = EofModelState::default();
@@ -157,6 +170,13 @@ mod tests {
         assert!(state.on_no_data(t0 + Duration::from_millis(220), min_idle));
     }
 
+    #[test]
+    fn shutdown_eof_requires_caught_up_offset() {
+        assert!(shutdown_should_emit_eof(10, 10));
+        assert!(shutdown_should_emit_eof(11, 10));
+        assert!(!shutdown_should_emit_eof(9, 10));
+    }
+
     proptest! {
         #[test]
         fn eof_model_only_emits_on_threshold_crossing(
@@ -176,6 +196,16 @@ mod tests {
                 }
                 state = next;
             }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn shutdown_eof_matches_offset_caught_up(offset: u64, file_size: u64) {
+            prop_assert_eq!(
+                shutdown_should_emit_eof(offset, file_size),
+                offset >= file_size
+            );
         }
     }
 

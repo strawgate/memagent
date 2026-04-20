@@ -16,6 +16,7 @@ use flate2::Compression as GzipLevel;
 use flate2::write::GzEncoder;
 
 use logfwd_arrow::conflict_schema::normalize_conflict_columns;
+use logfwd_config::OtlpProtocol;
 use logfwd_core::otlp::{
     self, Severity, bytes_field_size, encode_bytes_field, encode_fixed32, encode_fixed64,
     encode_tag, encode_varint, encode_varint_field, hex_decode, parse_severity,
@@ -46,14 +47,6 @@ const DEFAULT_GRPC_MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 // ---------------------------------------------------------------------------
 // OtlpSink
 // ---------------------------------------------------------------------------
-
-/// OTLP transport protocol.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum OtlpProtocol {
-    Grpc,
-    Http,
-}
 
 /// Sends OTLP protobuf LogRecords over gRPC or HTTP.
 pub struct OtlpSink {
@@ -547,6 +540,12 @@ impl OtlpSink {
         let content_type = match self.protocol {
             OtlpProtocol::Grpc => "application/grpc",
             OtlpProtocol::Http => "application/x-protobuf",
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unsupported OTLP protocol '{other}'"),
+                ));
+            }
         };
 
         // For gRPC, prepend the 5-byte length-prefixed frame header required by the

@@ -218,6 +218,46 @@ Caveats:
 
 ---
 
+## Performance change workflow
+
+When a change is motivated by performance — or unintentionally affects
+the hot path — the following loop is the repo standard. No perf claim
+lands in a PR or commit message without a corresponding `criterion`
+artifact to back it.
+
+1. **Baseline.** Before touching code, run the relevant `criterion`
+   bench on `main` and save the report. `just bench` runs the Tier 1
+   suite (`pipeline`, `output_encode`, `full_chain`). For more
+   targeted runs, invoke the specific bench binary directly (see
+   `crates/logfwd-bench/src/bin/`).
+2. **Profile to find the actual hotspot.** On macOS: `just profile-otlp-local`
+   produces a flamegraph. For FramedInput-specific work:
+   `just bench-framed-input -- --flamegraph /tmp/framed-input.svg`.
+   Optimize what the profile shows, not what you *think* is slow.
+3. **Measure allocations separately.** `just bench-framed-input-alloc`
+   and the `cpu-profiling` feature cover allocation-sensitive paths.
+   Heap churn and wall-clock are different axes — changes that trade
+   one for the other should say so explicitly.
+4. **Change the code.** Prefer the smallest change that moves the
+   measured bottleneck. Avoid micro-optimizations outside the hotspot.
+5. **Re-benchmark and compare.** Run the same bench on the change.
+   Include the before/after numbers (and percent delta) in the PR body.
+6. **Check for regressions elsewhere.** A win in the scanner can lose
+   in the encoder. `just bench` covers the Tier 1 suite quickly;
+   use it as a regression net before merge.
+7. **Update `dev-docs/` if the change alters a documented perf
+   characteristic.** Buffer lifecycle, hot-path rules, the ZERO_COPY_PIPELINE
+   notes. See `dev-docs/CHANGE_MAP.md` for co-change requirements.
+
+If the change touches `unsafe` SIMD in `logfwd-arrow`, verify it
+against the scalar fallback with proptest (`cargo test -p logfwd-arrow`
+exercises the equivalence proptests). Miri does not cover `logfwd-arrow`
+— `just miri` runs only the `logfwd-core` and `logfwd-types` suites.
+For SIMD invariants enforced at the type level, `just kani-boundary`
+verifies the scanner contract.
+
+---
+
 ## Things that will bite you
 
 Hard-won lessons from building the scanner and builder pipeline.

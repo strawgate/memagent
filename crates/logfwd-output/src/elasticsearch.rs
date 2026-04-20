@@ -6,6 +6,7 @@ use std::time::Duration;
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
 
+pub use logfwd_config::ElasticsearchRequestMode;
 use logfwd_types::diagnostics::ComponentStats;
 use logfwd_types::field_names;
 use tokio::sync::mpsc;
@@ -35,12 +36,6 @@ pub(crate) struct ElasticsearchConfig {
     /// Precomputed `{"index":{"_index":"<name>"}}\n` bytes — avoids a `format!`
     /// allocation on every `serialize_batch` call.
     action_bytes: Box<[u8]>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ElasticsearchRequestMode {
-    Buffered,
-    Streaming,
 }
 
 /// Async Elasticsearch sink using reqwest.

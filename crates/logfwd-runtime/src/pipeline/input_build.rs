@@ -169,7 +169,7 @@ pub(super) fn build_input_state(
                 ..Default::default()
             };
             if let Some(interval) = f.glob_rescan_interval_ms {
-                tail_config.glob_rescan_interval_ms = interval.get();
+                tail_config.glob_rescan_interval_ms = interval;
             }
             if let Some(max) = f.adaptive_fast_polls_max {
                 tail_config.adaptive_fast_polls_max = max;
@@ -430,6 +430,26 @@ pub(super) fn build_input_state(
             }
             if let Some(v) = t.read_timeout_ms {
                 options.read_timeout_ms = Some(v.get());
+            }
+            if let Some(tls) = &t.tls {
+                let has_client_ca = tls
+                    .client_ca_file
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|v| !v.is_empty());
+                if has_client_ca || tls.require_client_auth {
+                    return Err(format!(
+                        "input '{name}': tcp.tls.client_ca_file and tcp.tls.require_client_auth are not supported for TCP inputs yet (tracked by #2332)"
+                    ));
+                }
+                let cert_file =
+                    require_non_empty(name, "tcp", "tcp.tls.cert_file", tls.cert_file.as_ref())?;
+                let key_file =
+                    require_non_empty(name, "tcp", "tcp.tls.key_file", tls.key_file.as_ref())?;
+                options.tls = Some(logfwd_io::tcp_input::TcpInputTlsOptions {
+                    cert_file: cert_file.to_string(),
+                    key_file: key_file.to_string(),
+                });
             }
             let source = logfwd_io::tcp_input::TcpInput::with_options(
                 name,
@@ -1132,6 +1152,42 @@ mod tests {
         assert!(
             err.contains("non-empty 'http.path'"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_input_state_tcp_tls_reports_field_context_for_missing_files() {
+        use logfwd_diagnostics::diagnostics::PipelineMetrics;
+
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("p", "SELECT 1", &meter);
+        let stats = pm.add_input("tcp-in", "tcp");
+        let cfg = InputConfig {
+            name: Some("tcp-in".to_string()),
+            format: Some(Format::Json),
+            sql: None,
+            source_metadata: false,
+            type_config: InputTypeConfig::Tcp(logfwd_config::TcpTypeConfig {
+                listen: "127.0.0.1:0".to_string(),
+                tls: Some(logfwd_config::TlsInputConfig {
+                    cert_file: Some("/definitely/missing/server.crt".to_string()),
+                    key_file: Some("/definitely/missing/server.key".to_string()),
+                    client_ca_file: None,
+                    require_client_auth: false,
+                }),
+                max_connections: None,
+                connection_timeout_ms: None,
+                read_timeout_ms: None,
+            }),
+        };
+
+        let err = match build_input_state("tcp-in", &cfg, stats) {
+            Ok(_) => panic!("missing tls files should fail startup"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("tcp.tls.cert_file") || err.contains("tcp.tls.key_file"),
+            "expected tcp tls field context in startup error: {err}"
         );
     }
     #[test]
