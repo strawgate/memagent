@@ -20,7 +20,7 @@ Proven pure-logic kernel. Scanner, parsers, pipeline state machine, OTLP encodin
 - `structural.rs` — SIMD structural character detection (quote, backslash, bitmasks)
 - `cri.rs` — CRI log format parser + reassembler
 - `framer.rs` — NewlineFramer (Kani-proven, fixed-size, no heap)
-- `aggregator.rs` — CriReassembler (zero-copy F path, Kani-proven)
+- `reassembler.rs` — CriReassembler (zero-copy F path, Kani-proven)
 - `pipeline/` — BatchTicket, PipelineMachine (typestate, Kani-proven)
 - `otlp.rs` — OTLP protobuf encoding
 

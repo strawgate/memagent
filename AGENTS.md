@@ -98,6 +98,8 @@ The workspace `default-members` excludes `logfwd-transform` (datafusion) and `lo
 │   ├── logfwd-bench/            ← Criterion benchmarks for the scanner pipeline
 │   ├── logfwd-competitive-bench/← Comparative benchmarks vs other log agents
 │   ├── logfwd-test-utils/       ← Shared test utilities
+│   ├── logfwd-diagnostics/      ← Diagnostics control plane: HTTP endpoints, dashboard, readiness
+│   ├── logfwd-config-wasm/      ← WASM bindings for the config validator (browser/Node.js)
 │   ├── logfwd-ebpf-proto/       ← eBPF log capture protocol definitions (experimental)
 │   ├── logfwd-otap-proto/       ← OTAP protocol definitions
 │   └── logfwd-proto-build/      ← Protobuf build scripts
@@ -233,7 +235,7 @@ Component labels use `component:` prefix (e.g., `component:processor/scanner`). 
 - **Start developer docs quickly:** `dev-docs/README.md` — canonical map and task routing.
 - **Find a crate's purpose:** `crates/<name>/` — each has a `Cargo.toml` and many have an `AGENTS.md` with crate-specific rules.
 - **Find how data flows:** `dev-docs/ARCHITECTURE.md` — full pipeline diagram and buffer lifecycle.
-- **Find what SQL UDFs exist:** `crates/logfwd-transform/src/udf/` — `int()`, `float()`, `json()`, `json_int()`, `json_float()`, `regexp_extract()`, `grok()`, `geo_lookup()`, `hash()`.
+- **Find what SQL UDFs exist:** `crates/logfwd-transform/src/udf/` — `json()`, `json_int()`, `json_float()`, `regexp_extract()`, `grok()`, `geo_lookup()`, `hash()` (internal). `int()` / `float()` are DataFusion CAST forms, not custom UDFs.
 - **Find config schema:** `book/src/content/docs/configuration/reference.mdx` — all YAML fields, input/output types.
 - **Find example configs:** `examples/use-cases/` — 20 common patterns.
 - **Review roadmap/priorities:** [GitHub issue #889](https://github.com/strawgate/fastforward/issues/889).
