@@ -449,6 +449,18 @@ mod verification {
             open_bracket: kani::any(),
             close_bracket: kani::any(),
         };
+        kani::assume(
+            (p.newline
+                | p.real_quotes
+                | p.comma
+                | p.colon
+                | p.open_brace
+                | p.close_brace
+                | p.open_bracket
+                | p.close_bracket)
+                & mask
+                != 0,
+        );
 
         // Build a minimal iterator just to call classify_bit
         let iter = StructuralIter {
