@@ -2,6 +2,6 @@ input:
   type: udp
   listen: 127.0.0.1:15514
 output:
-  type: null
+  type: "null"
 server:
   diagnostics: 127.0.0.1:9091

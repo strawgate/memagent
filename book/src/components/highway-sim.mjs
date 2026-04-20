@@ -14,7 +14,7 @@
 
 export const DEFAULTS = {
   slotsHwy: 15,
-  slotsRamp: 5,
+  slotsRamp: 8,
   slotsExit: 6,
   slotsCont: 6,
   mergeSlot: 5,       // highway slot where ramp merges in
@@ -94,7 +94,8 @@ export function createSimulation(overrides, scaleFn) {
   let lightIsGreen = true;
   let greenPct = cfg.greenPct;
   let cycleStart = 0;
-  let lastSpawn = -Infinity;
+  let lastSpawnHwy = -Infinity;
+  let lastSpawnRamp = -Infinity;
   let spawnSrc = 0;
 
   let autoMode = true;
@@ -184,10 +185,11 @@ export function createSimulation(overrides, scaleFn) {
 
   // ---- segment advancement ----
 
-  function advanceSegment(seg) {
+  function advanceSegment(seg, segName) {
     const { slots, slotD, len, hasGate, fadePastGate, fadeFullLen } = seg;
+    const lastSlot = slots.length - 1;
 
-    for (let i = slots.length - 1; i >= 0; i--) {
+    for (let i = lastSlot; i >= 0; i--) {
       const car = slots[i];
       if (!car) continue;
 
@@ -210,6 +212,28 @@ export function createSimulation(overrides, scaleFn) {
           moveCar(car, car.segment, i);
           car.color = carColor(car);
           continue;
+        }
+
+        // Junction hold: don't advance into the last slot if the
+        // downstream segment entrance is occupied — prevents visual overlap
+        // at the screen-space junction point.
+        if (nextSlot === lastSlot) {
+          if (segName === 'ramp' && segs.highway.slots[cfg.mergeSlot] !== null) {
+            car.speed = 0;
+            moveCar(car, car.segment, i);
+            car.color = carColor(car);
+            continue;
+          }
+          if (segName === 'highway') {
+            const exitOccupied = segs.exit.slots[0] !== null;
+            const contOccupied = segs.cont.slots[0] !== null;
+            if (exitOccupied && (contOccupied || !lightIsGreen)) {
+              car.speed = 0;
+              moveCar(car, car.segment, i);
+              car.color = carColor(car);
+              continue;
+            }
+          }
         }
 
         // Move forward
@@ -293,39 +317,39 @@ export function createSimulation(overrides, scaleFn) {
 
   function trySpawn(now) {
     if (totalCars() >= cfg.maxCars) return { kind: 'capped' };
-    if (now - lastSpawn < cfg.spawnMs) return { kind: 'cooldown' };
 
     let spawned = false;
 
-    // Alternate preferred source
-    const src = spawnSrc;
-    spawnSrc = 1 - spawnSrc;
+    // Try highway and ramp independently with separate cooldowns.
+    // This naturally offsets them so they don't bunch up.
+    const halfCd = cfg.spawnMs / 2;
 
-    if (src === 0) {
-      if (segs.highway.slots[0] === null) {
-        segs.highway.slots[0] = makeCar('highway', 0);
-        spawned = true;
-      } else if (segs.ramp.slots[0] === null) {
+    if (now - lastSpawnHwy >= cfg.spawnMs && segs.highway.slots[0] === null) {
+      segs.highway.slots[0] = makeCar('highway', 0);
+      lastSpawnHwy = now;
+      spawned = true;
+    }
+
+    if (now - lastSpawnRamp >= cfg.spawnMs && segs.ramp.slots[0] === null) {
+      // Offset ramp by half a cycle so the two sources don't fire together
+      if (lastSpawnRamp === -Infinity) lastSpawnRamp = now - cfg.spawnMs + halfCd;
+      if (now - lastSpawnRamp >= cfg.spawnMs) {
         segs.ramp.slots[0] = makeCar('ramp', 0);
-        spawned = true;
-      }
-    } else {
-      if (segs.ramp.slots[0] === null) {
-        segs.ramp.slots[0] = makeCar('ramp', 0);
-        spawned = true;
-      } else if (segs.highway.slots[0] === null) {
-        segs.highway.slots[0] = makeCar('highway', 0);
+        lastSpawnRamp = now;
         spawned = true;
       }
     }
 
-    if (spawned) {
-      lastSpawn = now;
-      return { kind: 'spawned' };
-    }
+    if (spawned) return { kind: 'spawned' };
 
-    // Both entrances physically blocked
-    return { kind: 'blocked' };
+    // Check if both entrances are physically blocked
+    const hwyBlocked = segs.highway.slots[0] !== null;
+    const rampBlocked = segs.ramp.slots[0] !== null;
+    const hwyOnCooldown = now - lastSpawnHwy < cfg.spawnMs;
+    const rampOnCooldown = now - lastSpawnRamp < cfg.spawnMs;
+
+    if (hwyBlocked && rampBlocked) return { kind: 'blocked' };
+    return { kind: 'cooldown' };
   }
 
   // ---- removal ----
@@ -372,17 +396,17 @@ export function createSimulation(overrides, scaleFn) {
     const removedIds = removeDelivered(now);
 
     // 2. Advance continuation (downstream first — frees slots)
-    advanceSegment(segs.cont);
+    advanceSegment(segs.cont, 'cont');
 
     // 3. Highway → exit/cont transition (before exit advancement,
     //    so a full exit causes overflow to cont)
     tryHwyToExit();
 
     // 4. Advance exit
-    advanceSegment(segs.exit);
+    advanceSegment(segs.exit, 'exit');
 
     // 5. Advance highway
-    advanceSegment(segs.highway);
+    advanceSegment(segs.highway, 'highway');
 
     // 6. Try transition again (after highway advancement freed the lead car)
     tryHwyToExit();
@@ -391,7 +415,7 @@ export function createSimulation(overrides, scaleFn) {
     tryRampMerge();
 
     // 8. Advance ramp
-    advanceSegment(segs.ramp);
+    advanceSegment(segs.ramp, 'ramp');
 
     // 9. Try merge again
     tryRampMerge();
@@ -450,7 +474,7 @@ export function createSimulation(overrides, scaleFn) {
     exitAuto: function () { autoMode = false; },
     isAuto: function () { return autoMode; },
     setCycleStart: function (t) { cycleStart = t; },
-    setLastSpawn: function (t) { lastSpawn = t; },
+    setLastSpawn: function (t) { lastSpawnHwy = t; lastSpawnRamp = t - Math.floor(cfg.spawnMs / 2); },
     addCar: function (segment, slotIdx, speed, scale) {
       const seg = segs[segment];
       if (!seg) {

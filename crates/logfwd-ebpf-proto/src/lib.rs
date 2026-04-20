@@ -52,6 +52,7 @@
 //!   cgroup_path: /sys/fs/cgroup/kubepods/  # watch all pod cgroups
 //!   format: json                            # raw app output, not CRI
 //! ```
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 pub mod bpf;
 pub mod common;

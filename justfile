@@ -234,10 +234,10 @@ tlc-tail:
     just tlc MCTailLifecycle.tla TailLifecycle.cfg
 
 # Lint — fast (default-members, skips datafusion)
-lint: fmt-check otlp-codegen-check workspace-inheritance-guard clippy toml-check
+lint: fmt-check otlp-codegen-check workspace-inheritance-guard public-api-error-guard production-panic-guard clippy toml-check
 
 # Lint — full workspace (CI uses this)
-lint-all: fmt-check verification-guardrail otlp-codegen-check workspace-inheritance-guard clippy-all toml-check deny
+lint-all: fmt-check verification-guardrail otlp-codegen-check workspace-inheritance-guard public-api-error-guard production-panic-guard clippy-all toml-check deny
 
 # Quick CI — fast lint + test (default-members, no datafusion)
 ci: lint test
@@ -260,6 +260,14 @@ otlp-codegen-check:
 # Guardrail: inherited dependencies must not override default-features locally.
 workspace-inheritance-guard:
     python3 scripts/check_workspace_inherited_default_features.py
+
+# Guardrail: no Box<dyn Error> in public library signatures.
+public-api-error-guard:
+    python3 scripts/check_no_box_dyn_error.py
+
+# Guardrail: no panic!/todo!/unimplemented! in production runtime/output paths.
+production-panic-guard:
+    python3 scripts/check_no_panic_in_production.py
 
 # Format TOML files
 toml-fmt:
@@ -578,6 +586,14 @@ bench-otlp-io *ARGS:
 # Run OTLP I/O benchmarks with fast local iteration settings.
 bench-otlp-io-fast *ARGS:
     cargo bench -p logfwd-bench --bench otlp_io -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
+
+# Run source metadata attachment benchmarks.
+bench-source-metadata *ARGS:
+    cargo bench -p logfwd-bench --bench source_metadata -- {{ARGS}}
+
+# Run source metadata attachment benchmarks with fast local iteration settings.
+bench-source-metadata-fast *ARGS:
+    cargo bench -p logfwd-bench --bench source_metadata -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
 
 # Profile OTLP decode/encode CPU with the normal allocator (flamegraph, per-mode timings).
 profile-otlp-io *ARGS:

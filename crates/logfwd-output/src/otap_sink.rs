@@ -568,7 +568,7 @@ mod tests {
         let err = generated_fast::decode_batch_arrow_records_generated_fast(&data).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
-    use arrow::array::{Int64Array, StringArray};
+    use arrow::array::{Array, Int64Array, StringArray, UInt64Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use logfwd_arrow::star_schema::{flat_to_star, star_to_flat};
     use logfwd_core::otlp::encode_varint_field;
@@ -1136,6 +1136,72 @@ mod tests {
         assert!(
             status_vals.contains(&"200") && status_vals.contains(&"OK"),
             "expected both coalesced status values (200 and OK), got: {status_vals:?}"
+        );
+    }
+
+    #[test]
+    fn internal_columns_are_not_encoded_as_log_attrs() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new("__source_id", DataType::UInt64, true),
+            Field::new("__typename", DataType::Utf8, true),
+            Field::new("file.path", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("request")])),
+                Arc::new(UInt64Array::from(vec![Some(7)])),
+                Arc::new(StringArray::from(vec![Some("LogEvent")])),
+                Arc::new(StringArray::from(vec![Some("/var/log/app.log")])),
+            ],
+        )
+        .expect("valid batch");
+        let config = Arc::new(OtapSinkConfig {
+            endpoint: "http://localhost:4317".to_string(),
+            compression: Compression::None,
+            headers: vec![],
+        });
+        let client = reqwest::Client::new();
+        let counter = Arc::new(AtomicI64::new(0));
+        let stats = Arc::new(ComponentStats::new());
+        let mut sink = OtapSink::new("test".to_string(), config, client, counter, stats);
+
+        sink.encode_batch(&batch).expect("encode_batch");
+
+        let (_, payloads, _) =
+            decode_batch_arrow_records(&sink.proto_buf).expect("decode_batch_arrow_records");
+        let log_attrs_ipc = payloads
+            .iter()
+            .find(|(_, ptype, _)| *ptype == ArrowPayloadType::LogAttrs as u32)
+            .map(|(_, _, ipc)| ipc)
+            .expect("LOG_ATTRS payload");
+        let log_attrs_batches = deserialize_ipc(log_attrs_ipc).expect("deserialize LOG_ATTRS");
+        let log_attrs = log_attrs_batches
+            .into_iter()
+            .next()
+            .expect("log_attrs batch");
+        let key_arr = log_attrs.column_by_name("key").expect("key column");
+        let key_str = key_arr
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("key is StringArray");
+        let keys: Vec<&str> = (0..key_arr.len())
+            .filter(|&i| !key_arr.is_null(i))
+            .map(|i| key_str.value(i))
+            .collect();
+
+        assert!(
+            !keys.contains(&"__source_id"),
+            "internal source id must not be exported as LOG_ATTRS: {keys:?}"
+        );
+        assert!(
+            keys.contains(&"file.path"),
+            "public source metadata columns remain regular output columns: {keys:?}"
+        );
+        assert!(
+            keys.contains(&"__typename"),
+            "user double-underscore columns must remain regular output columns: {keys:?}"
         );
     }
 
