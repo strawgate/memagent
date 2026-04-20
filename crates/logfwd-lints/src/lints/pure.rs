@@ -119,6 +119,7 @@ fn describe_side_effect<'tcx>(
 ) -> Option<String> {
     match &expr.kind {
         ExprKind::Call(callee, _) => impure_call(cx, callee),
+        ExprKind::MethodCall(..) => impure_method_call(cx, expr),
         ExprKind::Path(qpath) => static_mut_access(cx, qpath, expr.hir_id),
         _ => None,
     }
@@ -144,6 +145,24 @@ fn impure_call<'tcx>(cx: &LateContext<'tcx>, callee: &Expr<'tcx>) -> Option<Stri
                 .collect::<Vec<_>>()
                 .join("::");
             return Some(format!("call `{joined}`"));
+        }
+    }
+    None
+}
+
+/// Detect method calls (e.g. `reader.read(...)`, `rng.gen()`) that
+/// resolve to a side-effectful function based on their def-path.
+fn impure_method_call<'tcx>(cx: &LateContext<'tcx>, expr: &Expr<'tcx>) -> Option<String> {
+    let def_id = cx.typeck_results().type_dependent_def_id(expr.hir_id)?;
+    let path = cx.get_def_path(def_id);
+    for prefix in IMPURE_PREFIX_PATHS {
+        if path_starts_with(&path, prefix) {
+            let joined = path
+                .iter()
+                .map(|s| s.as_str().to_string())
+                .collect::<Vec<_>>()
+                .join("::");
+            return Some(format!("method call `{joined}`"));
         }
     }
     None
