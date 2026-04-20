@@ -1,6 +1,6 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Measure actual RSS (resident set size) at each pipeline stage.
-//! Run with: cargo run -p logfwd-bench --release --bin rss
+//! Run with: cargo run -p logfwd-bench --release --features bench-tools --bin rss
 
 use std::io::Write;
 
@@ -12,7 +12,7 @@ fn rss_mb() -> f64 {
     // macOS: use mach API via libc
     #[cfg(target_os = "macos")]
     {
-        use std::mem;
+        use std::mem::{self, size_of};
         // SAFETY: `zeroed()` is valid for `mach_task_basic_info_data_t`
         // (all-zero is a valid bit pattern for this plain-data struct).
         let mut info: libc::mach_task_basic_info_data_t = unsafe { mem::zeroed() };
