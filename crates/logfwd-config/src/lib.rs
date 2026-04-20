@@ -19,9 +19,7 @@ pub use serde_helpers::{PositiveMillis, PositiveSecs};
 
 #[cfg(test)]
 pub(crate) use env::expand_env_vars;
-pub use shared::{
-    BatchConfig, Compression, NetworkConfig, RetryConfig, TlsClientConfig, TlsServerConfig,
-};
+pub use shared::{TlsClientConfig, TlsServerConfig};
 pub use types::{
     ArrowIpcOutputConfig, ArrowIpcTypeConfig, AuthConfig, CompressionFormat, Config, ConfigError,
     CsvEnrichmentConfig, ElasticsearchOutputConfig, ElasticsearchRequestMode, EnrichmentConfig,
@@ -32,10 +30,10 @@ pub use types::{
     HttpTypeConfig, InputConfig, InputType, InputTypeConfig, JournaldBackendConfig,
     JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sPathConfig,
     LokiOutputConfig, NullOutputConfig, OtlpOutputConfig, OtlpProtobufDecodeModeConfig,
-    OtlpProtocol, OtlpTypeConfig, OutputConfig, OutputConfigV2, OutputType, ParquetOutputConfig,
-    PipelineConfig, S3InputConfig, S3TypeConfig, SensorTypeConfig, ServerConfig,
-    SocketOutputConfig, SourceMetadataStyle, StaticEnrichmentConfig, StdoutOutputConfig,
-    StorageConfig, TcpTypeConfig, UdpTypeConfig,
+    OtlpProtocol, OtlpTypeConfig, OutputConfigV2, OutputType, ParquetOutputConfig, PipelineConfig,
+    S3InputConfig, S3TypeConfig, SensorTypeConfig, ServerConfig, SocketOutputConfig,
+    SourceMetadataStyle, StaticEnrichmentConfig, StdoutOutputConfig, StorageConfig, TcpTypeConfig,
+    UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 
@@ -47,6 +45,13 @@ pub use validate::validate_host_port;
 mod tests {
     use super::*;
     use std::fs;
+
+    fn elasticsearch_request_mode(output: &OutputConfigV2) -> Option<ElasticsearchRequestMode> {
+        match output {
+            OutputConfigV2::Elasticsearch(config) => config.request_mode,
+            _ => None,
+        }
+    }
 
     #[test]
     fn simple_config() {
@@ -84,7 +89,7 @@ storage:
         assert!(pipe.transform.as_ref().unwrap().contains("SELECT"));
         assert_eq!(pipe.outputs[0].output_type(), OutputType::Otlp);
         assert_eq!(
-            pipe.outputs[0].compat_config().endpoint.as_deref(),
+            pipe.outputs[0].endpoint(),
             Some("http://otel-collector:4317")
         );
         assert_eq!(cfg.server.diagnostics.as_deref(), Some("0.0.0.0:9090"));
@@ -226,10 +231,7 @@ output:
 ";
         let cfg = Config::load_str(yaml).expect("env var substitution");
         let pipe = &cfg.pipelines["default"];
-        assert_eq!(
-            pipe.outputs[0].compat_config().endpoint.as_deref(),
-            Some("http://my-collector:4317")
-        );
+        assert_eq!(pipe.outputs[0].endpoint(), Some("http://my-collector:4317"));
         // SAFETY: this test is not run concurrently with other tests that
         // depend on the same environment variable.
         unsafe { std::env::remove_var("LOGFWD_TEST_ENDPOINT") };
@@ -1179,8 +1181,7 @@ output:
 "#;
         let cfg = Config::load_str(yaml).expect("auth bearer_token");
         let pipe = &cfg.pipelines["default"];
-        let output = pipe.outputs[0].compat_config();
-        let auth = output.auth.as_ref().expect("auth present");
+        let auth = pipe.outputs[0].auth().expect("auth present");
         assert_eq!(auth.bearer_token.as_deref(), Some("my-secret-token"));
         assert!(auth.headers.is_empty());
     }
@@ -1201,8 +1202,7 @@ output:
 "#;
         let cfg = Config::load_str(yaml).expect("auth custom headers");
         let pipe = &cfg.pipelines["default"];
-        let output = pipe.outputs[0].compat_config();
-        let auth = output.auth.as_ref().expect("auth present");
+        let auth = pipe.outputs[0].auth().expect("auth present");
         assert_eq!(auth.bearer_token, None);
         assert_eq!(
             auth.headers.get("X-API-Key").map(String::as_str),
@@ -1230,8 +1230,7 @@ output:
 "#;
         let cfg = Config::load_str(yaml).expect("auth env var bearer");
         let pipe = &cfg.pipelines["default"];
-        let output = pipe.outputs[0].compat_config();
-        let auth = output.auth.as_ref().expect("auth present");
+        let auth = pipe.outputs[0].auth().expect("auth present");
         assert_eq!(auth.bearer_token.as_deref(), Some("env-bearer-token"));
         // SAFETY: this test is not run concurrently with other tests that
         // depend on the same environment variable.
@@ -1250,7 +1249,7 @@ output:
 ";
         let cfg = Config::load_str(yaml).expect("no auth");
         let pipe = &cfg.pipelines["default"];
-        assert!(pipe.outputs[0].compat_config().auth.is_none());
+        assert!(pipe.outputs[0].auth().is_none());
     }
 
     #[test]
@@ -1267,7 +1266,7 @@ output:
         let cfg = Config::load_str(yaml).expect("streaming request_mode should validate");
         let pipe = &cfg.pipelines["default"];
         assert_eq!(
-            pipe.outputs[0].compat_config().request_mode,
+            elasticsearch_request_mode(&pipe.outputs[0]),
             Some(ElasticsearchRequestMode::Streaming)
         );
     }
@@ -1478,7 +1477,7 @@ output:
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("invalid output config"),
+            msg.contains("invalid type: unit value") && msg.contains("output.type"),
             "unquoted type: null must be rejected: {msg}"
         );
     }
@@ -1489,7 +1488,7 @@ output:
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("invalid output config"),
+            msg.contains("invalid type: unit value") && msg.contains("output.type"),
             "empty output type with endpoint must be rejected before it can become the null sink: {msg}"
         );
     }
@@ -1509,7 +1508,7 @@ pipelines:
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("invalid output config") || msg.contains("did not match"),
+            msg.contains("invalid type: unit value") && msg.contains("pipelines.app.outputs[0]"),
             "unquoted type: null in list must be rejected: {msg}"
         );
     }
@@ -1538,11 +1537,9 @@ output:
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("pipeline 'default' output '#0'"),
-            "error should include pipeline/output context: {msg}"
-        );
-        assert!(
-            msg.contains("null output does not support") && msg.contains("endpoint"),
+            msg.contains("unknown field `endpoint`")
+                && msg.contains("expected `name`")
+                && msg.contains("output"),
             "explicit null output with endpoint must be rejected: {msg}"
         );
     }
@@ -1573,13 +1570,9 @@ output:
             );
             let err = Config::load_str(&yaml).unwrap_err();
             let msg = err.to_string();
+            let unknown_field = format!("unknown field `{field}`");
             assert!(
-                msg.contains("pipeline 'default' output '#0'"),
-                "error should include pipeline/output context: {msg}"
-            );
-            let expected = format!("null output does not support '{field}'");
-            assert!(
-                msg.contains(&expected),
+                msg.contains(&unknown_field) && msg.contains("expected `name`"),
                 "explicit null output with {field} must be rejected: {msg}"
             );
         }
@@ -1602,9 +1595,7 @@ output:
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("invalid output config")
-                && msg.contains("missing")
-                && msg.contains("type"),
+            msg.contains("missing configuration field \"output.type\""),
             "missing output type must fail clearly: {msg}"
         );
     }
@@ -1615,7 +1606,7 @@ output:
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("invalid output config") && msg.contains("unknown variant ``"),
+            msg.contains("unknown variant ``") && msg.contains("output.type"),
             "empty-string output type must fail clearly: {msg}"
         );
     }
@@ -1628,7 +1619,7 @@ output:
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("invalid output config"),
+            msg.contains("invalid type: unit value") && msg.contains("output.type"),
             "null type field value must be rejected: {msg}"
         );
     }
@@ -3329,13 +3320,13 @@ format: json
         ];
 
         for (yaml, expected_type) in cases {
-            let v2 = serde_yaml_ng::from_str::<OutputConfigV2>(yaml).unwrap();
-            assert_eq!(OutputConfig::from(v2).output_type, expected_type);
+            let output = serde_yaml_ng::from_str::<OutputConfigV2>(yaml).unwrap();
+            assert_eq!(output.output_type(), expected_type);
         }
     }
 
     #[test]
-    fn example_outputs_parse_as_v2_and_normalize_equivalently() {
+    fn example_outputs_parse_as_v2() {
         use serde::Deserialize;
         use serde_yaml_ng::Value;
 
@@ -3354,16 +3345,9 @@ format: json
             let value: Value = serde_yaml_ng::from_str(&yaml)
                 .unwrap_or_else(|err| panic!("{} should parse as YAML: {err}", path.display()));
             for output_value in collect_output_values(&value) {
-                let v2 = OutputConfigV2::deserialize(output_value.clone()).unwrap_or_else(|err| {
+                OutputConfigV2::deserialize(output_value.clone()).unwrap_or_else(|err| {
                     panic!("{} output should parse as v2: {err}", path.display())
                 });
-                let flat = OutputConfig::deserialize(output_value.clone()).unwrap_or_else(|err| {
-                    panic!(
-                        "{} output should normalize to flat shape: {err}",
-                        path.display()
-                    )
-                });
-                assert_eq!(OutputConfig::from(v2), flat, "{}", path.display());
                 checked += 1;
             }
         }

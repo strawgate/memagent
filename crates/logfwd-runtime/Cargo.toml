@@ -35,6 +35,7 @@ logfwd-config = { version = "0.1.0", path = "../logfwd-config" }
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
 logfwd-diagnostics = { version = "0.1.0", path = "../logfwd-diagnostics" }
 logfwd-io = { version = "0.1.0", path = "../logfwd-io" }
+logfwd-lint-attrs = { version = "0.1.0", path = "../logfwd-lint-attrs" }
 logfwd-output = { version = "0.1.0", path = "../logfwd-output" }
 logfwd-transform = { version = "0.1.0", path = "../logfwd-transform", optional = true }
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }

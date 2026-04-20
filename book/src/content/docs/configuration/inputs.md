@@ -202,6 +202,10 @@ input:
     client_ca_file: /etc/logfwd/tls/clients-ca.pem
 ```
 
+`client_ca_file` enables client certificate verification and is accepted only
+when `require_client_auth: true` is set. Supplying a client CA without requiring
+client authentication is rejected at startup.
+
 ## OTLP
 
 Receive OTLP log records from another agent or SDK.

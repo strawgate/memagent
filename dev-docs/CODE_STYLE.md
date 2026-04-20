@@ -65,6 +65,11 @@ overrides — adjust the workspace config instead.
   crates (`logfwd-core`, `logfwd-types`). `logfwd-config` has ~280
   pre-existing schema-field gaps and is not yet gated on this; new
   public items must still carry doc comments by review.
+- **`clippy::await_holding_lock` and `clippy::await_holding_refcell_ref`**
+  are warn workspace-wide. A `MutexGuard` (or `RefCell` borrow) held
+  across `.await` leaks when the future is dropped. The dylint lint
+  `cancel_safe_no_lock_across_await` provides a scoped, author-asserted
+  version for functions marked `#[cancel_safe]`.
 - **`#[must_use]` discipline.** `clippy::let_underscore_future = deny`
   (silently dropping a future is always a bug).
   `clippy::return_self_not_must_use = warn` (builder-chain methods
@@ -108,17 +113,25 @@ verifying `.await` doesn't happen while holding a `Mutex` guard —
 clippy alone is insufficient. These live in `crates/logfwd-lints/` as
 a dylint library and are invoked via `just dylint`.
 
-| Lint | What it flags |
-|---|---|
-| `hot_path_no_alloc` | Heap allocation inside a function marked `#[logfwd_lint_attrs::hot_path]` (`Box::new`, `Vec::new`/`with_capacity`, `String::from`/`new`, `.to_string()`, `.to_vec()`, `.to_owned()`, `.clone()` on heap types, `.collect()` into owned containers, `Arc::new`, `Rc::new`, `HashMap`/`HashSet` allocation). |
+| Lint | Attribute | What it flags |
+|---|---|---|
+| `hot_path_no_alloc` | `#[hot_path]` | Heap allocation inside the tagged function — `Box::new`, `Vec::new`/`with_capacity`, `String::from`/`new`, `.to_string()`, `.to_vec()`, `.to_owned()`, `.clone()` on heap types, `.collect()` into owned containers, `Arc::new`, `Rc::new`, `HashMap`/`HashSet` allocation. |
+| `cancel_safe_no_lock_across_await` | `#[cancel_safe]` | Lock guard held across a `.await` point inside the tagged async function — `std::sync`/`parking_lot`/`tokio::sync` mutex & rwlock guards, `RefCell::borrow{,_mut}`. A dropped future (e.g., a losing `tokio::select!` branch) leaks the guard until the surrounding scope unwinds. |
+| `no_panic_in_body` | `#[no_panic]` | Direct panic sources inside the tagged function — `panic!`/`todo!`/`unimplemented!`/`unreachable!`/`assert*!` macros, `.unwrap()`/`.expect()`, slice/array indexing. Shallow check — does **not** trace calls. |
+
+The lints are complementary to the workspace-wide clippy restrictions
+`clippy::await_holding_lock` and `clippy::await_holding_refcell_ref`
+(both `warn`), which fire on every async function. `#[cancel_safe]`
+adds intent-declaration and reserves space for stricter future
+enforcement (e.g., cancel-unsafe-future reachability).
 
 The dylint library lives in its own isolated workspace
 (`crates/logfwd-lints/` is excluded from the main workspace because it
 pins a specific rustc nightly and links against `rustc-private` crates).
 The attribute crate (`logfwd-lint-attrs/`) IS in the main workspace —
 it's a regular proc-macro crate. See `crates/logfwd-lints/README.md`
-for installation and the roadmap for additional lints (`#[cancel_safe]`,
-`#[no_panic]`, `#[checkpoint_ordered]`).
+for installation and the roadmap for additional lints
+(`#[checkpoint_ordered]`, `#[owned_by_actor]`, MIR-based `cancel_safe`).
 
 ## Ownership and Types
 

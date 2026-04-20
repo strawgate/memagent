@@ -69,15 +69,16 @@ impl Sink for FileSink {
     ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
             self.output_buf.clear();
-            if let Err(e) = self
-                .serializer
-                .write_batch_to(batch, metadata, &mut self.output_buf)
-            {
-                return SendResult::from_io_error(e);
-            }
+            let lines_written =
+                match self
+                    .serializer
+                    .write_batch_to(batch, metadata, &mut self.output_buf)
+                {
+                    Ok(n) => n as u64,
+                    Err(e) => return SendResult::from_io_error(e),
+                };
 
             let bytes_written = self.output_buf.len() as u64;
-            let lines_written = memchr::memchr_iter(b'\n', &self.output_buf).count() as u64;
             let mut file = self.file.lock().await;
             if let Err(e) = file.write_all(&self.output_buf).await {
                 return SendResult::from_io_error(e);
