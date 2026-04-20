@@ -151,6 +151,9 @@ struct InputState {
     /// Source path snapshots for source IDs represented in `row_origins`.
     #[cfg_attr(feature = "turmoil", allow(dead_code))]
     source_paths: HashMap<SourceId, String>,
+    /// CRI metadata rows aligned to scanner-ready bytes currently in `buf`.
+    #[cfg_attr(feature = "turmoil", allow(dead_code))]
+    cri_metadata: logfwd_io::input::CriMetadata,
     /// Input metrics (used for parse/rotation/truncation observability).
     stats: Arc<ComponentStats>,
 }
@@ -223,6 +226,7 @@ impl Pipeline {
             buf: BytesMut::with_capacity(self.batch_target_bytes),
             row_origins: Vec::new(),
             source_paths: HashMap::new(),
+            cri_metadata: logfwd_io::input::CriMetadata::default(),
             stats,
         });
         // Keep input_transforms in sync: one transform per input.

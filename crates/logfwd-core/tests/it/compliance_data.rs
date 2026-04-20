@@ -167,18 +167,17 @@ fn get_struct_bool(batch: &RecordBatch, field: &str, row: usize) -> Option<bool>
 
 /// Assert that the named child field of a conflict StructArray column is null at `row`.
 fn assert_struct_child_null(batch: &RecordBatch, field: &str, child: &str, row: usize) {
-    if let Some(col) = batch.column_by_name(field) {
-        if let Some(sa) = col.as_any().downcast_ref::<StructArray>() {
-            if let Some(child_idx) = sa.fields().iter().position(|f| f.name() == child) {
-                let child_col = sa.column(child_idx);
-                assert!(
-                    child_col.is_null(row),
-                    "{field}.{child}[{row}] expected null, got non-null"
-                );
-            }
-            // Child not present is also acceptable.
-        }
+    if let Some(col) = batch.column_by_name(field)
+        && let Some(sa) = col.as_any().downcast_ref::<StructArray>()
+        && let Some(child_idx) = sa.fields().iter().position(|f| f.name() == child)
+    {
+        let child_col = sa.column(child_idx);
+        assert!(
+            child_col.is_null(row),
+            "{field}.{child}[{row}] expected null, got non-null"
+        );
     }
+    // Child not present is also acceptable.
     // Column not existing is also acceptable.
 }
 

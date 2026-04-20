@@ -246,7 +246,7 @@ pub fn skip_field(buf: &[u8], wire_type: u8, pos: usize) -> Result<usize, &'stat
         2 => {
             // Length-delimited.
             let (len, new_pos) = decode_varint(buf, pos)?;
-            let len_usize = usize::try_from(len).map_err(|_| "skip: length overflow")?;
+            let len_usize = usize::try_from(len).map_err(|_e| "skip: length overflow")?;
             let end = new_pos
                 .checked_add(len_usize)
                 .ok_or("skip: length-delimited overflow")?;

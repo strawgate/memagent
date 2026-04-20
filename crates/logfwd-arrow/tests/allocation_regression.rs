@@ -129,15 +129,11 @@ fn scanner_allocs_scale_linearly() {
     let data_5000 = make_ndjson(5000);
 
     let reg_s500 = Region::new(GLOBAL);
-    let _ = streaming
-        .scan(bytes::Bytes::from(data_500.clone()))
-        .unwrap();
+    let _ = streaming.scan(bytes::Bytes::from(data_500)).unwrap();
     let stats_s500 = reg_s500.change();
 
     let reg_s5000 = Region::new(GLOBAL);
-    let _ = streaming
-        .scan(bytes::Bytes::from(data_5000.clone()))
-        .unwrap();
+    let _ = streaming.scan(bytes::Bytes::from(data_5000)).unwrap();
     let stats_s5000 = reg_s5000.change();
 
     let streaming_ratio = stats_s5000.allocations as f64 / stats_s500.allocations.max(1) as f64;

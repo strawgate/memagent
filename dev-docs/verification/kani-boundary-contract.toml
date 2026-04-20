@@ -39,7 +39,7 @@ issue = 1437
 [[seams]]
 path = "crates/logfwd-io/src/format.rs"
 status = "required"
-reason = "Local CRI metadata injection and mode dispatch helpers are already Kani-targeted."
+reason = "Local CRI message extraction, sidecar metadata, and mode dispatch helpers are already Kani-targeted."
 issue = 1314
 
 [[seams]]
@@ -89,6 +89,11 @@ path = "crates/logfwd-io/src/tail/mod.rs"
 status = "recommended"
 reason = "Module shell gates tail-specific verification under #[cfg(kani)] and should stay aligned with the verification seam."
 issue = 1314
+
+[[seams]]
+path = "crates/logfwd-io/src/input.rs"
+status = "recommended"
+reason = "CRI metadata sidecar row-alignment helpers are bounded local state transitions inside the input abstraction."
 
 [[seams]]
 path = "crates/logfwd-io/src/tcp_input.rs"

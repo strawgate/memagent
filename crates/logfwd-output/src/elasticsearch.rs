@@ -331,8 +331,7 @@ impl ElasticsearchSink {
                     result
                         .permanent_errors
                         .first()
-                        .map(String::as_str)
-                        .unwrap_or("retryable item failure")
+                        .map_or("retryable item failure", String::as_str)
                 ),
             ));
         }
@@ -1159,7 +1158,7 @@ impl ElasticsearchSink {
         let next_capacity = chunk.capacity().max(min_capacity);
         let body = std::mem::replace(chunk, Vec::with_capacity(next_capacity));
         tx.blocking_send(Ok(body))
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "ES body receiver dropped"))
+            .map_err(|_e| io::Error::new(io::ErrorKind::BrokenPipe, "ES body receiver dropped"))
     }
 
     fn serialize_batch_streaming(
@@ -1572,10 +1571,8 @@ impl ElasticsearchSinkFactory {
         let client = client_builder.build().map_err(io::Error::other)?;
 
         let endpoint = endpoint.trim_end_matches('/').to_string();
-        let bulk_url = format!(
-            "{}/_bulk?filter_path=errors,took,items.*.error,items.*.status",
-            endpoint
-        );
+        let bulk_url =
+            format!("{endpoint}/_bulk?filter_path=errors,took,items.*.error,items.*.status");
 
         // Pre-compute the action line bytes once so serialize_batch doesn't have
         // to allocate a String on every call.
@@ -3316,6 +3313,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn streaming_bulk_partial_success_retries_only_transient_items() {
+        use crate::sink::Sink;
+
+        let mut server = mockito::Server::new_async().await;
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec![
+                "accepted-a",
+                "retry-me",
+                "accepted-b",
+            ]))],
+        )
+        .expect("test batch should be valid");
+        let metadata = zero_metadata();
+
+        let retry_body = streaming_body_for_test(
+            &batch.slice(1, 1),
+            &metadata,
+            test_es_config_with_mode(
+                &server.url(),
+                "logs",
+                usize::MAX,
+                ElasticsearchRequestMode::Streaming,
+            ),
+        )
+        .await;
+
+        let full_attempt = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::Regex("accepted-a".to_string()))
+            .with_status(200)
+            .with_body(
+                r#"{"took":1,"errors":true,"items":[{"index":{"status":201}},{"index":{"error":{"type":"es_rejected_execution_exception","reason":"too many requests"},"status":429}},{"index":{"status":201}}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let retry_subset = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::Exact(retry_body))
+            .with_status(200)
+            .with_body(r#"{"took":1,"errors":false,"items":[{"index":{"status":201}}]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut sink = ElasticsearchSink::new(
+            "test".to_string(),
+            test_es_config_with_mode(
+                &server.url(),
+                "logs",
+                usize::MAX,
+                ElasticsearchRequestMode::Streaming,
+            ),
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::default()),
+        );
+
+        let first = sink.send_batch(&batch, &metadata).await;
+        assert!(
+            matches!(first, crate::sink::SendResult::RetryAfter(_)),
+            "expected streaming subset retry after partial response, got {first:?}"
+        );
+        let second = sink.send_batch(&batch, &metadata).await;
+        assert!(
+            matches!(second, crate::sink::SendResult::Ok),
+            "expected streaming retry subset success, got {second:?}"
+        );
+
+        full_attempt.assert_async().await;
+        retry_subset.assert_async().await;
+    }
+
+    #[tokio::test]
     async fn bulk_mixed_permanent_and_transient_retries_then_rejects_permanent() {
         use crate::sink::Sink;
 
@@ -3542,12 +3615,26 @@ mod tests {
         index: &str,
         max_bulk_bytes: usize,
     ) -> Arc<ElasticsearchConfig> {
+        test_es_config_with_mode(
+            endpoint,
+            index,
+            max_bulk_bytes,
+            ElasticsearchRequestMode::Buffered,
+        )
+    }
+
+    fn test_es_config_with_mode(
+        endpoint: &str,
+        index: &str,
+        max_bulk_bytes: usize,
+        request_mode: ElasticsearchRequestMode,
+    ) -> Arc<ElasticsearchConfig> {
         let escaped_index = serde_json::to_string(index).expect("test index should serialize");
         Arc::new(ElasticsearchConfig {
             endpoint: endpoint.to_string(),
             headers: Vec::new(),
             compress: false,
-            request_mode: ElasticsearchRequestMode::Buffered,
+            request_mode,
             max_bulk_bytes,
             stream_chunk_bytes: 64 * 1024,
             bulk_url: format!(
@@ -3558,6 +3645,34 @@ mod tests {
                 .into_bytes()
                 .into_boxed_slice(),
         })
+    }
+
+    async fn streaming_body_for_test(
+        batch: &RecordBatch,
+        metadata: &BatchMetadata,
+        config: Arc<ElasticsearchConfig>,
+    ) -> String {
+        let (tx, mut rx) = mpsc::channel::<io::Result<Vec<u8>>>(16);
+        let producer_batch = batch.clone();
+        let producer_metadata = metadata.clone();
+        let producer = tokio::task::spawn_blocking(move || {
+            ElasticsearchSink::serialize_batch_streaming(
+                producer_batch,
+                producer_metadata,
+                config,
+                tx,
+                Arc::new(AtomicU64::new(0)),
+            )
+        });
+        let mut body = Vec::new();
+        while let Some(chunk) = rx.recv().await {
+            body.extend(chunk.expect("streaming chunk should be ok"));
+        }
+        producer
+            .await
+            .expect("streaming producer should not panic")
+            .expect("streaming test body should serialize");
+        String::from_utf8(body).expect("streaming body should be utf8")
     }
 }
 

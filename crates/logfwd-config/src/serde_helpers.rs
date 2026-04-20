@@ -508,7 +508,7 @@ macro_rules! impl_strict_unsigned {
                 where
                     E: DeError,
                 {
-                    value.try_into().map_err(|_| {
+                    value.try_into().map_err(|_e| {
                         E::invalid_value(Unexpected::Signed(value), &StrictScalarExpected::<Self>::new())
                     })
                 }
@@ -517,7 +517,7 @@ macro_rules! impl_strict_unsigned {
                 where
                     E: DeError,
                 {
-                    value.try_into().map_err(|_| {
+                    value.try_into().map_err(|_e| {
                         E::invalid_value(Unexpected::Unsigned(value), &StrictScalarExpected::<Self>::new())
                     })
                 }
@@ -545,7 +545,7 @@ macro_rules! impl_strict_signed {
                 where
                     E: DeError,
                 {
-                    value.try_into().map_err(|_| {
+                    value.try_into().map_err(|_e| {
                         E::invalid_value(Unexpected::Signed(value), &StrictScalarExpected::<Self>::new())
                     })
                 }
@@ -554,7 +554,7 @@ macro_rules! impl_strict_signed {
                 where
                     E: DeError,
                 {
-                    value.try_into().map_err(|_| {
+                    value.try_into().map_err(|_e| {
                         E::invalid_value(Unexpected::Unsigned(value), &StrictScalarExpected::<Self>::new())
                     })
                 }
@@ -661,7 +661,7 @@ impl StrictScalar for PositiveMillis {
     where
         E: DeError,
     {
-        let n: u64 = value.try_into().map_err(|_| {
+        let n: u64 = value.try_into().map_err(|_e| {
             E::invalid_value(Unexpected::Signed(value), &"a positive integer (> 0)")
         })?;
         NonZeroU64::new(n)
@@ -731,7 +731,7 @@ impl StrictScalar for PositiveSecs {
     where
         E: DeError,
     {
-        let n: u64 = value.try_into().map_err(|_| {
+        let n: u64 = value.try_into().map_err(|_e| {
             E::invalid_value(Unexpected::Signed(value), &"a positive integer (> 0)")
         })?;
         NonZeroU64::new(n)

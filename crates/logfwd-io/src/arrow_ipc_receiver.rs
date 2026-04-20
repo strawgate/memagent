@@ -181,27 +181,18 @@ impl ArrowIpcReceiver {
         let handle = std::thread::Builder::new()
             .name("arrow-ipc-receiver".into())
             .spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread()
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(_) => {
-                        store_health_event(&health_for_server, ReceiverHealthEvent::FatalFailure);
-                        return;
-                    }
+                else {
+                    store_health_event(&health_for_server, ReceiverHealthEvent::FatalFailure);
+                    return;
                 };
 
                 runtime.block_on(async move {
-                    let listener = match tokio::net::TcpListener::from_std(std_listener) {
-                        Ok(listener) => listener,
-                        Err(_) => {
-                            store_health_event(
-                                &health_for_server,
-                                ReceiverHealthEvent::FatalFailure,
-                            );
-                            return;
-                        }
+                    let Ok(listener) = tokio::net::TcpListener::from_std(std_listener) else {
+                        store_health_event(&health_for_server, ReceiverHealthEvent::FatalFailure);
+                        return;
                     };
 
                     let app = axum::Router::new()
@@ -341,7 +332,7 @@ fn record_parse_error(stats: Option<&Arc<ComponentStats>>) {
 
 /// Decompress zstd body with size limit.
 fn decompress_zstd(body: &[u8], max_message_size_bytes: usize) -> Result<Vec<u8>, InputError> {
-    let decoder = zstd::Decoder::new(body).map_err(|_| {
+    let decoder = zstd::Decoder::new(body).map_err(|_e| {
         InputError::Receiver("zstd decompression failed: invalid header".to_string())
     })?;
     let mut decompressed = Vec::with_capacity(body.len().min(max_message_size_bytes));
@@ -685,7 +676,7 @@ fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<ContentEncodingF
     let Some(value) = headers.get(CONTENT_ENCODING) else {
         return Ok(None);
     };
-    let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
+    let parsed = value.to_str().map_err(|_e| StatusCode::BAD_REQUEST)?;
     let mut flags = ContentEncodingFlags::default();
     let mut has_token = false;
     for token in parsed.split(',').map(str::trim) {
@@ -714,7 +705,7 @@ fn parse_content_type(headers: &HeaderMap) -> Result<Option<&str>, StatusCode> {
     let Some(value) = headers.get(CONTENT_TYPE) else {
         return Ok(None);
     };
-    let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
+    let parsed = value.to_str().map_err(|_e| StatusCode::BAD_REQUEST)?;
     let media_type = parsed.split(';').next().unwrap_or(parsed).trim();
     if media_type.is_empty() {
         return Err(StatusCode::BAD_REQUEST);

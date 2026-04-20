@@ -779,7 +779,7 @@ pub fn active_batch_to_span_point(id: u64, batch: &ActiveBatch, pipeline: &str) 
     pipeline.hash(&mut hasher);
     let pipeline_hash = hasher.finish();
 
-    let trace_id = format!("{:016x}{:016x}", pipeline_hash, id);
+    let trace_id = format!("{pipeline_hash:016x}{id:016x}");
     let span_id = format!("{:016x}", id ^ pipeline_hash);
 
     let mut attrs = vec![
@@ -904,8 +904,7 @@ pub fn sample_health_transitions<S: std::hash::BuildHasher>(
                 buf.push(LogPoint {
                     severity,
                     body: format!(
-                        "component '{}' ({}) health changed: {:?} -> {:?}",
-                        name, role, old_name, new_name,
+                        "component '{name}' ({role}) health changed: {old_name:?} -> {new_name:?}"
                     ),
                     attributes: vec![
                         ("pipeline", pm.name.clone()),

@@ -153,7 +153,7 @@ impl GrokUdf {
 
     fn get_or_compile_grok(&self, pattern: &str) -> DfResult<Arc<CompiledGrok>> {
         {
-            let mut cache = self.grok_cache.lock().map_err(|_| {
+            let mut cache = self.grok_cache.lock().map_err(|_e| {
                 datafusion::error::DataFusionError::Execution(
                     "grok() internal cache lock poisoned".to_string(),
                 )
@@ -168,7 +168,7 @@ impl GrokUdf {
                 datafusion::error::DataFusionError::Execution(format!("grok: {e}"))
             })?);
 
-        let mut cache = self.grok_cache.lock().map_err(|_| {
+        let mut cache = self.grok_cache.lock().map_err(|_e| {
             datafusion::error::DataFusionError::Execution(
                 "grok() internal cache lock poisoned".to_string(),
             )

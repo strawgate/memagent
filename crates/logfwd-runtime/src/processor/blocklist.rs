@@ -135,14 +135,11 @@ impl Processor for BlocklistProcessor {
         }
 
         // Locate the source column.
-        let col = match batch.column_by_name(&self.source_column) {
-            Some(c) => c,
-            None => {
-                return Err(ProcessorError::Permanent(format!(
-                    "blocklist: source column '{}' not found in batch",
-                    self.source_column
-                )));
-            }
+        let Some(col) = batch.column_by_name(&self.source_column) else {
+            return Err(ProcessorError::Permanent(format!(
+                "blocklist: source column '{}' not found in batch",
+                self.source_column
+            )));
         };
 
         let mut match_builder = BooleanBuilder::with_capacity(num_rows);

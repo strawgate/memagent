@@ -781,7 +781,7 @@ fn for_each_field<'a>(
             }
             2 => {
                 let len = usize::try_from(read_varint(&mut input)?)
-                    .map_err(|_| ProjectionError::Invalid("protobuf length exceeds usize"))?;
+                    .map_err(|_e| ProjectionError::Invalid("protobuf length exceeds usize"))?;
                 if input.len() < len {
                     return Err(ProjectionError::Invalid("truncated length-delimited field"));
                 }
@@ -822,7 +822,7 @@ fn decode_field_number(key: u64) -> Result<u32, ProjectionError> {
             "protobuf field number out of range",
         ));
     }
-    u32::try_from(field).map_err(|_| ProjectionError::Invalid("protobuf field number overflow"))
+    u32::try_from(field).map_err(|_e| ProjectionError::Invalid("protobuf field number overflow"))
 }
 
 const PROTOBUF_MAX_GROUP_DEPTH: usize = 64;
@@ -848,7 +848,7 @@ fn skip_group(input: &mut &[u8], start_field: u32) -> Result<(), ProjectionError
             }
             2 => {
                 let len = usize::try_from(read_varint(input)?)
-                    .map_err(|_| ProjectionError::Invalid("protobuf length exceeds usize"))?;
+                    .map_err(|_e| ProjectionError::Invalid("protobuf length exceeds usize"))?;
                 if input.len() < len {
                     return Err(ProjectionError::Invalid("truncated length-delimited field"));
                 }
@@ -2892,7 +2892,7 @@ mod tests {
         ) {
             let prost = crate::otlp_receiver::decode_protobuf_to_batch_prost_reference(&data);
             let fallback = crate::otlp_receiver::decode_protobuf_bytes_to_batch_projected_experimental(
-                Bytes::from(data.clone()),
+                Bytes::from(data),
             );
 
             match (prost, fallback) {
@@ -3012,7 +3012,7 @@ mod tests {
                                             0 => kv_string(&key, &format!("v-{row}-{attr_idx}")),
                                             1 => kv_i64(&key, row as i64 + attr_idx as i64),
                                             2 => kv_f64(&key, row as f64 + attr_idx as f64 / 10.0),
-                                            3 => kv_bool(&key, (row + attr_idx) % 2 == 0),
+                                            3 => kv_bool(&key, (row + attr_idx).is_multiple_of(2)),
                                             _ => kv_bytes(&key, &[row as u8, attr_idx as u8]),
                                         }
                                     })

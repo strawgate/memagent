@@ -524,7 +524,7 @@ mod tests {
 
         let schema = Arc::new(Schema::new(vec![Field::new(
             "point",
-            DataType::Struct(struct_fields.clone()),
+            DataType::Struct(struct_fields),
             true,
         )]));
         let batch =

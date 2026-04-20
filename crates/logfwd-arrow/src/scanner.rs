@@ -417,25 +417,23 @@ mod tests {
             ))
             .unwrap();
         // Single-type bool field: bare name
-        assert_eq!(
+        assert!(
             batch
                 .column_by_name("a")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<BooleanArray>()
                 .unwrap()
-                .value(0),
-            true
+                .value(0)
         );
-        assert_eq!(
-            batch
+        assert!(
+            !batch
                 .column_by_name("b")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<BooleanArray>()
                 .unwrap()
-                .value(0),
-            false
+                .value(0)
         );
     }
     #[test]
@@ -515,15 +513,14 @@ mod tests {
                 .to_vec(),
             ))
             .unwrap();
-        assert_eq!(
+        assert!(
             batch
                 .column_by_name("ok")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<BooleanArray>()
                 .unwrap()
-                .value(0),
-            true
+                .value(0)
         );
     }
     #[test]

@@ -341,7 +341,7 @@ impl S3Input {
         let health = Arc::new(AtomicU8::new(ComponentHealth::Healthy.as_repr()));
         let is_running = Arc::new(AtomicBool::new(true));
 
-        let thread_name = format!("s3-input-{}", name);
+        let thread_name = format!("s3-input-{name}");
         let health_bg = Arc::clone(&health);
         let is_running_bg = Arc::clone(&is_running);
         let name_bg = name.clone();
@@ -522,6 +522,7 @@ impl InputSource for S3Input {
                     bytes: payload.bytes,
                     source_id: Some(payload.source_id),
                     accounted_bytes: payload.accounted_bytes,
+                    cri_metadata: None,
                 });
             }
             if payload.is_eof {
