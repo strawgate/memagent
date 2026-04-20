@@ -90,6 +90,13 @@ pub(super) fn decode_otlp_protobuf_bytes_with_mode(
         OtlpProtobufDecodeMode::Prost => decode_otlp_protobuf_with_prost(&body, resource_prefix),
         #[cfg(any(feature = "otlp-research", test))]
         OtlpProtobufDecodeMode::ProjectedFallback => {
+            match super::projection::classify_projected_fallback_support(&body) {
+                Ok(()) => {}
+                Err(ProjectionError::Unsupported(_)) => {
+                    return decode_otlp_protobuf_with_prost(&body, resource_prefix);
+                }
+                Err(err) => return Err(InputError::Receiver(err.to_string())),
+            }
             match super::projection::decode_projected_otlp_logs_view_bytes(
                 body.clone(),
                 resource_prefix,
@@ -306,6 +313,11 @@ fn decode_otlp_logs_json(body: &[u8], resource_prefix: &str) -> Result<Vec<u8>, 
                     let parsed_flags = parse_protojson_i64(flags).ok_or_else(|| {
                         InputError::Receiver("invalid OTLP JSON flags: not a valid int64".into())
                     })?;
+                    if parsed_flags < 0 || parsed_flags > i64::from(u32::MAX) {
+                        return Err(InputError::Receiver(
+                            "invalid OTLP JSON flags: must be a uint32".into(),
+                        ));
+                    }
                     if parsed_flags > 0 {
                         write_json_key(&mut out, field_names::FLAGS);
                         write_i64_to_buf(&mut out, parsed_flags);

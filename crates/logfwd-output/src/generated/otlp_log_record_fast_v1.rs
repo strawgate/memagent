@@ -47,7 +47,7 @@ pub(super) fn encode_row_as_log_record_fast_v1(
         if arr.is_null(row) {
             severity_num as u64
         } else {
-            u64::try_from(arr.value(row)).unwrap_or(severity_num as u64)
+            u64::try_from(arr.value(row)).unwrap_or(0)
         }
     } else {
         severity_num as u64
