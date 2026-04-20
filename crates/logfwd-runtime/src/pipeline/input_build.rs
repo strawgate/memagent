@@ -1166,7 +1166,7 @@ mod tests {
             name: Some("tcp-in".to_string()),
             format: Some(Format::Json),
             sql: None,
-            source_metadata: false,
+            source_metadata: SourceMetadataStyle::None,
             type_config: InputTypeConfig::Tcp(logfwd_config::TcpTypeConfig {
                 listen: "127.0.0.1:0".to_string(),
                 tls: Some(logfwd_config::TlsInputConfig {

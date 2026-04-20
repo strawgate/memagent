@@ -1127,7 +1127,7 @@ output:
         let pipeline = cfg.pipelines.values().next().unwrap();
         let input = &pipeline.inputs[0];
         match &input.type_config {
-            crate::InputTypeConfig::LinuxEbpfSensor(s) => {
+            InputTypeConfig::LinuxEbpfSensor(s) => {
                 let sensor = s.sensor.as_ref().unwrap();
                 assert_eq!(
                     sensor.include_event_types.as_ref().unwrap(),

@@ -2750,7 +2750,7 @@ pipelines:
           cert_file: /tmp/server.crt
           key_file: /tmp/server.key
     outputs:
-      - type: null
+      - type: "null"
 "#;
         Config::load_str(yaml).expect("tcp tls cert+key should validate");
     }
@@ -2766,7 +2766,7 @@ pipelines:
         tls:
           cert_file: /tmp/server.crt
     outputs:
-      - type: null
+      - type: "null"
 "#;
         let err = Config::load_str(partial).unwrap_err().to_string();
         assert!(
@@ -2785,7 +2785,7 @@ pipelines:
           key_file: /tmp/server.key
           client_ca_file: /tmp/ca.crt
     outputs:
-      - type: null
+      - type: "null"
 "#;
         let err = Config::load_str(mtls).unwrap_err().to_string();
         assert!(
