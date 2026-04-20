@@ -3,6 +3,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use arrow::array::UInt32Array;
+use arrow::compute;
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
 
@@ -49,6 +51,34 @@ pub struct ElasticsearchSink {
     name: String,
     pub(crate) batch_buf: Vec<u8>,
     stats: Arc<ComponentStats>,
+    pending_retry_rows: Option<Vec<u32>>,
+    pending_rejections: Vec<String>,
+}
+
+#[derive(Default)]
+struct BulkItemResult {
+    retry_items: Vec<usize>,
+    permanent_errors: Vec<String>,
+    item_count: usize,
+}
+
+enum SendAttempt {
+    Ok,
+    Rejected {
+        rejections: Vec<String>,
+        accepted_rows: usize,
+    },
+    RetryAfter {
+        pending_rows: Vec<u32>,
+        rejections: Vec<String>,
+        accepted_rows: usize,
+        delay: Duration,
+    },
+    IoError {
+        pending_rows: Vec<u32>,
+        rejections: Vec<String>,
+        error: io::Error,
+    },
 }
 
 impl ElasticsearchSink {
@@ -67,6 +97,8 @@ impl ElasticsearchSink {
             // send_batch_inner after each send).
             batch_buf: Vec::with_capacity(64 * 1024),
             stats,
+            pending_retry_rows: None,
+            pending_rejections: Vec::new(),
         }
     }
 
@@ -177,22 +209,12 @@ impl ElasticsearchSink {
         std::str::from_utf8(&rest[..end]).ok()?.parse().ok()
     }
 
-    /// Parse the ES bulk API response body for per-document errors.
+    /// Parse the ES bulk API response body for per-document outcomes.
     ///
-    /// Returns `Ok(())` if all documents succeeded (`errors: false`), or
-    /// an `Err` with the first failure's type and reason.
-    ///
-    /// **Duplication safety (#1880):** The parser scans ALL items rather than
-    /// stopping at the first error. When some items succeeded and others
-    /// failed, it returns `InvalidData` (permanent) to prevent the worker
-    /// pool from retrying the full batch and duplicating already-accepted
-    /// rows.
-    ///
-    /// Error kinds:
-    /// - `Other`: ALL items failed with retryable errors (429/5xx) — safe to retry the whole batch
-    /// - `InvalidData`: mixed success/failure, all-permanent failures, or structural anomalies —
-    ///   maps to `Rejected` in the caller so the worker pool does not retry
-    fn parse_bulk_response(body: &[u8]) -> io::Result<()> {
+    /// The hot success path only deserializes the top-level `errors` flag.
+    /// Full `items` parsing happens only for `errors:true`, where row-level
+    /// retry/reject state is needed to avoid resending already accepted rows.
+    fn parse_bulk_response_detailed(body: &[u8]) -> io::Result<BulkItemResult> {
         #[derive(serde::Deserialize)]
         struct BulkHeader {
             errors: bool,
@@ -203,7 +225,7 @@ impl ElasticsearchSink {
         })?;
 
         if !header.errors {
-            return Ok(());
+            return Ok(BulkItemResult::default());
         }
 
         // Only do full parse on the error path to avoid hot-path allocations.
@@ -221,17 +243,12 @@ impl ElasticsearchSink {
             ));
         }
 
-        // Scan ALL items to count succeeded vs failed, rather than stopping at
-        // the first error. This is critical to prevent duplication (#1880):
-        // if some items succeeded and others failed, we must NOT return a
-        // retryable error (which would cause the worker pool to retry
-        // already-accepted rows).
-        let mut succeeded: usize = 0;
-        let mut retryable_failures: usize = 0;
-        let mut permanent_failures: usize = 0;
-        let mut first_error_msg: Option<String> = None;
+        let mut result = BulkItemResult {
+            item_count: items.len(),
+            ..BulkItemResult::default()
+        };
 
-        for item in items {
+        for (idx, item) in items.iter().enumerate() {
             let action = item
                 .as_object()
                 .and_then(|obj| obj.values().next())
@@ -244,13 +261,7 @@ impl ElasticsearchSink {
                         io::Error::other("ES bulk response item missing numeric status field")
                     })?;
 
-                if status < 300 {
-                    succeeded += 1;
-                    continue;
-                }
-
-                // Build error message from the item.
-                let error_detail = if let Some(error) = action_obj.get("error") {
+                if let Some(error) = action_obj.get("error") {
                     let error_type = error
                         .get("type")
                         .and_then(serde_json::Value::as_str)
@@ -259,66 +270,212 @@ impl ElasticsearchSink {
                         .get("reason")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("no reason provided");
-                    format!("(status {status}): {error_type}: {reason}")
-                } else {
-                    format!("(status {status}): missing item error details")
-                };
-
-                if status == 429 || (500..600).contains(&status) {
-                    retryable_failures += 1;
-                } else {
-                    permanent_failures += 1;
+                    if status == 429 || (500..600).contains(&status) {
+                        result.retry_items.push(idx);
+                        continue;
+                    }
+                    result.permanent_errors.push(format!(
+                        "item {idx}: ES bulk error (status {status}): {error_type}: {reason}"
+                    ));
+                    continue;
                 }
 
-                if first_error_msg.is_none() {
-                    first_error_msg = Some(error_detail);
+                // Some ES responses include only `status` for failed items. Preserve
+                // retry semantics for retryable status-only failures.
+                if status == 429 || (500..600).contains(&status) {
+                    result.retry_items.push(idx);
+                    continue;
+                }
+                if status >= 400 {
+                    result.permanent_errors.push(format!(
+                        "item {idx}: ES bulk error (status {status}): missing item error details"
+                    ));
+                } else if status >= 300 {
+                    result.permanent_errors.push(format!(
+                        "item {idx}: unexpected ES bulk item status {status}"
+                    ));
                 }
             }
         }
 
-        // Determine outcome based on the full picture of all items.
-        let first_error = first_error_msg.unwrap_or_default();
+        if result.retry_items.is_empty() && result.permanent_errors.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ES bulk response indicated errors but no error details found in items",
+            ));
+        }
 
-        if succeeded > 0 && (retryable_failures > 0 || permanent_failures > 0) {
-            // MIXED: some items were accepted, others failed. Return InvalidData
-            // (permanent) to prevent the worker pool from retrying the full batch
-            // and duplicating the {succeeded} already-delivered rows (#1880).
+        Ok(result)
+    }
+
+    /// Compatibility wrapper used by tests that only need coarse error classification.
+    #[cfg(test)]
+    fn parse_bulk_response(body: &[u8]) -> io::Result<()> {
+        let result = Self::parse_bulk_response_detailed(body)?;
+        let failed = result
+            .retry_items
+            .len()
+            .saturating_add(result.permanent_errors.len());
+        let succeeded = result.item_count.saturating_sub(failed);
+
+        if succeeded > 0 && failed > 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
                     "ES bulk partial failure: {succeeded} succeeded, \
-                     {retryable_failures} retryable, {permanent_failures} rejected; \
+                     {} retryable, {} rejected; \
                      not retrying to prevent duplication of {succeeded} delivered rows. \
-                     First error: {first_error}"
+                     First error: {}",
+                    result.retry_items.len(),
+                    result.permanent_errors.len(),
+                    result
+                        .permanent_errors
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("retryable item failure")
                 ),
             ));
         }
 
-        if retryable_failures > 0 && permanent_failures == 0 {
-            // ALL items failed with retryable errors — safe to retry the full batch.
+        if !result.retry_items.is_empty() && result.permanent_errors.is_empty() {
             return Err(io::Error::other(format!(
-                "ES bulk transient error: all {retryable_failures} items failed. \
-                 First error: {first_error}"
+                "ES bulk transient error: all {} items failed",
+                result.retry_items.len()
             )));
         }
 
-        if permanent_failures > 0 {
-            // All items failed with permanent errors — do not retry.
+        if !result.permanent_errors.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
-                    "ES bulk error: all {permanent_failures} items rejected. \
-                     First error: {first_error}"
+                    "ES bulk error: all {} items rejected. First error: {}",
+                    result.permanent_errors.len(),
+                    result.permanent_errors.join("; ")
                 ),
             ));
         }
 
-        // errors: true but no specific error found in items — treat as failure rather
-        // than silently returning Ok (which would cause data loss by masking the error).
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "ES bulk response indicated errors but no error details found in items",
-        ))
+        Ok(())
+    }
+
+    fn parse_success_item_count(body: &[u8]) -> io::Result<Option<usize>> {
+        #[derive(serde::Deserialize)]
+        struct BulkResponseItems {
+            errors: bool,
+            items: Option<Vec<serde_json::Value>>,
+        }
+
+        let response: BulkResponseItems = serde_json::from_slice(body).map_err(|e| {
+            io::Error::other(format!("failed to parse ES bulk response items: {e}"))
+        })?;
+        if response.errors {
+            return Ok(None);
+        }
+        Ok(response.items.map(|items| items.len()))
+    }
+
+    fn project_batch_rows(batch: &RecordBatch, row_ids: &[u32]) -> io::Result<RecordBatch> {
+        if row_ids.len() == batch.num_rows()
+            && row_ids
+                .iter()
+                .enumerate()
+                .all(|(idx, row_id)| *row_id as usize == idx)
+        {
+            return Ok(batch.clone());
+        }
+
+        if let Some(row_id) = row_ids
+            .iter()
+            .copied()
+            .find(|row_id| *row_id as usize >= batch.num_rows())
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "projected Elasticsearch retry row id {row_id} out of bounds for {} rows",
+                    batch.num_rows()
+                ),
+            ));
+        }
+
+        let indices = UInt32Array::from(row_ids.to_vec());
+        let columns = batch
+            .columns()
+            .iter()
+            .map(|column| compute::take(column.as_ref(), &indices, None).map_err(io::Error::other))
+            .collect::<io::Result<Vec<_>>>()?;
+        RecordBatch::try_new(batch.schema(), columns).map_err(io::Error::other)
+    }
+
+    fn record_accepted_rows(&self, row_count: usize, payload_len: usize) {
+        if row_count == 0 {
+            return;
+        }
+        self.stats.inc_lines(row_count as u64);
+        self.stats.inc_bytes(payload_len as u64);
+    }
+
+    fn record_accepted_partial_rows(
+        &self,
+        accepted_rows: usize,
+        total_rows: usize,
+        payload_len: usize,
+    ) {
+        if accepted_rows == 0 || total_rows == 0 {
+            return;
+        }
+        let accepted_bytes = payload_len.saturating_mul(accepted_rows) / total_rows;
+        self.record_accepted_rows(accepted_rows, accepted_bytes);
+    }
+
+    fn finish_success_or_reject(rejections: Vec<String>) -> super::sink::SendResult {
+        if rejections.is_empty() {
+            super::sink::SendResult::Ok
+        } else {
+            super::sink::SendResult::Rejected(rejections.join("; "))
+        }
+    }
+
+    fn bulk_attempt_from_result(row_ids: Vec<u32>, result: BulkItemResult) -> SendAttempt {
+        if result.retry_items.is_empty() && result.permanent_errors.is_empty() {
+            return SendAttempt::Ok;
+        }
+
+        if result.item_count != row_ids.len() {
+            return SendAttempt::Rejected {
+                rejections: vec![format!(
+                    "ES bulk response item count mismatch: {} response items for {} attempted rows",
+                    result.item_count,
+                    row_ids.len()
+                )],
+                accepted_rows: 0,
+            };
+        }
+
+        let failed_rows = result
+            .retry_items
+            .len()
+            .saturating_add(result.permanent_errors.len());
+        let accepted_rows = result.item_count.saturating_sub(failed_rows);
+
+        if result.retry_items.is_empty() {
+            return SendAttempt::Rejected {
+                rejections: result.permanent_errors,
+                accepted_rows,
+            };
+        }
+
+        let pending_rows = result
+            .retry_items
+            .into_iter()
+            .map(|idx| row_ids[idx])
+            .collect();
+        SendAttempt::RetryAfter {
+            pending_rows,
+            rejections: result.permanent_errors,
+            accepted_rows,
+            delay: Self::ITEM_RETRY_DELAY,
+        }
     }
 
     /// Query Elasticsearch using ES|QL and receive Arrow IPC response.
@@ -365,37 +522,55 @@ impl ElasticsearchSink {
         &'a mut self,
         batch: &'a RecordBatch,
         metadata: &'a BatchMetadata,
+        row_ids: Vec<u32>,
         depth: usize,
-    ) -> std::pin::Pin<Box<dyn Future<Output = io::Result<super::sink::SendResult>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<Box<dyn Future<Output = SendAttempt> + Send + 'a>> {
         Box::pin(async move {
             const MAX_SPLIT_DEPTH: usize = 6; // up to 64 sub-batches
 
-            let n = batch.num_rows();
+            let n = row_ids.len();
             if n == 0 {
-                return Ok(super::sink::SendResult::Ok);
+                return SendAttempt::Ok;
             }
 
             if self.config.request_mode == ElasticsearchRequestMode::Streaming {
-                return match self
-                    .do_send_streaming(batch.clone(), metadata.clone())
-                    .await
+                let attempt = self
+                    .do_send_streaming(batch.clone(), metadata.clone(), row_ids.clone())
+                    .await;
+                if let SendAttempt::IoError { error, .. } = &attempt
+                    && error.kind() == io::ErrorKind::InvalidInput
+                    && n > 1
+                    && depth < MAX_SPLIT_DEPTH
                 {
-                    Ok(result) => Ok(result),
-                    Err(e)
-                        if e.kind() == io::ErrorKind::InvalidInput
-                            && n > 1
-                            && depth < MAX_SPLIT_DEPTH =>
-                    {
-                        self.send_split_halves(batch, metadata, depth).await
-                    }
-                    Err(e) => Err(e),
-                };
+                    return self
+                        .send_split_halves(batch, metadata, row_ids, depth)
+                        .await;
+                }
+                return attempt;
             }
 
-            self.serialize_batch(batch, metadata)?;
+            if let Err(error) = self.serialize_batch(batch, metadata) {
+                return match super::sink::SendResult::from_io_error(error) {
+                    super::sink::SendResult::Rejected(reason) => SendAttempt::Rejected {
+                        rejections: vec![reason],
+                        accepted_rows: 0,
+                    },
+                    super::sink::SendResult::IoError(error) => SendAttempt::IoError {
+                        pending_rows: row_ids,
+                        rejections: Vec::new(),
+                        error,
+                    },
+                    super::sink::SendResult::RetryAfter(delay) => SendAttempt::RetryAfter {
+                        pending_rows: row_ids,
+                        rejections: Vec::new(),
+                        accepted_rows: 0,
+                        delay,
+                    },
+                    super::sink::SendResult::Ok => SendAttempt::Ok,
+                };
+            }
             if self.batch_buf.is_empty() {
-                return Ok(super::sink::SendResult::Ok);
+                return SendAttempt::Ok;
             }
 
             let payload_len = self.batch_buf.len();
@@ -409,13 +584,18 @@ impl ElasticsearchSink {
             if payload_len > max_bytes {
                 if n > 1 && depth < MAX_SPLIT_DEPTH {
                     self.batch_buf.clear(); // discard oversized payload
-                    return self.send_split_halves(batch, metadata, depth).await;
+                    return self
+                        .send_split_halves(batch, metadata, row_ids, depth)
+                        .await;
                 }
                 // Row is too large to fit in a single bulk request even on its own.
-                return Ok(super::sink::SendResult::Rejected(format!(
-                    "single-row batch ({} bytes) exceeds max_bulk_bytes ({})",
-                    payload_len, max_bytes
-                )));
+                return SendAttempt::Rejected {
+                    rejections: vec![format!(
+                        "single-row batch ({} bytes) exceeds max_bulk_bytes ({})",
+                        payload_len, max_bytes
+                    )],
+                    accepted_rows: 0,
+                };
             }
 
             // Move the serialized payload out of batch_buf so we can pass it to
@@ -423,75 +603,34 @@ impl ElasticsearchSink {
             // (zero capacity, no allocation).  After do_send we restore capacity so
             // the next serialize_batch call doesn't have to grow from scratch.
             let body = std::mem::take(&mut self.batch_buf);
-            let row_count = n as u64;
+            let attempt = self.do_send(body, row_ids.clone()).await;
+            self.batch_buf.reserve(prev_cap);
 
-            match self.do_send(body).await {
-                Ok(result) => {
-                    // Restore warm capacity so the next serialize_batch avoids
-                    // repeated small-step growth.
-                    self.batch_buf.reserve(prev_cap);
-                    if matches!(result, super::sink::SendResult::Ok) {
-                        self.stats.inc_lines(row_count);
-                        self.stats.inc_bytes(payload_len as u64);
-                    }
-                    Ok(result)
+            match attempt {
+                SendAttempt::Ok => {
+                    self.record_accepted_rows(n, payload_len);
+                    SendAttempt::Ok
+                }
+                attempt @ SendAttempt::RetryAfter { accepted_rows, .. }
+                | attempt @ SendAttempt::Rejected { accepted_rows, .. } => {
+                    self.record_accepted_partial_rows(accepted_rows, n, payload_len);
+                    attempt
                 }
                 // Reactive split on 413 — server limit lower than our max_bulk_bytes.
-                Err(e)
-                    if e.kind() == io::ErrorKind::InvalidInput
+                SendAttempt::IoError { error, .. }
+                    if error.kind() == io::ErrorKind::InvalidInput
                         && n > 1
                         && depth < MAX_SPLIT_DEPTH =>
                 {
-                    self.batch_buf.reserve(prev_cap);
-                    self.send_split_halves(batch, metadata, depth).await
+                    self.send_split_halves(batch, metadata, row_ids, depth)
+                        .await
                 }
-                Err(e) => {
-                    self.batch_buf.reserve(prev_cap);
-                    Err(e)
-                }
+                attempt @ SendAttempt::IoError { .. } => attempt,
             }
         })
     }
 
-    /// Maximum internal retries for a split half when the other half already
-    /// succeeded. Keeps the retry window short — if the transient failure
-    /// persists, we return `Rejected` to prevent the worker pool from
-    /// retrying the full batch and duplicating the successful half.
-    const SPLIT_INTERNAL_RETRIES: usize = 2;
-
-    /// Base delay between internal split-half retries (doubles each attempt).
-    const SPLIT_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
-
-    /// Retry a failed split half internally up to `SPLIT_INTERNAL_RETRIES`
-    /// times with exponential backoff. Used when the other half already
-    /// succeeded, so we cannot let the worker pool retry the full batch.
-    async fn retry_split_half(
-        &mut self,
-        half: &RecordBatch,
-        metadata: &BatchMetadata,
-        depth: usize,
-    ) -> io::Result<super::sink::SendResult> {
-        let mut delay = Self::SPLIT_RETRY_BASE_DELAY;
-        for _ in 0..Self::SPLIT_INTERNAL_RETRIES {
-            tokio::time::sleep(delay).await;
-            delay *= 2;
-            let result = Self::classify_split_result(
-                self.send_batch_inner(half, metadata, depth + 1).await,
-            )?;
-            match result {
-                super::sink::SendResult::Ok | super::sink::SendResult::Rejected(_) => {
-                    return Ok(result);
-                }
-                super::sink::SendResult::IoError(_) | super::sink::SendResult::RetryAfter(_) => {
-                    // Continue retrying.
-                }
-            }
-        }
-        // Exhausted internal retries — the half is still failing.
-        Ok(super::sink::SendResult::Rejected(
-            "elasticsearch: split half failed after internal retries".to_string(),
-        ))
-    }
+    const ITEM_RETRY_DELAY: Duration = Duration::from_millis(250);
 
     /// Split a batch in half and send each half sequentially.
     ///
@@ -505,83 +644,296 @@ impl ElasticsearchSink {
         &mut self,
         batch: &RecordBatch,
         metadata: &BatchMetadata,
+        row_ids: Vec<u32>,
         depth: usize,
-    ) -> io::Result<super::sink::SendResult> {
-        let n = batch.num_rows();
+    ) -> SendAttempt {
+        let n = row_ids.len();
         let mid = n / 2;
         let left = batch.slice(0, mid);
         let right = batch.slice(mid, n - mid);
+        let left_rows = row_ids[..mid].to_vec();
+        let right_rows = row_ids[mid..].to_vec();
 
-        // Always send left half first.
-        let left_result =
-            Self::classify_split_result(self.send_batch_inner(&left, metadata, depth + 1).await)?;
-        let left_ok = matches!(left_result, super::sink::SendResult::Ok);
+        let left_result = self
+            .send_batch_inner(&left, metadata, left_rows, depth + 1)
+            .await;
 
-        // Always send right half, even if left failed (#1873).
-        let right_result =
-            Self::classify_split_result(self.send_batch_inner(&right, metadata, depth + 1).await)?;
-        let right_ok = matches!(right_result, super::sink::SendResult::Ok);
+        match left_result {
+            SendAttempt::Ok => {
+                let right_result = self
+                    .send_batch_inner(&right, metadata, right_rows, depth + 1)
+                    .await;
+                Self::merge_split_attempts(
+                    SendAttempt::Ok,
+                    Self::label_attempt_rejections("right split rejected", right_result),
+                )
+            }
+            SendAttempt::Rejected {
+                rejections,
+                accepted_rows,
+            } => {
+                let right_result = self
+                    .send_batch_inner(&right, metadata, right_rows, depth + 1)
+                    .await;
+                Self::merge_split_attempts(
+                    SendAttempt::Rejected {
+                        rejections: Self::prefix_rejections("left split rejected", rejections),
+                        accepted_rows,
+                    },
+                    Self::label_attempt_rejections("right split rejected", right_result),
+                )
+            }
+            SendAttempt::RetryAfter {
+                mut pending_rows,
+                rejections,
+                accepted_rows,
+                delay,
+            } => {
+                pending_rows.extend(right_rows);
+                SendAttempt::RetryAfter {
+                    pending_rows,
+                    rejections,
+                    accepted_rows,
+                    delay,
+                }
+            }
+            SendAttempt::IoError {
+                mut pending_rows,
+                rejections,
+                error,
+            } => {
+                pending_rows.extend(right_rows);
+                SendAttempt::IoError {
+                    pending_rows,
+                    rejections,
+                    error,
+                }
+            }
+        }
+    }
 
-        // When one half succeeded and the other failed transiently, retry the
-        // failed half internally rather than bubbling a retryable result to the
-        // worker pool (which would re-send the successful half).
-        let is_retryable = |r: &super::sink::SendResult| {
-            matches!(
-                r,
-                super::sink::SendResult::IoError(_) | super::sink::SendResult::RetryAfter(_)
+    fn prefix_rejections(prefix: &str, rejections: Vec<String>) -> Vec<String> {
+        rejections
+            .into_iter()
+            .map(|rejection| format!("{prefix}: {rejection}"))
+            .collect()
+    }
+
+    fn label_attempt_rejections(prefix: &str, attempt: SendAttempt) -> SendAttempt {
+        match attempt {
+            SendAttempt::Rejected {
+                rejections,
+                accepted_rows,
+            } => SendAttempt::Rejected {
+                rejections: Self::prefix_rejections(prefix, rejections),
+                accepted_rows,
+            },
+            SendAttempt::RetryAfter {
+                pending_rows,
+                rejections,
+                accepted_rows,
+                delay,
+            } => SendAttempt::RetryAfter {
+                pending_rows,
+                rejections: Self::prefix_rejections(prefix, rejections),
+                accepted_rows,
+                delay,
+            },
+            SendAttempt::IoError {
+                pending_rows,
+                rejections,
+                error,
+            } => SendAttempt::IoError {
+                pending_rows,
+                rejections: Self::prefix_rejections(prefix, rejections),
+                error,
+            },
+            ok @ SendAttempt::Ok => ok,
+        }
+    }
+
+    fn merge_split_attempts(left: SendAttempt, right: SendAttempt) -> SendAttempt {
+        match (left, right) {
+            (SendAttempt::Ok, SendAttempt::Ok) => SendAttempt::Ok,
+            (
+                SendAttempt::Rejected {
+                    rejections: mut left,
+                    accepted_rows,
+                },
+                SendAttempt::Rejected {
+                    rejections: right,
+                    accepted_rows: right_accepted,
+                },
+            ) => {
+                left.extend(right);
+                SendAttempt::Rejected {
+                    rejections: left,
+                    accepted_rows: accepted_rows.saturating_add(right_accepted),
+                }
+            }
+            (attempt @ SendAttempt::Rejected { .. }, SendAttempt::Ok)
+            | (SendAttempt::Ok, attempt @ SendAttempt::Rejected { .. }) => attempt,
+            (
+                SendAttempt::RetryAfter {
+                    pending_rows,
+                    mut rejections,
+                    accepted_rows,
+                    delay,
+                },
+                SendAttempt::Rejected {
+                    rejections: right_rejections,
+                    accepted_rows: right_accepted,
+                },
             )
-        };
-
-        match (left_ok, right_ok) {
-            (true, true) => Ok(super::sink::SendResult::Ok),
-            (true, false) if is_retryable(&right_result) => {
-                // Left succeeded, right failed transiently — retry right internally.
-                tracing::warn!(
-                    left_rows = mid,
-                    right_rows = n - mid,
-                    "elasticsearch: left split half delivered, right failed transiently; \
-                     retrying right half internally to prevent duplication"
-                );
-                let right_retry = self.retry_split_half(&right, metadata, depth).await?;
-                if right_retry.is_ok() {
-                    Ok(super::sink::SendResult::Ok)
-                } else {
-                    // Right exhausted retries. Return Rejected to prevent the
-                    // worker pool from retrying the full batch.
-                    Ok(super::sink::SendResult::Rejected(format!(
-                        "elasticsearch: right split half failed after internal retry; \
-                         left half ({mid} rows) was delivered successfully, \
-                         right half ({} rows) could not be delivered",
-                        n - mid
-                    )))
+            | (
+                SendAttempt::Rejected {
+                    rejections: right_rejections,
+                    accepted_rows: right_accepted,
+                },
+                SendAttempt::RetryAfter {
+                    pending_rows,
+                    mut rejections,
+                    accepted_rows,
+                    delay,
+                },
+            ) => {
+                rejections.extend(right_rejections);
+                SendAttempt::RetryAfter {
+                    pending_rows,
+                    rejections,
+                    accepted_rows: accepted_rows.saturating_add(right_accepted),
+                    delay,
                 }
             }
-            (false, true) if is_retryable(&left_result) => {
-                // Right succeeded, left failed transiently — retry left internally.
-                tracing::warn!(
-                    left_rows = mid,
-                    right_rows = n - mid,
-                    "elasticsearch: right split half delivered, left failed transiently; \
-                     retrying left half internally to prevent duplication"
-                );
-                let left_retry = self.retry_split_half(&left, metadata, depth).await?;
-                if left_retry.is_ok() {
-                    Ok(super::sink::SendResult::Ok)
-                } else {
-                    Ok(super::sink::SendResult::Rejected(format!(
-                        "elasticsearch: left split half failed after internal retry; \
-                         right half ({} rows) was delivered successfully, \
-                         left half ({mid} rows) could not be delivered",
-                        n - mid
-                    )))
+            (
+                SendAttempt::RetryAfter {
+                    mut pending_rows,
+                    mut rejections,
+                    accepted_rows,
+                    delay,
+                },
+                SendAttempt::RetryAfter {
+                    pending_rows: right_rows,
+                    rejections: right_rejections,
+                    accepted_rows: right_accepted,
+                    delay: right_delay,
+                },
+            ) => {
+                pending_rows.extend(right_rows);
+                rejections.extend(right_rejections);
+                SendAttempt::RetryAfter {
+                    pending_rows,
+                    rejections,
+                    accepted_rows: accepted_rows.saturating_add(right_accepted),
+                    delay: delay.max(right_delay),
                 }
             }
-            _ => {
-                // Both failed, or one succeeded and other was permanently rejected.
-                // For the both-failed case: safe to propagate retryable since no
-                // rows were delivered. For permanent rejections: merge normally.
-                Ok(Self::merge_split_send_results(left_result, right_result))
+            (
+                SendAttempt::IoError {
+                    mut pending_rows,
+                    mut rejections,
+                    error,
+                },
+                SendAttempt::IoError {
+                    pending_rows: right_rows,
+                    rejections: right_rejections,
+                    ..
+                },
+            ) => {
+                pending_rows.extend(right_rows);
+                rejections.extend(right_rejections);
+                SendAttempt::IoError {
+                    pending_rows,
+                    rejections,
+                    error,
+                }
             }
+            (
+                SendAttempt::IoError {
+                    mut pending_rows,
+                    mut rejections,
+                    error,
+                },
+                SendAttempt::RetryAfter {
+                    pending_rows: right_rows,
+                    rejections: right_rejections,
+                    ..
+                },
+            )
+            | (
+                SendAttempt::RetryAfter {
+                    pending_rows: right_rows,
+                    rejections: right_rejections,
+                    ..
+                },
+                SendAttempt::IoError {
+                    mut pending_rows,
+                    mut rejections,
+                    error,
+                },
+            ) => {
+                pending_rows.extend(right_rows);
+                rejections.extend(right_rejections);
+                SendAttempt::IoError {
+                    pending_rows,
+                    rejections,
+                    error,
+                }
+            }
+            (
+                SendAttempt::IoError {
+                    pending_rows,
+                    mut rejections,
+                    error,
+                },
+                SendAttempt::Rejected {
+                    rejections: right_rejections,
+                    ..
+                },
+            )
+            | (
+                SendAttempt::Rejected {
+                    rejections: right_rejections,
+                    ..
+                },
+                SendAttempt::IoError {
+                    pending_rows,
+                    mut rejections,
+                    error,
+                },
+            ) => {
+                rejections.extend(right_rejections);
+                SendAttempt::IoError {
+                    pending_rows,
+                    rejections,
+                    error,
+                }
+            }
+            (attempt @ SendAttempt::IoError { .. }, SendAttempt::Ok)
+            | (SendAttempt::Ok, attempt @ SendAttempt::IoError { .. }) => attempt,
+            (
+                SendAttempt::RetryAfter {
+                    pending_rows,
+                    rejections,
+                    accepted_rows,
+                    delay,
+                },
+                SendAttempt::Ok,
+            )
+            | (
+                SendAttempt::Ok,
+                SendAttempt::RetryAfter {
+                    pending_rows,
+                    rejections,
+                    accepted_rows,
+                    delay,
+                },
+            ) => SendAttempt::RetryAfter {
+                pending_rows,
+                rejections,
+                accepted_rows,
+                delay,
+            },
         }
     }
 
@@ -591,6 +943,7 @@ impl ElasticsearchSink {
     /// errors (e.g. mapper_parsing_exception) inside an HTTP 200 response.
     /// These are terminal — retrying is futile — but as `Err` they would skip
     /// the right half of a split send.
+    #[cfg(test)]
     fn classify_split_result(
         result: io::Result<super::sink::SendResult>,
     ) -> io::Result<super::sink::SendResult> {
@@ -613,6 +966,7 @@ impl ElasticsearchSink {
     /// Precedence is `IoError` > `RetryAfter` > `Rejected` > `Ok`. When both
     /// halves retry, use the longer delay. The shape intentionally mirrors
     /// fanout result reduction so mixed outcomes do not hide retryable work.
+    #[cfg(test)]
     fn merge_split_send_results(
         left: super::sink::SendResult,
         right: super::sink::SendResult,
@@ -647,7 +1001,7 @@ impl ElasticsearchSink {
         }
     }
 
-    async fn do_send(&self, body: Vec<u8>) -> io::Result<super::sink::SendResult> {
+    async fn do_send(&self, body: Vec<u8>, row_ids: Vec<u32>) -> SendAttempt {
         let body_len = body.len();
 
         let mut req = self
@@ -664,8 +1018,23 @@ impl ElasticsearchSink {
             use flate2::write::GzEncoder;
             use std::io::Write;
             let mut enc = GzEncoder::new(Vec::new(), Compression::fast());
-            enc.write_all(&body).map_err(io::Error::other)?;
-            let compressed = enc.finish().map_err(io::Error::other)?;
+            if let Err(error) = enc.write_all(&body).map_err(io::Error::other) {
+                return SendAttempt::IoError {
+                    pending_rows: row_ids,
+                    rejections: Vec::new(),
+                    error,
+                };
+            }
+            let compressed = match enc.finish().map_err(io::Error::other) {
+                Ok(compressed) => compressed,
+                Err(error) => {
+                    return SendAttempt::IoError {
+                        pending_rows: row_ids,
+                        rejections: Vec::new(),
+                        error,
+                    };
+                }
+            };
             tracing::Span::current().record("cmp_bytes", compressed.len() as u64);
             req.header("Content-Encoding", "gzip").body(compressed)
         } else {
@@ -673,7 +1042,16 @@ impl ElasticsearchSink {
         };
 
         let t0 = std::time::Instant::now();
-        let response = req.send().await.map_err(io::Error::other)?;
+        let response = match req.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                return SendAttempt::IoError {
+                    pending_rows: row_ids,
+                    rejections: Vec::new(),
+                    error: io::Error::other(error),
+                };
+            }
+        };
         let send_ns = t0.elapsed().as_nanos() as u64;
         tracing::Span::current().record("send_ns", send_ns);
 
@@ -686,10 +1064,14 @@ impl ElasticsearchSink {
             let recv_ns = (t0.elapsed().as_nanos() as u64).saturating_sub(send_ns);
             tracing::Span::current().record("recv_ns", recv_ns);
             tracing::Span::current().record("resp_bytes", detail.len() as u64);
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("ES returned 413 Payload Too Large (body {body_len} bytes): {detail}"),
-            ));
+            return SendAttempt::IoError {
+                pending_rows: row_ids,
+                rejections: Vec::new(),
+                error: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("ES returned 413 Payload Too Large (body {body_len} bytes): {detail}"),
+                ),
+            };
         }
 
         if !status.is_success() {
@@ -706,21 +1088,70 @@ impl ElasticsearchSink {
                 retry_after.as_ref(),
                 &format!("ES: {detail}"),
             ) {
-                return Ok(send_result);
+                return match send_result {
+                    super::sink::SendResult::RetryAfter(delay) => SendAttempt::RetryAfter {
+                        pending_rows: row_ids,
+                        rejections: Vec::new(),
+                        accepted_rows: 0,
+                        delay,
+                    },
+                    super::sink::SendResult::IoError(error) => SendAttempt::IoError {
+                        pending_rows: row_ids,
+                        rejections: Vec::new(),
+                        error,
+                    },
+                    super::sink::SendResult::Rejected(reason) => SendAttempt::Rejected {
+                        rejections: vec![reason],
+                        accepted_rows: 0,
+                    },
+                    super::sink::SendResult::Ok => SendAttempt::Ok,
+                };
             }
             // classify_http_status handles all non-2xx; unreachable in practice.
-            return Err(io::Error::other(format!("ES: HTTP {status}: {detail}")));
+            return SendAttempt::IoError {
+                pending_rows: row_ids,
+                rejections: Vec::new(),
+                error: io::Error::other(format!("ES: HTTP {status}: {detail}")),
+            };
         }
 
-        let body = response.bytes().await.map_err(io::Error::other)?;
+        let body = match response.bytes().await {
+            Ok(body) => body,
+            Err(error) => {
+                return SendAttempt::IoError {
+                    pending_rows: row_ids,
+                    rejections: Vec::new(),
+                    error: io::Error::other(error),
+                };
+            }
+        };
         let recv_ns = (t0.elapsed().as_nanos() as u64).saturating_sub(send_ns);
         tracing::Span::current().record("recv_ns", recv_ns);
         tracing::Span::current().record("resp_bytes", body.len() as u64);
         if let Some(took) = Self::extract_took(&body) {
             tracing::Span::current().record("took_ms", took);
         }
-        Self::parse_bulk_response(&body)?;
-        Ok(super::sink::SendResult::Ok)
+        match Self::parse_bulk_response_detailed(&body) {
+            Ok(result) => Self::bulk_attempt_from_result(row_ids, result),
+            Err(error) => match super::sink::SendResult::from_io_error(error) {
+                super::sink::SendResult::Rejected(reason) => SendAttempt::Rejected {
+                    rejections: vec![reason],
+                    accepted_rows: 0,
+                },
+                super::sink::SendResult::IoError(error) => SendAttempt::IoError {
+                    pending_rows: row_ids,
+                    rejections: Vec::new(),
+                    error,
+                },
+                super::sink::SendResult::RetryAfter(delay) => SendAttempt::RetryAfter {
+                    pending_rows: row_ids,
+                    rejections: Vec::new(),
+                    accepted_rows: 0,
+                    delay,
+                },
+                super::sink::SendResult::Ok => SendAttempt::Ok,
+            },
+        }
     }
 
     fn send_chunk(
@@ -811,8 +1242,9 @@ impl ElasticsearchSink {
         &self,
         batch: RecordBatch,
         metadata: BatchMetadata,
-    ) -> io::Result<super::sink::SendResult> {
-        let row_count = batch.num_rows() as u64;
+        row_ids: Vec<u32>,
+    ) -> SendAttempt {
+        let row_count = batch.num_rows();
         let (tx, rx) = mpsc::channel::<io::Result<Vec<u8>>>(4);
         let emitted = Arc::new(AtomicU64::new(0));
         let producer_emitted = Arc::clone(&emitted);
@@ -831,13 +1263,22 @@ impl ElasticsearchSink {
 
         let body = reqwest::Body::wrap_stream(ReceiverStream::new(rx));
         let t0 = std::time::Instant::now();
-        let response = req.body(body).send().await.map_err(io::Error::other)?;
+        let response = match req.body(body).send().await {
+            Ok(response) => response,
+            Err(error) => {
+                return SendAttempt::IoError {
+                    pending_rows: row_ids,
+                    rejections: Vec::new(),
+                    error: io::Error::other(error),
+                };
+            }
+        };
         let send_ns = t0.elapsed().as_nanos() as u64;
         tracing::Span::current().record("send_ns", send_ns);
 
-        producer
+        let producer_result = producer
             .await
-            .map_err(|e| io::Error::other(format!("ES streaming producer task failed: {e}")))??;
+            .map_err(|e| io::Error::other(format!("ES streaming producer task failed: {e}")));
 
         let payload_len = emitted.load(Ordering::Relaxed) as usize;
         tracing::Span::current().record("req_bytes", payload_len as u64);
@@ -851,12 +1292,16 @@ impl ElasticsearchSink {
             let recv_ns = (t0.elapsed().as_nanos() as u64).saturating_sub(send_ns);
             tracing::Span::current().record("recv_ns", recv_ns);
             tracing::Span::current().record("resp_bytes", detail.len() as u64);
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "ES returned 413 Payload Too Large (streamed body {payload_len} bytes): {detail}"
+            return SendAttempt::IoError {
+                pending_rows: row_ids,
+                rejections: Vec::new(),
+                error: io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "ES returned 413 Payload Too Large (streamed body {payload_len} bytes): {detail}"
+                    ),
                 ),
-            ));
+            };
         }
 
         if !status.is_success() {
@@ -873,46 +1318,196 @@ impl ElasticsearchSink {
                 retry_after.as_ref(),
                 &format!("ES: {detail}"),
             ) {
-                return Ok(send_result);
+                return match send_result {
+                    super::sink::SendResult::RetryAfter(delay) => SendAttempt::RetryAfter {
+                        pending_rows: row_ids,
+                        rejections: Vec::new(),
+                        accepted_rows: 0,
+                        delay,
+                    },
+                    super::sink::SendResult::IoError(error) => SendAttempt::IoError {
+                        pending_rows: row_ids,
+                        rejections: Vec::new(),
+                        error,
+                    },
+                    super::sink::SendResult::Rejected(reason) => SendAttempt::Rejected {
+                        rejections: vec![reason],
+                        accepted_rows: 0,
+                    },
+                    super::sink::SendResult::Ok => SendAttempt::Ok,
+                };
             }
             // classify_http_status handles all non-2xx; unreachable in practice.
-            return Err(io::Error::other(format!("ES: HTTP {status}: {detail}")));
+            return SendAttempt::IoError {
+                pending_rows: row_ids,
+                rejections: Vec::new(),
+                error: io::Error::other(format!("ES: HTTP {status}: {detail}")),
+            };
         }
 
-        let body = response.bytes().await.map_err(io::Error::other)?;
+        let body = match response.bytes().await {
+            Ok(body) => body,
+            Err(error) => {
+                return SendAttempt::IoError {
+                    pending_rows: row_ids,
+                    rejections: Vec::new(),
+                    error: io::Error::other(error),
+                };
+            }
+        };
         let recv_ns = (t0.elapsed().as_nanos() as u64).saturating_sub(send_ns);
         tracing::Span::current().record("recv_ns", recv_ns);
         tracing::Span::current().record("resp_bytes", body.len() as u64);
         if let Some(took) = Self::extract_took(&body) {
             tracing::Span::current().record("took_ms", took);
         }
-        Self::parse_bulk_response(&body)?;
-        self.stats.inc_lines(row_count);
-        self.stats.inc_bytes(payload_len as u64);
-        Ok(super::sink::SendResult::Ok)
+
+        if let Some(producer_error) = Self::streaming_producer_error(producer_result) {
+            if matches!(
+                Self::parse_success_item_count(&body),
+                Ok(Some(count)) if count == row_ids.len()
+            ) {
+                self.record_accepted_rows(row_count, payload_len);
+                return SendAttempt::Ok;
+            }
+            return SendAttempt::IoError {
+                pending_rows: row_ids,
+                rejections: Vec::new(),
+                error: producer_error,
+            };
+        }
+
+        match Self::parse_bulk_response_detailed(&body) {
+            Ok(result) if result.retry_items.is_empty() && result.permanent_errors.is_empty() => {
+                self.record_accepted_rows(row_count, payload_len);
+                SendAttempt::Ok
+            }
+            Ok(result) => {
+                let attempt = Self::bulk_attempt_from_result(row_ids, result);
+                match &attempt {
+                    SendAttempt::RetryAfter { accepted_rows, .. }
+                    | SendAttempt::Rejected { accepted_rows, .. } => {
+                        self.record_accepted_partial_rows(*accepted_rows, row_count, payload_len);
+                    }
+                    SendAttempt::Ok | SendAttempt::IoError { .. } => {}
+                }
+                attempt
+            }
+            Err(error) => match super::sink::SendResult::from_io_error(error) {
+                super::sink::SendResult::Rejected(reason) => SendAttempt::Rejected {
+                    rejections: vec![reason],
+                    accepted_rows: 0,
+                },
+                super::sink::SendResult::IoError(error) => SendAttempt::IoError {
+                    pending_rows: row_ids,
+                    rejections: Vec::new(),
+                    error,
+                },
+                super::sink::SendResult::RetryAfter(delay) => SendAttempt::RetryAfter {
+                    pending_rows: row_ids,
+                    rejections: Vec::new(),
+                    accepted_rows: 0,
+                    delay,
+                },
+                super::sink::SendResult::Ok => SendAttempt::Ok,
+            },
+        }
+    }
+
+    fn streaming_producer_error(producer_result: io::Result<io::Result<()>>) -> Option<io::Error> {
+        match producer_result {
+            Ok(Ok(())) => None,
+            Ok(Err(producer_error)) => Some(io::Error::other(format!(
+                "ES streaming producer failed: {producer_error}"
+            ))),
+            Err(join_error) => Some(io::Error::other(format!(
+                "ES streaming producer task failed: {join_error}"
+            ))),
+        }
     }
 }
 
 impl super::sink::Sink for ElasticsearchSink {
+    fn begin_batch(&mut self) {
+        self.pending_retry_rows = None;
+        self.pending_rejections.clear();
+    }
+
     fn send_batch<'a>(
         &'a mut self,
         batch: &'a RecordBatch,
         metadata: &'a BatchMetadata,
     ) -> std::pin::Pin<Box<dyn Future<Output = super::sink::SendResult> + Send + 'a>> {
         Box::pin(async move {
-            match self.send_batch_inner(batch, metadata, 0).await {
-                Ok(r) => r,
-                Err(e) => match e.kind() {
-                    // InvalidInput: proactive-split exhausted (single row too large) or
-                    // serialization error — permanent, do not retry.
-                    // InvalidData: ES bulk API returned item-level errors (e.g.
-                    // mapper_parsing_exception, strict_dynamic_mapping_exception) inside a
-                    // 200 OK response — also permanent, retrying the same document is futile.
-                    io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => {
-                        super::sink::SendResult::Rejected(e.to_string())
-                    }
-                    _ => super::sink::SendResult::IoError(e),
-                },
+            let row_ids = self
+                .pending_retry_rows
+                .clone()
+                .unwrap_or_else(|| (0..batch.num_rows() as u32).collect());
+            let mut rejections = self.pending_rejections.clone();
+            if row_ids.is_empty() {
+                self.pending_retry_rows = None;
+                self.pending_rejections.clear();
+                return Self::finish_success_or_reject(rejections);
+            }
+
+            let projected_batch = match Self::project_batch_rows(batch, &row_ids) {
+                Ok(projected) => projected,
+                Err(error) => {
+                    return match super::sink::SendResult::from_io_error(error) {
+                        super::sink::SendResult::Rejected(reason) => {
+                            rejections.push(reason);
+                            self.pending_retry_rows = None;
+                            self.pending_rejections.clear();
+                            Self::finish_success_or_reject(rejections)
+                        }
+                        other => {
+                            self.pending_retry_rows = Some(row_ids);
+                            self.pending_rejections = rejections;
+                            other
+                        }
+                    };
+                }
+            };
+
+            match self
+                .send_batch_inner(&projected_batch, metadata, row_ids.clone(), 0)
+                .await
+            {
+                SendAttempt::Ok => {
+                    self.pending_retry_rows = None;
+                    self.pending_rejections.clear();
+                    Self::finish_success_or_reject(rejections)
+                }
+                SendAttempt::Rejected {
+                    rejections: new_rejections,
+                    ..
+                } => {
+                    rejections.extend(new_rejections);
+                    self.pending_retry_rows = None;
+                    self.pending_rejections.clear();
+                    Self::finish_success_or_reject(rejections)
+                }
+                SendAttempt::RetryAfter {
+                    pending_rows,
+                    rejections: new_rejections,
+                    delay,
+                    ..
+                } => {
+                    rejections.extend(new_rejections);
+                    self.pending_retry_rows = Some(pending_rows);
+                    self.pending_rejections = rejections;
+                    super::sink::SendResult::RetryAfter(delay)
+                }
+                SendAttempt::IoError {
+                    pending_rows,
+                    rejections: new_rejections,
+                    error,
+                } => {
+                    rejections.extend(new_rejections);
+                    self.pending_retry_rows = Some(pending_rows);
+                    self.pending_rejections = rejections;
+                    super::sink::SendResult::IoError(error)
+                }
             }
         })
     }
@@ -1671,6 +2266,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_bulk_response_status_only_redirect_is_invalid_data() {
+        let response = br#"{
+            "took":5,
+            "errors":true,
+            "items":[
+                {"index":{"status":307}}
+            ]
+        }"#;
+        let err = ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("unexpected 3xx bulk item status must be rejected");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "status-only 3xx item-level responses should not be counted as accepted"
+        );
+        assert!(
+            err.to_string()
+                .contains("unexpected ES bulk item status 307"),
+            "error should mention unexpected 3xx status: {err}"
+        );
+    }
+
     /// Regression test for issue #1675.
     ///
     /// `parse_bulk_response` used to return `Ok(())` when `errors:true` but no
@@ -2346,9 +2964,8 @@ mod tests {
     // -----------------------------------------------------------------------
 
     /// When left succeeds but right gets a transient error (429), the ES sink
-    /// must retry the right half internally rather than returning a retryable
-    /// result to the worker pool (which would re-send the already-delivered
-    /// left half).
+    /// must persist only the right half for the worker-level retry so the
+    /// already-delivered left half is not resent.
     #[tokio::test]
     async fn split_left_ok_right_retry_does_not_duplicate() {
         use crate::sink::Sink;
@@ -2393,7 +3010,7 @@ mod tests {
             .expect(1) // left must be sent exactly once — no duplication
             .create_async()
             .await;
-        // Right half: first attempt returns 429, internal retry succeeds.
+        // Right half: first attempt returns 429, worker-level subset retry succeeds.
         let right_fail_mock = server
             .mock("POST", "/_bulk")
             .match_query(mockito::Matcher::Any)
@@ -2409,7 +3026,7 @@ mod tests {
             .match_body(mockito::Matcher::Regex("right-row".to_string()))
             .with_status(200)
             .with_body(r#"{"took":1,"errors":false,"items":[{"index":{"status":201}}]}"#)
-            .expect(1) // internal retry succeeds
+            .expect(1) // subset retry succeeds
             .create_async()
             .await;
 
@@ -2422,8 +3039,13 @@ mod tests {
 
         let result = sink.send_batch(&batch, &metadata).await;
         assert!(
+            matches!(result, crate::sink::SendResult::RetryAfter(_)),
+            "expected RetryAfter after right half failure, got {result:?}"
+        );
+        let result = sink.send_batch(&batch, &metadata).await;
+        assert!(
             matches!(result, crate::sink::SendResult::Ok),
-            "expected Ok after internal retry of right half, got {result:?}"
+            "expected Ok after subset retry of right half, got {result:?}"
         );
         // Left must be sent exactly once — no duplication.
         left_mock.assert_async().await;
@@ -2431,11 +3053,10 @@ mod tests {
         right_ok_mock.assert_async().await;
     }
 
-    /// When left succeeds and right exhausts all internal retries, the result
-    /// must be `Rejected` (not `IoError` or `RetryAfter`) to prevent the
-    /// worker pool from retrying the full batch and duplicating the left half.
+    /// When left succeeds and right remains retryable, worker-level retries must
+    /// continue to send only the right half.
     #[tokio::test]
-    async fn split_left_ok_right_exhausted_returns_rejected() {
+    async fn split_left_ok_right_retries_only_right_half() {
         use crate::sink::Sink;
 
         let mut server = mockito::Server::new_async().await;
@@ -2477,14 +3098,14 @@ mod tests {
             .expect(1) // left must be sent exactly once
             .create_async()
             .await;
-        // Right half: always fails with 429 (initial + SPLIT_INTERNAL_RETRIES).
+        // Right half: always fails with 429 across worker-level attempts.
         let right_mock = server
             .mock("POST", "/_bulk")
             .match_query(mockito::Matcher::Any)
             .match_body(mockito::Matcher::Regex("right-row".to_string()))
             .with_status(429)
             .with_body("too many requests")
-            .expect_at_least(2) // initial + at least 1 retry
+            .expect(2) // initial + one worker-level subset retry
             .create_async()
             .await;
 
@@ -2496,21 +3117,15 @@ mod tests {
         );
 
         let result = sink.send_batch(&batch, &metadata).await;
-        match result {
-            crate::sink::SendResult::Rejected(reason) => {
-                assert!(
-                    reason.contains("failed after internal retry"),
-                    "expected internal retry exhaustion message, got: {reason}"
-                );
-                assert!(
-                    reason.contains("delivered successfully") || reason.contains("was delivered"),
-                    "should warn that left half was already delivered: {reason}"
-                );
-            }
-            other => panic!(
-                "expected Rejected to prevent worker-pool-level retry duplication, got {other:?}"
-            ),
-        }
+        assert!(
+            matches!(result, crate::sink::SendResult::RetryAfter(_)),
+            "expected retryable result for right half, got {result:?}"
+        );
+        let result = sink.send_batch(&batch, &metadata).await;
+        assert!(
+            matches!(result, crate::sink::SendResult::RetryAfter(_)),
+            "expected retryable result for right half retry, got {result:?}"
+        );
         left_mock.assert_async().await;
         right_mock.assert_async().await;
     }
@@ -2552,6 +3167,188 @@ mod tests {
             err.to_string().contains("1 retryable"),
             "error should report retryable count: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn bulk_partial_success_retries_only_transient_items() {
+        use crate::sink::Sink;
+
+        let mut server = mockito::Server::new_async().await;
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec![
+                "accepted-a",
+                "retry-me",
+                "accepted-b",
+            ]))],
+        )
+        .expect("test batch should be valid");
+        let metadata = zero_metadata();
+
+        let mut sizing_sink = ElasticsearchSink::new(
+            "test".to_string(),
+            test_es_config(&server.url(), "logs", usize::MAX),
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::default()),
+        );
+        sizing_sink
+            .serialize_batch(&batch.slice(1, 1), &metadata)
+            .expect("retry row should serialize");
+        let retry_body = String::from_utf8(sizing_sink.batch_buf.clone()).expect("utf8 body");
+
+        let full_attempt = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::Regex("accepted-a".to_string()))
+            .with_status(200)
+            .with_body(
+                r#"{"took":1,"errors":true,"items":[{"index":{"status":201}},{"index":{"error":{"type":"es_rejected_execution_exception","reason":"too many requests"},"status":429}},{"index":{"status":201}}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let retry_subset = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::Exact(retry_body))
+            .with_status(200)
+            .with_body(r#"{"took":1,"errors":false,"items":[{"index":{"status":201}}]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut sink = ElasticsearchSink::new(
+            "test".to_string(),
+            test_es_config(&server.url(), "logs", usize::MAX),
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::default()),
+        );
+
+        let first = sink.send_batch(&batch, &metadata).await;
+        assert!(
+            matches!(first, crate::sink::SendResult::RetryAfter(_)),
+            "expected subset retry after partial response, got {first:?}"
+        );
+        let second = sink.send_batch(&batch, &metadata).await;
+        assert!(
+            matches!(second, crate::sink::SendResult::Ok),
+            "expected retry subset success, got {second:?}"
+        );
+
+        full_attempt.assert_async().await;
+        retry_subset.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn bulk_mixed_permanent_and_transient_retries_then_rejects_permanent() {
+        use crate::sink::Sink;
+
+        let mut server = mockito::Server::new_async().await;
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec![
+                "accepted", "bad-doc", "retry-me",
+            ]))],
+        )
+        .expect("test batch should be valid");
+        let metadata = zero_metadata();
+
+        let mut sizing_sink = ElasticsearchSink::new(
+            "test".to_string(),
+            test_es_config(&server.url(), "logs", usize::MAX),
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::default()),
+        );
+        sizing_sink
+            .serialize_batch(&batch.slice(2, 1), &metadata)
+            .expect("retry row should serialize");
+        let retry_body = String::from_utf8(sizing_sink.batch_buf.clone()).expect("utf8 body");
+
+        let mixed = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::Regex("bad-doc".to_string()))
+            .with_status(200)
+            .with_body(
+                r#"{"took":1,"errors":true,"items":[{"index":{"status":201}},{"index":{"error":{"type":"mapper_parsing_exception","reason":"bad field"},"status":400}},{"index":{"error":{"type":"es_rejected_execution_exception","reason":"too many requests"},"status":429}}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let retry_ok = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::Exact(retry_body))
+            .with_status(200)
+            .with_body(r#"{"took":1,"errors":false,"items":[{"index":{"status":201}}]}"#)
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut sink = ElasticsearchSink::new(
+            "test".to_string(),
+            test_es_config(&server.url(), "logs", usize::MAX),
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::default()),
+        );
+
+        let first = sink.send_batch(&batch, &metadata).await;
+        assert!(
+            matches!(first, crate::sink::SendResult::RetryAfter(_)),
+            "expected transient row to remain retryable, got {first:?}"
+        );
+        let second = sink.send_batch(&batch, &metadata).await;
+        match second {
+            crate::sink::SendResult::Rejected(reason) => {
+                assert!(reason.contains("mapper_parsing_exception"), "got: {reason}");
+                assert!(reason.contains("bad field"), "got: {reason}");
+            }
+            other => panic!("expected permanent rejection after retry success, got {other:?}"),
+        }
+
+        mixed.assert_async().await;
+        retry_ok.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn bulk_item_count_mismatch_rejects_without_subset_retry() {
+        use crate::sink::Sink;
+
+        let mut server = mockito::Server::new_async().await;
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec!["row-a", "row-b", "row-c"]))],
+        )
+        .expect("test batch should be valid");
+        let metadata = zero_metadata();
+
+        let mismatch = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .with_status(200)
+            .with_body(
+                r#"{"took":1,"errors":true,"items":[{"index":{"status":201}},{"index":{"error":{"type":"es_rejected_execution_exception","reason":"too many requests"},"status":429}}]}"#,
+            )
+            .expect(1)
+            .create_async()
+            .await;
+
+        let mut sink = ElasticsearchSink::new(
+            "test".to_string(),
+            test_es_config(&server.url(), "logs", usize::MAX),
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::default()),
+        );
+
+        let result = sink.send_batch(&batch, &metadata).await;
+        match result {
+            crate::sink::SendResult::Rejected(reason) => {
+                assert!(reason.contains("item count mismatch"), "got: {reason}");
+            }
+            other => panic!("expected structural mismatch rejection, got {other:?}"),
+        }
+
+        mismatch.assert_async().await;
     }
 
     /// When ALL items in the bulk response failed with retryable errors
