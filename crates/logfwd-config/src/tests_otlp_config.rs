@@ -30,7 +30,10 @@ pipelines:
             InputTypeConfig::Otlp(otlp) => {
                 assert_eq!(otlp.listen, "0.0.0.0:4318");
                 assert_eq!(otlp.max_recv_message_size_bytes, Some(8388608));
-                assert_eq!(otlp.grpc_keepalive_time_ms, Some(10000));
+                assert_eq!(
+                    otlp.grpc_keepalive_time_ms,
+                    crate::PositiveMillis::new(10000)
+                );
                 assert_eq!(otlp.grpc_max_concurrent_streams, Some(100));
 
                 let tls = otlp.tls.as_ref().unwrap();

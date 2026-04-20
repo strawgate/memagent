@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use logfwd_config::{Format, OutputConfig, OutputConfigV2, OutputType, TlsClientConfig};
+#[cfg(test)]
+use logfwd_config::OutputConfig;
+use logfwd_config::{Format, OutputConfigV2, TlsClientConfig};
 use logfwd_types::diagnostics::ComponentStats;
 
 use crate::arrow_ipc_sink::ArrowIpcSinkFactory;
@@ -23,10 +25,10 @@ use crate::udp_sink::UdpSinkFactory;
 fn build_http_client_builder(
     name: &str,
     tls: Option<&TlsClientConfig>,
-    request_timeout_ms: Option<u64>,
+    request_timeout_ms: Option<logfwd_config::PositiveMillis>,
 ) -> Result<reqwest::ClientBuilder, OutputError> {
     let mut client_builder = reqwest::Client::builder()
-        .timeout(Duration::from_millis(request_timeout_ms.unwrap_or(30_000)))
+        .timeout(request_timeout_ms.map_or(Duration::from_secs(30), Into::into))
         .pool_max_idle_per_host(64);
 
     if let Some(tls) = tls {
@@ -85,13 +87,14 @@ fn read_tls_file(name: &str, field: &str, path: &str) -> Result<Vec<u8>, OutputE
 ///
 /// Returns a factory that creates a fresh sink per worker. Most sink types
 /// support multiple workers; the factory can be called repeatedly.
-pub fn build_sink_factory(
+#[cfg(test)]
+pub(crate) fn build_sink_factory(
     name: &str,
     cfg: &OutputConfig,
     base_path: Option<&Path>,
     stats: Arc<ComponentStats>,
 ) -> Result<Arc<dyn SinkFactory>, OutputError> {
-    if cfg.output_type == OutputType::File
+    if cfg.output_type == logfwd_config::OutputType::File
         && let Some(compression) = cfg.compression.as_deref()
     {
         return Err(OutputError::Construction(format!(
@@ -430,7 +433,7 @@ mod tests {
         let cfg = OutputConfig {
             output_type: OutputType::Elasticsearch,
             endpoint: Some("https://localhost:9200".to_string()),
-            request_timeout_ms: Some(5_000),
+            request_timeout_ms: logfwd_config::PositiveMillis::new(5_000),
             tls: Some(logfwd_config::TlsClientConfig {
                 insecure_skip_verify: true,
                 ..Default::default()
@@ -450,7 +453,7 @@ mod tests {
         let cfg = OutputConfig {
             output_type: OutputType::Loki,
             endpoint: Some("https://localhost:3100".to_string()),
-            request_timeout_ms: Some(5_000),
+            request_timeout_ms: logfwd_config::PositiveMillis::new(5_000),
             tls: Some(logfwd_config::TlsClientConfig {
                 insecure_skip_verify: true,
                 ..Default::default()

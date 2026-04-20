@@ -15,6 +15,8 @@ mod shared;
 mod types;
 mod validate;
 
+pub use serde_helpers::{PositiveMillis, PositiveSecs};
+
 #[cfg(test)]
 pub(crate) use env::expand_env_vars;
 pub use shared::{
@@ -80,9 +82,9 @@ storage:
         ));
         assert_eq!(pipe.inputs[0].format, Some(Format::Cri));
         assert!(pipe.transform.as_ref().unwrap().contains("SELECT"));
-        assert_eq!(pipe.outputs[0].output_type, OutputType::Otlp);
+        assert_eq!(pipe.outputs[0].output_type(), OutputType::Otlp);
         assert_eq!(
-            pipe.outputs[0].endpoint.as_deref(),
+            pipe.outputs[0].validation_config().endpoint.as_deref(),
             Some("http://otel-collector:4317")
         );
         assert_eq!(cfg.server.diagnostics.as_deref(), Some("0.0.0.0:9090"));
@@ -160,8 +162,8 @@ server:
             InputTypeConfig::Udp(u) if u.listen == "0.0.0.0:514"
         ));
         assert_eq!(pipe.outputs.len(), 2);
-        assert_eq!(pipe.outputs[0].output_type, OutputType::Otlp);
-        assert_eq!(pipe.outputs[1].output_type, OutputType::Stdout);
+        assert_eq!(pipe.outputs[0].output_type(), OutputType::Otlp);
+        assert_eq!(pipe.outputs[1].output_type(), OutputType::Stdout);
     }
 
     #[test]
@@ -180,7 +182,7 @@ output:
         let cfg = Config::load_str(yaml).expect("env var substitution");
         let pipe = &cfg.pipelines["default"];
         assert_eq!(
-            pipe.outputs[0].endpoint.as_deref(),
+            pipe.outputs[0].validation_config().endpoint.as_deref(),
             Some("http://my-collector:4317")
         );
         // SAFETY: this test is not run concurrently with other tests that
@@ -211,7 +213,7 @@ output:
         assert_eq!(cfg.pipelines.len(), 1);
         let pipe = &cfg.pipelines["default"];
         assert_eq!(pipe.inputs[0].input_type(), InputType::File);
-        assert_eq!(pipe.outputs[0].output_type, OutputType::Stdout);
+        assert_eq!(pipe.outputs[0].output_type(), OutputType::Stdout);
         let _ = fs::remove_file(&path);
     }
 
@@ -626,7 +628,7 @@ pipelines:
         let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: file\n  path: /tmp/out.ndjson\n";
         let cfg = Config::load_str(yaml).unwrap();
         assert_eq!(
-            cfg.pipelines["default"].outputs[0].output_type,
+            cfg.pipelines["default"].outputs[0].output_type(),
             OutputType::File
         );
     }
@@ -805,20 +807,16 @@ output:
             InputTypeConfig::File(f) => f,
             _ => panic!("expected File type_config"),
         };
-        assert_eq!(f.poll_interval_ms, Some(100));
+        assert_eq!(f.poll_interval_ms, PositiveMillis::new(100));
         assert_eq!(f.read_buf_size, Some(1048576));
         assert_eq!(f.per_file_read_budget_bytes, Some(2097152));
     }
 
     #[test]
     fn file_input_rejects_zero_tuning_knobs() {
-        let cases = [
-            ("poll_interval_ms", 0),
-            ("read_buf_size", 0),
-            ("per_file_read_budget_bytes", 0),
-        ];
-
-        for (field, value) in cases {
+        // Non-duration fields still rejected by validation.
+        let validation_cases = [("read_buf_size", 0), ("per_file_read_budget_bytes", 0)];
+        for (field, value) in validation_cases {
             let yaml = format!(
                 r#"
 input:
@@ -835,6 +833,21 @@ output:
                 "expected error about positive {field}, got: {err}"
             );
         }
+
+        // Duration field (poll_interval_ms) is rejected at parse time via PositiveMillis.
+        let yaml = r#"
+input:
+  type: file
+  path: /tmp/test.log
+  poll_interval_ms: 0
+output:
+  type: stdout
+"#;
+        let err = Config::load_str(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("invalid value") || err.contains("positive"),
+            "expected zero-rejection error for poll_interval_ms, got: {err}"
+        );
     }
 
     #[test]
@@ -942,9 +955,11 @@ output:
   type: stdout
 ";
         let err = Config::load_str(yaml).unwrap_err();
+        // Now rejected at parse time via PositiveMillis.
+        let msg = err.to_string();
         assert!(
-            err.to_string()
-                .contains("sensor.poll_interval_ms must be at least 1")
+            msg.contains("invalid value") || msg.contains("positive"),
+            "expected zero-rejection error for poll_interval_ms, got: {msg}"
         );
     }
 
@@ -959,9 +974,11 @@ output:
   type: stdout
 ";
         let err = Config::load_str(yaml).unwrap_err();
+        // Now rejected at parse time via PositiveMillis.
+        let msg = err.to_string();
         assert!(
-            err.to_string()
-                .contains("sensor.control_reload_interval_ms must be at least 1")
+            msg.contains("invalid value") || msg.contains("positive"),
+            "expected zero-rejection error for control_reload_interval_ms, got: {msg}"
         );
     }
 
@@ -1013,7 +1030,8 @@ output:
 "#;
         let cfg = Config::load_str(yaml).expect("auth bearer_token");
         let pipe = &cfg.pipelines["default"];
-        let auth = pipe.outputs[0].auth.as_ref().expect("auth present");
+        let output = pipe.outputs[0].validation_config();
+        let auth = output.auth.as_ref().expect("auth present");
         assert_eq!(auth.bearer_token.as_deref(), Some("my-secret-token"));
         assert!(auth.headers.is_empty());
     }
@@ -1034,7 +1052,8 @@ output:
 "#;
         let cfg = Config::load_str(yaml).expect("auth custom headers");
         let pipe = &cfg.pipelines["default"];
-        let auth = pipe.outputs[0].auth.as_ref().expect("auth present");
+        let output = pipe.outputs[0].validation_config();
+        let auth = output.auth.as_ref().expect("auth present");
         assert_eq!(auth.bearer_token, None);
         assert_eq!(
             auth.headers.get("X-API-Key").map(String::as_str),
@@ -1062,7 +1081,8 @@ output:
 "#;
         let cfg = Config::load_str(yaml).expect("auth env var bearer");
         let pipe = &cfg.pipelines["default"];
-        let auth = pipe.outputs[0].auth.as_ref().expect("auth present");
+        let output = pipe.outputs[0].validation_config();
+        let auth = output.auth.as_ref().expect("auth present");
         assert_eq!(auth.bearer_token.as_deref(), Some("env-bearer-token"));
         // SAFETY: this test is not run concurrently with other tests that
         // depend on the same environment variable.
@@ -1081,7 +1101,7 @@ output:
 ";
         let cfg = Config::load_str(yaml).expect("no auth");
         let pipe = &cfg.pipelines["default"];
-        assert!(pipe.outputs[0].auth.is_none());
+        assert!(pipe.outputs[0].validation_config().auth.is_none());
     }
 
     #[test]
@@ -1097,7 +1117,10 @@ output:
 ";
         let cfg = Config::load_str(yaml).expect("streaming request_mode should validate");
         let pipe = &cfg.pipelines["default"];
-        assert_eq!(pipe.outputs[0].request_mode.as_deref(), Some("streaming"));
+        assert_eq!(
+            pipe.outputs[0].validation_config().request_mode.as_deref(),
+            Some("streaming")
+        );
     }
 
     #[test]
@@ -1293,7 +1316,7 @@ output:
         let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: null\n";
         let cfg = Config::load_str(yaml).expect("type: null simple layout");
         assert_eq!(
-            cfg.pipelines["default"].outputs[0].output_type,
+            cfg.pipelines["default"].outputs[0].output_type(),
             OutputType::Null
         );
     }
@@ -1313,7 +1336,7 @@ pipelines:
 ";
         let cfg = Config::load_str(yaml).expect("type: null in advanced list layout");
         assert_eq!(
-            cfg.pipelines["app"].outputs[0].output_type,
+            cfg.pipelines["app"].outputs[0].output_type(),
             OutputType::Null
         );
     }
@@ -1324,8 +1347,66 @@ pipelines:
         let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: \"null\"\n";
         let cfg = Config::load_str(yaml).expect("type: \"null\" quoted");
         assert_eq!(
-            cfg.pipelines["default"].outputs[0].output_type,
+            cfg.pipelines["default"].outputs[0].output_type(),
             OutputType::Null
+        );
+    }
+
+    #[test]
+    fn whole_output_null_is_rejected() {
+        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput: null\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("output is required when input is specified"),
+            "whole output null must not be treated as the null sink: {msg}"
+        );
+    }
+
+    #[test]
+    fn missing_output_type_is_rejected() {
+        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput: {}\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid output config") && msg.contains("missing field `type`"),
+            "missing output type must fail clearly: {msg}"
+        );
+    }
+
+    #[test]
+    fn empty_string_output_type_is_rejected() {
+        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: \"\"\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid output config") && msg.contains("unknown variant ``"),
+            "empty-string output type must fail clearly: {msg}"
+        );
+    }
+
+    #[test]
+    fn duplicate_pipeline_mapping_key_is_rejected() {
+        let yaml = r"
+pipelines:
+  app:
+    inputs:
+      - type: file
+        path: /tmp/a.log
+    outputs:
+      - type: stdout
+  app:
+    inputs:
+      - type: file
+        path: /tmp/b.log
+    outputs:
+      - type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate entry with key \"app\""),
+            "duplicate pipeline names must be rejected before validation: {msg}"
         );
     }
 
@@ -1622,8 +1703,9 @@ pipelines:
 ";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
+        // Now rejected at parse time via PositiveMillis.
         assert!(
-            msg.contains("poll_interval_ms must be greater than 0"),
+            msg.contains("invalid value") || msg.contains("positive"),
             "got: {msg}"
         );
     }
