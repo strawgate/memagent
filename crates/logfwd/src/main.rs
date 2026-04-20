@@ -971,7 +971,9 @@ fn maybe_prompt_blast_setup(args: &mut BlastArgs) -> Result<(), CliError> {
 }
 
 #[cfg(test)]
-fn resolve_blast_output_config(args: &BlastArgs) -> Result<logfwd_config::OutputConfig, CliError> {
+fn resolve_blast_output_config(
+    args: &BlastArgs,
+) -> Result<logfwd_config::OutputConfigV2, CliError> {
     let destination = args
         .destination
         .ok_or_else(|| CliError::Config("blast requires --destination".to_owned()))?;
@@ -2730,6 +2732,9 @@ outputs:
 
         let output_cfg =
             resolve_blast_output_config(&args).expect("tcp destination should preserve endpoint");
+        let logfwd_config::OutputConfigV2::Tcp(output_cfg) = output_cfg else {
+            panic!("expected tcp output config");
+        };
         assert_eq!(output_cfg.endpoint.as_deref(), Some("127.0.0.1:15140"));
     }
 
