@@ -36,27 +36,17 @@ jobs:
     name: Detect changed paths
     runs-on: ubuntu-latest
     outputs:
-      core: ${{ steps.filter.outputs.core }}
-      core_no_std: ${{ steps.filter.outputs.core_no_std }}
       kani_required: ${{ steps.filter.outputs.kani_required }}
       tla: ${{ steps.filter.outputs.tla }}
       frontend: ${{ steps.filter.outputs.frontend }}
       miri: ${{ steps.filter.outputs.miri }}
       rust: ${{ steps.filter.outputs.rust }}
-      loom: ${{ steps.filter.outputs.loom }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@f3ceefdc7ef57bc2d8560787d4b6c33e44044cec
         id: filter
         with:
           filters: |
-            core:
-              - 'crates/logfwd-core/**'
-            core_no_std:
-              - 'crates/logfwd-core/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - '.github/workflows/ci.yml'
             kani_required:
               - 'crates/logfwd-core/**'
               - 'crates/logfwd-arrow/**'
@@ -95,12 +85,6 @@ jobs:
               - 'Cargo.lock'
               - '.cargo/**'
               - 'rust-toolchain.toml'
-              - '.github/workflows/ci.yml'
-            loom:
-              - 'crates/logfwd-runtime/**'
-              - 'crates/logfwd-types/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
               - '.github/workflows/ci.yml'
 
   # -------------------------------------------------------------------------
@@ -323,7 +307,7 @@ jobs:
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
-      (github.event.pull_request.draft == false && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.core_no_std == 'true'))
+      (github.event.pull_request.draft == false && needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -537,12 +521,22 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
       (github.event.pull_request.draft == false && needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup-rust
+      # --no-default-features drops the SQL stack (logfwd-transform + datafusion
+      # ~5–8 min of compile on a 4-vCPU runner) which the turmoil tests do not
+      # exercise. Verified locally: 64/64 tests pass without those features.
       - name: Turmoil simulation tests
-        run: cargo test -p logfwd --features turmoil --test turmoil_sim -- --test-threads=1
+        run: >-
+          cargo test
+          -p logfwd
+          --no-default-features
+          --features turmoil
+          --test turmoil_sim
+          --
+          --test-threads=1
 
   simulation-loom:
     name: Simulation (Loom)
@@ -550,7 +544,7 @@ jobs:
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
-      (github.event.pull_request.draft == false && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.loom == 'true'))
+      (github.event.pull_request.draft == false && needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
