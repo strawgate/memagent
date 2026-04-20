@@ -2811,6 +2811,202 @@ mod tests {
         );
     }
 
+    #[test]
+    fn projected_complex_anyvalue_escapes_control_chars_quotes_and_backslashes_like_prost() {
+        let weird = "quote=\" backslash=\\ newline=\n tab=\t nul=\u{0000}";
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(Value::ArrayValue(ArrayValue {
+                                values: vec![
+                                    any_string(weird),
+                                    AnyValue {
+                                        value: Some(Value::KvlistValue(KeyValueList {
+                                            values: vec![KeyValue {
+                                                key: weird.into(),
+                                                value: Some(any_string(weird)),
+                                            }],
+                                        })),
+                                    },
+                                ],
+                            })),
+                        }),
+                        attributes: vec![KeyValue {
+                            key: weird.into(),
+                            value: Some(AnyValue {
+                                value: Some(Value::KvlistValue(KeyValueList {
+                                    values: vec![KeyValue {
+                                        key: weird.into(),
+                                        value: Some(any_string(weird)),
+                                    }],
+                                })),
+                            }),
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        assert_projected_matches_prost(&request);
+    }
+
+    #[test]
+    fn projected_complex_anyvalue_non_finite_and_negative_zero_match_prost() {
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        body: Some(AnyValue {
+                            value: Some(Value::ArrayValue(ArrayValue {
+                                values: vec![
+                                    AnyValue {
+                                        value: Some(Value::DoubleValue(f64::NAN)),
+                                    },
+                                    AnyValue {
+                                        value: Some(Value::DoubleValue(f64::INFINITY)),
+                                    },
+                                    AnyValue {
+                                        value: Some(Value::DoubleValue(f64::NEG_INFINITY)),
+                                    },
+                                    AnyValue {
+                                        value: Some(Value::DoubleValue(-0.0)),
+                                    },
+                                ],
+                            })),
+                        }),
+                        attributes: vec![KeyValue {
+                            key: "float.edge.cases".into(),
+                            value: Some(AnyValue {
+                                value: Some(Value::KvlistValue(KeyValueList {
+                                    values: vec![KeyValue {
+                                        key: "value".into(),
+                                        value: Some(AnyValue {
+                                            value: Some(Value::DoubleValue(-0.0)),
+                                        }),
+                                    }],
+                                })),
+                            }),
+                        }],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        assert_projected_matches_prost(&request);
+    }
+
+    #[test]
+    fn projected_complex_anyvalue_duplicate_kv_fields_are_last_value_wins_like_prost() {
+        let mut kv = Vec::new();
+        encode_len_field(&mut kv, otlp::KEY_VALUE_KEY, b"first-key");
+        encode_len_field(
+            &mut kv,
+            otlp::KEY_VALUE_VALUE,
+            &any_string("first-value").encode_to_vec(),
+        );
+        encode_len_field(&mut kv, otlp::KEY_VALUE_KEY, b"last-key");
+        encode_len_field(
+            &mut kv,
+            otlp::KEY_VALUE_VALUE,
+            &any_string("last-value").encode_to_vec(),
+        );
+
+        let mut kvlist = Vec::new();
+        encode_len_field(&mut kvlist, 1, &kv);
+
+        let mut body = Vec::new();
+        encode_len_field(&mut body, otlp::ANY_VALUE_KVLIST_VALUE, &kvlist);
+
+        let mut log_record = Vec::new();
+        encode_len_field(&mut log_record, otlp::LOG_RECORD_BODY, &body);
+        let mut scope_logs = Vec::new();
+        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        let mut resource_logs = Vec::new();
+        encode_len_field(
+            &mut resource_logs,
+            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            &scope_logs,
+        );
+        let mut payload = Vec::new();
+        encode_len_field(
+            &mut payload,
+            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            &resource_logs,
+        );
+
+        assert_projected_payload_matches_prost(&payload);
+    }
+
+    #[test]
+    fn projected_complex_anyvalue_malformed_nested_length_is_invalid() {
+        // AnyValue.array_value containing ArrayValue.values with truncated length.
+        // array bytes: field=1(len), length=2, payload has only one byte.
+        let malformed_array = [0x0a, 0x02, 0x01];
+        let mut any = Vec::new();
+        encode_len_field(&mut any, otlp::ANY_VALUE_ARRAY_VALUE, &malformed_array);
+
+        let mut log_record = Vec::new();
+        encode_len_field(&mut log_record, otlp::LOG_RECORD_BODY, &any);
+        let mut scope_logs = Vec::new();
+        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        let mut resource_logs = Vec::new();
+        encode_len_field(
+            &mut resource_logs,
+            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            &scope_logs,
+        );
+        let mut payload = Vec::new();
+        encode_len_field(
+            &mut payload,
+            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            &resource_logs,
+        );
+
+        let projection_err =
+            decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+                .expect_err("truncated nested complex AnyValue should fail projection");
+        assert!(matches!(projection_err, ProjectionError::Invalid(_)));
+        assert!(
+            crate::otlp_receiver::decode_protobuf_to_batch(&payload).is_err(),
+            "production decoder should reject malformed nested complex AnyValue wire"
+        );
+    }
+
+    #[test]
+    fn projected_deeply_nested_complex_anyvalue_matches_prost() {
+        let mut nested = any_string("leaf");
+        for _ in 0..48 {
+            nested = AnyValue {
+                value: Some(Value::ArrayValue(ArrayValue {
+                    values: vec![nested],
+                })),
+            };
+        }
+
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                scope_logs: vec![ScopeLogs {
+                    log_records: vec![LogRecord {
+                        body: Some(nested),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        assert_projected_matches_prost(&request);
+    }
+
     // ── Expanded proptest ─────────────────────────────────────────────
 
     proptest! {

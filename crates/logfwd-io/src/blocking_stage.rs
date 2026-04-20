@@ -265,6 +265,7 @@ mod tests {
     use std::future::Future;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
+    use std::thread::ThreadId;
     use std::time::Duration;
 
     struct CountingWorker {
@@ -305,6 +306,19 @@ mod tests {
 
         fn process(&mut self, (): Self::Job) -> Result<Self::Output, Self::Error> {
             Ok(self.worker_id)
+        }
+    }
+
+    struct ThreadIdentityWorker;
+
+    impl BlockingWorker for ThreadIdentityWorker {
+        type Job = ();
+        type Output = (ThreadId, Option<String>);
+        type Error = ();
+
+        fn process(&mut self, (): Self::Job) -> Result<Self::Output, Self::Error> {
+            let current = thread::current();
+            Ok((current.id(), current.name().map(str::to_owned)))
         }
     }
 
@@ -536,6 +550,28 @@ mod tests {
             total_seen.load(Ordering::Relaxed),
             65,
             "all dropped-receiver jobs should still be processed without leaking permits"
+        );
+    }
+
+    #[test]
+    fn jobs_run_on_dedicated_worker_threads_not_submitter_threads() {
+        let stage =
+            BoundedBlockingStage::new(1, 1, |_| ThreadIdentityWorker).expect("stage should build");
+        let submitter = thread::current();
+        let submitter_id = submitter.id();
+
+        let (worker_id, worker_name) =
+            block_on(stage.try_submit(()).expect("submit").recv()).expect("result should succeed");
+
+        assert_ne!(
+            worker_id, submitter_id,
+            "CPU job must execute on dedicated blocking-stage worker thread"
+        );
+        assert!(
+            worker_name
+                .as_deref()
+                .is_some_and(|name| name.starts_with("blocking-stage-")),
+            "worker thread should use blocking-stage thread namespace"
         );
     }
 }
