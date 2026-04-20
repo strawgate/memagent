@@ -155,10 +155,10 @@ pub(super) fn build_input_state(
             let format = cfg.format.clone().unwrap_or(Format::Auto);
             let mut tail_config = TailConfig {
                 start_from_end: false,
-                poll_interval_ms: f
-                    .poll_interval_ms
-                    .map(|v| v.get())
-                    .unwrap_or(DEFAULT_FILE_POLL_INTERVAL_MS),
+                poll_interval_ms: f.poll_interval_ms.map_or(
+                    DEFAULT_FILE_POLL_INTERVAL_MS,
+                    logfwd_config::PositiveMillis::get,
+                ),
                 read_buf_size: f.read_buf_size.unwrap_or(DEFAULT_READ_BUF_SIZE),
                 per_file_read_budget_bytes: f
                     .per_file_read_budget_bytes
@@ -511,7 +511,7 @@ pub(super) fn build_input_state(
                         .sensor
                         .as_ref()
                         .and_then(|c| c.poll_interval_ms)
-                        .map(|v| v.get()),
+                        .map(logfwd_config::PositiveMillis::get),
                 };
 
                 let source = PlatformSensorInput::new(name, sensor_cfg).map_err(|e| {
@@ -637,7 +637,9 @@ pub(super) fn build_input_state(
                     s3_cfg.max_concurrent_objects,
                     s3_cfg.visibility_timeout_secs,
                     compression_override,
-                    s3_cfg.poll_interval_ms.map(|v| v.get()),
+                    s3_cfg
+                        .poll_interval_ms
+                        .map(logfwd_config::PositiveMillis::get),
                 )
                 .map_err(|e| format!("input '{name}': {e}"))?;
 
@@ -709,14 +711,14 @@ pub(super) fn build_input_state(
 fn build_host_metrics_config(
     cfg: Option<&HostMetricsInputConfig>,
 ) -> logfwd_io::host_metrics::HostMetricsConfig {
-    let poll_interval_ms = cfg
-        .and_then(|c| c.poll_interval_ms)
-        .map(|v| v.get())
-        .unwrap_or(DEFAULT_SENSOR_POLL_INTERVAL_MS);
-    let control_reload_interval_ms = cfg
-        .and_then(|c| c.control_reload_interval_ms)
-        .map(|v| v.get())
-        .unwrap_or(DEFAULT_SENSOR_CONTROL_RELOAD_INTERVAL_MS);
+    let poll_interval_ms = cfg.and_then(|c| c.poll_interval_ms).map_or(
+        DEFAULT_SENSOR_POLL_INTERVAL_MS,
+        logfwd_config::PositiveMillis::get,
+    );
+    let control_reload_interval_ms = cfg.and_then(|c| c.control_reload_interval_ms).map_or(
+        DEFAULT_SENSOR_CONTROL_RELOAD_INTERVAL_MS,
+        logfwd_config::PositiveMillis::get,
+    );
     logfwd_io::host_metrics::HostMetricsConfig {
         poll_interval: std::time::Duration::from_millis(poll_interval_ms),
         control_path: cfg.and_then(|c| c.control_path.clone()).map(PathBuf::from),
