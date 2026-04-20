@@ -138,8 +138,8 @@ Read objects from AWS S3 or an S3-compatible endpoint. The S3 input can poll
 | `s3.access_key_id` | string | No | AWS access key ID. Falls back to `AWS_ACCESS_KEY_ID`. |
 | `s3.secret_access_key` | string | No | AWS secret access key. Falls back to `AWS_SECRET_ACCESS_KEY`. |
 | `s3.session_token` | string | No | AWS session token. Falls back to `AWS_SESSION_TOKEN`. |
-| `s3.part_size_bytes` | integer | No | Range-GET part size. Defaults to 8388608. |
-| `s3.max_concurrent_fetches` | integer | No | Maximum concurrent range GETs per object. Defaults to 8. |
+| `s3.part_size_bytes` | integer | No | Range-GET part size. Defaults to 1048576. |
+| `s3.max_concurrent_fetches` | integer | No | Maximum concurrent range GETs per object. Defaults to 16. |
 | `s3.max_concurrent_objects` | integer | No | Maximum objects fetched at once. Defaults to 4. |
 | `s3.visibility_timeout_secs` | integer | No | SQS visibility timeout. Defaults to 300 and must be at least 30. |
 | `s3.compression` | string | No | Compression override: `auto`, `gzip`, `zstd`, `snappy`, or `none`. Defaults to `auto`. |
