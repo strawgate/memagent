@@ -127,6 +127,12 @@ impl FormatDecoder {
         }
     }
 
+    /// Return true when this decoder can emit CRI metadata sidecars.
+    #[must_use]
+    pub fn emits_cri_metadata(&self) -> bool {
+        matches!(self, Self::Cri { .. } | Self::Auto { .. })
+    }
+
     /// Create a new instance with fresh state but the same format and stats.
     ///
     /// Used to create per-source format processors so that stateful formats

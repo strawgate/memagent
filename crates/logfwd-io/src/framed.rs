@@ -26,6 +26,9 @@ use std::sync::Arc;
 /// input without newlines). Applied per source.
 const MAX_REMAINDER_BYTES: usize = 2 * 1024 * 1024;
 
+const INITIAL_CRI_METADATA_SPANS: usize = 16;
+const INITIAL_CRI_TIMESTAMP_BYTES: usize = 1024;
+
 /// Per-source state for framing and checkpoint tracking.
 ///
 /// Each logical source (identified by `Option<SourceId>`) gets its own
@@ -84,12 +87,17 @@ impl FramedInput {
         format: FormatDecoder,
         stats: Arc<ComponentStats>,
     ) -> Self {
+        let cri_metadata_buf = if format.emits_cri_metadata() {
+            CriMetadata::with_capacity(INITIAL_CRI_METADATA_SPANS, INITIAL_CRI_TIMESTAMP_BYTES)
+        } else {
+            CriMetadata::default()
+        };
         Self {
             inner,
             format_template: format,
             sources: HashMap::new(),
             out_buf: Vec::with_capacity(64 * 1024),
-            cri_metadata_buf: CriMetadata::default(),
+            cri_metadata_buf,
             spare_buf: Vec::with_capacity(64 * 1024),
             stats,
             last_raw_had_payload: false,
@@ -100,12 +108,7 @@ impl FramedInput {
         if self.cri_metadata_buf.is_empty() {
             return None;
         }
-        let replacement = CriMetadata {
-            spans: Vec::with_capacity(self.cri_metadata_buf.spans.capacity()),
-            timestamp_bytes: Vec::with_capacity(self.cri_metadata_buf.timestamp_bytes.capacity()),
-            rows: 0,
-            has_values: false,
-        };
+        let replacement = self.cri_metadata_buf.empty_with_preserved_capacity();
         let metadata = std::mem::replace(&mut self.cri_metadata_buf, replacement);
         Some(metadata)
     }

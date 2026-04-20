@@ -109,6 +109,27 @@ pub struct CriMetadata {
 }
 
 impl CriMetadata {
+    /// Create an empty CRI metadata sidecar with reusable buffer capacity.
+    ///
+    /// This is intended for hot-path buffers that are cleared and reused across
+    /// batches. Use [`CriMetadata::default`] for cold or optional state that
+    /// should not allocate until metadata is actually appended.
+    #[must_use]
+    pub fn with_capacity(spans: usize, timestamp_bytes: usize) -> Self {
+        Self {
+            spans: Vec::with_capacity(spans),
+            timestamp_bytes: Vec::with_capacity(timestamp_bytes),
+            rows: 0,
+            has_values: false,
+        }
+    }
+
+    /// Create an empty sidecar with the same reusable capacities as `self`.
+    #[must_use]
+    pub fn empty_with_preserved_capacity(&self) -> Self {
+        Self::with_capacity(self.spans.capacity(), self.timestamp_bytes.capacity())
+    }
+
     /// Return true when this sidecar has no represented rows.
     pub fn is_empty(&self) -> bool {
         self.rows == 0
