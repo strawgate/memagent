@@ -2,6 +2,7 @@
 //!
 //! These events are only compiled when `logfwd-runtime` is built with
 //! `feature = "turmoil"`. Production builds are unaffected.
+// xtask-verify: allow(pub_module_needs_tests) reason: turmoil-only seam event enum; behavior verified by turmoil integration suites
 
 use crate::worker_pool::DeliveryOutcome;
 

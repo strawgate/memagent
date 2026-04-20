@@ -10,6 +10,9 @@ description = "Attribute macros that mark functions for semantic lints (e.g., #[
 proc-macro = true
 
 [dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full", "parsing"] }
 
 [lints]
 workspace = true

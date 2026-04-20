@@ -443,6 +443,12 @@ fn decode_batch_arrow_records(buf: &[u8]) -> Result<BatchArrowRecords, InputErro
     })
 }
 
+#[cfg(fuzzing)]
+pub fn fuzz_decode_batch_arrow_records(buf: &[u8]) -> Result<(i64, usize), InputError> {
+    let decoded = decode_batch_arrow_records(buf)?;
+    Ok((decoded.batch_id, decoded.payloads.len()))
+}
+
 fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusCode> {
     let Some(value) = headers.get(CONTENT_ENCODING) else {
         return Ok(None);

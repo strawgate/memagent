@@ -1,6 +1,8 @@
 # taplo TOML formatter/linter configuration
 # https://taplo.tamasfe.dev/configuration/
 
+exclude = ["**/cloud-artifacts/**"]
+
 [formatting]
 align_entries = false
 array_auto_expand = true

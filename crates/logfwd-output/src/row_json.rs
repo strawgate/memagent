@@ -1,3 +1,4 @@
+// xtask-verify: allow(pub_module_needs_tests) reason: integration coverage lives in otlp_sink/arrow sink tests; dedicated unit tests tracked separately
 use std::io::{self, Write};
 
 use arrow::array::{
@@ -481,4 +482,191 @@ pub fn write_row_json(
     }
     out.push(b'}');
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use arrow::array::{Float64Array, Int64Array, StringArray, StructArray};
+    use arrow::buffer::NullBuffer;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use proptest::prelude::*;
+
+    use crate::{build_col_infos, resolve_col_infos};
+
+    mod arrow_test_utils {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../logfwd-test-utils/src/arrow.rs"
+        ));
+    }
+
+    fn serialize_row_via_default(batch: &RecordBatch, row: usize) -> String {
+        let cols = build_col_infos(batch);
+        let mut out = Vec::new();
+        write_row_json(batch, row, &cols, &mut out).expect("row serialization must succeed");
+        String::from_utf8(out).expect("row json must be utf8")
+    }
+
+    fn serialize_row_via_resolved(batch: &RecordBatch, row: usize) -> String {
+        let cols = build_col_infos(batch);
+        let resolved = resolve_col_infos(batch, &cols);
+        let mut out = Vec::new();
+        write_row_json_resolved(row, &resolved, &mut out)
+            .expect("resolved row serialization must succeed");
+        String::from_utf8(out).expect("row json must be utf8")
+    }
+
+    fn scalar_batch(rows: Vec<(String, i64, f64, bool)>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new("count", DataType::Int64, false),
+            Field::new("ratio", DataType::Float64, false),
+            Field::new("ok", DataType::Boolean, false),
+        ]));
+
+        let text = rows.iter().map(|row| row.0.as_str()).collect::<Vec<_>>();
+        let count = rows.iter().map(|row| row.1).collect::<Vec<_>>();
+        let ratio = rows.iter().map(|row| row.2).collect::<Vec<_>>();
+        let ok = rows.iter().map(|row| row.3).collect::<Vec<_>>();
+
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(text)),
+                Arc::new(Int64Array::from(count)),
+                Arc::new(Float64Array::from(ratio)),
+                Arc::new(arrow::array::BooleanArray::from(ok)),
+            ],
+        )
+        .expect("scalar batch must be valid")
+    }
+
+    proptest! {
+        #[test]
+        fn row_json_produces_valid_json(batch in arrow_test_utils::arb_record_batch()) {
+            let cols = build_col_infos(&batch);
+            for row in 0..batch.num_rows() {
+                let mut out = Vec::new();
+                write_row_json(&batch, row, &cols, &mut out).expect("serialize");
+                let text = String::from_utf8(out).expect("utf8");
+                let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+                prop_assert!(value.is_object(), "row json must be an object: {text}");
+            }
+        }
+
+        #[test]
+        fn row_json_field_count_matches_schema(
+            rows in proptest::collection::vec(
+                (
+                    proptest::collection::vec(any::<char>(), 0..=10).prop_map(|chars| chars.into_iter().collect::<String>()),
+                    any::<i64>(),
+                    (-1_000_000i64..1_000_000i64).prop_map(|n| n as f64 / 10.0),
+                    any::<bool>(),
+                ),
+                0..20,
+            )
+        ) {
+            let batch = scalar_batch(rows);
+            for row in 0..batch.num_rows() {
+                let text = serialize_row_via_default(&batch, row);
+                let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+                let object = value.as_object().expect("must be object");
+                prop_assert_eq!(object.len(), batch.schema().fields().len());
+            }
+        }
+
+        #[test]
+        fn row_json_null_handling(
+            text_values in proptest::collection::vec(prop::option::of(any::<String>()), 0..20),
+            int_values in proptest::collection::vec(prop::option::of(any::<i64>()), 0..20),
+        ) {
+            let row_count = text_values.len().min(int_values.len());
+            let text_values = text_values.into_iter().take(row_count).collect::<Vec<_>>();
+            let int_values = int_values.into_iter().take(row_count).collect::<Vec<_>>();
+
+            let struct_fields = vec![
+                Arc::new(Field::new("inner_text", DataType::Utf8, true)),
+                Arc::new(Field::new("inner_int", DataType::Int64, true)),
+            ];
+            let struct_array = StructArray::new(
+                struct_fields.clone().into(),
+                vec![
+                    Arc::new(StringArray::from(text_values.iter().map(|v| v.as_deref()).collect::<Vec<_>>())),
+                    Arc::new(Int64Array::from(int_values.clone())),
+                ],
+                Some(NullBuffer::from(vec![true; row_count])),
+            );
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                "nested",
+                DataType::Struct(struct_fields.into()),
+                true,
+            )]));
+            let batch = RecordBatch::try_new(schema, vec![Arc::new(struct_array)]).expect("valid nested batch");
+
+            for row in 0..batch.num_rows() {
+                let text = serialize_row_via_default(&batch, row);
+                let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+                let nested = value
+                    .get("nested")
+                    .and_then(serde_json::Value::as_object)
+                    .expect("nested object should be present");
+
+                let inner_text = nested.get("inner_text").expect("inner_text key present");
+                let inner_int = nested.get("inner_int").expect("inner_int key present");
+                prop_assert_ne!(inner_text, "null", "inner_text must not serialize as string literal 'null'");
+                prop_assert_ne!(inner_int, "null", "inner_int must not serialize as string literal 'null'");
+
+                if text_values[row].is_none() {
+                    prop_assert!(inner_text.is_null(), "null inner_text must serialize as JSON null");
+                }
+                if int_values[row].is_none() {
+                    prop_assert!(inner_int.is_null(), "null inner_int must serialize as JSON null");
+                }
+            }
+        }
+
+        #[test]
+        fn row_json_paths_agree(batch in arrow_test_utils::arb_record_batch_without_null_column()) {
+            for row in 0..batch.num_rows() {
+                let direct = serialize_row_via_default(&batch, row);
+                let resolved = serialize_row_via_resolved(&batch, row);
+                prop_assert_eq!(resolved, direct, "resolved and default row serializers diverged");
+            }
+        }
+    }
+
+    #[test]
+    fn row_json_special_floats() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "ratio",
+            DataType::Float64,
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Float64Array::from(vec![
+                Some(f64::NAN),
+                Some(f64::INFINITY),
+                Some(f64::NEG_INFINITY),
+                Some(1.5),
+            ]))],
+        )
+        .expect("valid float batch");
+
+        let cols = build_col_infos(&batch);
+        for row in 0..batch.num_rows() {
+            let mut out = Vec::new();
+            write_row_json(&batch, row, &cols, &mut out).expect("serialize");
+            let value: serde_json::Value = serde_json::from_slice(&out).expect("valid json");
+            let ratio = value.get("ratio").expect("ratio field present");
+            if row < 3 {
+                assert!(ratio.is_null(), "NaN and infinities must serialize as null");
+            } else {
+                assert_eq!(ratio.as_f64(), Some(1.5));
+            }
+        }
+    }
 }
