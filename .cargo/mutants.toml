@@ -48,8 +48,8 @@ exclude_globs = [
 # Cap lint level to avoid deny-warnings build failures on mutated code.
 cap_lints = true
 
-# Timeout: 2x baseline to catch infinite loops without being too generous.
-# Baseline test is ~26s, so 2x = ~80s effective timeout after multiplier.
+# Timeout: 2.5x baseline to catch infinite loops without being too generous.
+# Baseline test is ~26s, so 2.5x = ~65s effective timeout after multiplier.
 timeout_multiplier = 2.5
 
 # Build timeout: generous since incremental builds vary.
