@@ -1,13 +1,11 @@
-#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Quick source metadata attachment timing/allocation profile.
 //!
 //! Run:
 //! `cargo run -p logfwd-bench --release --bin source_metadata_profile -- --rows 50000 --sources 300 --iterations 200`
 
-#![allow(clippy::print_stdout)]
-
 use std::alloc::System;
 use std::collections::HashMap;
+use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -46,7 +44,7 @@ struct ResultRow {
     bytes_per_row: f64,
 }
 
-fn main() {
+fn main() -> io::Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
     let rows = parse_flag(&args, "--rows", 50_000usize);
     let sources = parse_flag(&args, "--sources", 300usize).max(1);
@@ -56,12 +54,17 @@ fn main() {
     let fixture = make_fixture(rows, sources, run_len);
     let raw_json = generators::gen_production_mixed(rows, 42);
     let raw_path = "/var/log/pods/namespace_pod_uid/container/0.log";
+    let mut stdout = io::stdout().lock();
 
-    println!(
+    writeln!(
+        stdout,
         "source metadata profile rows={rows} sources={sources} run_len={run_len} iterations={iterations}"
-    );
-    println!("| mode | total ms | ns/row | allocs/iter | bytes/row | allocated MiB |");
-    println!("|---|---:|---:|---:|---:|---:|");
+    )?;
+    writeln!(
+        stdout,
+        "| mode | total ms | ns/row | allocs/iter | bytes/row | allocated MiB |"
+    )?;
+    writeln!(stdout, "|---|---:|---:|---:|---:|---:|")?;
 
     for result in [
         measure("__source_id_uint64", iterations, rows, || {
@@ -83,7 +86,8 @@ fn main() {
             raw_rewrite_source_path(&raw_json, raw_path)
         }),
     ] {
-        println!(
+        writeln!(
+            stdout,
             "| {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.2} |",
             result.mode,
             result.elapsed_ms,
@@ -91,8 +95,10 @@ fn main() {
             result.allocations as f64 / result.iterations as f64,
             result.bytes_per_row,
             result.bytes_allocated as f64 / 1_048_576.0,
-        );
+        )?;
     }
+
+    Ok(())
 }
 
 fn parse_flag<T>(args: &[String], name: &str, default: T) -> T

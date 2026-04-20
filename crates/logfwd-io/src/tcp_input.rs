@@ -12,10 +12,8 @@ use std::time::{Duration, Instant};
 
 use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::pipeline::SourceId;
-use rustls::RootCertStore;
 use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
-use rustls::server::WebPkiClientVerifier;
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use socket2::SockRef;
 
@@ -315,10 +313,6 @@ pub struct TcpInputTlsOptions {
     pub cert_file: String,
     /// Path to a PEM-encoded private key file matching `cert_file`.
     pub key_file: String,
-    /// Path to a PEM-encoded CA bundle used to verify client certificates.
-    pub client_ca_file: Option<String>,
-    /// Require clients to present a certificate signed by `client_ca_file`.
-    pub require_client_auth: bool,
 }
 
 /// TCP input that accepts connections and reads newline-delimited data.
@@ -394,77 +388,18 @@ impl TcpInput {
                 ),
             )
         })?;
-        let builder = ServerConfig::builder();
-        let builder = if opts.require_client_auth {
-            let client_ca_file = opts
-                .client_ca_file
-                .as_deref()
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "tcp.tls.require_client_auth requires tcp.tls.client_ca_file",
-                    )
-                })?;
-            let client_ca_certs = CertificateDer::pem_file_iter(client_ca_file)
-                .map_err(|e| {
-                    io::Error::new(
-                        pem_error_kind(&e),
-                        format!(
-                            "tcp.tls.client_ca_file '{client_ca_file}' could not be opened or parsed as PEM: {e}"
-                        ),
-                    )
-                })?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "tcp.tls.client_ca_file '{client_ca_file}' could not be parsed as PEM: {e}"
-                        ),
-                    )
-                })?;
-            if client_ca_certs.is_empty() {
-                return Err(io::Error::new(
+        let cfg = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .map_err(|e| {
+                io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("tcp.tls.client_ca_file '{client_ca_file}' contained no certificates"),
-                ));
-            }
-            let mut roots = RootCertStore::empty();
-            for cert in client_ca_certs {
-                roots.add(cert).map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "tcp.tls.client_ca_file '{client_ca_file}' contained an invalid CA certificate: {e}"
-                        ),
-                    )
-                })?;
-            }
-            let verifier = WebPkiClientVerifier::builder(std::sync::Arc::new(roots))
-                .build()
-                .map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "tcp.tls.client_ca_file '{client_ca_file}' could not build a client certificate verifier: {e}"
-                        ),
-                    )
-                })?;
-            builder.with_client_cert_verifier(verifier)
-        } else {
-            builder.with_no_client_auth()
-        };
-        let cfg = builder.with_single_cert(certs, key).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "tcp.tls cert/key mismatch between '{}' and '{}': {e}",
-                    opts.cert_file, opts.key_file
-                ),
-            )
-        })?;
+                    format!(
+                        "tcp.tls cert/key mismatch between '{}' and '{}': {e}",
+                        opts.cert_file, opts.key_file
+                    ),
+                )
+            })?;
         Ok(std::sync::Arc::new(cfg))
     }
 
@@ -848,10 +783,7 @@ impl InputSource for TcpInput {
 mod tests {
     use super::*;
     use proptest::prelude::*;
-    use rcgen::{
-        BasicConstraints, Certificate, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer,
-        KeyPair, KeyUsagePurpose, generate_simple_self_signed,
-    };
+    use rcgen::generate_simple_self_signed;
     use rustls::pki_types::ServerName;
     use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
     use std::fs;
@@ -904,94 +836,13 @@ mod tests {
         )
     }
 
-    fn write_mtls_files(
-        server_cert_pem: &str,
-        server_key_pem: &str,
-        ca_cert_pem: &str,
-    ) -> (tempfile::TempDir, String, String, String) {
-        let (dir, cert_file, key_file) = write_tls_files(server_cert_pem, server_key_pem);
-        let ca_path = dir.path().join("client-ca.crt");
-        fs::write(&ca_path, ca_cert_pem).expect("CA file should be written");
-        (
-            dir,
-            cert_file,
-            key_file,
-            ca_path.to_string_lossy().to_string(),
-        )
-    }
-
     fn make_tls_options(cert_file: String, key_file: String) -> TcpInputOptions {
         TcpInputOptions {
             tls: Some(TcpInputTlsOptions {
                 cert_file,
                 key_file,
-                client_ca_file: None,
-                require_client_auth: false,
             }),
             ..Default::default()
-        }
-    }
-
-    fn make_mtls_options(cert_file: String, key_file: String, ca_file: String) -> TcpInputOptions {
-        TcpInputOptions {
-            tls: Some(TcpInputTlsOptions {
-                cert_file,
-                key_file,
-                client_ca_file: Some(ca_file),
-                require_client_auth: true,
-            }),
-            ..Default::default()
-        }
-    }
-
-    fn make_ca() -> (Certificate, Issuer<'static, KeyPair>) {
-        let mut params =
-            CertificateParams::new(Vec::<String>::new()).expect("empty SAN should be valid");
-        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        params.key_usages.push(KeyUsagePurpose::KeyCertSign);
-        params.key_usages.push(KeyUsagePurpose::DigitalSignature);
-
-        let key_pair = KeyPair::generate().expect("CA key should generate");
-        let cert = params
-            .self_signed(&key_pair)
-            .expect("CA cert should self-sign");
-        (cert, Issuer::new(params, key_pair))
-    }
-
-    fn make_signed_cert(
-        name: &str,
-        eku: ExtendedKeyUsagePurpose,
-        issuer: &Issuer<'static, KeyPair>,
-    ) -> (Certificate, String) {
-        let mut params = CertificateParams::new(vec![name.to_string()])
-            .expect("certificate SAN should be valid");
-        params.key_usages.push(KeyUsagePurpose::DigitalSignature);
-        params.extended_key_usages.push(eku);
-        let key_pair = KeyPair::generate().expect("leaf key should generate");
-        let cert = params
-            .signed_by(&key_pair, issuer)
-            .expect("leaf cert should be signed by CA");
-        (cert, key_pair.serialize_pem())
-    }
-
-    fn client_config(
-        server_ca: &Certificate,
-        client_cert: Option<(&Certificate, &str)>,
-    ) -> ClientConfig {
-        let mut roots = RootCertStore::empty();
-        roots
-            .add(server_ca.der().clone())
-            .expect("generated CA should load as trust anchor");
-        let builder = ClientConfig::builder().with_root_certificates(roots);
-        match client_cert {
-            Some((cert, key_pem)) => builder
-                .with_client_auth_cert(
-                    vec![cert.der().clone()],
-                    PrivateKeyDer::from_pem_slice(key_pem.as_bytes())
-                        .expect("client key PEM should parse"),
-                )
-                .expect("client cert/key should match"),
-            None => builder.with_no_client_auth(),
         }
     }
 
@@ -1053,138 +904,6 @@ mod tests {
             .join()
             .expect("tls client writer thread should complete");
         assert_eq!(joined, b"{\"msg\":\"tls\"}\n");
-    }
-
-    #[test]
-    fn mtls_listener_accepts_trusted_client_certificate() {
-        let (ca_cert, ca_issuer) = make_ca();
-        let (server_cert, server_key_pem) =
-            make_signed_cert("localhost", ExtendedKeyUsagePurpose::ServerAuth, &ca_issuer);
-        let (client_cert, client_key_pem) =
-            make_signed_cert("client", ExtendedKeyUsagePurpose::ClientAuth, &ca_issuer);
-        let (_tmp, cert_file, key_file, ca_file) =
-            write_mtls_files(&server_cert.pem(), &server_key_pem, &ca_cert.pem());
-
-        let stats = std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new());
-        let mut input = TcpInput::with_options(
-            "mtls-test",
-            "127.0.0.1:0",
-            make_mtls_options(cert_file, key_file, ca_file),
-            stats,
-        )
-        .expect("mTLS listener should start");
-        let addr = input.local_addr().expect("mTLS listener local addr");
-
-        let conn = ClientConnection::new(
-            std::sync::Arc::new(client_config(
-                &ca_cert,
-                Some((&client_cert, &client_key_pem)),
-            )),
-            ServerName::try_from("localhost").expect("valid SNI"),
-        )
-        .expect("client connection should initialize");
-        let tcp = StdTcpStream::connect(addr).expect("client should connect");
-        let writer = std::thread::spawn(move || {
-            let mut tls = StreamOwned::new(conn, tcp);
-            tls.write_all(b"{\"msg\":\"mtls\"}\n")?;
-            tls.flush()
-        });
-
-        let joined = poll_tcp_bytes_until(&mut input, |bytes| bytes == b"{\"msg\":\"mtls\"}\n");
-        writer
-            .join()
-            .expect("mTLS client writer thread should complete")
-            .expect("mTLS write should succeed");
-        assert_eq!(joined, b"{\"msg\":\"mtls\"}\n");
-    }
-
-    #[test]
-    fn mtls_listener_rejects_missing_client_certificate() {
-        let (ca_cert, ca_issuer) = make_ca();
-        let (server_cert, server_key_pem) =
-            make_signed_cert("localhost", ExtendedKeyUsagePurpose::ServerAuth, &ca_issuer);
-        let (_tmp, cert_file, key_file, ca_file) =
-            write_mtls_files(&server_cert.pem(), &server_key_pem, &ca_cert.pem());
-
-        let stats = std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new());
-        let mut input = TcpInput::with_options(
-            "mtls-test",
-            "127.0.0.1:0",
-            make_mtls_options(cert_file, key_file, ca_file),
-            stats,
-        )
-        .expect("mTLS listener should start");
-        let addr = input.local_addr().expect("mTLS listener local addr");
-
-        let conn = ClientConnection::new(
-            std::sync::Arc::new(client_config(&ca_cert, None)),
-            ServerName::try_from("localhost").expect("valid SNI"),
-        )
-        .expect("client connection should initialize");
-        let tcp = StdTcpStream::connect(addr).expect("client should connect");
-        let writer = std::thread::spawn(move || {
-            let mut tls = StreamOwned::new(conn, tcp);
-            let _ = tls.write_all(b"{\"msg\":\"missing-cert\"}\n");
-            let _ = tls.flush();
-        });
-
-        let data_events = poll_for_data_events(&mut input, 50);
-        writer
-            .join()
-            .expect("mTLS client writer thread should complete");
-        assert!(
-            data_events.is_empty(),
-            "mTLS listener must not emit records when the client omits a certificate"
-        );
-    }
-
-    #[test]
-    fn mtls_listener_rejects_untrusted_client_certificate() {
-        let (ca_cert, ca_issuer) = make_ca();
-        let (_untrusted_ca_cert, untrusted_ca_issuer) = make_ca();
-        let (server_cert, server_key_pem) =
-            make_signed_cert("localhost", ExtendedKeyUsagePurpose::ServerAuth, &ca_issuer);
-        let (client_cert, client_key_pem) = make_signed_cert(
-            "client",
-            ExtendedKeyUsagePurpose::ClientAuth,
-            &untrusted_ca_issuer,
-        );
-        let (_tmp, cert_file, key_file, ca_file) =
-            write_mtls_files(&server_cert.pem(), &server_key_pem, &ca_cert.pem());
-
-        let stats = std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new());
-        let mut input = TcpInput::with_options(
-            "mtls-test",
-            "127.0.0.1:0",
-            make_mtls_options(cert_file, key_file, ca_file),
-            stats,
-        )
-        .expect("mTLS listener should start");
-        let addr = input.local_addr().expect("mTLS listener local addr");
-
-        let conn = ClientConnection::new(
-            std::sync::Arc::new(client_config(
-                &ca_cert,
-                Some((&client_cert, &client_key_pem)),
-            )),
-            ServerName::try_from("localhost").expect("valid SNI"),
-        )
-        .expect("client connection should initialize");
-        let tcp = StdTcpStream::connect(addr).expect("client should connect");
-        let writer = std::thread::spawn(move || {
-            let mut tls = StreamOwned::new(conn, tcp);
-            let _ = tls.write_all(b"{\"msg\":\"untrusted\"}\n");
-            let _ = tls.flush();
-        });
-
-        let data_events = poll_for_data_events(&mut input, 50);
-        writer
-            .join()
-            .expect("mTLS client writer thread should complete");
-        assert!(
-            data_events.is_empty(),
-            "mTLS listener must not emit records for untrusted client certificates"
-        );
     }
 
     #[test]
@@ -1334,57 +1053,6 @@ mod tests {
         assert!(
             err.to_string().contains("cert/key mismatch"),
             "error should mention cert/key mismatch: {err}"
-        );
-    }
-
-    #[test]
-    fn mtls_listener_fails_on_malformed_client_ca_pem() {
-        let certified = generate_simple_self_signed(vec!["localhost".into()])
-            .expect("test cert generation should succeed");
-        let (tmp, cert_file, key_file) = write_tls_files(
-            &certified.cert.pem(),
-            &certified.signing_key.serialize_pem(),
-        );
-        let ca_path = tmp.path().join("client-ca.crt");
-        fs::write(&ca_path, "not-a-ca").expect("client CA file should be written");
-
-        let err = match TcpInput::with_options(
-            "mtls-test",
-            "127.0.0.1:0",
-            make_mtls_options(cert_file, key_file, ca_path.to_string_lossy().to_string()),
-            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
-        ) {
-            Ok(_) => panic!("malformed client CA must fail startup"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string().contains("tcp.tls.client_ca_file"),
-            "error should identify tcp.tls.client_ca_file: {err}"
-        );
-    }
-
-    #[test]
-    fn mtls_listener_requires_non_empty_client_ca_path() {
-        let certified = generate_simple_self_signed(vec!["localhost".into()])
-            .expect("test cert generation should succeed");
-        let (_tmp, cert_file, key_file) = write_tls_files(
-            &certified.cert.pem(),
-            &certified.signing_key.serialize_pem(),
-        );
-
-        let err = match TcpInput::with_options(
-            "mtls-test",
-            "127.0.0.1:0",
-            make_mtls_options(cert_file, key_file, "   ".to_string()),
-            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
-        ) {
-            Ok(_) => panic!("blank client CA path must fail startup"),
-            Err(err) => err,
-        };
-        assert!(
-            err.to_string()
-                .contains("require_client_auth requires tcp.tls.client_ca_file"),
-            "error should identify missing tcp.tls.client_ca_file: {err}"
         );
     }
 

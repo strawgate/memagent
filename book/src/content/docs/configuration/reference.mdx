@@ -100,7 +100,7 @@ YAML sequence for multiple inputs.
 | `type` | string | Yes | Input type. See [Input types](#input-types). |
 | `name` | string | No | Friendly name shown in diagnostics. |
 | `format` | string | No | Log format. See [Formats](#formats). Defaults to `auto`. |
-| `source_metadata` | string | No | Source metadata style. Defaults to `none`. Use `fastforward` for internal `__source_id`, `ecs`/`beats` for public ECS columns such as `file.path`, `otel` for public OpenTelemetry columns such as `log.file.path`, or `vector` for public Vector-style columns such as `file`. Public source path styles currently require file inputs because other inputs do not expose public source path snapshots. |
+| `source_metadata` | string | No | Source metadata style. Defaults to `none`. Use `fastforward` for internal `__source_id`, `ecs`/`beats` for public ECS columns such as `file.path`, `otel` for public OpenTelemetry columns such as `log.file.path`, or `vector` for public Vector-style columns such as `file`. Public source path styles require inputs that expose source path snapshots. File inputs expose filesystem paths; S3 inputs expose object keys. |
 
 ### `file` input
 
@@ -119,6 +119,45 @@ input:
   type: file
   path: /var/log/pods/**/*.log
   format: cri
+```
+
+### `s3` input
+
+Read objects from AWS S3 or an S3-compatible endpoint. The S3 input can poll
+`ListObjectsV2` by prefix, or process object notifications from SQS when
+`sqs_queue_url` is set. S3 support is behind the `s3` feature.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `s3.bucket` | string | Yes | Bucket name. |
+| `s3.region` | string | No | AWS region. Defaults to `us-east-1`. |
+| `s3.endpoint` | string | No | S3-compatible endpoint URL, for example `http://localhost:9000`. Path-style addressing is used when set. |
+| `s3.prefix` | string | No | Only process object keys with this prefix. |
+| `s3.sqs_queue_url` | string | No | SQS queue URL for event-driven object discovery. Omit to poll the bucket prefix. |
+| `s3.start_after` | string | No | Initial `ListObjectsV2` `StartAfter` key for prefix polling. |
+| `s3.access_key_id` | string | No | AWS access key ID. Falls back to `AWS_ACCESS_KEY_ID`. |
+| `s3.secret_access_key` | string | No | AWS secret access key. Falls back to `AWS_SECRET_ACCESS_KEY`. |
+| `s3.session_token` | string | No | AWS session token. Falls back to `AWS_SESSION_TOKEN`. |
+| `s3.part_size_bytes` | integer | No | Range-GET part size. Defaults to 8388608. |
+| `s3.max_concurrent_fetches` | integer | No | Maximum concurrent range GETs per object. Defaults to 8. |
+| `s3.max_concurrent_objects` | integer | No | Maximum objects fetched at once. Defaults to 4. |
+| `s3.visibility_timeout_secs` | integer | No | SQS visibility timeout. Defaults to 300 and must be at least 30. |
+| `s3.compression` | string | No | Compression override: `auto`, `gzip`, `zstd`, `snappy`, or `none`. Defaults to `auto`. |
+| `s3.poll_interval_ms` | integer | No | Prefix polling interval in milliseconds. Defaults to 5000. |
+
+When `source_metadata` is `ecs`, `beats`, `otel`, or `vector`, S3 exposes the
+object key as the source path value for each row. `fastforward` only attaches
+the internal `__source_id`, and `none` attaches no source metadata.
+
+```yaml
+input:
+  type: s3
+  format: json
+  source_metadata: ecs
+  s3:
+    bucket: app-logs
+    region: us-east-1
+    prefix: prod/
 ```
 
 ### `stdin` input
@@ -347,6 +386,7 @@ Behavior:
 | Value | Status | Description |
 |-------|--------|-------------|
 | `file` | Implemented | Tail files matching a glob pattern. |
+| `s3` | Implemented | Read objects from AWS S3 or an S3-compatible endpoint. |
 | `stdin` | Implemented | Read piped stdin until EOF, then drain outputs and exit. |
 | `generator` | Implemented | Emit synthetic JSON-like records from an in-process source. |
 | `udp` | Implemented | Receive log lines over UDP. |
@@ -639,9 +679,9 @@ returns the columns that exist in the table. User-facing sinks drop known
 FastForward internal columns such as `__source_id` by default; alias an
 internal column to a public name when it should be emitted. User payload fields
 that happen to start with `__` are not treated as internal. Public source path
-styles currently require file inputs; use `fastforward` for source identity on
-non-file inputs, including S3, until those inputs expose explicit public source
-descriptors.
+styles currently require inputs that expose source path snapshots. File inputs
+use filesystem paths; S3 inputs use object keys. Use `fastforward` for source
+identity on inputs that do not expose public source descriptors.
 
 ### Built-in UDFs
 

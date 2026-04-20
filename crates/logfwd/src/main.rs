@@ -3111,7 +3111,7 @@ input:
   path: /var/log/*.log
   format: cri
 output:
-  type: "null"
+  type: null
 transform: |
   SELECT _timestampp FROM logs
 "#;
@@ -3131,7 +3131,7 @@ input:
   path: /var/log/*.log
   format: cri
 output:
-  type: "null"
+  type: null
 transform: |
   SELECT _timestamp, _stream, body FROM logs
 "#;
@@ -3151,7 +3151,7 @@ input:
   path: /var/log/*.log
   format: cri
 output:
-  type: "null"
+  type: null
 transform: |
   SELECT level, msg, custom_field FROM logs
 "#;
@@ -3171,7 +3171,7 @@ input:
   path: /var/log/*.log
   format: json
 output:
-  type: "null"
+  type: null
 transform: |
   SELECT custom_field FROM logs
 "#;
@@ -3191,7 +3191,7 @@ input:
   path: /var/log/*.log
   format: cri
 output:
-  type: "null"
+  type: null
 enrichment:
   - type: static
     table_name: labels
@@ -3215,7 +3215,7 @@ input:
   type: file
   path: /var/log/*.log
 output:
-  type: "null"
+  type: null
 transform: |
   SELECT _unknown_col FROM logs
 "#;

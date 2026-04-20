@@ -103,6 +103,12 @@ reason = "Per-poll UDP bounded-drain stop policy is an isolated pure seam in an 
 issue = 1314
 
 [[seams]]
+path = "crates/logfwd-io/src/s3_input/mod.rs"
+status = "exempt"
+reason = "S3 input is an async/network orchestration shell; source metadata snapshot behavior is stateful IO glue covered by unit and integration tests rather than a bounded pure Kani seam."
+issue = 1314
+
+[[seams]]
 path = "crates/logfwd-output/src/elasticsearch.rs"
 status = "required"
 reason = "Local response classification helpers already carry Kani proofs."
