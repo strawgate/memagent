@@ -1,3 +1,6 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+// Binary crate: user-facing CLI output is intentional.
+
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;

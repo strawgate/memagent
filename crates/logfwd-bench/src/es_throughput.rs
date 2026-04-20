@@ -16,6 +16,7 @@
 //!   `./es-throughput 30 4 5000 0 1 streaming`   # 4 workers, streamed request body
 //!   `./es-throughput 30 1 1000 0`               # baseline (single worker, buffered, no compress)
 
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 use std::fmt::Write as FmtWrite;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

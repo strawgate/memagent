@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
 

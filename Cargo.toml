@@ -139,7 +139,11 @@ assigning_clones = "allow"
 redundant_clone = "warn"
 cloned_instead_of_copied = "warn"
 needless_pass_by_ref_mut = "warn"
-undocumented_unsafe_blocks = "warn"
+undocumented_unsafe_blocks = "deny"
+dbg_macro = "deny"
+large_enum_variant = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
