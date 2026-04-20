@@ -177,11 +177,10 @@ export function createHighwayEngine(overrides) {
         }
 
         if (segment === 'ramp') {
+          // Stop-sign merge: always brake to a stop before the merge point
           const stopS = LENGTHS.ramp - 5;
           const remaining = stopS - car.s;
-          if (!mergeAllowed()) {
-            desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
-          }
+          desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
         } else if (segment === 'exit' && !lightIsGreen && car.s < EXIT_GATE_S) {
           const remaining = EXIT_GATE_S - car.s - 15;
           desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
@@ -259,7 +258,7 @@ export function createHighwayEngine(overrides) {
     if (anySpawned) spawnBlockedTicks = 0;
     else spawnBlockedTicks++;
 
-    const stalledCount = cars.filter(car => car.speed < 12 && car.segment !== 'cont').length;
+    const stalledCount = cars.filter(car => car.speed < 12 && car.segment === 'highway').length;
     if (stalledCount > 0) stalledFrames++;
     updateCarColors();
   }
