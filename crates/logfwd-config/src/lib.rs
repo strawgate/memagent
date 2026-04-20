@@ -24,16 +24,17 @@ pub use shared::{
     TlsServerConfig,
 };
 pub use types::{
-    ArrowIpcOutputConfig, ArrowIpcTypeConfig, AuthConfig, Config, ConfigError, CsvEnrichmentConfig,
-    ElasticsearchOutputConfig, EnrichmentConfig, FileOutputConfig, FileTypeConfig, Format,
-    GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorInputConfig,
-    GeneratorProfileConfig, GeneratorSequenceConfig, GeneratorTypeConfig, GeoDatabaseConfig,
-    GeoDatabaseFormat, HostInfoConfig, HostMetricsInputConfig, HttpInputConfig, HttpMethodConfig,
-    HttpOutputConfig, HttpTypeConfig, InputConfig, InputType, InputTypeConfig,
-    JournaldBackendConfig, JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig,
-    K8sPathConfig, LokiOutputConfig, NullOutputConfig, OtlpOutputConfig,
-    OtlpProtobufDecodeModeConfig, OtlpTypeConfig, OutputConfig, OutputConfigV1, OutputConfigV2,
-    OutputType, ParquetOutputConfig, PipelineConfig, S3InputConfig, S3TypeConfig, SensorTypeConfig,
+    ArrowIpcOutputConfig, ArrowIpcTypeConfig, AuthConfig, CompressionFormat, Config, ConfigError,
+    CsvEnrichmentConfig, ElasticsearchOutputConfig, ElasticsearchRequestMode, EnrichmentConfig,
+    FileOutputConfig, FileTypeConfig, Format, GeneratorAttributeValueConfig,
+    GeneratorComplexityConfig, GeneratorInputConfig, GeneratorProfileConfig,
+    GeneratorSequenceConfig, GeneratorTypeConfig, GeoDatabaseConfig, GeoDatabaseFormat,
+    HostInfoConfig, HostMetricsInputConfig, HttpInputConfig, HttpMethodConfig, HttpOutputConfig,
+    HttpTypeConfig, InputConfig, InputType, InputTypeConfig, JournaldBackendConfig,
+    JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sPathConfig,
+    LokiOutputConfig, NullOutputConfig, OtlpOutputConfig, OtlpProtobufDecodeModeConfig,
+    OtlpProtocol, OtlpTypeConfig, OutputConfig, OutputConfigV1, OutputConfigV2, OutputType,
+    ParquetOutputConfig, PipelineConfig, S3InputConfig, S3TypeConfig, SensorTypeConfig,
     ServerConfig, SocketOutputConfig, StaticEnrichmentConfig, StdoutOutputConfig, StorageConfig,
     TcpTypeConfig, UdpTypeConfig,
 };
@@ -1118,8 +1119,8 @@ output:
         let cfg = Config::load_str(yaml).expect("streaming request_mode should validate");
         let pipe = &cfg.pipelines["default"];
         assert_eq!(
-            pipe.outputs[0].validation_config().request_mode.as_deref(),
-            Some("streaming")
+            pipe.outputs[0].validation_config().request_mode,
+            Some(ElasticsearchRequestMode::Streaming)
         );
     }
 
@@ -1135,7 +1136,11 @@ output:
   request_mode: fancy
 ";
         let err = Config::load_str(yaml).expect_err("invalid request_mode should fail");
-        assert!(err.to_string().contains("request_mode"));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("fancy") && msg.contains("buffered") && msg.contains("streaming"),
+            "expected request_mode enum rejection: {msg}"
+        );
     }
 
     #[test]
@@ -2988,6 +2993,33 @@ format: json
             err.to_string().contains("format"),
             "strict v2 otlp config should reject format, got: {err}"
         );
+    }
+
+    #[test]
+    fn output_config_v2_rejects_invalid_enum_values_at_parse_time() {
+        let cases = [
+            (
+                "type: otlp\nendpoint: http://localhost:4318/v1/logs\nprotocol: websocket\n",
+                "websocket",
+            ),
+            (
+                "type: otlp\nendpoint: http://localhost:4318/v1/logs\ncompression: lz4\n",
+                "lz4",
+            ),
+            (
+                "type: elasticsearch\nendpoint: http://localhost:9200\nrequest_mode: fancy\n",
+                "fancy",
+            ),
+        ];
+
+        for (yaml, bad_value) in cases {
+            let err = serde_yaml_ng::from_str::<OutputConfigV2>(yaml).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains(bad_value) && msg.contains("unknown variant"),
+                "expected enum parse rejection for {bad_value}: {msg}"
+            );
+        }
     }
 
     #[test]

@@ -10,16 +10,16 @@ where
     T: Deserialize<'de>,
     D: serde::Deserializer<'de>,
 {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum OneOrMany<T> {
-        Many(Vec<T>),
-        One(T),
-    }
-
-    match OneOrMany::deserialize(deserializer)? {
-        OneOrMany::Many(v) => Ok(v),
-        OneOrMany::One(v) => Ok(vec![v]),
+    let value = serde_yaml_ng::Value::deserialize(deserializer)?;
+    match value {
+        serde_yaml_ng::Value::Sequence(items) => items
+            .into_iter()
+            .map(T::deserialize)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(D::Error::custom),
+        other => T::deserialize(other)
+            .map(|item| vec![item])
+            .map_err(D::Error::custom),
     }
 }
 

@@ -170,6 +170,59 @@ impl<'de> Deserialize<'de> for OutputType {
     }
 }
 
+/// Request-body compression configured for output sinks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompressionFormat {
+    None,
+    Gzip,
+    Zstd,
+}
+
+impl fmt::Display for CompressionFormat {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CompressionFormat::None => f.write_str("none"),
+            CompressionFormat::Gzip => f.write_str("gzip"),
+            CompressionFormat::Zstd => f.write_str("zstd"),
+        }
+    }
+}
+
+/// OTLP transport protocol configured for OTLP outputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OtlpProtocol {
+    Http,
+    Grpc,
+}
+
+impl fmt::Display for OtlpProtocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OtlpProtocol::Http => f.write_str("http"),
+            OtlpProtocol::Grpc => f.write_str("grpc"),
+        }
+    }
+}
+
+/// Elasticsearch bulk request construction mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ElasticsearchRequestMode {
+    Buffered,
+    Streaming,
+}
+
+impl fmt::Display for ElasticsearchRequestMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ElasticsearchRequestMode::Buffered => f.write_str("buffered"),
+            ElasticsearchRequestMode::Streaming => f.write_str("streaming"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -767,9 +820,9 @@ pub struct OutputConfig {
     pub name: Option<String>,
     pub output_type: OutputType,
     pub endpoint: Option<String>,
-    pub protocol: Option<String>,
-    pub compression: Option<String>,
-    pub request_mode: Option<String>,
+    pub protocol: Option<OtlpProtocol>,
+    pub compression: Option<CompressionFormat>,
+    pub request_mode: Option<ElasticsearchRequestMode>,
     pub format: Option<Format>,
     pub path: Option<String>,
     pub index: Option<String>,
@@ -835,8 +888,8 @@ impl From<&OutputConfig> for OutputConfigV2 {
             OutputType::Otlp => OutputConfigV2::Otlp(OtlpOutputConfig {
                 name: config.name.clone(),
                 endpoint: config.endpoint.clone(),
-                protocol: config.protocol.clone(),
-                compression: config.compression.clone(),
+                protocol: config.protocol,
+                compression: config.compression,
                 auth: config.auth.clone(),
                 tls: config.tls.clone(),
                 headers: config.headers.clone(),
@@ -850,15 +903,15 @@ impl From<&OutputConfig> for OutputConfigV2 {
             OutputType::Http => OutputConfigV2::Http(HttpOutputConfig {
                 name: config.name.clone(),
                 endpoint: config.endpoint.clone(),
-                compression: config.compression.clone(),
+                compression: config.compression,
                 format: config.format.clone(),
                 auth: config.auth.clone(),
             }),
             OutputType::Elasticsearch => OutputConfigV2::Elasticsearch(ElasticsearchOutputConfig {
                 name: config.name.clone(),
                 endpoint: config.endpoint.clone(),
-                compression: config.compression.clone(),
-                request_mode: config.request_mode.clone(),
+                compression: config.compression,
+                request_mode: config.request_mode,
                 index: config.index.clone().or_else(|| config.path.clone()),
                 auth: config.auth.clone(),
                 tls: config.tls.clone(),
@@ -886,7 +939,7 @@ impl From<&OutputConfig> for OutputConfigV2 {
             OutputType::Parquet => OutputConfigV2::Parquet(ParquetOutputConfig {
                 name: config.name.clone(),
                 path: config.path.clone(),
-                compression: config.compression.clone(),
+                compression: config.compression,
                 format: config.format.clone(),
             }),
             OutputType::Null => OutputConfigV2::Null(NullOutputConfig {
@@ -903,7 +956,7 @@ impl From<&OutputConfig> for OutputConfigV2 {
             OutputType::ArrowIpc => OutputConfigV2::ArrowIpc(ArrowIpcOutputConfig {
                 name: config.name.clone(),
                 endpoint: config.endpoint.clone(),
-                compression: config.compression.clone(),
+                compression: config.compression,
                 auth: config.auth.clone(),
                 host: config.host.clone(),
                 port: config.port,
@@ -925,12 +978,12 @@ pub struct OutputConfigV1 {
     pub output_type: OutputType,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub endpoint: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub protocol: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub compression: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub request_mode: Option<String>,
+    #[serde(default)]
+    pub protocol: Option<OtlpProtocol>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
+    #[serde(default)]
+    pub request_mode: Option<ElasticsearchRequestMode>,
     pub format: Option<Format>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub path: Option<String>,
@@ -1184,10 +1237,10 @@ pub struct OtlpOutputConfig {
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub endpoint: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub protocol: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub compression: Option<String>,
+    #[serde(default)]
+    pub protocol: Option<OtlpProtocol>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
     #[serde(default)]
     pub auth: Option<AuthConfig>,
     #[serde(default)]
@@ -1240,8 +1293,8 @@ pub struct HttpOutputConfig {
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub endpoint: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub compression: Option<String>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
     pub format: Option<Format>,
     #[serde(default)]
     pub auth: Option<AuthConfig>,
@@ -1268,10 +1321,10 @@ pub struct ElasticsearchOutputConfig {
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub endpoint: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub compression: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub request_mode: Option<String>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
+    #[serde(default)]
+    pub request_mode: Option<ElasticsearchRequestMode>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub index: Option<String>,
     #[serde(default)]
@@ -1393,8 +1446,8 @@ pub struct ParquetOutputConfig {
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub path: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub compression: Option<String>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
     pub format: Option<Format>,
 }
 
@@ -1455,8 +1508,8 @@ pub struct ArrowIpcOutputConfig {
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub endpoint: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    pub compression: Option<String>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
     #[serde(default)]
     pub auth: Option<AuthConfig>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
