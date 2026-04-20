@@ -435,9 +435,14 @@ pub(super) fn build_input_state(
                     .as_deref()
                     .map(str::trim)
                     .is_some_and(|v| !v.is_empty());
-                if has_client_ca || tls.require_client_auth {
+                if tls.require_client_auth && !has_client_ca {
                     return Err(format!(
-                        "input '{name}': tcp.tls.client_ca_file and tcp.tls.require_client_auth are not supported for TCP inputs yet (tracked by #2332)"
+                        "input '{name}': tcp.tls.require_client_auth requires non-empty 'tcp.tls.client_ca_file'"
+                    ));
+                }
+                if has_client_ca && !tls.require_client_auth {
+                    return Err(format!(
+                        "input '{name}': tcp.tls.client_ca_file requires 'tcp.tls.require_client_auth: true'"
                     ));
                 }
                 let cert_file =
@@ -447,6 +452,13 @@ pub(super) fn build_input_state(
                 options.tls = Some(logfwd_io::tcp_input::TcpInputTlsOptions {
                     cert_file: cert_file.to_string(),
                     key_file: key_file.to_string(),
+                    client_ca_file: tls
+                        .client_ca_file
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .map(str::to_string),
+                    require_client_auth: tls.require_client_auth,
                 });
             }
             let source = logfwd_io::tcp_input::TcpInput::with_options(
@@ -1188,6 +1200,42 @@ mod tests {
         assert!(
             err.contains("tcp.tls.cert_file") || err.contains("tcp.tls.key_file"),
             "expected tcp tls field context in startup error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_input_state_tcp_mtls_requires_client_ca_file() {
+        use logfwd_diagnostics::diagnostics::PipelineMetrics;
+
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("p", "SELECT 1", &meter);
+        let stats = pm.add_input("tcp-in", "tcp");
+        let cfg = InputConfig {
+            name: Some("tcp-in".to_string()),
+            format: Some(Format::Json),
+            sql: None,
+            source_metadata: SourceMetadataStyle::None,
+            type_config: InputTypeConfig::Tcp(logfwd_config::TcpTypeConfig {
+                listen: "127.0.0.1:0".to_string(),
+                tls: Some(logfwd_config::TlsInputConfig {
+                    cert_file: Some("/tmp/server.crt".to_string()),
+                    key_file: Some("/tmp/server.key".to_string()),
+                    client_ca_file: None,
+                    require_client_auth: true,
+                }),
+                max_connections: None,
+                connection_timeout_ms: None,
+                read_timeout_ms: None,
+            }),
+        };
+
+        let err = match build_input_state("tcp-in", &cfg, stats) {
+            Ok(_) => panic!("mTLS without client_ca_file should fail startup"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("tcp.tls.require_client_auth") && err.contains("tcp.tls.client_ca_file"),
+            "expected mTLS client CA field context in startup error: {err}"
         );
     }
     #[test]

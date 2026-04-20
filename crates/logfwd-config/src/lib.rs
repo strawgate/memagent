@@ -1526,6 +1526,66 @@ pipelines:
     }
 
     #[test]
+    fn quoted_null_output_rejects_endpoint() {
+        let yaml = r#"
+input:
+  type: file
+  path: /tmp/x.log
+output:
+  type: "null"
+  endpoint: https://collector:4318
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("pipeline 'default' output '#0'"),
+            "error should include pipeline/output context: {msg}"
+        );
+        assert!(
+            msg.contains("null output does not support") && msg.contains("endpoint"),
+            "explicit null output with endpoint must be rejected: {msg}"
+        );
+    }
+
+    #[test]
+    fn quoted_null_output_rejects_unrelated_output_fields() {
+        for (field, value) in [
+            ("auth", "\n    bearer_token: secret"),
+            ("batch_size", "100"),
+            ("compression", "gzip"),
+            ("format", "json"),
+            ("headers", "\n    x-test: value"),
+            ("index", "logs"),
+            ("path", "/tmp/out.log"),
+            ("protocol", "grpc"),
+            ("request_timeout_ms", "1000"),
+            ("tls", "\n    ca_file: /tmp/ca.pem"),
+        ] {
+            let yaml = format!(
+                r#"
+input:
+  type: file
+  path: /tmp/x.log
+output:
+  type: "null"
+  {field}: {value}
+"#
+            );
+            let err = Config::load_str(&yaml).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains("pipeline 'default' output '#0'"),
+                "error should include pipeline/output context: {msg}"
+            );
+            let expected = format!("null output does not support '{field}'");
+            assert!(
+                msg.contains(&expected),
+                "explicit null output with {field} must be rejected: {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn whole_output_null_is_rejected() {
         let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput: null\n";
         let err = Config::load_str(yaml).unwrap_err();
@@ -2263,6 +2323,25 @@ pipelines:
     }
 
     #[test]
+    fn tcp_mtls_accepts_required_client_ca() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 0.0.0.0:514
+        tls:
+          cert_file: /tmp/server.pem
+          key_file: /tmp/server.key
+          client_ca_file: /tmp/ca.pem
+          require_client_auth: true
+    outputs:
+      - type: "null"
+"#;
+        Config::load_str(yaml).expect("tcp mTLS with client CA should validate");
+    }
+
+    #[test]
     fn tcp_mtls_requires_client_ca() {
         let yaml = r#"
 pipelines:
@@ -2280,8 +2359,31 @@ pipelines:
         let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string()
-                .contains("client authentication is not supported"),
-            "expected TCP mTLS validation failure: {err}"
+                .contains("require_client_auth requires tls.client_ca_file"),
+            "expected TCP mTLS client CA validation failure: {err}"
+        );
+    }
+
+    #[test]
+    fn tcp_client_ca_requires_mtls_enabled() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 0.0.0.0:514
+        tls:
+          cert_file: /tmp/server.pem
+          key_file: /tmp/server.key
+          client_ca_file: /tmp/ca.pem
+    outputs:
+      - type: "null"
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("client_ca_file requires tls.require_client_auth: true"),
+            "expected TCP client CA without mTLS validation failure: {err}"
         );
     }
 
