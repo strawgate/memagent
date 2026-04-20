@@ -960,6 +960,12 @@ fn cpu_worker_loop(
         }
     };
 
+    /// After this many consecutive transform errors with no successes, escalate
+    /// to ERROR with guidance — the SQL likely references columns the input
+    /// format does not produce.
+    const CONSECUTIVE_TRANSFORM_ERROR_ESCALATION: u32 = 10;
+    let mut consecutive_transform_errors: u32 = 0;
+
     while let Some(item) = rx.blocking_recv() {
         let (batch, checkpoints, queued_at, input_index, scan_ns) = match item {
             IoWorkItem::Bytes(chunk) => {
@@ -1041,15 +1047,31 @@ fn cpu_worker_loop(
 
         let t1 = Instant::now();
         let result = match rt.block_on(transform.transform.execute(batch)) {
-            Ok(r) => r,
+            Ok(r) => {
+                consecutive_transform_errors = 0;
+                r
+            }
             Err(e) => {
                 metrics.inc_transform_error();
                 metrics.inc_dropped_batch();
-                tracing::warn!(
-                    input = transform.input_name.as_str(),
-                    error = %e,
-                    "cpu_worker: transform error (batch dropped)"
-                );
+                consecutive_transform_errors = consecutive_transform_errors.saturating_add(1);
+                if consecutive_transform_errors == CONSECUTIVE_TRANSFORM_ERROR_ESCALATION {
+                    tracing::error!(
+                        input = transform.input_name.as_str(),
+                        error = %e,
+                        consecutive_errors = consecutive_transform_errors,
+                        "cpu_worker: {consecutive_transform_errors} consecutive transform errors \
+                         with no successes — verify that the SQL column names match the input format \
+                         (e.g. CRI produces _timestamp, _stream, and JSON body keys; \
+                         generator/logs/simple produces timestamp, level, message, etc.)"
+                    );
+                } else {
+                    tracing::warn!(
+                        input = transform.input_name.as_str(),
+                        error = %e,
+                        "cpu_worker: transform error (batch dropped)"
+                    );
+                }
                 continue;
             }
         };
