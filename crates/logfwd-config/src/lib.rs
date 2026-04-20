@@ -1520,6 +1520,57 @@ pipelines:
     }
 
     #[test]
+    fn quoted_null_output_rejects_endpoint() {
+        let yaml = r#"
+input:
+  type: file
+  path: /tmp/x.log
+output:
+  type: "null"
+  endpoint: https://collector:4318
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("null output does not support 'endpoint'"),
+            "explicit null output with endpoint must be rejected: {msg}"
+        );
+    }
+
+    #[test]
+    fn quoted_null_output_rejects_unrelated_output_fields() {
+        for (field, value) in [
+            ("auth", "\n    bearer_token: secret"),
+            ("batch_size", "100"),
+            ("compression", "gzip"),
+            ("format", "json"),
+            ("headers", "\n    x-test: value"),
+            ("index", "logs"),
+            ("path", "/tmp/out.log"),
+            ("protocol", "grpc"),
+            ("request_timeout_ms", "1000"),
+            ("tls", "\n    ca_file: /tmp/ca.pem"),
+        ] {
+            let yaml = format!(
+                r#"
+input:
+  type: file
+  path: /tmp/x.log
+output:
+  type: "null"
+  {field}: {value}
+"#
+            );
+            let err = Config::load_str(&yaml).unwrap_err();
+            let msg = err.to_string();
+            assert!(
+                msg.contains(&format!("null output does not support '{field}'")),
+                "explicit null output with {field} must be rejected: {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn whole_output_null_is_rejected() {
         let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput: null\n";
         let err = Config::load_str(yaml).unwrap_err();
