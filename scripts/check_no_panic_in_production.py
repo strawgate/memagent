@@ -2,21 +2,28 @@
 """Fail if `panic!`, `todo!`, or `unimplemented!` appears outside test code
 in production crates (`logfwd-runtime`, `logfwd-output`).
 
-Rationale: a production panic crashes the running pipeline. These macros
-are acceptable in tests, behind `// ALLOW-PANIC: <reason>` (genuinely
-unreachable invariants), or in `#[cfg(test)]` modules and `#[test]`
-functions.
+A production panic crashes the running pipeline. These macros are
+acceptable in tests, under a `// ALLOW-PANIC: <reason>` line marker, or
+inside any `#[cfg(test)]` module or `#[test]`-annotated function (including
+parameterized forms like `#[tokio::test(flavor = "multi_thread")]`).
 
-This is a conservative regex-based AST walk:
+This is a conservative regex-based AST walk. It is a best-effort guard,
+not a full parser; for anything subtler than these patterns, see the
+dylint roadmap in `dev-docs/CODE_STYLE.md`.
 
-  * Tracks brace depth.
-  * When `#[cfg(test)]` precedes a `mod ... {` or `fn ... {`, the
-    introduced scope is treated as test code until braces close.
-  * `#[test]`, `#[tokio::test]`, `#[proptest]`, and other `*::test`
-    attributes are treated identically.
-  * `unreachable!` is allowed (it expresses an invariant, not a panic).
-  * Same-line comment `// ALLOW-PANIC: <reason>` opts a line out
-    explicitly.
+Heuristics:
+  * Tracks brace depth across the file.
+  * A `#[cfg(test)]` preceding a `mod ... {`, `fn ... {`, or `impl ... {`
+    opens a test scope inherited by all nested items.
+  * `#[test]`, `#[tokio::test]`, `#[tokio::test(...)]`, `#[proptest]`,
+    `#[proptest(...)]`, and any `*::test` (parameterized or not) flag the
+    following scope as test.
+  * `#[cfg(test)] mod name;` (external file declaration) marks the
+    referenced file (either `name.rs` or `name/mod.rs` sibling) as
+    entirely test scope.
+  * `#![cfg(test)]` at the top of a file marks the whole file as test.
+  * `unreachable!` is allowed (expresses an invariant, not a panic).
+  * Same-line comment `// ALLOW-PANIC: <reason>` opts a single line out.
 
 See `dev-docs/CODE_STYLE.md` -> Error Handling.
 """
@@ -38,10 +45,30 @@ GUARDED_CRATES = ("logfwd-runtime", "logfwd-output")
 # Macros that constitute a hard production panic.
 PANIC_MACROS = re.compile(r"\b(panic|todo|unimplemented)!\s*\(")
 
-# Test attributes that designate a `mod` or `fn` as test-only scope.
+# Test attributes that designate a following `mod`/`fn`/`impl` as test
+# scope. The optional `(...)` allows parameterized forms like
+# `#[tokio::test(flavor = "multi_thread")]` and `#[proptest(cases = 100)]`.
 TEST_ATTR = re.compile(
-    r"^[ \t]*#\[\s*(?:cfg\s*\(\s*test\s*\)|test|tokio::test|"
-    r"proptest|tracing_test::traced_test|[A-Za-z_:]*::test)\s*[\],]"
+    r"^[ \t]*#\[\s*"
+    r"(?:cfg\s*\(\s*test\s*\)"
+    r"|test"
+    r"|proptest"
+    r"|tracing_test::traced_test"
+    r"|[A-Za-z_][A-Za-z_0-9]*(?:::[A-Za-z_][A-Za-z_0-9]*)*::test"
+    r")"
+    r"(?:\s*\([^)]*\))?"
+    r"\s*[\],]"
+)
+
+# File-level inner attribute marking the whole file as test-only.
+INNER_CFG_TEST = re.compile(r"^[ \t]*#!\[\s*cfg\s*\(\s*test\s*\)\s*\]")
+
+# External test module declaration: `#[cfg(test)] mod name;`. Captured
+# across two lines in the pre-scan.
+EXT_TEST_MOD = re.compile(
+    r"^[ \t]*#\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*\n"
+    r"[ \t]*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_][A-Za-z_0-9]*)\s*;",
+    re.MULTILINE,
 )
 
 MOD_OR_FN_OPEN = re.compile(r"\b(?:mod|fn|impl)\b[^;{]*\{")
@@ -54,89 +81,121 @@ def relpath(path: Path) -> str:
 
 
 def collect_files() -> list[Path]:
-    files: list[Path] = []
-    for crate in GUARDED_CRATES:
-        crate_src = CRATES_ROOT / crate / "src"
-        if not crate_src.exists():
-            continue
-        for path in sorted(crate_src.rglob("*.rs")):
-            files.append(path)
-    return files
+    return [
+        path
+        for crate in GUARDED_CRATES
+        if (crate_src := CRATES_ROOT / crate / "src").exists()
+        for path in sorted(crate_src.rglob("*.rs"))
+    ]
 
 
-def strip_comments_and_strings(line: str) -> str:
-    """Strip // line comments and string literals so braces inside strings
-    don't affect depth tracking. Conservative: doesn't handle block comments
-    or escape-aware string parsing perfectly, but the codebase does not use
-    raw braces inside strings in ways that affect our heuristic.
+def strip_strings_and_line_comment(line: str) -> str:
+    """Remove string literals first (so `//` inside a string is not
+    mistaken for a comment), then drop trailing `//` comments. The
+    order is load-bearing: reversing it hides any panic that follows
+    a string containing `//`.
     """
-    # Strip line comments (after the first //).
+    line = re.sub(r'"(?:[^"\\]|\\.)*"', '""', line)
+    line = re.sub(r"'(?:[^'\\]|\\.)*'", "''", line)
     comment_idx = line.find("//")
     if comment_idx != -1:
         line = line[:comment_idx]
-    # Strip simple double-quoted strings.
-    line = re.sub(r'"(?:[^"\\]|\\.)*"', '""', line)
-    # Strip char literals.
-    line = re.sub(r"'(?:[^'\\]|\\.)'", "''", line)
     return line
 
 
-def find_violations_in_file(path: Path) -> list[str]:
+def collect_external_test_files(files: list[Path]) -> set[Path]:
+    """Pre-scan: find `#[cfg(test)] mod name;` declarations in each file
+    and mark the corresponding source files as test-only.
+    """
+    external: set[Path] = set()
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        for match in EXT_TEST_MOD.finditer(text):
+            name = match.group(1)
+            parent = path.parent
+            # `mod <name>;` in `foo.rs` refers to:
+            #   - `foo/<name>.rs`             (Rust 2018 path convention)
+            #   - `foo/<name>/mod.rs`         (legacy)
+            # `mod <name>;` in `foo/mod.rs` or `foo/lib.rs` refers to:
+            #   - `foo/<name>.rs`
+            #   - `foo/<name>/mod.rs`
+            # We follow the 2018 convention first, then legacy.
+            stem = path.stem
+            if stem in ("mod", "lib", "main") or path.name == f"{stem}.rs":
+                sibling_root = parent if stem in ("mod", "lib", "main") else parent / stem
+                candidates = [
+                    parent / f"{name}.rs",
+                    parent / name / "mod.rs",
+                    sibling_root / f"{name}.rs",
+                    sibling_root / name / "mod.rs",
+                ]
+            else:
+                candidates = [parent / f"{name}.rs", parent / name / "mod.rs"]
+            for candidate in candidates:
+                if candidate.exists():
+                    external.add(candidate.resolve())
+                    break
+    return external
+
+
+def file_is_inner_test(path: Path) -> bool:
+    """True if the file starts with `#![cfg(test)]` (file-wide test attr)."""
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("//"):
+                    continue
+                return bool(INNER_CFG_TEST.match(line))
+    except OSError:
+        return False
+    return False
+
+
+def find_violations_in_file(path: Path, is_all_test: bool) -> list[str]:
     text = path.read_text(encoding="utf-8")
     lines = text.splitlines()
 
     # Stack of brace depths at which a test scope was opened. A panic is
-    # allowed iff this stack is non-empty (inside any test scope).
+    # allowed iff this stack is non-empty or the whole file is test-only.
     test_scope_stack: list[int] = []
     depth = 0
-    pending_test_attr = False  # True if previous non-blank, non-attr line was a test attribute
+    pending_test_attr = False
 
     violations: list[str] = []
 
     for lineno, raw_line in enumerate(lines, start=1):
-        stripped_line = strip_comments_and_strings(raw_line)
+        stripped_line = strip_strings_and_line_comment(raw_line)
         bare = raw_line.strip()
 
         if not bare or bare.startswith("//"):
             continue
 
-        is_attr_line = bare.startswith("#[") or bare.startswith("#![")
-        if is_attr_line:
+        if bare.startswith(("#[", "#![")):
             if TEST_ATTR.match(raw_line):
                 pending_test_attr = True
-            # multiple attributes can stack; keep pending state
             continue
 
-        # Track brace deltas for this line. Order matters: we record the
-        # depth at the time of the *opening* brace of any test scope.
         opens = stripped_line.count("{")
         closes = stripped_line.count("}")
-
-        # Detect a mod/fn/impl declaration that opens a new scope.
         opens_scope = bool(MOD_OR_FN_OPEN.search(stripped_line))
 
-        # If a test attribute was pending, the next item it annotates is
-        # this line. If this line opens a scope, that scope is a test scope.
         if pending_test_attr and opens_scope:
-            # The opening brace is at current depth; the scope is from
-            # depth+1 inwards. Pop it when depth drops back to current.
             test_scope_stack.append(depth)
-        pending_test_attr = False if opens_scope or not is_attr_line else pending_test_attr
+        pending_test_attr = False
 
-        # Apply opens before checking panics, then closes after.
-        depth_before_line = depth
         depth += opens
 
-        # Check this line for panics.
-        if PANIC_MACROS.search(stripped_line):
-            if ALLOW_MARKER not in raw_line:
-                in_test_scope = bool(test_scope_stack)
-                if not in_test_scope:
-                    snippet = bare[:120]
-                    violations.append(f"{relpath(path)}:{lineno}: {snippet}")
+        if (
+            PANIC_MACROS.search(stripped_line)
+            and ALLOW_MARKER not in raw_line
+            and not test_scope_stack
+            and not is_all_test
+        ):
+            snippet = bare[:120]
+            violations.append(f"{relpath(path)}:{lineno}: {snippet}")
 
         depth -= closes
-        # Close any test scopes whose enter-depth is now >= current depth.
         while test_scope_stack and depth <= test_scope_stack[-1]:
             test_scope_stack.pop()
 
@@ -144,9 +203,15 @@ def find_violations_in_file(path: Path) -> list[str]:
 
 
 def main() -> int:
+    files = collect_files()
+    external_test_files = collect_external_test_files(files)
+
     offenders: list[str] = []
-    for path in collect_files():
-        offenders.extend(find_violations_in_file(path))
+    for path in files:
+        is_all_test = (
+            path.resolve() in external_test_files or file_is_inner_test(path)
+        )
+        offenders.extend(find_violations_in_file(path, is_all_test))
 
     if not offenders:
         print("No-panic-in-production guard OK.")
