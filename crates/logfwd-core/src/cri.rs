@@ -877,6 +877,41 @@ mod tests {
         }
         reassembler.reset();
     }
+
+    #[test]
+    fn json_escape_all_control_characters() {
+        // These control chars produce \u00XX where XX has hex digits a-f.
+        // Bytes 0x0A through 0x1F have low nibble >= 10 (some hit the
+        // `b'a' + (nibble - 10)` branch in json_escape_bytes).
+        // Note: 0x08 (\b), 0x09 (\t), 0x0A (\n), 0x0C (\f), 0x0D (\r) use
+        // named escapes, so we check the generic \u00XX path for the rest.
+        let mut buf = Vec::new();
+        for byte in 0x00u8..=0x1F {
+            buf.clear();
+            let input = [byte];
+            json_escape_bytes(&input, &mut buf);
+            let escaped = core::str::from_utf8(&buf).unwrap();
+            match byte {
+                0x08 => assert_eq!(escaped, "\\b", "byte 0x{byte:02x}"),
+                b'\t' => assert_eq!(escaped, "\\t", "byte 0x{byte:02x}"),
+                b'\n' => assert_eq!(escaped, "\\n", "byte 0x{byte:02x}"),
+                0x0C => assert_eq!(escaped, "\\f", "byte 0x{byte:02x}"),
+                b'\r' => assert_eq!(escaped, "\\r", "byte 0x{byte:02x}"),
+                _ => {
+                    let expected = format!("\\u00{byte:02x}");
+                    assert_eq!(escaped, expected, "byte 0x{byte:02x}");
+                }
+            }
+        }
+        // Also verify 0x7F (DEL) uses the generic escape path.
+        buf.clear();
+        json_escape_bytes(&[0x7F], &mut buf);
+        assert_eq!(
+            core::str::from_utf8(&buf).unwrap(),
+            "\\u007f",
+            "byte 0x7F (DEL)"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

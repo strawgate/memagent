@@ -1908,4 +1908,136 @@ mod verification {
         kani::cover!(WIRE_TYPE_VARINT == 0, "varint is 0");
         kani::cover!(WIRE_TYPE_FIXED32 == 5, "fixed32 is 5");
     }
+
+    // -----------------------------------------------------------------------
+    // Manual encode_varint stub for compositional proofs
+    //
+    // encode_varint takes `&mut Vec<u8>` which doesn't implement
+    // `kani::Arbitrary`, so standard `#[kani::ensures]` contracts can't be
+    // used with `stub_verified`. Instead we use a manual `#[kani::stub]`
+    // that models encode_varint's proven behavior: appends 1-10 bytes.
+    // The ground-truth correctness is already established by the
+    // verify_varint_* proofs above; these compositional variants focus on
+    // the *caller's* logic with encode_varint abstracted away.
+    // -----------------------------------------------------------------------
+
+    /// Manual stub modelling `encode_varint`'s proven output contract:
+    /// appends between 1 and 10 arbitrary bytes to `buf`.
+    fn encode_varint_stub(buf: &mut Vec<u8>, _value: u64) {
+        let len: usize = kani::any();
+        kani::assume(len >= 1 && len <= 10);
+        let mut i = 0;
+        while i < len {
+            buf.push(kani::any());
+            i += 1;
+        }
+    }
+
+    /// Compositional proof: encode_tag with encode_varint stubbed out.
+    ///
+    /// encode_tag computes `(field_number << 3) | wire_type` and passes it
+    /// to encode_varint. With the stub, we verify the caller logic produces
+    /// a buffer of 1-10 bytes (the tag varint) for any valid inputs.
+    #[kani::proof]
+    #[kani::stub(encode_varint, encode_varint_stub)]
+    #[kani::unwind(12)]
+    fn verify_encode_tag_compositional() {
+        let field_number: u32 = kani::any();
+        let wire_type: u8 = kani::any();
+        kani::assume(field_number > 0);
+        kani::assume(field_number <= 0x1FFFFFFF);
+        kani::assume(wire_type <= 5);
+
+        let mut buf = Vec::new();
+        encode_tag(&mut buf, field_number, wire_type);
+
+        // encode_tag calls encode_varint once, so output is 1-10 bytes
+        assert!(buf.len() >= 1 && buf.len() <= 10);
+
+        kani::cover!(buf.len() == 1, "single-byte tag");
+        kani::cover!(buf.len() > 1, "multi-byte tag");
+    }
+
+    /// Compositional proof: encode_fixed64 with encode_varint stubbed out.
+    ///
+    /// encode_fixed64 calls encode_tag (which calls encode_varint) then
+    /// appends 8 LE bytes. With the stub, we verify the total output is
+    /// tag (1-10 bytes) + 8 fixed bytes = 9-18 bytes.
+    #[kani::proof]
+    #[kani::stub(encode_varint, encode_varint_stub)]
+    #[kani::unwind(12)]
+    fn verify_encode_fixed64_compositional() {
+        let field_number: u32 = kani::any();
+        let value: u64 = kani::any();
+        kani::assume(field_number > 0 && field_number <= 1000);
+
+        let mut buf = Vec::new();
+        encode_fixed64(&mut buf, field_number, value);
+
+        // Tag (1-10 bytes via stub) + 8 fixed bytes
+        assert!(buf.len() >= 9 && buf.len() <= 18);
+
+        // Last 8 bytes are the value in little-endian
+        let tail = &buf[buf.len() - 8..];
+        let decoded = u64::from_le_bytes(tail.try_into().unwrap());
+        assert!(decoded == value, "fixed64 value mismatch");
+
+        kani::cover!(buf.len() == 9, "single-byte tag + 8 value bytes");
+    }
+
+    /// Compositional proof: encode_varint_field with encode_varint stubbed.
+    ///
+    /// encode_varint_field calls encode_tag (1 encode_varint for the tag)
+    /// then encode_varint again for the value. With the stub, each call
+    /// appends 1-10 bytes, so total is 2-20 bytes.
+    #[kani::proof]
+    #[kani::stub(encode_varint, encode_varint_stub)]
+    #[kani::unwind(12)]
+    fn verify_encode_varint_field_compositional() {
+        let field_number: u32 = kani::any();
+        let value: u64 = kani::any();
+        kani::assume(field_number > 0 && field_number <= 1000);
+
+        let mut buf = Vec::new();
+        encode_varint_field(&mut buf, field_number, value);
+
+        // Two encode_varint calls: tag (1-10) + value (1-10)
+        assert!(buf.len() >= 2 && buf.len() <= 20);
+
+        kani::cover!(buf.len() == 2, "minimal encoding");
+        kani::cover!(buf.len() > 10, "large encoding");
+    }
+
+    /// Compositional proof: encode_bytes_field with encode_varint stubbed.
+    ///
+    /// encode_bytes_field calls encode_tag (1 encode_varint for the tag),
+    /// then encode_varint for the length, then extends with the data slice.
+    /// With the stub, tag and length each append 1-10 bytes, plus data_len
+    /// bytes of payload.
+    #[kani::proof]
+    #[kani::stub(encode_varint, encode_varint_stub)]
+    #[kani::unwind(12)]
+    fn verify_encode_bytes_field_content_compositional() {
+        let field_number: u32 = kani::any();
+        kani::assume(field_number > 0 && field_number <= 100);
+        let data_len: usize = kani::any_where(|&l: &usize| l <= 8);
+        let data: [u8; 8] = kani::any();
+
+        let mut buf = Vec::new();
+        encode_bytes_field(&mut buf, field_number, &data[..data_len]);
+
+        // Tag (1-10) + length varint (1-10) + data (0-8) = 2-28 bytes
+        assert!(buf.len() >= 2 + data_len && buf.len() <= 20 + data_len);
+
+        // Last data_len bytes must be the exact input data
+        let payload = &buf[buf.len() - data_len..];
+        let mut i = 0;
+        while i < data_len {
+            assert!(payload[i] == data[i], "data mismatch at byte");
+            i += 1;
+        }
+
+        kani::cover!(data_len == 0, "empty payload");
+        kani::cover!(data_len > 0, "non-empty payload");
+    }
 }

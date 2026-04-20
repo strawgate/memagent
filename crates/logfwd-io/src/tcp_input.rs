@@ -394,12 +394,20 @@ impl TcpInput {
                 ),
             )
         })?;
-        let has_client_ca_file = opts
-            .client_ca_file
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|path| !path.is_empty());
-        if has_client_ca_file && !opts.require_client_auth {
+        let client_ca_file = match opts.client_ca_file.as_deref() {
+            Some(path) => {
+                let path = path.trim();
+                if path.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "tcp.tls.client_ca_file must not be empty",
+                    ));
+                }
+                Some(path)
+            }
+            None => None,
+        };
+        if client_ca_file.is_some() && !opts.require_client_auth {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "tcp.tls.client_ca_file requires tcp.tls.require_client_auth: true",
@@ -407,17 +415,12 @@ impl TcpInput {
         }
         let builder = ServerConfig::builder();
         let builder = if opts.require_client_auth {
-            let client_ca_file = opts
-                .client_ca_file
-                .as_deref()
-                .map(str::trim)
-                .filter(|path| !path.is_empty())
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "tcp.tls.require_client_auth requires tcp.tls.client_ca_file",
-                    )
-                })?;
+            let client_ca_file = client_ca_file.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "tcp.tls.require_client_auth requires tcp.tls.client_ca_file",
+                )
+            })?;
             let client_ca_certs = CertificateDer::pem_file_iter(client_ca_file)
                 .map_err(|e| {
                     io::Error::new(
@@ -1392,10 +1395,43 @@ mod tests {
             Ok(_) => panic!("blank client CA path must fail startup"),
             Err(err) => err,
         };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert!(
-            err.to_string()
-                .contains("require_client_auth requires tcp.tls.client_ca_file"),
-            "error should identify missing tcp.tls.client_ca_file: {err}"
+            err.to_string().contains("client_ca_file must not be empty"),
+            "error should identify blank tcp.tls.client_ca_file: {err}"
+        );
+    }
+
+    #[test]
+    fn mtls_listener_rejects_blank_client_ca_when_auth_disabled() {
+        let certified = generate_simple_self_signed(vec!["localhost".into()])
+            .expect("test cert generation should succeed");
+        let (_tmp, cert_file, key_file) = write_tls_files(
+            &certified.cert.pem(),
+            &certified.signing_key.serialize_pem(),
+        );
+
+        let err = match TcpInput::with_options(
+            "mtls-test",
+            "127.0.0.1:0",
+            TcpInputOptions {
+                tls: Some(TcpInputTlsOptions {
+                    cert_file,
+                    key_file,
+                    client_ca_file: Some("   ".to_string()),
+                    require_client_auth: false,
+                }),
+                ..Default::default()
+            },
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        ) {
+            Ok(_) => panic!("blank client CA path must fail startup"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(
+            err.to_string().contains("client_ca_file must not be empty"),
+            "error should identify blank tcp.tls.client_ca_file: {err}"
         );
     }
 
@@ -1427,6 +1463,7 @@ mod tests {
             Ok(_) => panic!("client CA without client auth must fail startup"),
             Err(err) => err,
         };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert!(
             err.to_string()
                 .contains("client_ca_file requires tcp.tls.require_client_auth: true"),

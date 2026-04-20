@@ -212,6 +212,7 @@ Accept log lines on a TCP socket.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:5140`. |
+| `tls` | object | No | Optional server TLS options (`cert_file`, `key_file`, `client_ca_file`, `require_client_auth`). `client_ca_file` is valid only when `require_client_auth: true`. |
 
 ```yaml
 input:

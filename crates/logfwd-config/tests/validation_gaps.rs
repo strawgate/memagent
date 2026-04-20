@@ -433,7 +433,10 @@ output:
 "#;
 
     let config = Config::load_str(yaml).expect("config should parse env-backed TLS bool");
-    let output = &config.pipelines["default"].outputs[0];
+    let logfwd_config::OutputConfigV2::Otlp(output) = &config.pipelines["default"].outputs[0]
+    else {
+        panic!("expected otlp output");
+    };
     let tls = output.tls.as_ref().expect("TLS config should be present");
 
     assert!(tls.insecure_skip_verify);

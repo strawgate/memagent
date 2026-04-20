@@ -137,6 +137,17 @@ mod kani_proofs {
     use super::{TicketDisposition, default_ticket_disposition};
     use crate::worker_pool::DeliveryOutcome;
 
+    /// Model: how a checkpoint advances for a given disposition.
+    /// Ack and Reject advance by 1 (saturating); Hold is a no-op.
+    fn apply_disposition(checkpoint: u64, disposition: TicketDisposition) -> u64 {
+        match disposition {
+            TicketDisposition::Ack | TicketDisposition::Reject => checkpoint.saturating_add(1),
+            TicketDisposition::Hold => checkpoint,
+        }
+    }
+
+    // -- Outcome mapping proofs (existing 3) ---------------------------------
+
     #[kani::proof]
     fn verify_default_ticket_disposition_delivered_acks() {
         assert_eq!(
@@ -171,5 +182,79 @@ mod kani_proofs {
                 TicketDisposition::Hold
             );
         }
+    }
+
+    // -- Checkpoint advancement model proofs (new 3) -------------------------
+
+    /// Hold disposition must never advance the checkpoint.
+    #[kani::proof]
+    fn verify_hold_never_advances_checkpoint() {
+        let checkpoint: u64 = kani::any();
+        let after = apply_disposition(checkpoint, TicketDisposition::Hold);
+        assert_eq!(after, checkpoint, "Hold must not change checkpoint");
+        kani::cover!(checkpoint == 0, "hold at zero reachable");
+        kani::cover!(checkpoint == u64::MAX, "hold at max reachable");
+    }
+
+    /// Ack and Reject are equivalent for checkpoint advancement: both advance
+    /// by exactly 1 (saturating at `u64::MAX`).
+    #[kani::proof]
+    fn verify_ack_reject_terminal_equivalence() {
+        let checkpoint: u64 = kani::any();
+        let after_ack = apply_disposition(checkpoint, TicketDisposition::Ack);
+        let after_reject = apply_disposition(checkpoint, TicketDisposition::Reject);
+        assert_eq!(
+            after_ack, after_reject,
+            "Ack and Reject must advance identically"
+        );
+        // Both advance by exactly 1 unless saturated.
+        if checkpoint < u64::MAX {
+            assert_eq!(after_ack, checkpoint + 1);
+        } else {
+            assert_eq!(after_ack, u64::MAX);
+        }
+        kani::cover!(checkpoint == 0, "terminal equivalence at zero reachable");
+        kani::cover!(
+            checkpoint == u64::MAX,
+            "terminal equivalence at saturation reachable"
+        );
+    }
+
+    /// Over a bounded mixed sequence of dispositions the checkpoint is
+    /// monotonically non-decreasing and never jumps by more than 1 per event.
+    #[kani::proof]
+    #[kani::unwind(9)]
+    fn verify_mixed_sequence_monotonicity_no_gap() {
+        // 8 events is enough to cover all interleaving patterns while staying
+        // tractable for the bounded model checker.
+        const MAX_EVENTS: usize = 8;
+        let len: usize = kani::any();
+        kani::assume(len <= MAX_EVENTS);
+
+        let mut checkpoint: u64 = 0;
+        let mut i: usize = 0;
+        while i < len {
+            let previous = checkpoint;
+            let tag: u8 = kani::any();
+            kani::assume(tag < 3);
+            let disposition = match tag {
+                0 => TicketDisposition::Ack,
+                1 => TicketDisposition::Reject,
+                _ => TicketDisposition::Hold,
+            };
+            checkpoint = apply_disposition(checkpoint, disposition);
+
+            // Monotonicity: never decreases.
+            assert!(checkpoint >= previous, "checkpoint must be monotonic");
+            // No-gap: advances by at most 1 per event.
+            assert!(
+                checkpoint <= previous.saturating_add(1),
+                "checkpoint must not jump by more than 1"
+            );
+
+            i += 1;
+        }
+        kani::cover!(checkpoint > 0, "at least one advance reachable");
+        kani::cover!(checkpoint == 0 && len > 0, "all-hold sequence reachable");
     }
 }
