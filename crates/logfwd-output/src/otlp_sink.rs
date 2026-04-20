@@ -540,6 +540,12 @@ impl OtlpSink {
         let content_type = match self.protocol {
             OtlpProtocol::Grpc => "application/grpc",
             OtlpProtocol::Http => "application/x-protobuf",
+            other => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("unsupported OTLP protocol '{other}'"),
+                ));
+            }
         };
 
         // For gRPC, prepend the 5-byte length-prefixed frame header required by the

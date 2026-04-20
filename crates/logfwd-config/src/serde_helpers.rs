@@ -1,5 +1,5 @@
 use serde::Deserialize;
-use serde::de::{Error as DeError, Unexpected};
+use serde::de::{Error as DeError, MapAccess, SeqAccess, Unexpected, value::MapAccessDeserializer};
 use std::fmt;
 use std::marker::PhantomData;
 use std::num::NonZeroU64;
@@ -10,17 +10,42 @@ where
     T: Deserialize<'de>,
     D: serde::Deserializer<'de>,
 {
-    let value = serde_yaml_ng::Value::deserialize(deserializer)?;
-    match value {
-        serde_yaml_ng::Value::Sequence(items) => items
-            .into_iter()
-            .map(T::deserialize)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(D::Error::custom),
-        other => T::deserialize(other)
-            .map(|item| vec![item])
-            .map_err(D::Error::custom),
+    struct OneOrManyVisitor<T> {
+        marker: PhantomData<T>,
     }
+
+    impl<'de, T> serde::de::Visitor<'de> for OneOrManyVisitor<T>
+    where
+        T: Deserialize<'de>,
+    {
+        type Value = Vec<T>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a mapping or a sequence of mappings")
+        }
+
+        fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+        where
+            A: SeqAccess<'de>,
+        {
+            let mut items = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+            while let Some(item) = seq.next_element()? {
+                items.push(item);
+            }
+            Ok(items)
+        }
+
+        fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+        where
+            A: MapAccess<'de>,
+        {
+            T::deserialize(MapAccessDeserializer::new(map)).map(|item| vec![item])
+        }
+    }
+
+    deserializer.deserialize_any(OneOrManyVisitor {
+        marker: PhantomData,
+    })
 }
 
 /// Deserializes an optional numeric or boolean field from a strict YAML scalar.

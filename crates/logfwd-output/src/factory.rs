@@ -131,7 +131,7 @@ pub fn build_sink_factory_v2(
                 Some(CompressionFormat::None) | None => false,
                 Some(other) => {
                     return Err(OutputError::Construction(format!(
-                        "output '{name}': elasticsearch does not support '{other}' compression (use 'gzip' or omit)"
+                        "output '{name}': elasticsearch does not support '{other}' compression (use 'gzip', 'none', or omit)"
                     )));
                 }
             };
@@ -139,6 +139,11 @@ pub fn build_sink_factory_v2(
                 Some(ElasticsearchRequestMode::Streaming) => ElasticsearchRequestMode::Streaming,
                 Some(ElasticsearchRequestMode::Buffered) | None => {
                     ElasticsearchRequestMode::Buffered
+                }
+                Some(other) => {
+                    return Err(OutputError::Construction(format!(
+                        "output '{name}': unsupported elasticsearch request_mode '{other}' (use 'buffered', 'streaming', or omit)"
+                    )));
                 }
             };
             let factory = ElasticsearchSinkFactory::new_with_client(
@@ -215,6 +220,11 @@ pub fn build_sink_factory_v2(
                 Some(CompressionFormat::Zstd) => Compression::Zstd,
                 Some(CompressionFormat::Gzip) => Compression::Gzip,
                 Some(CompressionFormat::None) | None => Compression::None,
+                Some(other) => {
+                    return Err(OutputError::Construction(format!(
+                        "output '{name}': unknown HTTP compression '{other}' (expected 'zstd', 'gzip', or 'none')"
+                    )));
+                }
             };
             let factory = JsonLinesSinkFactory::new(
                 name.to_string(),
@@ -243,11 +253,21 @@ pub fn build_sink_factory_v2(
             let protocol = match cfg.protocol {
                 Some(OtlpProtocol::Grpc) => OtlpProtocol::Grpc,
                 Some(OtlpProtocol::Http) | None => OtlpProtocol::Http,
+                Some(other) => {
+                    return Err(OutputError::Construction(format!(
+                        "output '{name}': unsupported OTLP protocol '{other}' (use 'http', 'grpc', or omit)"
+                    )));
+                }
             };
             let compression = match cfg.compression {
                 Some(CompressionFormat::Zstd) => Compression::Zstd,
                 Some(CompressionFormat::Gzip) => Compression::Gzip,
                 Some(CompressionFormat::None) | None => Compression::None,
+                Some(other) => {
+                    return Err(OutputError::Construction(format!(
+                        "output '{name}': unknown OTLP compression '{other}' (expected 'zstd', 'gzip', or 'none')"
+                    )));
+                }
             };
 
             let client_builder =

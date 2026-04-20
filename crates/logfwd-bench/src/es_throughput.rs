@@ -49,6 +49,7 @@ fn request_mode_name(mode: ElasticsearchRequestMode) -> &'static str {
     match mode {
         ElasticsearchRequestMode::Buffered => "buffered",
         ElasticsearchRequestMode::Streaming => "streaming",
+        _ => "unknown",
     }
 }
 

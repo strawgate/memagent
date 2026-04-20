@@ -173,6 +173,7 @@ impl<'de> Deserialize<'de> for OutputType {
 /// Request-body compression configured for output sinks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum CompressionFormat {
     None,
     Gzip,
@@ -192,6 +193,7 @@ impl fmt::Display for CompressionFormat {
 /// OTLP transport protocol configured for OTLP outputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum OtlpProtocol {
     Http,
     Grpc,
@@ -209,6 +211,7 @@ impl fmt::Display for OtlpProtocol {
 /// Elasticsearch bulk request construction mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum ElasticsearchRequestMode {
     Buffered,
     Streaming,
