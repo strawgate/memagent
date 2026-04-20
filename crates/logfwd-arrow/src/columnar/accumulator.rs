@@ -1561,7 +1561,12 @@ mod verification {
             offset < original.len() as u32 && end > original.len(),
             "spanning/OOB in original range"
         );
-        kani::cover!(offset >= original.len() as u32, "OOB in generated range");
+        kani::cover!(
+            offset >= original.len() as u32
+                && (offset as usize - original.len()).saturating_add(len as usize)
+                    > generated.len(),
+            "OOB in generated range"
+        );
         kani::cover!(offset == 0, "zero offset error");
     }
 
