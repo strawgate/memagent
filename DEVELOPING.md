@@ -308,6 +308,14 @@ easy ways to get this wrong are synthetic newline insertion and compressed
 request decoding. Capture source bytes at the receiver boundary first, then
 carry them explicitly through `InputEvent::Data` or `InputEvent::Batch`.
 
+### TLS client CA settings must not silently downgrade mTLS
+
+For server-side inputs, `client_ca_file` is meaningful only when
+`require_client_auth` is true. Accepting a client CA while leaving client auth
+disabled looks like mTLS is configured but still accepts unauthenticated clients.
+Reject that combination during startup, and normalize optional certificate paths
+once before validation and file loading.
+
 ### Arrow IPC compression is just a flag
 
 Compressed Arrow IPC is `StreamWriter` with `IpcWriteOptions::try_with_compression(Some(CompressionType::ZSTD))`. Any `RecordBatch` can be compressed. No special builder needed.
