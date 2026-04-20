@@ -5,7 +5,7 @@ const STEP_S = STEP_MS / 1000;
 const SHAPES = ['sedan', 'truck', 'compact', 'van'];
 
 const DEFAULTS = {
-  spawnMs: 1400,
+  spawnMs: 1000,
   maxCars: 18,
   greenPct: 80,
   cycleTotal: 3000,
