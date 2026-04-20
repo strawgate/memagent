@@ -298,6 +298,21 @@ def render_field_tables(spec: dict) -> str:
     return "\n".join(chunks)
 
 
+def render_field_number_constants(spec: dict) -> str:
+    chunks = ["#[allow(dead_code)]", "pub(super) mod field_numbers {"]
+    for message in spec["messages"]:
+        message_name = message["name"]
+        if message_name not in MESSAGE_TO_OTLP_PREFIX:
+            continue
+        for field in message["fields"]:
+            chunks.append(
+                f"    pub(crate) const {otlp_const_name(message_name, field['name'])}: u32 = "
+                f"{field['number']};"
+            )
+    chunks.append("}")
+    return "\n".join(chunks)
+
+
 def any_value_fields(spec: dict) -> list[dict]:
     for message in spec["messages"]:
         if message["name"] == "AnyValue":
@@ -901,6 +916,7 @@ pub(super) fn write_key_value_json(
 
 
 def render(spec: dict) -> str:
+    field_number_constants = render_field_number_constants(spec)
     tables = render_field_tables(spec)
     any_value_decoder = render_any_value_decoder(spec)
     key_value_decoder = render_key_value_decoder(spec)
@@ -958,6 +974,8 @@ pub(super) struct FieldRule {{
     pub(super) action: ProjectionAction,
     pub(super) child: Option<MessageKind>,
 }}
+
+{field_number_constants}
 
 {tables}
 #[allow(dead_code)]
@@ -1157,7 +1175,7 @@ fn read_varint(input: &mut &[u8]) -> Result<u64, ProjectionError> {{
 #[cfg(test)]
 mod generated_tests {{
     use super::*;
-    use super::super::otlp;
+    use logfwd_core::otlp;
 
 {generated_test_vectors}
 

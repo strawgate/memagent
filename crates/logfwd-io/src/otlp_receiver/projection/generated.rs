@@ -50,6 +50,44 @@ pub(super) struct FieldRule {
     pub(super) child: Option<MessageKind>,
 }
 
+#[allow(dead_code)]
+pub(super) mod field_numbers {
+    pub(crate) const EXPORT_LOGS_REQUEST_RESOURCE_LOGS: u32 = 1;
+    pub(crate) const RESOURCE_LOGS_RESOURCE: u32 = 1;
+    pub(crate) const RESOURCE_LOGS_SCOPE_LOGS: u32 = 2;
+    pub(crate) const RESOURCE_LOGS_SCHEMA_URL: u32 = 3;
+    pub(crate) const RESOURCE_ATTRIBUTES: u32 = 1;
+    pub(crate) const RESOURCE_DROPPED_ATTRIBUTES_COUNT: u32 = 2;
+    pub(crate) const RESOURCE_ENTITY_REFS: u32 = 3;
+    pub(crate) const SCOPE_LOGS_SCOPE: u32 = 1;
+    pub(crate) const SCOPE_LOGS_LOG_RECORDS: u32 = 2;
+    pub(crate) const SCOPE_LOGS_SCHEMA_URL: u32 = 3;
+    pub(crate) const INSTRUMENTATION_SCOPE_NAME: u32 = 1;
+    pub(crate) const INSTRUMENTATION_SCOPE_VERSION: u32 = 2;
+    pub(crate) const INSTRUMENTATION_SCOPE_ATTRIBUTES: u32 = 3;
+    pub(crate) const INSTRUMENTATION_SCOPE_DROPPED_ATTRIBUTES_COUNT: u32 = 4;
+    pub(crate) const LOG_RECORD_TIME_UNIX_NANO: u32 = 1;
+    pub(crate) const LOG_RECORD_SEVERITY_NUMBER: u32 = 2;
+    pub(crate) const LOG_RECORD_SEVERITY_TEXT: u32 = 3;
+    pub(crate) const LOG_RECORD_BODY: u32 = 5;
+    pub(crate) const LOG_RECORD_ATTRIBUTES: u32 = 6;
+    pub(crate) const LOG_RECORD_DROPPED_ATTRIBUTES_COUNT: u32 = 7;
+    pub(crate) const LOG_RECORD_FLAGS: u32 = 8;
+    pub(crate) const LOG_RECORD_TRACE_ID: u32 = 9;
+    pub(crate) const LOG_RECORD_SPAN_ID: u32 = 10;
+    pub(crate) const LOG_RECORD_OBSERVED_TIME_UNIX_NANO: u32 = 11;
+    pub(crate) const LOG_RECORD_EVENT_NAME: u32 = 12;
+    pub(crate) const KEY_VALUE_KEY: u32 = 1;
+    pub(crate) const KEY_VALUE_VALUE: u32 = 2;
+    pub(crate) const ANY_VALUE_STRING_VALUE: u32 = 1;
+    pub(crate) const ANY_VALUE_BOOL_VALUE: u32 = 2;
+    pub(crate) const ANY_VALUE_INT_VALUE: u32 = 3;
+    pub(crate) const ANY_VALUE_DOUBLE_VALUE: u32 = 4;
+    pub(crate) const ANY_VALUE_ARRAY_VALUE: u32 = 5;
+    pub(crate) const ANY_VALUE_KVLIST_VALUE: u32 = 6;
+    pub(crate) const ANY_VALUE_BYTES_VALUE: u32 = 7;
+}
+
 pub(super) const EXPORTLOGSSERVICEREQUEST_FIELDS: &[FieldRule] = &[FieldRule {
     number: 1,
     name: "resource_logs",
@@ -1001,8 +1039,8 @@ fn read_varint(input: &mut &[u8]) -> Result<u64, ProjectionError> {
 
 #[cfg(test)]
 mod generated_tests {
-    use super::super::otlp;
     use super::*;
+    use logfwd_core::otlp;
 
     fn sample_field_for_wire(number: u32, wire: WireKind) -> Vec<u8> {
         let mut out = Vec::new();

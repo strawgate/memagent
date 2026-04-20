@@ -13,11 +13,11 @@ use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
 use logfwd_arrow::columnar::builder::ColumnarBatchBuilder;
 use logfwd_arrow::columnar::plan::FieldHandle;
-use logfwd_core::otlp;
 
 use crate::InputError;
 
 mod generated;
+use generated::field_numbers as otlp_field;
 
 #[derive(Debug)]
 pub(super) enum ProjectionError {
@@ -174,7 +174,7 @@ impl ProjectedOtlpDecoder {
         let string_storage = StringStorage::InputView;
         let decode_result = for_each_field(body.as_ref(), |field, value| {
             match (field, value) {
-                (otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS, WireField::Len(resource_logs)) => {
+                (otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS, WireField::Len(resource_logs)) => {
                     decode_resource_logs_wire(
                         &mut self.builder,
                         &self.handles,
@@ -184,7 +184,7 @@ impl ProjectedOtlpDecoder {
                         string_storage,
                     )?;
                 }
-                (otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS, _) => {
+                (otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS, _) => {
                     return Err(ProjectionError::Invalid(
                         "invalid wire type for ExportLogsServiceRequest.resource_logs",
                     ));
@@ -229,7 +229,7 @@ fn decode_projected_otlp_logs_inner(
 
     for_each_field(body, |field, value| {
         match (field, value) {
-            (otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS, WireField::Len(resource_logs)) => {
+            (otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS, WireField::Len(resource_logs)) => {
                 decode_resource_logs_wire(
                     &mut builder,
                     &fields,
@@ -239,7 +239,7 @@ fn decode_projected_otlp_logs_inner(
                     string_storage,
                 )?;
             }
-            (otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS, _) => {
+            (otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for ExportLogsServiceRequest.resource_logs",
                 ));
@@ -282,7 +282,7 @@ fn decode_resource_logs_wire(
 
     for_each_field(resource_logs, |field, value| {
         match (field, value) {
-            (otlp::RESOURCE_LOGS_RESOURCE, WireField::Len(resource)) => {
+            (otlp_field::RESOURCE_LOGS_RESOURCE, WireField::Len(resource)) => {
                 collect_resource_attrs(
                     builder,
                     scratch,
@@ -291,7 +291,7 @@ fn decode_resource_logs_wire(
                     resource,
                 )?;
             }
-            (otlp::RESOURCE_LOGS_RESOURCE, _) => {
+            (otlp_field::RESOURCE_LOGS_RESOURCE, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for ResourceLogs.resource",
                 ));
@@ -303,7 +303,7 @@ fn decode_resource_logs_wire(
 
     for_each_field(resource_logs, |field, value| {
         match (field, value) {
-            (otlp::RESOURCE_LOGS_SCOPE_LOGS, WireField::Len(scope_logs)) => {
+            (otlp_field::RESOURCE_LOGS_SCOPE_LOGS, WireField::Len(scope_logs)) => {
                 decode_scope_logs_wire(
                     builder,
                     fields,
@@ -313,7 +313,7 @@ fn decode_resource_logs_wire(
                     string_storage,
                 )?;
             }
-            (otlp::RESOURCE_LOGS_SCOPE_LOGS, _) => {
+            (otlp_field::RESOURCE_LOGS_SCOPE_LOGS, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for ResourceLogs.scope_logs",
                 ));
@@ -333,7 +333,7 @@ fn collect_resource_attrs<'a>(
 ) -> Result<(), ProjectionError> {
     for_each_field(resource, |field, value| {
         match (field, value) {
-            (otlp::RESOURCE_ATTRIBUTES, WireField::Len(attr)) => {
+            (otlp_field::RESOURCE_ATTRIBUTES, WireField::Len(attr)) => {
                 if let Some((key, value)) = decode_key_value_wire(attr)? {
                     scratch.resource_key.clear();
                     scratch
@@ -353,7 +353,7 @@ fn collect_resource_attrs<'a>(
                     resource_attrs.push((handle, value));
                 }
             }
-            (otlp::RESOURCE_ATTRIBUTES, _) => {
+            (otlp_field::RESOURCE_ATTRIBUTES, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for Resource.attributes",
                 ));
@@ -376,10 +376,10 @@ fn decode_scope_logs_wire(
 
     for_each_field(scope_logs, |field, value| {
         match (field, value) {
-            (otlp::SCOPE_LOGS_SCOPE, WireField::Len(scope)) => {
+            (otlp_field::SCOPE_LOGS_SCOPE, WireField::Len(scope)) => {
                 merge_scope_wire(scope, &mut scope_fields)?;
             }
-            (otlp::SCOPE_LOGS_SCOPE, _) => {
+            (otlp_field::SCOPE_LOGS_SCOPE, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for ScopeLogs.scope",
                 ));
@@ -391,7 +391,7 @@ fn decode_scope_logs_wire(
 
     for_each_field(scope_logs, |field, value| {
         match (field, value) {
-            (otlp::SCOPE_LOGS_LOG_RECORDS, WireField::Len(log_record)) => {
+            (otlp_field::SCOPE_LOGS_LOG_RECORDS, WireField::Len(log_record)) => {
                 decode_log_record_wire(
                     builder,
                     fields,
@@ -402,7 +402,7 @@ fn decode_scope_logs_wire(
                     string_storage,
                 )?;
             }
-            (otlp::SCOPE_LOGS_LOG_RECORDS, _) => {
+            (otlp_field::SCOPE_LOGS_LOG_RECORDS, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for ScopeLogs.log_records",
                 ));
@@ -419,18 +419,18 @@ fn merge_scope_wire<'a>(
 ) -> Result<(), ProjectionError> {
     for_each_field(scope, |field, value| {
         match (field, value) {
-            (otlp::INSTRUMENTATION_SCOPE_NAME, WireField::Len(value)) => {
+            (otlp_field::INSTRUMENTATION_SCOPE_NAME, WireField::Len(value)) => {
                 scope_fields.name = Some(require_utf8(value, "invalid UTF-8 scope name")?);
             }
-            (otlp::INSTRUMENTATION_SCOPE_NAME, _) => {
+            (otlp_field::INSTRUMENTATION_SCOPE_NAME, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for InstrumentationScope.name",
                 ));
             }
-            (otlp::INSTRUMENTATION_SCOPE_VERSION, WireField::Len(value)) => {
+            (otlp_field::INSTRUMENTATION_SCOPE_VERSION, WireField::Len(value)) => {
                 scope_fields.version = Some(require_utf8(value, "invalid UTF-8 scope version")?);
             }
-            (otlp::INSTRUMENTATION_SCOPE_VERSION, _) => {
+            (otlp_field::INSTRUMENTATION_SCOPE_VERSION, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for InstrumentationScope.version",
                 ));
@@ -463,78 +463,78 @@ fn decode_log_record_wire(
 
     for_each_field(log_record, |field, value| {
         match (field, value) {
-            (otlp::LOG_RECORD_TIME_UNIX_NANO, WireField::Fixed64(value)) => {
+            (otlp_field::LOG_RECORD_TIME_UNIX_NANO, WireField::Fixed64(value)) => {
                 time_unix_nano = value;
             }
-            (otlp::LOG_RECORD_TIME_UNIX_NANO, _) => {
+            (otlp_field::LOG_RECORD_TIME_UNIX_NANO, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for LogRecord.time_unix_nano",
                 ));
             }
-            (otlp::LOG_RECORD_OBSERVED_TIME_UNIX_NANO, WireField::Fixed64(value)) => {
+            (otlp_field::LOG_RECORD_OBSERVED_TIME_UNIX_NANO, WireField::Fixed64(value)) => {
                 observed_time_unix_nano = value;
             }
-            (otlp::LOG_RECORD_OBSERVED_TIME_UNIX_NANO, _) => {
+            (otlp_field::LOG_RECORD_OBSERVED_TIME_UNIX_NANO, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for LogRecord.observed_time_unix_nano",
                 ));
             }
-            (otlp::LOG_RECORD_SEVERITY_NUMBER, WireField::Varint(value)) => {
+            (otlp_field::LOG_RECORD_SEVERITY_NUMBER, WireField::Varint(value)) => {
                 severity_number = i64::from(value as i32);
             }
-            (otlp::LOG_RECORD_SEVERITY_NUMBER, _) => {
+            (otlp_field::LOG_RECORD_SEVERITY_NUMBER, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for LogRecord.severity_number",
                 ));
             }
-            (otlp::LOG_RECORD_SEVERITY_TEXT, WireField::Len(value)) => {
+            (otlp_field::LOG_RECORD_SEVERITY_TEXT, WireField::Len(value)) => {
                 severity_text = if value.is_empty() {
                     None
                 } else {
                     Some(require_utf8(value, "invalid UTF-8 severity text")?)
                 };
             }
-            (otlp::LOG_RECORD_SEVERITY_TEXT, _) => {
+            (otlp_field::LOG_RECORD_SEVERITY_TEXT, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for LogRecord.severity_text",
                 ));
             }
-            (otlp::LOG_RECORD_BODY, WireField::Len(value)) => {
+            (otlp_field::LOG_RECORD_BODY, WireField::Len(value)) => {
                 if let Some(value) = decode_any_value_wire(value)? {
                     body = Some(value);
                 }
             }
-            (otlp::LOG_RECORD_BODY, _) => {
+            (otlp_field::LOG_RECORD_BODY, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for LogRecord.body",
                 ));
             }
-            (otlp::LOG_RECORD_TRACE_ID, WireField::Len(value)) => {
+            (otlp_field::LOG_RECORD_TRACE_ID, WireField::Len(value)) => {
                 trace_id = (!value.is_empty()).then_some(value);
             }
-            (otlp::LOG_RECORD_TRACE_ID, _) => {
+            (otlp_field::LOG_RECORD_TRACE_ID, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for LogRecord.trace_id",
                 ));
             }
-            (otlp::LOG_RECORD_SPAN_ID, WireField::Len(value)) => {
+            (otlp_field::LOG_RECORD_SPAN_ID, WireField::Len(value)) => {
                 span_id = (!value.is_empty()).then_some(value);
             }
-            (otlp::LOG_RECORD_SPAN_ID, _) => {
+            (otlp_field::LOG_RECORD_SPAN_ID, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for LogRecord.span_id",
                 ));
             }
-            (otlp::LOG_RECORD_FLAGS, WireField::Fixed32(value)) => flags = i64::from(value),
-            (otlp::LOG_RECORD_FLAGS, _) => {
+            (otlp_field::LOG_RECORD_FLAGS, WireField::Fixed32(value)) => flags = i64::from(value),
+            (otlp_field::LOG_RECORD_FLAGS, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for LogRecord.flags",
                 ));
             }
-            (otlp::LOG_RECORD_ATTRIBUTES, WireField::Len(value)) => {
+            (otlp_field::LOG_RECORD_ATTRIBUTES, WireField::Len(value)) => {
                 scratch.attr_ranges.push(subslice_range(log_record, value)?);
             }
-            (otlp::LOG_RECORD_ATTRIBUTES, _) => {
+            (otlp_field::LOG_RECORD_ATTRIBUTES, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for LogRecord.attributes",
                 ));
@@ -1110,21 +1110,21 @@ mod tests {
         .encode_to_vec();
 
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_SCOPE, &first_scope);
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_SCOPE, &second_scope);
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_SCOPE, &first_scope);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_SCOPE, &second_scope);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &record);
 
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
 
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
@@ -1140,8 +1140,8 @@ mod tests {
         }
         .encode_to_vec();
         let mut second_scope = Vec::new();
-        encode_len_field(&mut second_scope, otlp::INSTRUMENTATION_SCOPE_NAME, b"");
-        encode_len_field(&mut second_scope, otlp::INSTRUMENTATION_SCOPE_VERSION, b"");
+        encode_len_field(&mut second_scope, otlp_field::INSTRUMENTATION_SCOPE_NAME, b"");
+        encode_len_field(&mut second_scope, otlp_field::INSTRUMENTATION_SCOPE_VERSION, b"");
         let record = LogRecord {
             body: Some(any_string("hello")),
             ..Default::default()
@@ -1149,21 +1149,21 @@ mod tests {
         .encode_to_vec();
 
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_SCOPE, &first_scope);
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_SCOPE, &second_scope);
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_SCOPE, &first_scope);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_SCOPE, &second_scope);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &record);
 
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
 
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
@@ -1195,52 +1195,52 @@ mod tests {
     fn projected_nested_unknown_field_interleavings_match_prost_conversion() {
         let mut any_value = Vec::new();
         encode_varint_field(&mut any_value, 98, 1);
-        encode_len_field(&mut any_value, otlp::ANY_VALUE_STRING_VALUE, b"body");
+        encode_len_field(&mut any_value, otlp_field::ANY_VALUE_STRING_VALUE, b"body");
         encode_fixed64_field(&mut any_value, 99, 0x0102_0304_0506_0708);
 
         let mut attr = Vec::new();
         encode_len_field(&mut attr, 77, b"ignored-kv-prefix");
-        encode_len_field(&mut attr, otlp::KEY_VALUE_KEY, b"attr");
+        encode_len_field(&mut attr, otlp_field::KEY_VALUE_KEY, b"attr");
         encode_start_group(&mut attr, 78);
         encode_varint_field(&mut attr, 79, 123);
         encode_end_group(&mut attr, 78);
-        encode_len_field(&mut attr, otlp::KEY_VALUE_VALUE, &any_value);
+        encode_len_field(&mut attr, otlp_field::KEY_VALUE_VALUE, &any_value);
 
         let mut scope = Vec::new();
         encode_varint_field(&mut scope, 77, 7);
-        encode_len_field(&mut scope, otlp::INSTRUMENTATION_SCOPE_NAME, b"scope");
+        encode_len_field(&mut scope, otlp_field::INSTRUMENTATION_SCOPE_NAME, b"scope");
         encode_start_group(&mut scope, 78);
         encode_len_field(&mut scope, 79, b"inside-scope-group");
         encode_end_group(&mut scope, 78);
-        encode_len_field(&mut scope, otlp::INSTRUMENTATION_SCOPE_VERSION, b"1.0.0");
+        encode_len_field(&mut scope, otlp_field::INSTRUMENTATION_SCOPE_VERSION, b"1.0.0");
 
         let mut log_record = Vec::new();
         encode_fixed32_field(&mut log_record, 77, 0x0a0b_0c0d);
-        encode_fixed64_field(&mut log_record, otlp::LOG_RECORD_TIME_UNIX_NANO, 123);
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_BODY, &any_value);
+        encode_fixed64_field(&mut log_record, otlp_field::LOG_RECORD_TIME_UNIX_NANO, 123);
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_BODY, &any_value);
         encode_start_group(&mut log_record, 78);
         encode_varint_field(&mut log_record, 79, 456);
         encode_end_group(&mut log_record, 78);
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_ATTRIBUTES, &attr);
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_ATTRIBUTES, &attr);
 
         let mut scope_logs = Vec::new();
         encode_len_field(&mut scope_logs, 77, b"ignored-scope-logs-prefix");
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_SCOPE, &scope);
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_SCOPE, &scope);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &log_record);
         encode_fixed32_field(&mut scope_logs, 78, 99);
 
         let mut resource = Vec::new();
         encode_varint_field(&mut resource, 77, 1);
-        encode_len_field(&mut resource, otlp::RESOURCE_ATTRIBUTES, &attr);
+        encode_len_field(&mut resource, otlp_field::RESOURCE_ATTRIBUTES, &attr);
         encode_start_group(&mut resource, 78);
         encode_end_group(&mut resource, 78);
 
         let mut resource_logs = Vec::new();
         encode_len_field(&mut resource_logs, 77, b"ignored-resource-logs-prefix");
-        encode_len_field(&mut resource_logs, otlp::RESOURCE_LOGS_RESOURCE, &resource);
+        encode_len_field(&mut resource_logs, otlp_field::RESOURCE_LOGS_RESOURCE, &resource);
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
         encode_fixed64_field(&mut resource_logs, 78, 0x1111_2222_3333_4444);
@@ -1251,7 +1251,7 @@ mod tests {
         encode_end_group(&mut payload, 99);
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
         encode_fixed32_field(&mut payload, 101, 0x0102_0304);
@@ -1298,33 +1298,33 @@ mod tests {
     #[test]
     fn projected_repeated_empty_log_record_fields_match_prost_conversion() {
         let mut log_record = Vec::new();
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_SEVERITY_TEXT, b"INFO");
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_SEVERITY_TEXT, b"");
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_SEVERITY_TEXT, b"INFO");
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_SEVERITY_TEXT, b"");
         encode_len_field(
             &mut log_record,
-            otlp::LOG_RECORD_BODY,
+            otlp_field::LOG_RECORD_BODY,
             &any_string("first").encode_to_vec(),
         );
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_BODY, b"");
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_TRACE_ID, &[0xaa; 16]);
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_TRACE_ID, b"");
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_SPAN_ID, &[0xbb; 8]);
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_SPAN_ID, b"");
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_BODY, b"");
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_TRACE_ID, &[0xaa; 16]);
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_TRACE_ID, b"");
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_SPAN_ID, &[0xbb; 8]);
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_SPAN_ID, b"");
 
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &log_record);
 
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
 
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
@@ -1334,31 +1334,31 @@ mod tests {
     #[test]
     fn projected_repeated_empty_key_value_value_matches_prost_conversion() {
         let mut attr = Vec::new();
-        encode_len_field(&mut attr, otlp::KEY_VALUE_KEY, b"attr");
+        encode_len_field(&mut attr, otlp_field::KEY_VALUE_KEY, b"attr");
         encode_len_field(
             &mut attr,
-            otlp::KEY_VALUE_VALUE,
+            otlp_field::KEY_VALUE_VALUE,
             &any_string("kept").encode_to_vec(),
         );
-        encode_len_field(&mut attr, otlp::KEY_VALUE_VALUE, b"");
+        encode_len_field(&mut attr, otlp_field::KEY_VALUE_VALUE, b"");
 
         let mut log_record = Vec::new();
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_ATTRIBUTES, &attr);
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_ATTRIBUTES, &attr);
 
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &log_record);
 
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
 
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
@@ -1370,28 +1370,28 @@ mod tests {
         let mut any_value = Vec::new();
         encode_len_field(
             &mut any_value,
-            otlp::ANY_VALUE_ARRAY_VALUE,
+            otlp_field::ANY_VALUE_ARRAY_VALUE,
             &ArrayValue::default().encode_to_vec(),
         );
-        encode_len_field(&mut any_value, otlp::ANY_VALUE_STRING_VALUE, b"kept");
+        encode_len_field(&mut any_value, otlp_field::ANY_VALUE_STRING_VALUE, b"kept");
 
         let mut log_record = Vec::new();
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_BODY, &any_value);
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_BODY, &any_value);
 
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &log_record);
 
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
 
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
@@ -1403,24 +1403,24 @@ mod tests {
         let mut log_record = Vec::new();
         encode_varint_field(
             &mut log_record,
-            otlp::LOG_RECORD_SEVERITY_NUMBER,
+            otlp_field::LOG_RECORD_SEVERITY_NUMBER,
             u64::from(u32::MAX),
         );
 
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &log_record);
 
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
 
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
@@ -1443,24 +1443,24 @@ mod tests {
         let mut log_record = Vec::new();
         encode_len_field(
             &mut log_record,
-            otlp::LOG_RECORD_SEVERITY_TEXT,
+            otlp_field::LOG_RECORD_SEVERITY_TEXT,
             &[0xff, 0xfe],
         );
 
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &log_record);
 
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
 
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
@@ -1508,22 +1508,22 @@ mod tests {
     #[test]
     fn projected_known_log_record_field_with_wrong_wire_type_is_invalid() {
         let mut log_record = Vec::new();
-        encode_varint_field(&mut log_record, otlp::LOG_RECORD_SEVERITY_TEXT, 1);
+        encode_varint_field(&mut log_record, otlp_field::LOG_RECORD_SEVERITY_TEXT, 1);
 
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &log_record);
 
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
 
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
@@ -1543,7 +1543,7 @@ mod tests {
     #[test]
     fn projected_top_level_known_field_with_wrong_wire_type_is_invalid() {
         let mut payload = Vec::new();
-        encode_varint_field(&mut payload, otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS, 0);
+        encode_varint_field(&mut payload, otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS, 0);
 
         let projection_err =
             decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
@@ -2051,7 +2051,7 @@ mod tests {
 
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs_inner,
         );
 
@@ -2071,17 +2071,17 @@ mod tests {
         inner.extend_from_slice(&[0x01, 0x02]); // only 2 bytes
 
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &inner);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &inner);
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
@@ -2182,23 +2182,23 @@ mod tests {
         // severity_text field (3, len) with truncated length
         encode_varint(
             &mut log_record,
-            (otlp::LOG_RECORD_SEVERITY_TEXT as u64) << 3 | 2,
+            (otlp_field::LOG_RECORD_SEVERITY_TEXT as u64) << 3 | 2,
         );
         encode_varint(&mut log_record, 100); // claims 100 bytes
         log_record.extend_from_slice(b"short"); // only 5 bytes
 
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &log_record);
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
@@ -2214,27 +2214,27 @@ mod tests {
     fn projected_invalid_utf8_in_attribute_key_is_invalid() {
         let mut kv_bytes = Vec::new();
         // key = field 1, len with invalid UTF-8
-        encode_len_field(&mut kv_bytes, otlp::KEY_VALUE_KEY, &[0xff, 0xfe]);
+        encode_len_field(&mut kv_bytes, otlp_field::KEY_VALUE_KEY, &[0xff, 0xfe]);
         // value = field 2, len with a string AnyValue
         let mut any_val = Vec::new();
-        encode_len_field(&mut any_val, otlp::ANY_VALUE_STRING_VALUE, b"valid");
-        encode_len_field(&mut kv_bytes, otlp::KEY_VALUE_VALUE, &any_val);
+        encode_len_field(&mut any_val, otlp_field::ANY_VALUE_STRING_VALUE, b"valid");
+        encode_len_field(&mut kv_bytes, otlp_field::KEY_VALUE_VALUE, &any_val);
 
         let mut log_record = Vec::new();
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_ATTRIBUTES, &kv_bytes);
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_ATTRIBUTES, &kv_bytes);
 
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &log_record);
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
@@ -2249,26 +2249,26 @@ mod tests {
     #[test]
     fn projected_invalid_utf8_in_attribute_string_value_is_invalid() {
         let mut any_val = Vec::new();
-        encode_len_field(&mut any_val, otlp::ANY_VALUE_STRING_VALUE, &[0x80, 0x81]);
+        encode_len_field(&mut any_val, otlp_field::ANY_VALUE_STRING_VALUE, &[0x80, 0x81]);
         let mut kv_bytes = Vec::new();
-        encode_len_field(&mut kv_bytes, otlp::KEY_VALUE_KEY, b"bad-val");
-        encode_len_field(&mut kv_bytes, otlp::KEY_VALUE_VALUE, &any_val);
+        encode_len_field(&mut kv_bytes, otlp_field::KEY_VALUE_KEY, b"bad-val");
+        encode_len_field(&mut kv_bytes, otlp_field::KEY_VALUE_VALUE, &any_val);
 
         let mut log_record = Vec::new();
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_ATTRIBUTES, &kv_bytes);
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_ATTRIBUTES, &kv_bytes);
 
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &log_record);
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
@@ -2283,22 +2283,22 @@ mod tests {
     #[test]
     fn projected_invalid_utf8_in_body_string_is_invalid() {
         let mut any_val = Vec::new();
-        encode_len_field(&mut any_val, otlp::ANY_VALUE_STRING_VALUE, &[0xc0, 0xaf]);
+        encode_len_field(&mut any_val, otlp_field::ANY_VALUE_STRING_VALUE, &[0xc0, 0xaf]);
         let mut log_record = Vec::new();
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_BODY, &any_val);
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_BODY, &any_val);
 
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &log_record);
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
@@ -2543,26 +2543,26 @@ mod tests {
         let mut any_val = Vec::new();
         encode_len_field(
             &mut any_val,
-            otlp::ANY_VALUE_ARRAY_VALUE,
+            otlp_field::ANY_VALUE_ARRAY_VALUE,
             &ArrayValue::default().encode_to_vec(),
         );
 
         let mut log_record = Vec::new();
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_BODY, &any_val);
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_BODY, &any_val);
         encode_varint(&mut log_record, 0); // malformed field number zero
 
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &log_record);
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
@@ -2676,16 +2676,16 @@ mod tests {
     #[test]
     fn projected_complex_anyvalue_duplicate_kv_fields_are_last_value_wins_like_prost() {
         let mut kv = Vec::new();
-        encode_len_field(&mut kv, otlp::KEY_VALUE_KEY, b"first-key");
+        encode_len_field(&mut kv, otlp_field::KEY_VALUE_KEY, b"first-key");
         encode_len_field(
             &mut kv,
-            otlp::KEY_VALUE_VALUE,
+            otlp_field::KEY_VALUE_VALUE,
             &any_string("first-value").encode_to_vec(),
         );
-        encode_len_field(&mut kv, otlp::KEY_VALUE_KEY, b"last-key");
+        encode_len_field(&mut kv, otlp_field::KEY_VALUE_KEY, b"last-key");
         encode_len_field(
             &mut kv,
-            otlp::KEY_VALUE_VALUE,
+            otlp_field::KEY_VALUE_VALUE,
             &any_string("last-value").encode_to_vec(),
         );
 
@@ -2693,22 +2693,22 @@ mod tests {
         encode_len_field(&mut kvlist, 1, &kv);
 
         let mut body = Vec::new();
-        encode_len_field(&mut body, otlp::ANY_VALUE_KVLIST_VALUE, &kvlist);
+        encode_len_field(&mut body, otlp_field::ANY_VALUE_KVLIST_VALUE, &kvlist);
 
         let mut log_record = Vec::new();
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_BODY, &body);
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_BODY, &body);
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &log_record);
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
@@ -2721,22 +2721,22 @@ mod tests {
         // array bytes: field=1(len), length=2, payload has only one byte.
         let malformed_array = [0x0a, 0x02, 0x01];
         let mut any = Vec::new();
-        encode_len_field(&mut any, otlp::ANY_VALUE_ARRAY_VALUE, &malformed_array);
+        encode_len_field(&mut any, otlp_field::ANY_VALUE_ARRAY_VALUE, &malformed_array);
 
         let mut log_record = Vec::new();
-        encode_len_field(&mut log_record, otlp::LOG_RECORD_BODY, &any);
+        encode_len_field(&mut log_record, otlp_field::LOG_RECORD_BODY, &any);
         let mut scope_logs = Vec::new();
-        encode_len_field(&mut scope_logs, otlp::SCOPE_LOGS_LOG_RECORDS, &log_record);
+        encode_len_field(&mut scope_logs, otlp_field::SCOPE_LOGS_LOG_RECORDS, &log_record);
         let mut resource_logs = Vec::new();
         encode_len_field(
             &mut resource_logs,
-            otlp::RESOURCE_LOGS_SCOPE_LOGS,
+            otlp_field::RESOURCE_LOGS_SCOPE_LOGS,
             &scope_logs,
         );
         let mut payload = Vec::new();
         encode_len_field(
             &mut payload,
-            otlp::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
             &resource_logs,
         );
 
