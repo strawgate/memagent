@@ -1233,8 +1233,8 @@ fn experimental_projection_decode_mode_controls_http_protobuf_path() {
         Err(e) => panic!("unexpected transport error: {e}"),
     };
     assert_eq!(
-        projected_only_status, 400,
-        "ProjectedOnly must reject unsupported but valid OTLP shapes"
+        projected_only_status, 200,
+        "ProjectedOnly must accept complex AnyValue shapes after projection support was added"
     );
 
     let stats = Arc::new(ComponentStats::new());
@@ -1275,10 +1275,10 @@ fn experimental_projection_decode_mode_controls_http_protobuf_path() {
     };
     assert_eq!(
         fallback_status, 200,
-        "ProjectedFallback must use prost for supported-by-prost complex values"
+        "ProjectedFallback must handle complex AnyValue shapes via projection"
     );
-    assert_eq!(stats.otlp_projected_success(), 1);
-    assert_eq!(stats.otlp_projected_fallback(), 1);
+    assert_eq!(stats.otlp_projected_success(), 2);
+    assert_eq!(stats.otlp_projected_fallback(), 0);
     assert_eq!(stats.otlp_projection_invalid(), 0);
 
     let malformed_status = match loopback_http_client()
@@ -1294,8 +1294,8 @@ fn experimental_projection_decode_mode_controls_http_protobuf_path() {
         malformed_status, 400,
         "ProjectedFallback must reject malformed protobuf instead of falling back"
     );
-    assert_eq!(stats.otlp_projected_success(), 1);
-    assert_eq!(stats.otlp_projected_fallback(), 1);
+    assert_eq!(stats.otlp_projected_success(), 2);
+    assert_eq!(stats.otlp_projected_fallback(), 0);
     assert_eq!(stats.otlp_projection_invalid(), 1);
     assert_eq!(stats.parse_errors(), 1);
 

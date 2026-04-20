@@ -768,11 +768,29 @@ def render_wire_any_json_writer(spec: dict) -> str:
     key_number = key_value_fields["key"]["number"]
     value_number = key_value_fields["value"]["number"]
 
-    return """pub(super) fn write_wire_any_json(
+    return """/// Maximum nesting depth for recursive AnyValue JSON serialization.
+/// Protects against stack overflow from deeply nested ArrayValue/KvListValue payloads.
+pub(super) const MAX_ANY_VALUE_DEPTH: usize = 64;
+
+pub(super) fn write_wire_any_json(
     value: WireAny<'_>,
     out: &mut Vec<u8>,
     scratch: &mut WireScratch,
 ) -> Result<(), ProjectionError> {
+    write_wire_any_json_depth(value, out, scratch, 0)
+}
+
+pub(super) fn write_wire_any_json_depth(
+    value: WireAny<'_>,
+    out: &mut Vec<u8>,
+    scratch: &mut WireScratch,
+    depth: usize,
+) -> Result<(), ProjectionError> {
+    if depth > MAX_ANY_VALUE_DEPTH {
+        return Err(ProjectionError::Invalid(
+            "AnyValue nesting depth exceeds limit",
+        ));
+    }
     match value {
         WireAny::String(value) => {
             out.push(b'\"');
@@ -792,10 +810,12 @@ def render_wire_any_json_writer(spec: dict) -> str:
                 let mut buf = ryu::Buffer::new();
                 scratch.decimal.extend_from_slice(buf.format(value).as_bytes());
                 out.extend_from_slice(&scratch.decimal);
+            } else if value.is_nan() {
+                out.extend_from_slice(b\"\\\"NaN\\\"\");
+            } else if value.is_sign_positive() {
+                out.extend_from_slice(b\"\\\"inf\\\"\");
             } else {
-                out.push(b'\"');
-                super::write_json_escaped_bytes(out, value.to_string().as_bytes());
-                out.push(b'\"');
+                out.extend_from_slice(b\"\\\"-inf\\\"\");
             }
         }
         WireAny::Bytes(value) => {
@@ -803,8 +823,8 @@ def render_wire_any_json_writer(spec: dict) -> str:
             super::write_hex_to_buf(out, value);
             out.push(b'\"');
         }
-        WireAny::ArrayRaw(value) => write_array_value_json(value, out, scratch)?,
-        WireAny::KvListRaw(value) => write_kvlist_value_json(value, out, scratch)?,
+        WireAny::ArrayRaw(value) => write_array_value_json(value, out, scratch, depth)?,
+        WireAny::KvListRaw(value) => write_kvlist_value_json(value, out, scratch, depth)?,
     }
     Ok(())
 }
@@ -813,6 +833,7 @@ pub(super) fn write_array_value_json(
     array_value: &[u8],
     out: &mut Vec<u8>,
     scratch: &mut WireScratch,
+    depth: usize,
 ) -> Result<(), ProjectionError> {
     out.push(b'[');
     let mut first = true;
@@ -830,7 +851,7 @@ pub(super) fn write_array_value_json(
         }
         first = false;
         if let Some(value) = decode_any_value_wire(any_value)? {
-            write_wire_any_json(value, out, scratch)?;
+            write_wire_any_json_depth(value, out, scratch, depth + 1)?;
         } else {
             out.extend_from_slice(b"null");
         }
@@ -844,6 +865,7 @@ pub(super) fn write_kvlist_value_json(
     kvlist_value: &[u8],
     out: &mut Vec<u8>,
     scratch: &mut WireScratch,
+    depth: usize,
 ) -> Result<(), ProjectionError> {
     out.push(b'[');
     let mut first = true;
@@ -860,7 +882,7 @@ pub(super) fn write_kvlist_value_json(
             out.push(b',');
         }
         first = false;
-        write_key_value_json(kv, out, scratch)?;
+        write_key_value_json(kv, out, scratch, depth)?;
         Ok(())
     })?;
     out.push(b']');
@@ -871,6 +893,7 @@ pub(super) fn write_key_value_json(
     kv: &[u8],
     out: &mut Vec<u8>,
     scratch: &mut WireScratch,
+    depth: usize,
 ) -> Result<(), ProjectionError> {
     let mut key = &[][..];
     let mut value = None;
@@ -901,7 +924,7 @@ pub(super) fn write_key_value_json(
     super::write_json_escaped_bytes(out, key);
     out.extend_from_slice(b"\\",\\"v\\":");
     if let Some(value) = value {
-        write_wire_any_json(value, out, scratch)?;
+        write_wire_any_json_depth(value, out, scratch, depth + 1)?;
     } else {
         out.extend_from_slice(b"null");
     }
@@ -1229,17 +1252,17 @@ mod generated_tests {{
         let kvlist = [10, 8, 10, 1, b'k', 18, 3, 10, 1, b'v'];
 
         let mut out = Vec::new();
-        write_array_value_json(&array, &mut out, &mut scratch)
+        write_array_value_json(&array, &mut out, &mut scratch, 0)
             .expect("generated array JSON writer should decode repeated AnyValue");
         assert_eq!(out, br#"["x"]"#);
 
         out.clear();
-        write_key_value_json(&kv, &mut out, &mut scratch)
+        write_key_value_json(&kv, &mut out, &mut scratch, 0)
             .expect("generated key value JSON writer should decode KeyValue");
         assert_eq!(out, br#"{{"k":"k","v":"v"}}"#);
 
         out.clear();
-        write_kvlist_value_json(&kvlist, &mut out, &mut scratch)
+        write_kvlist_value_json(&kvlist, &mut out, &mut scratch, 0)
             .expect("generated kvlist JSON writer should decode repeated KeyValue");
         assert_eq!(out, br#"[{{"k":"k","v":"v"}}]"#);
 

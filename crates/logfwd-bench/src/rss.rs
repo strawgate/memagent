@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Measure actual RSS (resident set size) at each pipeline stage.
 //! Run with: cargo run -p logfwd-bench --release --bin rss
 

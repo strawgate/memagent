@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! CPU-profile harness for the Arrow→OTLP encoder.
 //!
 //! Runs `encode_batch` / `encode_batch_generated_fast` in a tight loop while

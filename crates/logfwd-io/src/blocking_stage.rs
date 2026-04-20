@@ -266,7 +266,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::thread;
     use std::thread::ThreadId;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     struct CountingWorker {
         processed: usize,
@@ -478,7 +478,12 @@ mod tests {
         for i in 0..32usize {
             let stage = Arc::clone(&stage);
             handles.push(thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(10);
                 loop {
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out waiting for submit slot"
+                    );
                     match stage.try_submit(i) {
                         Ok(result) => return block_on(result.recv()).expect("result"),
                         Err(BlockingStageSubmitError::Full) => thread::yield_now(),
@@ -521,8 +526,13 @@ mod tests {
         })
         .expect("stage should build");
 
+        let deadline = Instant::now() + Duration::from_secs(10);
         for _ in 0..64usize {
             loop {
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out submitting dropped-receiver jobs"
+                );
                 match stage.try_submit(1) {
                     Ok(result) => {
                         drop(result);
@@ -534,7 +544,12 @@ mod tests {
             }
         }
 
+        let deadline = Instant::now() + Duration::from_secs(10);
         loop {
+            assert!(
+                Instant::now() < deadline,
+                "timed out submitting final verification job"
+            );
             match stage.try_submit(1) {
                 Ok(result) => {
                     let output = block_on(result.recv()).expect("final output should complete");
