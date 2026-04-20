@@ -1,8 +1,11 @@
 use std::sync::Arc;
 
-use arrow::array::{Array, UInt32Array, UInt64Array};
+use arrow::array::{Array, StringArray, UInt32Array, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use arrow::record_batch::RecordBatch;
+use logfwd_types::field_names;
+use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+use prost::Message;
 use reqwest::header::{HeaderMap, HeaderValue};
 
 use super::*;
@@ -99,5 +102,40 @@ fn encode_flags_uint64_out_of_range_silently_dropped() {
     assert!(
         !contains_bytes(&sink.encoder_buf, &[0x45u8]),
         "flags field 8 must not be encoded for out-of-range UInt64 value"
+    );
+}
+
+#[test]
+fn internal_columns_are_not_encoded_as_log_attributes() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("message", DataType::Utf8, true),
+        Field::new(field_names::SOURCE_ID, DataType::UInt64, true),
+        Field::new("__typename", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(StringArray::from(vec![Some("hello")])),
+            Arc::new(UInt64Array::from(vec![Some(42)])),
+            Arc::new(StringArray::from(vec![Some("LogEvent")])),
+        ],
+    )
+    .expect("valid batch");
+
+    let mut sink = make_sink();
+    sink.encode_batch(&batch, &make_metadata());
+
+    let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+        .expect("prost decodes output");
+    let lr = &request.resource_logs[0].scope_logs[0].log_records[0];
+    assert!(
+        lr.attributes
+            .iter()
+            .all(|kv| kv.key != field_names::SOURCE_ID),
+        "internal source id must stay out of OTLP attributes"
+    );
+    assert!(
+        lr.attributes.iter().any(|kv| kv.key == "__typename"),
+        "user double-underscore fields must remain OTLP attributes"
     );
 }
