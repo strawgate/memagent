@@ -1,7 +1,7 @@
 use crate::types::{
     CompressionFormat, Config, ConfigError, ElasticsearchRequestMode, EnrichmentConfig, Format,
     GeneratorAttributeValueConfig, GeneratorProfileConfig, InputType, InputTypeConfig,
-    JournaldBackendConfig, OutputConfig, OutputConfigV2, OutputType, PIPELINE_WORKERS_MAX,
+    JournaldBackendConfig, OutputConfigV2, OutputType, PIPELINE_WORKERS_MAX,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -20,79 +20,6 @@ fn validation_message(error: ConfigError) -> String {
         ConfigError::Io(error) => error.to_string(),
         ConfigError::Yaml(error) => error.to_string(),
     }
-}
-
-fn null_output_unsupported_field(output: &OutputConfig) -> Option<&'static str> {
-    if output.endpoint.is_some() {
-        return Some("endpoint");
-    }
-    if output.protocol.is_some() {
-        return Some("protocol");
-    }
-    if output.compression.is_some() {
-        return Some("compression");
-    }
-    if output.request_mode.is_some() {
-        return Some("request_mode");
-    }
-    if output.format.is_some() {
-        return Some("format");
-    }
-    if output.path.is_some() {
-        return Some("path");
-    }
-    if output.index.is_some() {
-        return Some("index");
-    }
-    if output.auth.is_some() {
-        return Some("auth");
-    }
-    if output.tenant_id.is_some() {
-        return Some("tenant_id");
-    }
-    if output.static_labels.is_some() {
-        return Some("static_labels");
-    }
-    if output.label_columns.is_some() {
-        return Some("label_columns");
-    }
-    if output.tls.is_some() {
-        return Some("tls");
-    }
-    if output.headers.is_some() {
-        return Some("headers");
-    }
-    if output.retry_attempts.is_some() {
-        return Some("retry_attempts");
-    }
-    if output.retry_initial_backoff_ms.is_some() {
-        return Some("retry_initial_backoff_ms");
-    }
-    if output.retry_max_backoff_ms.is_some() {
-        return Some("retry_max_backoff_ms");
-    }
-    if output.request_timeout_ms.is_some() {
-        return Some("request_timeout_ms");
-    }
-    if output.batch_size.is_some() {
-        return Some("batch_size");
-    }
-    if output.batch_timeout_ms.is_some() {
-        return Some("batch_timeout_ms");
-    }
-    if output.host.is_some() {
-        return Some("host");
-    }
-    if output.port.is_some() {
-        return Some("port");
-    }
-    if output.buffer_size_bytes.is_some() {
-        return Some("buffer_size_bytes");
-    }
-    if output.write_schema_on_connect.is_some() {
-        return Some("write_schema_on_connect");
-    }
-    None
 }
 
 fn output_label(output: &OutputConfigV2, index: usize) -> String {
@@ -148,166 +75,6 @@ fn validate_socket_output_endpoint(
             "pipeline '{pipeline_name}' output '{label}': {}",
             validation_message(err)
         )));
-    }
-
-    Ok(())
-}
-
-fn validate_legacy_output_compat_fields(
-    pipeline_name: &str,
-    label: &str,
-    output_type: OutputType,
-    legacy: &OutputConfig,
-) -> Result<(), ConfigError> {
-    if output_type == OutputType::Null
-        && let Some(field) = null_output_unsupported_field(legacy)
-    {
-        return Err(ConfigError::Validation(format!(
-            "pipeline '{pipeline_name}' output '{label}': null output does not support '{field}'; remove the field"
-        )));
-    }
-
-    if output_type != OutputType::Elasticsearch && legacy.request_mode.is_some() {
-        return Err(ConfigError::Validation(format!(
-            "pipeline '{pipeline_name}' output '{label}': request_mode is only supported for elasticsearch outputs"
-        )));
-    }
-    if output_type != OutputType::Elasticsearch && legacy.index.is_some() {
-        return Err(ConfigError::Validation(format!(
-            "pipeline '{pipeline_name}' output '{label}': 'index' is only supported for elasticsearch outputs"
-        )));
-    }
-    if output_type == OutputType::Loki && legacy.compression.is_some() {
-        return Err(ConfigError::Validation(format!(
-            "pipeline '{pipeline_name}' output '{label}': 'compression' is not supported for loki outputs"
-        )));
-    }
-
-    if !matches!(
-        output_type,
-        OutputType::Otlp | OutputType::Elasticsearch | OutputType::Loki
-    ) && legacy.tls.is_some()
-    {
-        return Err(ConfigError::Validation(format!(
-            "pipeline '{pipeline_name}' output '{label}': 'tls' is only supported for otlp, elasticsearch, and loki outputs"
-        )));
-    }
-    if output_type != OutputType::Otlp {
-        if legacy.headers.is_some() {
-            return Err(ConfigError::Validation(format!(
-                "pipeline '{pipeline_name}' output '{label}': 'headers' is only supported for otlp outputs"
-            )));
-        }
-        if legacy.retry_attempts.is_some() {
-            return Err(ConfigError::Validation(format!(
-                "pipeline '{pipeline_name}' output '{label}': 'retry_attempts' is only supported for otlp outputs"
-            )));
-        }
-        if legacy.retry_initial_backoff_ms.is_some() {
-            return Err(ConfigError::Validation(format!(
-                "pipeline '{pipeline_name}' output '{label}': 'retry_initial_backoff_ms' is only supported for otlp outputs"
-            )));
-        }
-        if legacy.retry_max_backoff_ms.is_some() {
-            return Err(ConfigError::Validation(format!(
-                "pipeline '{pipeline_name}' output '{label}': 'retry_max_backoff_ms' is only supported for otlp outputs"
-            )));
-        }
-        if !matches!(output_type, OutputType::Elasticsearch | OutputType::Loki)
-            && legacy.request_timeout_ms.is_some()
-        {
-            return Err(ConfigError::Validation(format!(
-                "pipeline '{pipeline_name}' output '{label}': 'request_timeout_ms' is only supported for otlp, elasticsearch, and loki outputs"
-            )));
-        }
-        if legacy.batch_timeout_ms.is_some() {
-            return Err(ConfigError::Validation(format!(
-                "pipeline '{pipeline_name}' output '{label}': 'batch_timeout_ms' is only supported for otlp outputs"
-            )));
-        }
-    }
-
-    if output_type != OutputType::Otlp && legacy.protocol.is_some() {
-        return Err(ConfigError::Validation(format!(
-            "pipeline '{pipeline_name}' output '{label}': 'protocol' is only supported for otlp outputs"
-        )));
-    }
-    if output_type != OutputType::Loki {
-        if legacy.tenant_id.is_some() {
-            return Err(ConfigError::Validation(format!(
-                "pipeline '{pipeline_name}' output '{label}': 'tenant_id' is only supported for loki outputs"
-            )));
-        }
-        if legacy.static_labels.is_some() {
-            return Err(ConfigError::Validation(format!(
-                "pipeline '{pipeline_name}' output '{label}': 'static_labels' is only supported for loki outputs"
-            )));
-        }
-        if legacy.label_columns.is_some() {
-            return Err(ConfigError::Validation(format!(
-                "pipeline '{pipeline_name}' output '{label}': 'label_columns' is only supported for loki outputs"
-            )));
-        }
-    }
-
-    if !matches!(output_type, OutputType::File | OutputType::Parquet) && legacy.path.is_some() {
-        return Err(ConfigError::Validation(format!(
-            "pipeline '{pipeline_name}' output '{label}': 'path' is only supported for file/parquet outputs"
-        )));
-    }
-    if !matches!(
-        output_type,
-        OutputType::Otlp
-            | OutputType::Http
-            | OutputType::Elasticsearch
-            | OutputType::Loki
-            | OutputType::ArrowIpc
-    ) && legacy.auth.is_some()
-    {
-        return Err(ConfigError::Validation(format!(
-            "pipeline '{pipeline_name}' output '{label}': 'auth' is only supported for HTTP-based outputs"
-        )));
-    }
-    if matches!(
-        output_type,
-        OutputType::Stdout
-            | OutputType::Null
-            | OutputType::Tcp
-            | OutputType::Udp
-            | OutputType::File
-    ) && legacy.compression.is_some()
-    {
-        return Err(ConfigError::Validation(format!(
-            "pipeline '{pipeline_name}' output '{label}': 'compression' is not supported for this output type"
-        )));
-    }
-
-    if output_type != OutputType::ArrowIpc {
-        if legacy.host.is_some() {
-            return Err(ConfigError::Validation(format!(
-                "pipeline '{pipeline_name}' output '{label}': 'host' is only supported for arrow_ipc outputs"
-            )));
-        }
-        if legacy.port.is_some() {
-            return Err(ConfigError::Validation(format!(
-                "pipeline '{pipeline_name}' output '{label}': 'port' is only supported for arrow_ipc outputs"
-            )));
-        }
-        if legacy.buffer_size_bytes.is_some() {
-            return Err(ConfigError::Validation(format!(
-                "pipeline '{pipeline_name}' output '{label}': 'buffer_size_bytes' is only supported for arrow_ipc outputs"
-            )));
-        }
-        if legacy.batch_size.is_some() && output_type != OutputType::Otlp {
-            return Err(ConfigError::Validation(format!(
-                "pipeline '{pipeline_name}' output '{label}': 'batch_size' is only supported for otlp and arrow_ipc outputs"
-            )));
-        }
-        if legacy.write_schema_on_connect.is_some() {
-            return Err(ConfigError::Validation(format!(
-                "pipeline '{pipeline_name}' output '{label}': 'write_schema_on_connect' is only supported for arrow_ipc outputs"
-            )));
-        }
     }
 
     Ok(())
@@ -375,17 +142,8 @@ fn validate_output_config(
     pipeline_name: &str,
     label: &str,
     output: &OutputConfigV2,
-    legacy: &OutputConfig,
 ) -> Result<(), ConfigError> {
     let output_type = output.output_type();
-
-    if matches!(output_type, OutputType::Parquet | OutputType::Http) {
-        return Err(ConfigError::Validation(format!(
-            "pipeline '{pipeline_name}' output '{label}': {output_type} output type is not yet implemented",
-        )));
-    }
-
-    validate_legacy_output_compat_fields(pipeline_name, label, output_type.clone(), legacy)?;
 
     match output {
         OutputConfigV2::Otlp(config) => {
@@ -488,11 +246,6 @@ fn validate_output_config(
                 OutputType::Tcp,
                 config.endpoint.as_deref(),
             )?;
-            if legacy.format.is_some() {
-                return Err(ConfigError::Validation(format!(
-                    "pipeline '{pipeline_name}' output '{label}': tcp output does not support 'format'; remove the field",
-                )));
-            }
         }
         OutputConfigV2::Udp(config) => {
             validate_socket_output_endpoint(
@@ -501,11 +254,6 @@ fn validate_output_config(
                 OutputType::Udp,
                 config.endpoint.as_deref(),
             )?;
-            if legacy.format.is_some() {
-                return Err(ConfigError::Validation(format!(
-                    "pipeline '{pipeline_name}' output '{label}': udp output does not support 'format'; remove the field",
-                )));
-            }
         }
         OutputConfigV2::ArrowIpc(config) => {
             validate_url_output_endpoint(
@@ -1242,9 +990,8 @@ impl Config {
                 }
 
                 for (i, output) in pipe.outputs.iter().enumerate() {
-                    let typed = output.typed();
-                    let label = output_label(typed, i);
-                    validate_output_config(name, &label, typed, output.compat_config())?;
+                    let label = output_label(output, i);
+                    validate_output_config(name, &label, output)?;
                 }
 
                 // Validate enrichment entries (#550).
@@ -1387,7 +1134,6 @@ impl Config {
                 }
 
                 for (j, output) in pipe.outputs.iter().enumerate() {
-                    let output = output.typed();
                     let out_label = output_label(output, j);
 
                     let Some(out_path) = output_path_for_feedback_loop(output) else {

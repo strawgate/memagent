@@ -282,7 +282,7 @@ pub async fn run_pipelines(
                 "     {}out{}  {}",
                 dim(use_color),
                 reset(use_color),
-                output_label(output.typed())
+                output_label(output)
             );
         }
     }

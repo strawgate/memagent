@@ -15,6 +15,12 @@ java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/
 java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.liveness.cfg
 java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.cfg
 java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCWorkerPoolDispatch.tla -config tla/WorkerPoolDispatch.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCWorkerPoolDispatch.tla -config tla/WorkerPoolDispatch.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCFanoutSink.tla -config tla/FanoutSink.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCFanoutSink.tla -config tla/FanoutSink.liveness.cfg
 ```
 
 ## PipelineMachine.tla
@@ -94,6 +100,27 @@ tla/
   PipelineBatch.cfg             — safety model
   PipelineBatch.liveness.cfg    — liveness model
   PipelineBatch.coverage.cfg    — reachability guards
+
+  # Delivery retry loop (exponential backoff, batch terminalization liveness)
+  DeliveryRetry.tla             — worker retry loop with backoff + cancel
+  MCDeliveryRetry.tla           — TLC config
+  DeliveryRetry.cfg             — safety model (backoff invariants)
+  DeliveryRetry.liveness.cfg    — liveness model (terminal reachable under fairness)
+  DeliveryRetry.coverage.cfg    — reachability guards
+
+  # Worker pool dispatch (MRU dispatch, spawn-or-wait, 3-phase drain)
+  WorkerPoolDispatch.tla        — dispatch algorithm + worker lifecycle + drain
+  MCWorkerPoolDispatch.tla      — TLC config
+  WorkerPoolDispatch.cfg        — safety model
+  WorkerPoolDispatch.liveness.cfg — liveness model
+  WorkerPoolDispatch.coverage.cfg — reachability guards
+
+  # Fanout sink delivery (per-child tracking, no-duplicate-on-retry)
+  FanoutSink.tla                — fanout delivery + retry + partial success
+  MCFanoutSink.tla              — TLC config
+  FanoutSink.cfg                — safety model
+  FanoutSink.liveness.cfg       — liveness model
+  FanoutSink.coverage.cfg       — reachability guards
 
   README.md                     — this file
 ```
@@ -271,6 +298,88 @@ java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/Pip
 
 ---
 
+## DeliveryRetry.tla
+
+Models the worker delivery retry loop from
+`crates/logfwd-runtime/src/worker_pool/worker.rs` (`process_item`). This is the
+highest-priority spec because PipelineMachine.tla assumes `WF(AckBatch)` (batches
+eventually terminalize) but nothing formally verified that assumption until now.
+
+The retry loop sends a batch to a sink, and on transient failure (IoError,
+RetryAfter, timeout) retries indefinitely with exponential backoff capped at
+`MaxBackoffMs`. Terminal exits are: Ok (delivered), Rejected (permanent failure),
+or Cancel (shutdown). Liveness depends on sink recovery OR shutdown cancellation.
+
+### Model parameters
+
+| Config | InitialBackoffMs | MaxBackoffMs | MaxRetries |
+|--------|------------------|--------------|------------|
+| Safety | 100 | 1600 | 5 |
+| Liveness | 100 | 800 | 3 |
+| Coverage | 100 | 1600 | 5 |
+
+### What it proves
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `BackoffCapRespected` | Safety | backoff delay never exceeds MaxBackoffMs |
+| `BackoffMonotonic` | Safety | in WaitingBackoff, delay is at least InitialBackoffMs |
+| `TerminalImpliesOutcome` | Safety | Terminal state has a definite outcome |
+| `NonTerminalImpliesNoOutcome` | Safety | non-terminal state has no outcome yet |
+| `IdleImpliesNoRetries` | Safety | Idle state has zero retries |
+| `CancelledImpliesCancelledOutcome` | Safety | cancelled flag implies Cancelled outcome |
+| `BackoffZeroOnlyInitially` | Safety | zero backoff only before first transient failure |
+| `RetryCountMonotonic` | Safety (temporal) | retry count never decreases |
+| `BackoffDelayMonotonic` | Safety (temporal) | backoff delay never decreases |
+| `TerminalIsAbsorbing` | Safety (temporal) | Terminal state is permanent |
+| `OutcomeIsStable` | Safety (temporal) | outcome never changes once set |
+| `TerminalReachable` | Liveness | every delivery eventually reaches Terminal (under fairness) |
+| `HealthySinkDelivers` | Liveness | permanently healthy sink implies eventual Ok |
+| `CancelTerminates` | Liveness | cancellation leads to Terminal |
+| `TerminalIsStable` | Liveness | Terminal is eventually stable |
+| `BackoffEventuallyResolves` | Liveness | WaitingBackoff always resolves |
+| `SendingReachable` | Reachability | Sending state is reachable |
+| `OkReachable` | Reachability | Ok outcome is reachable |
+| `RejectedReachable` | Reachability | Rejected outcome is reachable |
+| `CancelledReachable` | Reachability | Cancelled outcome is reachable |
+| `BackoffReachable` | Reachability | WaitingBackoff is reachable |
+| `RetryOccurs` | Reachability | at least one retry occurs |
+| `BackoffCapReached` | Reachability | backoff reaches MaxBackoffMs |
+| `MultipleRetriesOccur` | Reachability | multiple retries occur |
+| `SinkRecoveryReachable` | Reachability | sink recovery after failure is reachable |
+
+### Run
+
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.coverage.cfg
+```
+
+### Key design: retry forever, terminate on cancel
+
+The code deliberately retries forever for transient errors (Filebeat-style delivery
+model). The worker blocks on its current batch, propagating backpressure through
+bounded channels to inputs. The only terminal exits are:
+
+- **Ok** — sink accepted the batch
+- **Rejected** — sink permanently rejected (4xx, schema error)
+- **Cancelled** — shutdown token fired
+
+This means `TerminalReachable` requires WF(Cancel) in the fairness assumption.
+Without cancellation, a permanently-failing sink would block the worker forever
+by design. This is the correct behavior: backpressure, not data loss.
+
+### Relationship to PipelineMachine.tla
+
+PipelineMachine.tla's `WF(AckBatch)` assumes that once a batch is in Sending
+state, it eventually receives an explicit terminal outcome (ack/reject/abandon).
+DeliveryRetry.tla's `TerminalReachable` property formally justifies this
+assumption by proving that the retry loop in `process_item` always terminates
+under weak fairness (with sink recovery or shutdown cancellation).
+
+---
+
 ## TailLifecycle.tla
 
 Models the pure tail reducer behavior extracted in `crates/logfwd-io/src/tail/state.rs`:
@@ -296,6 +405,151 @@ Models the pure tail reducer behavior extracted in `crates/logfwd-io/src/tail/st
 ```bash
 just tlc-tail
 ```
+
+---
+
+## WorkerPoolDispatch.tla
+
+Models the MRU worker dispatch algorithm from
+`crates/logfwd-runtime/src/worker_pool/pool.rs`.
+
+### Model parameters
+
+| Config | MaxWorkers | NumItems |
+|--------|-----------|----------|
+| Safety | 2 | 3 |
+| Liveness | 2 | 2 |
+| Coverage | 2 | 3 |
+
+Production uses MaxWorkers up to 64 and unbounded item streams. The dispatch
+algorithm is worker-count-independent so small values suffice.
+
+### What it proves
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `NoDoubleAccounting` | Safety | no item appears in two categories (pending/inFlight/delivered/rejected) simultaneously |
+| `DispatchNeverDrops` | Safety | every submitted item is either pending, in-flight, delivered, or rejected — never silently lost |
+| `StoppedImpliesNoInFlight` | Safety | stopped state has no in-flight items |
+| `StoppedImpliesNoPending` | Safety | stopped state has no pending items |
+| `WorkerCountBound` | Safety | active workers never exceed MaxWorkers |
+| `BusyImpliesActive` | Safety | busy workers are in the active set |
+| `InFlightHasWorker` | Safety | every in-flight item is assigned to a busy worker |
+| `NoSubmitAfterDrain` | Safety (temporal) | no new items enter pending after drain begins |
+| `FailureIsStickyTemporal` | Safety (temporal) | once a worker health is Failed, it stays Failed or Stopped |
+| `ForceAbortAccountsForAll` | Safety (temporal) | force-abort clears all in-flight and pending items |
+| `ShutdownReachable` | Liveness | drain eventually reaches Stopped |
+| `StoppedIsStable` | Liveness | once Stopped, stays Stopped |
+| `AllItemsEventuallyResolved` | Liveness | every submitted item eventually reaches delivered or rejected |
+| `DrainingReachable` | Reachability | Draining state is reachable |
+| `StoppedReachable` | Reachability | Stopped state is reachable |
+| `DeliveryOccurs` | Reachability | at least one item is delivered |
+| `RejectionOccurs` | Reachability | at least one item is rejected |
+| `WorkerSpawnOccurs` | Reachability | a worker is spawned |
+| `WorkerFailOccurs` | Reachability | a worker failure occurs |
+| `ForceAbortReachable` | Reachability | force-abort path is reachable |
+| `IdleTimeoutReachable` | Reachability | idle timeout path is reachable |
+| `MultipleWorkersReachable` | Reachability | multiple workers active simultaneously |
+| `BackpressureReachable` | Reachability | all workers busy with pending work |
+| `AllDeliveredReachable` | Reachability | full success (all items delivered) is reachable |
+| `SubmitAfterDrainReachable` | Reachability | submit-after-drain rejection is reachable |
+
+### Run
+
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCWorkerPoolDispatch.tla -config tla/WorkerPoolDispatch.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCWorkerPoolDispatch.tla -config tla/WorkerPoolDispatch.liveness.cfg
+python3 scripts/verify_tla_coverage.py --jar /path/to/tla2tools.jar --tla-file tla/MCWorkerPoolDispatch.tla --config tla/WorkerPoolDispatch.coverage.cfg
+```
+
+### Key design: MRU dispatch with spawn-or-wait
+
+The dispatch algorithm tries workers front-to-back (MRU first). If no idle
+worker is available and the pool is under capacity, a new worker is spawned.
+If at capacity with all workers busy, the pool async-waits on the front worker.
+This consolidates work onto fewer workers, letting cold workers hit idle timeout
+and self-terminate — freeing their HTTP connections.
+
+The 3-phase drain protocol (signal -> join with timeout -> force-abort) ensures
+that shutdown always terminates: either all workers finish gracefully, or
+remaining in-flight items are force-rejected after the timeout.
+
+---
+
+## FanoutSink.tla
+
+Models the `AsyncFanoutSink` delivery protocol from
+`crates/logfwd-output/src/sink.rs`. The fanout sends every batch to N child
+sinks, tracks per-child completion state, and prevents duplicate delivery when
+the worker pool retries a partially-failed batch.
+
+This is the class of bug that caused ES duplication issues (#1873, #1880) —
+when a retry re-sent data to children that had already accepted it.
+
+### Model parameters
+
+| Config | NumChildren | MaxRetries | MaxBatches |
+|--------|-------------|------------|------------|
+| Safety | 3 | 2 | 2 |
+| Liveness | 2 | 2 | 2 |
+| Coverage | 3 | 2 | 2 |
+
+### What it proves
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `PartialSuccessIsOk` | Safety | mixed Ok+Rejected (not all rejected) yields Ok result |
+| `AllRejectedIsRejected` | Safety | all children rejected yields Rejected result |
+| `BatchPhaseConsistency` | Safety | fanoutResult and batchPhase are always consistent |
+| `RetryCountBound` | Safety | retryCount never exceeds MaxRetries |
+| `DeliveryCountConsistency` | Safety | totalDelivered count is non-negative |
+| `OkChildNeverRevertsTemporal` | Safety (temporal) | once Ok in a batch, stays Ok until next BeginBatch |
+| `RejectedChildNeverRevertsTemporal` | Safety (temporal) | once Rejected in a batch, stays Rejected until next BeginBatch |
+| `NoDuplicateDeliveryTemporal` | Safety (temporal) | Ok children only transition via BeginBatch reset |
+| `BatchEventuallyFinalizes` | Liveness | every started batch eventually reaches Finalized |
+| `FinalizedEventuallyIdle` | Liveness | every finalized batch eventually returns to Idle |
+| `AllBatchesComplete` | Liveness | all modeled batches eventually complete |
+| `RetryEventuallyResolves` | Liveness | RetryNeeded state eventually resolves |
+| `DeliveringReachable` | Reachability | Delivering phase is reachable |
+| `FinalizedReachable` | Reachability | Finalized phase is reachable |
+| `ChildOkOccurs` | Reachability | at least one child succeeds |
+| `ChildRejectedOccurs` | Reachability | at least one child rejects |
+| `PartialSuccessReachable` | Reachability | mixed Ok+Rejected with Ok result is reachable |
+| `AllRejectedReachable` | Reachability | all-rejected result is reachable |
+| `AllOkReachable` | Reachability | all-ok result is reachable |
+| `RetryNeededReachable` | Reachability | RetryNeeded result is reachable |
+| `RetryOccurs` | Reachability | retry actually fires |
+| `ExhaustRetriesReachable` | Reachability | exhausted retries is reachable |
+| `MultipleBatchesReachable` | Reachability | multiple batches complete |
+| `TransientThenOkReachable` | Reachability | child transitions from transient to Ok across retries |
+
+### Run
+
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCFanoutSink.tla -config tla/FanoutSink.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCFanoutSink.tla -config tla/FanoutSink.liveness.cfg
+python3 scripts/verify_tla_coverage.py --jar /path/to/tla2tools.jar --tla-file tla/MCFanoutSink.tla --config tla/FanoutSink.coverage.cfg
+```
+
+### Key design: per-child state tracking across retries
+
+The fanout tracks each child sink's state (`Pending`, `Ok`, `Rejected`) across
+retry attempts within the same logical batch. When the worker pool retries a
+batch (because one child had a transient failure), the fanout skips children
+that already returned `Ok` or `Rejected`. This prevents duplicate delivery —
+the exact bug class that caused ES duplication (#1873, #1880).
+
+`begin_batch()` resets all children to `Pending` for each new logical batch.
+The worker pool MUST call `begin_batch()` before the first `send_batch()` of
+each batch. Without this call, children retain terminal states from the
+previous batch and would be skipped.
+
+### Key design: partial success semantics
+
+When some children succeed and others reject, the fanout returns `Ok` (not
+`Rejected`). Only when ALL children reject does the fanout return `Rejected`.
+This matches the principle that successfully-delivered data should not be
+discarded because one output destination rejected it.
 
 ---
 
@@ -405,8 +659,10 @@ constraint on the pipeline, not a property of the machine itself.
 
 **Retry timing and payload retention:** `HoldBatch`/`RetryHeldBatch` model
 lifecycle effects, not backoff timers, retry jitter, or retained batch payload
-storage. Runtime fault timing remains covered by Turmoil/proptest rather than
-this finite TLA model.
+storage. The backoff-level retry loop is now modeled in `DeliveryRetry.tla`,
+which proves terminalization liveness. Runtime fault timing (jitter, wall-clock
+delay accuracy) remains covered by Turmoil/proptest rather than this finite TLA
+model.
 
 ---
 

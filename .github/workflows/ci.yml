@@ -77,6 +77,8 @@ jobs:
               - 'crates/logfwd-runtime/src/pipeline/**'
               - 'crates/logfwd-io/src/tail/**'
               - 'crates/logfwd-runtime/src/worker_pool/**'
+              - 'crates/logfwd-output/src/sink.rs'
+              - 'crates/logfwd-output/src/sink/**'
               - 'scripts/verify_tla_coverage.py'
               - '.github/workflows/ci.yml'
             frontend:
@@ -575,6 +577,18 @@ jobs:
         run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg -workers auto
       - name: "TLC: TailLifecycle — safety"
         run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCTailLifecycle.tla -config tla/TailLifecycle.cfg -workers auto
+      - name: "TLC: DeliveryRetry — safety"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.cfg -workers auto
+      - name: "TLC: DeliveryRetry — liveness"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.liveness.cfg -workers auto
+      - name: "TLC: WorkerPoolDispatch — safety"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCWorkerPoolDispatch.tla -config tla/WorkerPoolDispatch.cfg -workers auto
+      - name: "TLC: WorkerPoolDispatch — liveness"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCWorkerPoolDispatch.tla -config tla/WorkerPoolDispatch.liveness.cfg -workers auto
+      - name: "TLC: FanoutSink — safety"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCFanoutSink.tla -config tla/FanoutSink.cfg -workers auto
+      - name: "TLC: FanoutSink — liveness"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCFanoutSink.tla -config tla/FanoutSink.liveness.cfg -workers auto
 
       # --- Coverage (vacuity guards) ---
       - name: "TLC coverage: PipelineMachine"
@@ -583,6 +597,12 @@ jobs:
         run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCShutdownProtocol.tla --config tla/ShutdownProtocol.coverage.cfg
       - name: "TLC coverage: PipelineBatch"
         run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCPipelineBatch.tla --config tla/PipelineBatch.coverage.cfg
+      - name: "TLC coverage: DeliveryRetry"
+        run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCDeliveryRetry.tla --config tla/DeliveryRetry.coverage.cfg
+      - name: "TLC coverage: WorkerPoolDispatch"
+        run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCWorkerPoolDispatch.tla --config tla/WorkerPoolDispatch.coverage.cfg
+      - name: "TLC coverage: FanoutSink"
+        run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCFanoutSink.tla --config tla/FanoutSink.coverage.cfg
 
       # --- Thorough ---
       - name: "TLC: PipelineMachine — thorough"

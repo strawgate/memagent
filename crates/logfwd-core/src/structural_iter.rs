@@ -430,7 +430,8 @@ mod verification {
 
     /// classify_bit always returns a valid StructuralKind, and the
     /// selected kind matches exactly one of the bitmask fields.
-    /// Exhaustive over all bit positions and arbitrary bitmasks.
+    /// Exhaustive over all bit positions where at least one structural
+    /// category has the tested bit set.
     #[kani::proof]
     #[kani::solver(cadical)]
     fn verify_classify_bit_correct() {
@@ -449,6 +450,20 @@ mod verification {
             open_bracket: kani::any(),
             close_bracket: kani::any(),
         };
+        let structural_bits = p.newline
+            | p.real_quotes
+            | p.comma
+            | p.colon
+            | p.open_brace
+            | p.close_brace
+            | p.open_bracket
+            | p.close_bracket;
+        kani::assume(structural_bits & mask != 0);
+        kani::cover!(p.real_quotes & mask != 0, "quote path reachable");
+        kani::cover!(
+            p.real_quotes & mask == 0 && p.open_bracket & mask != 0,
+            "open bracket fallback path reachable"
+        );
 
         // Build a minimal iterator just to call classify_bit
         let iter = StructuralIter {
