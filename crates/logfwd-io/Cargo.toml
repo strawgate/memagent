@@ -66,7 +66,6 @@ serde_json = "1"
 sonic-rs = { workspace = true }
 socket2 = { version = "0.6", features = ["all"] }
 rustls = { workspace = true, features = ["std"] }
-rustls-pki-types = { workspace = true }
 tiny_http = { workspace = true }
 lz4_flex = "0.13"
 zstd = "0.13"

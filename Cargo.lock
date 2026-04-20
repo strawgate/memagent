@@ -3063,7 +3063,6 @@ dependencies = [
  "rcgen",
  "reqwest",
  "rustls",
- "rustls-pki-types",
  "ryu",
  "sensor-ebpf-common",
  "serde",

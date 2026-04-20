@@ -104,7 +104,6 @@ js-sys = "0.3"
 varsubst = { version = "0.0.1", default-features = false }
 xxhash-rust = { version = "0.8.15", features = ["xxh32", "xxh64"] }
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
-rustls-pki-types = { version = "1", features = ["std"] }
 rcgen = "0.14"
 
 [workspace.lints.clippy]
