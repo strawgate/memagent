@@ -378,10 +378,10 @@ pub struct HostMetricsInputConfig {
     /// Glob patterns for process names to exclude.
     #[serde(default, deserialize_with = "deserialize_option_vec_strict_string")]
     pub exclude_process_names: Option<Vec<String>>,
-    /// Specific event types to enable (e.g., `["process_exec", "tcp_connect"]`).
+    /// Event types to enable for `linux_ebpf_sensor` inputs (e.g., `["exec", "tcp_connect"]`).
     #[serde(default, deserialize_with = "deserialize_option_vec_strict_string")]
     pub include_event_types: Option<Vec<String>>,
-    /// Specific event types to disable.
+    /// Event types to disable for `linux_ebpf_sensor` inputs. Excludes take precedence over includes.
     #[serde(default, deserialize_with = "deserialize_option_vec_strict_string")]
     pub exclude_event_types: Option<Vec<String>>,
     /// Ring buffer size in kilobytes.
