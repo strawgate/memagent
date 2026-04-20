@@ -43,14 +43,14 @@ fn build_pipeline(yaml: &str) -> Pipeline {
 /// Build a simple pipeline config YAML for a single file input.
 fn file_pipeline_yaml(log_path: &std::path::Path) -> String {
     format!(
-        r"
+        r#"
 input:
   type: file
   path: {}
   format: json
 output:
   type: "null"
-",
+"#,
         log_path.display()
     )
 }
