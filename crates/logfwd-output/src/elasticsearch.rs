@@ -1365,21 +1365,15 @@ impl super::sink::Sink for ElasticsearchSink {
                 Ok(projected) => projected,
                 Err(error) => {
                     return match super::sink::SendResult::from_io_error(error) {
-                        super::sink::SendResult::IoError(error) => {
-                            self.pending_retry_rows = Some(row_ids);
-                            self.pending_rejections = rejections;
-                            super::sink::SendResult::IoError(error)
-                        }
-                        super::sink::SendResult::RetryAfter(delay) => {
-                            self.pending_retry_rows = Some(row_ids);
-                            self.pending_rejections = rejections;
-                            super::sink::SendResult::RetryAfter(delay)
-                        }
                         super::sink::SendResult::Rejected(reason) => {
                             rejections.push(reason);
                             Self::finish_success_or_reject(rejections)
                         }
-                        super::sink::SendResult::Ok => Self::finish_success_or_reject(rejections),
+                        other => {
+                            self.pending_retry_rows = Some(row_ids);
+                            self.pending_rejections = rejections;
+                            other
+                        }
                     };
                 }
             };
