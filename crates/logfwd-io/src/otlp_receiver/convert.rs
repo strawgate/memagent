@@ -368,14 +368,18 @@ pub(super) fn parse_protojson_i64(value: &serde_json::Value) -> Option<i64> {
     // for 100). When the direct integer accessors fail, try f64 truncation
     // before falling back to string parsing to avoid a `to_string()` heap
     // allocation on the hot path.
+    //
+    // We must bounds-check *before* the `as i64` cast because `f as i64`
+    // saturates for out-of-range values and the round-trip check would then
+    // pass for boundary values (e.g. `9.223372036854776e18` rounds to the
+    // same f64 as `i64::MAX`).
     if let Some(f) = value.as_f64() {
-        let truncated = f as i64;
         #[allow(clippy::float_cmp)]
-        if truncated as f64 == f {
-            return Some(truncated);
+        if f.fract() == 0.0 && f >= i64::MIN as f64 && f < i64::MAX as f64 {
+            return Some(f as i64);
         }
-        // Value has a fractional part or is out of exact i64 range — fall
-        // through to the string normalizer which validates integrality.
+        // Value has a fractional part or is out of i64 range — fall through
+        // to the string path which validates integrality.
     }
     if let Some(s) = value.as_str() {
         return parse_protojson_i64_str(s);
@@ -390,17 +394,14 @@ pub(super) fn parse_protojson_u64(value: &serde_json::Value) -> Option<u64> {
     if let Some(s) = value.as_str() {
         return parse_protojson_u64_str(s);
     }
-    // Same as parse_protojson_i64: try f64 truncation before the expensive
-    // string normalizer to avoid a `to_string()` heap allocation.
-    if let Some(f) = value.as_f64()
-        && f >= 0.0
-    {
-        let truncated = f as u64;
+    // Same as parse_protojson_i64: bounds-check before `as u64` to avoid
+    // saturating casts at boundary values.
+    if let Some(f) = value.as_f64() {
         #[allow(clippy::float_cmp)]
-        if truncated as f64 == f {
-            return Some(truncated);
+        if f.fract() == 0.0 && f >= 0.0 && f < u64::MAX as f64 {
+            return Some(f as u64);
         }
-        // Value has a fractional part or is out of exact u64 range — not a
+        // Value has a fractional part or is out of u64 range — not a
         // valid protojson integer representation when arriving as a JSON
         // number.
     }
