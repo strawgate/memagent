@@ -743,11 +743,18 @@ impl Config {
                                     .as_deref()
                                     .map(str::trim)
                                     .filter(|v| !v.is_empty());
-                                let client_ca_file = tls
-                                    .client_ca_file
-                                    .as_deref()
-                                    .map(str::trim)
-                                    .filter(|v| !v.is_empty());
+                                let client_ca_file = match tls.client_ca_file.as_deref() {
+                                    Some(path) => {
+                                        let path = path.trim();
+                                        if path.is_empty() {
+                                            return Err(ConfigError::Validation(format!(
+                                                "pipeline '{name}' input '{label}': tcp tls client_ca_file must not be empty"
+                                            )));
+                                        }
+                                        Some(path)
+                                    }
+                                    None => None,
+                                };
 
                                 if tls.require_client_auth && client_ca_file.is_none() {
                                     return Err(ConfigError::Validation(format!(
@@ -3014,6 +3021,28 @@ pipelines:
         assert!(
             err.contains("client_ca_file requires tls.require_client_auth: true"),
             "expected client CA without mTLS rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn tcp_client_ca_rejects_blank_path() {
+        let mtls = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 127.0.0.1:5514
+        tls:
+          cert_file: /tmp/server.crt
+          key_file: /tmp/server.key
+          client_ca_file: "   "
+    outputs:
+      - type: "null"
+"#;
+        let err = Config::load_str(mtls).unwrap_err().to_string();
+        assert!(
+            err.contains("client_ca_file must not be empty"),
+            "expected blank client CA rejection, got: {err}"
         );
     }
 }
