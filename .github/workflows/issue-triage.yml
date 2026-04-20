@@ -1,0 +1,52 @@
+name: Issue Triage
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  actions: read
+  contents: read
+  discussions: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  run:
+    uses: elastic/ai-github-actions/.github/workflows/gh-aw-issue-triage.lock.yml@v0
+    secrets:
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+    with:
+      additional-instructions: |
+        YOUR GOAL: Turn this issue into a mechanical implementation
+        spec that a simple coding agent could execute without design
+        decisions. If you can't, say so clearly.
+
+        This is logfwd — a Rust log forwarder (file tail → SIMD parse
+        → Arrow RecordBatch → DataFusion SQL → OTLP/ES/Loki). Read
+        CLAUDE.md for the full project guide.
+
+        For each issue, produce ONE of two outcomes:
+
+        OUTCOME A — "Ready for implementation":
+        The issue is clear enough to implement mechanically. Post:
+        - **Files to modify**: path:line — current signature/struct
+        - **Exact changes**: what to add/remove/change in each file
+        - **Test to write**: which test file, what pattern to follow,
+          what to assert
+        - **Verification**: the command to run (cargo test, cargo kani,
+          just ci, etc.)
+        - **Open PRs in area**: any that might conflict
+
+        OUTCOME B — "Needs human decision":
+        The issue is ambiguous, has multiple valid approaches, or
+        requires a design choice. Post:
+        - **What's unclear**: the specific ambiguity or decision needed
+        - **Options**: 2-3 concrete approaches with trade-offs
+        - **Recommendation**: which option you'd pick and why
+        - **Label**: add the `needs-decision` label
+
+        DO NOT:
+        - Restate what the issue already says
+        - Produce long prose — code references > paragraphs
+        - Suggest the issue is invalid or a duplicate
+        - Hedge — commit to Outcome A or B, not both

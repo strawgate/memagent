@@ -1,0 +1,20 @@
+# logfwd example
+# Use case: OTLP input to Loki
+# Replace paths/endpoints with values for your environment.
+
+input:
+  type: otlp
+  listen: 0.0.0.0:4318
+
+transform: |
+  SELECT * FROM logs
+
+output:
+  type: loki
+  endpoint: https://loki:3100
+  static_labels:
+    source: otlp
+
+# Optional: diagnostics
+# server:
+#   diagnostics: 127.0.0.1:9191

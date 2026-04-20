@@ -1,0 +1,967 @@
+---
+// ConfigBuilder.astro — Visual two-panel pipeline config builder powered by WASM.
+const wasmBase = import.meta.env.BASE_URL.replace(/\/$/, '') + '/wasm/logfwd-config/';
+---
+<div id="config-builder" data-wasm-base={wasmBase}>
+  <!-- Loading state -->
+  <div class="cb-status" id="cb-status">
+    <span class="cb-spinner"></span>
+    <span>Loading config builder…</span>
+  </div>
+
+  <!-- Main UI (hidden until WASM ready) -->
+  <div class="cb-main" id="cb-main" hidden>
+
+    <!-- ── 1. Preset row ──────────────────────────────────────────── -->
+    <div class="cb-presets-row">
+      <span class="cb-section-label">Quick start</span>
+      <div id="cb-use-cases" class="cb-use-case-list"></div>
+    </div>
+
+    <!-- ── 2. Two-column picker ───────────────────────────────────── -->
+    <div class="cb-picker-columns">
+      <!-- Input column -->
+      <div class="cb-column cb-column-input">
+        <div class="cb-column-header">
+          <span class="cb-column-role">Input</span>
+          <span class="cb-column-sub">Where do logs come from?</span>
+        </div>
+        <div id="cb-input-grid" class="cb-picker-grid"></div>
+        <div id="cb-input-config" class="cb-config-panel"></div>
+      </div>
+
+      <!-- Centre arrow -->
+      <div class="cb-arrow-col" aria-hidden="true">
+        <div class="cb-arrow-wrap">
+          <svg class="cb-arrow-svg" viewBox="0 0 24 24" fill="none">
+            <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+      </div>
+
+      <!-- Output column -->
+      <div class="cb-column cb-column-output">
+        <div class="cb-column-header">
+          <span class="cb-column-role">Output</span>
+          <span class="cb-column-sub">Where should logs go?</span>
+        </div>
+        <div id="cb-output-grid" class="cb-picker-grid"></div>
+        <div id="cb-output-config" class="cb-config-panel"></div>
+      </div>
+    </div>
+
+    <!-- ── 3. SQL transform (collapsible) ────────────────────────── -->
+    <details class="cb-transform-details" id="cb-transform-details">
+      <summary class="cb-transform-summary">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true" class="cb-transform-icon">
+          <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>SQL transform</span>
+        <span class="cb-optional">(optional)</span>
+        <svg class="cb-summary-chevron" viewBox="0 0 10 6" fill="none" aria-hidden="true"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </summary>
+      <div class="cb-transform-body">
+        <textarea
+          id="cb-sql"
+          class="cb-sql-editor"
+          spellcheck="false"
+          rows="4"
+          placeholder="SELECT * FROM logs WHERE level = 'error'"
+        ></textarea>
+        <p class="cb-sql-hint">Filter and reshape events before they reach the output. Leave blank to pass everything through.</p>
+      </div>
+    </details>
+
+    <!-- ── 4. Generated YAML ───────────────────────────────────────── -->
+    <div class="cb-output-section">
+      <div class="cb-output-header">
+        <span class="cb-output-title">Generated config</span>
+        <div class="cb-output-actions">
+          <span id="cb-validation-badge" class="cb-badge" role="status" aria-live="polite"></span>
+          <button id="cb-copy-btn" class="cb-btn cb-btn-secondary" title="Copy to clipboard">Copy</button>
+          <button id="cb-download-btn" class="cb-btn cb-btn-primary" title="Download as logfwd.yaml">Download</button>
+        </div>
+      </div>
+      <pre id="cb-yaml-output" class="cb-yaml-pre"><code id="cb-yaml-code"></code></pre>
+      <div id="cb-validation-msg" class="cb-validation-msg" hidden></div>
+    </div>
+
+  </div><!-- /cb-main -->
+</div><!-- /config-builder -->
+
+<style is:global>
+  /* ── Root ────────────────────────────────────────────────────── */
+  #config-builder {
+    --cb-accent:    var(--sl-color-accent);
+    --cb-accent-hi: var(--sl-color-accent-high);
+    --cb-accent-lo: color-mix(in srgb, var(--sl-color-accent) 10%, transparent);
+    --cb-accent-md: color-mix(in srgb, var(--sl-color-accent) 22%, transparent);
+    --cb-accent-15: color-mix(in srgb, var(--sl-color-accent) 15%, transparent);
+    --cb-bg:        var(--sl-color-bg);
+    --cb-surface:   var(--sl-color-bg-sidebar);
+    --cb-border:    var(--sl-color-gray-5);
+    --cb-text:      var(--sl-color-text);
+    --cb-muted:     var(--sl-color-gray-3);
+    --cb-mono:      var(--sl-font-mono, monospace);
+    --cb-radius:    10px;
+    --cb-radius-sm: 8px;
+    font-family: var(--sl-font-system, system-ui, sans-serif);
+    font-size: var(--sl-text-sm);
+    margin: 1.5rem 0;
+  }
+
+  /* Kill Starlight's lobotomized owl in our layout containers */
+  #config-builder :is(
+    .cb-main,
+    .cb-presets-row,
+    .cb-use-case-list,
+    .cb-picker-columns,
+    .cb-column,
+    .cb-column-header,
+    .cb-picker-grid,
+    .cb-output-section,
+    .cb-output-header,
+    .cb-output-actions,
+    .cb-transform-body,
+    .cb-transform-summary,
+    .cb-arrow-col,
+    .cb-arrow-wrap
+  ) > * {
+    margin-top: 0 !important;
+  }
+
+  /* ── Loading ──────────────────────────────────────────────────── */
+  .cb-status {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+    padding: 2.5rem;
+    color: var(--cb-muted);
+    font-size: var(--sl-text-sm);
+  }
+  .cb-spinner {
+    display: inline-block;
+    width: 1.1em;
+    height: 1.1em;
+    border: 2px solid var(--cb-border);
+    border-top-color: var(--cb-accent);
+    border-radius: 50%;
+    animation: cb-spin 0.7s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes cb-spin { to { transform: rotate(360deg); } }
+
+  /* ── Main layout ──────────────────────────────────────────────── */
+  .cb-main {
+    display: flex;
+    flex-direction: column;
+    gap: 1.25rem;
+  }
+
+  /* ── Section label ────────────────────────────────────────────── */
+  .cb-section-label {
+    font-size: var(--sl-text-xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--cb-muted);
+    white-space: nowrap;
+  }
+
+  /* ── Presets row ──────────────────────────────────────────────── */
+  .cb-presets-row {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+  }
+  .cb-use-case-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+  .cb-preset-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.8rem;
+    border-radius: 999px;
+    border: 1.5px solid var(--cb-border);
+    background: transparent;
+    color: var(--cb-text);
+    cursor: pointer;
+    font-size: var(--sl-text-xs);
+    font-family: inherit;
+    font-weight: 500;
+    transition: border-color 0.15s, background 0.15s, color 0.15s;
+    line-height: 1.4;
+  }
+  .cb-preset-btn:hover {
+    border-color: var(--cb-accent);
+    background: var(--cb-accent-lo);
+    color: var(--cb-accent-hi);
+  }
+  .cb-preset-btn.cb-active {
+    border-color: var(--cb-accent);
+    background: var(--cb-accent-15);
+    color: var(--cb-accent-hi);
+    font-weight: 600;
+  }
+  .cb-preset-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    opacity: 0.6;
+    flex-shrink: 0;
+  }
+
+  /* ── Two-column picker layout ─────────────────────────────────── */
+  .cb-picker-columns {
+    display: grid;
+    grid-template-columns: 1fr 80px 1fr;
+    gap: 0;
+    align-items: start;
+  }
+
+  .cb-column {
+    border: 1px solid var(--cb-border);
+    border-radius: var(--cb-radius);
+    overflow: hidden;
+    background: var(--cb-surface);
+  }
+
+  .cb-column-header {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: 0.75rem 1rem 0.6rem;
+    border-bottom: 1px solid var(--cb-border);
+  }
+
+  .cb-column-role {
+    font-size: var(--sl-text-xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--cb-muted);
+    line-height: 1;
+  }
+
+  .cb-column-sub {
+    font-size: var(--sl-text-xs);
+    color: var(--cb-muted);
+    line-height: 1.3;
+  }
+
+  /* ── Arrow centre column ──────────────────────────────────────── */
+  .cb-arrow-col {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding-top: 3.5rem; /* visually centre with tiles, not header */
+  }
+
+  .cb-arrow-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    background: var(--cb-accent-md);
+  }
+
+  .cb-arrow-svg {
+    width: 22px;
+    height: 22px;
+    color: var(--cb-accent);
+    flex-shrink: 0;
+  }
+
+  /* ── Picker tile grid ─────────────────────────────────────────── */
+  .cb-picker-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
+    gap: 0.35rem;
+    padding: 0.5rem;
+  }
+
+  .cb-tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.3rem;
+    padding: 0.5rem 0.35rem;
+    border-radius: var(--cb-radius-sm);
+    border: 1px solid var(--cb-border);
+    background: var(--cb-bg);
+    color: var(--cb-text);
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 0.68rem;
+    font-weight: 500;
+    line-height: 1.25;
+    text-align: center;
+    transition: border-color 0.15s, background 0.15s, color 0.15s, transform 0.15s, box-shadow 0.15s;
+  }
+  .cb-tile:hover {
+    border-color: var(--cb-accent);
+    background: var(--cb-accent-lo);
+    color: var(--cb-accent);
+    transform: translateY(-2px);
+  }
+  .cb-tile.cb-selected {
+    border-color: var(--cb-accent);
+    background: var(--cb-accent-md);
+    color: var(--cb-accent);
+    font-weight: 700;
+    box-shadow: 0 0 0 2px var(--cb-accent);
+    transform: translateY(-1px);
+  }
+
+  .cb-tile-icon {
+    width: 26px;
+    height: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--cb-accent);
+    flex-shrink: 0;
+  }
+  .cb-tile-icon svg {
+    width: 26px;
+    height: 26px;
+  }
+
+  /* ── Config panel ─────────────────────────────────────────────── */
+  .cb-config-panel {
+    border-top: 1px solid var(--cb-border);
+    padding: 0.6rem 0.6rem 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .cb-config-panel:empty { display: none; }
+  .cb-config-title {
+    font-size: 0.65rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--cb-muted);
+    margin-bottom: 0.1rem;
+  }
+  .cb-config-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 0.4rem 0.5rem;
+  }
+  .cb-config-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--cb-text);
+    white-space: nowrap;
+  }
+  .cb-config-input {
+    font-size: 0.68rem;
+    font-family: var(--cb-mono);
+    padding: 0.2rem 0.4rem;
+    border: 1px solid var(--cb-border);
+    border-radius: 4px;
+    background: var(--cb-bg);
+    color: var(--cb-text);
+    width: 100%;
+    box-sizing: border-box;
+    min-width: 0;
+  }
+  .cb-config-input:focus {
+    outline: none;
+    border-color: var(--cb-accent);
+    box-shadow: 0 0 0 1px var(--cb-accent);
+  }
+  select.cb-config-input { cursor: pointer; }
+
+  /* ── SQL transform (collapsible details) ──────────────────────── */
+  .cb-transform-details {
+    border: 1px solid var(--cb-border);
+    border-radius: var(--cb-radius);
+    overflow: hidden;
+    background: var(--cb-surface);
+  }
+
+  .cb-transform-summary {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.65rem 1rem;
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+    font-weight: 600;
+    font-size: var(--sl-text-sm);
+    transition: background 0.15s;
+  }
+  .cb-transform-summary::-webkit-details-marker { display: none; }
+  .cb-transform-summary::marker { display: none; }
+  .cb-transform-summary:hover {
+    background: var(--cb-accent-lo);
+    color: var(--cb-accent-hi);
+  }
+
+  .cb-transform-icon {
+    width: 16px;
+    height: 16px;
+    color: var(--cb-accent);
+    flex-shrink: 0;
+  }
+
+  .cb-optional {
+    font-weight: 400;
+    color: var(--cb-muted);
+    font-size: var(--sl-text-xs);
+  }
+
+  .cb-summary-chevron {
+    width: 14px;
+    height: 14px;
+    color: var(--cb-muted);
+    margin-left: auto;
+    transition: transform 0.2s ease;
+    flex-shrink: 0;
+  }
+  .cb-transform-details[open] .cb-summary-chevron {
+    transform: rotate(180deg);
+  }
+
+  .cb-transform-body {
+    border-top: 1px solid var(--cb-border);
+  }
+
+  .cb-sql-editor {
+    display: block;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 0.75rem 1rem;
+    font-family: var(--cb-mono);
+    font-size: var(--sl-text-sm);
+    background: var(--cb-bg);
+    color: var(--cb-text);
+    border: none;
+    resize: vertical;
+    min-height: 90px;
+    line-height: 1.55;
+  }
+  .cb-sql-editor:focus {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--cb-accent);
+  }
+  .cb-sql-hint {
+    padding: 0.4rem 1rem 0.6rem;
+    font-size: var(--sl-text-xs);
+    color: var(--cb-muted);
+    background: var(--cb-surface);
+    border-top: 1px solid var(--cb-border);
+    margin: 0;
+  }
+
+  /* ── Generated YAML ───────────────────────────────────────────── */
+  .cb-output-section {
+    border: 1px solid var(--cb-border);
+    border-radius: var(--cb-radius);
+    overflow: hidden;
+  }
+  .cb-output-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.55rem 0.875rem;
+    background: var(--cb-surface);
+    border-bottom: 1px solid var(--cb-border);
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .cb-output-title {
+    font-weight: 600;
+    font-size: var(--sl-text-sm);
+  }
+  .cb-output-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .cb-yaml-pre {
+    margin: 0;
+    padding: 0.875rem;
+    background: var(--cb-bg);
+    overflow-x: auto;
+    font-size: var(--sl-text-xs);
+    line-height: 1.65;
+  }
+  .cb-yaml-pre code {
+    font-family: var(--cb-mono);
+    color: var(--cb-text);
+    white-space: pre;
+  }
+  .cb-validation-msg {
+    padding: 0.5rem 0.875rem;
+    font-size: var(--sl-text-xs);
+    font-family: var(--cb-mono);
+    background: color-mix(in srgb, var(--sl-color-red) 8%, transparent);
+    color: var(--sl-color-red);
+    border-top: 1px solid color-mix(in srgb, var(--sl-color-red) 30%, transparent);
+  }
+
+  /* ── Buttons ──────────────────────────────────────────────────── */
+  .cb-btn {
+    padding: 0.3rem 0.7rem;
+    border-radius: var(--cb-radius-sm);
+    border: 1.5px solid transparent;
+    cursor: pointer;
+    font-size: var(--sl-text-xs);
+    font-family: inherit;
+    font-weight: 500;
+    transition: opacity 0.15s, transform 0.1s;
+  }
+  .cb-btn:hover  { opacity: 0.85; }
+  .cb-btn:active { transform: scale(0.97); }
+  .cb-btn-primary {
+    background: var(--cb-accent);
+    color: var(--sl-color-white);
+  }
+  .cb-btn-secondary {
+    background: var(--cb-surface);
+    color: var(--cb-text);
+    border-color: var(--cb-border);
+  }
+
+  /* ── Validation badge ─────────────────────────────────────────── */
+  .cb-badge {
+    font-size: var(--sl-text-xs);
+    padding: 0.15rem 0.5rem;
+    border-radius: 999px;
+    font-weight: 600;
+    display: none;
+  }
+  .cb-badge.cb-valid {
+    display: inline;
+    background: color-mix(in srgb, var(--sl-color-green) 12%, transparent);
+    color: var(--sl-color-green);
+  }
+  .cb-badge.cb-invalid {
+    display: inline;
+    background: color-mix(in srgb, var(--sl-color-red) 12%, transparent);
+    color: var(--sl-color-red);
+  }
+
+  /* ── Responsive ───────────────────────────────────────────────── */
+  @media (max-width: 700px) {
+    .cb-picker-columns {
+      grid-template-columns: 1fr;
+      gap: 0.75rem;
+    }
+    .cb-arrow-col {
+      padding-top: 0;
+      /* Rotate arrow to point downward on mobile */
+    }
+    .cb-arrow-wrap {
+      transform: rotate(90deg);
+    }
+    .cb-picker-grid {
+      grid-template-columns: repeat(auto-fill, minmax(80px, 1fr));
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .cb-tile,
+    .cb-tile:hover,
+    .cb-tile.cb-selected {
+      transform: none !important;
+    }
+  }
+</style>
+
+<script type="module">
+(async () => {
+  // Resolve WASM path from the data attribute set by Astro's frontmatter.
+  // This makes the path work both in dev (base='/') and on GitHub Pages (base='/memagent').
+  const wasmBase = document.getElementById('config-builder').dataset.wasmBase;
+  const {
+    default: init,
+    get_input_templates,
+    get_output_templates,
+    get_use_case_templates,
+    validate_config,
+  } = await import(/* @vite-ignore */ wasmBase + 'logfwd_config_wasm.js');
+
+  // ── DOM refs ──────────────────────────────────────────────────
+  const STATUS            = document.getElementById('cb-status');
+  const MAIN              = document.getElementById('cb-main');
+  const inputGrid         = document.getElementById('cb-input-grid');
+  const outputGrid        = document.getElementById('cb-output-grid');
+  const inputConfigPanel  = document.getElementById('cb-input-config');
+  const outputConfigPanel = document.getElementById('cb-output-config');
+  const sqlEditor         = document.getElementById('cb-sql');
+  const yamlCode          = document.getElementById('cb-yaml-code');
+  const validationBadge   = document.getElementById('cb-validation-badge');
+  const validationMsg     = document.getElementById('cb-validation-msg');
+  const copyBtn           = document.getElementById('cb-copy-btn');
+  const downloadBtn       = document.getElementById('cb-download-btn');
+  const useCaseList       = document.getElementById('cb-use-cases');
+
+  // ── State ─────────────────────────────────────────────────────
+  let selectedInput  = null;   // template id string
+  let selectedOutput = null;
+  let activePresetBtn = null;
+  let inputs = [];
+  let outputs = [];
+  let inputValues  = {};   // { fieldKey: value } for selected input template
+  let outputValues = {};   // { fieldKey: value } for selected output template
+
+  // Field definitions come from the WASM template objects (template.fields).
+  // No JS-side duplicates needed.
+
+  // ── SVG icon library ──────────────────────────────────────────
+  // Vendor logos use fill="currentColor" (SimpleIcons paths, viewBox 0 0 24 24).
+  // Generic icons use stroke style.
+  const ICONS = {
+    // ── Vendor logos (real brand marks) ───────────────────────────
+    // Elasticsearch — Elastic horizontal bars logo (SimpleIcons)
+    elasticsearch: `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M13.394 0C8.683 0 4.609 2.716 2.644 6.667h15.641a4.77 4.77 0 0 0 3.073-1.11c.446-.375.864-.785 1.247-1.243l.001-.002A11.974 11.974 0 0 0 13.394 0zM1.804 8.889a12.009 12.009 0 0 0 0 6.222h14.7a3.111 3.111 0 1 0 0-6.222zm.84 8.444C4.61 21.283 8.684 24 13.395 24c3.701 0 7.011-1.677 9.212-4.312l-.001-.002a9.958 9.958 0 0 0-1.247-1.243 4.77 4.77 0 0 0-3.073-1.11z"/></svg>`,
+    // OpenTelemetry logo (SimpleIcons)
+    otel: `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12.6974 13.1173c-1.0224 1.0224-1.0224 2.68 0 3.7024 1.0224 1.0224 2.68 1.0224 3.7024 0 1.0224-1.0223 1.0224-2.68 0-3.7024-1.0223-1.0223-2.68-1.0223-3.7024 0zm2.7677 2.7701c-.5063.5063-1.3267.5063-1.833 0s-.5063-1.3266 0-1.833c.5063-.5062 1.3267-.5062 1.833 0 .5063.504.5063 1.3267 0 1.833zM16.356.2355l-1.6041 1.6042c-.314.314-.314.83 0 1.144L21.015 9.247c.314.314.83.314 1.144 0l1.6042-1.6041c.314-.314.314-.83 0-1.144L17.4976.2354c-.314-.314-.8276-.314-1.1416 0zM5.1173 20.734c.2848-.2848.2848-.7497 0-1.0345l-.8155-.8155c-.2848-.2848-.7497-.2848-1.0345 0l-1.6845 1.6845-.0024.0024-.4625-.4625c-.2556-.2556-.6718-.2556-.925 0-.2556.2556-.2556.6718 0 .925l2.775 2.775c.2556.2556.6718.2556.925 0 .2532-.2556.2556-.6718 0-.925l-.4625-.4625.0024-.0024zm8.4856-15.893-3.5637 3.5637c-.3164.3164-.3164.8374 0 1.1538l2.2006 2.2005c1.5554-1.1197 3.7365-.981 5.1361.4187l1.7819-1.7818c.3164-.3165.3164-.8374 0-1.1538l-4.401-4.401c-.3165-.319-.8374-.319-1.1539 0zm-2.2881 7.8455-1.2999-1.2999c-.3043-.3043-.8033-.3043-1.1076 0l-4.5836 4.586c-.3042.3043-.3042.8033 0 1.1076l2.5973 2.5973c.3043.3043.8033.3043 1.1076 0l2.9478-2.9527c-.6231-1.2877-.5112-2.8431.3384-4.0383z"/></svg>`,
+    // Kubernetes wheel (SimpleIcons)
+    kubernetes: `<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M10.204 14.35l.007.01-.999 2.413a5.171 5.171 0 0 1-2.075-2.597l2.578-.437.004.005a.44.44 0 0 1 .484.606zm-.833-2.129a.44.44 0 0 0 .173-.756l.002-.011L7.585 9.7a5.143 5.143 0 0 0-.73 3.255l2.514-.725.002-.009zm1.145-1.98a.44.44 0 0 0 .699-.337l.01-.005.15-2.62a5.144 5.144 0 0 0-3.01 1.442l2.147 1.523.004-.002zm.76 2.75l.723.349.722-.347.18-.78-.5-.623h-.804l-.5.623.179.779zm1.5-3.095a.44.44 0 0 0 .7.336l.008.003 2.134-1.513a5.188 5.188 0 0 0-2.992-1.442l.148 2.615.002.001zm10.876 5.97l-5.773 7.181a1.6 1.6 0 0 1-1.248.594l-9.261.003a1.6 1.6 0 0 1-1.247-.596l-5.776-7.18a1.583 1.583 0 0 1-.307-1.34L2.1 5.573c.108-.47.425-.864.863-1.073L11.305.513a1.606 1.606 0 0 1 1.385 0l8.345 3.985c.438.209.755.604.863 1.073l2.062 8.955c.108.47-.005.963-.308 1.34zm-3.289-2.057c-.042-.01-.103-.026-.145-.034-.174-.033-.315-.025-.479-.038-.35-.037-.638-.067-.895-.148-.105-.04-.18-.165-.216-.216l-.201-.059a6.45 6.45 0 0 0-.105-2.332 6.465 6.465 0 0 0-.936-2.163c.052-.047.15-.133.177-.159.008-.09.001-.183.094-.282.197-.185.444-.338.743-.522.142-.084.273-.137.415-.242.032-.024.076-.062.11-.089.24-.191.295-.52.123-.736-.172-.216-.506-.236-.745-.045-.034.027-.08.062-.111.088-.134.116-.217.23-.33.35-.246.25-.45.458-.673.609-.097.056-.239.037-.303.033l-.19.135a6.545 6.545 0 0 0-4.146-2.003l-.012-.223c-.065-.062-.143-.115-.163-.25-.022-.268.015-.557.057-.905.023-.163.061-.298.068-.475.001-.04-.001-.099-.001-.142 0-.306-.224-.555-.5-.555-.275 0-.499.249-.499.555l.001.014c0 .041-.002.092 0 .128.006.177.044.312.067.475.042.348.078.637.056.906a.545.545 0 0 1-.162.258l-.012.211a6.424 6.424 0 0 0-4.166 2.003 8.373 8.373 0 0 1-.18-.128c-.09.012-.18.04-.297-.029-.223-.15-.427-.358-.673-.608-.113-.12-.195-.234-.329-.349-.03-.026-.077-.062-.111-.088a.594.594 0 0 0-.348-.132.481.481 0 0 0-.398.176c-.172.216-.117.546.123.737l.007.005.104.083c.142.105.272.159.414.242.299.185.546.338.743.522.076.082.09.226.1.288l.16.143a6.462 6.462 0 0 0-1.02 4.506l-.208.06c-.055.072-.133.184-.215.217-.257.081-.546.11-.895.147-.164.014-.305.006-.48.039-.037.007-.09.02-.133.03l-.004.002-.007.002c-.295.071-.484.342-.423.608.061.267.349.429.645.365l.007-.001.01-.003.129-.029c.17-.046.294-.113.448-.172.33-.118.604-.217.87-.256.112-.009.23.069.288.101l.217-.037a6.5 6.5 0 0 0 2.88 3.596l-.09.218c.033.084.069.199.044.282-.097.252-.263.517-.452.813-.091.136-.185.242-.268.399-.02.037-.045.095-.064.134-.128.275-.034.591.213.71.248.12.556-.007.69-.282v-.002c.02-.039.046-.09.062-.127.07-.162.094-.301.144-.458.132-.332.205-.68.387-.897.05-.06.13-.082.215-.105l.113-.205a6.453 6.453 0 0 0 4.609.012l.106.192c.086.028.18.042.256.155.136.232.229.507.342.84.05.156.074.295.145.457.016.037.043.09.062.129.133.276.442.402.69.282.247-.118.341-.435.213-.71-.02-.039-.045-.096-.065-.134-.083-.156-.177-.261-.268-.398-.19-.296-.346-.541-.443-.793-.04-.13.007-.21.038-.294-.018-.022-.059-.144-.083-.202a6.499 6.499 0 0 0 2.88-3.622c.064.01.176.03.213.038.075-.05.144-.114.28-.104.266.039.54.138.87.256.154.06.277.128.448.173.036.01.088.019.13.028l.009.003.007.001c.297.064.584-.098.645-.365.06-.266-.128-.537-.423-.608zM16.4 9.701l-1.95 1.746v.005a.44.44 0 0 0 .173.757l.003.01 2.526.728a5.199 5.199 0 0 0-.108-1.674A5.208 5.208 0 0 0 16.4 9.7zm-4.013 5.325a.437.437 0 0 0-.404-.232.44.44 0 0 0-.372.233h-.002l-1.268 2.292a5.164 5.164 0 0 0 3.326.003l-1.27-2.296h-.01zm1.888-1.293a.44.44 0 0 0-.27.036.44.44 0 0 0-.214.572l-.003.004 1.01 2.438a5.15 5.15 0 0 0 2.081-2.615l-2.6-.44-.004.005z"/></svg>`,
+    // ── Generic / protocol icons (stroke style) ───────────────────
+    // Document with folded corner (plain file inputs)
+    file: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8l-6-6z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><polyline points="14,2 14,8 20,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    // Network/wifi waves (UDP / TCP)
+    network: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12.55a11 11 0 0114.08 0M1.42 9a16 16 0 0121.16 0M8.53 16.11a6 6 0 016.95 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="12" cy="20" r="1" fill="currentColor"/></svg>`,
+    // Globe (HTTP)
+    http: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5"/><path d="M2 12h20M12 2a15.3 15.3 0 010 20M12 2a15.3 15.3 0 000 20" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+    // Gear (systemd journald)
+    gear: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    // Grafana Loki — stylised flame (Loki branding)
+    loki: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 2c0 0-1 4-4 6s-3 5-1 7.5C8.5 18 10 19.5 12 20c2-.5 3.5-2 4.5-4.5 1.5-3.5-.5-5.5-1.5-7C14 7 12 2 12 2z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M9.5 14c.5 1.5 1.5 3 2.5 3.5 1-.5 2-2 2.5-3.5C15 12 13.5 11 12 10c-1.5 1-2.5 2-2.5 4z" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    // Terminal prompt >_ (stdout)
+    terminal: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6 9l4 3-4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><line x1="13" y1="15" x2="18" y2="15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+    // Floppy disk (NDJSON file output)
+    floppy: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><polyline points="17,21 17,13 7,13 7,21" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><polyline points="7,3 7,8 15,8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+    // Circle with slash (null sink)
+    null: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.5"/><line x1="5.5" y1="5.5" x2="18.5" y2="18.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+    // Lightning bolt (synthetic generator)
+    generator: `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M13 2L4.5 13.5H11L10 22L19.5 10H13L13 2Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  };
+
+  // Map template id → icon key
+  function iconForId(id) {
+    if (id === 'file_json' || id === 'file_raw') return 'file';
+    if (id === 'file_cri') return 'kubernetes';   // Kubernetes CRI logs
+    if (id === 'udp_raw' || id === 'tcp_json') return 'network';
+    if (id === 'otlp_receiver' || id === 'otlp') return 'otel';
+    if (id === 'http_json' || id === 'http') return 'http';
+    if (id === 'journald') return 'gear';
+    if (id === 'elasticsearch') return 'elasticsearch';
+    if (id === 'loki') return 'loki';
+    if (id === 'stdout') return 'terminal';
+    if (id === 'file') return 'floppy';
+    if (id === 'null') return 'null';
+    if (id === 'generator') return 'generator';
+    return 'http'; // fallback
+  }
+
+  function renderIcon(id) {
+    return ICONS[iconForId(id)] || ICONS['http'];
+  }
+
+  // ── Build picker tiles ────────────────────────────────────────
+  function buildTiles(container, templates, selectedId, onSelect) {
+    container.innerHTML = '';
+    for (const t of templates) {
+      const tile = document.createElement('button');
+      tile.className = 'cb-tile' + (t.id === selectedId ? ' cb-selected' : '');
+      tile.type = 'button';
+      tile.title = t.description || '';
+      tile.setAttribute('aria-pressed', t.id === selectedId ? 'true' : 'false');
+      tile.innerHTML = `
+        <div class="cb-tile-icon">${renderIcon(t.id)}</div>
+        <span>${t.label}</span>
+      `;
+      tile.addEventListener('click', () => onSelect(t));
+      container.appendChild(tile);
+    }
+  }
+
+  // ── Update tile selection highlights ─────────────────────────
+  function refreshInputTiles() {
+    inputGrid.querySelectorAll('.cb-tile').forEach((tile, i) => {
+      const selected = inputs[i]?.id === selectedInput;
+      tile.classList.toggle('cb-selected', selected);
+      tile.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    });
+  }
+
+  function refreshOutputTiles() {
+    outputGrid.querySelectorAll('.cb-tile').forEach((tile, i) => {
+      const selected = outputs[i]?.id === selectedOutput;
+      tile.classList.toggle('cb-selected', selected);
+      tile.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    });
+  }
+
+  // ── Config panel ──────────────────────────────────────────────
+  // Renders editable fields for the selected template into the given panel div.
+  // `template` is the full template object returned by get_input/output_templates().
+  function buildConfigPanel(panel, template, values, onChange) {
+    panel.innerHTML = '';
+    const fields = template?.fields || [];
+    if (fields.length === 0) return;
+
+    const title = document.createElement('div');
+    title.className = 'cb-config-title';
+    title.textContent = 'Options';
+    panel.appendChild(title);
+
+    for (const field of fields) {
+      const row = document.createElement('div');
+      row.className = 'cb-config-row';
+      const controlId = `${panel.id}-${field.key}`;
+
+      const label = document.createElement('label');
+      label.className = 'cb-config-label';
+      label.htmlFor = controlId;
+      label.textContent = field.label;
+      row.appendChild(label);
+
+      if (field.options?.length) {
+        const select = document.createElement('select');
+        select.id = controlId;
+        select.className = 'cb-config-input';
+        const current = values[field.key] ?? field.default;
+        for (const opt of field.options) {
+          const o = document.createElement('option');
+          o.value = opt;
+          o.textContent = opt;
+          if (opt === current) o.selected = true;
+          select.appendChild(o);
+        }
+        select.addEventListener('change', () => {
+          values[field.key] = select.value;
+          onChange();
+        });
+        row.appendChild(select);
+      } else {
+        const input = document.createElement('input');
+        input.id = controlId;
+        input.className = 'cb-config-input';
+        input.type = 'text';
+        input.placeholder = field.placeholder || field.default;
+        input.value = (values[field.key] !== undefined) ? values[field.key] : field.default;
+        input.addEventListener('input', () => {
+          values[field.key] = input.value;
+          onChange();
+        });
+        row.appendChild(input);
+      }
+
+      panel.appendChild(row);
+    }
+  }
+
+  // ── YAML scalar serializer ────────────────────────────────────
+  // Quotes a value when it contains characters that would break YAML structure:
+  // empty string (YAML null without quotes), ': ' (key separator), ' #' or
+  // leading '#' (comment trigger), newlines, or leading/trailing whitespace.
+  // Coerces to string defensively so number/boolean defaults don't throw.
+  function yamlScalar(val) {
+    const s = val == null ? '' : String(val);
+    if (s === '' || /: | #|^#|\n|\r/.test(s) || s !== s.trim()) {
+      return '"' + s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+                    .replace(/\n/g, '\\n').replace(/\r/g, '\\r') + '"';
+    }
+    return s;
+  }
+
+  // ── Apply field values to a YAML snippet ──────────────────────
+  // Matches "key: defaultValue" in the snippet to avoid collisions when the
+  // default value appears elsewhere (e.g. "json" in both path and format).
+  function applyValues(snippet, template, values) {
+    const fields = template?.fields || [];
+    let result = snippet;
+    for (const field of fields) {
+      const val = (values[field.key] !== undefined && values[field.key] !== '')
+        ? values[field.key]
+        : field.default;
+      const search  = field.key + ': ' + field.default;
+      const replace = field.key + ': ' + yamlScalar(val);
+      result = result.split(search).join(replace);
+    }
+    return result;
+  }
+
+  // ── YAML generation & validation ──────────────────────────────
+  function regenerate() {
+    if (!selectedInput || !selectedOutput) return;
+
+    const inp = inputs.find(t => t.id === selectedInput);
+    const out = outputs.find(t => t.id === selectedOutput);
+    if (!inp || !out) return;
+
+    const sql = sqlEditor.value.trim();
+    const inputSnippet  = applyValues(inp.snippet, inp, inputValues);
+    const outputSnippet = applyValues(out.snippet, out, outputValues);
+
+    let yaml = '# Generated by logfwd config builder\n';
+    yaml += '# Fill in paths, endpoints, and credentials for your environment.\n\n';
+    yaml += inputSnippet + '\n';
+    if (sql) {
+      yaml += 'transform: |\n';
+      for (const line of sql.split('\n')) yaml += '  ' + line + '\n';
+      yaml += '\n';
+    }
+    yaml += outputSnippet;
+    yaml += '\n# Optional: diagnostics server\n# server:\n#   diagnostics: 127.0.0.1:9191\n';
+
+    yamlCode.textContent = yaml;
+
+    try {
+      validate_config(yaml);
+      // SQL syntax is not validated server-side in WASM — make that visible.
+      validationBadge.textContent = sql ? '✓ valid (SQL not verified)' : '✓ valid';
+      validationBadge.className = 'cb-badge cb-valid';
+      validationMsg.hidden = true;
+    } catch (err) {
+      validationBadge.textContent = '✗ invalid';
+      validationBadge.className = 'cb-badge cb-invalid';
+      validationMsg.textContent = String(err);
+      validationMsg.hidden = false;
+    }
+  }
+
+  // ── Preset logic ──────────────────────────────────────────────
+  function clearPreset() {
+    if (activePresetBtn) {
+      activePresetBtn.classList.remove('cb-active');
+      activePresetBtn.setAttribute('aria-pressed', 'false');
+      activePresetBtn = null;
+    }
+  }
+
+  function applyPreset(uc, btn) {
+    selectedInput  = uc.input_id;
+    selectedOutput = uc.output_id;
+    inputValues  = {};
+    outputValues = {};
+    sqlEditor.value = (uc.transform === 'SELECT * FROM logs') ? '' : uc.transform;
+
+    refreshInputTiles();
+    refreshOutputTiles();
+    buildConfigPanel(inputConfigPanel,  inputs.find(t => t.id === selectedInput),  inputValues,  () => regenerate());
+    buildConfigPanel(outputConfigPanel, outputs.find(t => t.id === selectedOutput), outputValues, () => regenerate());
+
+    clearPreset();
+    btn.classList.add('cb-active');
+    btn.setAttribute('aria-pressed', 'true');
+    activePresetBtn = btn;
+    regenerate();
+  }
+
+  // ── Main setup ────────────────────────────────────────────────
+  async function setup() {
+    try {
+      await init();
+    } catch (e) {
+      STATUS.textContent = `Failed to load config builder: ${String(e)}`;
+      STATUS.style.color = 'var(--sl-color-red)';
+      return;
+    }
+
+    inputs  = get_input_templates();
+    outputs = get_output_templates();
+    const useCases = get_use_case_templates();
+
+    // Set defaults
+    selectedInput  = inputs[0]?.id;
+    selectedOutput = outputs[0]?.id;
+
+    // Build initial config panels for defaults
+    buildConfigPanel(inputConfigPanel,  inputs.find(t => t.id === selectedInput),  inputValues,  () => regenerate());
+    buildConfigPanel(outputConfigPanel, outputs.find(t => t.id === selectedOutput), outputValues, () => regenerate());
+
+    // Build input picker tiles (always visible)
+    buildTiles(inputGrid, inputs, selectedInput, (t) => {
+      selectedInput = t.id;
+      inputValues = {};
+      refreshInputTiles();
+      buildConfigPanel(inputConfigPanel, t, inputValues, () => regenerate());
+      clearPreset();
+      regenerate();
+    });
+
+    // Build output picker tiles (always visible)
+    buildTiles(outputGrid, outputs, selectedOutput, (t) => {
+      selectedOutput = t.id;
+      outputValues = {};
+      refreshOutputTiles();
+      buildConfigPanel(outputConfigPanel, t, outputValues, () => regenerate());
+      clearPreset();
+      regenerate();
+    });
+
+    // Build use-case preset chips
+    for (const uc of useCases) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'cb-preset-btn';
+      btn.title = uc.description || '';
+      btn.setAttribute('aria-pressed', 'false');
+      btn.innerHTML = `<span class="cb-preset-dot"></span>${uc.title}`;
+      btn.addEventListener('click', () => applyPreset(uc, btn));
+      useCaseList.appendChild(btn);
+    }
+
+    // SQL editor live update
+    sqlEditor.addEventListener('input', () => {
+      clearPreset();
+      regenerate();
+    });
+
+    // Copy button
+    copyBtn.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(yamlCode.textContent);
+      const orig = copyBtn.textContent;
+      copyBtn.textContent = 'Copied!';
+      setTimeout(() => { copyBtn.textContent = orig; }, 1500);
+    });
+
+    // Download button
+    downloadBtn.addEventListener('click', () => {
+      const blob = new Blob([yamlCode.textContent], { type: 'text/yaml' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'logfwd.yaml';
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 100);
+    });
+
+    // Show main, hide spinner
+    STATUS.style.display = 'none';
+    MAIN.removeAttribute('hidden');
+
+    // Initial YAML render
+    regenerate();
+  }
+
+  setup();
+})().catch(e => {
+  console.error(e);
+  const message = e instanceof Error ? e.message : String(e);
+  const st = document.getElementById('cb-status');
+  if (st) {
+    st.textContent = `Failed to load config builder: ${message}`;
+    st.style.color = 'var(--sl-color-red)';
+  }
+});
+</script>

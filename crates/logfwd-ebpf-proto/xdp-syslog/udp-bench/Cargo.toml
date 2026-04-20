@@ -1,0 +1,18 @@
+[package]
+name = "udp-bench"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[[bin]]
+name = "udp-bench"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+memchr = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

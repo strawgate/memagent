@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logfwd-config
+  namespace: collectors
+data:
+  pipeline.yaml: |
+    pipelines:
+      pods:
+        inputs:
+          - type: file
+            path: /var/log/pods/**/*.log
+            format: cri
+        outputs:
+          - type: otlp
+            endpoint: ${OTLP_ENDPOINT}
+            compression: zstd
+    server:
+      diagnostics: 0.0.0.0:9090

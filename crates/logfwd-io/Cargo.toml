@@ -1,0 +1,93 @@
+[package]
+name = "logfwd-io"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[features]
+default = []
+otlp-research = []
+s3 = [
+    "dep:async-compression",
+    "dep:futures-util",
+    "dep:reqwest",
+    "dep:hmac",
+    "dep:sha2",
+    "dep:hex",
+    "dep:quick-xml",
+    "dep:snap",
+    "dep:tokio-util",
+    "tokio/rt-multi-thread",
+    "tokio/sync",
+    "tokio/time",
+    "tokio/macros",
+    "tokio/io-util",
+]
+
+[dependencies]
+async-compression = { version = "0.4", features = ["tokio", "gzip", "zstd"], optional = true }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+base64 = { workspace = true }
+futures-util = { version = "0.3", optional = true }
+logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
+logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
+logfwd-otap-proto = { version = "0.1.0", path = "../logfwd-otap-proto" }
+logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
+arrow = { workspace = true }
+bytes = "1"
+crossbeam-channel = "0.5"
+flate2 = "1"
+globset = { workspace = true }
+hex = { version = "0.4", optional = true }
+hmac = { version = "0.12", optional = true }
+http-body-util = "0.1"
+itoa = "1"
+ryu = "1"
+libc = "0.2"
+libloading = "0.8"
+memchr = "2"
+notify = "8"
+quick-xml = { version = "0.37", features = ["serialize"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"], optional = true }
+sha2 = { version = "0.10", optional = true }
+snap = { version = "1", optional = true }
+tokio = { workspace = true }
+tokio-util = { version = "0.7", features = ["io"], optional = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+opentelemetry-proto = { version = "0.31", features = ["logs", "gen-tonic-messages"] }
+prost = "0.14"
+serde = { workspace = true }
+serde_json = "1"
+sonic-rs = { workspace = true }
+socket2 = { version = "0.6", features = ["all"] }
+tiny_http = { workspace = true }
+lz4_flex = "0.13"
+zstd = "0.13"
+xxhash-rust = { workspace = true }
+sysinfo = { workspace = true }
+walkdir = { workspace = true }
+simdutf8 = "0.1.5"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+aya = { workspace = true }
+sensor-ebpf-common = { path = "../logfwd-ebpf-proto/sensor-ebpf/sensor-ebpf-common", version = "0.1.0", features = ["std"] }
+
+[dev-dependencies]
+chrono = { workspace = true }
+dhat = "0.3"
+logfwd-test-utils = { version = "0.1.0", path = "../logfwd-test-utils" }
+mockito = "1.7.2"
+proptest = "1"
+proptest-state-machine = "0.8"
+serial_test = "3"
+tempfile = "3.27.0"
+tower = { version = "0.5", features = ["util"] }
+ureq = "3"
+
+[lints]
+workspace = true

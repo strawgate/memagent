@@ -1,0 +1,41 @@
+# cargo-release workspace configuration
+# Docs: https://github.com/crate-ci/cargo-release/blob/master/docs/reference.md
+#
+# Usage:
+#   cargo release patch   # bump 0.1.0 -> 0.1.1
+#   cargo release minor   # bump 0.1.0 -> 0.2.0
+#   cargo release major   # bump 0.1.0 -> 1.0.0
+#
+# Add --execute to actually apply the changes (dry-run by default).
+
+# All crates in the workspace share a single version number.
+shared-version = true
+
+# Git tag pushed by cargo-release that triggers the release workflow.
+tag-name = "v{{version}}"
+tag-message = "Release v{{version}}"
+
+# Commit that cargo-release creates when bumping versions.
+pre-release-commit-message = "chore: release v{{version}}"
+
+# Keep the tag and commit but do not publish to crates.io
+# (all crates already have `publish = false` in their Cargo.toml).
+publish = false
+
+# Push the version-bump commit and the new tag to origin so the
+# release workflow is triggered automatically.
+push = true
+
+# Update CHANGELOG.md: replace "## [Unreleased]" with the new version
+# heading and refresh the comparison links at the bottom of the file.
+[[pre-release-replacements]]
+file = "CHANGELOG.md"
+search = "## \\[Unreleased\\]"
+replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}"
+exactly = 1
+
+[[pre-release-replacements]]
+file = "CHANGELOG.md"
+search = "\\[Unreleased\\]: (https://github\\.com/.+/compare/)(.+)\\.\\.\\.HEAD"
+replace = "[Unreleased]: ${1}v{{version}}...HEAD\n[{{version}}]: ${1}${2}...v{{version}}"
+exactly = 1

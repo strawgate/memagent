@@ -1,0 +1,86 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ff
+  labels:
+    app: ff
+spec:
+  selector:
+    matchLabels:
+      app: ff
+  template:
+    metadata:
+      labels:
+        app: ff
+    spec:
+      automountServiceAccountToken: false
+      tolerations:
+        - operator: Exists
+      # Log collection requires root to read /var/log/pods (owned by root).
+      # Production deployments should use fsGroup/supplementalGroups (as needed) to grant access
+      # to the log directory without running as root.
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ff
+          image: ff:e2e
+          imagePullPolicy: IfNotPresent
+          args: ["run", "--config", "/etc/logfwd/config.yaml"]
+          securityContext:
+            runAsNonRoot: false
+            runAsUser: 0
+            runAsGroup: 0
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          ports:
+            - containerPort: 9090
+              name: diagnostics
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: diagnostics
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: diagnostics
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /live
+              port: diagnostics
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 12
+          volumeMounts:
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+            - name: config
+              mountPath: /etc/logfwd
+              readOnly: true
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+            type: Directory
+        - name: config
+          configMap:
+            name: logfwd-config

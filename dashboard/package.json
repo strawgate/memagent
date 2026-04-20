@@ -1,0 +1,48 @@
+{
+  "name": "dashboard",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build && cp ../crates/logfwd-diagnostics/src/dashboard-dist/index.html ../crates/logfwd-diagnostics/src/dashboard.html",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint": "oxlint .",
+    "format": "biome format --write .",
+    "format:check": "biome check .",
+    "typecheck": "tsgo --noEmit",
+    "knip": "knip"
+  },
+  "dependencies": {
+    "@otlpkit/otlpjson": "^0.2.3",
+    "@otlpkit/views": "^0.2.3",
+    "@preact/signals": "^2.9.0",
+    "preact": "^10.29.0",
+    "uplot": "^1.6.32"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.10",
+    "@fast-check/vitest": "^0.2.0",
+    "@playwright/test": "^1.50.0",
+    "@preact/preset-vite": "^2.10.4",
+    "@testing-library/jest-dom": "^6.4.0",
+    "@testing-library/preact": "^3.2.4",
+    "@testing-library/user-event": "^14.5.2",
+    "@types/node": "^24.12.0",
+    "@typescript/native-preview": "latest",
+    "@vitest/coverage-v8": "^4.1.0",
+    "fast-check": "^3.22.0",
+    "happy-dom": "^20.8.9",
+    "knip": "^6.0.0",
+    "msw": "^2.7.0",
+    "oxlint": "^1.0.0",
+    "typescript": "~5.9.3",
+    "vite": "^8.0.5",
+    "vite-plugin-singlefile": "^2.3.2",
+    "vitest": "^4.1.0",
+    "vitest-canvas-mock": "^0.3.2"
+  }
+}

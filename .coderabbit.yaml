@@ -1,0 +1,156 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+inheritance: true
+reviews:
+  pre_merge_checks:
+    docstrings:
+      mode: 'off'
+    title:
+      requirements: >-
+        Title must follow conventional commit format under 70 characters:
+        type(optional-scope): concise description (#issue-number).
+        Allowed types: feat, fix, refactor, docs, bench, test, chore.
+        Scope is the crate name when the change is crate-specific
+        (e.g., feat(logfwd-core): add varint overflow proof (#123)).
+        The description must name the observable behavior change, not
+        the mechanism. Reject vague titles like "update scanner" or
+        "fix bug". Require "fix: CRI aggregator drops final partial line
+        on EOF (#275)" — specific, behavioral, linked. The issue number
+        is required for feat and fix commits; optional for refactor, docs,
+        bench, test, chore. PR titles must match the squash commit message
+        that will land on master.
+    description:
+      mode: 'off'
+    custom_checks:
+      - name: High-Quality Rust Practices
+        mode: error
+        instructions: |
+          Pass if: (1) no .unwrap()/.expect("vague") in production paths — use ? or
+          a real invariant explanation; (2) no .clone()/allocation inside hot-path
+          loops without a benchmark justification comment; (3) all unsafe blocks outside
+          logfwd-core have a // SAFETY: comment stating the specific invariant; (4) new
+          state machines use the typestate pattern (except when the PR justifies why typestate is impractical for that specific case); (5) no feature flags for behavior,
+          no speculative traits, no sentinel values where Option applies; (6) all new
+          public items have /// doc comments describing behavior, not just the name.
+          Fail if any of the above are violated in changed code.
+          Full guidance: dev-docs/review-guides/high-quality-rust-practices.md
+
+      - name: Formal Verification Coverage
+        mode: error
+        instructions: >-
+          Fail if required verification is absent, of insufficient quality, or
+          VERIFICATION.md is not updated. Full guidance: dev-docs/review-guides/formal-verification-coverage.md
+
+
+          KANI — WHEN REQUIRED. Every new non-exempt public function in logfwd-core needs
+          a Kani proof. Exemptions (ONLY these three): async functions; heap-heavy code
+          creating Vec/HashMap/BTreeMap proportional to input size; trivial getters/setters
+          with no logic. Any function with logic (parsing, encoding, bit ops, state
+          transitions, arithmetic) is NOT exempt.
+
+          By category: PARSERS — verify_<fn>_no_panic with kani::any() inputs on a
+          bounded slice (8–32 bytes), plus an oracle correctness proof where the oracle is
+          an independent reference impl, not the function under test rewritten.
+          WIRE FORMAT ENCODERS (otlp.rs, varint) — no panic on bounded inputs; encoded
+          length == predicted length; decode(encode(x)) == x for all x.
+          BITMASK OPS (structural.rs, structural_iter.rs, chunk_classify.rs) — oracle
+          proofs against scalar reference; kani::cover!() must confirm both "some bits
+          set" and "zero bits" paths are reachable.
+          BYTE SEARCH (byte_search.rs) — oracle proofs against naive linear scan for both
+          find_byte and rfind_byte.
+          STATE MACHINE TRANSITIONS (lifecycle.rs, batch.rs, registry.rs) — prove valid
+          transitions preserve invariants; committed is monotone; stopped is terminal;
+          Queued→Sending is the only first transition; sequence numbers are strictly
+          monotonic.
+
+
+          PROOF QUALITY — EVERY PROOF MUST.
+          (1) Live in #[cfg(kani)] mod verification {}, NOT #[cfg(test)].
+          (2) Be named verify_<function>_<property>.
+          (3) Carry #[kani::unwind(N)] for every loop; missing unwind = unsound.
+          (4) Include ≥2 kani::cover!() guards when using assume(); UNSATISFIABLE
+          cover! = vacuous proof, reject it.
+          (5) Use independent oracles — the oracle must not call the function under test.
+          (6) Prefer kani::any_where() over any() + assume() for single-variable constraints.
+
+
+          ALLOCATION IN HARNESSES. Never use Vec::new(), Vec::with_capacity(kani::any()),
+          or vec![x; kani::any()] in a #[cfg(kani)] block — these cause tens of thousands
+          of spurious "aborting path on assume(false)" messages from alloc internals.
+          Use kani::any::<[u8; N]>() for byte inputs; kani::vec::any_vec::<T, N>() when
+          a Vec is required; Vec::with_capacity(N) for output buffers where N is the
+          statically known max encoded size. N must match the #[kani::unwind(N+1)] bound.
+
+
+          SOLVER. Proofs >10s must carry #[kani::solver(kissat)] with a comment. CI
+          timeout is 30 min; use kissat or bitwuzla for arithmetic-heavy proofs.
+
+
+          COMPOSITIONAL PROOFS. Hot-path leaf functions called from multiple sites must
+          have #[cfg_attr(kani, kani::requires/ensures)] contracts verified with
+          proof_for_contract so callers can use stub_verified. Reject deeply nested logic
+          added to logfwd-core hot paths without contracts on the leaves.
+
+
+          TLA+. Any PR touching lifecycle.rs, PipelineMachine transitions, drain, checkpoint
+          ordering, or batch sequencing MUST address TLA+ coverage (tla/PipelineMachine.tla).
+          Configs: PipelineMachine.cfg (safety, ~50K states), PipelineMachine.liveness.cfg
+          (liveness, ~5K states). Safety invariants: TypeOK, NoDoubleComplete,
+          DrainCompleteness, CheckpointOrderingInvariant, CommittedNeverAheadOfAcked,
+          InFlightImpliesCreated, AckedImpliesCreated. Temporal: NoCreateAfterDrain,
+          CommittedMonotonic, DrainMeansNoNewSending. Liveness: EventualDrain,
+          NoBatchLeftBehind, StoppedIsStable, AllCreatedBatchesEventuallyAccountedFor.
+          Require (a) explicit no-impact reasoning OR (b) updated spec + TLC output.
+          NEVER use CONSTRAINT for liveness — use model constants instead.
+
+
+          PROPTEST. New SIMD code in logfwd-arrow MUST have a proptest oracle
+          (SIMD == scalar, PROPTEST_CASES=2000). New scanner behavior MUST cover: escape
+          sequences crossing 64-byte boundaries; fields in different orders; duplicate
+          keys same type (first-write-wins); duplicate keys different types (two suffixed
+          columns). New async pipeline code MUST cover: arbitrary event ordering; acks
+          out of order; drain while in-flight. Scanner oracle is sonic-rs (last-writer-wins
+          vs our first-writer-wins — skip duplicate-key inputs or document the deviation).
+
+
+          VERIFICATION.md. Any PR adding/removing/modifying proofs MUST update the
+          per-module table in dev-docs/VERIFICATION.md with accurate proof counts.
+
+      - name: Documentation Thoroughly Updated
+        mode: warning
+        instructions: |
+          Warn if any of the following are missing for this PR: ARCHITECTURE.md updated
+          when pipeline participants or crate boundaries change; an ADR added to DESIGN.md
+          for any deliberated design choice; VERIFICATION.md proof counts accurate;
+          DEVELOPING.md lesson added for any non-obvious bug discovered; CONFIG_REFERENCE.md
+          updated for new/changed config fields; COLUMN_NAMING.md updated if suffix format
+          changes; CRATE_RULES.md updated when crate rules change; PHASES.md task marked
+          done with PR number; SCANNER_CONTRACT.md updated if parsing guarantees change;
+          all new public items have /// doc comments matching CONFIG_REFERENCE.md where
+          applicable.
+          Full guidance: dev-docs/review-guides/documentation-thoroughly-updated.md
+
+      - name: Crate Boundary and Dependency Integrity
+        mode: error
+        instructions: |
+          Pass if: (1) logfwd-core has no std:: imports, no unsafe, and no dependencies
+          beyond memchr and wide; (2) dependency direction is strictly lower-to-higher
+          (core → arrow → io → transform/output, config has no data-crate deps); (3)
+          the binary crate contains only async orchestration — no parsing or encoding
+          logic; (4) all new deps are in [workspace.dependencies] with explicit version
+          and approved license; (5) new crates include all five checklist items
+          (CRATE_RULES.md section, AGENTS.md, workspace member, CI check, ARCHITECTURE.md entry).
+          Fail if any boundary is violated.
+          Full guidance: dev-docs/review-guides/crate-boundary-and-dependency-integrity.md
+
+      - name: Maintainer Fitness
+        mode: warning
+        instructions: |
+          Warn if: (1) the PR mixes multiple unrelated concerns without justification;
+          (2) it exceeds 500 non-test/non-doc/non-proof lines without explanation; (3)
+          it implements future-phase work while earlier-phase tasks remain incomplete
+          (per dev-docs/PHASES.md); (4) hot-path code changes lack before/after benchmark
+          results from `just bench`; (5) first-write-wins or double-underscore conflict
+          suffix semantics change without an ADR and COLUMN_NAMING.md update; (6) any
+          CI job is red; (7) the PR description omits risk surface, test/proof coverage,
+          or known limitations.
+          Full guidance: dev-docs/review-guides/maintainer-fitness.md

@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 1792bd9525efbec22dd5b0b9021db2fc92d44c59f294141780c23df2b363ce2d # shrinks to rows = 1, attrs_per_row = 0, resource_attrs = 0, severity = None, body = None, scope_name = None, scope_version = None
+cc 2befe3f1c8b5886804a0450032c6b74cfdc39f5c0e3bd1e4ecce41a062ea82c5 # shrinks to num_resources = 1, scopes_per_resource = 1, rows_per_scope = 1, attrs_per_row = 0, resource_attrs = 0

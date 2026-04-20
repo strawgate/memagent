@@ -1,0 +1,30 @@
+tasks:
+  install-tools:
+    name: Install dev tools
+    description: Install just, taplo, cargo-deny, cargo-nextest, and sccache.
+    command: |
+      cargo install just taplo-cli cargo-deny cargo-nextest sccache --locked
+    triggeredBy:
+      - postDevcontainerStart
+
+  build-dashboard:
+    name: Build dashboard
+    description: |
+      Compile the Preact/TypeScript diagnostics dashboard into
+      crates/logfwd-io/src/dashboard.html. Must run before cargo build/test/clippy.
+    command: |
+      cd dashboard && npm ci && npm run build
+    triggeredBy:
+      - postDevcontainerStart
+    dependsOn:
+      - install-tools
+
+  cargo-check:
+    name: Cargo check
+    description: Verify the workspace compiles and warm the sccache build cache.
+    command: |
+      cargo check --all-targets
+    triggeredBy:
+      - postDevcontainerStart
+    dependsOn:
+      - build-dashboard

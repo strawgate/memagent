@@ -1,0 +1,5 @@
+input:
+  type: generator
+output:
+  type: otlp
+  endpoint: http://127.0.0.1:14318/v1/logs

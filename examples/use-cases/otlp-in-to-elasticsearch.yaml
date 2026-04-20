@@ -1,0 +1,19 @@
+# logfwd example
+# Use case: OTLP input to Elasticsearch
+# Replace paths/endpoints with values for your environment.
+
+input:
+  type: otlp
+  listen: 0.0.0.0:4318
+
+transform: |
+  SELECT * FROM logs
+
+output:
+  type: elasticsearch
+  endpoint: https://elasticsearch:9200
+  index: otlp-logs
+
+# Optional: diagnostics
+# server:
+#   diagnostics: 127.0.0.1:9191

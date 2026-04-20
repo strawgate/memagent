@@ -1,0 +1,13 @@
+name: Setup Rust
+description: Install stable Rust toolchain with clippy, rustfmt, and cargo cache.
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        save-if: ${{ github.ref == 'refs/heads/main' }}

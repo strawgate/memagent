@@ -1,0 +1,32 @@
+/target
+# Benchmark/profiling output
+dhat-heap.json
+dhat.out.*
+criterion-*.json
+build
+/actionlint
+.claude/worktrees/
+.worktrees/
+.tools/
+book/book/
+book/dist/
+book/node_modules/
+book/.astro/
+.DS_Store
+crates/logfwd-io/src/dashboard-dist/
+.playwright-mcp/
+*.env
+.env
+es-flamegraph.svg
+flamegraph.svg
+
+# Build artifacts in sub-crates
+**/target/
+
+# Logs
+error.log
+
+# Research intermediate artifacts (cloud task diffs, extracts)
+**/cloud-artifacts/
+.codex/
+scripts/__pycache__/

@@ -1,0 +1,539 @@
+---
+// Interactive input-side backpressure visualization.
+// Shows how different input sources behave when the pipeline can't keep up:
+// - File: log grows, read position falls behind, catches up on recovery
+// - UDP: kernel buffer fills, packets dropped permanently
+// - OTLP: upstream gets 429, backs off with retry
+---
+
+<div class="ib" id="input-backpressure"></div>
+
+<style is:global>
+  .ib {
+    --ib-bg: var(--sl-color-bg-sidebar);
+    --ib-border: var(--sl-color-hairline);
+    --ib-accent: var(--sl-color-accent);
+    --ib-text: var(--sl-color-text);
+    --ib-muted: var(--sl-color-gray-3);
+    --ib-green: #22c55e;
+    --ib-red: #ef4444;
+    --ib-amber: #f59e0b;
+    --ib-blue: #60a5fa;
+    margin: 1.5rem 0;
+  }
+  .ib * { margin-top: 0 !important; }
+
+  /* Source selector tabs */
+  .ib-tabs { display: flex; gap: 0.35rem; margin-bottom: 0.75rem; }
+  .ib-tab {
+    padding: 0.35rem 0.7rem; border-radius: 5px;
+    border: 1px solid var(--ib-border); background: transparent;
+    color: var(--ib-text); font-size: 0.72rem; cursor: pointer;
+    transition: all 0.2s;
+  }
+  .ib-tab:hover { border-color: var(--ib-accent); }
+  .ib-tab.active { border-color: var(--ib-accent); background: color-mix(in srgb, var(--ib-accent) 15%, transparent); font-weight: 600; }
+
+  /* Controls row */
+  .ib-controls {
+    display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;
+    margin-bottom: 0.75rem;
+  }
+  .ib-ctrl-label { font-size: 0.72rem; color: var(--ib-muted); white-space: nowrap; }
+  .ib-slider { width: 140px; cursor: pointer; }
+  .ib-speed-val { font-size: 0.72rem; font-weight: 600; min-width: 60px; }
+
+  /* Main visualization area — fixed height */
+  .ib-viz {
+    background: var(--ib-bg); border: 1px solid var(--ib-border);
+    border-radius: 8px; padding: 0.75rem;
+    min-height: 200px; position: relative;
+    margin-bottom: 0.5rem;
+  }
+  .ib-viz-title {
+    font-size: 0.68rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.04em; color: var(--ib-muted); margin-bottom: 0.5rem;
+  }
+
+  /* File mode: progress bar showing file size vs read position */
+  .ib-file-bar-wrap {
+    margin-bottom: 0.5rem;
+  }
+  .ib-file-bar-label {
+    font-size: 0.62rem; color: var(--ib-muted); margin-bottom: 0.2rem;
+    display: flex; justify-content: space-between;
+  }
+  .ib-file-bar {
+    height: 24px; background: #1e1e2e; border-radius: 4px;
+    overflow: hidden; position: relative;
+  }
+  .ib-file-written {
+    position: absolute; top: 0; left: 0; height: 100%;
+    background: color-mix(in srgb, var(--ib-muted) 30%, transparent);
+    transition: width 0.25s linear; border-radius: 4px;
+  }
+  .ib-file-read {
+    position: absolute; top: 0; left: 0; height: 100%;
+    background: var(--ib-green); opacity: 0.7;
+    transition: width 0.25s linear; border-radius: 4px;
+  }
+  .ib-file-gap {
+    font-size: 0.68rem; font-weight: 600; margin-top: 0.3rem;
+  }
+  .ib-file-gap.behind { color: var(--ib-amber); }
+  .ib-file-gap.far-behind { color: var(--ib-red); }
+  .ib-file-gap.caught-up { color: var(--ib-green); }
+
+  /* UDP mode: buffer gauge + drop counter */
+  .ib-udp-row { display: flex; gap: 1rem; align-items: flex-start; }
+  .ib-udp-buffer { flex: 1; }
+  .ib-udp-gauge {
+    height: 80px; width: 100%; background: #1e1e2e; border-radius: 4px;
+    position: relative; overflow: hidden;
+  }
+  .ib-udp-fill {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    background: var(--ib-green); transition: height 0.25s linear, background 0.3s;
+  }
+  .ib-udp-fill.warn { background: var(--ib-amber); }
+  .ib-udp-fill.full { background: var(--ib-red); }
+  .ib-udp-drop-box {
+    text-align: center; min-width: 90px;
+  }
+  .ib-udp-drop-count {
+    font-size: 1.8rem; font-weight: 800;
+    font-family: var(--sl-font-mono, monospace);
+    transition: color 0.3s;
+  }
+  .ib-udp-drop-count.zero { color: var(--ib-green); }
+  .ib-udp-drop-count.dropping { color: var(--ib-red); }
+  .ib-udp-drop-label {
+    font-size: 0.58rem; color: var(--ib-muted); text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  /* OTLP mode: request timeline */
+  .ib-otlp-reqs { display: flex; flex-direction: column; gap: 3px; }
+  .ib-otlp-req {
+    display: flex; align-items: center; gap: 0.5rem;
+    font-family: var(--sl-font-mono, monospace); font-size: 0.62rem;
+    padding: 0.2rem 0.4rem; border-radius: 3px;
+    animation: ib-fadein 0.2s ease-out;
+  }
+  @keyframes ib-fadein { from { opacity: 0; transform: translateX(-8px); } to { opacity: 1; } }
+  .ib-otlp-req .ib-status-200 { color: var(--ib-green); font-weight: 700; }
+  .ib-otlp-req .ib-status-429 { color: var(--ib-red); font-weight: 700; }
+  .ib-otlp-req .ib-retry { color: var(--ib-amber); font-size: 0.55rem; }
+
+  /* Stats */
+  .ib-stats {
+    display: flex; gap: 1rem; flex-wrap: wrap;
+    font-size: 0.68rem; padding: 0.3rem 0;
+  }
+  .ib-stat { display: flex; flex-direction: column; }
+  .ib-stat-label { font-size: 0.55rem; color: var(--ib-muted); text-transform: uppercase; letter-spacing: 0.03em; }
+  .ib-stat-val { font-weight: 700; font-family: var(--sl-font-mono, monospace); }
+  .ib-stat-val.green { color: var(--ib-green); }
+  .ib-stat-val.red { color: var(--ib-red); }
+  .ib-stat-val.amber { color: var(--ib-amber); }
+
+  /* Callout */
+  .ib-callout {
+    padding: 0.5rem 0.75rem; border-radius: 6px;
+    background: var(--ib-bg); border: 1px solid var(--ib-border);
+    font-size: 0.72rem; color: var(--ib-muted); line-height: 1.5;
+    transition: border-color 0.3s;
+  }
+  .ib-callout b { color: var(--ib-text); }
+  .ib-callout.warn { border-color: var(--ib-amber); }
+  .ib-callout.danger { border-color: var(--ib-red); }
+  .ib-callout.ok { border-color: var(--ib-green); }
+</style>
+
+<script>
+(function() {
+  var root = document.getElementById('input-backpressure');
+  if (!root) return;
+
+  function el(tag, cls) { var e = document.createElement(tag); if (cls) e.className = cls; return e; }
+
+  // --- State ---
+  var mode = 'file'; // file | udp | otlp
+  var writeSpeed = 70; // lines/sec equivalent (0-100 slider)
+  var pipelineSpeed = 50; // how fast pipeline drains (simulates output speed)
+  var tick = 0;
+  var timer = null;
+
+  // File state
+  var fileWritten = 0, fileRead = 0;
+
+  // UDP state
+  var udpBufferSize = 128; // kernel buffer capacity (datagrams)
+  var udpBuffer = 0, udpDropped = 0, udpReceived = 0;
+
+  // OTLP state
+  var otlpRequests = []; // { status, batch, retryAfter }
+  var otlpBatchNum = 0, otlpAccepted = 0, otlpRejected = 0, otlpRetrying = false, otlpRetryUntil = 0;
+
+  // --- DOM ---
+  var MODES = [
+    { id: 'file', label: 'File Input', desc: 'Log file keeps growing — logfwd falls behind, catches up later' },
+    { id: 'udp', label: 'UDP Input', desc: 'Datagrams arrive — kernel buffer fills, packets dropped forever' },
+    { id: 'otlp', label: 'OTLP Input', desc: 'Upstream agent sends batches — gets 429, backs off with retry' },
+  ];
+
+  // Tabs
+  var tabsEl = el('div', 'ib-tabs');
+  var tabBtns = MODES.map(function(m) {
+    var btn = el('button', 'ib-tab' + (m.id === mode ? ' active' : ''));
+    btn.type = 'button';
+    btn.textContent = m.label;
+    btn.setAttribute('aria-label', m.label + ': ' + m.desc);
+    btn.setAttribute('aria-pressed', m.id === mode ? 'true' : 'false');
+    btn.onclick = function() { switchMode(m.id); };
+    tabsEl.appendChild(btn);
+    return btn;
+  });
+  root.appendChild(tabsEl);
+
+  // Controls
+  var ctrlEl = el('div', 'ib-controls');
+
+  var wLbl = el('span', 'ib-ctrl-label'); wLbl.textContent = 'Write speed';
+  var wSlider = el('input', 'ib-slider'); wSlider.type = 'range'; wSlider.min = '0'; wSlider.max = '100'; wSlider.value = '' + writeSpeed;
+  wSlider.setAttribute('aria-label', 'Data write speed');
+  var wVal = el('span', 'ib-speed-val'); wVal.textContent = writeSpeed + ' lines/s';
+
+  var pLbl = el('span', 'ib-ctrl-label'); pLbl.textContent = 'Pipeline';
+  var pSlider = el('input', 'ib-slider'); pSlider.type = 'range'; pSlider.min = '0'; pSlider.max = '100'; pSlider.value = '' + pipelineSpeed;
+  pSlider.setAttribute('aria-label', 'Pipeline processing speed');
+  var pVal = el('span', 'ib-speed-val'); pVal.textContent = pipelineSpeed + ' lines/s';
+
+  ctrlEl.appendChild(wLbl); ctrlEl.appendChild(wSlider); ctrlEl.appendChild(wVal);
+  ctrlEl.appendChild(pLbl); ctrlEl.appendChild(pSlider); ctrlEl.appendChild(pVal);
+  root.appendChild(ctrlEl);
+
+  wSlider.oninput = function() { writeSpeed = +wSlider.value; wVal.textContent = writeSpeed + ' lines/s'; };
+  pSlider.oninput = function() { pipelineSpeed = +pSlider.value; pVal.textContent = pipelineSpeed + ' lines/s'; };
+
+  // Viz area
+  var vizEl = el('div', 'ib-viz');
+  root.appendChild(vizEl);
+
+  // Stats
+  var statsEl = el('div', 'ib-stats');
+  root.appendChild(statsEl);
+
+  // Callout — no aria-live since it updates every 250ms (would spam screen readers)
+  var calloutEl = el('div', 'ib-callout');
+  root.appendChild(calloutEl);
+
+  // --- Mode switching ---
+  function switchMode(newMode) {
+    mode = newMode;
+    tabBtns.forEach(function(btn, i) {
+      var active = MODES[i].id === mode;
+      btn.className = 'ib-tab' + (active ? ' active' : '');
+      btn.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+    resetState();
+    buildViz();
+    updateStats();
+  }
+
+  function resetState() {
+    tick = 0;
+    fileWritten = 0; fileRead = 0;
+    udpBuffer = 0; udpDropped = 0; udpReceived = 0;
+    otlpRequests = []; otlpBatchNum = 0; otlpAccepted = 0; otlpRejected = 0; otlpRetrying = false; otlpRetryUntil = 0;
+  }
+
+  // --- File viz ---
+  var fileBarWritten, fileBarRead, fileGapEl;
+
+  function buildFileViz() {
+    vizEl.innerHTML = '';
+    var title = el('div', 'ib-viz-title'); title.textContent = 'app.log';
+    vizEl.appendChild(title);
+
+    var wrap = el('div', 'ib-file-bar-wrap');
+    var label = el('div', 'ib-file-bar-label');
+    var l1 = el('span'); l1.textContent = 'Written (on disk)';
+    var l2 = el('span'); l2.textContent = 'Read by logfwd';
+    label.appendChild(l1); label.appendChild(l2);
+    wrap.appendChild(label);
+
+    var bar = el('div', 'ib-file-bar');
+    fileBarWritten = el('div', 'ib-file-written');
+    fileBarRead = el('div', 'ib-file-read');
+    bar.appendChild(fileBarWritten);
+    bar.appendChild(fileBarRead);
+    wrap.appendChild(bar);
+
+    fileGapEl = el('div', 'ib-file-gap caught-up');
+    fileGapEl.textContent = 'Caught up — 0 lines behind';
+    wrap.appendChild(fileGapEl);
+    vizEl.appendChild(wrap);
+  }
+
+  // --- UDP viz ---
+  var udpFillEl, udpDropEl;
+
+  function buildUdpViz() {
+    vizEl.innerHTML = '';
+    var title = el('div', 'ib-viz-title'); title.textContent = 'Kernel UDP receive buffer';
+    vizEl.appendChild(title);
+
+    var row = el('div', 'ib-udp-row');
+
+    var bufWrap = el('div', 'ib-udp-buffer');
+    var gauge = el('div', 'ib-udp-gauge');
+    udpFillEl = el('div', 'ib-udp-fill');
+    gauge.appendChild(udpFillEl);
+    bufWrap.appendChild(gauge);
+    var bufLabel = el('div', 'ib-file-bar-label');
+    var bl1 = el('span'); bl1.textContent = '0/' + udpBufferSize + ' datagrams';
+    bufLabel.appendChild(bl1);
+    bufWrap.appendChild(bufLabel);
+    row.appendChild(bufWrap);
+
+    var dropBox = el('div', 'ib-udp-drop-box');
+    udpDropEl = el('div', 'ib-udp-drop-count zero'); udpDropEl.textContent = '0';
+    var dropLabel = el('div', 'ib-udp-drop-label'); dropLabel.textContent = 'Dropped';
+    var dropSub = el('div', 'ib-udp-drop-label'); dropSub.textContent = '(permanent)';
+    dropBox.appendChild(udpDropEl);
+    dropBox.appendChild(dropLabel);
+    dropBox.appendChild(dropSub);
+    row.appendChild(dropBox);
+
+    vizEl.appendChild(row);
+  }
+
+  // --- OTLP viz ---
+  var otlpReqsEl;
+
+  function buildOtlpViz() {
+    vizEl.innerHTML = '';
+    var title = el('div', 'ib-viz-title'); title.textContent = 'Upstream agent → logfwd';
+    vizEl.appendChild(title);
+    otlpReqsEl = el('div', 'ib-otlp-reqs');
+    vizEl.appendChild(otlpReqsEl);
+  }
+
+  function buildViz() {
+    if (mode === 'file') buildFileViz();
+    else if (mode === 'udp') buildUdpViz();
+    else buildOtlpViz();
+    updateCallout();
+  }
+
+  // --- Simulation ---
+  function simTick() {
+    tick++;
+    var written = writeSpeed * 0.25; // per 250ms tick
+    var consumed = pipelineSpeed * 0.25;
+
+    if (mode === 'file') {
+      fileWritten += written;
+      fileRead = Math.min(fileRead + consumed, fileWritten);
+
+      var maxLines = 2000;
+      var writePct = Math.min(100, (fileWritten / maxLines) * 100);
+      var readPct = Math.min(100, (fileRead / maxLines) * 100);
+      fileBarWritten.style.width = writePct + '%';
+      fileBarRead.style.width = readPct + '%';
+
+      var gap = Math.round(fileWritten - fileRead);
+      if (gap <= 1) {
+        fileGapEl.className = 'ib-file-gap caught-up';
+        fileGapEl.textContent = 'Caught up \u2014 0 lines behind';
+      } else if (gap < 100) {
+        fileGapEl.className = 'ib-file-gap behind';
+        fileGapEl.textContent = gap + ' lines behind \u2014 falling behind';
+      } else {
+        fileGapEl.className = 'ib-file-gap far-behind';
+        fileGapEl.textContent = gap + ' lines behind \u2014 significant lag';
+      }
+
+      // Reset bars if they fill — keep the gap intact
+      if (fileWritten > maxLines) {
+        var gap = fileWritten - fileRead;
+        fileWritten = gap + 100; // keep some headroom
+        fileRead = 100;
+      }
+
+    } else if (mode === 'udp') {
+      var incoming = written;
+      var drained = Math.min(udpBuffer, consumed);
+      udpBuffer = udpBuffer - drained + incoming;
+      udpReceived += Math.round(drained);
+
+      if (udpBuffer > udpBufferSize) {
+        var overflow = Math.round(udpBuffer - udpBufferSize);
+        udpDropped += overflow;
+        udpBuffer = udpBufferSize;
+      }
+      udpBuffer = Math.max(0, udpBuffer);
+
+      var fillPct = (udpBuffer / udpBufferSize) * 100;
+      udpFillEl.style.height = fillPct + '%';
+      udpFillEl.className = 'ib-udp-fill' + (fillPct > 90 ? ' full' : fillPct > 60 ? ' warn' : '');
+      udpDropEl.textContent = '' + udpDropped;
+      udpDropEl.className = 'ib-udp-drop-count ' + (udpDropped > 0 ? 'dropping' : 'zero');
+
+      // Update buffer label
+      var lbl = vizEl.querySelector('.ib-file-bar-label span');
+      if (lbl) lbl.textContent = Math.round(udpBuffer) + '/' + udpBufferSize + ' datagrams';
+
+    } else if (mode === 'otlp') {
+      // Every ~4 ticks, upstream tries to send a batch
+      if (tick % 4 === 0 && !otlpRetrying) {
+        otlpBatchNum++;
+        var pipelineFull = writeSpeed > pipelineSpeed * 1.2;
+        if (pipelineFull) {
+          otlpRejected++;
+          otlpRetrying = true;
+          otlpRetryUntil = tick + 8; // retry after 2 seconds
+          addOtlpReq(otlpBatchNum, 429, 'Retry-After: 2s');
+        } else {
+          otlpAccepted++;
+          addOtlpReq(otlpBatchNum, 200, null);
+        }
+      }
+      // Retry fires — reuse the same batch number (it's the retried batch)
+      if (otlpRetrying && tick >= otlpRetryUntil) {
+        otlpRetrying = false;
+        var retryBatch = otlpBatchNum; // the batch that was 429'd
+        var stillFull = writeSpeed > pipelineSpeed * 1.2;
+        if (stillFull) {
+          otlpRejected++;
+          otlpRetrying = true;
+          otlpRetryUntil = tick + 12; // back off longer
+          addOtlpReq(retryBatch, 429, 'Retry-After: 3s (backoff)');
+        } else {
+          otlpAccepted++;
+          addOtlpReq(retryBatch, 200, 'retry succeeded');
+        }
+      }
+    }
+
+    updateStats();
+    updateCallout();
+  }
+
+  function addOtlpReq(batch, status, note) {
+    var row = el('div', 'ib-otlp-req');
+    var statusCls = status === 200 ? 'ib-status-200' : 'ib-status-429';
+    row.innerHTML = '<span>POST /v1/logs batch #' + batch + '</span> ' +
+      '<span class="' + statusCls + '">' + status + '</span>' +
+      (note ? ' <span class="ib-retry">' + note + '</span>' : '');
+    otlpReqsEl.appendChild(row);
+    if (otlpReqsEl.children.length > 12) otlpReqsEl.removeChild(otlpReqsEl.firstChild);
+  }
+
+  function updateStats() {
+    statsEl.innerHTML = '';
+    var items = [];
+
+    if (mode === 'file') {
+      var gap = Math.round(fileWritten - fileRead);
+      items = [
+        ['Written', Math.round(fileWritten) + ' lines', ''],
+        ['Read', Math.round(fileRead) + ' lines', 'green'],
+        ['Behind', gap + ' lines', gap > 100 ? 'red' : gap > 10 ? 'amber' : 'green'],
+        ['Write rate', writeSpeed + '/s', ''],
+        ['Read rate', pipelineSpeed + '/s', ''],
+      ];
+    } else if (mode === 'udp') {
+      items = [
+        ['Received', udpReceived, 'green'],
+        ['Dropped', udpDropped, udpDropped > 0 ? 'red' : 'green'],
+        ['Buffer', Math.round(udpBuffer) + '/' + udpBufferSize, udpBuffer > udpBufferSize * 0.9 ? 'red' : ''],
+        ['Incoming', writeSpeed + '/s', ''],
+        ['Draining', pipelineSpeed + '/s', ''],
+      ];
+    } else {
+      items = [
+        ['Accepted', otlpAccepted, 'green'],
+        ['Rejected (429)', otlpRejected, otlpRejected > 0 ? 'red' : 'green'],
+        ['Retrying', otlpRetrying ? 'yes' : 'no', otlpRetrying ? 'amber' : 'green'],
+        ['Send rate', writeSpeed + '/s', ''],
+        ['Capacity', pipelineSpeed + '/s', ''],
+      ];
+    }
+
+    items.forEach(function(item) {
+      var s = el('div', 'ib-stat');
+      var l = el('div', 'ib-stat-label'); l.textContent = '' + item[0];
+      var v = el('div', 'ib-stat-val' + (item[2] ? ' ' + item[2] : '')); v.textContent = '' + item[1];
+      s.appendChild(l); s.appendChild(v); statsEl.appendChild(s);
+    });
+  }
+
+  function updateCallout() {
+    var overloaded = writeSpeed > pipelineSpeed;
+
+    if (mode === 'file') {
+      var gap = Math.round(fileWritten - fileRead);
+      if (!overloaded || gap <= 1) {
+        calloutEl.className = 'ib-callout ok';
+        calloutEl.innerHTML = '<b>File input is safe.</b> Data is on disk \u2014 logfwd reads at its own pace. When the pipeline catches up, the gap closes. No data is ever lost.';
+      } else {
+        calloutEl.className = 'ib-callout warn';
+        calloutEl.innerHTML = '<b>' + gap + ' lines behind.</b> The file keeps growing but logfwd\'s checkpoint tracks the read position. When output recovers, logfwd resumes from exactly where it left off. Try increasing pipeline speed to watch it catch up.';
+      }
+    } else if (mode === 'udp') {
+      if (udpDropped > 0) {
+        calloutEl.className = 'ib-callout danger';
+        calloutEl.innerHTML = '<b>' + udpDropped + ' datagrams lost permanently.</b> UDP has no flow control \u2014 when the kernel buffer overflows, excess packets are silently dropped. Unlike file input, this data cannot be recovered. Size your pipeline to keep up, or switch to TCP/OTLP for backpressure signaling.';
+      } else if (udpBuffer > udpBufferSize * 0.7) {
+        calloutEl.className = 'ib-callout warn';
+        calloutEl.innerHTML = '<b>Kernel buffer filling.</b> If the pipeline doesn\'t catch up soon, datagrams will be dropped. UDP provides no backpressure signal to the sender.';
+      } else {
+        calloutEl.className = 'ib-callout ok';
+        calloutEl.innerHTML = '<b>UDP buffer healthy.</b> The pipeline is draining faster than datagrams arrive. No drops.';
+      }
+    } else {
+      if (otlpRetrying) {
+        calloutEl.className = 'ib-callout warn';
+        calloutEl.innerHTML = '<b>Upstream is backing off.</b> logfwd returned <code>429 Too Many Requests</code> with a <code>Retry-After</code> header. The upstream agent queues the batch and retries with exponential backoff. No data is lost \u2014 the sender holds it until logfwd is ready.';
+      } else if (otlpRejected > 0) {
+        calloutEl.className = 'ib-callout ok';
+        calloutEl.innerHTML = '<b>OTLP flow control working.</b> ' + otlpRejected + ' batches were temporarily rejected with 429, but the upstream agent retried and delivered them. This is the designed behavior \u2014 backpressure propagates to the sender via HTTP status codes.';
+      } else {
+        calloutEl.className = 'ib-callout ok';
+        calloutEl.innerHTML = '<b>All batches accepted (200).</b> The pipeline has enough capacity for the incoming OTLP traffic. No backpressure needed.';
+      }
+    }
+  }
+
+  // --- Init ---
+  buildViz();
+  updateStats();
+
+  var reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!reducedMotion) {
+    timer = setInterval(simTick, 250);
+  } else {
+    // Show a representative static state so the component isn't blank
+    fileWritten = 400; fileRead = 250;
+    udpBuffer = 100; udpDropped = 45; udpReceived = 300;
+    otlpAccepted = 8; otlpRejected = 3; otlpRetrying = true;
+    buildViz();
+    // Populate file bars statically
+    if (mode === 'file' && fileBarWritten && fileBarRead) {
+      fileBarWritten.style.width = '40%';
+      fileBarRead.style.width = '25%';
+      fileGapEl.className = 'ib-file-gap far-behind';
+      fileGapEl.textContent = '150 lines behind — animation paused (reduced motion)';
+    }
+    updateStats();
+    updateCallout();
+  }
+
+  // Cleanup
+  document.addEventListener('astro:before-swap', function() {
+    if (timer) { clearInterval(timer); timer = null; }
+  }, { once: true });
+})();
+</script>

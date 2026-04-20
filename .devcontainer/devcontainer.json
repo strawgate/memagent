@@ -1,0 +1,23 @@
+{
+  "name": "memagent",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/rust": {
+      "profile": "default"
+    },
+    "ghcr.io/devcontainers/features/node": {
+      "version": "lts"
+    },
+    "ghcr.io/devcontainers/features/docker-in-docker": {}
+  },
+  "remoteEnv": {
+    "RUSTC_WRAPPER": "sccache"
+  },
+  "forwardPorts": [9090],
+  "portsAttributes": {
+    "9090": {
+      "label": "Diagnostics",
+      "onAutoForward": "silent"
+    }
+  }
+}

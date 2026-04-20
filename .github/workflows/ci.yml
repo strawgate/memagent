@@ -1,0 +1,665 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read  # needed by dorny/paths-filter to list changed files on bot PRs
+
+# Tool versions — bump these to upgrade across all jobs.
+env:
+  TAPLO_VERSION: "0.10.0"
+  CARGO_DENY_VERSION: "0.19.0"
+  CARGO_MACHETE_VERSION: "0.9.1"
+  # CI runners have 4 vCPU — use all of them.
+  CARGO_BUILD_JOBS: "4"
+  NEXTEST_TEST_THREADS: "4"
+  RUST_TEST_THREADS: "4"
+  LOGFWD_DISABLE_DEFAULT_CHECKPOINTS: "1"
+  TOKIO_WORKER_THREADS: "4"
+  RAYON_NUM_THREADS: "4"
+
+jobs:
+  # -------------------------------------------------------------------------
+  # Path filter — determine which crates changed (used to scope expensive jobs)
+  # -------------------------------------------------------------------------
+  changes:
+    name: Detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      core: ${{ steps.filter.outputs.core }}
+      core_no_std: ${{ steps.filter.outputs.core_no_std }}
+      kani_required: ${{ steps.filter.outputs.kani_required }}
+      tla: ${{ steps.filter.outputs.tla }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      miri: ${{ steps.filter.outputs.miri }}
+      rust: ${{ steps.filter.outputs.rust }}
+      loom: ${{ steps.filter.outputs.loom }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@f3ceefdc7ef57bc2d8560787d4b6c33e44044cec
+        id: filter
+        with:
+          filters: |
+            core:
+              - 'crates/logfwd-core/**'
+            core_no_std:
+              - 'crates/logfwd-core/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            kani_required:
+              - 'crates/logfwd-core/**'
+              - 'crates/logfwd-arrow/**'
+              - 'crates/logfwd-types/**'
+              - 'crates/logfwd-io/**'
+              - 'crates/logfwd-output/**'
+              - 'crates/logfwd-runtime/**'
+              - 'crates/logfwd-diagnostics/**'
+              - 'crates/logfwd/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'dev-docs/verification/kani-boundary-contract.toml'
+              - 'scripts/verify_kani_boundary_contract.py'
+              - '.github/workflows/ci.yml'
+            tla:
+              - 'tla/**'
+              - 'crates/logfwd-types/src/pipeline/**'
+              - 'crates/logfwd-runtime/src/pipeline/**'
+              - 'crates/logfwd-io/src/tail/**'
+              - 'crates/logfwd-runtime/src/worker_pool/**'
+              - 'scripts/verify_tla_coverage.py'
+              - '.github/workflows/ci.yml'
+            frontend:
+              - 'dashboard/**'
+              - '.github/actions/build-dashboard/**'
+            miri:
+              - 'crates/logfwd-core/**'
+              - 'crates/logfwd-types/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+            rust:
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+            loom:
+              - 'crates/logfwd-runtime/**'
+              - 'crates/logfwd-types/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
+
+  # -------------------------------------------------------------------------
+  # Frontend — format, lint, typecheck, and tests in one job
+  # -------------------------------------------------------------------------
+  frontend:
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.frontend == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: dashboard/package-lock.json
+      - run: npm ci
+
+      - name: biome format check
+        run: npx biome check .
+
+      - name: oxlint
+        run: npx oxlint .
+
+      - uses: actions/cache@v5
+        with:
+          path: dashboard/tsconfig.tsbuildinfo
+          key: tsc-${{ hashFiles('dashboard/src/**/*.ts', 'dashboard/src/**/*.tsx', 'dashboard/tsconfig.app.json') }}
+      - name: typecheck
+        run: npx tsgo --noEmit
+
+      - name: vitest
+        run: npx vitest run --coverage
+      - name: upload coverage
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage
+          path: dashboard/coverage/
+
+  # -------------------------------------------------------------------------
+  # Lint: fast checks (fmt, TOML, typos, actionlint) then clippy + audits.
+  # Combined into one job to save a runner — fast checks fail-fast before
+  # the expensive clippy build starts.
+  # Always runs on non-draft PRs (no path filter) — acts as a fast gate.
+  # -------------------------------------------------------------------------
+  lint:
+    name: Lint
+    if: |
+      github.event_name == 'push' ||
+      github.event.pull_request.draft == false ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      checks: write  # needed by rustsec/audit-check@v2 to create check run annotations
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/build-dashboard
+
+      - uses: ./.github/actions/setup-rust
+
+      - name: Format check
+        run: cargo fmt --check
+
+      - name: Install taplo
+        run: |
+          curl -sSL "https://github.com/tamasfe/taplo/releases/download/${TAPLO_VERSION}/taplo-linux-x86_64.gz" \
+            | gunzip > /usr/local/bin/taplo && chmod +x /usr/local/bin/taplo
+
+      - name: TOML check
+        run: taplo check
+
+      - name: Workspace inheritance guardrail
+        run: python3 scripts/check_workspace_inherited_default_features.py
+
+      - name: Typos
+        uses: crate-ci/typos@v1
+
+      - name: Install actionlint
+        run: bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+
+      - name: Actionlint
+        run: ./actionlint
+
+      - name: Source file length guardrail
+        run: python3 scripts/check_max_source_lines.py
+
+      - name: No raw payload injection guardrail
+        run: python3 scripts/check_no_raw_payload_injection.py
+
+      - name: Set up Python for verification scripts
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Kani boundary contract
+        run: python3 scripts/verify_kani_boundary_contract.py
+      - name: TLC matrix contract
+        run: python3 scripts/verify_tlc_matrix_contract.py
+      - name: Proptest regression policy
+        run: python3 scripts/verify_proptest_regressions.py
+      - name: Verification trigger contract
+        run: python3 scripts/verify_verification_trigger_contract.py
+
+      # --- Expensive steps below — only reached if fast checks pass ---
+
+      - name: Install cargo-deny
+        run: |
+          curl -sSL "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar xz -C /tmp && mv /tmp/cargo-deny-*/cargo-deny /usr/local/bin/
+
+      - name: Clippy
+        run: cargo clippy --workspace -- -D warnings
+
+      - name: Rustdoc warnings check
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps --document-private-items
+
+      - name: Dependency audit (licenses / bans / advisories)
+        run: cargo deny check
+
+      - name: Install cargo-machete
+        run: |
+          curl -fsSL "https://github.com/bnjbvr/cargo-machete/releases/download/v${CARGO_MACHETE_VERSION}/cargo-machete-v${CARGO_MACHETE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
+            | tar xz -C /tmp && mv /tmp/cargo-machete-*/cargo-machete /usr/local/bin/
+
+      - name: Unused dependencies check
+        run: cargo machete
+
+      - name: Security audit
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ github.token }}
+          args: "--deny=vuln --deny=unsound --deny=yanked"
+
+  # -------------------------------------------------------------------------
+  # Tests — Linux and macOS in parallel
+  # -------------------------------------------------------------------------
+  test-linux:
+    name: Test (Linux)
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.rust == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/build-dashboard
+
+      - uses: ./.github/actions/setup-rust
+      - uses: taiki-e/install-action@nextest
+
+      - name: Tests
+        run: cargo nextest run --workspace --profile ci
+
+  # macOS: push + ci:full only (expensive runner, no path filter or draft check).
+  # Exclude Linux-only eBPF crates (aya does not compile on macOS).
+  test-macos:
+    name: Test (macOS)
+    if: github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'ci:full')
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/build-dashboard
+
+      - uses: ./.github/actions/setup-rust
+      - uses: taiki-e/install-action@nextest
+
+      - name: Tests
+        run: >-
+          cargo nextest run --workspace --profile ci
+          --exclude sensor-ebpf
+          --exclude sensor-ebpf-common
+
+  # -------------------------------------------------------------------------
+  # Network integration tests — #[ignore] tests that bind ports / make
+  # HTTP calls.  Runs after the main test job to reuse the build cache.
+  # Non-draft PRs only (no path filter); depends on test-linux for cache.
+  # -------------------------------------------------------------------------
+  test-network:
+    name: Test (network integration)
+    needs: [test-linux]
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/build-dashboard
+
+      - uses: ./.github/actions/setup-rust
+      - uses: taiki-e/install-action@nextest
+
+      - name: Network integration tests
+        run: |
+          # `transport_e2e` tests may be ignored or non-ignored depending on harness evolution.
+          # Run both to avoid false "no tests to run" failures while still failing on real test errors.
+          cargo nextest run --no-tests fail -p logfwd-io --profile ci --run-ignored all --test it transport_e2e
+          cargo nextest run --no-tests fail -p logfwd-io --profile ci --run-ignored all --lib otap_receiver::tests::
+          cargo nextest run --no-tests fail -p logfwd-io --profile ci --run-ignored all --lib otlp_receiver::tests:: -- --skip bench_writer_helpers_fast_vs_simple
+          cargo nextest run --no-tests fail -p logfwd-diagnostics --profile ci --run-ignored all --lib diagnostics::server::tests::
+
+  # -------------------------------------------------------------------------
+  # Cross-compilation checks — aarch64 workspace + thumbv6m no_std
+  # -------------------------------------------------------------------------
+  cross-check:
+    name: Cross-compilation checks
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.core_no_std == 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/build-dashboard
+
+      - uses: ./.github/actions/setup-rust
+      - run: rustup target add aarch64-unknown-linux-gnu thumbv6m-none-eabi
+        shell: bash
+
+      - name: Install cross-compilation toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+
+      - name: Check (aarch64)
+        run: cargo check --workspace --target aarch64-unknown-linux-gnu
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      - name: Check (logfwd-core no_std)
+        run: cargo build -p logfwd-core --target thumbv6m-none-eabi
+
+  # -------------------------------------------------------------------------
+  # Kani formal verification — split into three parallel shards.
+  #   kani-core:      logfwd-core (97 proofs, heaviest — structural/otlp unwinds)
+  #   kani-arrow:     logfwd-arrow (27 proofs, needs --lib flag)
+  #   kani-periphery: remaining 6 crates (107 proofs, lightweight)
+  # Each shard uses kissat solver and --jobs 2 for intra-crate parallelism.
+  # -------------------------------------------------------------------------
+  kani-core:
+    name: Kani proofs (core)
+    needs: [changes, lint]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: kani-core
+
+      - name: Run Kani verification (logfwd-core)
+        uses: model-checking/kani-github-action@v1
+        with:
+          args: >-
+            --solver kissat
+            --jobs 2
+            --output-format terse
+            -Z function-contracts
+            -Z mem-predicates
+            -Z stubbing
+            -p logfwd-core
+
+  kani-arrow:
+    name: Kani proofs (arrow)
+    needs: [changes, lint]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: kani-arrow
+
+      - name: Run Kani verification (logfwd-arrow --lib)
+        # logfwd-arrow has a binary with required-features that cargo-kani
+        # cannot skip, so verify only the library target.
+        uses: model-checking/kani-github-action@v1
+        with:
+          args: >-
+            --solver kissat
+            --jobs 2
+            --output-format terse
+            -Z function-contracts
+            -Z mem-predicates
+            -Z stubbing
+            -p logfwd-arrow
+            --lib
+
+  kani-periphery:
+    name: Kani proofs (periphery)
+    needs: [changes, lint]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: kani-periphery
+
+      - name: Run Kani verification (periphery crates)
+        uses: model-checking/kani-github-action@v1
+        with:
+          args: >-
+            --solver kissat
+            --jobs 2
+            --output-format terse
+            -Z function-contracts
+            -Z mem-predicates
+            -Z stubbing
+            -p logfwd-types
+            -p logfwd-io
+            -p logfwd-output
+            -p logfwd-runtime
+            -p logfwd-diagnostics
+            -p logfwd
+
+  # -------------------------------------------------------------------------
+  # Miri — UB-oriented execution, split into two parallel shards.
+  # PROPTEST_CASES=1: Miri validates UB per execution — 256 random cases
+  # adds no UB coverage and wastes ~30 min.
+  # -------------------------------------------------------------------------
+  miri-core:
+    name: Miri (core)
+    needs: [changes, lint]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.miri == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup-rust
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+
+      - name: Set up Miri
+        run: cargo +nightly miri setup
+
+      - name: Run Miri test suite (logfwd-core)
+        run: cargo +nightly miri test -p logfwd-core --lib
+        env:
+          MIRIFLAGS: "-Zmiri-strict-provenance"
+          PROPTEST_DISABLE_FAILURE_PERSISTENCE: "1"
+          PROPTEST_CASES: "1"
+
+  miri-types:
+    name: Miri (types)
+    needs: [changes, lint]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.miri == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup-rust
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+
+      - name: Set up Miri
+        run: cargo +nightly miri setup
+
+      - name: Run Miri test suite (logfwd-types)
+        run: cargo +nightly miri test -p logfwd-types --lib
+        env:
+          MIRIFLAGS: "-Zmiri-strict-provenance"
+          PROPTEST_DISABLE_FAILURE_PERSISTENCE: "1"
+          PROPTEST_CASES: "1"
+
+  # -------------------------------------------------------------------------
+  # Deterministic simulation & concurrency model checks
+  # -------------------------------------------------------------------------
+  simulation:
+    name: Simulation (Turmoil + Loom)
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.loom == 'true'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup-rust
+      - name: Turmoil simulation tests
+        run: cargo test -p logfwd --features turmoil --test turmoil_sim
+      - name: Loom seam test
+        run: cargo test -p logfwd-runtime --lib --features loom-tests worker_pool::pool::tests::loom_worker_removal_vs_late_event_model_never_resurrects_slot -- --exact
+
+  # -------------------------------------------------------------------------
+  # TLC: TLA+ model checking — all specs, coverage, and thorough in one job
+  # -------------------------------------------------------------------------
+  tlc:
+    name: "TLA+ model checking"
+    needs: [changes, lint]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.tla == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Download tla2tools.jar
+        run: |
+          mkdir -p /tmp/tla
+          curl -sL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o /tmp/tla/tla2tools.jar
+
+      # --- Safety & liveness ---
+      - name: "TLC: PipelineMachine — safety"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg -workers auto
+      - name: "TLC: PipelineMachine — liveness"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.liveness.cfg -workers auto
+      - name: "TLC: ShutdownProtocol — safety"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.cfg -workers auto
+      - name: "TLC: ShutdownProtocol — liveness"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.liveness.cfg -workers auto
+      - name: "TLC: PipelineBatch — safety"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.cfg -workers auto
+      - name: "TLC: PipelineBatch — liveness"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg -workers auto
+      - name: "TLC: TailLifecycle — safety"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCTailLifecycle.tla -config tla/TailLifecycle.cfg -workers auto
+
+      # --- Coverage (vacuity guards) ---
+      - name: "TLC coverage: PipelineMachine"
+        run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCPipelineMachine.tla --config tla/PipelineMachine.coverage.cfg
+      - name: "TLC coverage: ShutdownProtocol"
+        run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCShutdownProtocol.tla --config tla/ShutdownProtocol.coverage.cfg
+      - name: "TLC coverage: PipelineBatch"
+        run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCPipelineBatch.tla --config tla/PipelineBatch.coverage.cfg
+
+      # --- Thorough ---
+      - name: "TLC: PipelineMachine — thorough"
+        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.thorough.cfg -workers auto
+
+  # -------------------------------------------------------------------------
+  # Coverage — workspace code coverage via llvm-cov.
+  # Informational only (continue-on-error); non-draft PRs, no path filter.
+  # -------------------------------------------------------------------------
+  coverage:
+    name: Code Coverage
+    needs: [test-linux]
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/build-dashboard
+      - uses: ./.github/actions/setup-rust
+      - run: rustup component add llvm-tools-preview
+        shell: bash
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@nextest
+
+      - name: Generate workspace coverage
+        run: cargo llvm-cov nextest --workspace --lcov --output-path lcov.info --profile ci
+
+      - name: Generate HTML report
+        run: cargo llvm-cov report --html --output-dir htmlcov
+
+      - name: Generate Coverage Summary
+        run: cargo llvm-cov report --summary-only > coverage-summary.txt
+
+      - name: Write to Job Summary
+        run: |
+          {
+            echo "## Code Coverage Summary"
+            echo '```text'
+            cat coverage-summary.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload HTML coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: code-coverage-html
+          path: htmlcov/
+
+      - name: Upload LCOV artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: code-coverage-lcov
+          path: lcov.info
+
+  # -------------------------------------------------------------------------
+  # Conclusion — single required status check for branch protection.
+  # Pattern from rust-analyzer and cargo: set ONE required check
+  # ("conclusion") instead of maintaining a list of individual job names.
+  # -------------------------------------------------------------------------
+  conclusion:
+    name: CI conclusion
+    if: ${{ always() && !cancelled() }}
+    needs:
+      - changes
+      - frontend
+      - lint
+      - test-linux
+      - test-macos
+      - test-network
+      - cross-check
+      - kani-core
+      - kani-arrow
+      - kani-periphery
+      - miri-core
+      - miri-types
+      - simulation
+      - tlc
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          jq -C <<< '${{ toJson(needs) }}'
+          jq --exit-status 'all(.result == "success" or .result == "skipped")' \
+            <<< '${{ toJson(needs) }}'

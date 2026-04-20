@@ -1,0 +1,29 @@
+version: 2
+updates:
+  # Cargo dependencies
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      arrow:
+        patterns: ["arrow*", "parquet*"]
+      datafusion:
+        patterns: ["datafusion*"]
+      tokio:
+        patterns: ["tokio*"]
+      opentelemetry:
+        patterns: ["opentelemetry*"]
+
+  # GitHub Actions
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns: ["*"]

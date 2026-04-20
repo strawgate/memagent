@@ -1,0 +1,296 @@
+---
+// "What's the alternative?" — unbounded queue that grows until it OOMs.
+// A simple box fills with log lines. No backpressure = no limit = boom.
+---
+
+<div class="uq" id="uq-widget">
+  <div class="uq-scene">
+    <svg class="uq-svg" viewBox="0 0 600 180" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+      <!-- Incoming arrow -->
+      <line x1="30" y1="90" x2="110" y2="90" stroke="var(--uq-muted)" stroke-width="2" marker-end="url(#uq-arrow)" />
+      <text x="70" y="78" text-anchor="middle" fill="var(--uq-muted)" font-size="9" font-weight="600">LOGS IN</text>
+
+      <!-- Queue box (grows) -->
+      <rect id="uq-box" x="120" y="30" width="260" height="120" rx="6"
+            fill="var(--uq-box-bg)" stroke="var(--uq-box-border)" stroke-width="1.5" />
+      <text x="250" y="22" text-anchor="middle" fill="var(--uq-muted)" font-size="9" font-weight="600">UNBOUNDED QUEUE</text>
+
+      <!-- Fill level -->
+      <rect id="uq-fill" x="122" y="148" width="256" height="0" rx="4"
+            fill="var(--uq-fill-color)" opacity="0.7" />
+
+      <!-- Memory label inside box -->
+      <text id="uq-mem" x="250" y="95" text-anchor="middle" fill="var(--uq-mem-color)" font-size="14" font-weight="700" font-variant-numeric="tabular-nums">0 MB</text>
+
+      <!-- Outgoing arrow (slow/blocked) -->
+      <line x1="390" y1="90" x2="470" y2="90" stroke="var(--uq-muted)" stroke-width="2" stroke-dasharray="6,4" marker-end="url(#uq-arrow)" />
+      <text x="430" y="78" text-anchor="middle" fill="var(--uq-muted)" font-size="9" font-weight="600">SLOW OUTPUT</text>
+
+      <!-- Destination -->
+      <rect x="480" y="70" width="90" height="40" rx="6" fill="var(--uq-box-bg)" stroke="var(--uq-box-border)" stroke-width="1" />
+      <text x="525" y="94" text-anchor="middle" fill="var(--uq-muted)" font-size="9" font-weight="600">DESTINATION</text>
+
+      <!-- Explosion overlay (hidden initially) -->
+      <g id="uq-boom" opacity="0">
+        <text x="250" y="100" text-anchor="middle" font-size="40">💥</text>
+        <text id="uq-boom-text" x="250" y="140" text-anchor="middle" fill="#ef4444" font-size="13" font-weight="700">OOM KILLED — ALL DATA LOST</text>
+      </g>
+
+      <defs>
+        <marker id="uq-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--uq-muted)" />
+        </marker>
+      </defs>
+    </svg>
+  </div>
+
+  <div class="uq-controls">
+    <button class="uq-btn" id="uq-btn">▶ Start</button>
+    <span class="uq-label" id="uq-status">Waiting…</span>
+  </div>
+</div>
+
+<style is:global>
+  .uq {
+    --uq-box-bg: color-mix(in srgb, var(--sl-color-gray-6) 40%, var(--sl-color-bg-sidebar));
+    --uq-box-border: var(--sl-color-gray-4);
+    --uq-muted: var(--sl-color-gray-3);
+    --uq-fill-color: #60a5fa;
+    --uq-mem-color: var(--sl-color-text);
+    margin: 0.6rem 0 1rem;
+    padding: 0.6rem 0.8rem 0.4rem;
+    border: 1px solid var(--sl-color-hairline);
+    border-radius: 10px;
+    background: var(--sl-color-bg-sidebar);
+    overflow: hidden;
+  }
+  .uq * { margin-top: 0 !important; }
+  .uq-scene { width: 100%; }
+  .uq-svg { width: 100%; height: auto; display: block; }
+  .uq-controls {
+    display: flex; align-items: center; justify-content: center; gap: 0.8rem;
+    margin: 0.3rem 0 0;
+  }
+  .uq-btn {
+    background: var(--sl-color-accent); color: var(--sl-color-black);
+    border: none; border-radius: 6px; padding: 0.3rem 1rem;
+    font-size: 0.75rem; font-weight: 600; cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  .uq-btn:hover { opacity: 0.85; }
+  .uq-label {
+    font-size: 0.7rem; color: var(--uq-muted); font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+
+<script>
+(function() {
+  var fill = document.getElementById('uq-fill');
+  var mem = document.getElementById('uq-mem');
+  var boom = document.getElementById('uq-boom');
+  var box = document.getElementById('uq-box');
+  var btn = document.getElementById('uq-btn');
+  var status = document.getElementById('uq-status');
+  if (!fill || !btn || !mem || !boom || !box || !status) return;
+
+  var BOX_TOP = 30;
+  var BOX_H = 120;
+  var BOX_X = 122;
+  var BOX_W = 256;
+  var MAX_MB = 4096; // 4 GB
+  var DRAIN_RATE = 2; // MB per tick drained
+  var FILL_RATE = 18; // MB per tick incoming
+  var TICK_MS = 40;
+  var OOM_MB = MAX_MB;
+
+  var currentMB = 0;
+  var timer = null;
+  var exploded = false;
+  var phase = 'idle'; // idle | running | exploded
+
+  function formatMB(mb) {
+    if (mb >= 1024) return (mb / 1024).toFixed(1) + ' GB';
+    return Math.round(mb) + ' MB';
+  }
+
+  function updateVisuals() {
+    var pct = Math.min(currentMB / OOM_MB, 1);
+    var fillH = pct * BOX_H;
+    var fillY = BOX_TOP + BOX_H - fillH;
+
+    fill.setAttribute('y', String(fillY));
+    fill.setAttribute('height', String(fillH));
+    mem.textContent = formatMB(currentMB);
+
+    // Color progression: blue → yellow → red
+    if (pct > 0.8) {
+      fill.setAttribute('fill', '#ef4444');
+      mem.setAttribute('fill', '#ef4444');
+      box.setAttribute('stroke', '#ef4444');
+      box.setAttribute('stroke-width', '2.5');
+    } else if (pct > 0.5) {
+      fill.setAttribute('fill', '#f59e0b');
+      mem.setAttribute('fill', '#f59e0b');
+      box.setAttribute('stroke', '#f59e0b');
+      box.setAttribute('stroke-width', '2');
+    } else {
+      fill.setAttribute('fill', '#60a5fa');
+      mem.setAttribute('fill', 'var(--sl-color-text)');
+      box.setAttribute('stroke', 'var(--uq-box-border)');
+      box.setAttribute('stroke-width', '1.5');
+    }
+
+    // Status text
+    if (pct > 0.8) {
+      status.textContent = 'CRITICAL — memory exhaustion imminent';
+      status.style.color = '#ef4444';
+    } else if (pct > 0.5) {
+      status.textContent = 'WARNING — memory growing fast';
+      status.style.color = '#f59e0b';
+    } else if (pct > 0.1) {
+      status.textContent = 'Queue growing… ' + formatMB(currentMB) + ' used';
+      status.style.color = '';
+    } else {
+      status.textContent = 'Logs arriving faster than output can drain…';
+      status.style.color = '';
+    }
+  }
+
+  function tick() {
+    currentMB += FILL_RATE - DRAIN_RATE;
+    if (currentMB < 0) currentMB = 0;
+
+    if (currentMB >= OOM_MB) {
+      // Explode!
+      currentMB = OOM_MB;
+      updateVisuals();
+      clearInterval(timer);
+      timer = null;
+      phase = 'exploded';
+      exploded = true;
+
+      // Hide fill, show boom
+      fill.setAttribute('height', '0');
+      mem.setAttribute('opacity', '0');
+      boom.setAttribute('opacity', '1');
+      box.setAttribute('stroke', '#ef4444');
+      box.setAttribute('stroke-width', '3');
+      status.textContent = 'Process killed. All queued data lost.';
+      status.style.color = '#ef4444';
+      btn.textContent = '↻ Reset';
+      return;
+    }
+
+    updateVisuals();
+  }
+
+  function start() {
+    currentMB = 0;
+    exploded = false;
+    phase = 'running';
+    boom.setAttribute('opacity', '0');
+    mem.setAttribute('opacity', '1');
+    fill.setAttribute('height', '0');
+    box.setAttribute('stroke', 'var(--uq-box-border)');
+    box.setAttribute('stroke-width', '1.5');
+    btn.textContent = '⏸ Pause';
+    timer = setInterval(tick, TICK_MS);
+  }
+
+  function reset() {
+    clearInterval(timer);
+    timer = null;
+    clearTimeout(restartTimer);
+    restartTimer = null;
+    currentMB = 0;
+    phase = 'idle';
+    exploded = false;
+    boom.setAttribute('opacity', '0');
+    mem.setAttribute('opacity', '1');
+    fill.setAttribute('height', '0');
+    fill.setAttribute('fill', '#60a5fa');
+    mem.textContent = '0 MB';
+    mem.setAttribute('fill', 'var(--sl-color-text)');
+    box.setAttribute('stroke', 'var(--uq-box-border)');
+    box.setAttribute('stroke-width', '1.5');
+    btn.textContent = '▶ Start';
+    status.textContent = 'Waiting…';
+    status.style.color = '';
+  }
+
+  btn.addEventListener('click', function() {
+    if (phase === 'exploded') {
+      clearTimeout(restartTimer);
+      restartTimer = null;
+      reset();
+      start();
+    } else if (phase === 'idle') {
+      // Resume from current level (don't reset to 0)
+      if (currentMB > 0) {
+        phase = 'running';
+        boom.setAttribute('opacity', '0');
+        mem.setAttribute('opacity', '1');
+        btn.textContent = '⏸ Pause';
+        timer = setInterval(tick, TICK_MS);
+      } else {
+        start();
+      }
+    } else if (phase === 'running') {
+      clearInterval(timer);
+      timer = null;
+      phase = 'idle';
+      btn.textContent = '▶ Resume';
+    }
+  });
+
+  // Auto-restart after explosion (pause to let user read, then loop)
+  var restartTimer = null;
+  var origTick = tick;
+  tick = function() {
+    origTick();
+    if (phase === 'exploded' && !restartTimer) {
+      restartTimer = setTimeout(function() {
+        restartTimer = null;
+        reset();
+        start();
+      }, 3000);
+    }
+  };
+
+  // Autoplay on load (respect reduced motion)
+  if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    start();
+  } else {
+    status.textContent = 'Animation paused (reduced motion)';
+    btn.textContent = '▶ Start';
+  }
+
+  // Pause when tab is hidden, resume when visible
+  function onUqVisChange() {
+    if (document.hidden) {
+      clearInterval(timer);
+      timer = null;
+      clearTimeout(restartTimer);
+      restartTimer = null;
+    } else if (phase === 'running' && !timer) {
+      timer = setInterval(tick, TICK_MS);
+    } else if (phase === 'exploded' && !restartTimer) {
+      // Re-schedule auto-restart that was cleared when tab was hidden
+      restartTimer = setTimeout(function() {
+        restartTimer = null;
+        reset();
+        start();
+      }, 3000);
+    }
+  }
+  document.addEventListener('visibilitychange', onUqVisChange);
+
+  // Cleanup on SPA navigation
+  document.addEventListener('astro:before-swap', function() {
+    clearInterval(timer);
+    clearTimeout(restartTimer);
+    document.removeEventListener('visibilitychange', onUqVisChange);
+  }, { once: true });
+})();
+</script>

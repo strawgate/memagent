@@ -1,0 +1,9 @@
+input:
+  type: file
+  path: /var/log/app/*.log
+  format: json
+
+output:
+  type: elasticsearch
+  endpoint: http://localhost:9200
+  index: logs
