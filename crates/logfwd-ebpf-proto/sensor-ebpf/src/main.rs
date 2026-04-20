@@ -35,6 +35,12 @@ struct PodEbpfConfig(EbpfConfig);
 // SAFETY: EbpfConfig is repr(C), Copy, and contains only primitive types (u32).
 unsafe impl aya::Pod for PodEbpfConfig {}
 
+/// Tracefs paths to probe for the sched_process_exit format file.
+const SCHED_PROCESS_EXIT_FORMAT_PATHS: &[&str] = &[
+    "/sys/kernel/tracing/events/sched/sched_process_exit/format",
+    "/sys/kernel/debug/tracing/events/sched/sched_process_exit/format",
+];
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let json_mode = args.iter().any(|a| a == "--json");
@@ -85,11 +91,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ebpf_bytes = std::fs::read(ebpf_path)?;
     let mut ebpf = Ebpf::load(&ebpf_bytes)?;
 
-    // Configure exit_code offset from kernel BTF BEFORE attaching programs,
-    // so events emitted during startup have valid config.
-    match configure_exit_code(&mut ebpf) {
-        Ok(offset) => eprintln!("  configured exit_code offset: {offset}"),
-        Err(e) => eprintln!("  exit_code offset unavailable (sentinel mode): {e}"),
+    // Configure runtime offsets before attaching programs, so startup events
+    // have the best available semantics.
+    match configure_runtime_config(&mut ebpf) {
+        Ok(config) => {
+            if let Some(offset) = config.exit_code_offset {
+                eprintln!("  configured exit_code offset: {offset}");
+            } else {
+                eprintln!("  WARNING: exit_code offset unavailable; using sentinel mode");
+            }
+            if let Some(offset) = config.group_dead_offset {
+                eprintln!("  configured sched_process_exit.group_dead offset: {offset}");
+            } else {
+                eprintln!(
+                    "  WARNING: sched_process_exit.group_dead missing; using pid==tgid fallback semantics"
+                );
+            }
+        }
+        Err(e) => eprintln!("  runtime config unavailable (degraded mode): {e}"),
     }
 
     // Attach tracepoints.
@@ -729,8 +748,37 @@ impl EventCounts {
     }
 }
 
-/// Try to discover the exit_code offset from kernel BTF and write it to the CONFIG map.
-fn configure_exit_code(ebpf: &mut Ebpf) -> Result<u32, Box<dyn std::error::Error>> {
+struct RuntimeConfig {
+    exit_code_offset: Option<u32>,
+    group_dead_offset: Option<u32>,
+}
+
+/// Discover runtime offsets and write them to the CONFIG map.
+fn configure_runtime_config(ebpf: &mut Ebpf) -> Result<RuntimeConfig, Box<dyn std::error::Error>> {
+    let exit_code_offset = find_exit_code_offset().ok();
+    let group_dead_offset = find_sched_process_exit_group_dead_offset().ok().flatten();
+
+    let config_map = ebpf
+        .map_mut("CONFIG")
+        .ok_or("CONFIG map not found in eBPF binary")?;
+    let mut array: aya::maps::Array<_, PodEbpfConfig> =
+        config_map.try_into().map_err(|e| format!("{e}"))?;
+
+    let cfg = PodEbpfConfig(EbpfConfig {
+        task_exit_code_offset: exit_code_offset.unwrap_or(0),
+        sched_process_exit_group_dead_offset: group_dead_offset.unwrap_or(0),
+        sched_process_exit_has_group_dead: u32::from(group_dead_offset.is_some()),
+        pad: 0,
+    });
+    array.set(0, cfg, 0).map_err(|e| format!("{e}"))?;
+
+    Ok(RuntimeConfig {
+        exit_code_offset,
+        group_dead_offset,
+    })
+}
+
+fn find_exit_code_offset() -> Result<u32, Box<dyn std::error::Error>> {
     let output = std::process::Command::new("pahole")
         .args(["-C", "task_struct", "/sys/kernel/btf/vmlinux"])
         .output()?;
@@ -740,7 +788,6 @@ fn configure_exit_code(ebpf: &mut Ebpf) -> Result<u32, Box<dyn std::error::Error
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut offset: Option<u32> = None;
     for line in stdout.lines() {
         let trimmed = line.trim();
         if trimmed.contains("exit_code")
@@ -753,24 +800,83 @@ fn configure_exit_code(ebpf: &mut Ebpf) -> Result<u32, Box<dyn std::error::Error
             && off > 0
             && off < 16384
         {
-            offset = Some(off);
-            break;
+            return Ok(off);
         }
     }
 
-    let off = offset.ok_or("exit_code field not found in pahole output")?;
+    Err("exit_code field not found in pahole output".into())
+}
 
-    let config_map = ebpf
-        .map_mut("CONFIG")
-        .ok_or("CONFIG map not found in eBPF binary")?;
-    let mut array: aya::maps::Array<_, PodEbpfConfig> =
-        config_map.try_into().map_err(|e| format!("{e}"))?;
+fn find_sched_process_exit_group_dead_offset() -> Result<Option<u32>, Box<dyn std::error::Error>> {
+    let format_text = read_tracepoint_format()?;
+    let Some(field) = parse_tracepoint_field(&format_text, "group_dead") else {
+        return Ok(None);
+    };
+    if field.size == 0 || field.size > 4 {
+        eprintln!(
+            "  WARNING: sched_process_exit.group_dead has unexpected size {}; disabling",
+            field.size
+        );
+        return Ok(None);
+    }
+    if field.size != 1 {
+        eprintln!(
+            "  NOTE: sched_process_exit.group_dead size is {} (not 1); reading as u8 from first byte",
+            field.size
+        );
+    }
+    Ok(Some(field.offset))
+}
 
-    let cfg = PodEbpfConfig(EbpfConfig {
-        task_exit_code_offset: off,
-        pad: 0,
-    });
-    array.set(0, cfg, 0).map_err(|e| format!("{e}"))?;
+fn read_tracepoint_format() -> Result<String, Box<dyn std::error::Error>> {
+    for path in SCHED_PROCESS_EXIT_FORMAT_PATHS {
+        match std::fs::read_to_string(path) {
+            Ok(text) => return Ok(text),
+            Err(e) => eprintln!("  tracefs path {path} unavailable: {e}"),
+        }
+    }
+    Err("failed to read sched_process_exit tracepoint format from any tracefs path".into())
+}
 
-    Ok(off)
+struct TracepointField {
+    offset: u32,
+    size: u32,
+}
+
+fn parse_tracepoint_field(format_text: &str, field_name: &str) -> Option<TracepointField> {
+    for line in format_text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("field:") || !trimmed.contains("offset:") {
+            continue;
+        }
+        let Some(field_decl) = trimmed
+            .strip_prefix("field:")
+            .and_then(|field| field.split(';').next())
+            .map(str::trim)
+        else {
+            continue;
+        };
+        let Some(field_name_with_suffix) = field_decl.split_whitespace().last() else {
+            continue;
+        };
+        let actual_name = field_name_with_suffix.split('[').next().unwrap_or_default();
+        if actual_name != field_name {
+            continue;
+        }
+        let offset = trimmed
+            .split("offset:")
+            .nth(1)
+            .and_then(|o| o.split(';').next())
+            .map(str::trim)
+            .and_then(|s| s.parse::<u32>().ok())?;
+        let size = trimmed
+            .split("size:")
+            .nth(1)
+            .and_then(|s| s.split(';').next())
+            .map(str::trim)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        return Some(TracepointField { offset, size });
+    }
+    None
 }

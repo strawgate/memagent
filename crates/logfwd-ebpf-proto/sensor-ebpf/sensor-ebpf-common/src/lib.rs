@@ -248,6 +248,13 @@ pub struct EbpfConfig {
     /// Byte offset of `exit_code` in `task_struct`. Set from BTF at load time.
     /// When 0, the eBPF program uses -1 (unknown) as the exit_code sentinel.
     pub task_exit_code_offset: u32,
+    /// Byte offset of `group_dead` in `sched/sched_process_exit` tracepoint payload.
+    /// Only valid when `sched_process_exit_has_group_dead != 0`.
+    pub sched_process_exit_group_dead_offset: u32,
+    /// Whether `sched/sched_process_exit` includes `group_dead` in this kernel.
+    /// Kept separate from the offset value so offset 0 is never used as a
+    /// presence sentinel.
+    pub sched_process_exit_has_group_dead: u32,
     pub pad: u32,
 }
 
