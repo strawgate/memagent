@@ -9,8 +9,8 @@ publish = false
 autobins = false
 
 [features]
-# Empty gate used only to enable bench helper/profiling binaries on demand.
-bench-tools = []
+# Enables helper/profiling binaries and their non-benchmark dependency graph.
+bench-tools = ["dep:parquet"]
 dhat-heap = ["dep:dhat"]
 otlp-profile-alloc = []
 
@@ -59,7 +59,7 @@ opentelemetry-proto = { version = "0.31", features = [
     "logs",
     "gen-tonic-messages",
 ] }
-parquet = { workspace = true }
+parquet = { workspace = true, optional = true }
 prost = "0.14"
 sonic-rs = "0.5"
 zstd = "0.13"
