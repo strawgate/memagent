@@ -4,10 +4,13 @@ Contributor and agent entrypoint for repo-critical engineering context.
 
 ## Start Here (5 minutes)
 
-1. [Architecture](ARCHITECTURE.md) for crate boundaries and data flow.
-2. [Crate Rules](CRATE_RULES.md) for non-negotiable constraints.
-3. [Verification](VERIFICATION.md) for proof/test requirements.
-4. [Change Map](CHANGE_MAP.md) for required co-changes.
+1. [Code Style → Mindset](CODE_STYLE.md#mindset) for the ethos: parse
+   don't validate, invalid states unrepresentable, measure don't guess,
+   compile time as a quality attribute.
+2. [Architecture](ARCHITECTURE.md) for crate boundaries and data flow.
+3. [Crate Rules](CRATE_RULES.md) for non-negotiable constraints.
+4. [Verification](VERIFICATION.md) for proof/test requirements.
+5. [Change Map](CHANGE_MAP.md) for required co-changes.
 
 ## Task Routing
 

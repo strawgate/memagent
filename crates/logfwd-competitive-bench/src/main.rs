@@ -20,6 +20,7 @@
 //!   --memory N           Memory limit per container (default: 1g, Docker mode only)
 //!   --profile DIR        Write CPU flamegraph + memory profile to DIR
 //!   --dhat-binary PATH   logfwd binary built with --features dhat-heap
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 mod agents;
 mod blackhole;
@@ -842,15 +843,16 @@ fn print_table(results: &[BenchResult], lines: usize, file_size: u64) {
     let mb = file_size as f64 / 1_048_576.0;
 
     // Collect unique scenarios from results.
-    let scenarios: Vec<Scenario> = {
-        let mut seen = Vec::new();
-        for r in results {
-            if !seen.contains(&r.scenario) {
-                seen.push(r.scenario);
-            }
-        }
-        seen
-    };
+    let scenarios: Vec<Scenario> =
+        results
+            .iter()
+            .map(|r| r.scenario)
+            .fold(Vec::new(), |mut seen, scenario| {
+                if !seen.contains(&scenario) {
+                    seen.push(scenario);
+                }
+                seen
+            });
 
     for scenario in &scenarios {
         let scenario_results: Vec<&BenchResult> =

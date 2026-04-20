@@ -592,11 +592,12 @@ mod tests {
         let mut running = new_running();
         let src = SourceId(0);
 
-        let mut sending = Vec::new();
-        for i in 0..100u64 {
-            let t = running.create_batch(src, (i + 1) * 100);
-            sending.push(running.begin_send(t));
-        }
+        let sending: Vec<_> = (0..100u64)
+            .map(|i| {
+                let t = running.create_batch(src, (i + 1) * 100);
+                running.begin_send(t)
+            })
+            .collect();
         assert_eq!(running.in_flight_count(), 100);
 
         // Ack in reverse order
@@ -1421,11 +1422,14 @@ mod proptests {
                 PipelineMachine::<Starting, u64>::new().start();
             let src = SourceId(0);
 
-            let mut tickets = Vec::new();
-            for i in 0..n {
-                let t = running.create_batch(src, checkpoints[i]);
-                tickets.push(running.begin_send(t));
-            }
+            let tickets: Vec<_> = checkpoints
+                .iter()
+                .take(n)
+                .map(|&checkpoint| {
+                    let t = running.create_batch(src, checkpoint);
+                    running.begin_send(t)
+                })
+                .collect();
             let expected_final = checkpoints[n - 1];
 
             // Unbiased Fisher-Yates: perm_seed[i] is the swap index for position i.
@@ -1464,11 +1468,14 @@ mod proptests {
                 PipelineMachine::<Starting, u64>::new().start();
             let src = SourceId(0);
 
-            let mut sending = Vec::new();
-            for i in 0..n {
-                let t = running.create_batch(src, checkpoints[i]);
-                sending.push(running.begin_send(t));
-            }
+            let sending: Vec<_> = checkpoints
+                .iter()
+                .take(n)
+                .map(|&checkpoint| {
+                    let t = running.create_batch(src, checkpoint);
+                    running.begin_send(t)
+                })
+                .collect();
 
             let mut draining = running.begin_drain();
             prop_assert!(!draining.is_drained() || sending.is_empty());
@@ -1663,11 +1670,14 @@ mod proptests {
                 PipelineMachine::<Starting, u64>::new().start();
             let src = SourceId(0);
 
-            let mut tickets = Vec::new();
-            for i in 0..n {
-                let t = running.create_batch(src, checkpoints[i]);
-                tickets.push(running.begin_send(t));
-            }
+            let tickets: Vec<_> = checkpoints
+                .iter()
+                .take(n)
+                .map(|&checkpoint| {
+                    let t = running.create_batch(src, checkpoint);
+                    running.begin_send(t)
+                })
+                .collect();
 
             let expected_final = checkpoints[n - 1];
 

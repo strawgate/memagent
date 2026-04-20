@@ -189,7 +189,7 @@ pub fn render_devour_yaml(mode: DevourModeSpec, listen: &str, diagnostics_addr: 
     };
 
     format!(
-        "{input}output:\n  type: null\nserver:\n  diagnostics: {}\n",
+        "{input}output:\n  type: \"null\"\nserver:\n  diagnostics: {}\n",
         yaml_quote(diagnostics_addr),
     )
 }

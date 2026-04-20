@@ -690,6 +690,114 @@ mod generated_tests {
     use super::super::otlp;
     use super::*;
 
+    fn sample_field_for_wire(number: u32, wire: WireKind) -> Vec<u8> {
+        let mut out = Vec::new();
+        push_varint(
+            &mut out,
+            (u64::from(number) << 3) | u64::from(wire_id(wire)),
+        );
+        match wire {
+            WireKind::Varint => push_varint(&mut out, 1),
+            WireKind::Fixed64 => out.extend_from_slice(&1u64.to_le_bytes()),
+            WireKind::Len => {
+                push_varint(&mut out, 1);
+                out.push(0);
+            }
+            WireKind::StartGroup => {
+                push_varint(
+                    &mut out,
+                    (u64::from(number) << 3) | u64::from(wire_id(WireKind::EndGroup)),
+                );
+            }
+            WireKind::EndGroup => {}
+            WireKind::Fixed32 => out.extend_from_slice(&1u32.to_le_bytes()),
+        }
+        out
+    }
+
+    fn push_varint(out: &mut Vec<u8>, mut value: u64) {
+        while value >= 0x80 {
+            out.push(((value & 0x7f) as u8) | 0x80);
+            value >>= 7;
+        }
+        out.push(value as u8);
+    }
+
+    fn wire_id(wire: WireKind) -> u8 {
+        match wire {
+            WireKind::Varint => 0,
+            WireKind::Fixed64 => 1,
+            WireKind::Len => 2,
+            WireKind::StartGroup => 3,
+            WireKind::EndGroup => 4,
+            WireKind::Fixed32 => 5,
+        }
+    }
+
+    fn all_messages() -> &'static [MessageKind] {
+        &[
+            MessageKind::ExportLogsServiceRequest,
+            MessageKind::ResourceLogs,
+            MessageKind::Resource,
+            MessageKind::ScopeLogs,
+            MessageKind::InstrumentationScope,
+            MessageKind::LogRecord,
+            MessageKind::KeyValue,
+            MessageKind::AnyValue,
+        ]
+    }
+
+    fn wrong_wires(expected: WireKind) -> [WireKind; 5] {
+        match expected {
+            WireKind::Varint => [
+                WireKind::Fixed64,
+                WireKind::Len,
+                WireKind::StartGroup,
+                WireKind::EndGroup,
+                WireKind::Fixed32,
+            ],
+            WireKind::Fixed64 => [
+                WireKind::Varint,
+                WireKind::Len,
+                WireKind::StartGroup,
+                WireKind::EndGroup,
+                WireKind::Fixed32,
+            ],
+            WireKind::Len => [
+                WireKind::Varint,
+                WireKind::Fixed64,
+                WireKind::StartGroup,
+                WireKind::EndGroup,
+                WireKind::Fixed32,
+            ],
+            WireKind::StartGroup => [
+                WireKind::Varint,
+                WireKind::Fixed64,
+                WireKind::Len,
+                WireKind::EndGroup,
+                WireKind::Fixed32,
+            ],
+            WireKind::EndGroup => [
+                WireKind::Varint,
+                WireKind::Fixed64,
+                WireKind::Len,
+                WireKind::StartGroup,
+                WireKind::Fixed32,
+            ],
+            WireKind::Fixed32 => [
+                WireKind::Varint,
+                WireKind::Fixed64,
+                WireKind::Len,
+                WireKind::StartGroup,
+                WireKind::EndGroup,
+            ],
+        }
+    }
+
+    fn unsupported_anyvalue_field_numbers() -> &'static [u32] {
+        &[5, 6]
+    }
+
     #[test]
     fn generated_anyvalue_table_covers_all_current_oneof_fields() {
         let fields = fields_for(MessageKind::AnyValue);
@@ -993,5 +1101,113 @@ mod generated_tests {
         let bytes = [10, 3, b'k', b'e', b'y'];
         let value = decode_key_value_wire(&bytes).expect("generated KeyValue should decode");
         assert!(value.is_none());
+    }
+
+    #[test]
+    fn generated_known_fields_reject_wrong_wire_types() {
+        for &message in all_messages() {
+            for rule in fields_for(message) {
+                for wrong_wire in wrong_wires(rule.expected_wire) {
+                    let payload = sample_field_for_wire(rule.number, wrong_wire);
+                    let err = scan_message(&payload, message)
+                        .expect_err("known field wrong wire should be invalid");
+                    assert!(
+                        matches!(err, ProjectionError::Invalid(_)),
+                        "message={message:?} field={} wrong_wire={wrong_wire:?} err={err:?}",
+                        rule.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generated_ignored_fields_accept_expected_wire() {
+        for &message in all_messages() {
+            for rule in fields_for(message) {
+                if rule.action != ProjectionAction::Ignore {
+                    continue;
+                }
+                let payload = sample_field_for_wire(rule.number, rule.expected_wire);
+                scan_message(&payload, message)
+                    .expect("ignored field with expected wire should be accepted");
+            }
+        }
+    }
+
+    #[test]
+    fn generated_ignored_fields_reject_wrong_wire() {
+        for &message in all_messages() {
+            for rule in fields_for(message) {
+                if rule.action != ProjectionAction::Ignore {
+                    continue;
+                }
+                for wrong_wire in wrong_wires(rule.expected_wire) {
+                    let payload = sample_field_for_wire(rule.number, wrong_wire);
+                    let err = scan_message(&payload, message)
+                        .expect_err("ignored field wrong wire should be invalid");
+                    assert!(
+                        matches!(err, ProjectionError::Invalid(_)),
+                        "message={message:?} field={} wrong_wire={wrong_wire:?} err={err:?}",
+                        rule.name
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn generated_anyvalue_unsupported_shapes_trigger_fallback() {
+        for &field_number in unsupported_anyvalue_field_numbers() {
+            let payload = sample_field_for_wire(field_number, WireKind::Len);
+            let err = scan_message(&payload, MessageKind::AnyValue)
+                .expect_err("unsupported AnyValue shape should request fallback");
+            assert!(matches!(err, ProjectionError::Unsupported(_)));
+            let err = match decode_any_value_wire(&payload) {
+                Ok(_) => panic!("unsupported AnyValue decoder shape should request fallback"),
+                Err(err) => err,
+            };
+            assert!(matches!(err, ProjectionError::Unsupported(_)));
+        }
+    }
+
+    #[test]
+    fn generated_anyvalue_oneof_terminal_unsupported_drives_fallback() {
+        let projected = sample_field_for_wire(otlp::ANY_VALUE_STRING_VALUE, WireKind::Len);
+        for &field_number in unsupported_anyvalue_field_numbers() {
+            let unsupported = sample_field_for_wire(field_number, WireKind::Len);
+
+            let mut unsupported_then_projected = unsupported.clone();
+            unsupported_then_projected.extend_from_slice(&projected);
+            let value = decode_any_value_wire(&unsupported_then_projected)
+                .expect("terminal projected oneof should decode");
+            assert!(matches!(value, Some(WireAny::String(_))));
+
+            let mut projected_then_unsupported = projected.clone();
+            projected_then_unsupported.extend_from_slice(&unsupported);
+            let err = match decode_any_value_wire(&projected_then_unsupported) {
+                Ok(_) => panic!("terminal unsupported oneof should request fallback"),
+                Err(err) => err,
+            };
+            assert!(matches!(err, ProjectionError::Unsupported(_)));
+        }
+    }
+
+    #[test]
+    fn generated_security_malformed_wire_corpus_is_rejected() {
+        let malformed_cases: &[&[u8]] = &[
+            &[0x0a, 0x02, 0x01],
+            &[
+                0x08, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x02,
+            ],
+            &[0x53, 0x64],
+            &[0x0b, 0x13],
+            &[0x0c],
+        ];
+        for bytes in malformed_cases {
+            let err = classify_projection_support(bytes)
+                .expect_err("malformed protobuf bytes must be rejected");
+            assert!(matches!(err, ProjectionError::Invalid(_)));
+        }
     }
 }

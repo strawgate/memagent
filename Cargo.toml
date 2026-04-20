@@ -103,6 +103,8 @@ wasm-bindgen = "0.2"
 js-sys = "0.3"
 varsubst = { version = "0.0.1", default-features = false }
 xxhash-rust = { version = "0.8.15", features = ["xxh32", "xxh64"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+rcgen = "0.14"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -137,7 +139,11 @@ assigning_clones = "allow"
 redundant_clone = "warn"
 cloned_instead_of_copied = "warn"
 needless_pass_by_ref_mut = "warn"
-undocumented_unsafe_blocks = "warn"
+undocumented_unsafe_blocks = "deny"
+dbg_macro = "deny"
+large_enum_variant = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

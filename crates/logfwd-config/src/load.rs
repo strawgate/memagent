@@ -3,8 +3,8 @@ use crate::serde_helpers::{
     deserialize_option_strict_string, deserialize_string_map_strict_values,
 };
 use crate::types::{
-    Config, ConfigError, EnrichmentConfig, InputConfig, OutputConfigEntry, PipelineConfig,
-    ServerConfig, StorageConfig,
+    Config, ConfigError, EnrichmentConfig, InputConfig, InputTypeConfig, OutputConfigEntry,
+    PipelineConfig, ServerConfig, StorageConfig,
 };
 use config as config_rs;
 use serde::Deserialize;
@@ -132,13 +132,45 @@ impl Config {
             }
         };
 
-        let cfg = Config {
+        let mut cfg = Config {
             pipelines,
             server: raw.server,
             storage: raw.storage,
         };
+        cfg.normalize();
         cfg.validate_with_base_path(base_path)?;
         Ok(cfg)
+    }
+
+    /// Trim whitespace from user-supplied list values so that runtime
+    /// comparison (exact equality) matches what validation accepted.
+    fn normalize(&mut self) {
+        for pipeline in self.pipelines.values_mut() {
+            for input in &mut pipeline.inputs {
+                let sensor_cfg = match &mut input.type_config {
+                    InputTypeConfig::LinuxEbpfSensor(s)
+                    | InputTypeConfig::MacosEsSensor(s)
+                    | InputTypeConfig::WindowsEbpfSensor(s)
+                    | InputTypeConfig::HostMetrics(s) => s.sensor.as_mut(),
+                    _ => None,
+                };
+                if let Some(cfg) = sensor_cfg {
+                    trim_string_list(&mut cfg.include_event_types);
+                    trim_string_list(&mut cfg.exclude_event_types);
+                }
+            }
+        }
+    }
+}
+
+fn trim_string_list(list: &mut Option<Vec<String>>) {
+    if let Some(values) = list {
+        for value in values {
+            let trimmed = value.trim();
+            if trimmed.len() != value.len() {
+                *value = trimmed.to_owned();
+            }
+        }
     }
 }
 

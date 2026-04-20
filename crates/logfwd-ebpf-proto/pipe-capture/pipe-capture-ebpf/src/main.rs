@@ -41,7 +41,11 @@ pub fn pipe_write_probe(ctx: ProbeContext) -> u32 {
 
 #[inline(always)]
 fn inc_counter(idx: u32) {
+    // SAFETY: `idx` is one of this program's fixed counter slots; if the BPF map
+    // lookup succeeds, aya returns a verifier-checked pointer to that slot.
     if let Some(val) = unsafe { COUNTERS.get_ptr_mut(idx) } {
+        // SAFETY: the pointer came from the successful BPF map lookup above and
+        // remains valid for this program invocation.
         unsafe { *val += 1 };
     }
 }
@@ -58,12 +62,15 @@ fn try_pipe_write(ctx: &ProbeContext) -> Result<(), i64> {
     let tgid = (pid_tgid >> 32) as u32;
 
     // Filter: exclude our own process to prevent recursive capture.
+    // SAFETY: `tgid` is a plain scalar key and the read-only BPF map lookup does
+    // not retain references beyond this expression.
     if unsafe { EXCLUDE_PIDS.get(&tgid).is_some() } {
         return Ok(());
     }
 
     inc_counter(0); // total writes seen
 
+    // SAFETY: bpf_get_current_cgroup_id is valid in kprobe program context.
     let cgroup_id = unsafe { bpf_get_current_cgroup_id() };
     let capture_len = if count > MAX_DATA { MAX_DATA } else { count };
 
@@ -71,6 +78,8 @@ fn try_pipe_write(ctx: &ProbeContext) -> Result<(), i64> {
     match EVENTS.reserve::<PipeEvent>(0) {
         Some(mut entry) => {
             let event = entry.as_mut_ptr();
+            // SAFETY: `event` points to RingBuf-reserved PipeEvent storage;
+            // every field read by userspace is initialized before submit.
             unsafe {
                 (*event).pid = pid_tgid as u32;
                 (*event).tgid = tgid;

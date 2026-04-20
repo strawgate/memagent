@@ -3442,36 +3442,34 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
 
-        let mut found_200 = false;
-        let mut found_not_found = false;
-        for i in 0..log_attrs.num_rows() {
-            if key_arr.value(i) == "status" {
-                let val = if str_arr.is_null(i) {
+        let status_values: Vec<_> = (0..log_attrs.num_rows())
+            .filter(|&i| key_arr.value(i) == "status")
+            .map(|i| {
+                if str_arr.is_null(i) {
                     None
                 } else {
                     Some(str_arr.value(i))
-                };
-                match val {
-                    Some("200") => found_200 = true,
-                    Some("NOT_FOUND") => found_not_found = true,
-                    other => panic!("unexpected status value in log_attrs: {:?}", other),
                 }
+            })
+            .collect();
+        for value in &status_values {
+            match value {
+                Some("200" | "NOT_FOUND") => {}
+                other => panic!("unexpected status value in log_attrs: {:?}", other),
             }
         }
         assert!(
-            found_200,
+            status_values.iter().any(|value| *value == Some("200")),
             "status=200 (from int child) must appear in log_attrs, got: {:?}",
-            (0..log_attrs.num_rows())
-                .filter(|&i| key_arr.value(i) == "status")
-                .map(|i| if str_arr.is_null(i) {
-                    "NULL".to_string()
-                } else {
-                    str_arr.value(i).to_string()
-                })
+            status_values
+                .iter()
+                .map(|value| value.map_or_else(|| "NULL".to_string(), str::to_string))
                 .collect::<Vec<_>>()
         );
         assert!(
-            found_not_found,
+            status_values
+                .iter()
+                .any(|value| *value == Some("NOT_FOUND")),
             "status=NOT_FOUND (from str child) must appear in log_attrs"
         );
     }
