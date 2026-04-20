@@ -685,7 +685,7 @@ pipelines:
     fn ipv6_empty_bracket_rejected() {
         let err = validate_host_port("[]:8080");
         assert!(err.is_err(), "expected error for empty IPv6 brackets");
-        assert!(err.unwrap_err().contains("empty IPv6 address"));
+        assert!(err.unwrap_err().to_string().contains("empty IPv6 address"));
     }
 
     #[test]
