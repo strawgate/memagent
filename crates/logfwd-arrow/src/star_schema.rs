@@ -201,6 +201,10 @@ pub fn flat_to_star(batch: &RecordBatch) -> Result<StarSchema, ArrowError> {
     for (idx, field) in schema.fields().iter().enumerate() {
         let name = field.name().as_str();
 
+        if field_names::is_internal_column(name) {
+            continue;
+        }
+
         let resource_key = name.strip_prefix(RESOURCE_PREFIX).map(str::to_string);
         if let Some(resource_key) = resource_key {
             resource_cols.push((resource_key, idx));

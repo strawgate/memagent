@@ -105,15 +105,10 @@ mod passthrough {
     impl QueryAnalyzer {
         /// Return the metadata columns the passthrough transform needs.
         ///
-        /// Without DataFusion, `SELECT *` compatibility requires only the
-        /// legacy `_source_path` column; newer metadata columns remain
-        /// explicit opt-ins in the DataFusion-backed analyzer.
+        /// The passthrough transform accepts only `SELECT * FROM logs`, which
+        /// never widens results with source metadata.
         pub fn source_metadata_plan(&self) -> SourceMetadataPlan {
-            SourceMetadataPlan {
-                has_source_id: false,
-                has_input: false,
-                has_source_path: true,
-            }
+            SourceMetadataPlan::default()
         }
 
         /// Return metadata columns explicitly referenced by SQL.
@@ -126,7 +121,7 @@ mod passthrough {
 
         /// Return whether the transform needs source paths attached.
         pub fn source_path_required(&self) -> bool {
-            self.source_metadata_plan().has_source_path
+            self.source_metadata_plan().has_source_path()
         }
     }
 

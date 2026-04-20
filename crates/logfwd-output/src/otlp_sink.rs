@@ -959,6 +959,10 @@ fn resolve_batch_columns<'a>(batch: &'a RecordBatch, message_field: &str) -> Bat
 
     for (idx, field) in schema.fields().iter().enumerate() {
         let col_name = field.name().as_str();
+        if field_names::is_internal_column(col_name) {
+            excluded[idx] = true;
+            continue;
+        }
         let field_name = col_name;
         match field_name {
             name if field_names::matches_any(
@@ -1681,7 +1685,7 @@ mod otlp_sink_correctness_tests;
 mod tests {
     use std::sync::{Arc, OnceLock};
 
-    use arrow::array::{Int64Array, StringArray};
+    use arrow::array::{Int64Array, StringArray, UInt64Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
     use proptest::prelude::*;
@@ -1892,6 +1896,44 @@ mod tests {
             resource_attrs: Arc::default(),
             observed_time_ns: 1_000_000_000,
         }
+    }
+
+    #[test]
+    fn internal_columns_are_not_encoded_as_log_attributes() {
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use prost::Message;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("message", DataType::Utf8, true),
+            Field::new(field_names::SOURCE_ID, DataType::UInt64, true),
+            Field::new("__typename", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("hello")])),
+                Arc::new(UInt64Array::from(vec![Some(42)])),
+                Arc::new(StringArray::from(vec![Some("LogEvent")])),
+            ],
+        )
+        .expect("valid batch");
+
+        let mut sink = make_sink();
+        sink.encode_batch(&batch, &make_metadata());
+
+        let request = ExportLogsServiceRequest::decode(sink.encoder_buf.as_slice())
+            .expect("prost must decode output");
+        let lr = &request.resource_logs[0].scope_logs[0].log_records[0];
+        assert!(
+            lr.attributes
+                .iter()
+                .all(|kv| kv.key != field_names::SOURCE_ID),
+            "internal source id must stay out of OTLP attributes"
+        );
+        assert!(
+            lr.attributes.iter().any(|kv| kv.key == "__typename"),
+            "user double-underscore fields must remain OTLP attributes"
+        );
     }
 
     fn assert_timestamp_encoding_parity(

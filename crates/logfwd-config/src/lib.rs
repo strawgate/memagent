@@ -32,8 +32,8 @@ pub use types::{
     K8sPathConfig, LokiOutputConfig, NullOutputConfig, OtlpOutputConfig,
     OtlpProtobufDecodeModeConfig, OtlpTypeConfig, OutputConfig, OutputConfigV1, OutputConfigV2,
     OutputType, ParquetOutputConfig, PipelineConfig, S3InputConfig, S3TypeConfig, SensorTypeConfig,
-    ServerConfig, SocketOutputConfig, StaticEnrichmentConfig, StdoutOutputConfig, StorageConfig,
-    TcpTypeConfig, UdpTypeConfig,
+    ServerConfig, SocketOutputConfig, SourceMetadataStyle, StaticEnrichmentConfig,
+    StdoutOutputConfig, StorageConfig, TcpTypeConfig, UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 
@@ -90,7 +90,7 @@ storage:
     }
 
     #[test]
-    fn input_source_metadata_flag_defaults_false_and_parses_true() {
+    fn input_source_metadata_style_defaults_none_and_parses_styles() {
         let default_yaml = r"
 input:
   type: file
@@ -102,21 +102,38 @@ output:
 ";
         let cfg = Config::load_str(default_yaml).expect("default source_metadata should parse");
         let pipe = &cfg.pipelines["default"];
-        assert!(!pipe.inputs[0].source_metadata);
+        assert_eq!(pipe.inputs[0].source_metadata, SourceMetadataStyle::None);
 
         let enabled_yaml = r"
 input:
   type: file
   path: /var/log/pods/**/*.log
   format: cri
-  source_metadata: true
+  source_metadata: fastforward
 
 output:
   type: null
 ";
-        let cfg = Config::load_str(enabled_yaml).expect("source_metadata true should parse");
+        let cfg = Config::load_str(enabled_yaml).expect("source_metadata style should parse");
         let pipe = &cfg.pipelines["default"];
-        assert!(pipe.inputs[0].source_metadata);
+        assert_eq!(
+            pipe.inputs[0].source_metadata,
+            SourceMetadataStyle::Fastforward
+        );
+
+        let beats_yaml = r"
+input:
+  type: file
+  path: /var/log/pods/**/*.log
+  format: cri
+  source_metadata: beats
+
+output:
+  type: null
+";
+        let cfg = Config::load_str(beats_yaml).expect("beats alias should parse");
+        let pipe = &cfg.pipelines["default"];
+        assert_eq!(pipe.inputs[0].source_metadata, SourceMetadataStyle::Ecs);
     }
 
     #[test]

@@ -6,7 +6,7 @@ use opentelemetry::metrics::Meter;
 
 #[cfg(feature = "datafusion")]
 use logfwd_config::{EnrichmentConfig, GeoDatabaseFormat};
-use logfwd_config::{Format, InputTypeConfig, OutputConfigV2, PipelineConfig};
+use logfwd_config::{Format, InputTypeConfig, OutputConfigV2, PipelineConfig, SourceMetadataStyle};
 use logfwd_diagnostics::diagnostics::PipelineMetrics;
 use logfwd_io::checkpoint::{
     CheckpointStore, FileCheckpointStore, SourceCheckpoint, default_data_dir,
@@ -14,7 +14,7 @@ use logfwd_io::checkpoint::{
 use logfwd_output::{AsyncFanoutFactory, SinkFactory, build_sink_factory_v2};
 use logfwd_types::field_names;
 use logfwd_types::pipeline::{PipelineMachine, SourceId};
-use logfwd_types::source_metadata::SourceMetadataPlan;
+use logfwd_types::source_metadata::{SourceMetadataPlan, SourcePathColumn};
 
 use super::input_build::build_input_state;
 use super::{InputTransform, Pipeline};
@@ -514,32 +514,57 @@ impl Pipeline {
                 scan_config.line_field_name = Some(field_names::BODY.to_string());
             }
             let scanner = logfwd_arrow::scanner::Scanner::new(scan_config);
-            #[cfg(not(feature = "turmoil"))]
-            let requested_source_metadata_plan = transform.analyzer().source_metadata_plan();
             let explicit_source_metadata_plan =
                 transform.analyzer().explicit_source_metadata_plan();
-            if explicit_source_metadata_plan.has_any() && !input_cfg.source_metadata {
+            if explicit_source_metadata_plan.has_any()
+                && input_cfg.source_metadata == SourceMetadataStyle::None
+            {
                 return Err(format!(
                     "pipeline '{name}' input '{input_name}': SQL references source metadata \
-                     columns (_source_id, _input, or _source_path), but source_metadata is disabled; \
-                     set source_metadata: true on this input"
+                     columns such as __source_id, but source_metadata is disabled; \
+                     set source_metadata: fastforward on this input"
                 ));
             }
-            let source_metadata_plan = if input_cfg.source_metadata {
-                #[cfg(feature = "turmoil")]
-                {
+            if explicit_source_metadata_plan.has_source_id
+                && input_cfg.source_metadata != SourceMetadataStyle::Fastforward
+            {
+                return Err(format!(
+                    "pipeline '{name}' input '{input_name}': SQL references internal source \
+                     metadata column __source_id, but source_metadata is configured as {}; \
+                     set source_metadata: fastforward on this input",
+                    input_cfg.source_metadata
+                ));
+            }
+            #[cfg(feature = "turmoil")]
+            let source_metadata_plan = {
+                if input_cfg.source_metadata != SourceMetadataStyle::None {
                     return Err(format!(
                         "pipeline '{name}' input '{input_name}': source_metadata is not \
                          supported when built with the turmoil feature; the turmoil input path \
                          does not attach source metadata before SQL"
                     ));
                 }
-                #[cfg(not(feature = "turmoil"))]
-                {
-                    requested_source_metadata_plan
-                }
-            } else {
                 SourceMetadataPlan::default()
+            };
+            #[cfg(not(feature = "turmoil"))]
+            let source_metadata_plan = match input_cfg.source_metadata {
+                SourceMetadataStyle::None => SourceMetadataPlan::default(),
+                SourceMetadataStyle::Fastforward => SourceMetadataPlan {
+                    has_source_id: true,
+                    source_path: SourcePathColumn::None,
+                },
+                SourceMetadataStyle::Ecs => SourceMetadataPlan {
+                    has_source_id: false,
+                    source_path: SourcePathColumn::Ecs,
+                },
+                SourceMetadataStyle::Otel => SourceMetadataPlan {
+                    has_source_id: false,
+                    source_path: SourcePathColumn::Otel,
+                },
+                SourceMetadataStyle::Vector => SourceMetadataPlan {
+                    has_source_id: false,
+                    source_path: SourcePathColumn::Vector,
+                },
             };
 
             input_transforms.push(InputTransform {
@@ -706,7 +731,7 @@ mod tests {
             name: Some("input".to_string()),
             format: Some(Format::Json),
             sql: None,
-            source_metadata: false,
+            source_metadata: SourceMetadataStyle::None,
             type_config: InputTypeConfig::File(logfwd_config::FileTypeConfig {
                 path,
                 poll_interval_ms: None,
@@ -874,7 +899,7 @@ mod tests {
         std::fs::write(&log_path, b"{\"msg\":\"hello\"}\n").unwrap();
 
         let mut config = minimal_config(log_path.display().to_string());
-        config.transform = Some("SELECT _source_path FROM logs".to_string());
+        config.transform = Some("SELECT __source_id FROM logs".to_string());
 
         let err = Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
             .err()
@@ -892,8 +917,8 @@ mod tests {
         std::fs::write(&log_path, b"{\"msg\":\"hello\"}\n").unwrap();
 
         let mut config = minimal_config(log_path.display().to_string());
-        config.inputs[0].source_metadata = true;
-        config.transform = Some("SELECT _source_path FROM logs".to_string());
+        config.inputs[0].source_metadata = SourceMetadataStyle::Fastforward;
+        config.transform = Some("SELECT __source_id FROM logs".to_string());
 
         let pipeline =
             Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
@@ -901,29 +926,47 @@ mod tests {
         assert!(
             pipeline.input_transforms[0]
                 .source_metadata_plan
-                .has_source_path
+                .has_source_id
         );
     }
 
     #[test]
-    fn source_metadata_enabled_select_star_preserves_legacy_source_path_only() {
+    fn public_source_metadata_style_rejects_explicit_source_id() {
         let dir = tempfile::tempdir().unwrap();
         let log_path = dir.path().join("test.log");
         std::fs::write(&log_path, b"{\"msg\":\"hello\"}\n").unwrap();
 
         let mut config = minimal_config(log_path.display().to_string());
-        config.inputs[0].source_metadata = true;
+        config.inputs[0].source_metadata = SourceMetadataStyle::Ecs;
+        config.transform = Some("SELECT __source_id FROM logs".to_string());
+
+        let err = Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
+            .err()
+            .expect("public metadata style should reject internal source id");
+        assert!(
+            err.contains("source_metadata is configured as ecs"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn fastforward_source_metadata_attaches_source_id_for_select_star() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("test.log");
+        std::fs::write(&log_path, b"{\"msg\":\"hello\"}\n").unwrap();
+
+        let mut config = minimal_config(log_path.display().to_string());
+        config.inputs[0].source_metadata = SourceMetadataStyle::Fastforward;
 
         let pipeline =
             Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
-                .expect("SELECT * should preserve legacy source path compatibility");
+                .expect("SELECT * should build without source metadata columns");
 
         assert_eq!(
             pipeline.input_transforms[0].source_metadata_plan,
             SourceMetadataPlan {
-                has_source_id: false,
-                has_input: false,
-                has_source_path: true,
+                has_source_id: true,
+                source_path: SourcePathColumn::None,
             }
         );
     }

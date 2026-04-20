@@ -180,14 +180,15 @@ impl SqlTransform {
             .map_err(|e| TransformError::Sql(format!("Failed to collect results: {e}")))?;
 
         // Concat all result batches into one.
-        match batches.len() {
+        let result = match batches.len() {
             0 => Ok(RecordBatch::new_empty(output_schema)),
             1 => Ok(batches.into_iter().next().expect("verified len==1")),
             _ => {
                 let schema = batches[0].schema();
                 concat_batches(&schema, &batches).map_err(TransformError::Arrow)
             }
-        }
+        }?;
+        Ok(result)
     }
 
     /// Lazily create the SessionContext with UDFs registered.

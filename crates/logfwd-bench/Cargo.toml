@@ -110,6 +110,10 @@ harness = false
 name = "s3_input"
 harness = false
 
+[[bench]]
+name = "source_metadata"
+harness = false
+
 [[bin]]
 name = "es-throughput"
 path = "src/es_throughput.rs"
