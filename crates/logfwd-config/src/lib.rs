@@ -1335,6 +1335,64 @@ pipelines:
         );
     }
 
+    #[test]
+    fn whole_output_null_is_rejected() {
+        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput: null\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("output is required when input is specified"),
+            "whole output null must not be treated as the null sink: {msg}"
+        );
+    }
+
+    #[test]
+    fn missing_output_type_is_rejected() {
+        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput: {}\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid output config") && msg.contains("missing field `type`"),
+            "missing output type must fail clearly: {msg}"
+        );
+    }
+
+    #[test]
+    fn empty_string_output_type_is_rejected() {
+        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: \"\"\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("invalid output config") && msg.contains("unknown variant ``"),
+            "empty-string output type must fail clearly: {msg}"
+        );
+    }
+
+    #[test]
+    fn duplicate_pipeline_mapping_key_is_rejected() {
+        let yaml = r"
+pipelines:
+  app:
+    inputs:
+      - type: file
+        path: /tmp/a.log
+    outputs:
+      - type: stdout
+  app:
+    inputs:
+      - type: file
+        path: /tmp/b.log
+    outputs:
+      - type: stdout
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate entry with key \"app\""),
+            "duplicate pipeline names must be rejected before validation: {msg}"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Bug #725: server.diagnostics address validated at config load time
     // -----------------------------------------------------------------------
