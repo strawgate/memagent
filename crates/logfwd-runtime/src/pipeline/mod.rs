@@ -48,7 +48,7 @@ use logfwd_io::tail::ByteOffset;
 #[cfg(feature = "turmoil")]
 use logfwd_output::SinkFactory;
 #[cfg(test)]
-use logfwd_output::build_sink_factory;
+use logfwd_output::build_sink_factory_v2;
 use logfwd_output::{BatchMetadata, OnceAsyncFactory};
 use logfwd_types::pipeline::{PipelineMachine, Running, SourceId};
 use logfwd_types::source_metadata::SourceMetadataPlan;
@@ -843,7 +843,7 @@ mod tests {
     use std::time::Instant;
 
     use arrow::record_batch::RecordBatch;
-    use logfwd_config::{Format, OutputConfig, OutputType};
+    use logfwd_config::{Format, OutputConfig, OutputConfigV2, OutputType};
     use logfwd_core::scan_config::ScanConfig;
     use logfwd_diagnostics::diagnostics::ComponentStats;
     use logfwd_output::{
@@ -887,8 +887,9 @@ mod tests {
             format: Some(Format::Json),
             ..Default::default()
         };
+        let typed = OutputConfigV2::from(&cfg);
         let factory =
-            build_sink_factory("test", &cfg, None, Arc::new(ComponentStats::new())).unwrap();
+            build_sink_factory_v2("test", &typed, None, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "test");
         let sink = factory.create().expect("create should succeed");
         assert_eq!(sink.name(), "test");
@@ -904,8 +905,9 @@ mod tests {
             compression: Some("zstd".to_string()),
             ..Default::default()
         };
+        let typed = OutputConfigV2::from(&cfg);
         let factory =
-            build_sink_factory("otel", &cfg, None, Arc::new(ComponentStats::new())).unwrap();
+            build_sink_factory_v2("otel", &typed, None, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "otel");
     }
 
@@ -916,7 +918,8 @@ mod tests {
             output_type: OutputType::Otlp,
             ..Default::default()
         };
-        let result = build_sink_factory("bad", &cfg, None, Arc::new(ComponentStats::new()));
+        let typed = OutputConfigV2::from(&cfg);
+        let result = build_sink_factory_v2("bad", &typed, None, Arc::new(ComponentStats::new()));
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("endpoint"), "got: {err}");

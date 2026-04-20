@@ -845,6 +845,45 @@ fn invalid_json_flags_returns_error() {
 }
 
 #[test]
+fn negative_json_flags_returns_error() {
+    let result = decode_otlp_json(
+        br#"{
+            "resourceLogs": [{
+                "scopeLogs": [{
+                    "logRecords": [{
+                        "flags": -1
+                    }]
+                }]
+            }]
+        }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+    );
+
+    assert!(
+        result.is_err(),
+        "negative flags must fail because OTLP flags are uint32"
+    );
+}
+
+#[test]
+fn out_of_range_json_flags_returns_error() {
+    let result = decode_otlp_json(
+        br#"{
+            "resourceLogs": [{
+                "scopeLogs": [{
+                    "logRecords": [{
+                        "flags": 4294967296
+                    }]
+                }]
+            }]
+        }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+    );
+
+    assert!(result.is_err(), "flags above uint32::MAX must fail");
+}
+
+#[test]
 fn invalid_json_trace_id_returns_error() {
     let result = decode_otlp_json(
         br#"{
