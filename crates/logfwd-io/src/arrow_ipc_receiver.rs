@@ -385,6 +385,11 @@ fn decode_ipc_stream(body: &[u8]) -> Result<Vec<RecordBatch>, InputError> {
         .map_err(|e| InputError::Receiver(format!("failed to read Arrow IPC batch: {e}")))
 }
 
+#[cfg(fuzzing)]
+pub fn fuzz_decode_arrow_ipc_stream(body: &[u8]) -> Result<usize, InputError> {
+    decode_ipc_stream(body).map(|batches| batches.len())
+}
+
 fn store_health_event(health: &AtomicU8, event: ReceiverHealthEvent) {
     let mut current = health.load(Ordering::Relaxed);
     loop {

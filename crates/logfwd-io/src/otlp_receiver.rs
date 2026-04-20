@@ -42,6 +42,52 @@ use crate::InputError;
 use crate::background_http_task::BackgroundHttpTask;
 use crate::input::{InputEvent, InputSource};
 
+#[cfg(fuzzing)]
+pub fn fuzz_decode_protojson_bytes(value: &str) -> Result<Vec<u8>, base64::DecodeError> {
+    convert::decode_protojson_bytes(value)
+}
+
+#[cfg(fuzzing)]
+pub fn fuzz_parse_protojson_f64(value: &serde_json::Value) -> Option<f64> {
+    convert::parse_protojson_f64(value)
+}
+
+#[cfg(fuzzing)]
+pub fn fuzz_parse_protojson_i64(value: &serde_json::Value) -> Option<i64> {
+    convert::parse_protojson_i64(value)
+}
+
+#[cfg(fuzzing)]
+pub fn fuzz_parse_protojson_u64(value: &serde_json::Value) -> Option<u64> {
+    convert::parse_protojson_u64(value)
+}
+
+#[cfg(fuzzing)]
+pub fn fuzz_decode_otlp_json(
+    body: &[u8],
+    resource_prefix: &str,
+) -> Result<RecordBatch, InputError> {
+    decode::decode_otlp_json(body, resource_prefix)
+}
+
+#[cfg(fuzzing)]
+pub fn fuzz_decode_otlp_protobuf(
+    body: &[u8],
+    resource_prefix: &str,
+) -> Result<RecordBatch, InputError> {
+    decode::decode_otlp_protobuf(body, resource_prefix)
+}
+
+#[cfg(fuzzing)]
+pub fn fuzz_decompress_gzip(body: &[u8], max_body_size: usize) -> Result<Vec<u8>, InputError> {
+    decode::decompress_gzip(body, max_body_size)
+}
+
+#[cfg(fuzzing)]
+pub fn fuzz_decompress_zstd(body: &[u8], max_body_size: usize) -> Result<Vec<u8>, InputError> {
+    decode::decompress_zstd(body, max_body_size)
+}
+
 const CHANNEL_BOUND: usize = 4096;
 const FALLBACK_REQUEST_CPU_WORKERS: usize = 4;
 /// Maximum CPU decode workers regardless of available parallelism.
