@@ -39,7 +39,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 serde = { workspace = true }
 serde_json = "1"
-stats_alloc = "0.1"
+stats_alloc = { workspace = true }
 tempfile = "3"
 tiny_http = "0.12"
 tokio = { version = "1", features = ["rt-multi-thread"] }
@@ -108,6 +108,10 @@ harness = false
 
 [[bench]]
 name = "s3_input"
+harness = false
+
+[[bench]]
+name = "source_metadata"
 harness = false
 
 [[bin]]

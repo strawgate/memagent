@@ -43,6 +43,10 @@ now stays focused on startup/CLI/bootstrap concerns.
 HTTP endpoints, readiness/status shaping, stderr/span buffering, and the
 generated `dashboard.html` asset served by diagnostics).
 
+`logfwd-bench` is not in the production data path. It owns Criterion benchmarks
+and profiling binaries used to measure scanner, pipeline, output, and source
+metadata behavior under representative cardinality and allocation pressure.
+
 ## Data flow
 
 ### 1. Reading: bytes enter the system

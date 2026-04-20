@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bytes::BytesMut;
+#[cfg(test)]
+use logfwd_config::SourceMetadataStyle;
 use logfwd_config::{
     Format, GeneratorAttributeValueConfig, GeneratorComplexityConfig, GeneratorProfileConfig,
     HostMetricsInputConfig, HttpMethodConfig, InputConfig, InputType, InputTypeConfig,
@@ -877,7 +879,7 @@ mod tests {
             name: Some("sensor".to_string()),
             format: Some(Format::Raw),
             sql: None,
-            source_metadata: false,
+            source_metadata: SourceMetadataStyle::None,
             type_config: input_type_config,
         };
         let err = match build_input_state("sensor", &cfg, stats) {
@@ -903,7 +905,7 @@ mod tests {
             name: Some("test_in".into()),
             format: None,
             sql: None,
-            source_metadata: false,
+            source_metadata: SourceMetadataStyle::None,
             type_config: InputTypeConfig::File(logfwd_config::FileTypeConfig {
                 path: "/tmp/test.log".into(),
                 poll_interval_ms: None,
@@ -933,7 +935,7 @@ mod tests {
             name: Some("test_in".into()),
             format: None,
             sql: None,
-            source_metadata: false,
+            source_metadata: SourceMetadataStyle::None,
             type_config: InputTypeConfig::File(logfwd_config::FileTypeConfig {
                 path: "/tmp/test.log".into(),
                 poll_interval_ms: logfwd_config::PositiveMillis::new(123),
@@ -990,7 +992,7 @@ mod tests {
                     name: Some("in".to_string()),
                     format: Some(format),
                     sql: None,
-                    source_metadata: false,
+                    source_metadata: SourceMetadataStyle::None,
                     type_config: type_config_fn("127.0.0.1:0"),
                 };
                 let stats = pm.add_input("in", "test");
@@ -1038,7 +1040,7 @@ mod tests {
             name: Some("file-in".to_string()),
             format: Some(Format::Json),
             sql: None,
-            source_metadata: false,
+            source_metadata: SourceMetadataStyle::None,
             type_config: InputTypeConfig::File(logfwd_config::FileTypeConfig {
                 path: "   ".to_string(),
                 poll_interval_ms: None,
@@ -1108,7 +1110,7 @@ mod tests {
                 name: Some("net-in".to_string()),
                 format: Some(Format::Json),
                 sql: None,
-                source_metadata: false,
+                source_metadata: SourceMetadataStyle::None,
                 type_config,
             };
             let stats = pm.add_input("net-in", "net");
@@ -1134,7 +1136,7 @@ mod tests {
             name: Some("http-in".to_string()),
             format: Some(Format::Json),
             sql: None,
-            source_metadata: false,
+            source_metadata: SourceMetadataStyle::None,
             type_config: InputTypeConfig::Http(logfwd_config::HttpTypeConfig {
                 listen: "127.0.0.1:0".to_string(),
                 http: Some(logfwd_config::HttpInputConfig {

@@ -587,6 +587,14 @@ bench-otlp-io *ARGS:
 bench-otlp-io-fast *ARGS:
     cargo bench -p logfwd-bench --bench otlp_io -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
 
+# Run source metadata attachment benchmarks.
+bench-source-metadata *ARGS:
+    cargo bench -p logfwd-bench --bench source_metadata -- {{ARGS}}
+
+# Run source metadata attachment benchmarks with fast local iteration settings.
+bench-source-metadata-fast *ARGS:
+    cargo bench -p logfwd-bench --bench source_metadata -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
+
 # Profile OTLP decode/encode CPU with the normal allocator (flamegraph, per-mode timings).
 profile-otlp-io *ARGS:
     cargo run -p logfwd-bench --release --bin otlp_io_profile -- {{ARGS}}

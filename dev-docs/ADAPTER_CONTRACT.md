@@ -183,22 +183,25 @@ Source metadata belongs to the table assembly boundary, not to transport bytes.
 
 ### Source metadata rules
 
-- Source metadata (`_source_path`, `_source_id`, future fields) must be
+- Source metadata (`__source_id`, public style columns such as `file.path` or
+  `log.file.path`, future fields) must be
   attached as Arrow columns **post-scan**, not injected into raw bytes pre-scan.
-- There is no legacy exception. File `_source_path`, row `_source_id`, UDP
+- There is no legacy exception. File paths, row source ids, UDP
   sender identity, and future source descriptors must travel as sidecar/source
   metadata and be materialized only when assembling the `RecordBatch` presented
   to SQL.
 - Canonical pattern for row-native metadata: carry source-origin spans beside
-  scanner-ready chunks, then attach `_source_id`, `_input`, `_source_path`, or
-  future fields after scan and before SQL. Rich descriptors belong in cold-path
+  scanner-ready chunks, then attach `__source_id` for `source_metadata:
+  fastforward` or public style columns for `source_metadata: ecs`, `otel`, or
+  `vector` after scan and before SQL. Rich descriptors belong in cold-path
   enrichment tables such as `sources`.
 - Runtime should not pay this cost by default. Config-driven inputs must opt in
-  with `source_metadata: true`; otherwise `SELECT *` remains narrow and
-  explicit source-metadata references are rejected at pipeline construction.
-- For opted-in inputs, `SELECT *` preserves legacy `_source_path`
-  compatibility. Newer source metadata columns such as `_source_id` and
-  `_input` must be referenced explicitly.
+  with a non-`none` `source_metadata` style.
+- SQL has no hidden-source-column behavior. `SELECT *` returns the columns in
+  the Arrow table. User-facing sinks drop known FastForward internal fields
+  such as `__source_id` by default, and public styles such as ECS/Beats, OTel,
+  and Vector are emitted as normal columns. User payload fields that happen to
+  start with `__` are not treated as internal.
 - Resource attributes are separate output semantics. Use
   `resource.attributes.*` for explicit OTLP resource columns, not as the only
   source metadata contract.
