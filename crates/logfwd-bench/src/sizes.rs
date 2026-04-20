@@ -72,7 +72,7 @@ fn main() {
     }
 
     deep_memory_analysis();
-    buffer_layout_analysis();
+    analyze_buffer_layout();
 }
 
 fn measure(name: &str, _fields: usize, lines: usize, data: &[u8]) {
@@ -382,7 +382,7 @@ fn deep_memory_analysis() {
 
 // Per-column buffer layout report: lists each column's Arrow buffer
 // pointers/lengths and flags any overlapping memory ranges.
-fn buffer_layout_analysis() {
+fn analyze_buffer_layout() {
     use arrow::array::Array;
 
     let data = generate_simple(10_000);

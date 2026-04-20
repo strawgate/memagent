@@ -1727,6 +1727,53 @@ mod tests {
     }
 
     #[test]
+    fn control_file_ignores_unknown_keys() {
+        let (_dir, control_path) = tempfiles::control_file_path();
+
+        let mut input = HostMetricsInput::new(
+            "sensor",
+            host_target(),
+            HostMetricsConfig {
+                control_path: Some(control_path.clone()),
+                control_reload_interval: Duration::from_millis(1),
+                poll_interval: Duration::from_secs(60),
+                enabled_families: Some(vec!["process".to_string()]),
+                ..HostMetricsConfig::default()
+            },
+        )
+        .expect("host target should be valid");
+
+        // Startup poll primes the reload loop.
+        assert_eq!(input.poll().expect("startup poll").len(), 1);
+
+        // Control file carries a stale key (emit_heartbeat became a no-op) alongside
+        // live keys — the reader must ignore the unknown key rather than abort.
+        tempfiles::write_control_file(
+            &control_path,
+            serde_json::json!({
+                "generation": 7,
+                "enabled_families": ["process"],
+                "emit_signal_rows": true,
+                "emit_heartbeat": true,
+            }),
+        );
+        std::thread::sleep(Duration::from_millis(2));
+
+        let events = input.poll().expect("reload poll should succeed");
+        assert_eq!(events.len(), 1);
+        let batch = first_batch(&events);
+        let kinds = string_col(batch, "event_kind");
+        assert!(
+            kinds
+                .iter()
+                .any(|v| v.as_deref() == Some("control_reload_applied")),
+            "stale control-file key must not block reload"
+        );
+        let generations = u64_col(batch, "control_generation");
+        assert!(generations.iter().all(|g| *g == 7));
+    }
+
+    #[test]
     fn control_reload_same_generation_and_values_is_noop() {
         let (_dir, control_path) = tempfiles::control_file_path();
 

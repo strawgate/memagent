@@ -67,6 +67,14 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Must not depend on runtime orchestration crates (`logfwd-runtime`, `logfwd-output`) | Cargo dependency graph + review |
 | Kani seams for readiness policy and stderr escaping stay tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
+## logfwd-config-wasm
+
+| Rule | Enforcement |
+|------|-------------|
+| WASM bindings for the config validator; must expose the same parsing/validation surface as `logfwd-config` so browser and Node.js hosts reject invalid YAML with identical diagnostics | Architecture |
+| Allowed deps: `logfwd-config`, `wasm-bindgen`, `serde`, `serde_json`, `js-sys` | Cargo.toml + review |
+| Must not depend on runtime, I/O, or transform crates — the validator is pure-config parsing | Cargo dependency graph + review |
+
 ## logfwd-transform
 
 | Rule | Enforcement |

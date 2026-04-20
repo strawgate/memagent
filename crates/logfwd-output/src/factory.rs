@@ -482,8 +482,12 @@ mod tests {
             Ok(_) => panic!("malformed tls ca_file should reject sink construction"),
             Err(err) => err,
         };
+        // The malformed body gets past Certificate::from_pem and fails deeper
+        // inside reqwest's builder. Assert on the crate's own wrapper ("loki
+        // factory:") instead of the reqwest-specific "builder error" text so
+        // the test is stable across reqwest/rustls updates.
         assert!(
-            err.to_string().contains("builder error"),
+            err.to_string().contains("loki factory"),
             "unexpected error: {err}"
         );
     }
