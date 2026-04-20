@@ -26,7 +26,7 @@ sensor:
             assert_eq!(sensor.include_event_types.unwrap(), vec!["process_exec"]);
             assert_eq!(sensor.exclude_event_types.unwrap(), vec!["tcp_connect"]);
             assert_eq!(sensor.ring_buffer_size_kb.unwrap(), 4096);
-            assert_eq!(sensor.poll_interval_ms.unwrap(), 100);
+            assert_eq!(sensor.poll_interval_ms, crate::PositiveMillis::new(100));
         }
         _ => panic!("wrong variant"),
     }

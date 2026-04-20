@@ -584,7 +584,11 @@ fn build_meter_provider(
     use opentelemetry_sdk::metrics::SdkMeterProvider;
 
     if let Some(ref endpoint) = config.server.metrics_endpoint {
-        let interval_secs = config.server.metrics_interval_secs.unwrap_or(60);
+        let interval_secs = config
+            .server
+            .metrics_interval_secs
+            .map(|v| v.get())
+            .unwrap_or(60);
 
         let otlp_exporter = opentelemetry_otlp::MetricExporter::builder()
             .with_http()

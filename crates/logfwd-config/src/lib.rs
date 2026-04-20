@@ -15,6 +15,8 @@ mod shared;
 mod types;
 mod validate;
 
+pub use serde_helpers::{PositiveMillis, PositiveSecs};
+
 #[cfg(test)]
 pub(crate) use env::expand_env_vars;
 pub use shared::{
@@ -805,20 +807,16 @@ output:
             InputTypeConfig::File(f) => f,
             _ => panic!("expected File type_config"),
         };
-        assert_eq!(f.poll_interval_ms, Some(100));
+        assert_eq!(f.poll_interval_ms, PositiveMillis::new(100));
         assert_eq!(f.read_buf_size, Some(1048576));
         assert_eq!(f.per_file_read_budget_bytes, Some(2097152));
     }
 
     #[test]
     fn file_input_rejects_zero_tuning_knobs() {
-        let cases = [
-            ("poll_interval_ms", 0),
-            ("read_buf_size", 0),
-            ("per_file_read_budget_bytes", 0),
-        ];
-
-        for (field, value) in cases {
+        // Non-duration fields still rejected by validation.
+        let validation_cases = [("read_buf_size", 0), ("per_file_read_budget_bytes", 0)];
+        for (field, value) in validation_cases {
             let yaml = format!(
                 r#"
 input:
@@ -835,6 +833,21 @@ output:
                 "expected error about positive {field}, got: {err}"
             );
         }
+
+        // Duration field (poll_interval_ms) is rejected at parse time via PositiveMillis.
+        let yaml = r#"
+input:
+  type: file
+  path: /tmp/test.log
+  poll_interval_ms: 0
+output:
+  type: stdout
+"#;
+        let err = Config::load_str(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("invalid value") || err.contains("positive"),
+            "expected zero-rejection error for poll_interval_ms, got: {err}"
+        );
     }
 
     #[test]
@@ -942,9 +955,11 @@ output:
   type: stdout
 ";
         let err = Config::load_str(yaml).unwrap_err();
+        // Now rejected at parse time via PositiveMillis.
+        let msg = err.to_string();
         assert!(
-            err.to_string()
-                .contains("sensor.poll_interval_ms must be at least 1")
+            msg.contains("invalid value") || msg.contains("positive"),
+            "expected zero-rejection error for poll_interval_ms, got: {msg}"
         );
     }
 
@@ -959,9 +974,11 @@ output:
   type: stdout
 ";
         let err = Config::load_str(yaml).unwrap_err();
+        // Now rejected at parse time via PositiveMillis.
+        let msg = err.to_string();
         assert!(
-            err.to_string()
-                .contains("sensor.control_reload_interval_ms must be at least 1")
+            msg.contains("invalid value") || msg.contains("positive"),
+            "expected zero-rejection error for control_reload_interval_ms, got: {msg}"
         );
     }
 
@@ -1686,8 +1703,9 @@ pipelines:
 ";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
+        // Now rejected at parse time via PositiveMillis.
         assert!(
-            msg.contains("poll_interval_ms must be greater than 0"),
+            msg.contains("invalid value") || msg.contains("positive"),
             "got: {msg}"
         );
     }

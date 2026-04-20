@@ -66,12 +66,6 @@ impl Pipeline {
         if config.batch_target_bytes == Some(0) {
             return Err("batch_target_bytes must be > 0".to_string());
         }
-        if config.batch_timeout_ms == Some(0) {
-            return Err("batch_timeout_ms must be > 0".to_string());
-        }
-        if config.poll_interval_ms == Some(0) {
-            return Err("poll_interval_ms must be > 0".to_string());
-        }
 
         // Collect enrichment sources once — they are shared across all
         // per-input transforms.
@@ -120,7 +114,7 @@ impl Pipeline {
                                 }
                             };
 
-                        if let Some(interval_secs) = geo_cfg.refresh_interval {
+                        if let Some(interval_secs) = geo_cfg.refresh_interval.map(|s| s.get()) {
                             let reloadable = Arc::new(
                                 crate::transform::enrichment::ReloadableGeoDb::new(initial_db),
                             );
@@ -131,7 +125,7 @@ impl Pipeline {
                             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                                 handle.spawn(async move {
                                 let mut ticker = tokio::time::interval(Duration::from_secs(
-                                    interval_secs.max(1),
+                                    interval_secs,
                                 ));
                                 ticker.tick().await;
                                 loop {
@@ -227,14 +221,13 @@ impl Pipeline {
                         table
                             .reload()
                             .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
-                        if let Some(interval_secs) = cfg.refresh_interval {
+                        if let Some(interval_secs) = cfg.refresh_interval.map(|s| s.get()) {
                             let t = Arc::clone(&table);
                             let name = cfg.table_name.clone();
                             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                                 handle.spawn(async move {
-                                    let mut ticker = tokio::time::interval(Duration::from_secs(
-                                        interval_secs.max(1),
-                                    ));
+                                    let mut ticker =
+                                        tokio::time::interval(Duration::from_secs(interval_secs));
                                     ticker.tick().await;
                                     loop {
                                         ticker.tick().await;
@@ -280,14 +273,13 @@ impl Pipeline {
                         table
                             .reload()
                             .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
-                        if let Some(interval_secs) = cfg.refresh_interval {
+                        if let Some(interval_secs) = cfg.refresh_interval.map(|s| s.get()) {
                             let t = Arc::clone(&table);
                             let name = cfg.table_name.clone();
                             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                                 handle.spawn(async move {
-                                    let mut ticker = tokio::time::interval(Duration::from_secs(
-                                        interval_secs.max(1),
-                                    ));
+                                    let mut ticker =
+                                        tokio::time::interval(Duration::from_secs(interval_secs));
                                     ticker.tick().await;
                                     loop {
                                         ticker.tick().await;
@@ -346,14 +338,13 @@ impl Pipeline {
                         table
                             .reload()
                             .map_err(|e| format!("enrichment '{}': {e}", cfg.table_name))?;
-                        if let Some(interval_secs) = cfg.refresh_interval {
+                        if let Some(interval_secs) = cfg.refresh_interval.map(|s| s.get()) {
                             let t = Arc::clone(&table);
                             let name = cfg.table_name.clone();
                             if let Ok(handle) = tokio::runtime::Handle::try_current() {
                                 handle.spawn(async move {
-                                    let mut ticker = tokio::time::interval(Duration::from_secs(
-                                        interval_secs.max(1),
-                                    ));
+                                    let mut ticker =
+                                        tokio::time::interval(Duration::from_secs(interval_secs));
                                     ticker.tick().await;
                                     loop {
                                         ticker.tick().await;
@@ -619,13 +610,6 @@ impl Pipeline {
             "inputs and input_transforms must have the same length"
         );
 
-        if config.batch_timeout_ms == Some(0) {
-            return Err("batch_timeout_ms must be > 0".to_string());
-        }
-        if config.poll_interval_ms == Some(0) {
-            return Err("poll_interval_ms must be > 0".to_string());
-        }
-
         Ok(Pipeline {
             name: name.to_string(),
             inputs,
@@ -638,10 +622,10 @@ impl Pipeline {
                 .unwrap_or(DEFAULT_BATCH_TARGET_BYTES),
             batch_timeout: config
                 .batch_timeout_ms
-                .map_or(DEFAULT_BATCH_TIMEOUT, Duration::from_millis),
+                .map_or(DEFAULT_BATCH_TIMEOUT, Into::into),
             poll_interval: config
                 .poll_interval_ms
-                .map_or(DEFAULT_POLL_INTERVAL, Duration::from_millis),
+                .map_or(DEFAULT_POLL_INTERVAL, Into::into),
             resource_attrs: Arc::new(resource_attrs),
             machine: Some(PipelineMachine::new().start()),
             checkpoint_store,
@@ -822,33 +806,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn from_config_rejects_zero_batch_and_poll_timeouts() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let log_path = dir.path().join("in.log");
-        std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").expect("write input");
-        let cfg = PipelineConfig {
-            inputs: vec![minimal_input(log_path.to_string_lossy().into_owned())],
-            transform: None,
-            outputs: vec![minimal_output().into()],
-            enrichment: Vec::new(),
-            resource_attrs: Default::default(),
-            workers: None,
-            batch_target_bytes: None,
-            batch_timeout_ms: Some(0),
-            poll_interval_ms: None,
-        };
-
-        let batch_err =
-            match Pipeline::from_config("p", &cfg, &logfwd_test_utils::test_meter(), None) {
-                Ok(_) => panic!("zero batch timeout must be rejected"),
-                Err(err) => err,
-            };
-        assert!(
-            batch_err.contains("batch_timeout_ms must be > 0"),
-            "unexpected error: {batch_err}"
-        );
-    }
+    // Zero batch_timeout_ms and poll_interval_ms are now rejected at parse
+    // time by the PositiveMillis newtype, so there is no runtime test needed.
 
     #[test]
     fn workers_zero_returns_error() {

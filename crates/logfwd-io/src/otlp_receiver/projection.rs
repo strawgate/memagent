@@ -19,6 +19,8 @@ use logfwd_types::field_names;
 
 use crate::InputError;
 
+mod generated;
+
 #[derive(Debug)]
 pub(super) enum ProjectionError {
     Invalid(&'static str),
@@ -122,6 +124,15 @@ pub(super) fn decode_projected_otlp_logs_view_bytes(
         resource_prefix,
         StringStorage::InputView,
     )
+}
+
+/// Classify whether the payload is eligible for direct projection.
+///
+/// This generated preflight is used only by fallback mode. It allows
+/// unsupported-but-valid OTLP shapes to skip builder mutation and go straight
+/// to the prost fallback path while preserving malformed-wire rejection.
+pub(super) fn classify_projected_fallback_support(body: &[u8]) -> Result<(), ProjectionError> {
+    generated::classify_projection_support(body)
 }
 
 /// Reusable OTLP projected decoder.
@@ -656,33 +667,7 @@ fn decode_log_record_wire(
 }
 
 fn decode_key_value_wire(kv: &[u8]) -> Result<Option<(&[u8], WireAny<'_>)>, ProjectionError> {
-    let mut key = &[][..];
-    let mut value = None;
-    for_each_field(kv, |field, field_value| {
-        match (field, field_value) {
-            (otlp::KEY_VALUE_KEY, WireField::Len(bytes)) => {
-                key = require_utf8(bytes, "invalid UTF-8 attribute key")?;
-            }
-            (otlp::KEY_VALUE_KEY, _) => {
-                return Err(ProjectionError::Invalid(
-                    "invalid wire type for KeyValue.key",
-                ));
-            }
-            (otlp::KEY_VALUE_VALUE, WireField::Len(bytes)) => {
-                if let Some(decoded) = decode_any_value_wire(bytes)? {
-                    value = Some(decoded);
-                }
-            }
-            (otlp::KEY_VALUE_VALUE, _) => {
-                return Err(ProjectionError::Invalid(
-                    "invalid wire type for KeyValue.value",
-                ));
-            }
-            _ => {}
-        }
-        Ok(())
-    })?;
-    Ok(value.map(|value| (key, value)))
+    generated::decode_key_value_wire(kv)
 }
 
 fn resolve_record_attr_field(
@@ -727,81 +712,7 @@ fn wire_any_field_kind(value: &WireAny<'_>) -> FieldKind {
 }
 
 fn decode_any_value_wire(value: &[u8]) -> Result<Option<WireAny<'_>>, ProjectionError> {
-    let mut out = None;
-    let mut unsupported = None;
-    for_each_field(value, |field, field_value| {
-        match (field, field_value) {
-            (otlp::ANY_VALUE_STRING_VALUE, WireField::Len(bytes)) => {
-                out = Some(WireAny::String(require_utf8(
-                    bytes,
-                    "invalid UTF-8 AnyValue string",
-                )?));
-            }
-            (otlp::ANY_VALUE_STRING_VALUE, _) => {
-                return Err(ProjectionError::Invalid(
-                    "invalid wire type for AnyValue.string_value",
-                ));
-            }
-            (otlp::ANY_VALUE_BOOL_VALUE, WireField::Varint(value)) => {
-                out = Some(WireAny::Bool(value != 0));
-            }
-            (otlp::ANY_VALUE_BOOL_VALUE, _) => {
-                return Err(ProjectionError::Invalid(
-                    "invalid wire type for AnyValue.bool_value",
-                ));
-            }
-            (otlp::ANY_VALUE_INT_VALUE, WireField::Varint(value)) => {
-                out = Some(WireAny::Int(value as i64));
-            }
-            (otlp::ANY_VALUE_INT_VALUE, _) => {
-                return Err(ProjectionError::Invalid(
-                    "invalid wire type for AnyValue.int_value",
-                ));
-            }
-            (otlp::ANY_VALUE_DOUBLE_VALUE, WireField::Fixed64(value)) => {
-                out = Some(WireAny::Double(f64::from_bits(value)));
-            }
-            (otlp::ANY_VALUE_DOUBLE_VALUE, _) => {
-                return Err(ProjectionError::Invalid(
-                    "invalid wire type for AnyValue.double_value",
-                ));
-            }
-            (otlp::ANY_VALUE_BYTES_VALUE, WireField::Len(bytes)) => {
-                out = Some(WireAny::Bytes(bytes));
-            }
-            (otlp::ANY_VALUE_BYTES_VALUE, _) => {
-                return Err(ProjectionError::Invalid(
-                    "invalid wire type for AnyValue.bytes_value",
-                ));
-            }
-            (otlp::ANY_VALUE_ARRAY_VALUE, WireField::Len(_)) => {
-                out = None;
-                unsupported = Some("AnyValue::ArrayValue");
-            }
-            (otlp::ANY_VALUE_ARRAY_VALUE, _) => {
-                return Err(ProjectionError::Invalid(
-                    "invalid wire type for AnyValue.array_value",
-                ));
-            }
-            (otlp::ANY_VALUE_KVLIST_VALUE, WireField::Len(_)) => {
-                out = None;
-                unsupported = Some("AnyValue::KvListValue");
-            }
-            (otlp::ANY_VALUE_KVLIST_VALUE, _) => {
-                return Err(ProjectionError::Invalid(
-                    "invalid wire type for AnyValue.kvlist_value",
-                ));
-            }
-            _ => {}
-        }
-        Ok(())
-    })?;
-    if let Some(reason) = unsupported
-        && out.is_none()
-    {
-        return Err(ProjectionError::Unsupported(reason));
-    }
-    Ok(out)
+    generated::decode_any_value_wire(value)
 }
 
 fn require_utf8<'a>(bytes: &'a [u8], context: &'static str) -> Result<&'a [u8], ProjectionError> {
