@@ -30,17 +30,92 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
-      - name: Set up Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
-      - name: Download tla2tools.jar
-        run: |
-          mkdir -p /tmp/tla
-          curl -sL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o /tmp/tla/tla2tools.jar
       - name: TLC PipelineMachine nightly thorough model
-        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.thorough.cfg -workers auto
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCPipelineMachine.tla
+          config: tla/PipelineMachine.nightly.thorough.cfg
+
+  tla-pipeline-nightly-thorough-report:
+    permissions:
+      contents: read
+      issues: write
+    name: TLA+ nightly thorough failure report
+    needs: tla-pipeline-nightly-thorough
+    if: |
+      always() &&
+      github.event_name == 'schedule' &&
+      needs.tla-pipeline-nightly-thorough.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # The upstream job's result is 'failure' for any non-zero exit in the
+      # run-tlc composite action, which includes real TLC counterexamples
+      # AND infra failures (JDK setup, jar download, cache restore).  We
+      # can't distinguish without parsing artifacts, so the title/body stay
+      # neutral about the cause — first triage step is to open the run URL
+      # and see which step in run-tlc turned red.
+      #
+      # Dedup: a stable title plus a label filter lets us comment on an
+      # existing open issue instead of spamming a new one every day while
+      # the same regression persists.
+      - name: File or update issue on failure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_TITLE: "Nightly TLA+ thorough job failing"
+          ISSUE_LABEL: "bug"
+        run: |
+          set -euo pipefail
+          run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          date_iso="$(date -u +%Y-%m-%d)"
+
+          existing="$(gh issue list \
+            --state open \
+            --label "$ISSUE_LABEL" \
+            --search "in:title \"$ISSUE_TITLE\"" \
+            --json number,title \
+            --jq ".[] | select(.title == \"$ISSUE_TITLE\") | .number" \
+            | head -n1)"
+
+          body_file="$(mktemp)"
+          if [ -n "$existing" ]; then
+            cat >"$body_file" <<EOF
+          Recurrence on ${date_iso}: ${run_url}
+
+          Open the run URL to determine whether the cause is a TLC
+          counterexample or infrastructure (JDK setup, jar download,
+          cache miss).
+          EOF
+            gh issue comment "$existing" --body-file "$body_file"
+          else
+            cat >"$body_file" <<EOF
+          Nightly TLA+ thorough job failed.
+
+          - Spec: tla/MCPipelineMachine.tla
+          - Config: tla/PipelineMachine.nightly.thorough.cfg
+          - First observed: ${date_iso}
+          - First run: ${run_url}
+
+          The upstream job failed — open the run URL to determine whether
+          this is a real TLC counterexample or an infrastructure issue
+          (JDK setup, jar download, cache miss).
+
+          If TLC itself failed, reproduce locally:
+            just tlc MCPipelineMachine.tla PipelineMachine.nightly.thorough.cfg
+
+          TLC prints the violated invariant / liveness property and the
+          state trace just before exiting.  If the run step never reached
+          the \`tlc2.TLC\` invocation, the issue is infrastructure — close
+          this issue once the underlying transient resolves.  Subsequent
+          failures while this issue stays open will be appended as comments
+          rather than spawning new issues.
+          EOF
+            gh issue create \
+              --title "$ISSUE_TITLE" \
+              --body-file "$body_file" \
+              --label "$ISSUE_LABEL"
+          fi
 
   turmoil-replay-equivalence:
     name: Turmoil replay-equivalence
@@ -55,9 +130,9 @@ jobs:
           go-version-file: scripts/linearizability/go.mod
       - name: Replay-equivalence test lane
         run: |
-          cargo test -p logfwd --features turmoil --test turmoil_sim fault_scenario_sim::replay_equivalence_seed_supports_three_identical_replays -- --exact
-          cargo test -p logfwd --features turmoil --test turmoil_sim fault_scenario_sim::replay_equivalence_seed_matrix_keeps_history_equivalent -- --exact
-          cargo test -p logfwd --features turmoil --test turmoil_sim linearizability::porcupine_checker_accepts_runtime_history -- --exact
+          cargo test -p logfwd --no-default-features --features turmoil --test turmoil_sim fault_scenario_sim::replay_equivalence_seed_supports_three_identical_replays -- --exact
+          cargo test -p logfwd --no-default-features --features turmoil --test turmoil_sim fault_scenario_sim::replay_equivalence_seed_matrix_keeps_history_equivalent -- --exact
+          cargo test -p logfwd --no-default-features --features turmoil --test turmoil_sim linearizability::porcupine_checker_accepts_runtime_history -- --exact
 
   turmoil-seed-sweep:
     name: Turmoil seed sweep (1000 seeds, shard ${{ matrix.shard_index }}/4)
@@ -75,7 +150,7 @@ jobs:
         with:
           go-version-file: scripts/linearizability/go.mod
       - name: Build turmoil tests once
-        run: cargo test -p logfwd --features turmoil --test turmoil_sim --no-run
+        run: cargo test -p logfwd --no-default-features --features turmoil --test turmoil_sim --no-run
       - name: Run turmoil tests with shard-assigned seeds
         run: |
           TOTAL_SEEDS=1000
@@ -87,7 +162,7 @@ jobs:
           rm -f "$FAIL_SEEDS_FILE"
 
           # Find the compiled test binary (filter for test targets only)
-          BIN=$(cargo test -p logfwd --features turmoil --test turmoil_sim --no-run --message-format=json 2>/dev/null \
+          BIN=$(cargo test -p logfwd --no-default-features --features turmoil --test turmoil_sim --no-run --message-format=json 2>/dev/null \
             | jq -r 'select(.executable != null and (.target.kind // [] | index("test"))) | .executable' \
             | head -1)
           if [ -z "$BIN" ]; then
@@ -150,8 +225,9 @@ jobs:
           pattern: turmoil-failures-shard-*-${{ github.run_id }}
           path: /tmp/turmoil-artifacts
           merge-multiple: false
-      - name: Create aggregated issue on turmoil seed sweep failure
+      - name: Create or update aggregated issue on turmoil seed sweep failure
         run: |
+          set -euo pipefail
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           summary_file="$(mktemp)"
           failed_shards=0
@@ -191,22 +267,50 @@ jobs:
             exit 0
           fi
 
+          # Dedup against a stable title so persistent regressions append
+          # comments instead of opening a new issue every night.  Matches the
+          # pattern used by tla-pipeline-nightly-thorough-report above.
+          issue_title="Nightly turmoil seed sweep failing"
+          date_iso="$(date -u +%Y-%m-%d)"
+          existing="$(gh issue list \
+            --state open \
+            --label bug \
+            --search "in:title \"$issue_title\"" \
+            --json number,title \
+            --jq ".[] | select(.title == \"$issue_title\") | .number" \
+            | head -n1)"
+
           body_file="$(mktemp)"
-          cat >"$body_file" <<EOF
-          Nightly turmoil seed sweep failed.
+          if [ -n "$existing" ]; then
+            cat >"$body_file" <<EOF
+          Recurrence on ${date_iso}: ${run_url}
 
           - Failed shards: ${failed_shards}
           - Total failed seeds: ${total_fail_count}
-          - Run: ${run_url}
+
+          $(cat "$summary_file")
+          EOF
+            gh issue comment "$existing" --body-file "$body_file"
+          else
+            cat >"$body_file" <<EOF
+          Nightly turmoil seed sweep failed.
+
+          - First observed: ${date_iso}
+          - First run: ${run_url}
+          - Failed shards: ${failed_shards}
+          - Total failed seeds: ${total_fail_count}
 
           $(cat "$summary_file")
 
-          Please investigate and convert any reproductions into deterministic tests.
+          Please investigate and convert any reproductions into deterministic
+          tests.  Subsequent failures while this issue stays open will be
+          appended as comments rather than spawning new issues.
           EOF
-          gh issue create \
-            --title "Nightly turmoil seed sweep failed ($(date +%Y-%m-%d))" \
-            --body-file "$body_file" \
-            --label "bug"
+            gh issue create \
+              --title "$issue_title" \
+              --body-file "$body_file" \
+              --label "bug"
+          fi
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

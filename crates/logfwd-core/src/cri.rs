@@ -733,6 +733,12 @@ mod tests {
         }
 
         #[test]
+        // Exhaustively splits the input at every byte offset (0..=line.len()).
+        // Each case runs 60–100 full parse cycles — trivially cheap natively
+        // but ~40s under Miri with PROPTEST_CASES=1. The equivalence invariant
+        // is memory-agnostic, so Miri (a UB detector) gets no new coverage from
+        // this loop that the native proptest doesn't already provide.
+        #[cfg_attr(miri, ignore)]
         fn proptest_split_full_line_matches_unsplit(
             message in "[ -~]{0,64}",
             max_size in 1..64usize,

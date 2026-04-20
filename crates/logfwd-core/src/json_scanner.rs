@@ -609,6 +609,16 @@ mod tests {
     use proptest::prelude::*;
     use proptest::test_runner::Config as ProptestConfig;
 
+    /// Maximum padding bytes to prepend when probing SIMD block boundaries
+    /// in proptests.  Under Miri each extra byte costs ~10–100x native, and
+    /// the invariants under test are memory-agnostic, so we use a narrower
+    /// range there. Native proptest still sweeps 0..90 to exercise edges of
+    /// multiple 64-byte blocks.
+    #[cfg(miri)]
+    const MAX_PADDING: usize = 10;
+    #[cfg(not(miri))]
+    const MAX_PADDING: usize = 90;
+
     /// Minimal ScanBuilder for testing — captures fields as strings.
     struct TestBuilder {
         rows: Vec<Vec<(String, String)>>,
@@ -1179,7 +1189,7 @@ mod tests {
         #[test]
         fn crlf_and_lf_produce_identical_rows(
             val in "[a-z0-9]{1,20}",
-            padding in 0usize..90,
+            padding in 0usize..MAX_PADDING,
         ) {
             let spaces = " ".repeat(padding);
             let lf_line = alloc::format!("{{\"k\":\"{val}\"}}\n");
@@ -1249,7 +1259,7 @@ mod tests {
         #[test]
         fn skip_bare_value_close_bracket_proptest(
             num in 0u32..1_000_000,
-            padding in 0usize..90,
+            padding in 0usize..MAX_PADDING,
         ) {
             // Direct: "42]extra" — must stop exactly at position of ']'
             let value_str = alloc::format!("{num}");
@@ -1288,7 +1298,7 @@ mod tests {
         ///    original (unescaped) ASCII character
         #[test]
         fn escape_sequences_survive_simd_boundaries(
-            padding in 0usize..90,
+            padding in 0usize..MAX_PADDING,
         ) {
             // Test the 8 standard RFC 8259 single-char escapes that round-trip
             // to a known single byte.
