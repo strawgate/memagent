@@ -177,9 +177,16 @@ fn decode_otlp_logs_json(body: &[u8], resource_prefix: &str) -> Result<Vec<u8>, 
     };
 
     let mut out = Vec::new();
+    // Scratch buffer reused across resource attribute keys to avoid one
+    // `format!()` heap allocation per attribute.
+    let mut key_buf = String::with_capacity(128);
 
     for rl in resource_logs {
-        // Collect resource attributes.
+        // Collect resource attributes. Keys are built by concatenating
+        // `resource_prefix` + original key into the reusable `key_buf`,
+        // then cloned into the vec. This avoids `format!()` macro overhead
+        // (argument parsing, Display trait dispatch) while still producing
+        // the required owned Strings for the inner loop.
         let mut resource_attrs: Vec<(String, &serde_json::Value)> = Vec::new();
         if let Some(attrs) = rl
             .get("resource")
@@ -193,7 +200,10 @@ fn decode_otlp_logs_json(body: &[u8], resource_prefix: &str) -> Result<Vec<u8>, 
                 let Some(value) = kv.get("value") else {
                     continue;
                 };
-                resource_attrs.push((format!("{resource_prefix}{key}"), value));
+                key_buf.clear();
+                key_buf.push_str(resource_prefix);
+                key_buf.push_str(key);
+                resource_attrs.push((key_buf.clone(), value));
             }
         }
 
@@ -391,12 +401,14 @@ fn json_any_value_to_string(v: &serde_json::Value) -> Result<Option<String>, Inp
     if let Some(i) = v.get("intValue") {
         let parsed = parse_protojson_i64(i)
             .ok_or_else(|| InputError::Receiver("invalid OTLP JSON intValue".into()))?;
-        return Ok(Some(parsed.to_string()));
+        let mut buf = itoa::Buffer::new();
+        return Ok(Some(buf.format(parsed).to_string()));
     }
     if let Some(dv) = v.get("doubleValue") {
         let parsed = parse_protojson_f64(dv)
             .ok_or_else(|| InputError::Receiver("invalid OTLP JSON doubleValue".into()))?;
-        return Ok(Some(parsed.to_string()));
+        let mut buf = ryu::Buffer::new();
+        return Ok(Some(buf.format(parsed).to_string()));
     }
     if let Some(b) = v.get("boolValue").and_then(serde_json::Value::as_bool) {
         return Ok(Some(if b { "true" } else { "false" }.to_string()));
