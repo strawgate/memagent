@@ -595,13 +595,13 @@ impl Pipeline {
         // Build output sink factory → pool.
         let factory: Arc<dyn SinkFactory> = if config.outputs.len() == 1 {
             let output_cfg = &config.outputs[0];
-            build_output_factory_from_config(0, output_cfg.typed(), base_path, &mut metrics)?
+            build_output_factory_from_config(0, output_cfg, base_path, &mut metrics)?
         } else {
             let mut factories: Vec<Arc<dyn SinkFactory>> = Vec::new();
             for (i, output_cfg) in config.outputs.iter().enumerate() {
                 factories.push(build_output_factory_from_config(
                     i,
-                    output_cfg.typed(),
+                    output_cfg,
                     base_path,
                     &mut metrics,
                 )?);
@@ -705,9 +705,7 @@ fn should_open_checkpoint_store(checkpoint_dir: &Path, has_explicit_data_dir: bo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use logfwd_config::{
-        InputConfig, InputTypeConfig, OutputConfig, OutputConfigV2, OutputType, StdoutOutputConfig,
-    };
+    use logfwd_config::{InputConfig, InputTypeConfig, OutputConfigV2, StdoutOutputConfig};
     use logfwd_types::source_metadata::SourcePathColumn;
 
     fn minimal_input(path: String) -> InputConfig {
@@ -728,17 +726,14 @@ mod tests {
         }
     }
 
-    fn minimal_output() -> OutputConfig {
-        OutputConfig {
-            output_type: OutputType::Stdout,
-            ..Default::default()
-        }
+    fn minimal_output() -> OutputConfigV2 {
+        OutputConfigV2::Stdout(StdoutOutputConfig::default())
     }
 
     fn minimal_config(path: String) -> PipelineConfig {
         PipelineConfig {
             inputs: vec![minimal_input(path)],
-            outputs: vec![minimal_output().into()],
+            outputs: vec![minimal_output()],
             transform: None,
             enrichment: vec![],
             resource_attrs: std::collections::HashMap::new(),
@@ -756,13 +751,10 @@ mod tests {
         std::fs::write(&log_path, b"{\"msg\":\"hello\"}\n").unwrap();
 
         let mut config = minimal_config(log_path.display().to_string());
-        config.outputs = vec![
-            OutputConfigV2::Stdout(StdoutOutputConfig {
-                name: Some("typed_stdout".to_string()),
-                format: None,
-            })
-            .into(),
-        ];
+        config.outputs = vec![OutputConfigV2::Stdout(StdoutOutputConfig {
+            name: Some("typed_stdout".to_string()),
+            format: None,
+        })];
 
         Pipeline::from_config("default", &config, &logfwd_test_utils::test_meter(), None)
             .expect("native typed output entry should build");
@@ -777,7 +769,7 @@ mod tests {
         let cfg = PipelineConfig {
             inputs: vec![minimal_input(log_path.to_string_lossy().into_owned())],
             transform: None,
-            outputs: vec![minimal_output().into()],
+            outputs: vec![minimal_output()],
             enrichment: Vec::new(),
             resource_attrs: Default::default(),
             workers: None,
@@ -897,7 +889,7 @@ mod tests {
                 }),
             }],
             transform: None,
-            outputs: vec![minimal_output().into()],
+            outputs: vec![minimal_output()],
             enrichment: Vec::new(),
             resource_attrs: Default::default(),
             workers: None,
@@ -948,7 +940,7 @@ mod tests {
                 }),
             }],
             transform: None,
-            outputs: vec![minimal_output().into()],
+            outputs: vec![minimal_output()],
             enrichment: Vec::new(),
             resource_attrs: Default::default(),
             workers: None,

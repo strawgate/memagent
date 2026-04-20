@@ -3,7 +3,7 @@ use crate::serde_helpers::{
     deserialize_option_strict_string, deserialize_string_map_strict_values,
 };
 use crate::types::{
-    Config, ConfigError, EnrichmentConfig, InputConfig, InputTypeConfig, OutputConfigEntry,
+    Config, ConfigError, EnrichmentConfig, InputConfig, InputTypeConfig, OutputConfigV2,
     PipelineConfig, ServerConfig, StorageConfig,
 };
 use config as config_rs;
@@ -19,7 +19,7 @@ struct RawConfig {
     input: Option<InputConfig>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     transform: Option<String>,
-    output: Option<OutputConfigEntry>,
+    output: Option<OutputConfigV2>,
     #[serde(default)]
     enrichment: Vec<EnrichmentConfig>,
     #[serde(default, deserialize_with = "deserialize_string_map_strict_values")]
