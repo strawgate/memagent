@@ -57,7 +57,7 @@ struct CompiledGrok {
     pattern: grok::Pattern,
     field_names: Vec<String>,
     /// Original pattern string, retained for diagnostic logging.
-    original_pattern: String,
+    original_pattern: Arc<str>,
 }
 
 const GROK_CACHE_CAPACITY: usize = 128;
@@ -81,7 +81,7 @@ fn compile_grok(pattern: &str) -> Result<CompiledGrok, crate::TransformError> {
     Ok(CompiledGrok {
         pattern: compiled,
         field_names,
-        original_pattern: pattern.to_owned(),
+        original_pattern: Arc::from(pattern),
     })
 }
 
@@ -115,8 +115,6 @@ impl std::fmt::Debug for GrokUdf {
 impl PartialEq for GrokUdf {
     fn eq(&self, other: &Self) -> bool {
         self.signature == other.signature
-            && self.slow_match_count.load(Ordering::Relaxed)
-                == other.slow_match_count.load(Ordering::Relaxed)
     }
 }
 
@@ -184,7 +182,9 @@ impl GrokUdf {
 
     /// Run `match_against` and record timing. If the match exceeds
     /// [`SLOW_MATCH_THRESHOLD`], bump the slow-match counter and emit a
-    /// throttled warning so operators can tell their pattern is pathological.
+    /// throttled warning about a slow match. This detects elapsed-time slow
+    /// matches only; it does not directly detect whether fancy-regex hit a
+    /// backtracking limit or swallowed an internal error.
     #[inline]
     fn timed_match_against<'a>(
         &self,
@@ -200,7 +200,7 @@ impl GrokUdf {
             if count == 1 || count.is_multiple_of(SLOW_MATCH_LOG_INTERVAL) {
                 tracing::warn!(
                     grok_pattern = %compiled.original_pattern,
-                    elapsed_ms = %elapsed.as_millis(),
+                    elapsed = ?elapsed,
                     slow_match_total = count,
                     "grok: regex match exceeded {}ms — possible catastrophic backtracking. \
                      The grok() UDF uses the fancy-regex engine which silently returns NULL \
@@ -335,7 +335,8 @@ impl ScalarUDFImpl for GrokUdf {
                             // NOTE: the grok crate uses fancy-regex internally.
                             // If matching exceeds fancy-regex backtracking limits,
                             // `match_against` returns None (error swallowed).
-                            // timed_match_against() detects and logs these cases.
+                            // timed_match_against() can help surface potentially
+                            // pathological matches by logging when a match is slow.
                             match self.timed_match_against(&compiled, strings.value(row)) {
                                 Some(matches) => {
                                     for (i, name) in compiled.field_names.iter().enumerate() {
