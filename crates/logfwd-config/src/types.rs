@@ -92,6 +92,41 @@ impl fmt::Display for InputType {
     }
 }
 
+/// Controls which source metadata columns are attached to scanned records.
+///
+/// `none` is the default and disables attachment. `fastforward` emits the
+/// internal `__source_id` handle. `ecs` emits ECS/Beats `file.path` and accepts
+/// the serde alias `beats`. `otel` emits `log.file.path`. `vector` emits
+/// `file`. Values serialize and parse as `snake_case`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceMetadataStyle {
+    /// Do not attach source metadata columns.
+    #[default]
+    None,
+    /// Attach FastForward internal metadata (`__source_id`).
+    Fastforward,
+    /// Attach ECS/Beats-style public metadata columns.
+    #[serde(alias = "beats")]
+    Ecs,
+    /// Attach OpenTelemetry-style public metadata columns.
+    Otel,
+    /// Attach Vector-style public metadata columns.
+    Vector,
+}
+
+impl fmt::Display for SourceMetadataStyle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::None => f.write_str("none"),
+            Self::Fastforward => f.write_str("fastforward"),
+            Self::Ecs => f.write_str("ecs"),
+            Self::Otel => f.write_str("otel"),
+            Self::Vector => f.write_str("vector"),
+        }
+    }
+}
+
 /// OTLP protobuf decode strategy for OTLP inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -155,14 +190,6 @@ impl<'de> Deserialize<'de> for OutputType {
                 compat::parse_output_type_name(v).ok_or_else(|| {
                     E::unknown_variant(v, compat::supported_output_type_names_for_errors())
                 })
-            }
-
-            fn visit_unit<E: serde::de::Error>(self) -> Result<OutputType, E> {
-                Ok(OutputType::Null)
-            }
-
-            fn visit_none<E: serde::de::Error>(self) -> Result<OutputType, E> {
-                Ok(OutputType::Null)
             }
         }
 
@@ -571,12 +598,13 @@ pub struct InputConfig {
     pub format: Option<Format>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub sql: Option<String>,
-    /// Attach source metadata columns (`_source_id`, `_input`, `_source_path`) when SQL requests them.
+    /// Source metadata attachment style.
     ///
-    /// Disabled by default because source metadata requires per-row origin
-    /// tracking and may materialize high-cardinality strings such as paths.
+    /// `none` is the default. `fastforward` attaches only the internal
+    /// `__source_id` handle. Public styles attach normal source metadata
+    /// columns using that schema's naming convention.
     #[serde(default)]
-    pub source_metadata: bool,
+    pub source_metadata: SourceMetadataStyle,
     #[serde(flatten)]
     pub type_config: InputTypeConfig,
 }
@@ -668,7 +696,7 @@ pub struct FileTypeConfig {
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub max_open_files: Option<usize>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
-    pub glob_rescan_interval_ms: Option<PositiveMillis>,
+    pub glob_rescan_interval_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

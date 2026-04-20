@@ -1160,7 +1160,7 @@ input:
       field: seq
     event_created_unix_nano_field: event_created_unix_nano
 output:
-  type: null
+  type: "null"
 "#;
         let config = logfwd_config::Config::load_str(yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];
@@ -1532,7 +1532,7 @@ input:
       stream_id: emitter-0
 transform: "SELECT nonexistent_col FROM logs"
 output:
-  type: null
+  type: "null"
 "#;
         let config = logfwd_config::Config::load_str(&yaml).unwrap();
         let pipe_cfg = &config.pipelines["default"];

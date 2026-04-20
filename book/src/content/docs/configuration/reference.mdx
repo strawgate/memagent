@@ -100,7 +100,7 @@ YAML sequence for multiple inputs.
 | `type` | string | Yes | Input type. See [Input types](#input-types). |
 | `name` | string | No | Friendly name shown in diagnostics. |
 | `format` | string | No | Log format. See [Formats](#formats). Defaults to `auto`. |
-| `source_metadata` | boolean | No | Attach source metadata columns (`_source_id`, `_input`, `_source_path`) when SQL requests them. Defaults to `false`; set `true` before referencing those columns or using `k8s_path` joins. |
+| `source_metadata` | string | No | Source metadata style. Defaults to `none`. Use `fastforward` for internal `__source_id`, `ecs`/`beats` for public ECS columns such as `file.path`, `otel` for public OpenTelemetry columns such as `log.file.path`, or `vector` for public Vector-style columns such as `file`. Public source path styles currently require file inputs because other inputs do not expose public source path snapshots. |
 
 ### `file` input
 
@@ -613,17 +613,23 @@ Special columns attached by the runtime after scan, plus format-derived columns:
 | Column | Type | Description |
 |--------|------|-------------|
 | `body` | string | Original input line (when input line capture is enabled, e.g. `line_field: body`, or when a non-JSON CRI line is wrapped for scanner safety). |
-| `_source_id` | uint64 | Stable row-level source identity when an input can identify a sender/source. File inputs use file identity; UDP uses sender address identity. |
-| `_input` | string | Configured input name for the row source. |
-| `_source_path` | string | Source file path (file-backed inputs only). Used as a join key for `k8s_path` enrichment. |
+| `__source_id` | uint64 | FastForward internal row-level source identity when `source_metadata: fastforward` is set. SQL can reference it, but user-facing sinks drop this internal column unless SQL aliases it to a public name. |
+| `file.path` | string | ECS/Beats-style source file path when `source_metadata: ecs` or `source_metadata: beats` is set. Quote it in SQL as `"file.path"`. |
+| `log.file.path` | string | OpenTelemetry-style source file path when `source_metadata: otel` is set. Quote it in SQL as `"log.file.path"`. |
+| `file` | string | Vector-style source file path when `source_metadata: vector` is set. |
 | `_timestamp` | string | Timestamp from the CRI header as an RFC 3339 string (CRI inputs only). |
 | `_stream` | string | CRI stream name (`stdout` / `stderr`). |
 
 Source metadata is never written into raw input bytes. It is carried beside
-scanner-ready chunks and, when `source_metadata: true` is set on the input,
-materialized as table columns before SQL runs. For compatibility, `SELECT *`
-includes `_source_path` for opted-in inputs. New metadata columns such as
-`_source_id` and `_input` are included only when SQL references them explicitly.
+scanner-ready chunks and, when `source_metadata` is not `none`, materialized as
+table columns before SQL runs. SQL does no hidden pruning or widening: `SELECT *`
+returns the columns that exist in the table. User-facing sinks drop known
+FastForward internal columns such as `__source_id` by default; alias an
+internal column to a public name when it should be emitted. User payload fields
+that happen to start with `__` are not treated as internal. Public source path
+styles currently require file inputs; use `fastforward` for source identity on
+non-file inputs, including S3, until those inputs expose explicit public source
+descriptors.
 
 ### Built-in UDFs
 
@@ -788,9 +794,10 @@ FROM logs l CROSS JOIN k8s_cluster_info k
 
 Parses Kubernetes pod log paths (e.g.
 `/var/log/pods/<namespace>_<pod>_<uid>/<container>/`) to extract metadata.
-Queries that join `logs._source_path` to this table must set
-`source_metadata: true` on the file input. Source paths are never written into
-raw log bytes.
+Queries that join a source path to this table should set `source_metadata: ecs`
+or another public path style on the file input and quote dotted column names in
+SQL, for example `"file.path"`. Source paths are never written into raw log
+bytes.
 
 Columns exposed by the enrichment table (named `k8s_pods` by default; set `table_name: k8s` in config to use the `k8s` alias shown in the examples below):
 

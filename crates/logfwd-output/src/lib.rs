@@ -19,6 +19,7 @@ pub(crate) mod http_classify;
 mod conflict_columns;
 mod elasticsearch;
 mod factory;
+mod internal_columns;
 mod metadata;
 mod row_json;
 

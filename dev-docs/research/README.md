@@ -31,6 +31,7 @@ Point-in-time investigations that informed architecture decisions.
 - [linearizability-porcupine-plan.md](linearizability-porcupine-plan.md)
 - [per-input-sql-analysis.md](per-input-sql-analysis.md)
 - [source-metadata-zero-copy-plan-2026-04-19.md](source-metadata-zero-copy-plan-2026-04-19.md)
+- [source-metadata-attachment-perf-2026-04-19.md](source-metadata-attachment-perf-2026-04-19.md)
 - [tla-gap-analysis.md](tla-gap-analysis.md)
 - [turmoil-concurrency-bugs-report-2026-04.md](turmoil-concurrency-bugs-report-2026-04.md)
 - [type-suffix-redesign.md](type-suffix-redesign.md)
