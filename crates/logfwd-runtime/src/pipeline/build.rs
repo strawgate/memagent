@@ -16,10 +16,13 @@ use logfwd_io::checkpoint::{
 use logfwd_output::{AsyncFanoutFactory, SinkFactory, build_sink_factory_v2};
 use logfwd_types::field_names;
 use logfwd_types::pipeline::{PipelineMachine, SourceId};
-use logfwd_types::source_metadata::{SourceMetadataPlan, SourcePathColumn};
+use logfwd_types::source_metadata::SourceMetadataPlan;
 
 use super::input_build::build_input_state;
-use super::{InputTransform, Pipeline};
+use super::{
+    InputTransform, Pipeline, source_metadata_style_needs_source_paths,
+    source_metadata_style_source_path,
+};
 
 // ── Pipeline defaults ──────────────────────────────────────────────────
 /// Default output worker count when `pipelines.<name>.workers` is unset.
@@ -36,21 +39,6 @@ pub(crate) const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 pub(crate) const DEFAULT_CHECKPOINT_FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 /// Default maximum time to wait for worker-pool drain before cancellation.
 pub(crate) const DEFAULT_POOL_DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
-
-fn source_metadata_style_source_path(style: SourceMetadataStyle) -> SourcePathColumn {
-    match style {
-        SourceMetadataStyle::Ecs => SourcePathColumn::Ecs,
-        SourceMetadataStyle::Otel => SourcePathColumn::Otel,
-        SourceMetadataStyle::Vector => SourcePathColumn::Vector,
-        SourceMetadataStyle::None | SourceMetadataStyle::Fastforward => SourcePathColumn::None,
-    }
-}
-
-fn source_metadata_style_needs_source_paths(style: SourceMetadataStyle) -> bool {
-    source_metadata_style_source_path(style)
-        .to_column_name()
-        .is_some()
-}
 
 fn input_type_exposes_public_source_paths(type_config: &InputTypeConfig) -> bool {
     // Keep this list tied to InputSource::source_paths() implementations.
@@ -566,7 +554,7 @@ impl Pipeline {
                 return Err(format!(
                     "pipeline '{name}' input '{input_name}': source_metadata style {} requires \
                      source paths, but input type {} does not expose public source path snapshots; \
-                     currently only file inputs support public source path metadata styles",
+                     currently only file and s3 inputs support public source path metadata styles",
                     input_cfg.source_metadata,
                     input_cfg.input_type()
                 ));
@@ -748,6 +736,7 @@ mod tests {
         CompressionFormat, InputConfig, InputTypeConfig, OutputConfig, OutputConfigV2, OutputType,
         StdoutOutputConfig,
     };
+    use logfwd_types::source_metadata::SourcePathColumn;
 
     fn minimal_input(path: String) -> InputConfig {
         InputConfig {
@@ -1007,7 +996,7 @@ mod tests {
                         max_concurrent_fetches: None,
                         max_concurrent_objects: None,
                         visibility_timeout_secs: None,
-                        compression: None,
+                        compression: Some("invalid-test-compression".to_string()),
                         poll_interval_ms: None,
                     },
                 }),
@@ -1027,8 +1016,7 @@ mod tests {
             .expect("S3 public source path style should reach S3 build validation");
         assert!(
             err.contains("S3 input requires the 's3' feature")
-                || err.contains("s3.access_key_id is required")
-                || err.contains("failed to create S3 input"),
+                || err.contains("unknown S3 compression value 'invalid-test-compression'"),
             "unexpected error: {err}"
         );
     }

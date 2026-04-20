@@ -660,12 +660,7 @@ pub(super) fn build_input_state(
                     s3_cfg
                         .poll_interval_ms
                         .map(logfwd_config::PositiveMillis::get),
-                    matches!(
-                        cfg.source_metadata,
-                        logfwd_config::SourceMetadataStyle::Ecs
-                            | logfwd_config::SourceMetadataStyle::Otel
-                            | logfwd_config::SourceMetadataStyle::Vector
-                    ),
+                    super::source_metadata_style_needs_source_paths(cfg.source_metadata),
                 )
                 .map_err(|e| format!("input '{name}': {e}"))?;
 

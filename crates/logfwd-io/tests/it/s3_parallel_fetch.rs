@@ -28,7 +28,7 @@ fn make_s3_input(endpoint: &str, bucket: &str, prefix: &str) -> S3Input {
         visibility_timeout_secs: 300,
         compression_override: None,
         poll_interval_ms: 100,
-        expose_source_paths: false,
+        should_expose_source_paths: false,
     };
     S3Input::new("s3-test", settings).expect("S3Input::new")
 }

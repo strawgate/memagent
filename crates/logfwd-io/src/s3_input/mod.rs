@@ -128,8 +128,8 @@ pub struct S3InputSettings {
     pub compression_override: Option<Compression>,
     /// `ListObjectsV2` polling interval in milliseconds.
     pub poll_interval_ms: u64,
-    /// Track current object keys for `InputSource::source_paths()` snapshots.
-    pub expose_source_paths: bool,
+    /// Whether to track current object keys for `InputSource::source_paths()` snapshots.
+    pub should_expose_source_paths: bool,
 }
 
 impl std::fmt::Debug for S3InputSettings {
@@ -153,7 +153,10 @@ impl std::fmt::Debug for S3InputSettings {
             .field("visibility_timeout_secs", &self.visibility_timeout_secs)
             .field("compression_override", &self.compression_override)
             .field("poll_interval_ms", &self.poll_interval_ms)
-            .field("expose_source_paths", &self.expose_source_paths)
+            .field(
+                "should_expose_source_paths",
+                &self.should_expose_source_paths,
+            )
             .finish()
     }
 }
@@ -178,7 +181,7 @@ impl S3InputSettings {
         visibility_timeout_secs: Option<u32>,
         compression_override: Option<Compression>,
         poll_interval_ms: Option<u64>,
-        expose_source_paths: bool,
+        should_expose_source_paths: bool,
     ) -> Result<Self, String> {
         let access_key_id = access_key_id
             .or_else(|| std::env::var("AWS_ACCESS_KEY_ID").ok())
@@ -225,7 +228,7 @@ impl S3InputSettings {
                 .max(MIN_SQS_VISIBILITY_TIMEOUT_SECS),
             compression_override,
             poll_interval_ms: poll_interval_ms.unwrap_or(DEFAULT_POLL_INTERVAL_MS).max(1),
-            expose_source_paths,
+            should_expose_source_paths,
         })
     }
 }
@@ -239,7 +242,7 @@ pub struct S3Input {
     health: Arc<AtomicU8>,
     is_running: Arc<AtomicBool>,
     thread_handle: Option<std::thread::JoinHandle<()>>,
-    source_paths_enabled: bool,
+    should_expose_source_paths: bool,
     active_source_paths: HashMap<SourceId, PathBuf>,
     poll_source_paths: HashMap<SourceId, PathBuf>,
 }
@@ -264,7 +267,7 @@ struct FetchOptions {
     part_size: u64,
     max_fetches: usize,
     compression_override: Option<Compression>,
-    expose_source_paths: bool,
+    should_expose_source_paths: bool,
 }
 
 /// A unit of work: one S3 object to fetch.
@@ -349,7 +352,7 @@ impl S3Input {
         let visibility_timeout = settings.visibility_timeout_secs;
         let poll_interval_ms = settings.poll_interval_ms;
         let compression_override = settings.compression_override;
-        let expose_source_paths = settings.expose_source_paths;
+        let should_expose_source_paths = settings.should_expose_source_paths;
         let bucket = settings.bucket.clone();
         let prefix = settings.prefix.clone();
         let start_after_init = settings.start_after.clone();
@@ -452,7 +455,7 @@ impl S3Input {
                         part_size,
                         max_fetches,
                         compression_override,
-                        expose_source_paths,
+                        should_expose_source_paths,
                         Arc::clone(&is_running_bg),
                         Arc::clone(&health_bg),
                         name_bg.clone(),
@@ -475,7 +478,7 @@ impl S3Input {
             health,
             is_running,
             thread_handle: Some(handle),
-            source_paths_enabled: expose_source_paths,
+            should_expose_source_paths,
             active_source_paths: HashMap::new(),
             poll_source_paths: HashMap::new(),
         })
@@ -497,13 +500,13 @@ impl InputSource for S3Input {
                 break;
             };
             drained += 1;
-            if self.source_paths_enabled {
+            if self.should_expose_source_paths {
                 if let Some(source_path) = payload.source_path {
                     self.active_source_paths
                         .entry(payload.source_id)
                         .or_insert_with(|| PathBuf::from(source_path));
                 }
-                if !payload.bytes.is_empty()
+                if (!payload.bytes.is_empty() || payload.is_eof)
                     && let Some(source_path) = self.active_source_paths.get(&payload.source_id)
                 {
                     self.poll_source_paths
@@ -872,7 +875,7 @@ async fn run_orchestrator(
     part_size: u64,
     max_fetches: usize,
     compression_override: Option<Compression>,
-    expose_source_paths: bool,
+    should_expose_source_paths: bool,
     is_running: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
     name: String,
@@ -889,7 +892,7 @@ async fn run_orchestrator(
         part_size,
         max_fetches,
         compression_override,
-        expose_source_paths,
+        should_expose_source_paths,
     };
 
     while is_running.load(Ordering::Relaxed) {
@@ -1169,7 +1172,7 @@ async fn fetch_object(
             bytes: buf[..filled].to_vec(),
             accounted_bytes: ab,
             source_id,
-            source_path: if options.expose_source_paths && is_first_chunk {
+            source_path: if options.should_expose_source_paths && is_first_chunk {
                 Some(key.to_string())
             } else {
                 None
@@ -1310,7 +1313,7 @@ async fn fetch_parallel_stream(
                 bytes: data[pos..end].to_vec(),
                 accounted_bytes: ab,
                 source_id,
-                source_path: if options.expose_source_paths && is_first_chunk {
+                source_path: if options.should_expose_source_paths && is_first_chunk {
                     Some(key.to_string())
                 } else {
                     None
@@ -1372,7 +1375,7 @@ pub async fn fetch_parallel_stream_bench(
         part_size,
         max_fetches,
         compression_override: None,
-        expose_source_paths: false,
+        should_expose_source_paths: false,
     };
     let handle =
         tokio::spawn(
@@ -1458,14 +1461,14 @@ async fn fetch_parallel_buffered(
 mod tests {
     use super::*;
 
-    fn test_input(rx: mpsc::Receiver<ChunkPayload>, source_paths_enabled: bool) -> S3Input {
+    fn test_input(rx: mpsc::Receiver<ChunkPayload>, should_expose_source_paths: bool) -> S3Input {
         S3Input {
             name: "s3-test".to_string(),
             rx: Some(rx),
             health: Arc::new(AtomicU8::new(ComponentHealth::Healthy.as_repr())),
             is_running: Arc::new(AtomicBool::new(true)),
             thread_handle: None,
-            source_paths_enabled,
+            should_expose_source_paths,
             active_source_paths: HashMap::new(),
             poll_source_paths: HashMap::new(),
         }
@@ -1539,6 +1542,41 @@ mod tests {
 
         input.poll().expect("empty poll clears current snapshot");
         assert!(input.source_paths().is_empty());
+    }
+
+    #[test]
+    fn poll_exposes_source_path_for_eof_only_flush_when_active() {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let key = "logs/app/partial-without-newline.json";
+        let source_id = source_id_from_key(key);
+        tx.send(ChunkPayload {
+            bytes: Vec::new(),
+            accounted_bytes: 0,
+            source_id,
+            source_path: None,
+            is_eof: true,
+        })
+        .expect("send eof");
+
+        let mut input = test_input(rx, true);
+        input
+            .active_source_paths
+            .insert(source_id, PathBuf::from(key));
+        let events = input.poll().expect("poll eof");
+        assert_eq!(events.len(), 1);
+        let InputEvent::EndOfFile {
+            source_id: eof_source_id,
+        } = events[0]
+        else {
+            panic!("expected eof event");
+        };
+        assert_eq!(eof_source_id, Some(source_id));
+
+        let paths = input.source_paths();
+        assert_eq!(paths.len(), 1);
+        assert_eq!(paths[0].0, source_id);
+        assert_eq!(paths[0].1, PathBuf::from(key));
+        assert!(!input.active_source_paths.contains_key(&source_id));
     }
 
     #[test]
