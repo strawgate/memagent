@@ -373,6 +373,17 @@ impl ElasticsearchSink {
             return Ok(batch.clone());
         }
 
+        if let Some(row_id) = row_ids
+            .iter()
+            .copied()
+            .find(|row_id| *row_id as usize >= batch.num_rows())
+        {
+            return Err(io::Error::other(format!(
+                "projected Elasticsearch retry row id {row_id} out of bounds for {} rows",
+                batch.num_rows()
+            )));
+        }
+
         let indices = UInt32Array::from(row_ids.to_vec());
         let columns = batch
             .columns()
@@ -1266,7 +1277,14 @@ impl ElasticsearchSink {
         if let Some(took) = Self::extract_took(&body) {
             tracing::Span::current().record("took_ms", took);
         }
-        let response_attempt = match Self::parse_bulk_response_detailed(&body) {
+        let producer_result = producer
+            .await
+            .map_err(|e| io::Error::other(format!("ES streaming producer task failed: {e}")));
+        if let Some(attempt) = Self::streaming_producer_failure(&row_ids, producer_result) {
+            return attempt;
+        }
+
+        match Self::parse_bulk_response_detailed(&body) {
             Ok(result) if result.retry_items.is_empty() && result.permanent_errors.is_empty() => {
                 self.record_accepted_rows(row_count, payload_len);
                 SendAttempt::Ok
@@ -1299,51 +1317,25 @@ impl ElasticsearchSink {
                 rejections: Vec::new(),
                 error,
             },
-        };
-
-        let producer_result = producer
-            .await
-            .map_err(|e| io::Error::other(format!("ES streaming producer task failed: {e}")));
-        Self::finalize_streaming_outcome(response_attempt, producer_result)
+        }
     }
 
-    fn finalize_streaming_outcome(
-        response_attempt: SendAttempt,
+    fn streaming_producer_failure(
+        row_ids: &[u32],
         producer_result: io::Result<io::Result<()>>,
-    ) -> SendAttempt {
-        match (response_attempt, producer_result) {
-            (SendAttempt::Ok, _) => SendAttempt::Ok,
-            (attempt @ SendAttempt::RetryAfter { .. }, _)
-            | (attempt @ SendAttempt::Rejected { .. }, _)
-            | (attempt @ SendAttempt::IoError { .. }, Ok(Ok(()))) => attempt,
-            (
-                SendAttempt::IoError {
-                    pending_rows,
-                    rejections,
-                    error: response_error,
-                },
-                Ok(Err(producer_error)),
-            ) => SendAttempt::IoError {
-                pending_rows,
-                rejections,
-                error: io::Error::other(format!(
-                    "{response_error}; producer error: {producer_error}"
-                )),
-            },
-            (
-                SendAttempt::IoError {
-                    pending_rows,
-                    rejections,
-                    error: response_error,
-                },
-                Err(join_error),
-            ) => SendAttempt::IoError {
-                pending_rows,
-                rejections,
-                error: io::Error::other(format!(
-                    "{response_error}; producer join error: {join_error}"
-                )),
-            },
+    ) -> Option<SendAttempt> {
+        match producer_result {
+            Ok(Ok(())) => None,
+            Ok(Err(producer_error)) => Some(SendAttempt::IoError {
+                pending_rows: row_ids.to_vec(),
+                rejections: Vec::new(),
+                error: io::Error::other(format!("ES streaming producer failed: {producer_error}")),
+            }),
+            Err(join_error) => Some(SendAttempt::IoError {
+                pending_rows: row_ids.to_vec(),
+                rejections: Vec::new(),
+                error: io::Error::other(format!("ES streaming producer task failed: {join_error}")),
+            }),
         }
     }
 }
@@ -1371,7 +1363,25 @@ impl super::sink::Sink for ElasticsearchSink {
 
             let projected_batch = match Self::project_batch_rows(batch, &row_ids) {
                 Ok(projected) => projected,
-                Err(error) => return super::sink::SendResult::from_io_error(error),
+                Err(error) => {
+                    return match super::sink::SendResult::from_io_error(error) {
+                        super::sink::SendResult::IoError(error) => {
+                            self.pending_retry_rows = Some(row_ids);
+                            self.pending_rejections = rejections;
+                            super::sink::SendResult::IoError(error)
+                        }
+                        super::sink::SendResult::RetryAfter(delay) => {
+                            self.pending_retry_rows = Some(row_ids);
+                            self.pending_rejections = rejections;
+                            super::sink::SendResult::RetryAfter(delay)
+                        }
+                        super::sink::SendResult::Rejected(reason) => {
+                            rejections.push(reason);
+                            Self::finish_success_or_reject(rejections)
+                        }
+                        super::sink::SendResult::Ok => Self::finish_success_or_reject(rejections),
+                    };
+                }
             };
 
             match self
@@ -2691,6 +2701,64 @@ mod tests {
             }
             _ => panic!("expected merged io error"),
         }
+    }
+
+    #[test]
+    fn streaming_producer_failure_retries_original_rows() {
+        let result = ElasticsearchSink::streaming_producer_failure(
+            &[3, 5],
+            Ok(Err(io::Error::other("serialize failed"))),
+        );
+
+        match result {
+            Some(SendAttempt::IoError {
+                pending_rows,
+                rejections,
+                error,
+            }) => {
+                assert_eq!(pending_rows, vec![3, 5]);
+                assert!(rejections.is_empty());
+                assert!(error.to_string().contains("serialize failed"));
+            }
+            _ => panic!("expected producer failure to become retryable io error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn send_batch_restores_pending_state_when_projection_fails() {
+        use crate::sink::Sink;
+
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec!["row-a"]))],
+        )
+        .expect("test batch should be valid");
+        let metadata = zero_metadata();
+        let pending_rows = vec![0, u32::MAX];
+        assert!(
+            ElasticsearchSink::project_batch_rows(&batch, &pending_rows).is_err(),
+            "test setup must trigger projection failure"
+        );
+
+        let mut sink = ElasticsearchSink::new(
+            "test".to_string(),
+            test_es_config("http://127.0.0.1:1", "logs", usize::MAX),
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::default()),
+        );
+        sink.pending_retry_rows = Some(pending_rows.clone());
+        sink.pending_rejections = vec!["prior permanent rejection".to_string()];
+
+        let result = sink.send_batch(&batch, &metadata).await;
+        assert!(
+            matches!(result, crate::sink::SendResult::IoError(_)),
+            "projection failure should be retryable, got {result:?}"
+        );
+        assert_eq!(sink.pending_retry_rows, Some(pending_rows));
+        assert_eq!(
+            sink.pending_rejections,
+            vec!["prior permanent rejection".to_string()]
+        );
     }
 
     #[test]
