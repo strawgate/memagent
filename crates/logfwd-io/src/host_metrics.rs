@@ -326,8 +326,11 @@ struct SensorRow {
     disk_io_write_total_bytes: Option<u64>,
 }
 
+// Control files are operator-tunable runtime state, not a fixed schema. Tolerate
+// unknown fields so operators can stage new knobs or leave stale ones behind
+// (for example `emit_heartbeat`, which became a no-op) without the reader
+// aborting mid-poll.
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ControlFileConfig {
     generation: Option<u64>,
     enabled_families: Option<Vec<String>>,
