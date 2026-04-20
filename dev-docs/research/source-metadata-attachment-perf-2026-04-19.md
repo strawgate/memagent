@@ -104,7 +104,7 @@ For quick CPU/allocation iteration without Criterion's full bench-package
 linking cost, use:
 
 ```bash
-cargo run -p logfwd-bench --release --bin source_metadata_profile -- \
+cargo run -p logfwd-bench --release --features bench-tools --bin source_metadata_profile -- \
   --rows 50000 --sources 300 --iterations 200
 ```
 

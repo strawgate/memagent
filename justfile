@@ -625,23 +625,23 @@ bench-source-metadata-fast *ARGS:
 
 # Profile OTLP decode/encode CPU with the normal allocator (flamegraph, per-mode timings).
 profile-otlp-io *ARGS:
-    cargo run -p logfwd-bench --release --bin otlp_io_profile -- {{ARGS}}
+    cargo run -p logfwd-bench --release --features bench-tools --bin otlp_io_profile -- {{ARGS}}
 
 # Profile OTLP decode/encode allocation counts with stats_alloc instrumentation.
 profile-otlp-io-alloc *ARGS:
-    cargo run -p logfwd-bench --release --features otlp-profile-alloc --bin otlp_io_profile -- {{ARGS}}
+    cargo run -p logfwd-bench --release --features bench-tools,otlp-profile-alloc --bin otlp_io_profile -- {{ARGS}}
 
 # Generate microbenchmark report (markdown)
 bench-report:
-    cargo run -p logfwd-bench
+    cargo run -p logfwd-bench --features bench-tools
 
 # Profile FramedInput / format processing overhead and print a markdown report.
 bench-framed-input *ARGS:
-    cargo run -p logfwd-bench --release --bin framed_input_profile -- {{ARGS}}
+    cargo run -p logfwd-bench --release --features bench-tools --bin framed_input_profile -- {{ARGS}}
 
 # Allocation-focused FramedInput profiling (dhat-backed, slower; no throughput numbers).
 bench-framed-input-alloc *ARGS:
-    cargo run -p logfwd-bench --release --features dhat-heap --bin framed_input_profile -- --alloc-only {{ARGS}}
+    cargo run -p logfwd-bench --release --features bench-tools,dhat-heap --bin framed_input_profile -- --alloc-only {{ARGS}}
 
 # Run low-and-slow rate-ingest benchmark (logfwd only, measures memory and CPU at each eps)
 bench-rate *ARGS:
@@ -651,7 +651,7 @@ bench-rate *ARGS:
 # Run sustained-load memory profiler (generator → SQL → null, default 5 minutes).
 # Use --quick (30s) for CI or --medium (120s) for quick checks.
 bench-memory *ARGS:
-    cargo run -p logfwd-bench --release --bin memory-profile -- {{ARGS}}
+    cargo run -p logfwd-bench --release --features bench-tools --bin memory-profile -- {{ARGS}}
 
 # Profile file output (JSON lines serialization + file I/O) CPU, memory, or per-stage breakdown.
 # Modes: breakdown (default), cpu (flamegraph), alloc (allocation counts).
@@ -660,11 +660,11 @@ bench-memory *ARGS:
 #   just profile-file-output --schema wide                # breakdown, wide schema
 #   just profile-file-output --mode cpu --schema wide     # CPU flamegraph, wide
 profile-file-output *ARGS:
-    cargo run -p logfwd-bench --release --bin file_output_profile -- {{ARGS}}
+    cargo run -p logfwd-bench --release --features bench-tools --bin file_output_profile -- {{ARGS}}
 
 # Profile file output allocation counts (requires stats_alloc instrumented allocator).
 profile-file-output-alloc *ARGS:
-    cargo run -p logfwd-bench --release --features otlp-profile-alloc --bin file_output_profile -- --mode alloc {{ARGS}}
+    cargo run -p logfwd-bench --release --features bench-tools,otlp-profile-alloc --bin file_output_profile -- --mode alloc {{ARGS}}
 
 # Start a local OTLP blackhole receiver using main CLI devour wrapper.
 bench-devour-otlp listen="127.0.0.1:4318":
