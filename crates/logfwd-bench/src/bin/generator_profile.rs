@@ -15,7 +15,6 @@ const DEFAULT_SEED: u64 = 42;
 #[derive(Clone, Copy)]
 struct Case {
     name: &'static str,
-    legacy_name: &'static str,
     rows: usize,
     run: fn(usize, u64),
 }
@@ -81,12 +80,9 @@ fn print_help() {
     println!("  --lines N       row count for most generators (default: {DEFAULT_LINES})");
     println!("  --iterations N  iterations per generator (default: {DEFAULT_ITERATIONS})");
     println!("  --seed N        base seed (default: {DEFAULT_SEED})");
-    println!("  --only NAME     run one case by new or legacy name:");
-    println!("                  cloudtrail_audit (legacy: cloudtrail)");
-    println!("                  envoy_access (legacy: envoy)");
-    println!("                  infra_mixed (legacy: production)");
-    println!("                  app_minimal (legacy: narrow)");
-    println!("                  infra_wide (legacy: wide)");
+    println!(
+        "  --only NAME     run one case (cloudtrail_audit | envoy_access | infra_mixed | app_minimal | infra_wide)"
+    );
 }
 
 fn main() {
@@ -107,31 +103,26 @@ fn main() {
     let cases = [
         Case {
             name: "cloudtrail_audit",
-            legacy_name: "cloudtrail",
             rows: lines,
             run: run_cloudtrail,
         },
         Case {
             name: "envoy_access",
-            legacy_name: "envoy",
             rows: lines,
             run: run_envoy,
         },
         Case {
             name: "infra_mixed",
-            legacy_name: "production",
             rows: lines,
             run: run_production_mixed,
         },
         Case {
             name: "app_minimal",
-            legacy_name: "narrow",
             rows: lines,
             run: run_narrow,
         },
         Case {
             name: "infra_wide",
-            legacy_name: "wide",
             rows: wide_rows,
             run: run_wide,
         },
@@ -145,7 +136,6 @@ fn main() {
     for case in cases {
         if let Some(ref only_filter) = only
             && case.name != only_filter
-            && case.legacy_name != only_filter
         {
             continue;
         }

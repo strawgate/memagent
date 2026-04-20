@@ -24,14 +24,8 @@ use libloading::{Library, Symbol};
 
 /// Only open journal files generated on the local machine.
 pub const SD_JOURNAL_LOCAL_ONLY: i32 = 1;
-/// Only volatile journal files (no persistent).
-#[allow(dead_code)]
-pub const SD_JOURNAL_RUNTIME_ONLY: i32 = 2;
 /// Only open system journal.
 pub const SD_JOURNAL_SYSTEM: i32 = 4;
-/// Only current user's journal.
-#[allow(dead_code)]
-pub const SD_JOURNAL_CURRENT_USER: i32 = 8;
 
 // ── sd_journal_wait return values ─────────────────────────────────────
 

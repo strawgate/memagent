@@ -4,8 +4,10 @@ use arrow::array::{Float64Array, Int64Array, StringArray};
 use arrow::datatypes::DataType;
 use arrow::datatypes::{Field, Schema};
 use arrow::record_batch::RecordBatch;
-use logfwd_config::OutputType;
-use logfwd_config::{CompressionFormat, Format, OtlpProtocol, OutputConfig};
+use logfwd_config::{
+    AuthConfig, CompressionFormat, ElasticsearchOutputConfig, FileOutputConfig, Format,
+    HttpOutputConfig, OtlpOutputConfig, OtlpProtocol, OutputConfigV2, StdoutOutputConfig,
+};
 use logfwd_types::diagnostics::ComponentStats;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -289,25 +291,20 @@ fn test_float_column_json() {
 
 #[test]
 fn test_build_sink_factory_stdout() {
-    let cfg = OutputConfig {
+    let cfg = OutputConfigV2::Stdout(StdoutOutputConfig {
         name: Some("test".to_string()),
-        output_type: OutputType::Stdout,
         format: Some(Format::Json),
-        ..Default::default()
-    };
-    // StdoutSink uses the async pipeline — must use build_sink_factory.
+    });
     let factory = build_sink_factory("test", &cfg, None, Arc::new(ComponentStats::new())).unwrap();
     assert_eq!(factory.name(), "test");
 }
 
 #[test]
 fn test_build_sink_factory_stdout_rejects_unsupported_format() {
-    let cfg = OutputConfig {
+    let cfg = OutputConfigV2::Stdout(StdoutOutputConfig {
         name: Some("test".to_string()),
-        output_type: OutputType::Stdout,
         format: Some(Format::Cri),
-        ..Default::default()
-    };
+    });
     match build_sink_factory("test", &cfg, None, Arc::new(ComponentStats::new())) {
         Ok(_) => panic!("expected unsupported stdout format to be rejected"),
         Err(err) => assert!(
@@ -326,13 +323,11 @@ fn test_build_sink_factory_file_resolves_relative_path_against_base_path() {
         NEXT_TMP_ID.fetch_add(1, Ordering::Relaxed)
     );
 
-    let cfg = OutputConfig {
+    let cfg = OutputConfigV2::File(FileOutputConfig {
         name: Some("capture".to_string()),
-        output_type: OutputType::File,
         path: Some(filename.clone()),
         format: Some(Format::Json),
-        ..Default::default()
-    };
+    });
 
     let factory = build_sink_factory(
         "capture",
@@ -352,61 +347,38 @@ fn test_build_sink_factory_file_resolves_relative_path_against_base_path() {
 }
 
 #[test]
-fn test_build_sink_factory_file_rejects_compression() {
-    let cfg = OutputConfig {
-        name: Some("capture".to_string()),
-        output_type: OutputType::File,
-        path: Some("/tmp/capture.ndjson".to_string()),
-        compression: Some(CompressionFormat::Zstd),
-        ..Default::default()
-    };
-
-    let err = match build_sink_factory("capture", &cfg, None, Arc::new(ComponentStats::new())) {
-        Ok(_) => panic!("expected file compression to be rejected"),
-        Err(err) => err,
-    };
-    assert!(
-        err.to_string()
-            .contains("does not support 'zstd' compression")
-    );
-}
-
-#[test]
 fn test_build_sink_factory_otlp_accepts_gzip() {
-    let cfg = OutputConfig {
+    let cfg = OutputConfigV2::Otlp(OtlpOutputConfig {
         name: Some("otel".to_string()),
-        output_type: OutputType::Otlp,
         endpoint: Some("http://localhost:4318".to_string()),
         protocol: Some(OtlpProtocol::Http),
         compression: Some(CompressionFormat::Gzip),
         ..Default::default()
-    };
+    });
     build_sink_factory("otel", &cfg, None, Arc::new(ComponentStats::new()))
         .expect("gzip OTLP compression should be accepted");
 }
 
 #[test]
 fn test_build_sink_factory_http_supported() {
-    let cfg = OutputConfig {
+    let cfg = OutputConfigV2::Http(HttpOutputConfig {
         name: Some("http-ok".to_string()),
-        output_type: OutputType::Http,
         endpoint: Some("http://localhost:9200".to_string()),
         compression: Some(CompressionFormat::Gzip),
         ..Default::default()
-    };
+    });
     let result = build_sink_factory("http-ok", &cfg, None, Arc::new(ComponentStats::new()));
     assert!(result.is_ok(), "Http type should be supported");
 }
 
 #[test]
 fn test_build_sink_factory_elasticsearch_rejects_unknown_compression() {
-    let cfg = OutputConfig {
+    let cfg = OutputConfigV2::Elasticsearch(ElasticsearchOutputConfig {
         name: Some("es".to_string()),
-        output_type: OutputType::Elasticsearch,
         endpoint: Some("http://localhost:9200".to_string()),
         compression: Some(CompressionFormat::Zstd),
         ..Default::default()
-    };
+    });
     let err = match build_sink_factory("es", &cfg, None, Arc::new(ComponentStats::new())) {
         Ok(_) => panic!("elasticsearch must reject unsupported compression"),
         Err(err) => err,
@@ -419,12 +391,10 @@ fn test_build_sink_factory_elasticsearch_rejects_unknown_compression() {
 
 #[test]
 fn test_build_sink_factory_missing_endpoint() {
-    let cfg = OutputConfig {
+    let cfg = OutputConfigV2::Otlp(OtlpOutputConfig {
         name: Some("bad".to_string()),
-        output_type: OutputType::Otlp,
         ..Default::default()
-    };
-    // OTLP now uses the async pipeline via build_sink_factory.
+    });
     let result = build_sink_factory("bad", &cfg, None, Arc::new(ComponentStats::new()));
     assert!(result.is_err());
     let err = result.err().unwrap();
@@ -439,7 +409,6 @@ fn test_build_auth_headers_none() {
 
 #[test]
 fn test_build_auth_headers_bearer() {
-    use logfwd_config::AuthConfig;
     let auth = AuthConfig {
         bearer_token: Some("tok123".to_string()),
         headers: std::collections::HashMap::new(),
@@ -452,7 +421,6 @@ fn test_build_auth_headers_bearer() {
 
 #[test]
 fn test_build_auth_headers_custom() {
-    use logfwd_config::AuthConfig;
     let mut h = std::collections::HashMap::new();
     h.insert("X-API-Key".to_string(), "secret".to_string());
     let auth = AuthConfig {
@@ -467,7 +435,6 @@ fn test_build_auth_headers_custom() {
 
 #[test]
 fn test_build_auth_headers_bearer_and_custom() {
-    use logfwd_config::AuthConfig;
     let mut h = std::collections::HashMap::new();
     h.insert("X-Tenant".to_string(), "acme".to_string());
     let auth = AuthConfig {
@@ -487,18 +454,15 @@ fn test_build_auth_headers_bearer_and_custom() {
 
 #[test]
 fn test_build_sink_factory_elasticsearch_with_bearer_auth() {
-    use logfwd_config::AuthConfig;
-    let cfg = OutputConfig {
+    let cfg = OutputConfigV2::Elasticsearch(ElasticsearchOutputConfig {
         name: Some("auth-sink".to_string()),
-        output_type: OutputType::Elasticsearch,
         endpoint: Some("http://localhost:9200".to_string()),
         auth: Some(AuthConfig {
             bearer_token: Some("mytoken".to_string()),
             headers: std::collections::HashMap::new(),
         }),
         ..Default::default()
-    };
-    // Verify the factory builds successfully with auth.
+    });
     let factory =
         build_sink_factory("auth-sink", &cfg, None, Arc::new(ComponentStats::new())).unwrap();
     assert_eq!(factory.name(), "auth-sink");

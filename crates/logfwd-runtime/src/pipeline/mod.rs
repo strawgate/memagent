@@ -48,7 +48,7 @@ use logfwd_io::tail::ByteOffset;
 #[cfg(feature = "turmoil")]
 use logfwd_output::SinkFactory;
 #[cfg(test)]
-use logfwd_output::build_sink_factory_v2;
+use logfwd_output::build_sink_factory;
 use logfwd_output::{BatchMetadata, OnceAsyncFactory};
 use logfwd_types::pipeline::{PipelineMachine, Running, SourceId};
 use logfwd_types::source_metadata::{SourceMetadataPlan, SourcePathColumn};
@@ -909,7 +909,7 @@ mod tests {
         };
         let typed = OutputConfigV2::from(&cfg);
         let factory =
-            build_sink_factory_v2("test", &typed, None, Arc::new(ComponentStats::new())).unwrap();
+            build_sink_factory("test", &typed, None, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "test");
         let sink = factory.create().expect("create should succeed");
         assert_eq!(sink.name(), "test");
@@ -927,7 +927,7 @@ mod tests {
         };
         let typed = OutputConfigV2::from(&cfg);
         let factory =
-            build_sink_factory_v2("otel", &typed, None, Arc::new(ComponentStats::new())).unwrap();
+            build_sink_factory("otel", &typed, None, Arc::new(ComponentStats::new())).unwrap();
         assert_eq!(factory.name(), "otel");
     }
 
@@ -939,7 +939,7 @@ mod tests {
             ..Default::default()
         };
         let typed = OutputConfigV2::from(&cfg);
-        let result = build_sink_factory_v2("bad", &typed, None, Arc::new(ComponentStats::new()));
+        let result = build_sink_factory("bad", &typed, None, Arc::new(ComponentStats::new()));
         assert!(result.is_err());
         let err = result.err().unwrap();
         assert!(err.to_string().contains("endpoint"), "got: {err}");

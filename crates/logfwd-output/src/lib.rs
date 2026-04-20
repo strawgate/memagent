@@ -28,7 +28,7 @@ mod loki;
 pub use arrow_ipc_sink::{ArrowIpcSinkFactory, deserialize_ipc, serialize_ipc};
 pub use elasticsearch::{ElasticsearchRequestMode, ElasticsearchSink, ElasticsearchSinkFactory};
 pub use error::OutputError;
-pub use factory::build_sink_factory_v2;
+pub use factory::build_sink_factory;
 pub use file_sink::{FileSink, FileSinkFactory};
 pub use json_lines::{JsonLinesSink, JsonLinesSinkFactory};
 pub use logfwd_config::OtlpProtocol;

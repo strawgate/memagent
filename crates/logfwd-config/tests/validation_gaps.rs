@@ -955,8 +955,8 @@ pipelines:
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
-        err.contains("tcp output does not support 'format'"),
-        "unexpected error: {err}"
+        err.contains("unknown field") && err.contains("format"),
+        "tcp output should reject format at parse time: {err}"
     );
 }
 
@@ -1017,9 +1017,8 @@ output:
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
-        err.contains("pipeline 'default' output '#0'")
-            && err.contains("null output does not support 'endpoint'"),
-        "unexpected error: {err}"
+        err.contains("unknown field") && err.contains("endpoint"),
+        "null output should reject endpoint at parse time: {err}"
     );
 }
 
@@ -1038,9 +1037,8 @@ pipelines:
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
-        err.contains("pipeline 'test' output 'discard'")
-            && err.contains("null output does not support 'format'"),
-        "unexpected error: {err}"
+        err.contains("unknown field") && err.contains("format"),
+        "null output should reject format at parse time: {err}"
     );
 }
 

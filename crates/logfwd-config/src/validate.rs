@@ -86,9 +86,6 @@ fn null_output_unsupported_field(output: &OutputConfig) -> Option<&'static str> 
     if output.port.is_some() {
         return Some("port");
     }
-    if output.write_legacy_ipc_format.is_some() {
-        return Some("write_legacy_ipc_format");
-    }
     if output.buffer_size_bytes.is_some() {
         return Some("buffer_size_bytes");
     }
@@ -1115,11 +1112,6 @@ impl Config {
                         if output.port.is_some() {
                             return Err(ConfigError::Validation(format!(
                                 "pipeline '{name}' output '{label}': 'port' is only supported for arrow_ipc outputs"
-                            )));
-                        }
-                        if output.write_legacy_ipc_format.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'write_legacy_ipc_format' is only supported for arrow_ipc outputs"
                             )));
                         }
                         if output.buffer_size_bytes.is_some() {
@@ -2693,7 +2685,10 @@ pipelines:
         retry_attempts: 3
 "#;
         let err = Config::load_str(yaml).unwrap_err().to_string();
-        assert!(err.contains("'retry_attempts' is only supported for otlp outputs"));
+        assert!(
+            err.contains("unknown field") && err.contains("retry_attempts"),
+            "stdout output should reject retry_attempts at parse time: {err}"
+        );
     }
 
     #[test]

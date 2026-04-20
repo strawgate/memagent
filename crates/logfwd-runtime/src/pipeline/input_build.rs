@@ -1169,7 +1169,7 @@ mod tests {
             source_metadata: SourceMetadataStyle::None,
             type_config: InputTypeConfig::Tcp(logfwd_config::TcpTypeConfig {
                 listen: "127.0.0.1:0".to_string(),
-                tls: Some(logfwd_config::TlsInputConfig {
+                tls: Some(logfwd_config::TlsServerConfig {
                     cert_file: Some("/definitely/missing/server.crt".to_string()),
                     key_file: Some("/definitely/missing/server.key".to_string()),
                     client_ca_file: None,

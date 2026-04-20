@@ -1126,7 +1126,6 @@ fn cmd_wizard() -> Result<(), CliError> {
         let uc = &USE_CASE_TEMPLATES[uc_idx];
         println!("{}selected{}: {}", green(), reset(), uc.title);
         println!();
-        // TODO: support multiline SQL input (currently single-line via read_line)
         let sql = prompt_text(
             "SQL transform (blank = keep the preset default)",
             uc.transform,
@@ -1151,7 +1150,6 @@ fn cmd_wizard() -> Result<(), CliError> {
             &output_descs,
         )?;
 
-        // TODO: support multiline SQL input (currently single-line via read_line)
         let sql = prompt_text(
             "Optional SQL transform (blank = SELECT * FROM logs)",
             "SELECT * FROM logs",

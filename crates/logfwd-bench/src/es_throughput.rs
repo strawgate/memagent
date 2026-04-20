@@ -4,7 +4,6 @@
 //! Credentials are read from environment variables:
 //!
 //!   ES_URL        — base URL (e.g. <https://my-cluster.es.us-east-1.aws.elastic.cloud>)
-//!   ES_ENDPOINT   — alias for ES_URL (legacy)
 //!   ES_API_KEY    — Elasticsearch API key (without the "ApiKey " prefix)
 //!   ES_INDEX      — target index base name (default: logfwd-bench)
 //!
@@ -33,9 +32,7 @@ use logfwd_types::diagnostics::ComponentStats;
 use pprof::ProfilerGuardBuilder;
 
 fn es_endpoint() -> String {
-    std::env::var("ES_URL")
-        .or_else(|_| std::env::var("ES_ENDPOINT"))
-        .expect("ES_URL or ES_ENDPOINT required")
+    std::env::var("ES_URL").expect("ES_URL env var required")
 }
 
 fn es_api_key() -> String {

@@ -54,9 +54,6 @@ pub struct TlsServerConfig {
     pub require_client_auth: bool,
 }
 
-/// Backward-compatible alias: [`TlsInputConfig`] is now [`TlsServerConfig`].
-pub type TlsInputConfig = TlsServerConfig;
-
 // ── Retry ──────────────────────────────────────────────────────────────
 
 /// Retry configuration for transient failures.
