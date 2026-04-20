@@ -10,15 +10,13 @@ use datafusion::sql::sqlparser::parser::Parser;
 
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_types::field_names;
-use logfwd_types::source_metadata::SourceMetadataPlan;
+use logfwd_types::source_metadata::{SourceMetadataPlan, SourcePathColumn};
 
 use crate::TransformError;
 
 #[derive(Default)]
 struct SourceMetadataUsage {
     referenced_columns: HashSet<String>,
-    uses_select_star: bool,
-    except_fields: Vec<String>,
 }
 
 #[derive(Default)]
@@ -39,10 +37,6 @@ impl SourceMetadataScope {
             outer_logs_aliases,
             ..Self::default()
         }
-    }
-
-    fn has_logs(&self) -> bool {
-        !self.logs_aliases.is_empty()
     }
 
     fn matches_logs_qualifier(&self, qualifier: &str) -> bool {
@@ -159,49 +153,24 @@ impl QueryAnalyzer {
     /// Source metadata columns that must be attached post-scan before SQL.
     ///
     /// Explicit references need their columns for projection/filter/join
-    /// evaluation. Wildcard projections preserve legacy `_source_path`
-    /// compatibility without implicitly widening results with new metadata
-    /// columns such as `_source_id` or `_input`.
+    /// evaluation. Wildcard projections remain narrow and never attach source
+    /// metadata by themselves.
     pub fn source_metadata_plan(&self) -> SourceMetadataPlan {
-        let explicit = self.explicit_source_metadata_plan();
-        SourceMetadataPlan {
-            has_source_id: explicit.has_source_id,
-            has_input: explicit.has_input,
-            has_source_path: self.source_metadata_usage.uses_select_star
-                || explicit.has_source_path,
-        }
+        self.explicit_source_metadata_plan()
     }
 
     /// Source metadata columns explicitly referenced by SQL expressions.
     ///
-    /// This excludes wildcard projection so callers can reject explicit source
-    /// metadata dependencies when source metadata is disabled by config while
-    /// still allowing `SELECT *` to remain narrow.
+    /// This excludes wildcard projection and wildcard EXCEPT lists so callers
+    /// can reject source metadata dependencies only when SQL actually consumes
+    /// those metadata values.
     pub fn explicit_source_metadata_plan(&self) -> SourceMetadataPlan {
-        let references = |target: &str| {
-            self.source_metadata_usage
-                .referenced_columns
-                .iter()
-                .map(|name| strip_type_suffix(name))
-                .chain(
-                    self.source_metadata_usage
-                        .except_fields
-                        .iter()
-                        .map(|name| strip_type_suffix(name)),
-                )
-                .any(|name| name.eq_ignore_ascii_case(target))
-        };
-
-        SourceMetadataPlan {
-            has_source_id: references(field_names::SOURCE_ID),
-            has_input: references(field_names::INPUT),
-            has_source_path: references(field_names::SOURCE_PATH),
-        }
+        source_metadata_plan_for_names(&self.source_metadata_usage.referenced_columns)
     }
 
-    /// Whether the input layer must expose the file `_source_path` column.
+    /// Whether the input layer must expose a source path column for this query.
     pub fn source_path_required(&self) -> bool {
-        self.source_metadata_plan().has_source_path
+        self.source_metadata_plan().has_source_path()
     }
 
     /// Extract filter hints from the SQL for predicate pushdown.
@@ -1281,19 +1250,9 @@ fn collect_logs_source_metadata_from_select(
 
     for item in &select.projection {
         match item {
-            SelectItem::Wildcard(opts) => {
-                if scope.has_logs() {
-                    usage.uses_select_star = true;
-                    extract_except_fields(opts, &mut usage.except_fields);
-                }
-            }
-            SelectItem::QualifiedWildcard(kind, opts) => match kind {
-                sqlast::SelectItemQualifiedWildcardKind::ObjectName(name) => {
-                    if object_name_matches_logs_scope(name, &scope) {
-                        usage.uses_select_star = true;
-                        extract_except_fields(opts, &mut usage.except_fields);
-                    }
-                }
+            SelectItem::Wildcard(_) => {}
+            SelectItem::QualifiedWildcard(kind, _) => match kind {
+                sqlast::SelectItemQualifiedWildcardKind::ObjectName(_) => {}
                 sqlast::SelectItemQualifiedWildcardKind::Expr(expr) => {
                     collect_logs_source_metadata_from_expr(expr, &scope, usage);
                 }
@@ -1892,15 +1851,15 @@ fn collect_source_metadata_name(name: &str, usage: &mut SourceMetadataUsage) {
 
 fn is_source_metadata_name(name: &str) -> bool {
     name.eq_ignore_ascii_case(field_names::SOURCE_ID)
-        || name.eq_ignore_ascii_case(field_names::INPUT)
-        || name.eq_ignore_ascii_case(field_names::SOURCE_PATH)
 }
 
-fn object_name_matches_logs_scope(name: &sqlast::ObjectName, scope: &SourceMetadataScope) -> bool {
-    name.0
-        .last()
-        .and_then(|part| part.as_ident())
-        .is_some_and(|ident| scope.matches_logs_qualifier(&ident.value))
+fn source_metadata_plan_for_names(names: &HashSet<String>) -> SourceMetadataPlan {
+    let references = |target: &str| names.iter().any(|name| name.eq_ignore_ascii_case(target));
+
+    SourceMetadataPlan {
+        has_source_id: references(field_names::SOURCE_ID),
+        source_path: SourcePathColumn::default(),
+    }
 }
 
 fn table_name_exposes_logs_relation(
@@ -2078,52 +2037,11 @@ mod tests {
     }
 
     #[test]
-    fn source_path_required_for_explicit_projection() {
-        let analyzer = QueryAnalyzer::new("SELECT _source_path FROM logs").unwrap();
-        assert!(analyzer.source_path_required());
-        assert!(analyzer.source_metadata_plan().has_source_path);
-        assert!(!analyzer.source_metadata_plan().has_source_id);
-        assert!(!analyzer.source_metadata_plan().has_input);
-    }
-
-    #[test]
-    fn source_path_required_for_qualified_join_reference() {
-        let analyzer = QueryAnalyzer::new(
-            "SELECT l.msg, k.namespace FROM logs l \
-             LEFT JOIN k8s k ON l._source_path = k.log_path_prefix",
-        )
-        .unwrap();
-        assert!(analyzer.source_path_required());
-    }
-
-    #[test]
-    fn source_path_required_for_wildcard_projection() {
-        let analyzer = QueryAnalyzer::new("SELECT * FROM logs").unwrap();
-        assert!(analyzer.source_path_required());
-    }
-
-    #[test]
-    fn source_path_required_for_wildcard_except_projection() {
-        let analyzer = QueryAnalyzer::new("SELECT * EXCEPT (_source_path) FROM logs").unwrap();
-        assert!(analyzer.source_path_required());
-    }
-
-    #[test]
     fn source_id_required_for_explicit_projection() {
-        let analyzer = QueryAnalyzer::new("SELECT _source_id FROM logs").unwrap();
+        let analyzer = QueryAnalyzer::new("SELECT __source_id FROM logs").unwrap();
         let plan = analyzer.source_metadata_plan();
         assert!(plan.has_source_id);
-        assert!(!plan.has_input);
-        assert!(!plan.has_source_path);
-    }
-
-    #[test]
-    fn input_required_for_explicit_projection() {
-        let analyzer = QueryAnalyzer::new("SELECT _input FROM logs").unwrap();
-        let plan = analyzer.source_metadata_plan();
-        assert!(!plan.has_source_id);
-        assert!(plan.has_input);
-        assert!(!plan.has_source_path);
+        assert!(!plan.has_source_path());
     }
 
     #[test]
@@ -2139,47 +2057,17 @@ mod tests {
     fn explicit_source_metadata_plan_includes_join_reference() {
         let analyzer = QueryAnalyzer::new(
             "SELECT l.msg FROM logs l \
-             LEFT JOIN k8s k ON l._source_path = k.log_path_prefix",
+             LEFT JOIN sources s ON l.__source_id = s.source_id",
         )
         .unwrap();
-        assert!(analyzer.explicit_source_metadata_plan().has_source_path);
+        assert!(analyzer.explicit_source_metadata_plan().has_source_id);
     }
 
     #[test]
-    fn explicit_source_metadata_plan_includes_wildcard_except_reference() {
-        let analyzer = QueryAnalyzer::new("SELECT * EXCEPT (_source_path) FROM logs").unwrap();
-        assert!(analyzer.explicit_source_metadata_plan().has_source_path);
-    }
-
-    #[test]
-    fn wildcard_projection_attaches_legacy_source_path_only() {
-        let analyzer = QueryAnalyzer::new("SELECT * FROM logs").unwrap();
-        let plan = analyzer.source_metadata_plan();
-        assert!(!plan.has_source_id);
-        assert!(!plan.has_input);
-        assert!(plan.has_source_path);
-    }
-
-    #[test]
-    fn source_metadata_plan_ignores_non_logs_subquery_wildcard() {
-        let analyzer =
-            QueryAnalyzer::new("SELECT host FROM logs WHERE EXISTS (SELECT * FROM alerts)")
-                .unwrap();
+    fn source_metadata_plan_ignores_public_style_columns() {
+        let analyzer = QueryAnalyzer::new(r#"SELECT "file.path" FROM logs"#).unwrap();
         assert_eq!(
             analyzer.source_metadata_plan(),
-            SourceMetadataPlan::default()
-        );
-    }
-
-    #[test]
-    fn explicit_source_metadata_plan_ignores_non_logs_wildcard_except() {
-        let analyzer = QueryAnalyzer::new(
-            "SELECT host FROM logs WHERE EXISTS \
-             (SELECT * EXCEPT (_source_path) FROM alerts)",
-        )
-        .unwrap();
-        assert_eq!(
-            analyzer.explicit_source_metadata_plan(),
             SourceMetadataPlan::default()
         );
     }
@@ -2188,7 +2076,7 @@ mod tests {
     fn explicit_source_metadata_plan_uses_logs_alias_only() {
         let analyzer = QueryAnalyzer::new(
             "SELECT l.msg FROM logs l \
-             LEFT JOIN k8s k ON l.path = k._source_path",
+             LEFT JOIN sources s ON s.other_id = k.__source_id",
         )
         .unwrap();
         assert_eq!(
@@ -2198,113 +2086,16 @@ mod tests {
 
         let analyzer = QueryAnalyzer::new(
             "SELECT l.msg FROM logs l \
-             LEFT JOIN k8s k ON l._source_path = k.log_path_prefix",
+             LEFT JOIN sources s ON l.__source_id = s.source_id",
         )
         .unwrap();
-        assert!(analyzer.explicit_source_metadata_plan().has_source_path);
-    }
-
-    #[test]
-    fn explicit_source_metadata_plan_ignores_ambiguous_bare_join_reference() {
-        let analyzer = QueryAnalyzer::new(
-            "SELECT _source_path FROM logs \
-             LEFT JOIN k8s k ON logs.path = k.log_path_prefix",
-        )
-        .unwrap();
-        assert_eq!(
-            analyzer.explicit_source_metadata_plan(),
-            SourceMetadataPlan::default()
-        );
-
-        let analyzer = QueryAnalyzer::new(
-            "SELECT logs._source_path FROM logs \
-             LEFT JOIN k8s k ON logs.path = k.log_path_prefix",
-        )
-        .unwrap();
-        assert!(analyzer.explicit_source_metadata_plan().has_source_path);
-    }
-
-    #[test]
-    fn explicit_source_metadata_plan_tracks_logs_derived_alias() {
-        let analyzer =
-            QueryAnalyzer::new("SELECT d._source_path FROM (SELECT * FROM logs) d").unwrap();
-        assert!(analyzer.explicit_source_metadata_plan().has_source_path);
-
-        let analyzer =
-            QueryAnalyzer::new("SELECT d._source_path FROM (SELECT * FROM alerts) d").unwrap();
-        assert_eq!(
-            analyzer.explicit_source_metadata_plan(),
-            SourceMetadataPlan::default()
-        );
-    }
-
-    #[test]
-    fn explicit_source_metadata_plan_tracks_using_join_on_logs() {
-        let analyzer =
-            QueryAnalyzer::new("SELECT msg FROM logs JOIN paths USING (_source_path)").unwrap();
-        assert!(analyzer.explicit_source_metadata_plan().has_source_path);
-    }
-
-    #[test]
-    fn explicit_source_metadata_plan_ignores_using_join_without_logs() {
-        let analyzer = QueryAnalyzer::new(
-            "SELECT logs.msg FROM logs, paths p JOIN k8s k USING (_source_path)",
-        )
-        .unwrap();
-        assert_eq!(
-            analyzer.explicit_source_metadata_plan(),
-            SourceMetadataPlan::default()
-        );
+        assert!(analyzer.explicit_source_metadata_plan().has_source_id);
     }
 
     #[test]
     fn explicit_source_metadata_plan_ignores_cte_shadowing_logs() {
-        let analyzer =
-            QueryAnalyzer::new("WITH logs AS (SELECT 1 AS _source_id) SELECT _source_id FROM logs")
-                .unwrap();
-        assert_eq!(
-            analyzer.explicit_source_metadata_plan(),
-            SourceMetadataPlan::default()
-        );
-        assert_eq!(
-            analyzer.source_metadata_plan(),
-            SourceMetadataPlan::default()
-        );
-    }
-
-    #[test]
-    fn source_metadata_plan_ignores_wildcard_from_cte_shadowing_logs() {
-        let analyzer =
-            QueryAnalyzer::new("WITH logs AS (SELECT 1 AS value) SELECT * FROM logs").unwrap();
-        assert_eq!(
-            analyzer.source_metadata_plan(),
-            SourceMetadataPlan::default()
-        );
-    }
-
-    #[test]
-    fn explicit_source_metadata_plan_preserves_cte_shadowing_in_subqueries() {
         let analyzer = QueryAnalyzer::new(
-            "WITH logs AS (SELECT 1 AS _source_id) \
-             SELECT 1 WHERE EXISTS (SELECT _source_id FROM logs)",
-        )
-        .unwrap();
-        assert_eq!(
-            analyzer.explicit_source_metadata_plan(),
-            SourceMetadataPlan::default()
-        );
-        assert_eq!(
-            analyzer.source_metadata_plan(),
-            SourceMetadataPlan::default()
-        );
-    }
-
-    #[test]
-    fn explicit_source_metadata_plan_preserves_preceding_cte_shadowing() {
-        let analyzer = QueryAnalyzer::new(
-            "WITH logs AS (SELECT 1 AS _source_path), \
-             b AS (SELECT _source_path FROM logs) \
-             SELECT _source_path FROM b",
+            "WITH logs AS (SELECT 1 AS __source_id) SELECT __source_id FROM logs",
         )
         .unwrap();
         assert_eq!(
@@ -2320,37 +2111,16 @@ mod tests {
     #[test]
     fn explicit_source_metadata_plan_tracks_logs_backed_cte_alias() {
         let analyzer =
-            QueryAnalyzer::new("WITH c AS (SELECT * FROM logs) SELECT c._source_id FROM c")
+            QueryAnalyzer::new("WITH c AS (SELECT * FROM logs) SELECT c.__source_id FROM c")
                 .unwrap();
         assert!(analyzer.explicit_source_metadata_plan().has_source_id);
 
         let analyzer =
-            QueryAnalyzer::new("WITH c AS (SELECT * FROM alerts) SELECT c._source_id FROM c")
+            QueryAnalyzer::new("WITH c AS (SELECT * FROM alerts) SELECT c.__source_id FROM c")
                 .unwrap();
         assert_eq!(
             analyzer.explicit_source_metadata_plan(),
             SourceMetadataPlan::default()
         );
-    }
-
-    #[test]
-    fn explicit_source_metadata_plan_tracks_chained_logs_backed_cte_alias() {
-        let analyzer = QueryAnalyzer::new(
-            "WITH c AS (SELECT * FROM logs), \
-             d AS (SELECT c._source_path FROM c) \
-             SELECT _source_path FROM d",
-        )
-        .unwrap();
-        assert!(analyzer.explicit_source_metadata_plan().has_source_path);
-    }
-
-    #[test]
-    fn explicit_source_metadata_plan_tracks_correlated_outer_logs_alias() {
-        let analyzer = QueryAnalyzer::new(
-            "SELECT l.msg FROM logs l \
-             WHERE EXISTS (SELECT 1 FROM alerts a WHERE a.path = l._source_path)",
-        )
-        .unwrap();
-        assert!(analyzer.explicit_source_metadata_plan().has_source_path);
     }
 }

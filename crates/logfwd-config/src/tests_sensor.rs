@@ -7,7 +7,7 @@ type: linux_ebpf_sensor
 sensor:
   include_process_names: ["nginx*", "redis"]
   exclude_process_names: ["bash"]
-  include_event_types: ["process_exec"]
+  include_event_types: ["exec"]
   exclude_event_types: ["tcp_connect"]
   ring_buffer_size_kb: 4096
   poll_interval_ms: 100
@@ -23,7 +23,7 @@ sensor:
                 vec!["nginx*", "redis"]
             );
             assert_eq!(sensor.exclude_process_names.unwrap(), vec!["bash"]);
-            assert_eq!(sensor.include_event_types.unwrap(), vec!["process_exec"]);
+            assert_eq!(sensor.include_event_types.unwrap(), vec!["exec"]);
             assert_eq!(sensor.exclude_event_types.unwrap(), vec!["tcp_connect"]);
             assert_eq!(sensor.ring_buffer_size_kb.unwrap(), 4096);
             assert_eq!(sensor.poll_interval_ms, crate::PositiveMillis::new(100));

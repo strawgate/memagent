@@ -183,7 +183,7 @@ input:
   type: file
   path: /var/log/pods/**/*.log
   format: cri
-  source_metadata: true
+  source_metadata: ecs
 
 enrichment:
   - type: k8s_path
@@ -197,7 +197,7 @@ transform: |
     k.pod_name,
     k.container_name
   FROM logs l
-  LEFT JOIN k8s k ON l._source_path = k.log_path_prefix
+  LEFT JOIN k8s k ON l."file.path" = k.log_path_prefix
 ```
 
 ### Namespace filtering
@@ -209,12 +209,12 @@ input:
   type: file
   path: /var/log/pods/**/*.log
   format: cri
-  source_metadata: true
+  source_metadata: ecs
 
 transform: |
   SELECT l.*, k.namespace, k.pod_name, k.container_name
   FROM logs l
-  LEFT JOIN k8s k ON l._source_path = k.log_path_prefix
+  LEFT JOIN k8s k ON l."file.path" = k.log_path_prefix
   WHERE k.namespace IN ('production', 'staging')
 ```
 

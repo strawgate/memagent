@@ -1,6 +1,7 @@
 //! Reads criterion JSON results from target/criterion/ and emits a markdown table.
 //!
 //! Usage: cargo run -p logfwd-bench [criterion_dir]
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //!   Default criterion_dir: target/criterion
 
 use std::collections::BTreeMap;

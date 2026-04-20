@@ -1,7 +1,7 @@
 use crate::types::{
-    Config, ConfigError, EnrichmentConfig, Format, GeneratorAttributeValueConfig,
-    GeneratorProfileConfig, InputType, InputTypeConfig, JournaldBackendConfig, OutputType,
-    PIPELINE_WORKERS_MAX,
+    CompressionFormat, Config, ConfigError, ElasticsearchRequestMode, EnrichmentConfig, Format,
+    GeneratorAttributeValueConfig, GeneratorProfileConfig, InputType, InputTypeConfig,
+    JournaldBackendConfig, OutputType, PIPELINE_WORKERS_MAX,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -10,41 +10,59 @@ use url::Url;
 
 const MAX_READ_BUF_SIZE: usize = 4_194_304;
 
+fn validation_error(message: impl Into<String>) -> ConfigError {
+    ConfigError::Validation(message.into())
+}
+
+fn validation_message(error: ConfigError) -> String {
+    match error {
+        ConfigError::Validation(message) => message,
+        ConfigError::Io(error) => error.to_string(),
+        ConfigError::Yaml(error) => error.to_string(),
+    }
+}
+
 impl Config {
     /// Validate the loaded configuration using a base path for relative paths.
     pub fn validate_with_base_path(&self, base_path: Option<&Path>) -> Result<(), ConfigError> {
         if let Some(ep) = &self.server.traces_endpoint
-            && let Err(msg) = validate_endpoint_url(ep)
+            && let Err(err) = validate_endpoint_url(ep)
         {
             return Err(ConfigError::Validation(format!(
-                "server.traces_endpoint: {msg}"
+                "server.traces_endpoint: {}",
+                validation_message(err)
             )));
         }
 
         // Validate server.metrics_endpoint at config time (#1892).
         if let Some(ep) = &self.server.metrics_endpoint
-            && let Err(msg) = validate_endpoint_url(ep)
+            && let Err(err) = validate_endpoint_url(ep)
         {
             return Err(ConfigError::Validation(format!(
-                "server.metrics_endpoint: {msg}"
+                "server.metrics_endpoint: {}",
+                validation_message(err)
             )));
         }
 
         // Validate server.diagnostics bind address at config time so that
         // `validate` catches typos before the server tries to bind at runtime.
         if let Some(addr) = &self.server.diagnostics
-            && let Err(msg) = validate_bind_addr(addr)
+            && let Err(err) = validate_bind_addr(addr)
         {
             return Err(ConfigError::Validation(format!(
-                "server.diagnostics: {msg}"
+                "server.diagnostics: {}",
+                validation_message(err)
             )));
         }
 
         // Validate server.log_level is a recognised level (#481).
         if let Some(level) = &self.server.log_level
-            && let Err(msg) = validate_log_level(level)
+            && let Err(err) = validate_log_level(level)
         {
-            return Err(ConfigError::Validation(format!("server.log_level: {msg}")));
+            return Err(ConfigError::Validation(format!(
+                "server.log_level: {}",
+                validation_message(err)
+            )));
         }
 
         // Validate storage.data_dir is either absent/non-existent or an existing directory.
@@ -168,9 +186,10 @@ impl Config {
                             }
                         }
                         InputTypeConfig::Udp(u) => {
-                            if let Err(msg) = validate_bind_addr(&u.listen) {
+                            if let Err(err) = validate_bind_addr(&u.listen) {
                                 return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': {msg}"
+                                    "pipeline '{name}' input '{label}': {}",
+                                    validation_message(err)
                                 )));
                             }
                             if u.max_message_size_bytes == Some(0) {
@@ -193,16 +212,40 @@ impl Config {
                             )?;
                         }
                         InputTypeConfig::Tcp(t) => {
-                            if let Err(msg) = validate_bind_addr(&t.listen) {
+                            if let Err(err) = validate_bind_addr(&t.listen) {
                                 return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': {msg}"
+                                    "pipeline '{name}' input '{label}': {}",
+                                    validation_message(err)
                                 )));
                             }
-                            if t.tls.is_some() {
-                                // TCP TLS is not yet implemented at runtime.
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': TLS is not yet supported for TCP inputs (runtime TLS termination is not implemented)"
-                                )));
+                            if let Some(tls) = &t.tls {
+                                let cert_file = tls
+                                    .cert_file
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|v| !v.is_empty());
+                                let key_file = tls
+                                    .key_file
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|v| !v.is_empty());
+                                let client_ca_file = tls
+                                    .client_ca_file
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|v| !v.is_empty());
+
+                                if client_ca_file.is_some() || tls.require_client_auth {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': tcp tls client authentication is not supported (tls.client_ca_file and tls.require_client_auth are reserved for #2332)"
+                                    )));
+                                }
+
+                                if cert_file.is_none() || key_file.is_none() {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': tcp tls requires both tls.cert_file and tls.key_file"
+                                    )));
+                                }
                             }
                             if t.max_connections == Some(0) {
                                 return Err(ConfigError::Validation(format!(
@@ -218,9 +261,10 @@ impl Config {
                             )?;
                         }
                         InputTypeConfig::Otlp(o) => {
-                            if let Err(msg) = validate_bind_addr(&o.listen) {
+                            if let Err(err) = validate_bind_addr(&o.listen) {
                                 return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': {msg}"
+                                    "pipeline '{name}' input '{label}': {}",
+                                    validation_message(err)
                                 )));
                             }
                             if o.max_recv_message_size_bytes == Some(0) {
@@ -238,9 +282,10 @@ impl Config {
                             )?;
                         }
                         InputTypeConfig::Http(h) => {
-                            if let Err(msg) = validate_bind_addr(&h.listen) {
+                            if let Err(err) = validate_bind_addr(&h.listen) {
                                 return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': {msg}"
+                                    "pipeline '{name}' input '{label}': {}",
+                                    validation_message(err)
                                 )));
                             }
                             if let Some(http) = &h.http {
@@ -387,10 +432,11 @@ impl Config {
                                     }
                                     if let Some(start) = &ts.start
                                         && !start.eq_ignore_ascii_case("now")
-                                        && let Err(e) = validate_iso8601_timestamp(start)
+                                        && let Err(err) = validate_iso8601_timestamp(start)
                                     {
                                         return Err(ConfigError::Validation(format!(
-                                            "pipeline '{name}' input '{label}': generator.timestamp.start: {e}"
+                                            "pipeline '{name}' input '{label}': generator.timestamp.start: {}",
+                                            validation_message(err)
                                         )));
                                     }
                                 }
@@ -441,6 +487,15 @@ impl Config {
                                     }
                                 }
                             }
+                            if let Some(sensor) = s.sensor.as_ref() {
+                                validate_sensor_event_type_filters(
+                                    &input_type,
+                                    name,
+                                    &label,
+                                    sensor.include_event_types.as_deref(),
+                                    sensor.exclude_event_types.as_deref(),
+                                )?;
+                            }
                             // NOTE: ebpf_binary_path for linux_ebpf_sensor is validated
                             // at runtime when the sensor loads, not here — the path may
                             // be auto-discovered or provided via environment variable.
@@ -474,9 +529,10 @@ impl Config {
                             }
                         }
                         InputTypeConfig::ArrowIpc(a) => {
-                            if let Err(msg) = validate_bind_addr(&a.listen) {
+                            if let Err(err) = validate_bind_addr(&a.listen) {
                                 return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': {msg}"
+                                    "pipeline '{name}' input '{label}': {}",
+                                    validation_message(err)
                                 )));
                             }
                             if input.format.is_some() {
@@ -686,10 +742,11 @@ impl Config {
                                 )));
                             }
                             if let Some(ep) = &output.endpoint
-                                && let Err(msg) = validate_endpoint_url(ep)
+                                && let Err(err) = validate_endpoint_url(ep)
                             {
                                 return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': {msg}",
+                                    "pipeline '{name}' output '{label}': {}",
+                                    validation_message(err)
                                 )));
                             }
                             if output.output_type == OutputType::Elasticsearch {
@@ -713,15 +770,10 @@ impl Config {
                                         "pipeline '{name}' output '{label}': elasticsearch index '{idx}' {reason}"
                                     )));
                                 }
-                                if let Some(mode) = output.request_mode.as_deref()
-                                    && !matches!(mode, "buffered" | "streaming")
-                                {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' output '{label}': elasticsearch request_mode must be 'buffered' or 'streaming'"
-                                    )));
-                                }
-                                if output.request_mode.as_deref() == Some("streaming")
-                                    && output.compression.as_deref() == Some("gzip")
+                                if matches!(
+                                    output.request_mode,
+                                    Some(ElasticsearchRequestMode::Streaming)
+                                ) && matches!(output.compression, Some(CompressionFormat::Gzip))
                                 {
                                     return Err(ConfigError::Validation(format!(
                                         "pipeline '{name}' output '{label}': elasticsearch request_mode 'streaming' does not support gzip compression yet"
@@ -774,10 +826,11 @@ impl Config {
                                 )));
                             }
                             if let Some(ep) = &output.endpoint
-                                && let Err(msg) = validate_host_port(ep)
+                                && let Err(err) = validate_host_port(ep)
                             {
                                 return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': {msg}",
+                                    "pipeline '{name}' output '{label}': {}",
+                                    validation_message(err)
                                 )));
                             }
                             if output.format.is_some() {
@@ -805,8 +858,8 @@ impl Config {
                         )));
                     }
                     if output.output_type == OutputType::ArrowIpc
-                        && let Some(c) = output.compression.as_deref()
-                        && !matches!(c, "zstd" | "none")
+                        && let Some(c) = output.compression
+                        && !matches!(c, CompressionFormat::Zstd | CompressionFormat::None)
                     {
                         return Err(ConfigError::Validation(format!(
                             "pipeline '{name}' output '{label}': arrow_ipc output only supports 'zstd' or 'none' compression, not '{c}'"
@@ -875,28 +928,20 @@ impl Config {
                             "pipeline '{name}' output '{label}': 'protocol' is only supported for otlp outputs"
                         )));
                     }
-                    // Validate OTLP protocol value (#1876).
-                    if output.output_type == OutputType::Otlp
-                        && let Some(p) = output.protocol.as_deref()
-                        && !matches!(p, "http" | "grpc")
-                    {
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': otlp protocol must be 'http' or 'grpc', got '{p}'"
-                        )));
-                    }
-                    // Validate compression values per output type (#1876).
-                    if let Some(c) = output.compression.as_deref() {
+                    // Validate compression values per output type.
+                    if let Some(c) = output.compression {
                         match output.output_type {
-                            OutputType::Otlp if !matches!(c, "zstd" | "gzip" | "none") => {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': otlp compression must be 'zstd', 'gzip', or 'none', got '{c}'"
-                                )));
-                            }
-                            OutputType::Elasticsearch if !matches!(c, "gzip" | "none") => {
+                            OutputType::Elasticsearch
+                                if !matches!(
+                                    c,
+                                    CompressionFormat::Gzip | CompressionFormat::None
+                                ) =>
+                            {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' output '{label}': elasticsearch compression must be 'gzip' or 'none', got '{c}'"
                                 )));
                             }
+                            // OTLP accepts every `CompressionFormat` variant.
                             // ArrowIpc allows zstd/none and is validated above.
                             // Other types either reject compression entirely or accept any.
                             _ => {}
@@ -1378,9 +1423,10 @@ fn track_listen_addr_uniqueness(
     input_label: &str,
     listen: &str,
 ) -> Result<(), ConfigError> {
-    let Some(listen_key) = canonical_listen_addr_key(transport, listen).map_err(|msg| {
+    let Some(listen_key) = canonical_listen_addr_key(transport, listen).map_err(|err| {
         ConfigError::Validation(format!(
-            "pipeline '{pipeline_name}' input '{input_label}': {msg}"
+            "pipeline '{pipeline_name}' input '{input_label}': {}",
+            validation_message(err)
         ))
     })?
     else {
@@ -1396,23 +1442,27 @@ fn track_listen_addr_uniqueness(
     Ok(())
 }
 
-fn canonical_listen_addr_key(transport: &str, listen: &str) -> Result<Option<String>, String> {
+fn canonical_listen_addr_key(transport: &str, listen: &str) -> Result<Option<String>, ConfigError> {
     let (host, port_str) = if listen.starts_with('[') {
         let close_bracket = listen
             .find(']')
-            .ok_or_else(|| format!("'{listen}' has mismatched brackets"))?;
+            .ok_or_else(|| validation_error(format!("'{listen}' has mismatched brackets")))?;
         if !listen[close_bracket..].starts_with("]:") {
-            return Err(format!("'{listen}' is missing a port after IPv6 brackets"));
+            return Err(validation_error(format!(
+                "'{listen}' is missing a port after IPv6 brackets"
+            )));
         }
         (&listen[..=close_bracket], &listen[close_bracket + 2..])
     } else {
-        listen
-            .rsplit_once(':')
-            .ok_or_else(|| format!("'{listen}' is missing a port (expected format host:port)"))?
+        listen.rsplit_once(':').ok_or_else(|| {
+            validation_error(format!(
+                "'{listen}' is missing a port (expected format host:port)"
+            ))
+        })?
     };
     let port = port_str
         .parse::<u16>()
-        .map_err(|_| format!("'{listen}' has an invalid port '{port_str}'"))?;
+        .map_err(|_| validation_error(format!("'{listen}' has an invalid port '{port_str}'")))?;
     if port == 0 {
         return Ok(None);
     }
@@ -1494,8 +1544,90 @@ fn is_sensor_family_supported(input_type: &InputType, name: &str) -> bool {
     sensor_supported_families(input_type).contains(&name)
 }
 
+const PLATFORM_SENSOR_EVENT_TYPES: &[&str] = &[
+    "exec",
+    "exit",
+    "tcp_connect",
+    "tcp_accept",
+    "file_open",
+    "file_delete",
+    "file_rename",
+    "setuid",
+    "setgid",
+    "module_load",
+    "ptrace",
+    "memfd_create",
+    "dns_query",
+];
+
+const PLATFORM_SENSOR_EVENT_TYPES_CSV: &str = "exec,exit,tcp_connect,tcp_accept,file_open,file_delete,file_rename,setuid,setgid,module_load,ptrace,memfd_create,dns_query";
+
+fn validate_sensor_event_type_filters(
+    input_type: &InputType,
+    pipeline_name: &str,
+    input_label: &str,
+    include_event_types: Option<&[String]>,
+    exclude_event_types: Option<&[String]>,
+) -> Result<(), ConfigError> {
+    if include_event_types.is_none() && exclude_event_types.is_none() {
+        return Ok(());
+    }
+
+    if *input_type != InputType::LinuxEbpfSensor {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' input '{input_label}': sensor.include_event_types and sensor.exclude_event_types are only supported for linux_ebpf_sensor inputs"
+        )));
+    }
+
+    validate_sensor_event_type_list(
+        pipeline_name,
+        input_label,
+        "include_event_types",
+        include_event_types,
+    )?;
+    validate_sensor_event_type_list(
+        pipeline_name,
+        input_label,
+        "exclude_event_types",
+        exclude_event_types,
+    )?;
+    Ok(())
+}
+
+fn validate_sensor_event_type_list(
+    pipeline_name: &str,
+    input_label: &str,
+    field: &str,
+    event_types: Option<&[String]>,
+) -> Result<(), ConfigError> {
+    let Some(event_types) = event_types else {
+        return Ok(());
+    };
+
+    for event_type in event_types {
+        let normalized = event_type.trim();
+        if normalized.is_empty() {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' input '{input_label}': sensor.{field} entries must not be empty"
+            )));
+        }
+        if event_type != normalized {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' input '{input_label}': sensor.{field} entry '{event_type}' has leading or trailing whitespace"
+            )));
+        }
+        if !PLATFORM_SENSOR_EVENT_TYPES.contains(&normalized) {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' input '{input_label}': unknown sensor event type '{normalized}' for linux_ebpf_sensor input (supported: {PLATFORM_SENSOR_EVENT_TYPES_CSV})"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Validate that a bind address is a parseable `host:port` socket address.
-fn validate_bind_addr(addr: &str) -> Result<(), String> {
+fn validate_bind_addr(addr: &str) -> Result<(), ConfigError> {
     validate_host_port(addr)
 }
 
@@ -1504,9 +1636,11 @@ fn validate_bind_addr(addr: &str) -> Result<(), String> {
 /// Accepts IP addresses (v4 and v6) as well as hostnames, consistent with the
 /// runtime `TcpListener::bind` behaviour.  Use this function anywhere an
 /// address is validated so that CLI and config validation remain in sync.
-pub fn validate_host_port(addr: &str) -> Result<(), String> {
+pub fn validate_host_port(addr: &str) -> Result<(), ConfigError> {
     if addr.starts_with("http://") || addr.starts_with("https://") {
-        return Err(format!("'{addr}' is a URL, expected host:port"));
+        return Err(validation_error(format!(
+            "'{addr}' is a URL, expected host:port"
+        )));
     }
 
     let (host, port_str) = if addr.starts_with('[') {
@@ -1514,67 +1648,78 @@ pub fn validate_host_port(addr: &str) -> Result<(), String> {
         // "[::1]]:4317" are rejected rather than treating "[::1]]" as the host.
         let close_bracket = addr
             .find(']')
-            .ok_or_else(|| format!("'{addr}' has mismatched brackets"))?;
+            .ok_or_else(|| validation_error(format!("'{addr}' has mismatched brackets")))?;
         let inner = &addr[1..close_bracket];
         if inner.is_empty() {
-            return Err(format!(
+            return Err(validation_error(format!(
                 "'{addr}' has an empty IPv6 address inside brackets"
-            ));
+            )));
         }
-        inner
-            .parse::<std::net::Ipv6Addr>()
-            .map_err(|_| format!("'{addr}' contains a non-IPv6 value inside brackets"))?;
+        inner.parse::<std::net::Ipv6Addr>().map_err(|_| {
+            validation_error(format!(
+                "'{addr}' contains a non-IPv6 value inside brackets"
+            ))
+        })?;
         if !addr[close_bracket..].starts_with("]:") {
-            return Err(format!("'{addr}' is missing a port after IPv6 brackets"));
+            return Err(validation_error(format!(
+                "'{addr}' is missing a port after IPv6 brackets"
+            )));
         }
         let port_str = &addr[close_bracket + 2..];
         (&addr[..=close_bracket], port_str)
     } else {
-        addr.rsplit_once(':')
-            .ok_or_else(|| format!("'{addr}' is missing a port (expected format host:port)"))?
+        addr.rsplit_once(':').ok_or_else(|| {
+            validation_error(format!(
+                "'{addr}' is missing a port (expected format host:port)"
+            ))
+        })?
     };
 
     if host.is_empty() {
-        return Err(format!("'{addr}' has an empty host"));
+        return Err(validation_error(format!("'{addr}' has an empty host")));
     }
 
     // Reject path-like hosts (e.g. "host/path:80") — these are likely
     // malformed URLs rather than intentional host:port values. (#1461)
     if host.contains('/') {
-        return Err(format!(
+        return Err(validation_error(format!(
             "'{addr}' host contains a '/' (expected host:port, not a URL path)"
-        ));
+        )));
     }
 
     // Reject unmatched closing bracket outside of IPv6 brackets (e.g. "host]:80").
     if !addr.starts_with('[') && host.contains(']') {
-        return Err(format!("'{addr}' has an unmatched ']' in the host"));
+        return Err(validation_error(format!(
+            "'{addr}' has an unmatched ']' in the host"
+        )));
     }
     if !addr.starts_with('[') && host.contains('[') {
-        return Err(format!("'{addr}' has an unmatched '[' in the host"));
+        return Err(validation_error(format!(
+            "'{addr}' has an unmatched '[' in the host"
+        )));
     }
 
     if !addr.starts_with('[') && host.contains(':') {
-        return Err(format!(
+        return Err(validation_error(format!(
             "'{addr}' has multiple colons without IPv6 brackets"
-        ));
+        )));
     }
 
     port_str
         .parse::<u16>()
-        .map_err(|_| format!("'{addr}' has an invalid port '{port_str}'"))?;
+        .map_err(|_| validation_error(format!("'{addr}' has an invalid port '{port_str}'")))?;
     Ok(())
 }
 
 /// Validate that a log level string is a recognised tracing level.
 ///
 /// Accepted values (case-insensitive): `trace`, `debug`, `info`, `warn`, `error`.
-fn validate_log_level(level: &str) -> Result<(), String> {
+fn validate_log_level(level: &str) -> Result<(), ConfigError> {
     match level.to_ascii_lowercase().as_str() {
         "trace" | "debug" | "info" | "warn" | "error" => Ok(()),
-        _ => Err(format!(
+        _ => Err(validation_error(format!(
             "'{level}' is not a recognised log level; expected one of: trace, debug, info, warn, error"
-        )),
+        ))),
     }
 }
 
@@ -1586,7 +1731,7 @@ fn validate_log_level(level: &str) -> Result<(), String> {
 /// Note: `logfwd-io::generator::parse_iso8601_to_epoch_ms` performs the same
 /// validation plus epoch conversion.  We duplicate the range checks here because
 /// `logfwd-config` cannot depend on `logfwd-io` (wrong crate-dependency direction).
-fn validate_iso8601_timestamp(s: &str) -> Result<(), String> {
+fn validate_iso8601_timestamp(s: &str) -> Result<(), ConfigError> {
     let b = s.as_bytes();
     if b.len() != 20
         || b[4] != b'-'
@@ -1596,16 +1741,16 @@ fn validate_iso8601_timestamp(s: &str) -> Result<(), String> {
         || b[16] != b':'
         || b[19] != b'Z'
     {
-        return Err(format!(
+        return Err(validation_error(format!(
             "must be \"now\" or YYYY-MM-DDTHH:MM:SSZ format, got {s:?}"
-        ));
+        )));
     }
-    let digits = |off: usize, n: usize| -> Result<u32, String> {
+    let digits = |off: usize, n: usize| -> Result<u32, ConfigError> {
         let mut v = 0u32;
         for i in 0..n {
             let c = b[off + i];
             if !c.is_ascii_digit() {
-                return Err(format!("non-digit character in {s:?}"));
+                return Err(validation_error(format!("non-digit character in {s:?}")));
             }
             v = v * 10 + (c - b'0') as u32;
         }
@@ -1619,10 +1764,14 @@ fn validate_iso8601_timestamp(s: &str) -> Result<(), String> {
     let sec = digits(17, 2)?;
 
     if !(1..=12).contains(&month) {
-        return Err(format!("month {month} out of range 1-12 in {s:?}"));
+        return Err(validation_error(format!(
+            "month {month} out of range 1-12 in {s:?}"
+        )));
     }
     if hour > 23 || min > 59 || sec > 59 {
-        return Err(format!("time component out of range in {s:?}"));
+        return Err(validation_error(format!(
+            "time component out of range in {s:?}"
+        )));
     }
     let max_day = match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -1637,9 +1786,9 @@ fn validate_iso8601_timestamp(s: &str) -> Result<(), String> {
         _ => unreachable!(),
     };
     if day < 1 || day > max_day {
-        return Err(format!(
+        return Err(validation_error(format!(
             "day {day} out of range for {year:04}-{month:02} (max {max_day}) in {s:?}"
-        ));
+        )));
     }
     Ok(())
 }
@@ -1647,6 +1796,10 @@ fn validate_iso8601_timestamp(s: &str) -> Result<(), String> {
 #[cfg(test)]
 mod validate_host_port_tests {
     use super::*;
+
+    fn host_port_error(addr: &str) -> String {
+        validate_host_port(addr).unwrap_err().to_string()
+    }
 
     #[test]
     fn validate_host_port_works() {
@@ -1656,73 +1809,25 @@ mod validate_host_port_tests {
         assert!(validate_host_port("[::1]:4317").is_ok());
         assert!(validate_host_port("[2001:db8::1]:80").is_ok());
 
-        assert!(
-            validate_host_port(":4317")
-                .unwrap_err()
-                .contains("empty host")
-        );
-        assert!(
-            validate_host_port("http://localhost:4317")
-                .unwrap_err()
-                .contains("URL")
-        );
-        assert!(
-            validate_host_port("https://localhost:4317")
-                .unwrap_err()
-                .contains("URL")
-        );
-        assert!(
-            validate_host_port("foo:bar:4317")
-                .unwrap_err()
-                .contains("multiple colons")
-        );
-        assert!(
-            validate_host_port("localhost")
-                .unwrap_err()
-                .contains("missing a port")
-        );
-        assert!(
-            validate_host_port("localhost:")
-                .unwrap_err()
-                .contains("invalid port")
-        );
-        assert!(
-            validate_host_port("localhost:999999")
-                .unwrap_err()
-                .contains("invalid port")
-        );
-        assert!(
-            validate_host_port("[::1]")
-                .unwrap_err()
-                .contains("missing a port")
-        );
-        assert!(
-            validate_host_port("[::1]:")
-                .unwrap_err()
-                .contains("invalid port")
-        );
+        assert!(host_port_error(":4317").contains("empty host"));
+        assert!(host_port_error("http://localhost:4317").contains("URL"));
+        assert!(host_port_error("https://localhost:4317").contains("URL"));
+        assert!(host_port_error("foo:bar:4317").contains("multiple colons"));
+        assert!(host_port_error("localhost").contains("missing a port"));
+        assert!(host_port_error("localhost:").contains("invalid port"));
+        assert!(host_port_error("localhost:999999").contains("invalid port"));
+        assert!(host_port_error("[::1]").contains("missing a port"));
+        assert!(host_port_error("[::1]:").contains("invalid port"));
         // Empty IPv6 brackets — []:8080 has no host
-        assert!(validate_host_port("[]:8080").unwrap_err().contains("empty"));
+        assert!(host_port_error("[]:8080").contains("empty"));
         // Double closing bracket — [::1]]:4317 is malformed
-        assert!(
-            validate_host_port("[::1]]:4317")
-                .unwrap_err()
-                .contains("missing a port")
-        );
+        assert!(host_port_error("[::1]]:4317").contains("missing a port"));
         // Path-like host rejected (#1461)
-        assert!(
-            validate_host_port("foo/bar:4317")
-                .unwrap_err()
-                .contains("/")
-        );
+        assert!(host_port_error("foo/bar:4317").contains("/"));
         // Unmatched closing bracket rejected (#1461)
-        assert!(validate_host_port("foo]:4317").unwrap_err().contains("]"));
+        assert!(host_port_error("foo]:4317").contains("]"));
         // Unmatched opening bracket rejected (#2060)
-        assert!(
-            validate_host_port("foo[bar:4317")
-                .unwrap_err()
-                .contains("[")
-        );
+        assert!(host_port_error("foo[bar:4317").contains("["));
     }
 
     #[test]
@@ -1772,16 +1877,16 @@ fn redact_url(endpoint: &str) -> String {
 }
 
 /// Validate that an endpoint URL has a recognised scheme and a non-empty host.
-fn validate_endpoint_url(endpoint: &str) -> Result<(), String> {
+fn validate_endpoint_url(endpoint: &str) -> Result<(), ConfigError> {
     let safe = redact_url(endpoint);
 
-    let parsed =
-        Url::parse(endpoint).map_err(|_| format!("endpoint '{safe}' is not a valid URL"))?;
+    let parsed = Url::parse(endpoint)
+        .map_err(|_| validation_error(format!("endpoint '{safe}' is not a valid URL")))?;
 
     if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err(format!(
+        return Err(validation_error(format!(
             "endpoint '{safe}' must not include credentials in the URL; use output.auth instead"
-        ));
+        )));
     }
 
     let rest = if endpoint
@@ -1795,18 +1900,22 @@ fn validate_endpoint_url(endpoint: &str) -> Result<(), String> {
     {
         &endpoint[7..]
     } else {
-        return Err(format!(
+        return Err(validation_error(format!(
             "endpoint '{safe}' has no recognised scheme; expected 'http://' or 'https://'"
-        ));
+        )));
     };
 
     // Reject malformed authority forms like `http:///bulk` or `https://?x=1`.
     if rest.is_empty() || rest.starts_with('/') || rest.starts_with('?') || rest.starts_with('#') {
-        return Err(format!("endpoint '{safe}' has no host after the scheme"));
+        return Err(validation_error(format!(
+            "endpoint '{safe}' has no host after the scheme"
+        )));
     }
 
     if parsed.host_str().is_none_or(str::is_empty) {
-        return Err(format!("endpoint '{safe}' has no host after the scheme"));
+        return Err(validation_error(format!(
+            "endpoint '{safe}' has no host after the scheme"
+        )));
     }
 
     Ok(())
@@ -1954,7 +2063,9 @@ mod validate_endpoint_url_tests {
 
     #[test]
     fn endpoint_url_redacts_userinfo_for_malformed_urls() {
-        let err = validate_endpoint_url("https://user:secret@/bulk").expect_err("must fail");
+        let err = validate_endpoint_url("https://user:secret@/bulk")
+            .expect_err("must fail")
+            .to_string();
         assert!(
             err.contains("***redacted***") && !err.contains("secret"),
             "malformed endpoint errors must redact userinfo: {err}"
@@ -2207,7 +2318,7 @@ pipelines:
           response_code: 204
           response_body: '{"ok":true}'
     outputs:
-      - type: null
+      - type: "null"
 "#;
         let err = Config::load_str(yaml).expect_err("204 + response_body must fail validation");
         assert!(
@@ -2229,7 +2340,7 @@ pipelines:
         http:
           max_drained_bytes_per_poll: 0
     outputs:
-      - type: null
+      - type: "null"
 "#;
         let err = Config::load_str(yaml).expect_err("zero drain cap must fail validation");
         assert!(
@@ -2340,7 +2451,7 @@ mod validate_otlp_protocol_compression_tests {
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("protocol") && msg.contains("websocket"),
+            msg.contains("websocket") && msg.contains("http") && msg.contains("grpc"),
             "expected protocol rejection for 'websocket': {msg}"
         );
     }
@@ -2363,7 +2474,7 @@ mod validate_otlp_protocol_compression_tests {
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("compression") && msg.contains("lz4"),
+            msg.contains("lz4") && msg.contains("zstd") && msg.contains("gzip"),
             "expected compression rejection for 'lz4': {msg}"
         );
     }
@@ -2625,5 +2736,61 @@ pipelines:
         batch_size: 512
 "#;
         Config::load_str(yaml).expect("arrow_ipc should accept batch_size");
+    }
+
+    #[test]
+    fn tcp_tls_accepts_cert_and_key() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 127.0.0.1:5514
+        tls:
+          cert_file: /tmp/server.crt
+          key_file: /tmp/server.key
+    outputs:
+      - type: null
+"#;
+        Config::load_str(yaml).expect("tcp tls cert+key should validate");
+    }
+
+    #[test]
+    fn tcp_tls_rejects_partial_or_mtls_fields() {
+        let partial = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 127.0.0.1:5514
+        tls:
+          cert_file: /tmp/server.crt
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(partial).unwrap_err().to_string();
+        assert!(
+            err.contains("tls.cert_file") && err.contains("tls.key_file"),
+            "expected cert/key pairing validation error, got: {err}"
+        );
+
+        let mtls = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 127.0.0.1:5514
+        tls:
+          cert_file: /tmp/server.crt
+          key_file: /tmp/server.key
+          client_ca_file: /tmp/ca.crt
+    outputs:
+      - type: null
+"#;
+        let err = Config::load_str(mtls).unwrap_err().to_string();
+        assert!(
+            err.contains("client authentication is not supported"),
+            "expected mTLS rejection, got: {err}"
+        );
     }
 }

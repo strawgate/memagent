@@ -304,7 +304,7 @@ const OUTPUT_TEMPLATES: &[OutputTemplate] = &[
         id: "null",
         label: "null sink",
         description: "Discard all logs. Useful for benchmarking.",
-        snippet: "output:\n  type: null\n",
+        snippet: "output:\n  type: \"null\"\n",
         fields: &[],
     },
 ];

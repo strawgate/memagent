@@ -5,7 +5,7 @@ use arrow::datatypes::DataType;
 use arrow::datatypes::{Field, Schema};
 use arrow::record_batch::RecordBatch;
 use logfwd_config::OutputType;
-use logfwd_config::{Format, OutputConfig};
+use logfwd_config::{CompressionFormat, Format, OtlpProtocol, OutputConfig};
 use logfwd_types::diagnostics::ComponentStats;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -357,7 +357,7 @@ fn test_build_sink_factory_file_rejects_compression() {
         name: Some("capture".to_string()),
         output_type: OutputType::File,
         path: Some("/tmp/capture.ndjson".to_string()),
-        compression: Some("zstd".to_string()),
+        compression: Some(CompressionFormat::Zstd),
         ..Default::default()
     };
 
@@ -377,8 +377,8 @@ fn test_build_sink_factory_otlp_accepts_gzip() {
         name: Some("otel".to_string()),
         output_type: OutputType::Otlp,
         endpoint: Some("http://localhost:4318".to_string()),
-        protocol: Some("http".to_string()),
-        compression: Some("gzip".to_string()),
+        protocol: Some(OtlpProtocol::Http),
+        compression: Some(CompressionFormat::Gzip),
         ..Default::default()
     };
     build_sink_factory("otel", &cfg, None, Arc::new(ComponentStats::new()))
@@ -391,7 +391,7 @@ fn test_build_sink_factory_http_supported() {
         name: Some("http-ok".to_string()),
         output_type: OutputType::Http,
         endpoint: Some("http://localhost:9200".to_string()),
-        compression: Some("gzip".to_string()),
+        compression: Some(CompressionFormat::Gzip),
         ..Default::default()
     };
     let result = build_sink_factory("http-ok", &cfg, None, Arc::new(ComponentStats::new()));
@@ -404,7 +404,7 @@ fn test_build_sink_factory_elasticsearch_rejects_unknown_compression() {
         name: Some("es".to_string()),
         output_type: OutputType::Elasticsearch,
         endpoint: Some("http://localhost:9200".to_string()),
-        compression: Some("zstd".to_string()),
+        compression: Some(CompressionFormat::Zstd),
         ..Default::default()
     };
     let err = match build_sink_factory("es", &cfg, None, Arc::new(ComponentStats::new())) {

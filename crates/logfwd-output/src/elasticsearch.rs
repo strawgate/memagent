@@ -6,6 +6,7 @@ use std::time::Duration;
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
 
+pub use logfwd_config::ElasticsearchRequestMode;
 use logfwd_types::diagnostics::ComponentStats;
 use logfwd_types::field_names;
 use tokio::sync::mpsc;
@@ -35,12 +36,6 @@ pub(crate) struct ElasticsearchConfig {
     /// Precomputed `{"index":{"_index":"<name>"}}\n` bytes — avoids a `format!`
     /// allocation on every `serialize_batch` call.
     action_bytes: Box<[u8]>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ElasticsearchRequestMode {
-    Buffered,
-    Streaming,
 }
 
 /// Async Elasticsearch sink using reqwest.
@@ -187,11 +182,16 @@ impl ElasticsearchSink {
     /// Returns `Ok(())` if all documents succeeded (`errors: false`), or
     /// an `Err` with the first failure's type and reason.
     ///
-    /// Error kinds are chosen deliberately:
-    /// - `Other`: structural/transient failures (malformed JSON, missing fields) — retriable
-    /// - `InvalidData`: item-level document errors (mapper_parsing_exception, etc.) — permanent,
-    ///   retrying the same document is futile, so these map to `Rejected` in the caller.
-    ///   Also used when `errors:true` but no item-level details are present.
+    /// **Duplication safety (#1880):** The parser scans ALL items rather than
+    /// stopping at the first error. When some items succeeded and others
+    /// failed, it returns `InvalidData` (permanent) to prevent the worker
+    /// pool from retrying the full batch and duplicating already-accepted
+    /// rows.
+    ///
+    /// Error kinds:
+    /// - `Other`: ALL items failed with retryable errors (429/5xx) — safe to retry the whole batch
+    /// - `InvalidData`: mixed success/failure, all-permanent failures, or structural anomalies —
+    ///   maps to `Rejected` in the caller so the worker pool does not retry
     fn parse_bulk_response(body: &[u8]) -> io::Result<()> {
         #[derive(serde::Deserialize)]
         struct BulkHeader {
@@ -221,6 +221,16 @@ impl ElasticsearchSink {
             ));
         }
 
+        // Scan ALL items to count succeeded vs failed, rather than stopping at
+        // the first error. This is critical to prevent duplication (#1880):
+        // if some items succeeded and others failed, we must NOT return a
+        // retryable error (which would cause the worker pool to retry
+        // already-accepted rows).
+        let mut succeeded: usize = 0;
+        let mut retryable_failures: usize = 0;
+        let mut permanent_failures: usize = 0;
+        let mut first_error_msg: Option<String> = None;
+
         for item in items {
             let action = item
                 .as_object()
@@ -233,7 +243,14 @@ impl ElasticsearchSink {
                     .ok_or_else(|| {
                         io::Error::other("ES bulk response item missing numeric status field")
                     })?;
-                if let Some(error) = action_obj.get("error") {
+
+                if status < 300 {
+                    succeeded += 1;
+                    continue;
+                }
+
+                // Build error message from the item.
+                let error_detail = if let Some(error) = action_obj.get("error") {
                     let error_type = error
                         .get("type")
                         .and_then(serde_json::Value::as_str)
@@ -242,34 +259,60 @@ impl ElasticsearchSink {
                         .get("reason")
                         .and_then(serde_json::Value::as_str)
                         .unwrap_or("no reason provided");
-                    if status == 429 || (500..600).contains(&status) {
-                        // Status indicates transient backpressure/server failure.
-                        return Err(io::Error::other(format!(
-                            "ES bulk transient error (status {status}): {error_type}: {reason}"
-                        )));
-                    }
-                    // InvalidData: document-level rejection — permanent, do not retry.
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("ES bulk error (status {status}): {error_type}: {reason}"),
-                    ));
-                }
-                // Some ES responses include only `status` for failed items (for example
-                // status-only 429/503 under pressure). Preserve retry semantics even when
-                // `error` is absent.
+                    format!("(status {status}): {error_type}: {reason}")
+                } else {
+                    format!("(status {status}): missing item error details")
+                };
+
                 if status == 429 || (500..600).contains(&status) {
-                    return Err(io::Error::other(format!(
-                        "ES bulk transient error (status {status}): missing item error details"
-                    )));
+                    retryable_failures += 1;
+                } else {
+                    permanent_failures += 1;
                 }
-                if status >= 400 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("ES bulk error (status {status}): missing item error details"),
-                    ));
+
+                if first_error_msg.is_none() {
+                    first_error_msg = Some(error_detail);
                 }
             }
         }
+
+        // Determine outcome based on the full picture of all items.
+        let first_error = first_error_msg.unwrap_or_default();
+
+        if succeeded > 0 && (retryable_failures > 0 || permanent_failures > 0) {
+            // MIXED: some items were accepted, others failed. Return InvalidData
+            // (permanent) to prevent the worker pool from retrying the full batch
+            // and duplicating the {succeeded} already-delivered rows (#1880).
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "ES bulk partial failure: {succeeded} succeeded, \
+                     {retryable_failures} retryable, {permanent_failures} rejected; \
+                     not retrying to prevent duplication of {succeeded} delivered rows. \
+                     First error: {first_error}"
+                ),
+            ));
+        }
+
+        if retryable_failures > 0 && permanent_failures == 0 {
+            // ALL items failed with retryable errors — safe to retry the full batch.
+            return Err(io::Error::other(format!(
+                "ES bulk transient error: all {retryable_failures} items failed. \
+                 First error: {first_error}"
+            )));
+        }
+
+        if permanent_failures > 0 {
+            // All items failed with permanent errors — do not retry.
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "ES bulk error: all {permanent_failures} items rejected. \
+                     First error: {first_error}"
+                ),
+            ));
+        }
+
         // errors: true but no specific error found in items — treat as failure rather
         // than silently returning Ok (which would cause data loss by masking the error).
         Err(io::Error::new(
@@ -410,7 +453,54 @@ impl ElasticsearchSink {
         })
     }
 
+    /// Maximum internal retries for a split half when the other half already
+    /// succeeded. Keeps the retry window short — if the transient failure
+    /// persists, we return `Rejected` to prevent the worker pool from
+    /// retrying the full batch and duplicating the successful half.
+    const SPLIT_INTERNAL_RETRIES: usize = 2;
+
+    /// Base delay between internal split-half retries (doubles each attempt).
+    const SPLIT_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
+
+    /// Retry a failed split half internally up to `SPLIT_INTERNAL_RETRIES`
+    /// times with exponential backoff. Used when the other half already
+    /// succeeded, so we cannot let the worker pool retry the full batch.
+    async fn retry_split_half(
+        &mut self,
+        half: &RecordBatch,
+        metadata: &BatchMetadata,
+        depth: usize,
+    ) -> io::Result<super::sink::SendResult> {
+        let mut delay = Self::SPLIT_RETRY_BASE_DELAY;
+        for _ in 0..Self::SPLIT_INTERNAL_RETRIES {
+            tokio::time::sleep(delay).await;
+            delay *= 2;
+            let result = Self::classify_split_result(
+                self.send_batch_inner(half, metadata, depth + 1).await,
+            )?;
+            match result {
+                super::sink::SendResult::Ok | super::sink::SendResult::Rejected(_) => {
+                    return Ok(result);
+                }
+                super::sink::SendResult::IoError(_) | super::sink::SendResult::RetryAfter(_) => {
+                    // Continue retrying.
+                }
+            }
+        }
+        // Exhausted internal retries — the half is still failing.
+        Ok(super::sink::SendResult::Rejected(
+            "elasticsearch: split half failed after internal retries".to_string(),
+        ))
+    }
+
     /// Split a batch in half and send each half sequentially.
+    ///
+    /// **Duplication safety (#1873):** Both halves are always attempted
+    /// regardless of individual outcomes. When one half succeeds but the
+    /// other fails with a transient error, the failed half is retried
+    /// internally (up to `SPLIT_INTERNAL_RETRIES` times) rather than
+    /// propagating a retryable result to the worker pool — which would
+    /// retry the entire original batch and duplicate the successful half.
     async fn send_split_halves(
         &mut self,
         batch: &RecordBatch,
@@ -421,17 +511,78 @@ impl ElasticsearchSink {
         let mid = n / 2;
         let left = batch.slice(0, mid);
         let right = batch.slice(mid, n - mid);
+
+        // Always send left half first.
         let left_result =
             Self::classify_split_result(self.send_batch_inner(&left, metadata, depth + 1).await)?;
-        if matches!(
-            left_result,
-            super::sink::SendResult::IoError(_) | super::sink::SendResult::RetryAfter(_)
-        ) {
-            return Ok(left_result);
-        }
+        let left_ok = matches!(left_result, super::sink::SendResult::Ok);
+
+        // Always send right half, even if left failed (#1873).
         let right_result =
             Self::classify_split_result(self.send_batch_inner(&right, metadata, depth + 1).await)?;
-        Ok(Self::merge_split_send_results(left_result, right_result))
+        let right_ok = matches!(right_result, super::sink::SendResult::Ok);
+
+        // When one half succeeded and the other failed transiently, retry the
+        // failed half internally rather than bubbling a retryable result to the
+        // worker pool (which would re-send the successful half).
+        let is_retryable = |r: &super::sink::SendResult| {
+            matches!(
+                r,
+                super::sink::SendResult::IoError(_) | super::sink::SendResult::RetryAfter(_)
+            )
+        };
+
+        match (left_ok, right_ok) {
+            (true, true) => Ok(super::sink::SendResult::Ok),
+            (true, false) if is_retryable(&right_result) => {
+                // Left succeeded, right failed transiently — retry right internally.
+                tracing::warn!(
+                    left_rows = mid,
+                    right_rows = n - mid,
+                    "elasticsearch: left split half delivered, right failed transiently; \
+                     retrying right half internally to prevent duplication"
+                );
+                let right_retry = self.retry_split_half(&right, metadata, depth).await?;
+                if right_retry.is_ok() {
+                    Ok(super::sink::SendResult::Ok)
+                } else {
+                    // Right exhausted retries. Return Rejected to prevent the
+                    // worker pool from retrying the full batch.
+                    Ok(super::sink::SendResult::Rejected(format!(
+                        "elasticsearch: right split half failed after internal retry; \
+                         left half ({mid} rows) was delivered successfully, \
+                         right half ({} rows) could not be delivered",
+                        n - mid
+                    )))
+                }
+            }
+            (false, true) if is_retryable(&left_result) => {
+                // Right succeeded, left failed transiently — retry left internally.
+                tracing::warn!(
+                    left_rows = mid,
+                    right_rows = n - mid,
+                    "elasticsearch: right split half delivered, left failed transiently; \
+                     retrying left half internally to prevent duplication"
+                );
+                let left_retry = self.retry_split_half(&left, metadata, depth).await?;
+                if left_retry.is_ok() {
+                    Ok(super::sink::SendResult::Ok)
+                } else {
+                    Ok(super::sink::SendResult::Rejected(format!(
+                        "elasticsearch: left split half failed after internal retry; \
+                         right half ({} rows) was delivered successfully, \
+                         left half ({mid} rows) could not be delivered",
+                        n - mid
+                    )))
+                }
+            }
+            _ => {
+                // Both failed, or one succeeded and other was permanently rejected.
+                // For the both-failed case: safe to propagate retryable since no
+                // rows were delivered. For permanent rejections: merge normally.
+                Ok(Self::merge_split_send_results(left_result, right_result))
+            }
+        }
     }
 
     /// Convert permanent ES rejections from `Err` to `Ok(Rejected)` so they
@@ -1451,11 +1602,22 @@ mod tests {
         }"#;
         let err = ElasticsearchSink::parse_bulk_response(response)
             .expect_err("should error on bulk failure");
+        // Mixed result: 1 succeeded + 1 rejected → InvalidData to prevent duplication (#1880).
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "mixed success/failure must be permanent to prevent duplication"
+        );
+        assert!(
+            err.to_string().contains("partial failure"),
+            "error should mention partial failure: {err}"
+        );
         assert!(err.to_string().contains("mapper_parsing_exception"));
     }
 
     #[test]
     fn parse_bulk_response_retryable_item_error_is_transient() {
+        // All items failed with 429 (no successes) — safe to retry the full batch.
         let response = br#"{
             "took":5,
             "errors":true,
@@ -1468,12 +1630,13 @@ mod tests {
         assert_eq!(
             err.kind(),
             io::ErrorKind::Other,
-            "429 item-level errors should be retried"
+            "all-429 item-level errors should be retried"
         );
     }
 
     #[test]
     fn parse_bulk_response_status_only_retryable_item_error_is_transient() {
+        // All items failed with status-only 429 (no successes) — safe to retry.
         let response = br#"{
             "took":5,
             "errors":true,
@@ -1884,6 +2047,7 @@ mod tests {
         // parse_bulk_response returns Err(InvalidData) when the bulk response
         // contains item-level errors even inside a 200 OK.  Confirm the error
         // kind is InvalidData so the send_batch classifier can reject it.
+        // All items failed permanently (no successes).
         let response = br#"{
             "took":3,
             "errors":true,
@@ -2175,6 +2339,329 @@ mod tests {
         // Both mocks must have been hit — the right half was not skipped.
         left_mock.assert_async().await;
         right_mock.assert_async().await;
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #1873: split-half retry duplication prevention tests
+    // -----------------------------------------------------------------------
+
+    /// When left succeeds but right gets a transient error (429), the ES sink
+    /// must retry the right half internally rather than returning a retryable
+    /// result to the worker pool (which would re-send the already-delivered
+    /// left half).
+    #[tokio::test]
+    async fn split_left_ok_right_retry_does_not_duplicate() {
+        use crate::sink::Sink;
+
+        let mut server = mockito::Server::new_async().await;
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec!["left-row", "right-row"]))],
+        )
+        .expect("test batch should be valid");
+        let metadata = zero_metadata();
+
+        // Measure serialized sizes to pick a threshold that forces splitting.
+        let mut sizing_sink = ElasticsearchSink::new(
+            "test".to_string(),
+            test_es_config(&server.url(), "logs", usize::MAX),
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::default()),
+        );
+        sizing_sink
+            .serialize_batch(&batch, &metadata)
+            .expect("full batch should serialize");
+        let full_len = sizing_sink.batch_buf.len();
+        sizing_sink
+            .serialize_batch(&batch.slice(0, 1), &metadata)
+            .expect("left half should serialize");
+        let left_len = sizing_sink.batch_buf.len();
+        sizing_sink
+            .serialize_batch(&batch.slice(1, 1), &metadata)
+            .expect("right half should serialize");
+        let right_len = sizing_sink.batch_buf.len();
+        let split_threshold = left_len.max(right_len) + 1;
+        assert!(full_len > split_threshold);
+
+        // Left half: success.
+        let left_mock = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::Regex("left-row".to_string()))
+            .with_status(200)
+            .with_body(r#"{"took":1,"errors":false,"items":[{"index":{"status":201}}]}"#)
+            .expect(1) // left must be sent exactly once — no duplication
+            .create_async()
+            .await;
+        // Right half: first attempt returns 429, internal retry succeeds.
+        let right_fail_mock = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::Regex("right-row".to_string()))
+            .with_status(429)
+            .with_body("too many requests")
+            .expect(1) // first attempt fails
+            .create_async()
+            .await;
+        let right_ok_mock = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::Regex("right-row".to_string()))
+            .with_status(200)
+            .with_body(r#"{"took":1,"errors":false,"items":[{"index":{"status":201}}]}"#)
+            .expect(1) // internal retry succeeds
+            .create_async()
+            .await;
+
+        let mut sink = ElasticsearchSink::new(
+            "test".to_string(),
+            test_es_config(&server.url(), "logs", split_threshold),
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::default()),
+        );
+
+        let result = sink.send_batch(&batch, &metadata).await;
+        assert!(
+            matches!(result, crate::sink::SendResult::Ok),
+            "expected Ok after internal retry of right half, got {result:?}"
+        );
+        // Left must be sent exactly once — no duplication.
+        left_mock.assert_async().await;
+        right_fail_mock.assert_async().await;
+        right_ok_mock.assert_async().await;
+    }
+
+    /// When left succeeds and right exhausts all internal retries, the result
+    /// must be `Rejected` (not `IoError` or `RetryAfter`) to prevent the
+    /// worker pool from retrying the full batch and duplicating the left half.
+    #[tokio::test]
+    async fn split_left_ok_right_exhausted_returns_rejected() {
+        use crate::sink::Sink;
+
+        let mut server = mockito::Server::new_async().await;
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec!["left-row", "right-row"]))],
+        )
+        .expect("test batch should be valid");
+        let metadata = zero_metadata();
+
+        let mut sizing_sink = ElasticsearchSink::new(
+            "test".to_string(),
+            test_es_config(&server.url(), "logs", usize::MAX),
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::default()),
+        );
+        sizing_sink
+            .serialize_batch(&batch, &metadata)
+            .expect("full batch should serialize");
+        let full_len = sizing_sink.batch_buf.len();
+        sizing_sink
+            .serialize_batch(&batch.slice(0, 1), &metadata)
+            .expect("left half should serialize");
+        let left_len = sizing_sink.batch_buf.len();
+        sizing_sink
+            .serialize_batch(&batch.slice(1, 1), &metadata)
+            .expect("right half should serialize");
+        let right_len = sizing_sink.batch_buf.len();
+        let split_threshold = left_len.max(right_len) + 1;
+        assert!(full_len > split_threshold);
+
+        // Left half: success.
+        let left_mock = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::Regex("left-row".to_string()))
+            .with_status(200)
+            .with_body(r#"{"took":1,"errors":false,"items":[{"index":{"status":201}}]}"#)
+            .expect(1) // left must be sent exactly once
+            .create_async()
+            .await;
+        // Right half: always fails with 429 (initial + SPLIT_INTERNAL_RETRIES).
+        let right_mock = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .match_body(mockito::Matcher::Regex("right-row".to_string()))
+            .with_status(429)
+            .with_body("too many requests")
+            .expect_at_least(2) // initial + at least 1 retry
+            .create_async()
+            .await;
+
+        let mut sink = ElasticsearchSink::new(
+            "test".to_string(),
+            test_es_config(&server.url(), "logs", split_threshold),
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::default()),
+        );
+
+        let result = sink.send_batch(&batch, &metadata).await;
+        match result {
+            crate::sink::SendResult::Rejected(reason) => {
+                assert!(
+                    reason.contains("failed after internal retry"),
+                    "expected internal retry exhaustion message, got: {reason}"
+                );
+                assert!(
+                    reason.contains("delivered successfully") || reason.contains("was delivered"),
+                    "should warn that left half was already delivered: {reason}"
+                );
+            }
+            other => panic!(
+                "expected Rejected to prevent worker-pool-level retry duplication, got {other:?}"
+            ),
+        }
+        left_mock.assert_async().await;
+        right_mock.assert_async().await;
+    }
+
+    // -----------------------------------------------------------------------
+    // Bug #1880: bulk partial success duplication prevention tests
+    // -----------------------------------------------------------------------
+
+    /// When an ES bulk response contains mixed results (some 200, some 429),
+    /// `parse_bulk_response` must return a permanent error to prevent the
+    /// worker pool from retrying already-accepted rows.
+    #[test]
+    fn bulk_partial_success_returns_permanent_error() {
+        let response = br#"{
+            "took":5,
+            "errors":true,
+            "items":[
+                {"index":{"_id":"1","status":201}},
+                {"index":{"error":{"type":"es_rejected_execution_exception","reason":"too many requests"},"status":429}},
+                {"index":{"_id":"3","status":201}}
+            ]
+        }"#;
+        let err = ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("mixed success/failure must be an error");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "mixed results must be permanent to prevent duplication of 2 delivered rows"
+        );
+        assert!(
+            err.to_string().contains("partial failure"),
+            "error should mention partial failure: {err}"
+        );
+        assert!(
+            err.to_string().contains("2 succeeded"),
+            "error should report succeeded count: {err}"
+        );
+        assert!(
+            err.to_string().contains("1 retryable"),
+            "error should report retryable count: {err}"
+        );
+    }
+
+    /// When ALL items in the bulk response failed with retryable errors
+    /// (429/5xx), `parse_bulk_response` should return a transient error
+    /// since it's safe to retry the full batch (no rows were accepted).
+    #[test]
+    fn bulk_all_retryable_returns_transient() {
+        let response = br#"{
+            "took":5,
+            "errors":true,
+            "items":[
+                {"index":{"error":{"type":"es_rejected_execution_exception","reason":"too many requests"},"status":429}},
+                {"index":{"error":{"type":"es_rejected_execution_exception","reason":"too many requests"},"status":429}}
+            ]
+        }"#;
+        let err = ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("all-retryable must be an error");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::Other,
+            "all-retryable failures should be transient (safe to retry full batch)"
+        );
+    }
+
+    /// When ALL items in the bulk response failed with permanent errors
+    /// (4xx non-429), `parse_bulk_response` should return a permanent error.
+    #[test]
+    fn bulk_all_permanent_returns_rejected() {
+        let response = br#"{
+            "took":5,
+            "errors":true,
+            "items":[
+                {"index":{"error":{"type":"mapper_parsing_exception","reason":"failed to parse"},"status":400}},
+                {"index":{"error":{"type":"strict_dynamic_mapping_exception","reason":"unmapped field"},"status":400}}
+            ]
+        }"#;
+        let err = ElasticsearchSink::parse_bulk_response(response)
+            .expect_err("all-permanent must be an error");
+        assert_eq!(
+            err.kind(),
+            io::ErrorKind::InvalidData,
+            "all-permanent failures should be rejected"
+        );
+        assert!(
+            err.to_string().contains("2 items rejected"),
+            "error should report count: {err}"
+        );
+    }
+
+    /// When both split halves fail with transient errors (no rows delivered),
+    /// the merged result should still be retryable since it's safe for the
+    /// worker pool to retry the full batch.
+    #[tokio::test]
+    async fn split_both_halves_fail_returns_retryable() {
+        use crate::sink::Sink;
+
+        let mut server = mockito::Server::new_async().await;
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, false)])),
+            vec![Arc::new(StringArray::from(vec!["left-row", "right-row"]))],
+        )
+        .expect("test batch should be valid");
+        let metadata = zero_metadata();
+
+        let mut sizing_sink = ElasticsearchSink::new(
+            "test".to_string(),
+            test_es_config(&server.url(), "logs", usize::MAX),
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::default()),
+        );
+        sizing_sink
+            .serialize_batch(&batch, &metadata)
+            .expect("full batch should serialize");
+        let full_len = sizing_sink.batch_buf.len();
+        sizing_sink
+            .serialize_batch(&batch.slice(0, 1), &metadata)
+            .expect("left half should serialize");
+        let left_len = sizing_sink.batch_buf.len();
+        sizing_sink
+            .serialize_batch(&batch.slice(1, 1), &metadata)
+            .expect("right half should serialize");
+        let right_len = sizing_sink.batch_buf.len();
+        let split_threshold = left_len.max(right_len) + 1;
+        assert!(full_len > split_threshold);
+
+        // Both halves fail with 503.
+        let _mock = server
+            .mock("POST", "/_bulk")
+            .match_query(mockito::Matcher::Any)
+            .with_status(503)
+            .with_body("service unavailable")
+            .expect(2) // both halves attempted
+            .create_async()
+            .await;
+
+        let mut sink = ElasticsearchSink::new(
+            "test".to_string(),
+            test_es_config(&server.url(), "logs", split_threshold),
+            reqwest::Client::new(),
+            Arc::new(ComponentStats::default()),
+        );
+
+        let result = sink.send_batch(&batch, &metadata).await;
+        assert!(
+            matches!(
+                result,
+                crate::sink::SendResult::IoError(_) | crate::sink::SendResult::RetryAfter(_)
+            ),
+            "both halves failed — safe to return retryable for worker pool retry, got {result:?}"
+        );
     }
 
     fn test_es_config(

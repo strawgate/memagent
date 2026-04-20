@@ -14,12 +14,11 @@ permissions:
 jobs:
   health:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      # ── GitHub repo stats (stars, forks, issues, velocity, languages, etc.) ──
-      - uses: strawgate/octo11y/actions/repo-stats@main-dist
+      - uses: strawgate/o11ykit/octo11y/actions/repo-stats@main-dist
         id: stats
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -32,20 +31,18 @@ jobs:
             avg-pr-merge-hours, median-pr-merge-hours,
             languages
 
-      # ── Start OTLP collector for custom metrics ──
-      - uses: strawgate/octo11y/actions/monitor@main-dist
+      - uses: strawgate/o11ykit/octo11y/actions/monitor@main-dist
         id: monitor
 
-      # ── Lines of code (via tokei) ──
       - name: Count lines of code
+        shell: bash
         run: |
-          curl -sL https://github.com/XAMPPRocky/tokei/releases/latest/download/tokei-x86_64-unknown-linux-gnu.tar.gz \
-            | tar xz -C /usr/local/bin
-          JSON=$(tokei --output json)
+          cargo install --locked tokei --version 14.0.0 --root /tmp/tokei
+          JSON=$(/tmp/tokei/bin/tokei --output json)
           echo "TOTAL_LOC=$(echo "$JSON" | jq '.Total.code')" >> "$GITHUB_ENV"
           echo "RUST_LOC=$(echo "$JSON" | jq '.Rust.code // 0')" >> "$GITHUB_ENV"
 
-      - uses: strawgate/octo11y/actions/emit-metric@main-dist
+      - uses: strawgate/o11ykit/octo11y/actions/emit-metric@main-dist
         with:
           otlp-http-endpoint: ${{ steps.monitor.outputs.otlp-http-endpoint }}
           name: total_lines_of_code
@@ -54,7 +51,7 @@ jobs:
           scenario: project-health
           direction: bigger_is_better
 
-      - uses: strawgate/octo11y/actions/emit-metric@main-dist
+      - uses: strawgate/o11ykit/octo11y/actions/emit-metric@main-dist
         with:
           otlp-http-endpoint: ${{ steps.monitor.outputs.otlp-http-endpoint }}
           name: rust_lines_of_code
@@ -63,13 +60,13 @@ jobs:
           scenario: project-health
           direction: bigger_is_better
 
-      # ── Rust crate count (workspace members) ──
       - name: Count Rust crates
+        shell: bash
         run: |
-          CRATE_COUNT=$(grep -c 'crates/' Cargo.toml || echo 0)
+          CRATE_COUNT=$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')
           echo "CRATE_COUNT=$CRATE_COUNT" >> "$GITHUB_ENV"
 
-      - uses: strawgate/octo11y/actions/emit-metric@main-dist
+      - uses: strawgate/o11ykit/octo11y/actions/emit-metric@main-dist
         with:
           otlp-http-endpoint: ${{ steps.monitor.outputs.otlp-http-endpoint }}
           name: rust_crate_count
@@ -78,36 +75,37 @@ jobs:
           scenario: project-health
           direction: bigger_is_better
 
-      # ── CI build time (avg of last 10 successful CI runs) ──
       - name: Measure CI build time
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          AVG_SECS=$(gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?per_page=10&status=success" \
+          AVG_SECS=$(gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?per_page=20" \
             --jq '
               [.workflow_runs[]
-                | select(.run_started_at != null)
+                | select(.conclusion == "success" and .run_started_at != null and .updated_at != null)
                 | ((.updated_at | fromdateiso8601) - (.run_started_at | fromdateiso8601))
-              ] | if length > 0 then (add / length | round) else 0 end
+              ]
+              | .[:10]
+              | if length > 0 then (add / length | round) else 0 end
             ')
           echo "CI_BUILD_SECS=${AVG_SECS}" >> "$GITHUB_ENV"
 
-      - uses: strawgate/octo11y/actions/emit-metric@main-dist
+      - uses: strawgate/o11ykit/octo11y/actions/emit-metric@main-dist
         with:
           otlp-http-endpoint: ${{ steps.monitor.outputs.otlp-http-endpoint }}
           name: ci_build_duration_seconds
           value: ${{ env.CI_BUILD_SECS }}
-          unit: seconds
+          unit: s
           scenario: project-health
           direction: smaller_is_better
 
-      # ── Dependency count ──
       - name: Count dependencies
+        shell: bash
         run: |
-          DEP_COUNT=$(grep -c '^\[\[package\]\]' Cargo.lock 2>/dev/null || echo 0)
-          echo "DEP_COUNT=$DEP_COUNT" >> "$GITHUB_ENV"
+          echo "DEP_COUNT=$(grep -c '^\[\[package\]\]' Cargo.lock)" >> "$GITHUB_ENV"
 
-      - uses: strawgate/octo11y/actions/emit-metric@main-dist
+      - uses: strawgate/o11ykit/octo11y/actions/emit-metric@main-dist
         with:
           otlp-http-endpoint: ${{ steps.monitor.outputs.otlp-http-endpoint }}
           name: cargo_dependency_count
@@ -116,11 +114,10 @@ jobs:
           scenario: project-health
           direction: smaller_is_better
 
-      # ── Stash repo-stats + custom metrics together, then aggregate ──
-      - uses: strawgate/octo11y/actions/stash@main-dist
+      - uses: strawgate/o11ykit/octo11y/actions/stash@main-dist
         with:
           results: ${{ steps.stats.outputs.results-file }}
           format: otlp
           metrics-dir: ${{ steps.monitor.outputs.metrics-dir }}
 
-      - uses: strawgate/octo11y/actions/aggregate@main-dist
+      - uses: strawgate/o11ykit/octo11y/actions/aggregate@main-dist
