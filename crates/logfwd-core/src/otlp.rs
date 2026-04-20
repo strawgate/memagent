@@ -1180,6 +1180,14 @@ mod verification {
     use super::*;
     use alloc::{vec, vec::Vec};
 
+    // NOTE: encode_varint and encode_tag take `&mut Vec<u8>` and return `()`.
+    // In our current Kani version/configuration used in CI, the contract system
+    // (requires/ensures/modifies) requires the modified type to implement
+    // `kani::Arbitrary` for stub_verified, but `Vec<u8>` does not in that setup.
+    // Function contracts for these wire format helpers are therefore deferred for
+    // now, and the correctness of these functions is instead proven
+    // exhaustively by the verify_varint_* and verify_encode_tag proofs below.
+
     /// Prove varint_len matches encode_varint output length for ALL u64 values.
     ///
     /// This is the foundational wire format proof — if these disagree,
@@ -1290,9 +1298,13 @@ mod verification {
         kani::cover!(field_number == 0x1FFFFFFF && wire_type == 5);
     }
 
-    /// Prove days_from_civil never panics and produces reasonable values
     /// Oracle proof: days_from_civil matches a naive year/month
-    /// iteration for all valid dates in [1970, 2100].
+    /// iteration for bounded date components with year in [1970, 2100].
+    ///
+    /// Note: this proof range includes potentially non-calendar-valid
+    /// day-of-month combinations (e.g. Feb 31); it does not claim to
+    /// admit only valid civil dates. The oracle and the implementation
+    /// agree on all such inputs regardless.
     ///
     /// Uses a completely different algorithm (cumulative day counting)
     /// from the Hinnant formula. Kani can't use chrono, so this naive
@@ -1585,7 +1597,13 @@ mod verification {
     }
 
     /// Prove parse_timestamp_nanos never panics for any 32-byte input.
+    ///
+    /// Uses stub_verified for proven sub-functions to avoid re-verifying
+    /// digit parsing and calendar arithmetic inline.
     #[kani::proof]
+    #[kani::stub_verified(parse_4digits)]
+    #[kani::stub_verified(parse_2digits)]
+    #[kani::stub_verified(days_from_civil)]
     #[kani::unwind(14)] // fractional while loop: up to 12 iters (len=32, frac_start=20) + 2 margin
     #[kani::solver(kissat)]
     fn verify_parse_timestamp_no_panic() {
