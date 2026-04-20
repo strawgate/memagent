@@ -511,7 +511,7 @@ pub(super) fn build_input_state(
                         .sensor
                         .as_ref()
                         .and_then(|c| c.poll_interval_ms)
-                        .map(|v| v.get()),
+                        .map(logfwd_config::PositiveMillis::get),
                 };
 
                 let source = PlatformSensorInput::new(name, sensor_cfg).map_err(|e| {
@@ -637,7 +637,9 @@ pub(super) fn build_input_state(
                     s3_cfg.max_concurrent_objects,
                     s3_cfg.visibility_timeout_secs,
                     compression_override,
-                    s3_cfg.poll_interval_ms.map(|v| v.get()),
+                    s3_cfg
+                        .poll_interval_ms
+                        .map(logfwd_config::PositiveMillis::get),
                 )
                 .map_err(|e| format!("input '{name}': {e}"))?;
 
