@@ -86,6 +86,8 @@ export function createHighwayEngine(overrides) {
       scale: lerp(0.85, 1.12, ((id * 37) % 100) / 100),
       opacity: 1,
       color: 'flow',
+      mergeCleared: false,
+      stopTicks: 0,
     };
   }
 
@@ -177,10 +179,12 @@ export function createHighwayEngine(overrides) {
         }
 
         if (segment === 'ramp') {
-          // Stop-sign merge: always brake to a stop before the merge point
-          const stopS = LENGTHS.ramp - 30;
-          const remaining = stopS - car.s;
-          desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
+          // Two-phase merge: stop at the stop line, then drive remaining ramp after clearance
+          const stopS = LENGTHS.ramp - 80;
+          if (!car.mergeCleared) {
+            const remaining = stopS - car.s;
+            desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
+          }
         } else if (segment === 'exit' && !lightIsGreen && car.s < EXIT_GATE_S) {
           const remaining = EXIT_GATE_S - car.s - 15;
           desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
@@ -202,21 +206,26 @@ export function createHighwayEngine(overrides) {
       }
     }
 
-    const RAMP_STOP_S = LENGTHS.ramp - 30;
+    const RAMP_STOP_S = LENGTHS.ramp - 80;
+    const RAMP_END_S = LENGTHS.ramp - 5;
     const HWY_STOP_S = LENGTHS.highway - 5;
 
     for (let i = 0; i < cars.length; i++) {
       const car = cars[i];
-      if (car.segment === 'ramp' && car.s >= RAMP_STOP_S) {
-        if (mergeAllowed()) {
-          const overflow = car.s - RAMP_STOP_S;
-          car.segment = 'highway';
-          car.s = MERGE_S + overflow;
-          car.speed = cfg.laneSpeed.highway;
+      if (car.segment === 'ramp' && !car.mergeCleared && car.s >= RAMP_STOP_S) {
+        // Phase 1: stop at the line and wait for a gap + minimum dwell
+        if (car.speed < 1) car.stopTicks++;
+        if (car.speed < 1 && car.stopTicks >= 10 && mergeAllowed()) {
+          car.mergeCleared = true; // proceed through remaining ramp
         } else {
           car.s = RAMP_STOP_S;
-          car.speed = 0;
+          car.speed = Math.max(0, car.speed - cfg.brake * STEP_S);
         }
+      } else if (car.segment === 'ramp' && car.s >= RAMP_END_S) {
+        // Phase 2: reached ramp end → transition to highway (tiny teleport)
+        car.segment = 'highway';
+        car.s = MERGE_S + (car.s - RAMP_END_S);
+        car.speed = Math.min(car.speed, cfg.laneSpeed.highway);
       } else if (car.segment === 'highway' && car.s >= HWY_STOP_S) {
         const overflow = car.s - HWY_STOP_S;
         if (car.route === 'exit' && branchClear('exit')) {
@@ -245,18 +254,27 @@ export function createHighwayEngine(overrides) {
     // Spawn highway and ramp independently, offset by half a period
     const spawnPeriod = cfg.spawnMs * 2; // each source spawns at 2× the base rate
     let anySpawned = false;
-    if (cars.length < cfg.maxCars && now - lastSpawnHwy >= spawnPeriod && branchClear('highway')) {
-      cars.push(makeCar('highway', 0));
-      lastSpawnHwy = now;
-      anySpawned = true;
+    let spawnBlocked = false;
+    if (cars.length < cfg.maxCars && now - lastSpawnHwy >= spawnPeriod) {
+      if (branchClear('highway')) {
+        cars.push(makeCar('highway', 0));
+        lastSpawnHwy = now;
+        anySpawned = true;
+      } else {
+        spawnBlocked = true;
+      }
     }
-    if (cars.length < cfg.maxCars && now - lastSpawnRamp >= spawnPeriod && branchClear('ramp')) {
-      cars.push(makeCar('ramp', 0));
-      lastSpawnRamp = now;
-      anySpawned = true;
+    if (cars.length < cfg.maxCars && now - lastSpawnRamp >= spawnPeriod) {
+      if (branchClear('ramp')) {
+        cars.push(makeCar('ramp', 0));
+        lastSpawnRamp = now;
+        anySpawned = true;
+      } else {
+        spawnBlocked = true;
+      }
     }
-    if (anySpawned) spawnBlockedTicks = 0;
-    else spawnBlockedTicks++;
+    if (spawnBlocked) spawnBlockedTicks++;
+    else if (anySpawned) spawnBlockedTicks = 0;
 
     const stalledCount = cars.filter(car => car.speed < 12 && car.segment === 'highway').length;
     if (stalledCount > 0) stalledFrames++;
@@ -270,7 +288,7 @@ export function createHighwayEngine(overrides) {
     const stallPct = totalFrames > 0 ? Math.round(stalledFrames / totalFrames * 100) : 0;
 
     let status;
-    if (spawnBlockedTicks >= 8) {
+    if (spawnBlockedTicks >= 60) {
       status = { level: 'blocked', msg: 'Traffic backed up to the on-ramp — no new cars can enter' };
     } else if (stallPct > 20) {
       status = { level: 'congested', msg: 'Highway congested — cars queuing behind the light' };
