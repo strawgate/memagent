@@ -465,12 +465,7 @@ fn append_cri_metadata_for_data(
 
 #[cfg(not(feature = "turmoil"))]
 fn take_cri_metadata_preserving_capacity(metadata: &mut CriMetadata) -> CriMetadata {
-    let replacement = CriMetadata {
-        spans: Vec::with_capacity(metadata.spans.capacity()),
-        timestamp_bytes: Vec::with_capacity(metadata.timestamp_bytes.capacity()),
-        rows: 0,
-        has_values: false,
-    };
+    let replacement = metadata.empty_with_preserved_capacity();
     std::mem::replace(metadata, replacement)
 }
 
@@ -707,7 +702,7 @@ fn overlay_existing_string_values(
         })?;
     let existing = batch.column(existing_index);
     let existing = string_view_array(existing)?;
-    let mut builder = StringViewBuilder::new();
+    let mut builder = StringViewBuilder::with_capacity(batch.num_rows());
     for row in 0..batch.num_rows() {
         if !sidecar.is_null(row) {
             builder.append_value(sidecar.value(row));
@@ -744,7 +739,7 @@ fn string_view_array(array: &ArrayRef) -> Result<Option<StringViewArray>, ArrowE
                 .ok_or_else(|| {
                     ArrowError::InvalidArgumentError("Utf8 column is not a StringArray".to_string())
                 })?;
-            let mut builder = StringViewBuilder::new();
+            let mut builder = StringViewBuilder::with_capacity(array.len());
             for row in 0..array.len() {
                 if array.is_null(row) {
                     builder.append_null();
@@ -763,7 +758,7 @@ fn string_view_array(array: &ArrayRef) -> Result<Option<StringViewArray>, ArrowE
                         "LargeUtf8 column is not a LargeStringArray".to_string(),
                     )
                 })?;
-            let mut builder = StringViewBuilder::new();
+            let mut builder = StringViewBuilder::with_capacity(array.len());
             for row in 0..array.len() {
                 if array.is_null(row) {
                     builder.append_null();
@@ -782,8 +777,8 @@ fn cri_metadata_arrays(
     num_rows: usize,
     cri_metadata: CriMetadata,
 ) -> Result<(ArrayRef, ArrayRef), ArrowError> {
-    let mut timestamp = StringViewBuilder::new();
-    let mut stream = StringViewBuilder::new();
+    let mut timestamp = StringViewBuilder::with_capacity(num_rows);
+    let mut stream = StringViewBuilder::with_capacity(num_rows);
     let timestamp_buffer = Buffer::from(cri_metadata.timestamp_bytes);
     let timestamp_block =
         (!timestamp_buffer.is_empty()).then(|| timestamp.append_block(timestamp_buffer.clone()));
@@ -846,32 +841,65 @@ fn source_path_metadata_array(
     row_origins: &[RowOriginSpan],
     source_paths: &HashMap<SourceId, String>,
 ) -> Result<ArrayRef, ArrowError> {
-    let mut builder = StringViewBuilder::new();
-    let mut blocks: HashMap<SourceId, (u32, u32)> = HashMap::new();
+    let mut builder = StringViewBuilder::with_capacity(num_rows);
+    let mut first_block = None;
+    let mut extra_blocks = Vec::new();
     for span in row_origins {
         let Some(source_id) = span.source_id else {
             append_null_metadata_views(&mut builder, span.rows);
             continue;
         };
-        let Some(value) = source_paths.get(&source_id).map(String::as_str) else {
+        let Some((block, len)) = source_path_metadata_block(
+            &mut builder,
+            source_id,
+            source_paths,
+            &mut first_block,
+            &mut extra_blocks,
+        )?
+        else {
             append_null_metadata_views(&mut builder, span.rows);
             continue;
-        };
-        let (block, len) = if let Some(&(block, len)) = blocks.get(&source_id) {
-            (block, len)
-        } else {
-            let len = u32::try_from(value.len()).map_err(|_e| {
-                ArrowError::InvalidArgumentError(
-                    "source metadata string is too large for Utf8View".to_string(),
-                )
-            })?;
-            let block = builder.append_block(Buffer::from(value.as_bytes().to_vec()));
-            blocks.insert(source_id, (block, len));
-            (block, len)
         };
         append_block_metadata_views(&mut builder, block, 0, len, span.rows)?;
     }
     finish_string_metadata_array(builder, num_rows)
+}
+
+#[cfg(not(feature = "turmoil"))]
+fn source_path_metadata_block(
+    builder: &mut StringViewBuilder,
+    source_id: SourceId,
+    source_paths: &HashMap<SourceId, String>,
+    first_block: &mut Option<(SourceId, u32, u32)>,
+    extra_blocks: &mut Vec<(SourceId, u32, u32)>,
+) -> Result<Option<(u32, u32)>, ArrowError> {
+    if let Some((cached_source_id, block, len)) = first_block.as_ref()
+        && *cached_source_id == source_id
+    {
+        return Ok(Some((*block, *len)));
+    }
+    if let Some((_, block, len)) = extra_blocks
+        .iter()
+        .find(|(cached_source_id, _, _)| *cached_source_id == source_id)
+    {
+        return Ok(Some((*block, *len)));
+    }
+
+    let Some(value) = source_paths.get(&source_id).map(String::as_str) else {
+        return Ok(None);
+    };
+    let len = u32::try_from(value.len()).map_err(|_| {
+        ArrowError::InvalidArgumentError(
+            "source metadata string is too large for Utf8View".to_string(),
+        )
+    })?;
+    let block = builder.append_block(Buffer::from(value.as_bytes().to_vec()));
+    if first_block.is_none() {
+        *first_block = Some((source_id, block, len));
+    } else {
+        extra_blocks.push((source_id, block, len));
+    }
+    Ok(Some((block, len)))
 }
 
 #[cfg(not(feature = "turmoil"))]

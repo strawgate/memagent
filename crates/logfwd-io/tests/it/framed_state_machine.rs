@@ -312,6 +312,7 @@ impl StateMachineTest for FramedTest {
                     bytes,
                     source_id: Some(source),
                     accounted_bytes: n as u64,
+                    cri_metadata: None,
                 });
 
                 // INVARIANT: every emitted Data event ends with newline.
