@@ -8,7 +8,7 @@ import { PATHS } from './highway-graph.mjs';
 
 <div class="hw" id="highway-bp">
   <div class="hw-scene">
-    <svg class="hw-svg" viewBox="0 0 800 300" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+    <svg class="hw-svg" viewBox="0 0 800 380" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
       <defs>
         <path id="hw-path-ramp" d={PATHS.ramp} fill="none" />
         <path id="hw-path-hwy" d={PATHS.highway} fill="none" />
@@ -17,31 +17,31 @@ import { PATHS } from './highway-graph.mjs';
       </defs>
 
       <!-- Highway road surface (full width including continuation) -->
-      <rect x="25" y="84" width="750" height="32" fill="var(--hw-road)" />
-      <line x1="25" y1="84" x2="775" y2="84" stroke="var(--hw-edge)" stroke-width="1.5" />
-      <line x1="25" y1="116" x2="775" y2="116" stroke="var(--hw-edge)" stroke-width="1.5" />
+      <rect x="25" y="80" width="750" height="40" fill="var(--hw-road)" />
+      <line x1="25" y1="80" x2="775" y2="80" stroke="var(--hw-edge)" stroke-width="1.5" />
+      <line x1="25" y1="120" x2="775" y2="120" stroke="var(--hw-edge)" stroke-width="1.5" />
       <line x1="40" y1="100" x2="770" y2="100" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="14,10" />
 
       <!-- Direction chevrons on highway -->
       <g opacity="0.25" stroke="var(--hw-dash)" stroke-width="1.5" fill="none">
-        <path d="M 100,94 L 106,100 L 100,106" />
-        <path d="M 280,94 L 286,100 L 280,106" />
-        <path d="M 460,94 L 466,100 L 460,106" />
+        <path d="M 100,92 L 106,100 L 100,108" />
+        <path d="M 280,92 L 286,100 L 280,108" />
+        <path d="M 460,92 L 466,100 L 460,108" />
       </g>
 
       <!-- On-ramp road surface -->
-      <path d={PATHS.ramp} fill="none" stroke="var(--hw-road)" stroke-width="28" stroke-linecap="round" />
-      <path d={PATHS.ramp} fill="none" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="6,8" />
+      <path d={PATHS.ramp} fill="none" stroke="var(--hw-road)" stroke-width="36" stroke-linecap="round" />
+      <path d={PATHS.ramp} fill="none" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="6,8" />
 
       <!-- Exit ramp road surface -->
-      <path d={PATHS.exit} fill="none" stroke="var(--hw-road)" stroke-width="28" stroke-linecap="round" />
-      <path d={PATHS.exit} fill="none" stroke="var(--hw-dash)" stroke-width="1" stroke-dasharray="6,8" />
+      <path d={PATHS.exit} fill="none" stroke="var(--hw-road)" stroke-width="36" stroke-linecap="round" />
+      <path d={PATHS.exit} fill="none" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="6,8" />
 
       <!-- Fork marker -->
-      <line x1="560" y1="84" x2="560" y2="116" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.35" />
+      <line x1="560" y1="80" x2="560" y2="120" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.35" />
 
       <!-- Merge zone marker -->
-      <line x1="200" y1="84" x2="200" y2="116" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.35" />
+      <line x1="200" y1="80" x2="200" y2="120" stroke="var(--hw-dash)" stroke-width="1.5" stroke-dasharray="3,3" opacity="0.35" />
 
       <!-- Traffic light — positioned dynamically by JS on exit ramp -->
       <g id="hw-light" style="display:none">
@@ -55,19 +55,19 @@ import { PATHS } from './highway-graph.mjs';
       </g>
 
       <!-- Labels -->
-      <text x="30" y="78" text-anchor="start" fill="var(--hw-muted)" font-size="9" font-weight="600">LOG SOURCE</text>
-      <text x="30" y="275" text-anchor="start" fill="var(--hw-muted)" font-size="9" font-weight="600">LOG SOURCE</text>
-      <text x="730" y="275" text-anchor="middle" fill="var(--hw-muted)" font-size="9" font-weight="600">DESTINATION</text>
-      <text x="200" y="130" text-anchor="middle" fill="var(--hw-muted)" font-size="8" opacity="0.45">MERGE</text>
-      <text x="560" y="130" text-anchor="middle" fill="var(--hw-muted)" font-size="8" opacity="0.45">EXIT</text>
+      <text x="30" y="70" text-anchor="start" fill="var(--hw-muted)" font-size="9" font-weight="600">LOG SOURCE</text>
+      <text x="30" y="342" text-anchor="start" fill="var(--hw-muted)" font-size="9" font-weight="600">LOG SOURCE</text>
+      <text x="730" y="342" text-anchor="middle" fill="var(--hw-muted)" font-size="9" font-weight="600">DESTINATION</text>
+      <text x="200" y="138" text-anchor="middle" fill="var(--hw-muted)" font-size="8" opacity="0.45">MERGE</text>
+      <text x="560" y="138" text-anchor="middle" fill="var(--hw-muted)" font-size="8" opacity="0.45">EXIT</text>
 
       <!-- Status label along highway -->
-      <text x="380" y="72" text-anchor="middle" fill="var(--hw-muted)" font-size="10" font-weight="600" id="hw-pipeline-label">FLOWING — TRAFFIC MOVING FREELY</text>
+      <text x="380" y="64" text-anchor="middle" fill="var(--hw-muted)" font-size="10" font-weight="600" id="hw-pipeline-label">FLOWING — TRAFFIC MOVING FREELY</text>
 
       <g id="hw-cars"></g>
 
       <!-- Stats below the highway -->
-      <foreignObject x="200" y="140" width="360" height="45">
+      <foreignObject x="200" y="148" width="360" height="45">
         <div xmlns="http://www.w3.org/1999/xhtml" class="hw-stats" id="hw-stats">
           <div class="hw-stat">
             <span class="hw-stat-val" id="hw-s-tput">—</span>

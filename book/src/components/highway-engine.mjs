@@ -5,23 +5,23 @@ const STEP_S = STEP_MS / 1000;
 const SHAPES = ['sedan', 'truck', 'compact', 'van'];
 
 const DEFAULTS = {
-  spawnMs: 1000,
+  spawnMs: 850,
   maxCars: 18,
   greenPct: 80,
   cycleTotal: 3000,
   autoSpeed: 6, // pct per second
   autoMin: 5,
   autoMax: 100,
-  minGap: 28,
-  mergeGap: 32,
-  accel: 140,
-  brake: 220,
-  spawnSpeed: 60,
+  minGap: 44,
+  mergeGap: 80,
+  accel: 180,
+  brake: 280,
+  spawnSpeed: 78,
   laneSpeed: {
-    ramp: 92,
-    highway: 112,
-    exit: 102,
-    cont: 112,
+    ramp: 135,
+    highway: 146,
+    exit: 133,
+    cont: 146,
   },
 };
 
@@ -177,13 +177,29 @@ export function createHighwayEngine(overrides) {
         }
 
         if (segment === 'ramp') {
-          const remaining = LENGTHS.ramp - car.s - 8;
-          if (!mergeAllowed()) desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
+          const remaining = LENGTHS.ramp - car.s - 90;
+          if (!mergeAllowed()) {
+            desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
+          } else if (car.s > LENGTHS.ramp - 120) {
+            // Near-merge zone: check world-space proximity to highway cars
+            const rp = pointAt('ramp', car.s);
+            const PROX = 30; // world-space safety radius
+            for (let j = 0; j < perSeg.highway.length; j++) {
+              const hc = perSeg.highway[j];
+              const hp = pointAt('highway', hc.s);
+              const dx = rp.x - hp.x;
+              const dy = rp.y - hp.y;
+              if (dx * dx + dy * dy < PROX * PROX) {
+                desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
+                break;
+              }
+            }
+          }
         } else if (segment === 'exit' && !lightIsGreen && car.s < EXIT_GATE_S) {
-          const remaining = EXIT_GATE_S - car.s - 6;
+          const remaining = EXIT_GATE_S - car.s - 15;
           desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
         } else if (segment === 'highway') {
-          const remaining = LENGTHS.highway - car.s - 6;
+          const remaining = LENGTHS.highway - car.s - 30;
           if (car.route === 'exit' && !branchClear('exit')) desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
           if (car.route === 'cont' && !branchClear('cont')) desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
         }
@@ -191,6 +207,29 @@ export function createHighwayEngine(overrides) {
         if (car.speed < desired) car.speed = Math.min(desired, car.speed + cfg.accel * STEP_S);
         else car.speed = Math.max(desired, car.speed - cfg.brake * STEP_S);
         car.s += car.speed * STEP_S;
+
+        // Hard position clamp: never closer than minGap to the leader
+        if (leader) {
+          const maxS = leader.s - cfg.minGap;
+          if (car.s > maxS) { car.s = maxS; car.speed = Math.min(car.speed, leader.speed); }
+        }
+
+        // Cross-segment clamp: ramp cars near merge must not overlap highway cars
+        if (segment === 'ramp' && car.s > LENGTHS.ramp - 120) {
+          const rp = pointAt('ramp', car.s);
+          const SAFE = 22;
+          for (let j = 0; j < perSeg.highway.length; j++) {
+            const hc = perSeg.highway[j];
+            const hp = pointAt('highway', hc.s);
+            const dx = rp.x - hp.x;
+            const dy = rp.y - hp.y;
+            if (dx * dx + dy * dy < SAFE * SAFE) {
+              car.s = LENGTHS.ramp - 90;
+              car.speed = 0;
+              break;
+            }
+          }
+        }
       }
     }
 
@@ -200,8 +239,16 @@ export function createHighwayEngine(overrides) {
         if (mergeAllowed()) {
           car.segment = 'highway';
           car.s = MERGE_S + (car.s - LENGTHS.ramp);
+          car.speed = cfg.laneSpeed.highway;
         } else {
-          car.s = LENGTHS.ramp - 0.5;
+          // Snap back, but stay behind any ramp car that's near the stop zone
+          let safeS = LENGTHS.ramp - 90;
+          for (let j = 0; j < cars.length; j++) {
+            if (j !== i && cars[j].segment === 'ramp' && cars[j].s > safeS) {
+              safeS = Math.min(safeS, cars[j].s - cfg.minGap);
+            }
+          }
+          car.s = Math.max(0, safeS);
           car.speed = 0;
         }
       } else if (car.segment === 'highway' && car.s >= LENGTHS.highway) {
@@ -209,11 +256,19 @@ export function createHighwayEngine(overrides) {
         if (car.route === 'exit' && branchClear('exit')) {
           car.segment = 'exit';
           car.s = overflow;
+          car.speed = cfg.laneSpeed.exit;
         } else if (car.route === 'cont' && branchClear('cont')) {
           car.segment = 'cont';
           car.s = overflow;
+          car.speed = cfg.laneSpeed.cont;
         } else {
-          car.s = LENGTHS.highway - 0.5;
+          let safeS = LENGTHS.highway - 30;
+          for (let j = 0; j < cars.length; j++) {
+            if (j !== i && cars[j].segment === 'highway') {
+              safeS = Math.min(safeS, cars[j].s - cfg.minGap);
+            }
+          }
+          car.s = Math.max(0, safeS);
           car.speed = 0;
         }
       } else if ((car.segment === 'exit' && car.s >= LENGTHS.exit) || (car.segment === 'cont' && car.s >= LENGTHS.cont)) {
@@ -328,6 +383,10 @@ export function createHighwayEngine(overrides) {
     },
     setLastSpawn(t) {
       lastSpawnAt = t;
+    },
+    resetClock() {
+      lastNow = null;
+      accumulatorMs = 0;
     },
   };
 }

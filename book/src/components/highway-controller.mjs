@@ -18,8 +18,8 @@ import { angleAt, EXIT_GATE_S, pointAt } from './highway-graph.mjs';
 
   if (!carsG || !slider || !lightG || !lightHousing || !stopLine) return;
 
-  const CAR_W = 20;
-  const CAR_H = 10;
+  const CAR_W = 26;
+  const CAR_H = 13;
   const carEls = {};
 
   const engine = createHighwayEngine({
@@ -201,7 +201,7 @@ import { angleAt, EXIT_GATE_S, pointAt } from './highway-graph.mjs';
       cancelAnimationFrame(rafId);
       rafId = 0;
     } else if (!rafId && !window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      engine.setCycleStart(Date.now());
+      engine.resetClock();
       rafId = requestAnimationFrame(animate);
     }
   });
