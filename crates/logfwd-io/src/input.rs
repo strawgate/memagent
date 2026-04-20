@@ -379,6 +379,42 @@ impl StdinInput {
                     source_id: None,
                     accounted_bytes,
                 });
+                // After consuming probe data, check once more whether the
+                // channel is terminal so we don't suppress EOF when this was
+                // the final chunk.
+                self.is_stdin_terminal(events)
+            }
+            Ok(StdinMessage::EndOfFile) => {
+                self.is_finished = true;
+                events.push(InputEvent::EndOfFile { source_id: None });
+                true
+            }
+            Ok(StdinMessage::Error(kind, message)) => {
+                self.pending_error = Some((kind, message));
+                false
+            }
+            Err(mpsc::TryRecvError::Empty) => true,
+            Err(mpsc::TryRecvError::Disconnected) => {
+                self.is_finished = true;
+                events.push(InputEvent::EndOfFile { source_id: None });
+                true
+            }
+        }
+    }
+
+    /// Single `try_recv` that checks for a terminal state without consuming
+    /// additional data.  If the next message is `Data`, it is pushed to
+    /// `events` but the channel is **not** probed further — the caller should
+    /// treat the result as "not drained" because more items may remain.
+    fn is_stdin_terminal(&mut self, events: &mut Vec<InputEvent>) -> bool {
+        match self.rx.try_recv() {
+            Ok(StdinMessage::Data(bytes)) => {
+                let accounted_bytes = bytes.len() as u64;
+                events.push(InputEvent::Data {
+                    bytes,
+                    source_id: None,
+                    accounted_bytes,
+                });
                 false
             }
             Ok(StdinMessage::EndOfFile) => {
@@ -633,8 +669,27 @@ mod tests {
             .expect("shutdown poll should return bounded events");
         let (data_events, eof_events) = count_stdin_shutdown_events(&events);
 
-        assert_eq!(data_events, STDIN_MAX_SHUTDOWN_EVENTS + 2);
+        assert_eq!(data_events, STDIN_MAX_SHUTDOWN_EVENTS + 3);
         assert_eq!(eof_events, 0);
         assert!(!input.is_finished());
+    }
+
+    #[test]
+    fn stdin_poll_shutdown_emits_eof_when_post_limit_probe_data_is_final_chunk() {
+        // Regression: after draining STDIN_MAX_SHUTDOWN_EVENTS chunks, if the
+        // post-limit probe consumes Data that happens to be the last chunk
+        // before the channel closes, the follow-up terminal check must detect
+        // the closed channel and set is_drained so EOF is emitted.
+        let messages = (0..(STDIN_MAX_SHUTDOWN_EVENTS + 2))
+            .map(|i| StdinMessage::Data(format!("chunk-{i}\n").into_bytes()))
+            .collect();
+        let mut input = stdin_from_messages(messages);
+
+        let events = input.poll_shutdown().expect("shutdown poll should drain");
+        let (data_events, eof_events) = count_stdin_shutdown_events(&events);
+
+        assert_eq!(data_events, STDIN_MAX_SHUTDOWN_EVENTS + 2);
+        assert_eq!(eof_events, 1);
+        assert!(input.is_finished());
     }
 }
