@@ -786,7 +786,7 @@ mod verification {
     /// arbitrary position implies correctness at all.
     #[kani::proof]
     #[kani::unwind(65)]
-    #[kani::solver(kissat)]
+    #[kani::solver(cadical)]
     fn verify_find_char_mask_correct() {
         let block: [u8; 64] = kani::any();
         let needle: u8 = kani::any();
@@ -803,7 +803,7 @@ mod verification {
     /// use identical match-arm logic.
     #[kani::proof]
     #[kani::unwind(65)]
-    #[kani::solver(kissat)]
+    #[kani::solver(cadical)]
     fn verify_structural_scalar_consistent() {
         let block: [u8; 64] = kani::any();
         let raw = find_structural_chars_scalar(&block);
@@ -812,90 +812,12 @@ mod verification {
         assert_eq!(raw.quote, find_char_mask(&block, b'"'));
     }
 
-    /// Crash-freedom: process_block never panics for any combination
-    /// of 10 arbitrary u64 bitmasks and any block_len 0..=64.
-    #[kani::solver(kissat)]
-    #[kani::proof]
-    #[kani::unwind(65)] // compute_real_quotes: while b != 0, up to 64 iters
-    fn verify_process_block_no_panic() {
-        let raw = RawBlockMasks {
-            newline: kani::any(),
-            space: kani::any(),
-            quote: kani::any(),
-            backslash: kani::any(),
-            comma: kani::any(),
-            colon: kani::any(),
-            open_brace: kani::any(),
-            close_brace: kani::any(),
-            open_bracket: kani::any(),
-            close_bracket: kani::any(),
-        };
-        let block_len: usize = kani::any_where(|&l: &usize| l <= 64);
-
-        let mut classifier = StreamingClassifier::new();
-        let _ = classifier.process_block(&raw, block_len);
-    }
-
-    /// Tail masking: no bits set beyond block_len in any output field.
-    #[kani::solver(kissat)]
-    #[kani::proof]
-    #[kani::unwind(65)] // compute_real_quotes: while b != 0, up to 64 iters
-    fn verify_process_block_tail_mask() {
-        let raw = RawBlockMasks {
-            newline: kani::any(),
-            space: kani::any(),
-            quote: kani::any(),
-            backslash: kani::any(),
-            comma: kani::any(),
-            colon: kani::any(),
-            open_brace: kani::any(),
-            close_brace: kani::any(),
-            open_bracket: kani::any(),
-            close_bracket: kani::any(),
-        };
-        let block_len: usize = kani::any_where(|&l: &usize| l < 64);
-
-        let mut classifier = StreamingClassifier::new();
-        let p = classifier.process_block(&raw, block_len);
-
-        // No bits set beyond block_len
-        let tail_mask = !((1u64 << block_len) - 1);
-        assert_eq!(p.newline & tail_mask, 0);
-        assert_eq!(p.real_quotes & tail_mask, 0);
-        assert_eq!(p.comma & tail_mask, 0);
-    }
-
-    /// String exclusion: structural characters (space, comma, colon,
-    /// braces) never overlap with in_string mask. Only covers the
-    /// no-backslash case — with escapes, the exclusion is verified
-    /// by the compositional proof below.
-    #[kani::solver(kissat)]
-    #[kani::proof]
-    #[kani::unwind(65)] // compute_real_quotes: while b != 0, up to 64 iters
-    fn verify_in_string_exclusion() {
-        let raw = RawBlockMasks {
-            newline: 0, // no newlines for simplicity
-            space: kani::any(),
-            quote: kani::any(),
-            backslash: 0, // no escapes for simplicity
-            comma: kani::any(),
-            colon: kani::any(),
-            open_brace: kani::any(),
-            close_brace: kani::any(),
-            open_bracket: kani::any(),
-            close_bracket: kani::any(),
-        };
-
-        let mut classifier = StreamingClassifier::new();
-        let p = classifier.process_block(&raw, 64);
-
-        // Structural chars must not overlap with in_string
-        assert_eq!(p.space & p.in_string, 0);
-        assert_eq!(p.comma & p.in_string, 0);
-        assert_eq!(p.colon & p.in_string, 0);
-        assert_eq!(p.open_brace & p.in_string, 0);
-        assert_eq!(p.close_brace & p.in_string, 0);
-    }
+    // Proofs #5 (verify_process_block_no_panic), #6 (verify_process_block_tail_mask),
+    // and #7 (verify_in_string_exclusion) have been retired — their properties are
+    // fully subsumed by verify_process_block_compositional below, which uses
+    // stub_verified(compute_real_quotes) and checks all 10 output fields for
+    // crash-freedom, tail masking, and string exclusion. See kani::cover!()
+    // statements in that proof for traceability.
 
     /// Verify compute_real_quotes contract: result is submask of quote_bits.
     #[kani::proof_for_contract(compute_real_quotes)]
@@ -909,10 +831,11 @@ mod verification {
     /// Compositional proof: process_block using proven compute_real_quotes.
     /// Kani trusts the compute_real_quotes contract (submask property)
     /// and verifies process_block's composition logic:
+    /// - Crash-freedom: never panics for any inputs (subsumes retired #5)
     /// - real_quotes is a submask of raw quotes (from contract)
     /// - in_string is derived correctly via prefix_xor
-    /// - structural chars are masked by !in_string
-    /// - tail mask clears bits beyond block_len
+    /// - structural chars are masked by !in_string (subsumes retired #7)
+    /// - tail mask clears bits beyond block_len (subsumes retired #6)
     #[kani::proof]
     #[kani::stub_verified(compute_real_quotes)]
     fn verify_process_block_compositional() {
@@ -963,5 +886,21 @@ mod verification {
             assert_eq!(p.open_bracket & tail, 0);
             assert_eq!(p.close_bracket & tail, 0);
         }
+
+        // Coverage for retired proof properties:
+        // #5 (crash-freedom): reaching this point proves no panic
+        kani::cover!(block_len == 0, "crash-free at block_len=0 (retired #5)");
+        kani::cover!(block_len == 64, "crash-free at block_len=64 (retired #5)");
+        // #6 (tail masking): covered by the tail assertions above
+        kani::cover!(block_len < 64, "tail masking active (retired #6)");
+        // #7 (string exclusion): covered by the in_string assertions above
+        kani::cover!(
+            p.in_string != 0,
+            "string exclusion with non-zero in_string (retired #7)"
+        );
+        kani::cover!(
+            p.comma != 0 && p.in_string != 0,
+            "comma and in_string both non-zero (retired #7)"
+        );
     }
 }

@@ -432,6 +432,7 @@ mod verification {
     /// selected kind matches exactly one of the bitmask fields.
     /// Exhaustive over all bit positions and arbitrary bitmasks.
     #[kani::proof]
+    #[kani::solver(cadical)]
     fn verify_classify_bit_correct() {
         let bit_pos: usize = kani::any_where(|&p: &usize| p < 64);
         let mask = 1u64 << bit_pos;
@@ -523,6 +524,7 @@ mod verification {
     /// and the byte at result (if < len) is not an ASCII space.
     #[kani::proof]
     #[kani::unwind(18)]
+    #[kani::solver(cadical)]
     fn verify_next_non_space_fallback() {
         let buf: [u8; 16] = kani::any();
         let from: usize = kani::any();

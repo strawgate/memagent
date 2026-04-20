@@ -369,7 +369,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
           key: kani-core
 
       - name: Run Kani verification (logfwd-core)
@@ -400,7 +400,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
           key: kani-arrow
 
       - name: Run Kani verification (logfwd-arrow --lib)
@@ -434,7 +434,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
           key: kani-periphery
 
       - name: Run Kani verification (periphery crates)
