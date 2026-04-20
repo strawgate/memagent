@@ -154,9 +154,11 @@ impl StdoutSink {
                 num_rows
             }
             StdoutFormat::Console => {
+                let start_len = dest.len();
                 self.write_console(batch, dest)?;
                 // Console format: count lines in output (variable per row).
-                memchr_iter(b'\n', dest).count()
+                // Slice from start_len to count only newly-appended newlines.
+                memchr_iter(b'\n', &dest[start_len..]).count()
             }
         };
         Ok(lines)
