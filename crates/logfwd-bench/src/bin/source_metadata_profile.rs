@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Quick source metadata attachment timing/allocation profile.
 //!
 //! Run:
