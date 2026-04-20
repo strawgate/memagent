@@ -803,12 +803,12 @@ fn cri_metadata_arrays(
             append_inline_metadata_values(&mut stream, values.stream.as_str(), span.rows);
             continue;
         }
-        let timestamp_offset = u32::try_from(values.timestamp_start).map_err(|_| {
+        let timestamp_offset = u32::try_from(values.timestamp_start).map_err(|_err| {
             ArrowError::InvalidArgumentError(
                 "CRI timestamp string offset is too large for Utf8View".to_string(),
             )
         })?;
-        let timestamp_len = u32::try_from(values.timestamp_len).map_err(|_| {
+        let timestamp_len = u32::try_from(values.timestamp_len).map_err(|_err| {
             ArrowError::InvalidArgumentError(
                 "CRI timestamp string is too large for Utf8View".to_string(),
             )
