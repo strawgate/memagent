@@ -865,6 +865,13 @@ fn source_path_metadata_array(
     finish_string_metadata_array(builder, num_rows)
 }
 
+/// Look up or create the `StringView` block index for a source path.
+///
+/// Caches the first block inline and spills subsequent unique source paths
+/// into `extra_blocks` so repeated rows referencing the same source reuse
+/// a single buffer allocation.
+// Verified: turmoil cfg alignment is correct — this function is only called
+// from `source_path_metadata_array` which is also `#[cfg(not(feature = "turmoil"))]`.
 #[cfg(not(feature = "turmoil"))]
 fn source_path_metadata_block(
     builder: &mut StringViewBuilder,
@@ -888,7 +895,7 @@ fn source_path_metadata_block(
     let Some(value) = source_paths.get(&source_id).map(String::as_str) else {
         return Ok(None);
     };
-    let len = u32::try_from(value.len()).map_err(|_| {
+    let len = u32::try_from(value.len()).map_err(|_overflow| {
         ArrowError::InvalidArgumentError(
             "source metadata string is too large for Utf8View".to_string(),
         )
