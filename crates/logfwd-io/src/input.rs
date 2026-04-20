@@ -699,4 +699,23 @@ mod tests {
         assert_eq!(eof_events, 1);
         assert!(input.is_finished());
     }
+
+    #[test]
+    fn stdin_poll_shutdown_emits_eof_for_exactly_max_plus_one_chunks() {
+        // Edge case: exactly STDIN_MAX_SHUTDOWN_EVENTS + 1 data chunks with a
+        // disconnected channel. The main loop drains MAX chunks, the post-limit
+        // probe consumes the (MAX+1)th, and the follow-up terminal check must
+        // detect the disconnected channel and emit synthetic EOF.
+        let messages = (0..(STDIN_MAX_SHUTDOWN_EVENTS + 1))
+            .map(|i| StdinMessage::Data(format!("chunk-{i}\n").into_bytes()))
+            .collect();
+        let mut input = stdin_from_messages(messages);
+
+        let events = input.poll_shutdown().expect("shutdown poll should drain");
+        let (data_events, eof_events) = count_stdin_shutdown_events(&events);
+
+        assert_eq!(data_events, STDIN_MAX_SHUTDOWN_EVENTS + 1);
+        assert_eq!(eof_events, 1);
+        assert!(input.is_finished());
+    }
 }
