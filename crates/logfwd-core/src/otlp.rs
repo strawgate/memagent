@@ -116,9 +116,11 @@ pub const KEY_VALUE_VALUE: u32 = 2;
 // --- Protobuf wire format helpers ---
 
 use alloc::vec::Vec;
+use logfwd_lint_attrs::{allow_unproven, trust_boundary, verified};
 
 /// Encode a varint into buf at offset, return new offset.
 #[inline(always)]
+#[verified(kani = "verify_varint_len_matches_encode")]
 pub fn encode_varint(buf: &mut Vec<u8>, mut value: u64) {
     loop {
         if value < 0x80 {
@@ -133,6 +135,7 @@ pub fn encode_varint(buf: &mut Vec<u8>, mut value: u64) {
 /// Compute encoded varint length without writing.
 #[inline(always)]
 #[allow(clippy::match_overlapping_arm)]
+#[verified(kani = "verify_varint_len_matches_encode")]
 pub const fn varint_len(value: u64) -> usize {
     match value {
         0..=0x7F => 1,
@@ -150,12 +153,14 @@ pub const fn varint_len(value: u64) -> usize {
 
 /// Write a protobuf tag (field_number + wire_type).
 #[inline(always)]
+#[verified(kani = "verify_encode_tag")]
 pub fn encode_tag(buf: &mut Vec<u8>, field_number: u32, wire_type: u8) {
     encode_varint(buf, ((field_number as u64) << 3) | wire_type as u64);
 }
 
 /// Write a fixed64 field (tag + 8 bytes little-endian).
 #[inline(always)]
+#[verified(kani = "verify_encode_fixed64")]
 pub fn encode_fixed64(buf: &mut Vec<u8>, field_number: u32, value: u64) {
     encode_tag(buf, field_number, 1); // wire type 1 = 64-bit
     buf.extend_from_slice(&value.to_le_bytes());
@@ -163,6 +168,7 @@ pub fn encode_fixed64(buf: &mut Vec<u8>, field_number: u32, value: u64) {
 
 /// Write a varint field (tag + varint value).
 #[inline(always)]
+#[verified(kani = "verify_encode_varint_field")]
 pub fn encode_varint_field(buf: &mut Vec<u8>, field_number: u32, value: u64) {
     encode_tag(buf, field_number, 0); // wire type 0 = varint
     encode_varint(buf, value);
@@ -170,6 +176,7 @@ pub fn encode_varint_field(buf: &mut Vec<u8>, field_number: u32, value: u64) {
 
 /// Write a length-delimited field (tag + length + bytes).
 #[inline(always)]
+#[verified(kani = "verify_encode_bytes_field_content")]
 pub fn encode_bytes_field(buf: &mut Vec<u8>, field_number: u32, data: &[u8]) {
     encode_tag(buf, field_number, 2); // wire type 2 = length-delimited
     encode_varint(buf, data.len() as u64);
@@ -178,6 +185,7 @@ pub fn encode_bytes_field(buf: &mut Vec<u8>, field_number: u32, data: &[u8]) {
 
 /// Compute the encoded size of a length-delimited field (without writing).
 #[inline(always)]
+#[verified(kani = "verify_bytes_field_size")]
 pub const fn bytes_field_size(field_number: u32, data_len: usize) -> usize {
     let tag_size = varint_len(((field_number as u64) << 3) | 2);
     let len_size = varint_len(data_len as u64);
@@ -187,6 +195,7 @@ pub const fn bytes_field_size(field_number: u32, data_len: usize) -> usize {
 /// Write a fixed32 field (tag + 4 bytes little-endian).
 /// Used for LogRecord field 8 (`flags`), wire type 5.
 #[inline(always)]
+#[allow_unproven]
 pub fn encode_fixed32(buf: &mut Vec<u8>, field_number: u32, value: u32) {
     encode_tag(buf, field_number, 5); // wire type 5 = 32-bit fixed
     buf.extend_from_slice(&value.to_le_bytes());
@@ -198,6 +207,8 @@ pub fn encode_fixed32(buf: &mut Vec<u8>, field_number: u32, value: u32) {
 ///
 /// Returns `(value, new_pos)` or an error string if the input is truncated
 /// or the varint exceeds 10 bytes.
+#[allow_unproven]
+#[trust_boundary]
 pub fn decode_varint(buf: &[u8], pos: usize) -> Result<(u64, usize), &'static str> {
     let mut value: u64 = 0;
     let mut shift: u32 = 0;
@@ -220,6 +231,8 @@ pub fn decode_varint(buf: &[u8], pos: usize) -> Result<(u64, usize), &'static st
 }
 
 /// Decode a protobuf tag into `(field_number, wire_type, new_pos)`.
+#[allow_unproven]
+#[trust_boundary]
 pub fn decode_tag(buf: &[u8], pos: usize) -> Result<(u32, u8, usize), &'static str> {
     let (tag, new_pos) = decode_varint(buf, pos)?;
     let field_number = (tag >> 3) as u32;
@@ -229,6 +242,8 @@ pub fn decode_tag(buf: &[u8], pos: usize) -> Result<(u32, u8, usize), &'static s
 
 /// Skip a protobuf field value based on its wire type. Returns the new
 /// position after the field value.
+#[allow_unproven]
+#[trust_boundary]
 pub fn skip_field(buf: &[u8], wire_type: u8, pos: usize) -> Result<usize, &'static str> {
     match wire_type {
         0 => {
@@ -274,6 +289,7 @@ pub fn skip_field(buf: &[u8], wire_type: u8, pos: usize) -> Result<usize, &'stat
 ///
 /// Designed for zero-allocation decoding of `trace_id` (32 hex chars → 16 bytes)
 /// and `span_id` (16 hex chars → 8 bytes) on the hot encoding path.
+#[verified(kani = "verify_hex_decode_roundtrip")]
 pub fn hex_decode(hex_bytes: &[u8], out: &mut [u8]) -> bool {
     if hex_bytes.len() != out.len() * 2 {
         return false;
@@ -345,6 +361,7 @@ pub enum Severity {
 
 /// Fast severity lookup from first byte + length. No string comparison needed.
 #[inline(always)]
+#[verified(kani = "verify_parse_severity_no_false_positives")]
 pub fn parse_severity(text: &[u8]) -> (Severity, &[u8]) {
     // Exact case-insensitive match against the 6 standard severity strings
     // plus common aliases used by syslog and application logs.
@@ -373,12 +390,14 @@ pub fn parse_severity(text: &[u8]) -> (Severity, &[u8]) {
 /// Case-insensitive variable-length comparison for ASCII letters.
 /// Used by Kani proofs to verify parse_severity only matches standard levels.
 #[cfg(kani)]
+#[allow_unproven]
 fn eq_ignore_case_match(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x | 0x20 == y | 0x20)
 }
 
 /// Case-insensitive 3-byte comparison.
 #[inline(always)]
+#[allow_unproven]
 fn eq_ignore_case_3(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20 && a[1] | 0x20 == b[1] | 0x20 && a[2] | 0x20 == b[2] | 0x20
 }
@@ -388,6 +407,7 @@ fn eq_ignore_case_3(a: &[u8], b: &[u8]) -> bool {
 /// collisions for non-letters (e.g., `@` |0x20 = `` ` ``). Safe here because
 /// the comparison targets ("INFO", "WARN") are all ASCII letters.
 #[inline(always)]
+#[verified(kani = "verify_eq_ignore_case_4_no_false_positives_info")]
 fn eq_ignore_case_4(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20
         && a[1] | 0x20 == b[1] | 0x20
@@ -397,6 +417,7 @@ fn eq_ignore_case_4(a: &[u8], b: &[u8]) -> bool {
 
 /// Case-insensitive 5-byte comparison.
 #[inline(always)]
+#[verified(kani = "verify_eq_ignore_case_5_no_false_positives_error")]
 fn eq_ignore_case_5(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20
         && a[1] | 0x20 == b[1] | 0x20
@@ -407,6 +428,7 @@ fn eq_ignore_case_5(a: &[u8], b: &[u8]) -> bool {
 
 /// Case-insensitive 6-byte comparison.
 #[inline(always)]
+#[allow_unproven]
 fn eq_ignore_case_6(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20
         && a[1] | 0x20 == b[1] | 0x20
@@ -418,6 +440,7 @@ fn eq_ignore_case_6(a: &[u8], b: &[u8]) -> bool {
 
 /// Case-insensitive 7-byte comparison.
 #[inline(always)]
+#[allow_unproven]
 fn eq_ignore_case_7(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20
         && a[1] | 0x20 == b[1] | 0x20
@@ -430,6 +453,7 @@ fn eq_ignore_case_7(a: &[u8], b: &[u8]) -> bool {
 
 /// Case-insensitive 8-byte comparison.
 #[inline(always)]
+#[allow_unproven]
 fn eq_ignore_case_8(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20
         && a[1] | 0x20 == b[1] | 0x20
@@ -460,6 +484,7 @@ fn eq_ignore_case_8(a: &[u8], b: &[u8]) -> bool {
 ///
 /// Fractional seconds beyond 9 digits (nanosecond precision) are
 /// truncated — this is intentional as OTLP uses nanoseconds.
+#[verified(kani = "verify_parse_timestamp_compositional")]
 pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
     if ts.len() < 19 {
         return None;
@@ -579,6 +604,7 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
 #[allow(dead_code)]
 #[inline(always)]
 #[cfg_attr(kani, kani::ensures(|result: &u16| *result <= 9999))]
+#[verified(kani = "verify_parse_4digits_contract")]
 fn parse_4digits(s: &[u8], off: usize) -> u16 {
     if off + 4 > s.len() {
         return 0;
@@ -595,6 +621,7 @@ fn parse_4digits(s: &[u8], off: usize) -> u16 {
 #[allow(dead_code)]
 #[inline(always)]
 #[cfg_attr(kani, kani::ensures(|result: &u8| *result <= 99))]
+#[verified(kani = "verify_parse_2digits_contract")]
 fn parse_2digits(s: &[u8], off: usize) -> u8 {
     if off + 2 > s.len() {
         return 0;
@@ -611,6 +638,7 @@ fn parse_2digits(s: &[u8], off: usize) -> u8 {
 /// avoids the double-check that `parse_4digits` + external `is_ascii_digit`
 /// calls would perform.
 #[inline(always)]
+#[allow_unproven]
 fn parse_4digits_checked(s: &[u8], off: usize) -> Option<u16> {
     let (a, b, c, d) = (
         s[off].wrapping_sub(b'0'),
@@ -628,6 +656,7 @@ fn parse_4digits_checked(s: &[u8], off: usize) -> Option<u16> {
 /// not a digit. Single-pass: one `wrapping_sub` + compare per digit instead of
 /// a `is_ascii_digit` check followed by a separate subtraction.
 #[inline(always)]
+#[allow_unproven]
 fn parse_2digits_checked(s: &[u8], off: usize) -> Option<u8> {
     let a = s[off].wrapping_sub(b'0');
     let b = s[off + 1].wrapping_sub(b'0');
@@ -639,12 +668,14 @@ fn parse_2digits_checked(s: &[u8], off: usize) -> Option<u8> {
 
 /// Returns `true` if `year` is a leap year (Gregorian calendar).
 #[inline(always)]
+#[allow_unproven]
 fn is_leap_year(year: i64) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
 /// Returns the number of days in the given month (1-12) for the given year.
 #[inline(always)]
+#[allow_unproven]
 fn days_in_month(year: i64, month: u32) -> u32 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -673,6 +704,7 @@ fn days_in_month(year: i64, month: u32) -> u32 {
     // Required so `stub_verified(days_from_civil)` keeps nanos arithmetic within u64.
     && *result <= 213_400
 ))]
+#[verified(kani = "verify_days_from_civil_contract")]
 pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let y = if month <= 2 { year - 1 } else { year };
     let m = if month <= 2 {
