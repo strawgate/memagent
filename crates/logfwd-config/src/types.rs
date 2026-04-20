@@ -1060,6 +1060,123 @@ impl From<OutputConfigV2> for OutputConfig {
     }
 }
 
+impl OutputConfigV2 {
+    /// Return the optional user-provided output name for this typed output.
+    pub fn name(&self) -> Option<&str> {
+        match self {
+            OutputConfigV2::Otlp(config) => config.name.as_deref(),
+            OutputConfigV2::Http(config) => config.name.as_deref(),
+            OutputConfigV2::Elasticsearch(config) => config.name.as_deref(),
+            OutputConfigV2::Loki(config) => config.name.as_deref(),
+            OutputConfigV2::Stdout(config) => config.name.as_deref(),
+            OutputConfigV2::File(config) => config.name.as_deref(),
+            OutputConfigV2::Parquet(config) => config.name.as_deref(),
+            OutputConfigV2::Null(config) => config.name.as_deref(),
+            OutputConfigV2::Tcp(config) => config.name.as_deref(),
+            OutputConfigV2::Udp(config) => config.name.as_deref(),
+            OutputConfigV2::ArrowIpc(config) => config.name.as_deref(),
+        }
+    }
+
+    /// Return the flat output type tag corresponding to this typed variant.
+    pub fn output_type(&self) -> OutputType {
+        match self {
+            OutputConfigV2::Otlp(_) => OutputType::Otlp,
+            OutputConfigV2::Http(_) => OutputType::Http,
+            OutputConfigV2::Elasticsearch(_) => OutputType::Elasticsearch,
+            OutputConfigV2::Loki(_) => OutputType::Loki,
+            OutputConfigV2::Stdout(_) => OutputType::Stdout,
+            OutputConfigV2::File(_) => OutputType::File,
+            OutputConfigV2::Parquet(_) => OutputType::Parquet,
+            OutputConfigV2::Null(_) => OutputType::Null,
+            OutputConfigV2::Tcp(_) => OutputType::Tcp,
+            OutputConfigV2::Udp(_) => OutputType::Udp,
+            OutputConfigV2::ArrowIpc(_) => OutputType::ArrowIpc,
+        }
+    }
+}
+
+/// Pipeline output entry stored in the config model.
+///
+/// New YAML is represented as a typed `OutputConfigV2`. Legacy flat output
+/// YAML is accepted at the deserialization edge. A flat compatibility view is
+/// retained so existing callers that access `PipelineConfig.outputs` fields can
+/// continue reading the normalized `OutputConfig` shape while new runtime code
+/// uses the typed variant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutputConfigEntry {
+    config: OutputConfigV2,
+    flat: OutputConfig,
+}
+
+impl OutputConfigEntry {
+    /// Return the typed output configuration used by new internal consumers.
+    pub fn typed(&self) -> &OutputConfigV2 {
+        &self.config
+    }
+
+    /// Return the optional user-provided output name from the typed config.
+    pub fn name(&self) -> Option<&str> {
+        self.config.name()
+    }
+
+    /// Return the flat output type tag for diagnostics and compatibility code.
+    pub fn output_type(&self) -> OutputType {
+        self.config.output_type()
+    }
+
+    /// Return a flat validation view, preserving legacy fields when present.
+    pub(crate) fn validation_config(&self) -> OutputConfig {
+        self.flat.clone()
+    }
+}
+
+impl From<OutputConfigV2> for OutputConfigEntry {
+    fn from(config: OutputConfigV2) -> Self {
+        let flat = OutputConfig::from(config.clone());
+        Self { config, flat }
+    }
+}
+
+impl From<OutputConfig> for OutputConfigEntry {
+    fn from(config: OutputConfig) -> Self {
+        Self {
+            config: OutputConfigV2::from(&config),
+            flat: config,
+        }
+    }
+}
+
+impl std::ops::Deref for OutputConfigEntry {
+    type Target = OutputConfig;
+
+    fn deref(&self) -> &Self::Target {
+        &self.flat
+    }
+}
+
+impl<'de> Deserialize<'de> for OutputConfigEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_yaml_ng::Value::deserialize(deserializer)?;
+        let v2_error = match OutputConfigV2::deserialize(value.clone()) {
+            Ok(config) => return Ok(OutputConfigEntry::from(config)),
+            Err(error) => error,
+        };
+
+        OutputConfigV1::deserialize(value)
+            .map(OutputConfig::from)
+            .map(OutputConfigEntry::from)
+            .map_err(|v1_error| {
+                serde::de::Error::custom(format!(
+                    "invalid output config; v2 parse error: {v2_error}; legacy parse error: {v1_error}"
+                ))
+            })
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct OtlpOutputConfig {
@@ -1244,6 +1361,11 @@ impl StdoutOutputConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
+/// File output configuration for the typed V2 schema.
+///
+/// File compression is intentionally not part of the typed schema. Legacy flat
+/// configs may still carry `compression`; compatibility code preserves that
+/// field in the flat view so it can reject the unsupported option explicitly.
 pub struct FileOutputConfig {
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub name: Option<String>,
@@ -1531,8 +1653,9 @@ pub struct PipelineConfig {
     pub inputs: Vec<InputConfig>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub transform: Option<String>,
+    /// Typed output configurations accepted from V2 or legacy output YAML.
     #[serde(default, deserialize_with = "deserialize_one_or_many")]
-    pub outputs: Vec<OutputConfig>,
+    pub outputs: Vec<OutputConfigEntry>,
     #[serde(default)]
     pub enrichment: Vec<EnrichmentConfig>,
     #[serde(default, deserialize_with = "deserialize_string_map_strict_values")]

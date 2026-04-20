@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use logfwd_config::{Format, OutputConfig, OutputConfigV2, OutputType, TlsClientConfig};
+#[cfg(test)]
+use logfwd_config::OutputConfig;
+use logfwd_config::{Format, OutputConfigV2, TlsClientConfig};
 use logfwd_types::diagnostics::ComponentStats;
 
 use crate::arrow_ipc_sink::ArrowIpcSinkFactory;
@@ -85,13 +87,14 @@ fn read_tls_file(name: &str, field: &str, path: &str) -> Result<Vec<u8>, OutputE
 ///
 /// Returns a factory that creates a fresh sink per worker. Most sink types
 /// support multiple workers; the factory can be called repeatedly.
-pub fn build_sink_factory(
+#[cfg(test)]
+pub(crate) fn build_sink_factory(
     name: &str,
     cfg: &OutputConfig,
     base_path: Option<&Path>,
     stats: Arc<ComponentStats>,
 ) -> Result<Arc<dyn SinkFactory>, OutputError> {
-    if cfg.output_type == OutputType::File
+    if cfg.output_type == logfwd_config::OutputType::File
         && let Some(compression) = cfg.compression.as_deref()
     {
         return Err(OutputError::Construction(format!(
