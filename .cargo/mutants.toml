@@ -1,0 +1,59 @@
+# cargo-mutants configuration
+# https://mutants.rs/config.html
+#
+# Run: cargo mutants -p logfwd-core --test-tool nextest
+# PR:  git diff origin/main...HEAD | cargo mutants --in-diff - --test-tool nextest
+
+# Use nextest (matches CI test runner).
+test_tool = "nextest"
+
+# Exclude Kani verification modules — these are proof harnesses that only run
+# under `cargo kani`, not `cargo test`.  Without this exclusion ~32% of
+# logfwd-core mutants are false-positive "missed".
+exclude_re = [
+    "verification::",          # Kani proof harnesses (all crates)
+    "::tests::",               # test-only helper functions
+    "impl.*Display",           # Display impls — cosmetic, not logic
+    "impl.*Debug",             # Debug impls — cosmetic
+    "tracing::",               # tracing instrumentation
+]
+
+# Skip mutations inside calls to these functions — they're side-effect-only
+# logging/tracing or allocation hints that don't affect correctness.
+skip_calls = [
+    "trace",
+    "debug",
+    "info",
+    "warn",
+    "error",
+    "tracing::trace",
+    "tracing::debug",
+    "tracing::info",
+    "tracing::warn",
+    "tracing::error",
+    "eprintln",
+    "with_capacity",
+    "reserve",
+    "shrink_to_fit",
+]
+skip_calls_defaults = true
+
+# Exclude generated code and benchmarks from mutation.
+exclude_globs = [
+    "**/generated/**",
+    "**/benches/**",
+    "**/examples/**",
+]
+
+# Cap lint level to avoid deny-warnings build failures on mutated code.
+cap_lints = true
+
+# Timeout: 2x baseline to catch infinite loops without being too generous.
+# Baseline test is ~26s, so 2x = ~80s effective timeout after multiplier.
+timeout_multiplier = 2.5
+
+# Build timeout: generous since incremental builds vary.
+build_timeout_multiplier = 5.0
+
+# Minimum test timeout floor (seconds).
+minimum_test_timeout = 30.0

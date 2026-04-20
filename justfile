@@ -302,6 +302,20 @@ test-extended:
 test-linearizability:
     cargo test -p logfwd --features turmoil --test turmoil_sim linearizability::porcupine_checker_accepts_runtime_history
 
+# ---------------------------------------------------------------------------
+# Mutation testing (cargo-mutants)
+# ---------------------------------------------------------------------------
+
+# Run mutation testing on a single crate (default: logfwd-core).
+# Requires: cargo install cargo-mutants
+# Config:   .cargo/mutants.toml (exclusions, timeout, nextest)
+mutants crate="logfwd-core":
+    cargo mutants -p {{crate}}
+
+# Run mutation testing only on code changed vs origin/main (fast, CI-friendly).
+mutants-diff crate="logfwd-core":
+    git diff origin/main...HEAD | cargo mutants -p {{crate}} --in-diff -
+
 # Build release binary (full package, includes DataFusion SQL)
 build:
     cargo build --release -p logfwd
