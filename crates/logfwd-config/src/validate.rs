@@ -1666,6 +1666,11 @@ fn validate_sensor_event_type_list(
                 "pipeline '{pipeline_name}' input '{input_label}': sensor.{field} entries must not be empty"
             )));
         }
+        if event_type != normalized {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' input '{input_label}': sensor.{field} entry '{event_type}' has leading or trailing whitespace"
+            )));
+        }
         if !PLATFORM_SENSOR_EVENT_TYPES.contains(&normalized) {
             return Err(ConfigError::Validation(format!(
                 "pipeline '{pipeline_name}' input '{input_label}': unknown sensor event type '{normalized}' for linux_ebpf_sensor input (supported: {PLATFORM_SENSOR_EVENT_TYPES_CSV})"

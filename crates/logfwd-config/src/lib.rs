@@ -1050,6 +1050,24 @@ output:
     }
 
     #[test]
+    fn linux_sensor_rejects_whitespace_event_type_filter() {
+        let yaml = r#"
+input:
+  type: linux_ebpf_sensor
+  sensor:
+    include_event_types: [" exec"]
+output:
+  type: stdout
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("has leading or trailing whitespace"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
     fn host_metrics_rejects_event_type_filters() {
         let yaml = r"
 input:

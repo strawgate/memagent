@@ -1,23 +1,5 @@
 //! Pure platform-sensor event-type filtering helpers.
 
-/// Event type names emitted in the `event_kind` Arrow column.
-#[cfg(test)]
-pub(crate) const SUPPORTED_EVENT_TYPES: &[&str] = &[
-    "exec",
-    "exit",
-    "tcp_connect",
-    "tcp_accept",
-    "file_open",
-    "file_delete",
-    "file_rename",
-    "setuid",
-    "setgid",
-    "module_load",
-    "ptrace",
-    "memfd_create",
-    "dns_query",
-];
-
 /// Return whether `event_kind` should pass the configured include/exclude lists.
 ///
 /// Include lists narrow the set first. Exclude lists are then applied and take
@@ -44,7 +26,24 @@ fn contains_event_type(types: &[String], event_kind: &str) -> bool {
 mod tests {
     use super::*;
 
-    fn strings(values: &[&str]) -> Vec<String> {
+    /// Event type names emitted in the `event_kind` Arrow column.
+    const SUPPORTED_EVENT_TYPES: &[&str] = &[
+        "exec",
+        "exit",
+        "tcp_connect",
+        "tcp_accept",
+        "file_open",
+        "file_delete",
+        "file_rename",
+        "setuid",
+        "setgid",
+        "module_load",
+        "ptrace",
+        "memfd_create",
+        "dns_query",
+    ];
+
+    fn make_string_vec(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
     }
 
@@ -78,22 +77,22 @@ mod tests {
 
     #[test]
     fn include_list_allows_only_named_event_types() {
-        let include = strings(&["exec", "exit"]);
+        let include = make_string_vec(&["exec", "exit"]);
         assert!(is_event_type_enabled("exec", Some(&include), None));
         assert!(!is_event_type_enabled("tcp_connect", Some(&include), None));
     }
 
     #[test]
     fn exclude_list_suppresses_named_event_types() {
-        let exclude = strings(&["tcp_connect"]);
+        let exclude = make_string_vec(&["tcp_connect"]);
         assert!(!is_event_type_enabled("tcp_connect", None, Some(&exclude)));
         assert!(is_event_type_enabled("exec", None, Some(&exclude)));
     }
 
     #[test]
     fn exclude_list_takes_precedence_over_include_list() {
-        let include = strings(&["exec", "tcp_connect"]);
-        let exclude = strings(&["tcp_connect"]);
+        let include = make_string_vec(&["exec", "tcp_connect"]);
+        let exclude = make_string_vec(&["tcp_connect"]);
         assert!(!is_event_type_enabled(
             "tcp_connect",
             Some(&include),
