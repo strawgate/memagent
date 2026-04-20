@@ -155,7 +155,10 @@ pub(super) fn build_input_state(
             let format = cfg.format.clone().unwrap_or(Format::Auto);
             let mut tail_config = TailConfig {
                 start_from_end: false,
-                poll_interval_ms: f.poll_interval_ms.unwrap_or(DEFAULT_FILE_POLL_INTERVAL_MS),
+                poll_interval_ms: f
+                    .poll_interval_ms
+                    .map(|v| v.get())
+                    .unwrap_or(DEFAULT_FILE_POLL_INTERVAL_MS),
                 read_buf_size: f.read_buf_size.unwrap_or(DEFAULT_READ_BUF_SIZE),
                 per_file_read_budget_bytes: f
                     .per_file_read_budget_bytes
@@ -164,7 +167,7 @@ pub(super) fn build_input_state(
                 ..Default::default()
             };
             if let Some(interval) = f.glob_rescan_interval_ms {
-                tail_config.glob_rescan_interval_ms = interval;
+                tail_config.glob_rescan_interval_ms = interval.get();
             }
             if let Some(max) = f.adaptive_fast_polls_max {
                 tail_config.adaptive_fast_polls_max = max;
@@ -421,10 +424,10 @@ pub(super) fn build_input_state(
                 options.max_connections = v;
             }
             if let Some(v) = t.connection_timeout_ms {
-                options.connection_timeout_ms = v;
+                options.connection_timeout_ms = v.get();
             }
             if let Some(v) = t.read_timeout_ms {
-                options.read_timeout_ms = Some(v);
+                options.read_timeout_ms = Some(v.get());
             }
             let source = logfwd_io::tcp_input::TcpInput::with_options(
                 name,
@@ -504,7 +507,11 @@ pub(super) fn build_input_state(
                         .as_ref()
                         .and_then(|c| c.exclude_event_types.clone()),
                     ring_buffer_size_kb: s.sensor.as_ref().and_then(|c| c.ring_buffer_size_kb),
-                    poll_interval_ms: s.sensor.as_ref().and_then(|c| c.poll_interval_ms),
+                    poll_interval_ms: s
+                        .sensor
+                        .as_ref()
+                        .and_then(|c| c.poll_interval_ms)
+                        .map(|v| v.get()),
                 };
 
                 let source = PlatformSensorInput::new(name, sensor_cfg).map_err(|e| {
@@ -630,7 +637,7 @@ pub(super) fn build_input_state(
                     s3_cfg.max_concurrent_objects,
                     s3_cfg.visibility_timeout_secs,
                     compression_override,
-                    s3_cfg.poll_interval_ms,
+                    s3_cfg.poll_interval_ms.map(|v| v.get()),
                 )
                 .map_err(|e| format!("input '{name}': {e}"))?;
 
@@ -704,16 +711,16 @@ fn build_host_metrics_config(
 ) -> logfwd_io::host_metrics::HostMetricsConfig {
     let poll_interval_ms = cfg
         .and_then(|c| c.poll_interval_ms)
+        .map(|v| v.get())
         .unwrap_or(DEFAULT_SENSOR_POLL_INTERVAL_MS);
     let control_reload_interval_ms = cfg
         .and_then(|c| c.control_reload_interval_ms)
+        .map(|v| v.get())
         .unwrap_or(DEFAULT_SENSOR_CONTROL_RELOAD_INTERVAL_MS);
     logfwd_io::host_metrics::HostMetricsConfig {
-        poll_interval: std::time::Duration::from_millis(poll_interval_ms.max(1)),
+        poll_interval: std::time::Duration::from_millis(poll_interval_ms),
         control_path: cfg.and_then(|c| c.control_path.clone()).map(PathBuf::from),
-        control_reload_interval: std::time::Duration::from_millis(
-            control_reload_interval_ms.max(1),
-        ),
+        control_reload_interval: std::time::Duration::from_millis(control_reload_interval_ms),
         enabled_families: cfg.and_then(|c| c.enabled_families.clone()),
         emit_signal_rows: cfg.and_then(|c| c.emit_signal_rows).unwrap_or(true),
         max_rows_per_poll: cfg
@@ -907,7 +914,7 @@ mod tests {
             source_metadata: false,
             type_config: InputTypeConfig::File(logfwd_config::FileTypeConfig {
                 path: "/tmp/test.log".into(),
-                poll_interval_ms: Some(123),
+                poll_interval_ms: logfwd_config::PositiveMillis::new(123),
                 read_buf_size: Some(456),
                 per_file_read_budget_bytes: Some(789),
                 adaptive_fast_polls_max: Some(11),

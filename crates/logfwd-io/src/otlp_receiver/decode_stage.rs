@@ -131,6 +131,22 @@ impl OtlpRequestCpuWorker {
         body: Vec<u8>,
     ) -> Result<OtlpRequestCpuOutput, OtlpRequestCpuError> {
         let body = Bytes::from(body);
+        match super::projection::classify_projected_fallback_support(&body) {
+            Ok(()) => {}
+            Err(ProjectionError::Unsupported(_)) => {
+                return decode_otlp_protobuf_with_prost(&body, self.resource_prefix.as_ref())
+                    .map(|batch| OtlpRequestCpuOutput {
+                        batch,
+                        outcome: OtlpRequestCpuOutcome::ProjectedFallback,
+                    })
+                    .map_err(OtlpRequestCpuError::Payload);
+            }
+            Err(err) => {
+                return Err(OtlpRequestCpuError::ProjectionInvalid(
+                    err.into_input_error(),
+                ));
+            }
+        }
         match self.decode_projected_view(body.clone()) {
             Ok(batch) => Ok(OtlpRequestCpuOutput {
                 batch,

@@ -252,9 +252,10 @@ ci-all: lint-all test-all tlc-tail
 toml-check:
     taplo check
 
-# Check generated OTLP fast-row encoder drift.
+# Check generated OTLP code drift.
 otlp-codegen-check:
     python3 scripts/generate_otlp_fast_encoder.py --check
+    python3 scripts/generate_otlp_projection.py --check
 
 # Guardrail: inherited dependencies must not override default-features locally.
 workspace-inheritance-guard:

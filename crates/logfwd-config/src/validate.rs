@@ -79,16 +79,6 @@ impl Config {
         for name in pipeline_names {
             let pipe = &self.pipelines[name];
             let result = (|| -> Result<(), ConfigError> {
-                if pipe.batch_timeout_ms == Some(0) {
-                    return Err(ConfigError::Validation(format!(
-                        "pipeline '{name}': batch_timeout_ms must be greater than 0"
-                    )));
-                }
-                if pipe.poll_interval_ms == Some(0) {
-                    return Err(ConfigError::Validation(format!(
-                        "pipeline '{name}': poll_interval_ms must be greater than 0"
-                    )));
-                }
                 if let Some(workers) = pipe.workers
                     && !(1..=PIPELINE_WORKERS_MAX).contains(&workers)
                 {
@@ -152,11 +142,6 @@ impl Config {
                             if f.path.trim().is_empty() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': file input 'path' must not be empty"
-                                )));
-                            }
-                            if f.poll_interval_ms == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': 'poll_interval_ms' must be at least 1"
                                 )));
                             }
                             if f.read_buf_size == Some(0) {
@@ -224,17 +209,6 @@ impl Config {
                                     "pipeline '{name}' input '{label}': max_connections cannot be 0"
                                 )));
                             }
-                            if t.connection_timeout_ms == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': connection_timeout_ms cannot be 0"
-                                )));
-                            }
-                            if t.read_timeout_ms == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': read_timeout_ms cannot be 0"
-                                )));
-                            }
-
                             track_listen_addr_uniqueness(
                                 &mut seen_listen_addrs,
                                 "tcp",
@@ -432,20 +406,6 @@ impl Config {
                                     "pipeline '{name}' input '{label}': sensor inputs do not support 'format' (Arrow-native input)"
                                 )));
                             }
-                            if s.sensor.as_ref().and_then(|cfg| cfg.poll_interval_ms) == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': sensor.poll_interval_ms must be at least 1"
-                                )));
-                            }
-                            if s.sensor
-                                .as_ref()
-                                .and_then(|cfg| cfg.control_reload_interval_ms)
-                                == Some(0)
-                            {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': sensor.control_reload_interval_ms must be at least 1"
-                                )));
-                            }
                             if s.sensor
                                 .as_ref()
                                 .and_then(|cfg| cfg.control_path.as_deref())
@@ -510,11 +470,6 @@ impl Config {
                             {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': sensor.ring_buffer_size_kb must be at least 1"
-                                )));
-                            }
-                            if s.sensor.as_ref().and_then(|cfg| cfg.poll_interval_ms) == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': sensor.poll_interval_ms must be at least 1"
                                 )));
                             }
                         }
@@ -643,13 +598,6 @@ impl Config {
                                         "pipeline '{name}' input '{label}': s3.endpoint must start with http:// or https://"
                                     )));
                                 }
-                            }
-                            if let Some(interval) = s3_cfg.poll_interval_ms
-                                && interval == 0
-                            {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': s3.poll_interval_ms must be at least 1"
-                                )));
                             }
                             if let Some(ref comp) = s3_cfg.compression {
                                 let valid = [
@@ -911,41 +859,15 @@ impl Config {
                         }
                     }
 
-                    // Validate OTLP-specific field values when set.
-                    if matches!(
-                        output.output_type,
-                        OutputType::Otlp | OutputType::Elasticsearch | OutputType::Loki
-                    ) && output.request_timeout_ms == Some(0)
+                    // Validate cross-field OTLP relationships.
+                    if output.output_type == OutputType::Otlp
+                        && let (Some(initial), Some(max)) =
+                            (output.retry_initial_backoff_ms, output.retry_max_backoff_ms)
+                        && initial > max
                     {
                         return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': 'request_timeout_ms' must be at least 1"
+                            "pipeline '{name}' output '{label}': 'retry_initial_backoff_ms' must be <= 'retry_max_backoff_ms'"
                         )));
-                    }
-
-                    if output.output_type == OutputType::Otlp {
-                        if output.batch_timeout_ms == Some(0) {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'batch_timeout_ms' must be at least 1"
-                            )));
-                        }
-                        if output.retry_initial_backoff_ms == Some(0) {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'retry_initial_backoff_ms' must be at least 1"
-                            )));
-                        }
-                        if output.retry_max_backoff_ms == Some(0) {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'retry_max_backoff_ms' must be at least 1"
-                            )));
-                        }
-                        if let (Some(initial), Some(max)) =
-                            (output.retry_initial_backoff_ms, output.retry_max_backoff_ms)
-                            && initial > max
-                        {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'retry_initial_backoff_ms' must be <= 'retry_max_backoff_ms'"
-                            )));
-                        }
                     }
 
                     if output.output_type != OutputType::Otlp && output.protocol.is_some() {
@@ -1100,11 +1022,6 @@ impl Config {
                                     "pipeline '{name}' enrichment #{j}: geo_database 'path' must not be empty"
                                 )));
                             }
-                            if geo_cfg.refresh_interval == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
-                                )));
-                            }
                             // Only check existence for absolute paths; relative paths
                             // are resolved against base_path in Pipeline::from_config.
                             let p = Path::new(&geo_cfg.path);
@@ -1138,11 +1055,6 @@ impl Config {
                                     "pipeline '{name}' enrichment #{j}: csv 'path' must not be empty"
                                 )));
                             }
-                            if cfg.refresh_interval == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
-                                )));
-                            }
                             let p = Path::new(&cfg.path);
                             if p.is_absolute() && !p.exists() {
                                 return Err(ConfigError::Validation(format!(
@@ -1160,11 +1072,6 @@ impl Config {
                             if cfg.path.trim().is_empty() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' enrichment #{j}: jsonl 'path' must not be empty"
-                                )));
-                            }
-                            if cfg.refresh_interval == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
                                 )));
                             }
                             let p = Path::new(&cfg.path);
@@ -1208,11 +1115,6 @@ impl Config {
                             if cfg.path.trim().is_empty() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' enrichment #{j}: kv_file 'path' must not be empty"
-                                )));
-                            }
-                            if cfg.refresh_interval == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
                                 )));
                             }
                             let p = Path::new(&cfg.path);
@@ -2650,11 +2552,8 @@ pipelines:
         endpoint: https://localhost:9200
         request_timeout_ms: 0
 "#;
-        let err = Config::load_str(yaml).unwrap_err().to_string();
-        assert!(
-            err.contains("request_timeout_ms") && err.contains("at least 1"),
-            "expected zero timeout rejection, got: {err}"
-        );
+        // Now rejected at parse time via PositiveMillis.
+        let _ = Config::load_str(yaml).expect_err("zero request_timeout_ms should be rejected");
     }
 
     #[test]
@@ -2670,11 +2569,8 @@ pipelines:
         endpoint: http://localhost:4317
         request_timeout_ms: 0
 "#;
-        let err = Config::load_str(yaml).unwrap_err().to_string();
-        assert!(
-            err.contains("request_timeout_ms") && err.contains("at least 1"),
-            "expected zero timeout rejection, got: {err}"
-        );
+        // Now rejected at parse time via PositiveMillis.
+        let _ = Config::load_str(yaml).expect_err("zero request_timeout_ms should be rejected");
     }
 
     #[test]
@@ -2690,11 +2586,8 @@ pipelines:
         endpoint: http://localhost:4317
         batch_timeout_ms: 0
 "#;
-        let err = Config::load_str(yaml).unwrap_err().to_string();
-        assert!(
-            err.contains("batch_timeout_ms") && err.contains("at least 1"),
-            "expected zero batch_timeout_ms rejection, got: {err}"
-        );
+        // Now rejected at parse time via PositiveMillis.
+        let _ = Config::load_str(yaml).expect_err("zero batch_timeout_ms should be rejected");
     }
 
     #[test]
