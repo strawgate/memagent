@@ -19,9 +19,7 @@ pub use serde_helpers::{PositiveMillis, PositiveSecs};
 
 #[cfg(test)]
 pub(crate) use env::expand_env_vars;
-pub use shared::{
-    BatchConfig, Compression, NetworkConfig, RetryConfig, TlsClientConfig, TlsServerConfig,
-};
+pub use shared::{TlsClientConfig, TlsServerConfig};
 pub use types::{
     ArrowIpcOutputConfig, ArrowIpcTypeConfig, AuthConfig, CompressionFormat, Config, ConfigError,
     CsvEnrichmentConfig, ElasticsearchOutputConfig, ElasticsearchRequestMode, EnrichmentConfig,
