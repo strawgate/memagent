@@ -548,22 +548,20 @@ impl InputSource for TcpInput {
         let mut events = Vec::new();
 
         // Step 1: Data events.
-        for (i, data) in client_data.into_iter().enumerate() {
-            if let Some(bytes) = data
-                && !bytes.is_empty()
-            {
+        events.extend(client_data.into_iter().enumerate().filter_map(|(i, data)| {
+            data.filter(|bytes| !bytes.is_empty()).map(|bytes| {
                 // Drain the per-client raw-byte counter into accounted_bytes.
                 // Bytes that accumulated in client.pending across previous polls
                 // without producing a complete record are included here because
                 // unaccounted_bytes is persistent on the Client struct.
-                let accounted_bytes = std::mem::replace(&mut self.clients[i].unaccounted_bytes, 0);
-                events.push(InputEvent::Data {
+                let accounted_bytes = std::mem::take(&mut self.clients[i].unaccounted_bytes);
+                InputEvent::Data {
                     bytes,
                     source_id: Some(self.clients[i].source_id),
                     accounted_bytes,
-                });
-            }
-        }
+                }
+            })
+        }));
 
         // Step 2: EndOfFile events for every connection that is dying.
         //
