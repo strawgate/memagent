@@ -1,3 +1,4 @@
+// xtask-verify: allow(pub_module_needs_tests) reason: integration coverage lives in otlp_sink/arrow sink tests; dedicated unit tests tracked separately
 use std::io::{self, Write};
 
 use arrow::array::{

@@ -191,6 +191,10 @@ proptest-regressions:
 verification-trigger-contract:
     python3 scripts/verify_verification_trigger_contract.py
 
+# Run structural verification checks.
+verify:
+    cargo xtask verify
+
 # Run all lightweight verification guardrails enforced in CI.
 verification-guardrail: kani-boundary tlc-matrix-contract proptest-regressions verification-trigger-contract
 

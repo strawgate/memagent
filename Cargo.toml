@@ -21,6 +21,7 @@ members = [
     "crates/logfwd-ebpf-proto/sensor-ebpf",
     "crates/logfwd-ebpf-proto/sensor-ebpf/sensor-ebpf-common",
     "crates/logfwd-config-wasm",
+    "xtask",
 ]
 # sensor-ebpf-kern requires nightly + bpfel-unknown-none target (eBPF bytecode).
 # It is intentionally excluded from the workspace.

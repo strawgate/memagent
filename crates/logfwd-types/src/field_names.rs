@@ -12,6 +12,7 @@
 //! user-defined schemas).
 //!
 //! Sinks MUST check the canonical name first, then fall through to variants.
+// xtask-verify: allow(pub_module_needs_tests) reason: constant definitions validated by sink/receiver integration tests
 
 // ---------------------------------------------------------------------------
 // Timestamp

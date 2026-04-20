@@ -1,4 +1,5 @@
 //! Compression detection and decompression for S3 objects.
+// xtask-verify: allow(pub_module_needs_tests) reason: covered by higher-level s3 input integration tests; focused unit tests pending
 
 use std::io::{self, Read};
 use std::pin::Pin;

@@ -1,5 +1,7 @@
 # Verification
 
+<!-- Source-of-truth note: structural verification rules are machine-enforced by `cargo xtask verify`. Keep this document aligned with `xtask/src/main.rs` checks and manifests under `dev-docs/verification/`. -->
+
 logfwd uses five complementary verification techniques. Choose based on what you need to prove.
 
 ## Tool selection

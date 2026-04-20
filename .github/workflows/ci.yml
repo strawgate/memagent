@@ -157,6 +157,9 @@ jobs:
 
       - uses: ./.github/actions/setup-rust
 
+      - name: Xtask structural verification
+        run: cargo xtask verify
+
       - name: Format check
         run: cargo fmt --check
 
