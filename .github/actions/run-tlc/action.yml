@@ -43,7 +43,15 @@ runs:
         VERSION: ${{ inputs.tla-tools-version }}
       run: |
         mkdir -p /tmp/tla
+        # Harden against transient GitHub Releases flakes: retry on any
+        # error up to 5 times with a 2s base delay, cap each attempt at
+        # 60s of connect + 180s total, and fail cleanly on HTTP errors.
         curl -fsSL \
+          --retry 5 \
+          --retry-delay 2 \
+          --retry-all-errors \
+          --connect-timeout 15 \
+          --max-time 180 \
           "https://github.com/tlaplus/tlaplus/releases/download/${VERSION}/tla2tools.jar" \
           -o /tmp/tla/tla2tools.jar
 

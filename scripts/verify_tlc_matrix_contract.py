@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,9 +20,11 @@ IGNORED_CFG_SUFFIXES = (".coverage.cfg", ".thorough.cfg", ".nightly.thorough.cfg
 # missing every expected cfg is treated as a hard error.
 _TLC_JOB_PREFIXES = ("tlc-",)
 
-# Matches a run-tlc action usage block; we then scan the `with:` block for the
-# tla-file and config inputs.
-_RUN_TLC_ACTION_RE = re.compile(r"^\s*uses:\s*\./\.github/actions/run-tlc\s*$")
+# Matches a run-tlc action usage line.  Accepts both the list-item-inline
+# form (`- uses: ./.github/actions/run-tlc`) and the mapping-style form
+# where `uses:` sits on its own line under a sibling `- name:` key.  We
+# then scan the step block for the `tla-file:` / `config:` inputs.
+_RUN_TLC_ACTION_RE = re.compile(r"^\s*-?\s*uses:\s*\./\.github/actions/run-tlc\s*$")
 _TLA_FILE_RE = re.compile(r"^\s*tla-file:\s*(\S+)\s*$")
 _CONFIG_RE = re.compile(r"^\s*config:\s*(\S+)\s*$")
 
@@ -37,7 +40,7 @@ class TlcEntry:
     config: str
 
 
-def _iter_job_blocks(workflow_text: str):
+def _iter_job_blocks(workflow_text: str) -> Iterator[tuple[str, list[str]]]:
     """Yield (job_name, block_lines) for each top-level job in ci.yml."""
     lines = workflow_text.splitlines()
     in_jobs = False
@@ -77,36 +80,51 @@ def _iter_job_blocks(workflow_text: str):
 
 
 def _extract_action_entries(block: list[str]) -> list[TlcEntry]:
-    """Parse composite-action `uses: ./.github/actions/run-tlc` invocations."""
+    """Parse composite-action run-tlc invocations.
+
+    Accepts both step forms that GitHub Actions permits:
+      - `- uses: ./.github/actions/run-tlc` (list-item-inline)
+      - `- name: ...` on one line and `  uses: ...` on the next.
+
+    For each match we walk backward to locate the step's list-item marker,
+    then scan forward until the next list item at that same indent.  This
+    is more robust than guessing an offset from the `uses:` line alone.
+    """
     entries: list[TlcEntry] = []
-    idx = 0
-    while idx < len(block):
-        line = block[idx]
-        if _RUN_TLC_ACTION_RE.match(line):
-            tla_file: str | None = None
-            config: str | None = None
-            look = idx + 1
-            # Scan until we encounter the next step (line starting with "- ")
-            # at the same or lower indent than the current step.
-            base_indent = len(line) - len(line.lstrip(" "))
-            while look < len(block):
-                nxt = block[look]
-                nxt_stripped = nxt.strip()
-                nxt_indent = len(nxt) - len(nxt.lstrip(" "))
-                if nxt_stripped.startswith("- ") and nxt_indent <= base_indent - 2:
-                    break
-                m_tla = _TLA_FILE_RE.match(nxt)
-                m_cfg = _CONFIG_RE.match(nxt)
-                if m_tla:
-                    tla_file = m_tla.group(1)
-                elif m_cfg:
-                    config = m_cfg.group(1)
-                look += 1
-            if tla_file and config:
-                entries.append(TlcEntry(tla_file=tla_file, config=config))
-            idx = look
-        else:
-            idx += 1
+    for start_idx, line in enumerate(block):
+        if not _RUN_TLC_ACTION_RE.match(line):
+            continue
+
+        # Walk backward until we find the list-item marker ("- ") that
+        # introduces this step; that line's indent is the step's base.
+        step_indent: int | None = None
+        for back in range(start_idx, -1, -1):
+            candidate = block[back]
+            stripped_candidate = candidate.lstrip(" ")
+            if stripped_candidate.startswith("- "):
+                step_indent = len(candidate) - len(stripped_candidate)
+                break
+        if step_indent is None:
+            # `uses:` wasn't part of a list step — malformed, skip.
+            continue
+
+        tla_file: str | None = None
+        config: str | None = None
+        for look in range(start_idx + 1, len(block)):
+            nxt = block[look]
+            nxt_stripped = nxt.lstrip(" ")
+            nxt_indent = len(nxt) - len(nxt_stripped)
+            # Stop at the next sibling list item (same indent as our step).
+            if nxt_stripped.startswith("- ") and nxt_indent <= step_indent:
+                break
+            m_tla = _TLA_FILE_RE.match(nxt)
+            m_cfg = _CONFIG_RE.match(nxt)
+            if m_tla:
+                tla_file = m_tla.group(1)
+            elif m_cfg:
+                config = m_cfg.group(1)
+        if tla_file and config:
+            entries.append(TlcEntry(tla_file=tla_file, config=config))
     return entries
 
 

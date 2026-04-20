@@ -55,19 +55,47 @@ jobs:
       # can't distinguish without parsing artifacts, so the title/body stay
       # neutral about the cause — first triage step is to open the run URL
       # and see which step in run-tlc turned red.
-      - name: File aggregated issue on failure
+      #
+      # Dedup: a stable title plus a label filter lets us comment on an
+      # existing open issue instead of spamming a new one every day while
+      # the same regression persists.
+      - name: File or update issue on failure
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          ISSUE_TITLE: "Nightly TLA+ thorough job failing"
+          ISSUE_LABEL: "bug"
         run: |
+          set -euo pipefail
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          date_iso="$(date -u +%Y-%m-%d)"
+
+          existing="$(gh issue list \
+            --state open \
+            --label "$ISSUE_LABEL" \
+            --search "in:title \"$ISSUE_TITLE\"" \
+            --json number,title \
+            --jq ".[] | select(.title == \"$ISSUE_TITLE\") | .number" \
+            | head -n1)"
+
           body_file="$(mktemp)"
-          cat >"$body_file" <<EOF
+          if [ -n "$existing" ]; then
+            cat >"$body_file" <<EOF
+          Recurrence on ${date_iso}: ${run_url}
+
+          Open the run URL to determine whether the cause is a TLC
+          counterexample or infrastructure (JDK setup, jar download,
+          cache miss).
+          EOF
+            gh issue comment "$existing" --body-file "$body_file"
+          else
+            cat >"$body_file" <<EOF
           Nightly TLA+ thorough job failed.
 
           - Spec: tla/MCPipelineMachine.tla
           - Config: tla/PipelineMachine.nightly.thorough.cfg
-          - Run: ${run_url}
+          - First observed: ${date_iso}
+          - First run: ${run_url}
 
           The upstream job failed — open the run URL to determine whether
           this is a real TLC counterexample or an infrastructure issue
@@ -79,12 +107,15 @@ jobs:
           TLC prints the violated invariant / liveness property and the
           state trace just before exiting.  If the run step never reached
           the \`tlc2.TLC\` invocation, the issue is infrastructure — close
-          this issue once the underlying transient resolves.
+          this issue once the underlying transient resolves.  Subsequent
+          failures while this issue stays open will be appended as comments
+          rather than spawning new issues.
           EOF
-          gh issue create \
-            --title "Nightly TLA+ thorough job failed ($(date +%Y-%m-%d))" \
-            --body-file "$body_file" \
-            --label "bug"
+            gh issue create \
+              --title "$ISSUE_TITLE" \
+              --body-file "$body_file" \
+              --label "$ISSUE_LABEL"
+          fi
 
   turmoil-replay-equivalence:
     name: Turmoil replay-equivalence
