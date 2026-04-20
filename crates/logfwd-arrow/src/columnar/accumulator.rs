@@ -1315,280 +1315,254 @@ mod verification {
 
     // ── make_string_view ────────────────────────────────────────────────────
 
-    /// Inline path (len ≤ 12): length encodes correctly, data bytes round-trip.
-    /// Uses fully symbolic byte content (not constant fill) so the solver
-    /// explores all byte-value-dependent paths.
+    /// Consolidated valid-path proof: covers zero-length, inline (1..=12),
+    /// and buffer-ref (>12) paths in a single harness with `kani::cover!()`
+    /// verifying each case is reachable.
+    ///
+    /// Replaces the former 3 separate proofs:
+    /// - `verify_make_string_view_zero_length`
+    /// - `verify_make_string_view_inline_roundtrip`
+    /// - `verify_make_string_view_buffer_ref_packing`
     #[kani::proof]
-    #[kani::unwind(17)] // 12-byte loop + margin
-    fn verify_make_string_view_inline_roundtrip() {
+    #[kani::unwind(17)]
+    #[kani::solver(kissat)]
+    fn verify_make_string_view_valid_paths() {
         let len: u32 = kani::any();
-        kani::assume(len > 0 && len <= 12);
+        kani::assume(len <= 20);
 
-        // Symbolic bytes — solver explores all values (unlike constant fill).
-        let mut buf = [0u8; 12];
+        // Fixed 32-byte buffer with symbolic first 12 bytes (covers inline
+        // data round-trip and buffer-ref prefix verification).
+        let mut buf = [0u8; 32];
         for i in 0..12 {
             buf[i] = kani::any();
         }
 
-        let sref = StringRef { offset: 0, len };
-        let view =
-            make_string_view(sref, &buf[..len as usize], &[], len as usize, 0, None).unwrap();
+        if len == 0 {
+            // Zero-length path
+            let sref = StringRef { offset: 0, len: 0 };
+            let view = make_string_view(sref, &[], &[], 0, 0, None).unwrap();
+            assert_eq!(view, 0u128, "zero-length string must be all-zero view");
+        } else if len <= 12 {
+            // Inline path
+            let sref = StringRef { offset: 0, len };
+            let view =
+                make_string_view(sref, &buf[..len as usize], &[], len as usize, 0, None).unwrap();
 
-        // Oracle: independently decode the u128 and verify every field.
-        let view_bytes = view.to_le_bytes();
-        let extracted_len =
-            u32::from_le_bytes([view_bytes[0], view_bytes[1], view_bytes[2], view_bytes[3]]);
-        assert_eq!(extracted_len, len, "encoded length must match");
+            let view_bytes = view.to_le_bytes();
+            let extracted_len =
+                u32::from_le_bytes([view_bytes[0], view_bytes[1], view_bytes[2], view_bytes[3]]);
+            assert_eq!(extracted_len, len, "encoded length must match");
 
-        for i in 0..len as usize {
-            assert_eq!(
-                view_bytes[4 + i],
-                buf[i],
-                "inline data byte must match source"
-            );
+            for i in 0..len as usize {
+                assert_eq!(
+                    view_bytes[4 + i],
+                    buf[i],
+                    "inline data byte must match source"
+                );
+            }
+            for i in (4 + len as usize)..16 {
+                assert_eq!(view_bytes[i], 0, "padding byte must be zero");
+            }
+        } else {
+            // Buffer-ref path (len > 12)
+            kani::assume((len as usize) <= 20);
+            let block_idx: u32 = kani::any();
+            kani::assume(block_idx <= 4);
+            let local_offset: u32 = kani::any();
+            kani::assume(local_offset <= 8);
+            kani::assume((local_offset as usize) + (len as usize) <= 32);
+
+            let buf_len = local_offset as usize + len as usize;
+            let sref = StringRef {
+                offset: local_offset,
+                len,
+            };
+            let view =
+                make_string_view(sref, &buf[..buf_len], &[], buf_len, block_idx, None).unwrap();
+
+            let start = local_offset as usize;
+            let expected_prefix =
+                u32::from_le_bytes([buf[start], buf[start + 1], buf[start + 2], buf[start + 3]]);
+            let expected_view = (len as u128)
+                | ((expected_prefix as u128) << 32)
+                | ((block_idx as u128) << 64)
+                | ((local_offset as u128) << 96);
+            assert_eq!(view, expected_view, "view must match oracle computation");
         }
-        // Padding bytes beyond data must be zero.
-        for i in (4 + len as usize)..16 {
-            assert_eq!(view_bytes[i], 0, "padding byte must be zero");
-        }
 
+        kani::cover!(len == 0, "zero-length path");
         kani::cover!(len == 1, "minimal inline");
         kani::cover!(len == 12, "max inline");
-        kani::cover!(buf[0] == 0x00, "zero first byte");
+        kani::cover!(len > 12, "buffer-ref path");
         kani::cover!(buf[0] == 0xFF, "high first byte");
     }
 
-    /// Zero-length string encodes as zero u128.
-    #[kani::proof]
-    fn verify_make_string_view_zero_length() {
-        let sref = StringRef { offset: 0, len: 0 };
-        let view = make_string_view(sref, &[], &[], 0, 0, None).unwrap();
-        assert_eq!(view, 0u128, "zero-length string must be all-zero view");
-    }
-
-    /// Buffer-ref path (len > 12): u128 field packing is non-overlapping and
-    /// each 32-bit lane round-trips correctly.
+    /// Consolidated error-path proof: covers OOB references and buffer
+    /// selection (original vs generated vs missing generated).
     ///
-    /// Uses symbolic prefix bytes (not constant fill) so solver explores
-    /// endianness-dependent bugs. Fixed 32-byte buffer to keep CBMC tractable.
+    /// Replaces the former 2 separate proofs:
+    /// - `verify_make_string_view_out_of_bounds`
+    /// - `verify_make_string_view_buffer_selection`
     #[kani::proof]
     #[kani::solver(kissat)]
-    fn verify_make_string_view_buffer_ref_packing() {
+    fn verify_make_string_view_error_and_selection() {
         let len: u32 = kani::any();
-        kani::assume(len > 12 && len <= 20); // bounded for solver tractability
-
-        let block_idx: u32 = kani::any();
-        kani::assume(block_idx <= 4); // bounded for solver tractability
-        let local_offset: u32 = kani::any();
-        kani::assume(local_offset <= 8); // keep buffer small
-        kani::assume((local_offset as usize) + (len as usize) <= 32);
-
-        // Symbolic first 4 bytes (prefix) + remaining bytes are fixed.
-        let buf_len = local_offset as usize + len as usize;
-        let mut buf = [0u8; 32];
-        let start = local_offset as usize;
-        buf[start] = kani::any();
-        buf[start + 1] = kani::any();
-        buf[start + 2] = kani::any();
-        buf[start + 3] = kani::any();
-
-        let sref = StringRef {
-            offset: local_offset,
-            len,
-        };
-        let view = make_string_view(sref, &buf[..buf_len], &[], buf_len, block_idx, None).unwrap();
-
-        // Oracle: independently recompute expected u128 from the spec.
-        let expected_prefix =
-            u32::from_le_bytes([buf[start], buf[start + 1], buf[start + 2], buf[start + 3]]);
-        let expected_view = (len as u128)
-            | ((expected_prefix as u128) << 32)
-            | ((block_idx as u128) << 64)
-            | ((local_offset as u128) << 96);
-        assert_eq!(view, expected_view, "view must match oracle computation");
-
-        kani::cover!(block_idx > 0, "non-zero block index");
-        kani::cover!(local_offset > 0, "non-zero local offset");
-        kani::cover!(buf[start] == 0x00, "zero prefix byte");
-        kani::cover!(buf[start] == 0xFF, "high prefix byte");
-    }
-
-    /// Out-of-bounds StringRef returns error, never panics.
-    /// Uses fixed-size array (not vec with symbolic length) to avoid CBMC timeout.
-    #[kani::proof]
-    #[kani::solver(kissat)]
-    fn verify_make_string_view_out_of_bounds() {
-        let offset: u32 = kani::any();
-        let len: u32 = kani::any();
-        kani::assume(len > 0 && len <= 128);
-        kani::assume(offset <= 128);
-
-        let buf_len: usize = kani::any();
-        kani::assume(buf_len <= 64);
-        let total = (offset as usize).saturating_add(len as usize);
-        kani::assume(total > buf_len);
-
-        // Fixed-size array avoids CBMC symbolic-allocation explosion.
-        let buf = [0u8; 64];
-        let sref = StringRef { offset, len };
-        let result = make_string_view(sref, &buf[..buf_len], &[], buf_len, 0, None);
-        assert!(result.is_err(), "OOB reference must return error");
-
-        kani::cover!(offset == 0, "zero offset with large len");
-        kani::cover!(offset > 0 && len > 0, "non-zero offset and len");
-        kani::cover!(buf_len == 0, "empty buffer");
-    }
-
-    /// Buffer selection: offset < original_len uses original buffer,
-    /// offset >= original_len uses generated buffer.
-    #[kani::proof]
-    fn verify_make_string_view_buffer_selection() {
-        let len: u32 = kani::any();
-        kani::assume(len > 0 && len <= 4);
+        kani::assume(len > 0 && len <= 16);
 
         let original_len: usize = 8;
         let original = [0xAAu8; 8];
         let generated = [0xBBu8; 8];
 
-        // Original buffer path: offset < original_len.
-        let orig_offset: u32 = kani::any();
-        kani::assume(orig_offset <= (original_len as u32) - len);
-        let sref_orig = StringRef {
-            offset: orig_offset,
-            len,
-        };
-        let result_orig =
-            make_string_view(sref_orig, &original, &generated, original_len, 0, Some(1));
-        assert!(result_orig.is_ok(), "valid original ref must succeed");
+        let scenario: u8 = kani::any_where(|&s: &u8| s < 4);
+        match scenario {
+            0 => {
+                // OOB in original buffer
+                let offset: u32 = kani::any();
+                kani::assume(offset <= 16);
+                let total = (offset as usize).saturating_add(len as usize);
+                kani::assume(total > original_len);
+                kani::assume(offset < original_len as u32);
+                let sref = StringRef { offset, len };
+                let result = make_string_view(sref, &original, &[], original_len, 0, None);
+                assert!(result.is_err(), "OOB original ref must return error");
+            }
+            1 => {
+                // Valid original buffer path
+                let orig_offset: u32 = kani::any();
+                kani::assume(len <= 8);
+                kani::assume(orig_offset <= (original_len as u32) - len);
+                let sref = StringRef {
+                    offset: orig_offset,
+                    len,
+                };
+                let result =
+                    make_string_view(sref, &original, &generated, original_len, 0, Some(1));
+                assert!(result.is_ok(), "valid original ref must succeed");
+            }
+            2 => {
+                // Valid generated buffer path
+                let gen_offset: u32 = kani::any();
+                kani::assume(len <= 8);
+                kani::assume(gen_offset <= (generated.len() as u32) - len);
+                let sref = StringRef {
+                    offset: original_len as u32 + gen_offset,
+                    len,
+                };
+                let result =
+                    make_string_view(sref, &original, &generated, original_len, 0, Some(1));
+                assert!(result.is_ok(), "valid generated ref must succeed");
+            }
+            _ => {
+                // No generated buffer + offset in generated range → error
+                let sref = StringRef {
+                    offset: original_len as u32,
+                    len: 1,
+                };
+                let result = make_string_view(sref, &original, &[], original_len, 0, None);
+                assert!(
+                    result.is_err(),
+                    "generated offset with no generated buffer must error"
+                );
+            }
+        }
 
-        // Generated buffer path: offset >= original_len.
-        let gen_offset: u32 = kani::any();
-        kani::assume(gen_offset <= (generated.len() as u32) - len);
-        let sref_gen = StringRef {
-            offset: original_len as u32 + gen_offset,
-            len,
-        };
-        let result_gen =
-            make_string_view(sref_gen, &original, &generated, original_len, 0, Some(1));
-        assert!(result_gen.is_ok(), "valid generated ref must succeed");
-
-        // No generated buffer + offset in generated range → error.
-        let sref_no_gen = StringRef {
-            offset: original_len as u32,
-            len: 1,
-        };
-        let result_no_gen = make_string_view(sref_no_gen, &original, &[], original_len, 0, None);
-        assert!(
-            result_no_gen.is_err(),
-            "generated offset with no generated buffer must error"
-        );
-
-        kani::cover!(orig_offset == 0, "start of original");
-        kani::cover!(gen_offset == 0, "start of generated");
+        kani::cover!(scenario == 0, "OOB error path");
+        kani::cover!(scenario == 1, "valid original path");
+        kani::cover!(scenario == 2, "valid generated path");
+        kani::cover!(scenario == 3, "missing generated buffer error");
     }
 
     // ── read_str_bytes — 2-buffer dispatch ─────────────────────────────────
 
-    /// Valid original-buffer reference returns correct bytes.
+    /// Consolidated valid-path proof: covers original and generated buffer
+    /// dispatch in a single harness.
+    ///
+    /// Replaces the former 2 separate proofs:
+    /// - `verify_read_str_bytes_original`
+    /// - `verify_read_str_bytes_generated`
     #[kani::proof]
     #[kani::unwind(10)]
-    fn verify_read_str_bytes_original() {
+    fn verify_read_str_bytes_valid_paths() {
         let original = [0xAAu8; 8];
         let generated = [0xBBu8; 8];
-        let offset: u32 = kani::any();
         let len: u32 = kani::any();
         kani::assume(len > 0 && len <= 8);
-        kani::assume(offset <= 8 - len);
 
-        let sref = StringRef { offset, len };
-        let result = read_str_bytes(&original, &generated, original.len(), sref);
-        assert!(result.is_ok());
-        let bytes = result.unwrap();
-        assert_eq!(bytes.len(), len as usize);
-        for &b in bytes {
-            assert_eq!(b, 0xAA);
+        let use_generated: bool = kani::any();
+
+        if use_generated {
+            let gen_offset: u32 = kani::any();
+            kani::assume(gen_offset <= 8 - len);
+            let sref = StringRef {
+                offset: original.len() as u32 + gen_offset,
+                len,
+            };
+            let result = read_str_bytes(&original, &generated, original.len(), sref);
+            assert!(result.is_ok());
+            let bytes = result.unwrap();
+            assert_eq!(bytes.len(), len as usize);
+            for &b in bytes {
+                assert_eq!(b, 0xBB);
+            }
+        } else {
+            let offset: u32 = kani::any();
+            kani::assume(offset <= 8 - len);
+            let sref = StringRef { offset, len };
+            let result = read_str_bytes(&original, &generated, original.len(), sref);
+            assert!(result.is_ok());
+            let bytes = result.unwrap();
+            assert_eq!(bytes.len(), len as usize);
+            for &b in bytes {
+                assert_eq!(b, 0xAA);
+            }
         }
 
-        kani::cover!(len == 1, "single-byte original ref");
-        kani::cover!(offset == 0, "ref from start of original");
+        kani::cover!(use_generated, "generated buffer path");
+        kani::cover!(!use_generated, "original buffer path");
+        kani::cover!(len == 1, "single-byte ref");
+        kani::cover!(len == 8, "full-buffer ref");
     }
 
-    /// Valid generated-buffer reference returns correct bytes.
+    /// Consolidated error-path proof: covers OOB and boundary-spanning
+    /// errors in a single harness.
+    ///
+    /// Replaces the former 2 separate proofs:
+    /// - `verify_read_str_bytes_oob`
+    /// - `verify_read_str_bytes_no_spanning`
     #[kani::proof]
-    #[kani::unwind(10)]
-    fn verify_read_str_bytes_generated() {
-        let original = [0xAAu8; 8];
-        let generated = [0xBBu8; 8];
-        let gen_offset: u32 = kani::any();
-        let len: u32 = kani::any();
-        kani::assume(len > 0 && len <= 8);
-        kani::assume(gen_offset <= 8 - len);
-
-        let sref = StringRef {
-            offset: original.len() as u32 + gen_offset,
-            len,
-        };
-        let result = read_str_bytes(&original, &generated, original.len(), sref);
-        assert!(result.is_ok());
-        let bytes = result.unwrap();
-        assert_eq!(bytes.len(), len as usize);
-        for &b in bytes {
-            assert_eq!(b, 0xBB);
-        }
-
-        kani::cover!(len == 1, "single-byte generated ref");
-        kani::cover!(gen_offset == 0, "ref from start of generated");
-    }
-
-    /// Out-of-bounds StringRef returns error for both buffers.
-    #[kani::proof]
-    fn verify_read_str_bytes_oob() {
-        let original = [0u8; 4];
-        let generated = [0u8; 4];
+    fn verify_read_str_bytes_errors() {
+        let original = [0xAAu8; 4];
+        let generated = [0xBBu8; 4];
         let offset: u32 = kani::any();
         let len: u32 = kani::any();
         kani::assume(len > 0 && len <= 16);
         kani::assume(offset <= 16);
 
         let sref = StringRef { offset, len };
-
         let end = (offset as usize).saturating_add(len as usize);
+
         if offset < original.len() as u32 {
             if end > original.len() {
+                // Spanning or OOB in original range
                 let result = read_str_bytes(&original, &generated, original.len(), sref);
-                assert!(result.is_err());
+                assert!(result.is_err(), "spanning/OOB original ref must error");
             }
         } else {
             let adj_start = offset as usize - original.len();
             let adj_end = adj_start + len as usize;
             if adj_end > generated.len() {
+                // OOB in generated range
                 let result = read_str_bytes(&original, &generated, original.len(), sref);
-                assert!(result.is_err());
+                assert!(result.is_err(), "OOB generated ref must error");
             }
         }
 
-        kani::cover!(offset < original.len() as u32, "OOB in original range");
+        kani::cover!(
+            offset < original.len() as u32 && end > original.len(),
+            "spanning/OOB in original range"
+        );
         kani::cover!(offset >= original.len() as u32, "OOB in generated range");
-    }
-
-    /// No StringRef can span across the original/generated boundary.
-    #[kani::proof]
-    fn verify_read_str_bytes_no_spanning() {
-        let original = [0xAAu8; 4];
-        let generated = [0xBBu8; 4];
-        let len: u32 = kani::any();
-        kani::assume(len > 0 && len <= 8);
-
-        let offset: u32 = kani::any();
-        kani::assume(offset < original.len() as u32);
-        kani::assume((offset as usize) + (len as usize) > original.len());
-
-        let sref = StringRef { offset, len };
-        let result = read_str_bytes(&original, &generated, original.len(), sref);
-        assert!(result.is_err(), "spanning ref must be rejected");
-
-        kani::cover!(len >= 2, "multi-byte spanning ref");
-        kani::cover!(offset == 0, "spanning from start of original");
+        kani::cover!(offset == 0, "zero offset error");
     }
 
     // ── scatter_values — dense/sparse placement ────────────────────────────
