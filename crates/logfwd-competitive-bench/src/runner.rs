@@ -267,7 +267,7 @@ pub fn run_agent_docker(
         elapsed_ms: elapsed.as_millis() as u64,
         timed_out,
         iteration,
-        samples: Vec::new(), // TODO: Docker sampling
+        samples: Vec::new(),
     })
 }
 
