@@ -501,10 +501,8 @@ pub(super) fn metrics_to_otlp_json(points: &[MetricPoint]) -> String {
                 if !v.is_finite() {
                     let _ = write!(out, "null");
                 } else if v.fract() == 0.0 && *v >= i64::MIN as f64 && *v <= i64::MAX as f64 {
-                    let _ = {
-                        let vi = *v as i64;
-                        write!(out, "{vi}")
-                    };
+                    let vi = *v as i64;
+                    let _ = write!(out, "{vi}");
                 } else {
                     let _ = write!(out, "{v}");
                 }

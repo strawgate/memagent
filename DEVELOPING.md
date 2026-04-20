@@ -137,7 +137,7 @@ reproduce a scenario from a failing CI run.
 ## Reading criterion benchmark output
 
 `just bench` writes HTML + JSON under `target/criterion/`. A quick
-cheatsheet for the files you'll actually care about:
+cheat sheet for the files you'll actually care about:
 
 | File | Purpose |
 |---|---|

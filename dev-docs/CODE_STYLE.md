@@ -90,8 +90,9 @@ overrides — adjust the workspace config instead.
   and would force stylistic churn with negligible correctness gain.
 - **Modernization + easy-win lints** (all warn workspace-wide):
   - `uninlined_format_args`, `redundant_else`,
-    `semicolon_if_nothing_returned` — modernize syntax, all
-    `cargo clippy --fix`-able.
+    `semicolon_if_nothing_returned` — modernize syntax. Auto-apply
+    via `cargo clippy --fix --workspace --allow-dirty`, then verify
+    with `just lint`.
   - `map_err_ignore` — flags `.map_err(|_| …)` which drops the
     original error. Use `.map_err(|_e| …)` if the drop is intentional,
     or preserve the source via `thiserror #[source]`.
@@ -252,10 +253,12 @@ Pick the one that reads straightest for the specific control flow:
   pull long arms into named helper functions.
 
 Auto-fix hint: `clippy::manual_let_else` fires on the "old" idiom
-`let x = match … { Some(v) => v, None => return };`. The fix is
-mechanical; apply via `cargo clippy --fix`. (This lint is currently
-allowed workspace-wide because some call sites use `Err(e)` bindings
-that don't translate cleanly.)
+`let x = match … { Some(v) => v, None => return };`. Apply via
+`cargo clippy --fix --workspace --allow-dirty`, then verify with
+`just lint`. (This lint is currently allowed workspace-wide because
+some call sites use `Err(e)` bindings that don't translate cleanly,
+and because the auto-fix does not apply inside `logfwd-core` where
+changes must be re-verified through the Kani proof pipeline.)
 
 ## Unsafe Code
 
