@@ -72,7 +72,7 @@ fn main() {
     }
 
     deep_memory_analysis();
-    deep_memory_analysis_v2();
+    buffer_layout_analysis();
 }
 
 fn measure(name: &str, _fields: usize, lines: usize, data: &[u8]) {
@@ -380,12 +380,14 @@ fn deep_memory_analysis() {
         fmt_bytes(unique_bytes), unique_bytes as f64 / raw_size as f64);
 }
 
-fn deep_memory_analysis_v2() {
+// Per-column buffer layout report: lists each column's Arrow buffer
+// pointers/lengths and flags any overlapping memory ranges.
+fn buffer_layout_analysis() {
     use arrow::array::Array;
-    
+
     let data = generate_simple(10_000);
     let raw_size = data.len();
-    println!("\n=== Deep Memory V2 (10K lines, {} raw) ===\n", fmt_bytes(raw_size));
+    println!("\n=== Buffer layout (10K lines, {} raw) ===\n", fmt_bytes(raw_size));
 
     let mut scanner = Scanner::new(ScanConfig::default());
     let batch = scanner.scan(bytes::Bytes::from(data.to_vec())).unwrap();
