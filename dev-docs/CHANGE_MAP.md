@@ -14,27 +14,26 @@ When you add, rename, or remove config fields:
 
 ### Output schema is V2-only
 
-`OutputConfig` (the flat struct) is the in-memory view used by the runtime,
-but YAML deserialization goes through `OutputConfigV2` (the typed
-`#[serde(tag = "type", rename_all = "snake_case")]` enum) exclusively.
-There is no legacy flat-shape fallback deserializer — if your PR introduces
-a new output type, it lives entirely as a new `OutputConfigV2` variant
-with its own typed struct:
+Output YAML deserializes straight into `OutputConfigV2` — the typed
+`#[serde(tag = "type", rename_all = "snake_case")]` enum in
+`crates/logfwd-config/src/types.rs`. The flat `OutputConfig` struct and
+its `From<V2>` / `From<&OutputConfig>` bridges were removed; nothing
+else in the workspace carries a second shape. If your PR introduces a
+new output type, add it as one more variant:
 
-- Add the variant struct (`FooOutputConfig`) alongside the existing typed
-  configs in `crates/logfwd-config/src/types.rs`, with
-  `#[serde(deny_unknown_fields)]`.
-- Add the variant to `OutputConfigV2` and to the `From<OutputConfigV2> for
-  OutputConfig` / `From<&OutputConfig> for OutputConfigV2` matches.
-- Do **not** reintroduce shared "flat" fields — a knob that only applies to
-  one output belongs on that variant's typed struct, not on `OutputConfig`.
-  `deny_unknown_fields` will then reject the field on every other variant
-  for free.
+- Define the variant struct (`FooOutputConfig`) alongside the existing
+  typed configs with `#[serde(deny_unknown_fields)]`.
+- Add the variant to `OutputConfigV2` and extend the `name()`,
+  `endpoint()`, and `output_type()` match arms.
+- Add the sink construction arm in `logfwd-output::factory::build_sink_factory`.
+- Do **not** reintroduce a shared flat struct — a knob that only applies
+  to one output belongs on that variant. `deny_unknown_fields` then
+  rejects the knob on every other variant for free.
 - Cross-output validation messages ("X is only supported for Y outputs")
-  used to live in `validate.rs`; those are unreachable from YAML now
-  because V2 rejects the field at parse time with `unknown field ...`.
-  Don't write new cross-output validators unless you also have a non-YAML
-  caller that can construct the invalid shape.
+  from the old `validate.rs` pass are unreachable from YAML now —
+  `deny_unknown_fields` catches them at parse time with
+  `unknown field ...`. Don't add new cross-output validators unless a
+  non-YAML caller can construct the invalid shape.
 
 ## Pipeline behavior changes
 

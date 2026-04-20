@@ -332,18 +332,21 @@ Rules of thumb when designing a public (or `pub(crate)`) function or type:
 
 ## Output Config Schema
 
-Output configuration has exactly one user-facing shape: the tagged enum
+Output configuration has exactly one shape: the tagged enum
 `OutputConfigV2` (`#[serde(tag = "type", rename_all = "snake_case")]`) in
-`crates/logfwd-config/src/types.rs`. The flat `OutputConfig` struct is an
-in-memory normalized view; it is not a deserialization target any more.
+`crates/logfwd-config/src/types.rs`. The flat `OutputConfig` struct and
+its V2-bridge `From` impls have been removed — runtime code operates on
+`OutputConfigV2` directly via `name()` / `endpoint()` / `output_type()`
+helpers and the sink factory matches on variants.
 
-- **Don't add shared fields to `OutputConfig`.** Every output knob lives
-  on the typed variant it applies to (`ElasticsearchOutputConfig`,
+- **Don't add a second "flat" shape.** Every output knob lives on the
+  typed variant it applies to (`ElasticsearchOutputConfig`,
   `LokiOutputConfig`, `ArrowIpcOutputConfig`, …). `deny_unknown_fields`
   on each variant rejects the field on every other type for free.
-- **New output types are new V2 variants**, not new fields on the flat
-  struct. Add the variant struct, extend the V2 enum, extend the two
-  `From` matches, and the runtime picks it up through `build_sink_factory`.
+- **New output types are new V2 variants.** Add the variant struct,
+  extend the V2 enum, extend the `name()` / `endpoint()` / `output_type()`
+  match arms in `impl OutputConfigV2`, and add the sink construction
+  arm in `logfwd-output::factory::build_sink_factory`.
 - **No V1 fallback path.** There used to be a legacy flat-shape fallback
   deserializer; it is gone. If a new YAML shape has to be supported,
   extend V2 directly.
