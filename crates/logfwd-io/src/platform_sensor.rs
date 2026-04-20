@@ -549,9 +549,7 @@ impl PlatformSensorInput {
         }
         Err(io::Error::other(format!(
             "failed to read sched_process_exit tracepoint format from any tracefs path: {}",
-            last_err
-                .map(|e| e.to_string())
-                .unwrap_or_else(|| "no paths configured".to_string())
+            last_err.map_or_else(|| "no paths configured".to_string(), |e| e.to_string())
         )))
     }
 
@@ -672,11 +670,6 @@ fn parse_tracepoint_field(format_text: &str, field_name: &str) -> Option<Tracepo
         return Some(TracepointField { offset, size });
     }
     None
-}
-
-/// Legacy wrapper that returns only the offset (used by tests).
-fn parse_tracepoint_field_offset(format_text: &str, field_name: &str) -> Option<u32> {
-    parse_tracepoint_field(format_text, field_name).map(|f| f.offset)
 }
 
 /// Parse a single ring buffer event into an `EventRow`.
@@ -1012,7 +1005,12 @@ impl InputSource for PlatformSensorInput {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_addr, parse_tracepoint_field, parse_tracepoint_field_offset};
+    use super::{format_addr, parse_tracepoint_field};
+
+    /// Legacy wrapper that returns only the offset (used by tests).
+    fn parse_tracepoint_field_offset(format_text: &str, field_name: &str) -> Option<u32> {
+        parse_tracepoint_field(format_text, field_name).map(|f| f.offset)
+    }
 
     #[test]
     fn format_addr_renders_network_order_ipv4() {
