@@ -554,12 +554,9 @@ mod tests {
             }
         }
         let text = String::from_utf8_lossy(&all_bytes);
-        let mut received = 0u32;
-        for i in 0..total {
-            if text.contains(&format!("seq:{i}\n")) {
-                received += 1;
-            }
-        }
+        let received = (0..total)
+            .filter(|i| text.contains(&format!("seq:{i}\n")))
+            .count() as u32;
         // Accept ≥50% of successful sends. UDP drops are expected but
         // on localhost with pacing most should arrive.
         let threshold = sent / 2;
@@ -704,22 +701,28 @@ mod tests {
             "first poll must stop at datagram drain cap"
         );
 
-        let mut seen = Vec::new();
-        for event in first {
-            if let InputEvent::Data { bytes, .. } = event {
-                seen.extend_from_slice(&bytes);
-            }
-        }
+        let mut seen: Vec<u8> = first
+            .into_iter()
+            .filter_map(|event| match event {
+                InputEvent::Data { bytes, .. } => Some(bytes),
+                _ => None,
+            })
+            .flatten()
+            .collect();
         for _ in 0..8 {
             let events = input.poll().unwrap();
             if events.is_empty() {
                 break;
             }
-            for event in events {
-                if let InputEvent::Data { bytes, .. } = event {
-                    seen.extend_from_slice(&bytes);
-                }
-            }
+            seen.extend(
+                events
+                    .into_iter()
+                    .filter_map(|event| match event {
+                        InputEvent::Data { bytes, .. } => Some(bytes),
+                        _ => None,
+                    })
+                    .flatten(),
+            );
         }
 
         let text = String::from_utf8_lossy(&seen);
