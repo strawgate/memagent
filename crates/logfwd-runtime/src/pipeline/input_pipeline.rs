@@ -76,6 +76,23 @@ use super::{InputState, InputTransform, RowOriginSpan};
 #[cfg(not(feature = "turmoil"))]
 const IO_CPU_CHANNEL_CAPACITY: usize = 4;
 
+#[cfg(not(feature = "turmoil"))]
+const MAX_SHUTDOWN_POLL_ROUNDS: usize = 64;
+
+#[cfg(not(feature = "turmoil"))]
+fn should_repoll_shutdown(events: &[InputEvent], is_finished: bool) -> bool {
+    if is_finished || events.is_empty() {
+        return false;
+    }
+    let has_payload = events
+        .iter()
+        .any(|event| matches!(event, InputEvent::Data { .. } | InputEvent::Batch { .. }));
+    let has_eof = events
+        .iter()
+        .any(|event| matches!(event, InputEvent::EndOfFile { .. }));
+    has_payload && !has_eof
+}
+
 /// Flush `buf` to the channel as an `IoWorkItem::Bytes` chunk.
 ///
 /// Returns `false` if the channel is closed (caller should exit the I/O loop).
@@ -702,30 +719,38 @@ fn io_worker_loop(
                 input.stats.health(),
                 HealthTransitionEvent::ShutdownRequested,
             ));
-            match input.source.poll_shutdown() {
-                Ok(events) => {
-                    if !process_io_events(
-                        &mut input,
-                        &input_name,
-                        events,
-                        &tx,
-                        &metrics,
-                        &mut last_bp_warn,
-                        input_index,
-                        safe_batch_target_bytes,
-                        &mut buffered_since,
-                        &mut pending_row_origin,
-                        source_metadata_plan,
-                    ) {
+            for _ in 0..MAX_SHUTDOWN_POLL_ROUNDS {
+                match input.source.poll_shutdown() {
+                    Ok(events) => {
+                        let should_repoll =
+                            should_repoll_shutdown(&events, input.source.is_finished());
+                        if !process_io_events(
+                            &mut input,
+                            &input_name,
+                            events,
+                            &tx,
+                            &metrics,
+                            &mut last_bp_warn,
+                            input_index,
+                            safe_batch_target_bytes,
+                            &mut buffered_since,
+                            &mut pending_row_origin,
+                            source_metadata_plan,
+                        ) {
+                            break 'io_loop;
+                        }
+                        if !should_repoll {
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            input = input.source.name(),
+                            error = %e,
+                            "input.shutdown_poll_error"
+                        );
                         break;
                     }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        input = input.source.name(),
-                        error = %e,
-                        "input.shutdown_poll_error"
-                    );
                 }
             }
             break;
@@ -1467,6 +1492,55 @@ mod tests {
         }
     }
 
+    struct MultiShutdownPollSource {
+        remaining: usize,
+        finished: bool,
+    }
+
+    impl logfwd_io::input::InputSource for MultiShutdownPollSource {
+        fn poll(&mut self) -> std::io::Result<Vec<InputEvent>> {
+            Ok(Vec::new())
+        }
+
+        fn poll_shutdown(&mut self) -> std::io::Result<Vec<InputEvent>> {
+            if self.remaining == 0 {
+                if self.finished {
+                    return Ok(Vec::new());
+                }
+                self.finished = true;
+                return Ok(vec![InputEvent::EndOfFile {
+                    source_id: Some(SourceId(14)),
+                }]);
+            }
+
+            let index = 3 - self.remaining;
+            self.remaining -= 1;
+            let bytes = format!("{{\"msg\":\"shutdown-{index}\"}}\n").into_bytes();
+            let accounted_bytes = bytes.len() as u64;
+            Ok(vec![InputEvent::Data {
+                bytes,
+                source_id: Some(SourceId(14)),
+                accounted_bytes,
+            }])
+        }
+
+        fn name(&self) -> &'static str {
+            "multi-shutdown-poll-source"
+        }
+
+        fn health(&self) -> logfwd_types::diagnostics::ComponentHealth {
+            logfwd_types::diagnostics::ComponentHealth::Healthy
+        }
+
+        fn is_finished(&self) -> bool {
+            self.finished
+        }
+
+        fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
+            vec![(SourceId(14), PathBuf::from("/var/log/shutdown.log"))]
+        }
+    }
+
     #[test]
     fn io_worker_uses_configured_input_name_for_source_metadata() {
         let (tx, mut rx) = mpsc::channel(IO_CPU_CHANNEL_CAPACITY);
@@ -1695,6 +1769,68 @@ mod tests {
         assert_eq!(
             chunk.source_paths.get(&SourceId(13)).map(String::as_str),
             Some("/var/log/drain.log")
+        );
+    }
+
+    #[test]
+    fn io_worker_shutdown_repolls_until_source_finishes() {
+        let (tx, mut rx) = mpsc::channel(IO_CPU_CHANNEL_CAPACITY);
+        let shutdown = CancellationToken::new();
+        let stats = Arc::new(logfwd_types::diagnostics::ComponentStats::new_with_health(
+            logfwd_types::diagnostics::ComponentHealth::Starting,
+        ));
+        let input = InputState {
+            source: Box::new(MultiShutdownPollSource {
+                remaining: 2,
+                finished: false,
+            }),
+            buf: bytes::BytesMut::new(),
+            row_origins: Vec::new(),
+            source_paths: HashMap::new(),
+            stats,
+        };
+        let meter = opentelemetry::global::meter("io_worker_shutdown_repolls");
+        let metrics = Arc::new(PipelineMetrics::new("test", "SELECT * FROM logs", &meter));
+        let worker_shutdown = shutdown.clone();
+
+        let handle = std::thread::spawn(move || {
+            io_worker_loop(
+                input,
+                Arc::from("configured-input"),
+                tx,
+                metrics,
+                worker_shutdown,
+                usize::MAX,
+                Duration::from_secs(60),
+                Duration::from_millis(1),
+                0,
+                SourceMetadataPlan {
+                    has_source_id: true,
+                    has_input: true,
+                    has_source_path: true,
+                },
+            );
+        });
+
+        std::thread::sleep(Duration::from_millis(20));
+        shutdown.cancel();
+        let item = rx.blocking_recv().expect("shutdown drain item");
+        drop(rx);
+        handle.join().expect("io worker exits");
+
+        let IoWorkItem::Bytes(chunk) = item else {
+            panic!("expected byte chunk");
+        };
+        assert_eq!(
+            chunk.bytes.as_ref(),
+            b"{\"msg\":\"shutdown-1\"}\n{\"msg\":\"shutdown-2\"}\n"
+        );
+        assert_eq!(chunk.row_origins.len(), 1);
+        assert_eq!(chunk.row_origins[0].source_id, Some(SourceId(14)));
+        assert_eq!(chunk.row_origins[0].rows, 2);
+        assert_eq!(
+            chunk.source_paths.get(&SourceId(14)).map(String::as_str),
+            Some("/var/log/shutdown.log")
         );
     }
 

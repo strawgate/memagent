@@ -21,6 +21,23 @@ use super::submit::{scan_and_transform_for_send, transform_direct_batch_for_send
 #[cfg(feature = "turmoil")]
 use super::{ChannelMsg, InputState, InputTransform};
 
+#[cfg(feature = "turmoil")]
+const MAX_SHUTDOWN_POLL_ROUNDS: usize = 64;
+
+#[cfg(feature = "turmoil")]
+fn should_repoll_shutdown(events: &[InputEvent], is_finished: bool) -> bool {
+    if is_finished || events.is_empty() {
+        return false;
+    }
+    let has_payload = events
+        .iter()
+        .any(|event| matches!(event, InputEvent::Data { .. } | InputEvent::Batch { .. }));
+    let has_eof = events
+        .iter()
+        .any(|event| matches!(event, InputEvent::EndOfFile { .. }));
+    has_payload && !has_eof
+}
+
 #[inline]
 #[cfg(any(feature = "turmoil", test, kani))]
 const fn should_flush_buffer(
@@ -126,28 +143,36 @@ pub(super) async fn async_input_poll_loop(
                 input.stats.health(),
                 HealthTransitionEvent::ShutdownRequested,
             ));
-            match input.source.poll_shutdown() {
-                Ok(events) => {
-                    if !process_input_events(
-                        &mut input,
-                        &mut transform,
-                        &tx,
-                        &metrics,
-                        input_index,
-                        events,
-                        &mut buffered_since,
-                    )
-                    .await
-                    {
-                        break 'poll_loop;
+            for _ in 0..MAX_SHUTDOWN_POLL_ROUNDS {
+                match input.source.poll_shutdown() {
+                    Ok(events) => {
+                        let should_repoll =
+                            should_repoll_shutdown(&events, input.source.is_finished());
+                        if !process_input_events(
+                            &mut input,
+                            &mut transform,
+                            &tx,
+                            &metrics,
+                            input_index,
+                            events,
+                            &mut buffered_since,
+                        )
+                        .await
+                        {
+                            break 'poll_loop;
+                        }
+                        if !should_repoll {
+                            break;
+                        }
                     }
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        input = input.source.name(),
-                        error = %e,
-                        "input.shutdown_poll_error"
-                    );
+                    Err(e) => {
+                        tracing::warn!(
+                            input = input.source.name(),
+                            error = %e,
+                            "input.shutdown_poll_error"
+                        );
+                        break;
+                    }
                 }
             }
             break;

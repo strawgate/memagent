@@ -87,6 +87,7 @@ ShutdownEmit ==
 ShutdownNoEmit ==
     \E nextOffset \in 0..MaxOffset, nextSize \in 0..MaxOffset:
         /\ nextOffset < nextSize
+        /\ ~eofEmitted
         /\ fileOffset' = nextOffset
         /\ fileSize' = nextSize
         /\ eofEmitted' = eofEmitted
@@ -145,6 +146,7 @@ ShutdownEofRequiresCaughtUp ==
 ShutdownBehindSuppressesEof ==
     lastAction = "ShutdownNoEmit" =>
     /\ fileOffset < fileSize
+    /\ ~eofEmitted
 
 BackoffZeroIffNoErrors ==
     (consecutiveErrors = 0) <=> (backoffMs = 0)
