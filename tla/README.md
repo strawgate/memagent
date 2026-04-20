@@ -15,6 +15,8 @@ java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/
 java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.liveness.cfg
 java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.cfg
 java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.liveness.cfg
 ```
 
 ## PipelineMachine.tla
@@ -94,6 +96,13 @@ tla/
   PipelineBatch.cfg             — safety model
   PipelineBatch.liveness.cfg    — liveness model
   PipelineBatch.coverage.cfg    — reachability guards
+
+  # Delivery retry loop (exponential backoff, batch terminalization liveness)
+  DeliveryRetry.tla             — worker retry loop with backoff + cancel
+  MCDeliveryRetry.tla           — TLC config
+  DeliveryRetry.cfg             — safety model (backoff invariants)
+  DeliveryRetry.liveness.cfg    — liveness model (terminal reachable under fairness)
+  DeliveryRetry.coverage.cfg    — reachability guards
 
   README.md                     — this file
 ```
@@ -271,6 +280,88 @@ java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/Pip
 
 ---
 
+## DeliveryRetry.tla
+
+Models the worker delivery retry loop from
+`crates/logfwd-runtime/src/worker_pool/worker.rs` (`process_item`). This is the
+highest-priority spec because PipelineMachine.tla assumes `WF(AckBatch)` (batches
+eventually terminalize) but nothing formally verified that assumption until now.
+
+The retry loop sends a batch to a sink, and on transient failure (IoError,
+RetryAfter, timeout) retries indefinitely with exponential backoff capped at
+`MaxBackoffMs`. Terminal exits are: Ok (delivered), Rejected (permanent failure),
+or Cancel (shutdown). Liveness depends on sink recovery OR shutdown cancellation.
+
+### Model parameters
+
+| Config | InitialBackoffMs | MaxBackoffMs | MaxRetries |
+|--------|------------------|--------------|------------|
+| Safety | 100 | 1600 | 5 |
+| Liveness | 100 | 800 | 3 |
+| Coverage | 100 | 1600 | 5 |
+
+### What it proves
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `BackoffCapRespected` | Safety | backoff delay never exceeds MaxBackoffMs |
+| `BackoffMonotonic` | Safety | in WaitingBackoff, delay is at least InitialBackoffMs |
+| `TerminalImpliesOutcome` | Safety | Terminal state has a definite outcome |
+| `NonTerminalImpliesNoOutcome` | Safety | non-terminal state has no outcome yet |
+| `IdleImpliesNoRetries` | Safety | Idle state has zero retries |
+| `CancelledImpliesCancelledOutcome` | Safety | cancelled flag implies Cancelled outcome |
+| `BackoffZeroOnlyInitially` | Safety | zero backoff only before first transient failure |
+| `RetryCountMonotonic` | Safety (temporal) | retry count never decreases |
+| `BackoffDelayMonotonic` | Safety (temporal) | backoff delay never decreases |
+| `TerminalIsAbsorbing` | Safety (temporal) | Terminal state is permanent |
+| `OutcomeIsStable` | Safety (temporal) | outcome never changes once set |
+| `TerminalReachable` | Liveness | every delivery eventually reaches Terminal (under fairness) |
+| `HealthySinkDelivers` | Liveness | permanently healthy sink implies eventual Ok |
+| `CancelTerminates` | Liveness | cancellation leads to Terminal |
+| `TerminalIsStable` | Liveness | Terminal is eventually stable |
+| `BackoffEventuallyResolves` | Liveness | WaitingBackoff always resolves |
+| `SendingReachable` | Reachability | Sending state is reachable |
+| `OkReachable` | Reachability | Ok outcome is reachable |
+| `RejectedReachable` | Reachability | Rejected outcome is reachable |
+| `CancelledReachable` | Reachability | Cancelled outcome is reachable |
+| `BackoffReachable` | Reachability | WaitingBackoff is reachable |
+| `RetryOccurs` | Reachability | at least one retry occurs |
+| `BackoffCapReached` | Reachability | backoff reaches MaxBackoffMs |
+| `MultipleRetriesOccur` | Reachability | multiple retries occur |
+| `SinkRecoveryReachable` | Reachability | sink recovery after failure is reachable |
+
+### Run
+
+```bash
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.liveness.cfg
+java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.coverage.cfg
+```
+
+### Key design: retry forever, terminate on cancel
+
+The code deliberately retries forever for transient errors (Filebeat-style delivery
+model). The worker blocks on its current batch, propagating backpressure through
+bounded channels to inputs. The only terminal exits are:
+
+- **Ok** — sink accepted the batch
+- **Rejected** — sink permanently rejected (4xx, schema error)
+- **Cancelled** — shutdown token fired
+
+This means `TerminalReachable` requires WF(Cancel) in the fairness assumption.
+Without cancellation, a permanently-failing sink would block the worker forever
+by design. This is the correct behavior: backpressure, not data loss.
+
+### Relationship to PipelineMachine.tla
+
+PipelineMachine.tla's `WF(AckBatch)` assumes that once a batch is in Sending
+state, it eventually receives an explicit terminal outcome (ack/reject/abandon).
+DeliveryRetry.tla's `TerminalReachable` property formally justifies this
+assumption by proving that the retry loop in `process_item` always terminates
+under weak fairness (with sink recovery or shutdown cancellation).
+
+---
+
 ## TailLifecycle.tla
 
 Models the pure tail reducer behavior extracted in `crates/logfwd-io/src/tail/state.rs`:
@@ -405,8 +496,10 @@ constraint on the pipeline, not a property of the machine itself.
 
 **Retry timing and payload retention:** `HoldBatch`/`RetryHeldBatch` model
 lifecycle effects, not backoff timers, retry jitter, or retained batch payload
-storage. Runtime fault timing remains covered by Turmoil/proptest rather than
-this finite TLA model.
+storage. The backoff-level retry loop is now modeled in `DeliveryRetry.tla`,
+which proves terminalization liveness. Runtime fault timing (jitter, wall-clock
+delay accuracy) remains covered by Turmoil/proptest rather than this finite TLA
+model.
 
 ---
 
