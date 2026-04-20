@@ -2010,28 +2010,17 @@ mod tests {
 
     #[test]
     fn first_poll_emits_network_data() {
-        // Skip when the precondition the sensor relies on isn't met. Two
-        // independent checks, combined conservatively (skip if *either*
-        // rules out real interfaces):
-        //
-        // 1. `UdpSocket::bind(...).connect("192.0.2.1:1")` — probes whether
-        //    the kernel has a usable network stack at all. Cheap, OS-level,
-        //    catches "no network" sandboxes without touching /proc.
-        // 2. `sysinfo::Networks::new_with_refreshed_list()` — probes the
-        //    exact source the sensor reads. Some sandboxes grant sockets
-        //    but not `/proc/net/*`, so UDP can succeed while sysinfo stays
-        //    empty; guarding on sysinfo too keeps the test from silently
-        //    depending on an unmet precondition and re-hitting the original
-        //    "network_interface is null everywhere" failure.
+        // Skip only when the exact precondition the sensor relies on isn't
+        // met: `sysinfo::Networks` has to enumerate at least one interface,
+        // because that's the source the sensor reads. An earlier revision
+        // also gated on `UdpSocket::connect("192.0.2.1:1")`, but that
+        // over-skips — network-isolated containers with usable loopback
+        // interfaces fail the route probe even though sysinfo would still
+        // populate `network_interface`, quietly bypassing the assertion
+        // exactly where this portability test matters most.
         //
         // Silent skip — `print_stderr` is a workspace-level warn and the
         // other portability skips in this PR stay silent too.
-        let kernel_net_ok = std::net::UdpSocket::bind("0.0.0.0:0")
-            .and_then(|s| s.connect("192.0.2.1:1"))
-            .is_ok();
-        if !kernel_net_ok {
-            return;
-        }
         let mut iface_probe = sysinfo::Networks::new_with_refreshed_list();
         iface_probe.refresh(true);
         if iface_probe.iter().next().is_none() {
