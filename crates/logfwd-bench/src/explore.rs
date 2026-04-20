@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Exploratory benchmark: scanner + SQL transform across many dimensions.
 //! Run with: cargo run -p logfwd-bench --release --bin explore
 

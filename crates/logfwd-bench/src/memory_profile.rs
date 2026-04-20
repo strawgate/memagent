@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Sustained-load memory profiler for the logfwd pipeline.
 //!
 //! Runs scanner → SQL transform → null sink in a tight loop for a configurable

@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Library evaluation benchmarks for I/O component refactor (issue #1283).
 //!
 //! Compares:

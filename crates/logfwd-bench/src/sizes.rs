@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Measure data sizes across the pipeline: raw JSON → Arrow RecordBatch → IPC → Parquet
 //! Run with: cargo run -p logfwd-bench --release --bin sizes
 

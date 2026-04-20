@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! CPU and memory profiler for the file output hot path.
 //!
 //! Isolates the JSON serialization + file I/O cost of `FileSink` / `StdoutSink`

@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Apples-to-apples HTTP receiver benchmark for OTLP-like ingestion.
 //!
 //! Compares three transport stacks under the same workload and decode path:

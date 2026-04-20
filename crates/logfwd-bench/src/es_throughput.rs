@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! End-to-end Elasticsearch output throughput bench.
 //!
 //! Tests the full pipeline with configurable workers, batch size, and compression.
