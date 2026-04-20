@@ -587,7 +587,7 @@ fn rewrite_args_as_send(args: Vec<OsString>) -> Vec<OsString> {
     if let Some((program, rest)) = args.split_first() {
         rewritten.push(program.clone());
         rewritten.push(OsString::from("send"));
-        rewritten.extend(rest.iter().cloned());
+        rewritten.extend_from_slice(rest);
     } else {
         rewritten.push(OsString::from("ff"));
         rewritten.push(OsString::from("send"));

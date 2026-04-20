@@ -3141,9 +3141,7 @@ format: json
                     pipeline.get(serde_yaml_ng::Value::String("outputs".to_string()))
                 {
                     match output_value {
-                        serde_yaml_ng::Value::Sequence(values) => {
-                            outputs.extend(values.iter().cloned());
-                        }
+                        serde_yaml_ng::Value::Sequence(values) => outputs.extend_from_slice(values),
                         value => outputs.push(value.clone()),
                     }
                 }
