@@ -393,7 +393,7 @@ fn validate_output_config(
         )));
     }
 
-    validate_legacy_output_compat_fields(pipeline_name, label, output_type, legacy)?;
+    validate_legacy_output_compat_fields(pipeline_name, label, output_type.clone(), legacy)?;
 
     match output {
         OutputConfigV2::Otlp(config) => {
@@ -535,7 +535,9 @@ fn validate_output_config(
             }
         }
         OutputConfigV2::Http(_) | OutputConfigV2::Parquet(_) => {
-            unreachable!("placeholder output variants are rejected before typed output validation")
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' output '{label}': {output_type} output type is not yet implemented",
+            )));
         }
     }
 
@@ -1236,13 +1238,9 @@ impl Config {
                 }
 
                 for (i, output) in pipe.outputs.iter().enumerate() {
-                    let label = output_label(output.typed(), i);
-                    validate_output_config(
-                        name,
-                        &label,
-                        output.typed(),
-                        output.validation_config(),
-                    )?;
+                    let typed = output.typed();
+                    let label = output_label(typed, i);
+                    validate_output_config(name, &label, typed, output.compat_config())?;
                 }
 
                 // Validate enrichment entries (#550).

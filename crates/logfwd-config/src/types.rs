@@ -1265,7 +1265,7 @@ impl OutputConfigEntry {
     }
 
     /// Return a flat compatibility view, preserving legacy fields when present.
-    pub(crate) fn validation_config(&self) -> &OutputConfig {
+    pub(crate) fn compat_config(&self) -> &OutputConfig {
         &self.flat
     }
 }

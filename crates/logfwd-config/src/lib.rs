@@ -85,7 +85,7 @@ storage:
         assert!(pipe.transform.as_ref().unwrap().contains("SELECT"));
         assert_eq!(pipe.outputs[0].output_type(), OutputType::Otlp);
         assert_eq!(
-            pipe.outputs[0].validation_config().endpoint.as_deref(),
+            pipe.outputs[0].compat_config().endpoint.as_deref(),
             Some("http://otel-collector:4317")
         );
         assert_eq!(cfg.server.diagnostics.as_deref(), Some("0.0.0.0:9090"));
@@ -228,7 +228,7 @@ output:
         let cfg = Config::load_str(yaml).expect("env var substitution");
         let pipe = &cfg.pipelines["default"];
         assert_eq!(
-            pipe.outputs[0].validation_config().endpoint.as_deref(),
+            pipe.outputs[0].compat_config().endpoint.as_deref(),
             Some("http://my-collector:4317")
         );
         // SAFETY: this test is not run concurrently with other tests that
@@ -1177,7 +1177,7 @@ output:
 "#;
         let cfg = Config::load_str(yaml).expect("auth bearer_token");
         let pipe = &cfg.pipelines["default"];
-        let output = pipe.outputs[0].validation_config();
+        let output = pipe.outputs[0].compat_config();
         let auth = output.auth.as_ref().expect("auth present");
         assert_eq!(auth.bearer_token.as_deref(), Some("my-secret-token"));
         assert!(auth.headers.is_empty());
@@ -1199,7 +1199,7 @@ output:
 "#;
         let cfg = Config::load_str(yaml).expect("auth custom headers");
         let pipe = &cfg.pipelines["default"];
-        let output = pipe.outputs[0].validation_config();
+        let output = pipe.outputs[0].compat_config();
         let auth = output.auth.as_ref().expect("auth present");
         assert_eq!(auth.bearer_token, None);
         assert_eq!(
@@ -1228,7 +1228,7 @@ output:
 "#;
         let cfg = Config::load_str(yaml).expect("auth env var bearer");
         let pipe = &cfg.pipelines["default"];
-        let output = pipe.outputs[0].validation_config();
+        let output = pipe.outputs[0].compat_config();
         let auth = output.auth.as_ref().expect("auth present");
         assert_eq!(auth.bearer_token.as_deref(), Some("env-bearer-token"));
         // SAFETY: this test is not run concurrently with other tests that
@@ -1248,7 +1248,7 @@ output:
 ";
         let cfg = Config::load_str(yaml).expect("no auth");
         let pipe = &cfg.pipelines["default"];
-        assert!(pipe.outputs[0].validation_config().auth.is_none());
+        assert!(pipe.outputs[0].compat_config().auth.is_none());
     }
 
     #[test]
@@ -1265,7 +1265,7 @@ output:
         let cfg = Config::load_str(yaml).expect("streaming request_mode should validate");
         let pipe = &cfg.pipelines["default"];
         assert_eq!(
-            pipe.outputs[0].validation_config().request_mode,
+            pipe.outputs[0].compat_config().request_mode,
             Some(ElasticsearchRequestMode::Streaming)
         );
     }
