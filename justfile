@@ -304,8 +304,8 @@ build-dev-lite:
 _bench-run name config seconds="10" diag="http://127.0.0.1:9090":
     #!/usr/bin/env bash
     set -euo pipefail
-    LOGFWD=./target/release/ff
-    $LOGFWD run --config {{config}} &
+    FF=./target/release/ff
+    $FF run --config {{config}} &
     PID=$!
     sleep {{seconds}}
     STATS=$(curl -s {{diag}}/admin/v1/stats 2>/dev/null || echo '{}')
@@ -323,8 +323,8 @@ _bench-run name config seconds="10" diag="http://127.0.0.1:9090":
 _bench-pair name rx_config tx_config seconds="10":
     #!/usr/bin/env bash
     set -euo pipefail
-    LOGFWD=./target/release/ff
-    $LOGFWD run --config {{rx_config}} &
+    FF=./target/release/ff
+    $FF run --config {{rx_config}} &
     RX=$!;
 
     # Poll /ready until the diagnostics HTTP server is up (503 → 200).
@@ -349,7 +349,7 @@ _bench-pair name rx_config tx_config seconds="10":
     # Give run_async() time to bind receiver sockets after /ready returns.
     sleep 1
 
-    $LOGFWD run --config {{tx_config}} &
+    $FF run --config {{tx_config}} &
     TX=$!; sleep {{seconds}}
     STATS=$(curl -s http://127.0.0.1:9091/admin/v1/stats 2>/dev/null || echo '{}')
     kill $TX $RX 2>/dev/null; wait $TX $RX 2>/dev/null || true

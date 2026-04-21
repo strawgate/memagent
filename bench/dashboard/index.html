@@ -249,9 +249,9 @@ async function main() {
   if (latestRun && latestRun.scenarios) {
     for (const sn of (latestRun.scenario_names || Object.keys(latestRun.scenarios))) {
       const sc = latestRun.scenarios[sn];
-      const ffData = sc?.ff || sc?.logfwd;
-      if (!ffData) continue;
-      const scenarioFfLps = averageLps(ffData);
+      const ffLps = averageLps(sc?.ff);
+      const logfwdLps = averageLps(sc?.logfwd);
+      const scenarioFfLps = ffLps > 0 ? ffLps : logfwdLps;
       if (!(scenarioFfLps > 0)) continue;
       for (const agent of Object.keys(sc)) {
         if (agent === 'ff' || agent === 'logfwd') continue;
