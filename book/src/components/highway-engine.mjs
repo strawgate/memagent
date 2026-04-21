@@ -5,7 +5,7 @@ const STEP_S = STEP_MS / 1000;
 const SHAPES = ['sedan', 'truck', 'compact', 'van'];
 
 const DEFAULTS = {
-  spawnMs: 850,
+  spawnMs: 700,
   maxCars: 18,
   greenPct: 80,
   cycleTotal: 3000,
@@ -62,12 +62,29 @@ export function createHighwayEngine(overrides) {
   let autoDir = -1;
   let greenPct = cfg.greenPct;
   let lightIsGreen = true;
+  let prevLightIsGreen = true;
+  let redPassCount = 0;
   let accumulatorMs = 0;
   let deliveries = [];
   let spawnBlockedTicks = 0;
   let totalFrames = 0;
   let stalledFrames = 0;
   let removedIds = [];
+
+  // Pre-populate: place a few cars so the scene starts with traffic
+  function preSeed() {
+    const hwPositions = [60, 170, 290, 410];
+    for (const s of hwPositions) {
+      const car = makeCar('highway', s);
+      car.speed = cfg.laneSpeed.highway;
+      cars.push(car);
+    }
+    const rampS = LENGTHS.ramp * 0.35;
+    const rcar = makeCar('ramp', rampS);
+    rcar.speed = cfg.laneSpeed.ramp;
+    cars.push(rcar);
+  }
+  preSeed();
 
   function routeChoiceFor(id) {
     return (id % 5) < 2 ? 'cont' : 'exit';
@@ -133,7 +150,11 @@ export function createHighwayEngine(overrides) {
 
   function tickLight(now) {
     const elapsed = (now - cycleStart) % cfg.cycleTotal;
+    const wasGreen = lightIsGreen;
     lightIsGreen = elapsed < cfg.cycleTotal * greenPct / 100;
+    // Track red-phase passthrough: reset counter on transition to red
+    if (wasGreen && !lightIsGreen) redPassCount = 0;
+    prevLightIsGreen = lightIsGreen;
   }
 
   function updateCarColors() {
@@ -186,8 +207,14 @@ export function createHighwayEngine(overrides) {
             desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
           }
         } else if (segment === 'exit' && !lightIsGreen && car.s < EXIT_GATE_S) {
-          const remaining = EXIT_GATE_S - car.s - 15;
-          desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
+          // Let at least 1 car through each red phase
+          if (redPassCount >= 1) {
+            const remaining = EXIT_GATE_S - car.s - 15;
+            desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
+          }
+        } else if (segment === 'exit' && !lightIsGreen && car.s >= EXIT_GATE_S && !car._countedPass) {
+          car._countedPass = true;
+          redPassCount++;
         } else if (segment === 'highway') {
           const remaining = LENGTHS.highway - car.s - 5;
           if (car.route === 'exit' && !branchClear('exit')) desired = Math.min(desired, stopSpeed(remaining, cfg.brake));
