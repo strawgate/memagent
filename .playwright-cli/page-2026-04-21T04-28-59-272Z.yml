@@ -1,0 +1,180 @@
+- generic [active] [ref=e1]:
+  - link "Skip to content" [ref=e2] [cursor=pointer]:
+    - /url: "#_top"
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - link "FastForward" [ref=e7] [cursor=pointer]:
+          - /url: /fastforward/
+          - generic [ref=e8]: FastForward
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+          - generic [ref=e14]: Search
+          - generic [ref=e15]:
+            - generic [ref=e16]: Ctrl
+            - generic [ref=e17]: K
+        - generic [ref=e18]:
+          - link "GitHub" [ref=e20] [cursor=pointer]:
+            - /url: https://github.com/strawgate/fastforward
+            - generic [ref=e21]: GitHub
+            - img [ref=e22]
+          - generic [ref=e25]:
+            - generic [ref=e26]: Select theme
+            - img
+            - combobox "Select theme" [ref=e27] [cursor=pointer]:
+              - option "Dark"
+              - option "Light"
+              - option "Auto" [selected]
+            - img
+    - navigation "Main":
+      - list [ref=e31]:
+        - listitem [ref=e32]:
+          - link "Quick Start" [ref=e33] [cursor=pointer]:
+            - /url: /fastforward/quick-start/
+        - listitem [ref=e34]:
+          - group [ref=e35]:
+            - generic "Learn" [ref=e36] [cursor=pointer]:
+              - generic [ref=e37]: Learn
+              - img [ref=e38]
+            - list [ref=e40]:
+              - listitem [ref=e41]:
+                - link "Overview" [ref=e42] [cursor=pointer]:
+                  - /url: /fastforward/learn/
+              - listitem [ref=e43]:
+                - link "Inputs" [ref=e44] [cursor=pointer]:
+                  - /url: /fastforward/learn/inputs/
+              - listitem [ref=e45]:
+                - link "Tailing" [ref=e46] [cursor=pointer]:
+                  - /url: /fastforward/learn/tailing/
+              - listitem [ref=e47]:
+                - link "Scanner Deep Dive" [ref=e48] [cursor=pointer]:
+                  - /url: /fastforward/learn/scanner/
+              - listitem [ref=e49]:
+                - link "Columnar" [ref=e50] [cursor=pointer]:
+                  - /url: /fastforward/learn/columnar/
+              - listitem [ref=e51]:
+                - link "Backpressure in Action" [ref=e52] [cursor=pointer]:
+                  - /url: /fastforward/learn/backpressure/
+              - listitem [ref=e53]:
+                - link "Checkpoint Ordering" [ref=e54] [cursor=pointer]:
+                  - /url: /fastforward/learn/checkpoints/
+              - listitem [ref=e55]:
+                - link "Performance" [ref=e56] [cursor=pointer]:
+                  - /url: /fastforward/learn/performance/
+        - listitem [ref=e57]:
+          - group [ref=e58]:
+            - generic "Configuration" [ref=e59] [cursor=pointer]:
+              - generic [ref=e60]: Configuration
+              - img [ref=e61]
+            - list [ref=e63]:
+              - listitem [ref=e64]:
+                - link "Config Builder" [ref=e65] [cursor=pointer]:
+                  - /url: /fastforward/configuration/config-builder/
+              - listitem [ref=e66]:
+                - link "SQL Transforms" [ref=e67] [cursor=pointer]:
+                  - /url: /fastforward/configuration/sql-transforms/
+              - listitem [ref=e68]:
+                - link "Input Types" [ref=e69] [cursor=pointer]:
+                  - /url: /fastforward/configuration/inputs/
+              - listitem [ref=e70]:
+                - link "Output Types" [ref=e71] [cursor=pointer]:
+                  - /url: /fastforward/configuration/outputs/
+              - listitem [ref=e72]:
+                - link "YAML Reference" [ref=e73] [cursor=pointer]:
+                  - /url: /fastforward/configuration/reference/
+        - listitem [ref=e74]:
+          - group [ref=e75]:
+            - generic "Deployment" [ref=e76] [cursor=pointer]:
+              - generic [ref=e77]: Deployment
+              - img [ref=e78]
+            - list [ref=e80]:
+              - listitem [ref=e81]:
+                - link "Kubernetes DaemonSet" [ref=e82] [cursor=pointer]:
+                  - /url: /fastforward/deployment/kubernetes/
+              - listitem [ref=e83]:
+                - link "Docker" [ref=e84] [cursor=pointer]:
+                  - /url: /fastforward/deployment/docker/
+              - listitem [ref=e85]:
+                - link "Monitoring & Diagnostics" [ref=e86] [cursor=pointer]:
+                  - /url: /fastforward/deployment/monitoring/
+        - listitem [ref=e87]:
+          - link "Troubleshooting" [ref=e88] [cursor=pointer]:
+            - /url: /fastforward/troubleshooting/
+        - listitem [ref=e89]:
+          - group [ref=e90]:
+            - generic "Development" [ref=e91] [cursor=pointer]:
+              - generic [ref=e92]: Development
+              - img [ref=e93]
+            - list [ref=e95]:
+              - listitem [ref=e96]:
+                - link "Contributing" [ref=e97] [cursor=pointer]:
+                  - /url: /fastforward/development/contributing/
+              - listitem [ref=e98]:
+                - link "Benchmarking" [ref=e99] [cursor=pointer]:
+                  - /url: /fastforward/development/benchmarking/
+    - generic [ref=e101]:
+      - complementary [ref=e102]:
+        - navigation "On this page" [ref=e107]:
+          - heading "On this page" [level=2] [ref=e108]
+          - list [ref=e109]:
+            - listitem [ref=e110]:
+              - link "Overview" [ref=e111] [cursor=pointer]:
+                - /url: "#_top"
+      - main [ref=e113]:
+        - heading "Config Builder" [level=1] [ref=e116]
+        - generic [ref=e118]:
+          - generic [ref=e119]:
+            - paragraph [ref=e120]: Use the builder below to generate a config YAML for your pipeline. Pick a preset to get started, or choose an input and output manually. Optionally add a SQL transform to filter or reshape events before they reach the output.
+            - generic [ref=e121]:
+              - generic [ref=e122]: "Failed to load config builder: Failed to fetch dynamically imported module: http://localhost:8083/fastforward/wasm/logfwd-config/logfwd_config_wasm.js"
+              - generic [ref=e123]:
+                - generic [ref=e125]: Quick start
+                - generic [ref=e126]:
+                  - generic [ref=e128]:
+                    - generic [ref=e129]: Input
+                    - generic [ref=e130]: Where do logs come from?
+                  - img [ref=e134]
+                  - generic [ref=e137]:
+                    - generic [ref=e138]: Output
+                    - generic [ref=e139]: Where should logs go?
+                - group [ref=e141]:
+                  - generic "SQL transform (optional)" [ref=e142] [cursor=pointer]:
+                    - img [ref=e143]
+                    - generic [ref=e145]: SQL transform
+                    - generic [ref=e146]: (optional)
+                    - img [ref=e147]
+                - generic [ref=e149]:
+                  - generic [ref=e150]:
+                    - generic [ref=e151]: Generated config
+                    - generic [ref=e152]:
+                      - button "Copy" [ref=e153] [cursor=pointer]
+                      - button "Download" [ref=e154] [cursor=pointer]
+                  - generic [ref=e155]:
+                    - code
+            - separator [ref=e156]
+            - paragraph [ref=e157]:
+              - text: The generated YAML is validated against the same Rust config types used by
+              - code [ref=e158]: logfwd
+              - text: itself, so the structure and field values are guaranteed to be valid. Fill in paths, endpoints, and credentials for your environment before deploying.
+          - generic [ref=e159]:
+            - generic [ref=e160]:
+              - link "Edit page" [ref=e161] [cursor=pointer]:
+                - /url: https://github.com/strawgate/fastforward/edit/main/book/src/content/docs/configuration/config-builder.mdx
+                - img [ref=e162]
+                - text: Edit page
+              - paragraph [ref=e164]:
+                - text: "Last updated:"
+                - time [ref=e165]: Apr 19, 2026
+            - generic [ref=e166]:
+              - link "Previous Performance" [ref=e167] [cursor=pointer]:
+                - /url: /fastforward/learn/performance/
+                - img [ref=e168]
+                - generic [ref=e170]:
+                  - text: Previous
+                  - text: Performance
+              - link "Next SQL Transforms" [ref=e171] [cursor=pointer]:
+                - /url: /fastforward/configuration/sql-transforms/
+                - img [ref=e172]
+                - generic [ref=e174]:
+                  - text: Next
+                  - text: SQL Transforms
