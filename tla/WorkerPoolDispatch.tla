@@ -180,7 +180,7 @@ SpawnAndDispatch ==
         /\ LET item == Head(pending) IN
            /\ workers'      = workers \cup {w}
            /\ workerState'  = [workerState EXCEPT ![w] = "Busy"]
-           /\ workerHealth' = [workerHealth EXCEPT ![w] = "Healthy"]
+           /\ workerHealth' = [workerHealth EXCEPT ![w] = (IF workerHealth[w] = "Failed" THEN "Failed" ELSE "Healthy")]
            /\ pending'      = Tail(pending)
            /\ inFlight'     = inFlight \cup {item}
            /\ assignment'   = [assignment EXCEPT ![item] = w]
@@ -198,7 +198,7 @@ WorkerComplete(w, item) ==
     /\ item \in inFlight
     /\ assignment[item] = w
     /\ workerState' = [workerState EXCEPT ![w] = "Idle"]
-    /\ workerHealth' = [workerHealth EXCEPT ![w] = "Healthy"]
+    /\ workerHealth' = [workerHealth EXCEPT ![w] = (IF workerHealth[w] = "Failed" THEN "Failed" ELSE "Healthy")]
     /\ inFlight'    = inFlight \ {item}
     /\ delivered'   = delivered \cup {item}
     /\ UNCHANGED <<poolState, workers, pending, rejected,
@@ -392,8 +392,7 @@ NoSubmitAfterDrain ==
 \* FailureIsSticky as a temporal property: once Failed, stays Failed.
 FailureIsStickyTemporal ==
     \A w \in WorkerIds :
-        [](workerHealth[w] = "Failed" =>
-           [](workerHealth[w] = "Failed" \/ workerState[w] = "Stopped"))
+        [][workerHealth[w] = "Failed" => workerHealth'[w] = "Failed"]_workerHealth
 
 \* ForceAbort accounts for all unfinished work.
 ForceAbortAccountsForAll ==
