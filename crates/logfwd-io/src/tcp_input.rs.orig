@@ -1733,41 +1733,6 @@ mod tests {
     }
 
     #[test]
-    fn test_tcp_max_clients_drops_and_warns() {
-        let mut options = TcpInputOptions::default();
-        options.max_clients = 2;
-
-        let mut input = TcpInput::with_options(
-            "test_max_conns",
-            "127.0.0.1:0",
-            options,
-            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
-        )
-        .unwrap();
-
-        let addr = input.local_addr().unwrap();
-
-        let _client1 = StdTcpStream::connect(addr).unwrap();
-        let _client2 = StdTcpStream::connect(addr).unwrap();
-        let _client3 = StdTcpStream::connect(addr).unwrap();
-        let _client4 = StdTcpStream::connect(addr).unwrap();
-
-        // Wait a bit to ensure connections hit the kernel accept queue
-        std::thread::sleep(Duration::from_millis(50));
-
-        // The first poll should accept 2 connections, log a warning, and drop the other 2.
-        let _events = input.poll().unwrap();
-
-        assert_eq!(input.clients.len(), 2, "Should only accept max_clients clients");
-        assert!(input.last_max_clients_warning.is_some(), "Should have logged a warning");
-        assert_eq!(input.connections_accepted, 4, "Should have accepted and immediately dropped the excess connections");
-
-        // Let's also check a second poll does not blow up
-        let _events2 = input.poll().unwrap();
-        assert_eq!(input.clients.len(), 2, "Still 2 clients");
-    }
-
-    #[test]
     fn tcp_max_line_length() {
         let mut input = TcpInput::new(
             "test",

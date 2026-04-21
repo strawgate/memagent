@@ -521,9 +521,9 @@ impl Config {
                                     )));
                                 }
                             }
-                            if t.max_connections == Some(0) {
+                            if t.max_clients == Some(0) {
                                 return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': max_connections cannot be 0"
+                                    "pipeline '{name}' input '{label}': max_clients cannot be 0"
                                 )));
                             }
                             track_listen_addr_uniqueness(
