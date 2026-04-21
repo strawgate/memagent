@@ -9,9 +9,10 @@ const DEFAULTS = {
   maxCars: 18,
   greenPct: 80,
   cycleTotal: 3000,
-  autoSpeed: 6, // pct per second
+  autoSpeed: 4, // pct per second — slow enough for congestion to visibly build
   autoMin: 0,
   autoMax: 75,
+  autoDwell: 3, // seconds to pause at min before sweeping back up
   minGap: 36,
   mergeGap: 36,
   accel: 180,
@@ -132,12 +133,20 @@ export function createHighwayEngine(overrides) {
     return behind > cfg.mergeGap;
   }
 
+  let autoDwellRemain = 0;
+
   function tickAuto(dtS) {
     if (!autoMode) return;
+    // Dwell at min before sweeping back up
+    if (autoDwellRemain > 0) {
+      autoDwellRemain -= dtS;
+      return;
+    }
     autoVal += cfg.autoSpeed * autoDir * dtS;
     if (autoVal <= cfg.autoMin) {
       autoVal = cfg.autoMin;
       autoDir = 1;
+      autoDwellRemain = cfg.autoDwell;
     }
     if (autoVal >= cfg.autoMax) {
       autoVal = cfg.autoMax;
@@ -314,7 +323,7 @@ export function createHighwayEngine(overrides) {
     let status;
     if (spawnBlockedTicks >= 60) {
       status = { level: 'blocked', msg: 'Heavy Traffic Expected — backed up to the on-ramp' };
-    } else if (stallPct > 40) {
+    } else if (stallPct > 30) {
       status = { level: 'congested', msg: 'Heavy Traffic Expected — cars queuing behind the light' };
     } else {
       status = { level: 'flowing', msg: 'Flowing — traffic moving freely' };
