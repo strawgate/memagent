@@ -2,6 +2,7 @@
 #![cfg(kani)]
 
 use super::*;
+use crate::elasticsearch::timestamp::{is_leap_year, write_ts_suffix};
 
 /// Prove is_leap_year satisfies all four cases of the Gregorian calendar rule
 /// exhaustively for every possible u32 year value.
