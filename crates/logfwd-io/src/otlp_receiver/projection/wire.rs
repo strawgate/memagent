@@ -33,12 +33,6 @@ pub(super) enum StringStorage {
     InputView,
 }
 
-#[derive(Clone, Copy, Default)]
-pub(super) struct ScopeFields<'a> {
-    pub(super) name: Option<&'a [u8]>,
-    pub(super) version: Option<&'a [u8]>,
-}
-
 pub(super) fn for_each_field<'a>(
     mut input: &'a [u8],
     mut visit: impl FnMut(u32, WireField<'a>) -> Result<(), ProjectionError>,

@@ -21,10 +21,13 @@ mod tests;
 mod wire;
 mod write;
 
+#[cfg(test)]
 use generated::field_numbers as otlp_field;
 
 // Re-export submodule items so the generated module can access them via `super::`.
-use wire::{StringStorage, WireAny, WireField, WireScratch, for_each_field, require_utf8};
+use wire::{
+    StringStorage, WireAny, WireField, WireScratch, for_each_field, require_utf8, subslice_range,
+};
 use write::{
     write_hex_field, write_hex_to_buf, write_json_escaped_bytes, write_wire_any_complex_json,
     write_wire_str,
@@ -157,27 +160,17 @@ impl ProjectedOtlpDecoder {
         }
 
         let string_storage = StringStorage::InputView;
-        let decode_result = for_each_field(body.as_ref(), |field, value| {
-            match (field, value) {
-                (otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS, WireField::Len(resource_logs)) => {
-                    decode::decode_resource_logs_wire(
-                        &mut self.builder,
-                        &self.handles,
-                        &mut self.scratch,
-                        &self.resource_prefix,
-                        resource_logs,
-                        string_storage,
-                    )?;
-                }
-                (otlp_field::EXPORT_LOGS_REQUEST_RESOURCE_LOGS, _) => {
-                    return Err(ProjectionError::Invalid(
-                        "invalid wire type for ExportLogsServiceRequest.resource_logs",
-                    ));
-                }
-                _ => {}
-            }
-            Ok(())
-        });
+        let decode_result =
+            generated::for_each_export_resource_logs(body.as_ref(), |resource_logs| {
+                decode::decode_resource_logs_wire(
+                    &mut self.builder,
+                    &self.handles,
+                    &mut self.scratch,
+                    &self.resource_prefix,
+                    resource_logs,
+                    string_storage,
+                )
+            });
 
         if let Err(e) = decode_result {
             // Reset builder to idle so the next begin_batch succeeds even

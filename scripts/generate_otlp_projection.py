@@ -40,16 +40,16 @@ ACTION_TO_VARIANT = {
 }
 
 OTLP_PLANNED_FIELDS = [
-    ("timestamp", "TIMESTAMP", "Int64"),
-    ("observed_timestamp", "OBSERVED_TIMESTAMP", "Int64"),
-    ("severity", "SEVERITY", "Utf8View"),
-    ("severity_number", "SEVERITY_NUMBER", "Int64"),
-    ("body", "BODY", "Utf8View"),
-    ("trace_id", "TRACE_ID", "Utf8View"),
-    ("span_id", "SPAN_ID", "Utf8View"),
-    ("flags", "FLAGS", "Int64"),
-    ("scope_name", "SCOPE_NAME", "Utf8View"),
-    ("scope_version", "SCOPE_VERSION", "Utf8View"),
+    ("timestamp", "TIMESTAMP", "Int64", "int64"),
+    ("observed_timestamp", "OBSERVED_TIMESTAMP", "Int64", "int64"),
+    ("severity", "SEVERITY", "Utf8View", "string"),
+    ("severity_number", "SEVERITY_NUMBER", "Int64", "int64"),
+    ("body", "BODY", "Utf8View", "any_string"),
+    ("trace_id", "TRACE_ID", "Utf8View", "hex"),
+    ("span_id", "SPAN_ID", "Utf8View", "hex"),
+    ("flags", "FLAGS", "Int64", "int64"),
+    ("scope_name", "SCOPE_NAME", "Utf8View", "string"),
+    ("scope_version", "SCOPE_VERSION", "Utf8View", "string"),
 ]
 
 PROTO_TYPE_TO_ANY_KIND = {
@@ -534,6 +534,36 @@ fn push_varint(out: &mut Vec<u8>, mut value: u64) {{
     out.push(value as u8);
 }}
 
+fn push_len_field(out: &mut Vec<u8>, number: u32, bytes: &[u8]) {{
+    push_varint(out, (u64::from(number) << 3) | u64::from(wire_id(WireKind::Len)));
+    push_varint(out, bytes.len() as u64);
+    out.extend_from_slice(bytes);
+}}
+
+fn push_fixed64_field(out: &mut Vec<u8>, number: u32, value: u64) {{
+    push_varint(
+        out,
+        (u64::from(number) << 3) | u64::from(wire_id(WireKind::Fixed64)),
+    );
+    out.extend_from_slice(&value.to_le_bytes());
+}}
+
+fn push_fixed32_field(out: &mut Vec<u8>, number: u32, value: u32) {{
+    push_varint(
+        out,
+        (u64::from(number) << 3) | u64::from(wire_id(WireKind::Fixed32)),
+    );
+    out.extend_from_slice(&value.to_le_bytes());
+}}
+
+fn push_varint_field(out: &mut Vec<u8>, number: u32, value: u64) {{
+    push_varint(
+        out,
+        (u64::from(number) << 3) | u64::from(wire_id(WireKind::Varint)),
+    );
+    push_varint(out, value);
+}}
+
 fn wire_id(wire: WireKind) -> u8 {{
     match wire {{
         WireKind::Varint => 0,
@@ -605,17 +635,71 @@ fn complex_anyvalue_field_numbers() -> &'static [u32] {{
 def render_planned_handle_builder() -> str:
     handle_fields = "\n".join(
         f"    pub(super) {field_name}: FieldHandle,"
-        for field_name, _field_const, _kind in OTLP_PLANNED_FIELDS
+        for field_name, _field_const, _kind, _writer in OTLP_PLANNED_FIELDS
     )
     handle_bindings = "\n".join(
         "        "
         f"{field_name}: plan"
         f".declare_planned(field_names::{field_const}, FieldKind::{kind})"
         '.expect("duplicate planned field"),'
-        for field_name, field_const, kind in OTLP_PLANNED_FIELDS
+        for field_name, field_const, kind, _writer in OTLP_PLANNED_FIELDS
     )
+    appender_methods = []
+    for field_name, _field_const, _kind, writer in OTLP_PLANNED_FIELDS:
+        if writer == "int64":
+            appender_methods.append(
+                f"""    pub(super) fn write_{field_name}(
+        &self,
+        builder: &mut ColumnarBatchBuilder,
+        value: i64,
+    ) {{
+        builder.write_i64(self.{field_name}, value);
+    }}"""
+            )
+        elif writer == "string":
+            appender_methods.append(
+                f"""    pub(super) fn write_{field_name}(
+        &self,
+        builder: &mut ColumnarBatchBuilder,
+        value: &[u8],
+        string_storage: StringStorage,
+    ) -> Result<(), ProjectionError> {{
+        super::write_wire_str(builder, self.{field_name}, value, string_storage)
+    }}"""
+            )
+        elif writer == "hex":
+            appender_methods.append(
+                f"""    pub(super) fn write_{field_name}(
+        &self,
+        builder: &mut ColumnarBatchBuilder,
+        value: &[u8],
+        scratch: &mut WireScratch,
+    ) -> Result<(), ProjectionError> {{
+        super::write_hex_field(builder, self.{field_name}, value, &mut scratch.hex)
+    }}"""
+            )
+        elif writer == "any_string":
+            appender_methods.append(
+                f"""    pub(super) fn write_{field_name}(
+        &self,
+        builder: &mut ColumnarBatchBuilder,
+        value: WireAny<'_>,
+        scratch: &mut WireScratch,
+        string_storage: StringStorage,
+    ) -> Result<(), ProjectionError> {{
+        write_wire_any_as_string(builder, self.{field_name}, value, scratch, string_storage)
+    }}"""
+            )
+        else:
+            raise ValueError(f"unknown OTLP planned field writer {writer!r}")
+
+    appender_impl = "\n\n".join(appender_methods)
     return f"""pub(super) struct OtlpFieldHandles {{
 {handle_fields}
+}}
+
+impl OtlpFieldHandles {{
+{appender_impl}
 }}
 
 pub(super) fn build_otlp_plan() -> (BatchPlan, OtlpFieldHandles) {{
@@ -626,6 +710,236 @@ pub(super) fn build_otlp_plan() -> (BatchPlan, OtlpFieldHandles) {{
     (plan, handles)
 }}
 """
+
+
+def render_scope_log_decoders(spec: dict) -> str:
+    scope = {field["name"]: field for field in message_fields(spec, "InstrumentationScope")}
+    log_record = {field["name"]: field for field in message_fields(spec, "LogRecord")}
+
+    return """#[derive(Clone, Copy, Default)]
+pub(super) struct ScopeFields<'a> {
+    pub(super) name: Option<&'a [u8]>,
+    pub(super) version: Option<&'a [u8]>,
+}
+
+pub(super) fn merge_scope_wire<'a>(
+    scope: &'a [u8],
+    scope_fields: &mut ScopeFields<'a>,
+) -> Result<(), ProjectionError> {
+    super::for_each_field(scope, |field, value| {
+        match (field, value) {
+            (__SCOPE_NAME_FIELD__, WireField::Len(value)) => {
+                scope_fields.name = Some(super::require_utf8(
+                    value,
+                    "invalid UTF-8 scope name",
+                )?);
+            }
+            (__SCOPE_NAME_FIELD__, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for InstrumentationScope.name",
+                ));
+            }
+            (__SCOPE_VERSION_FIELD__, WireField::Len(value)) => {
+                scope_fields.version = Some(super::require_utf8(
+                    value,
+                    "invalid UTF-8 scope version",
+                )?);
+            }
+            (__SCOPE_VERSION_FIELD__, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for InstrumentationScope.version",
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    })
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct LogRecordFields<'a> {
+    pub(super) time_unix_nano: u64,
+    pub(super) observed_time_unix_nano: u64,
+    pub(super) severity_number: i64,
+    pub(super) severity_text: Option<&'a [u8]>,
+    pub(super) body: Option<WireAny<'a>>,
+    pub(super) trace_id: Option<&'a [u8]>,
+    pub(super) span_id: Option<&'a [u8]>,
+    pub(super) flags: i64,
+}
+
+pub(super) fn decode_log_record_fields<'a>(
+    log_record: &'a [u8],
+    attr_ranges: &mut Vec<(usize, usize)>,
+) -> Result<LogRecordFields<'a>, ProjectionError> {
+    let mut out = LogRecordFields::default();
+    super::for_each_field(log_record, |field, value| {
+        match (field, value) {
+            (__LOG_TIME_FIELD__, WireField::Fixed64(value)) => {
+                out.time_unix_nano = value;
+            }
+            (__LOG_TIME_FIELD__, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.time_unix_nano",
+                ));
+            }
+            (__LOG_OBSERVED_TIME_FIELD__, WireField::Fixed64(value)) => {
+                out.observed_time_unix_nano = value;
+            }
+            (__LOG_OBSERVED_TIME_FIELD__, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.observed_time_unix_nano",
+                ));
+            }
+            (__LOG_SEVERITY_NUMBER_FIELD__, WireField::Varint(value)) => {
+                out.severity_number = i64::from(value as i32);
+            }
+            (__LOG_SEVERITY_NUMBER_FIELD__, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.severity_number",
+                ));
+            }
+            (__LOG_SEVERITY_TEXT_FIELD__, WireField::Len(value)) => {
+                out.severity_text = if value.is_empty() {
+                    None
+                } else {
+                    Some(super::require_utf8(
+                        value,
+                        "invalid UTF-8 severity text",
+                    )?)
+                };
+            }
+            (__LOG_SEVERITY_TEXT_FIELD__, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.severity_text",
+                ));
+            }
+            (__LOG_BODY_FIELD__, WireField::Len(value)) => {
+                if let Some(value) = decode_any_value_wire(value)? {
+                    out.body = Some(value);
+                }
+            }
+            (__LOG_BODY_FIELD__, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.body",
+                ));
+            }
+            (__LOG_TRACE_ID_FIELD__, WireField::Len(value)) => {
+                out.trace_id = (!value.is_empty()).then_some(value);
+            }
+            (__LOG_TRACE_ID_FIELD__, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.trace_id",
+                ));
+            }
+            (__LOG_SPAN_ID_FIELD__, WireField::Len(value)) => {
+                out.span_id = (!value.is_empty()).then_some(value);
+            }
+            (__LOG_SPAN_ID_FIELD__, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.span_id",
+                ));
+            }
+            (__LOG_FLAGS_FIELD__, WireField::Fixed32(value)) => {
+                out.flags = i64::from(value);
+            }
+            (__LOG_FLAGS_FIELD__, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.flags",
+                ));
+            }
+            (__LOG_ATTRS_FIELD__, WireField::Len(value)) => {
+                attr_ranges.push(super::subslice_range(log_record, value)?);
+            }
+            (__LOG_ATTRS_FIELD__, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.attributes",
+                ));
+            }
+            _ => {}
+        }
+        Ok(())
+    })?;
+    Ok(out)
+}
+""".replace("__SCOPE_NAME_FIELD__", str(scope["name"]["number"])).replace(
+        "__SCOPE_VERSION_FIELD__", str(scope["version"]["number"])
+    ).replace("__LOG_TIME_FIELD__", str(log_record["time_unix_nano"]["number"])).replace(
+        "__LOG_OBSERVED_TIME_FIELD__", str(log_record["observed_time_unix_nano"]["number"])
+    ).replace("__LOG_SEVERITY_NUMBER_FIELD__", str(log_record["severity_number"]["number"])).replace(
+        "__LOG_SEVERITY_TEXT_FIELD__", str(log_record["severity_text"]["number"])
+    ).replace("__LOG_BODY_FIELD__", str(log_record["body"]["number"])).replace(
+        "__LOG_TRACE_ID_FIELD__", str(log_record["trace_id"]["number"])
+    ).replace("__LOG_SPAN_ID_FIELD__", str(log_record["span_id"]["number"])).replace(
+        "__LOG_FLAGS_FIELD__", str(log_record["flags"]["number"])
+    ).replace("__LOG_ATTRS_FIELD__", str(log_record["attributes"]["number"]))
+
+
+def render_len_field_visitors(spec: dict) -> str:
+    messages = {message["name"]: {field["name"]: field for field in message["fields"]} for message in spec["messages"]}
+    visitors = [
+        (
+            "for_each_export_resource_logs",
+            "ExportLogsServiceRequest",
+            "resource_logs",
+            "ExportLogsServiceRequest.resource_logs",
+        ),
+        (
+            "for_each_resource_logs_resource",
+            "ResourceLogs",
+            "resource",
+            "ResourceLogs.resource",
+        ),
+        (
+            "for_each_resource_logs_scope_logs",
+            "ResourceLogs",
+            "scope_logs",
+            "ResourceLogs.scope_logs",
+        ),
+        (
+            "for_each_resource_attribute",
+            "Resource",
+            "attributes",
+            "Resource.attributes",
+        ),
+        (
+            "for_each_scope_logs_scope",
+            "ScopeLogs",
+            "scope",
+            "ScopeLogs.scope",
+        ),
+        (
+            "for_each_scope_logs_log_record",
+            "ScopeLogs",
+            "log_records",
+            "ScopeLogs.log_records",
+        ),
+    ]
+    blocks = []
+    for fn_name, message_name, field_name, display_name in visitors:
+        field = messages[message_name][field_name]
+        if field["wire"] != "len":
+            raise ValueError(f"{message_name}.{field_name} visitor requires len wire")
+        blocks.append(
+            f"""pub(super) fn {fn_name}<'a>(
+    input: &'a [u8],
+    mut visit: impl FnMut(&'a [u8]) -> Result<(), ProjectionError>,
+) -> Result<(), ProjectionError> {{
+    super::for_each_field(input, |field, value| {{
+        match (field, value) {{
+            ({field["number"]}, WireField::Len(bytes)) => visit(bytes)?,
+            ({field["number"]}, _) => {{
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for {display_name}",
+                ));
+            }}
+            _ => {{}}
+        }}
+        Ok(())
+    }})
+}}"""
+        )
+    return "\n\n".join(blocks) + "\n"
 
 
 def render_wire_any_field_kind(spec: dict) -> str:
@@ -947,6 +1261,8 @@ def render(spec: dict) -> str:
     core_constant_drift_tests = render_core_constant_drift_tests(spec)
     generated_test_vectors = render_generated_test_vectors(spec)
     planned_handle_builder = render_planned_handle_builder()
+    scope_log_decoders = render_scope_log_decoders(spec)
+    len_field_visitors = render_len_field_visitors(spec)
     wire_any_field_kind = render_wire_any_field_kind(spec)
     wire_any_appenders = render_wire_any_appenders(spec)
     wire_any_json_writer = render_wire_any_json_writer(spec)
@@ -1013,6 +1329,8 @@ pub(super) fn classify_projection_support(input: &[u8]) -> Result<(), Projection
 }}
 
 {planned_handle_builder}
+{scope_log_decoders}
+{len_field_visitors}
 {any_value_decoder}
 {key_value_decoder}
 {wire_any_field_kind}
@@ -1275,6 +1593,255 @@ mod generated_tests {{
         write_wire_any_json(WireAny::String(&any_string[2..]), &mut out, &mut scratch)
             .expect("generated AnyValue JSON writer should keep scalar dispatch");
         assert_eq!(out, br#""x""#);
+    }}
+
+    #[test]
+    fn generated_planned_appenders_write_expected_columns() {{
+        use arrow::array::{{Int64Array, StringViewArray}};
+
+        let (plan, handles) = build_otlp_plan();
+        let mut builder = ColumnarBatchBuilder::new(plan);
+        let mut scratch = WireScratch::default();
+
+        builder.begin_batch();
+        builder.begin_row();
+        handles.write_timestamp(&mut builder, 11);
+        handles.write_observed_timestamp(&mut builder, 12);
+        handles
+            .write_severity(&mut builder, b"INFO", StringStorage::Decoded)
+            .expect("severity appender should write");
+        handles.write_severity_number(&mut builder, 9);
+        handles
+            .write_body(
+                &mut builder,
+                WireAny::String(b"body"),
+                &mut scratch,
+                StringStorage::Decoded,
+            )
+            .expect("body appender should write");
+        handles
+            .write_trace_id(&mut builder, &[0xab, 0xcd], &mut scratch)
+            .expect("trace id appender should write");
+        handles
+            .write_span_id(&mut builder, &[0x12, 0x34], &mut scratch)
+            .expect("span id appender should write");
+        handles.write_flags(&mut builder, 1);
+        handles
+            .write_scope_name(&mut builder, b"scope", StringStorage::Decoded)
+            .expect("scope name appender should write");
+        handles
+            .write_scope_version(&mut builder, b"1.2.3", StringStorage::Decoded)
+            .expect("scope version appender should write");
+        builder.end_row();
+
+        let batch = builder
+            .finish_batch()
+            .expect("generated appenders should produce a batch");
+
+        let int_value = |name: &str| -> i64 {{
+            let column = batch
+                .column(batch.schema().index_of(name).expect("planned int field"));
+            column
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .expect("planned field should be Int64")
+                .value(0)
+        }};
+        let str_value = |name: &str| -> String {{
+            let column = batch
+                .column(batch.schema().index_of(name).expect("planned string field"));
+            column
+                .as_any()
+                .downcast_ref::<StringViewArray>()
+                .expect("planned field should be StringViewArray")
+                .value(0)
+                .to_owned()
+        }};
+
+        assert_eq!(int_value(field_names::TIMESTAMP), 11);
+        assert_eq!(int_value(field_names::OBSERVED_TIMESTAMP), 12);
+        assert_eq!(str_value(field_names::SEVERITY), "INFO");
+        assert_eq!(int_value(field_names::SEVERITY_NUMBER), 9);
+        assert_eq!(str_value(field_names::BODY), "body");
+        assert_eq!(str_value(field_names::TRACE_ID), "abcd");
+        assert_eq!(str_value(field_names::SPAN_ID), "1234");
+        assert_eq!(int_value(field_names::FLAGS), 1);
+        assert_eq!(str_value(field_names::SCOPE_NAME), "scope");
+        assert_eq!(str_value(field_names::SCOPE_VERSION), "1.2.3");
+    }}
+
+    #[test]
+    fn generated_scope_decoder_merges_partial_scope_messages() {{
+        let mut scope_fields = ScopeFields::default();
+        let mut name = Vec::new();
+        let mut version = Vec::new();
+        push_len_field(
+            &mut name,
+            field_numbers::INSTRUMENTATION_SCOPE_NAME,
+            b"scope-a",
+        );
+        push_len_field(
+            &mut version,
+            field_numbers::INSTRUMENTATION_SCOPE_VERSION,
+            b"1.2.3",
+        );
+
+        merge_scope_wire(&name, &mut scope_fields).expect("scope name should decode");
+        merge_scope_wire(&version, &mut scope_fields).expect("scope version should decode");
+
+        assert_eq!(scope_fields.name, Some(b"scope-a".as_slice()));
+        assert_eq!(scope_fields.version, Some(b"1.2.3".as_slice()));
+    }}
+
+    #[test]
+    fn generated_log_record_decoder_extracts_projected_fields() {{
+        let mut body = Vec::new();
+        push_len_field(&mut body, field_numbers::ANY_VALUE_STRING_VALUE, b"body");
+
+        let mut attr_value = Vec::new();
+        push_len_field(&mut attr_value, field_numbers::ANY_VALUE_STRING_VALUE, b"value");
+
+        let mut attr = Vec::new();
+        push_len_field(&mut attr, field_numbers::KEY_VALUE_KEY, b"key");
+        push_len_field(&mut attr, field_numbers::KEY_VALUE_VALUE, &attr_value);
+
+        let trace_id = [0x11; 16];
+        let span_id = [0x22; 8];
+        let mut log_record = Vec::new();
+        push_fixed64_field(
+            &mut log_record,
+            field_numbers::LOG_RECORD_TIME_UNIX_NANO,
+            11,
+        );
+        push_fixed64_field(
+            &mut log_record,
+            field_numbers::LOG_RECORD_OBSERVED_TIME_UNIX_NANO,
+            12,
+        );
+        push_varint_field(
+            &mut log_record,
+            field_numbers::LOG_RECORD_SEVERITY_NUMBER,
+            9,
+        );
+        push_len_field(
+            &mut log_record,
+            field_numbers::LOG_RECORD_SEVERITY_TEXT,
+            b"INFO",
+        );
+        push_len_field(&mut log_record, field_numbers::LOG_RECORD_BODY, &body);
+        push_len_field(&mut log_record, field_numbers::LOG_RECORD_TRACE_ID, &trace_id);
+        push_len_field(&mut log_record, field_numbers::LOG_RECORD_SPAN_ID, &span_id);
+        push_fixed32_field(&mut log_record, field_numbers::LOG_RECORD_FLAGS, 1);
+        push_len_field(&mut log_record, field_numbers::LOG_RECORD_ATTRIBUTES, &attr);
+
+        let mut attr_ranges = Vec::new();
+        let decoded = decode_log_record_fields(&log_record, &mut attr_ranges)
+            .expect("log record fields should decode");
+
+        assert_eq!(decoded.time_unix_nano, 11);
+        assert_eq!(decoded.observed_time_unix_nano, 12);
+        assert_eq!(decoded.severity_number, 9);
+        assert_eq!(decoded.severity_text, Some(b"INFO".as_slice()));
+        assert_eq!(decoded.trace_id, Some(trace_id.as_slice()));
+        assert_eq!(decoded.span_id, Some(span_id.as_slice()));
+        assert_eq!(decoded.flags, 1);
+        match decoded.body {{
+            Some(WireAny::String(value)) => assert_eq!(value, b"body"),
+            _ => panic!("body should decode as string AnyValue"),
+        }}
+        assert_eq!(attr_ranges.len(), 1);
+        let (start, len) = attr_ranges[0];
+        assert_eq!(&log_record[start..start + len], attr.as_slice());
+    }}
+
+    #[test]
+    fn generated_len_visitors_yield_expected_payloads() {{
+        let mut export = Vec::new();
+        let mut resource_logs = Vec::new();
+        let mut resource = Vec::new();
+        let mut scope_logs = Vec::new();
+
+        push_len_field(&mut resource, field_numbers::RESOURCE_ATTRIBUTES, b"attr");
+        push_len_field(&mut scope_logs, field_numbers::SCOPE_LOGS_SCOPE, b"scope");
+        push_len_field(
+            &mut scope_logs,
+            field_numbers::SCOPE_LOGS_LOG_RECORDS,
+            b"log",
+        );
+        push_len_field(
+            &mut resource_logs,
+            field_numbers::RESOURCE_LOGS_RESOURCE,
+            &resource,
+        );
+        push_len_field(
+            &mut resource_logs,
+            field_numbers::RESOURCE_LOGS_SCOPE_LOGS,
+            &scope_logs,
+        );
+        push_len_field(
+            &mut export,
+            field_numbers::EXPORT_LOGS_REQUEST_RESOURCE_LOGS,
+            &resource_logs,
+        );
+
+        let mut seen_resource_logs = Vec::new();
+        for_each_export_resource_logs(&export, |payload| {{
+            seen_resource_logs.push(payload.to_vec());
+            Ok(())
+        }})
+        .expect("export visitor should yield resource logs");
+        assert_eq!(seen_resource_logs, vec![resource_logs.clone()]);
+
+        let mut seen_resources = Vec::new();
+        for_each_resource_logs_resource(&resource_logs, |payload| {{
+            seen_resources.push(payload.to_vec());
+            Ok(())
+        }})
+        .expect("resource visitor should yield resource payload");
+        assert_eq!(seen_resources, vec![resource.clone()]);
+
+        let mut seen_scope_logs = Vec::new();
+        for_each_resource_logs_scope_logs(&resource_logs, |payload| {{
+            seen_scope_logs.push(payload.to_vec());
+            Ok(())
+        }})
+        .expect("scope logs visitor should yield scope logs payload");
+        assert_eq!(seen_scope_logs, vec![scope_logs.clone()]);
+
+        let mut seen_attrs = Vec::new();
+        for_each_resource_attribute(&resource, |payload| {{
+            seen_attrs.push(payload.to_vec());
+            Ok(())
+        }})
+        .expect("resource attribute visitor should yield attribute payload");
+        assert_eq!(seen_attrs, vec![b"attr".to_vec()]);
+
+        let mut seen_scopes = Vec::new();
+        for_each_scope_logs_scope(&scope_logs, |payload| {{
+            seen_scopes.push(payload.to_vec());
+            Ok(())
+        }})
+        .expect("scope visitor should yield scope payload");
+        assert_eq!(seen_scopes, vec![b"scope".to_vec()]);
+
+        let mut seen_logs = Vec::new();
+        for_each_scope_logs_log_record(&scope_logs, |payload| {{
+            seen_logs.push(payload.to_vec());
+            Ok(())
+        }})
+        .expect("log visitor should yield log payload");
+        assert_eq!(seen_logs, vec![b"log".to_vec()]);
+    }}
+
+    #[test]
+    fn generated_len_visitors_reject_wrong_wire() {{
+        let payload = sample_field_for_wire(
+            field_numbers::RESOURCE_LOGS_SCOPE_LOGS,
+            WireKind::Varint,
+        );
+        let err = for_each_resource_logs_scope_logs(&payload, |_| Ok(()))
+            .expect_err("wrong wire should be invalid");
+        assert!(matches!(err, ProjectionError::Invalid(_)));
     }}
 
     #[test]
