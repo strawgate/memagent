@@ -1,4 +1,3 @@
-#![allow(clippy::undocumented_unsafe_blocks)]
 use std::borrow::Cow;
 use std::future::Future;
 use std::io::{self, IsTerminal, Write};
@@ -344,10 +343,13 @@ impl StdoutSink {
 fn safe_col_to_string(col: &dyn Array, row: usize) -> Cow<'_, str> {
     // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
     match col.data_type() {
-        DataType::Utf8 => Cow::Borrowed( unsafe { col.as_string::<i32>().value_unchecked(row) }),
-        DataType::Utf8View => Cow::Borrowed( unsafe { col.as_string_view().value_unchecked(row) }),
+        // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+        DataType::Utf8 => Cow::Borrowed(unsafe { col.as_string::<i32>().value_unchecked(row) }),
+        // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+        DataType::Utf8View => Cow::Borrowed(unsafe { col.as_string_view().value_unchecked(row) }),
         DataType::LargeUtf8 => {
-            Cow::Borrowed( unsafe { col.as_string::<i64>().value_unchecked(row) })
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            Cow::Borrowed(unsafe { col.as_string::<i64>().value_unchecked(row) })
         }
         DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, _) => {
             let Some(arr) = col
@@ -356,7 +358,8 @@ fn safe_col_to_string(col: &dyn Array, row: usize) -> Cow<'_, str> {
             else {
                 return Cow::Owned(safe_array_value_to_string(col, row));
             };
-            let ns =  unsafe { arr.value_unchecked(row) };
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            let ns = unsafe { arr.value_unchecked(row) };
             let secs = ns.div_euclid(1_000_000_000);
             let nanos = ns.rem_euclid(1_000_000_000) as u32;
             Cow::Owned(logfwd_arrow::star_schema::chrono_timestamp(secs, nanos))
@@ -368,7 +371,8 @@ fn safe_col_to_string(col: &dyn Array, row: usize) -> Cow<'_, str> {
             else {
                 return Cow::Owned(safe_array_value_to_string(col, row));
             };
-            let us =  unsafe { arr.value_unchecked(row) };
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            let us = unsafe { arr.value_unchecked(row) };
             let secs = us.div_euclid(1_000_000);
             let nanos = (us.rem_euclid(1_000_000) * 1_000) as u32;
             Cow::Owned(logfwd_arrow::star_schema::chrono_timestamp(secs, nanos))
@@ -380,7 +384,8 @@ fn safe_col_to_string(col: &dyn Array, row: usize) -> Cow<'_, str> {
             else {
                 return Cow::Owned(safe_array_value_to_string(col, row));
             };
-            let ms =  unsafe { arr.value_unchecked(row) };
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            let ms = unsafe { arr.value_unchecked(row) };
             let secs = ms.div_euclid(1_000);
             let nanos = (ms.rem_euclid(1_000) * 1_000_000) as u32;
             Cow::Owned(logfwd_arrow::star_schema::chrono_timestamp(secs, nanos))
@@ -392,7 +397,8 @@ fn safe_col_to_string(col: &dyn Array, row: usize) -> Cow<'_, str> {
             else {
                 return Cow::Owned(safe_array_value_to_string(col, row));
             };
-            let secs =  unsafe { arr.value_unchecked(row) };
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            let secs = unsafe { arr.value_unchecked(row) };
             Cow::Owned(logfwd_arrow::star_schema::chrono_timestamp(secs, 0))
         }
         _ => Cow::Owned(safe_array_value_to_string(col, row)),

@@ -1,4 +1,3 @@
-#![allow(clippy::undocumented_unsafe_blocks)]
 // xtask-verify: allow(pub_module_needs_tests) reason: integration coverage lives in otlp_sink/arrow sink tests; dedicated unit tests tracked separately
 use std::io::{self, Write};
 
@@ -370,39 +369,48 @@ pub(crate) fn write_typed_json_value(
         }
         // SAFETY for all typed arrays: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
         TypedArrayRef::Int8(a) => {
-            let v =  unsafe { a.value_unchecked(row) };
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            let v = unsafe { a.value_unchecked(row) };
             out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::Int16(a) => {
-            let v =  unsafe { a.value_unchecked(row) };
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            let v = unsafe { a.value_unchecked(row) };
             out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::Int32(a) => {
-            let v =  unsafe { a.value_unchecked(row) };
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            let v = unsafe { a.value_unchecked(row) };
             out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::Int64(a) => {
-            let v =  unsafe { a.value_unchecked(row) };
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            let v = unsafe { a.value_unchecked(row) };
             out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::UInt8(a) => {
-            let v =  unsafe { a.value_unchecked(row) };
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            let v = unsafe { a.value_unchecked(row) };
             out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::UInt16(a) => {
-            let v =  unsafe { a.value_unchecked(row) };
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            let v = unsafe { a.value_unchecked(row) };
             out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::UInt32(a) => {
-            let v =  unsafe { a.value_unchecked(row) };
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            let v = unsafe { a.value_unchecked(row) };
             out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::UInt64(a) => {
-            let v =  unsafe { a.value_unchecked(row) };
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            let v = unsafe { a.value_unchecked(row) };
             out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::Float32(a) => {
-            let v =  unsafe { a.value_unchecked(row) };
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            let v = unsafe { a.value_unchecked(row) };
             if v.is_finite() {
                 out.extend_from_slice(ryu::Buffer::new().format_finite(v).as_bytes());
             } else {
@@ -410,7 +418,8 @@ pub(crate) fn write_typed_json_value(
             }
         }
         TypedArrayRef::Float64(a) => {
-            let v =  unsafe { a.value_unchecked(row) };
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            let v = unsafe { a.value_unchecked(row) };
             if v.is_finite() {
                 out.extend_from_slice(ryu::Buffer::new().format_finite(v).as_bytes());
             } else {
@@ -418,17 +427,21 @@ pub(crate) fn write_typed_json_value(
             }
         }
         TypedArrayRef::Boolean(a) => {
-            let v =  unsafe { a.value_unchecked(row) };
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            let v = unsafe { a.value_unchecked(row) };
             out.extend_from_slice(if v { b"true" } else { b"false" });
         }
         TypedArrayRef::Utf8(a) => {
-            write_json_string(out,  unsafe { a.value_unchecked(row) })?;
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            write_json_string(out, unsafe { a.value_unchecked(row) })?;
         }
         TypedArrayRef::LargeUtf8(a) => {
-            write_json_string(out,  unsafe { a.value_unchecked(row) })?;
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            write_json_string(out, unsafe { a.value_unchecked(row) })?;
         }
         TypedArrayRef::Utf8View(a) => {
-            write_json_string(out,  unsafe { a.value_unchecked(row) })?;
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            write_json_string(out, unsafe { a.value_unchecked(row) })?;
         }
         TypedArrayRef::Struct(a) => {
             out.push(b'{');
@@ -451,13 +464,16 @@ pub(crate) fn write_typed_json_value(
             out.push(b'}');
         }
         TypedArrayRef::Binary(a) => {
-            write_json_hex_bytes(out,  unsafe { a.value_unchecked(row) });
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            write_json_hex_bytes(out, unsafe { a.value_unchecked(row) });
         }
         TypedArrayRef::LargeBinary(a) => {
-            write_json_hex_bytes(out,  unsafe { a.value_unchecked(row) });
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            write_json_hex_bytes(out, unsafe { a.value_unchecked(row) });
         }
         TypedArrayRef::FixedSizeBinary(a) => {
-            write_json_hex_bytes(out,  unsafe { a.value_unchecked(row) });
+            // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
+            write_json_hex_bytes(out, unsafe { a.value_unchecked(row) });
         }
         TypedArrayRef::Other(arr) => {
             // Fallback: use the dyn Array path (includes is_null check).
