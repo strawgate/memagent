@@ -193,7 +193,7 @@ mod tests {
     #[test]
     fn event_struct_size() {
         // Verify the event struct is a reasonable size for ring buffer events.
-        let size = std::mem::size_of::<PipeWriteEvent>();
+        let size = size_of::<PipeWriteEvent>();
         // Header (pid, tgid, cgroup_id, write_len, captured_len, stream, pad)
         // + 4096 bytes data + alignment padding.
         assert!(
