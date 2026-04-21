@@ -1,0 +1,98 @@
+{
+  "created_at": "2026-04-21T06:16:40.250116+00:00",
+  "cwd": "/Users/billeaston/Documents/repos/fastforward/.claude/worktrees/flickering-kindling-axolotl",
+  "prompt_dir": "/Users/billeaston/Documents/repos/fastforward/.claude/worktrees/flickering-kindling-axolotl/dev-docs/research/fanout-2026-04-21",
+  "pattern": "*.prompt.md",
+  "branch": "refactor/split-large-files",
+  "env_id": "69df2fbdf2f08191994e04fe688302c8",
+  "env_label": "strawgate/o11ykit",
+  "attempts_requested": 2,
+  "prompt_attempt_overrides": {
+    "/Users/billeaston/Documents/repos/fastforward/.claude/worktrees/flickering-kindling-axolotl/ws02-pipeline-topology-compiler.prompt.md": 3,
+    "/Users/billeaston/Documents/repos/fastforward/.claude/worktrees/flickering-kindling-axolotl/ws05-macos-oslog-feasibility.prompt.md": 1,
+    "/Users/billeaston/Documents/repos/fastforward/.claude/worktrees/flickering-kindling-axolotl/ws06-windows-eventlog-feasibility.prompt.md": 1,
+    "/Users/billeaston/Documents/repos/fastforward/.claude/worktrees/flickering-kindling-axolotl/ws08-otlp-json-path.prompt.md": 1
+  },
+  "tasks": [
+    {
+      "name": "Research: Row Predicate Pushdown Design (Issue #1257)",
+      "prompt_file": "/Users/billeaston/Documents/repos/fastforward/.claude/worktrees/flickering-kindling-axolotl/dev-docs/research/fanout-2026-04-21/ws01-row-predicate-pushdown.prompt.md",
+      "attempts": 2,
+      "task_id": "task_e_69e7164a5444832e9a4bd92de150cd57",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69e7164a5444832e9a4bd92de150cd57",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69e7164a5444832e9a4bd92de150cd57\n",
+      "stderr": ""
+    },
+    {
+      "name": "Research: Pipeline Topology Compiler Design (Issue #1363)",
+      "prompt_file": "/Users/billeaston/Documents/repos/fastforward/.claude/worktrees/flickering-kindling-axolotl/dev-docs/research/fanout-2026-04-21/ws02-pipeline-topology-compiler.prompt.md",
+      "attempts": 2,
+      "task_id": "task_e_69e7164ce498832e8d68cbf8dcbdd5fb",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69e7164ce498832e8d68cbf8dcbdd5fb",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69e7164ce498832e8d68cbf8dcbdd5fb\n",
+      "stderr": ""
+    },
+    {
+      "name": "Research: InputConfig V2 Tagged Enum Migration (Issue #1101)",
+      "prompt_file": "/Users/billeaston/Documents/repos/fastforward/.claude/worktrees/flickering-kindling-axolotl/dev-docs/research/fanout-2026-04-21/ws03-inputconfig-v2-migration.prompt.md",
+      "attempts": 2,
+      "task_id": "task_e_69e716502e2c832e8f0cff14ad0b8815",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69e716502e2c832e8f0cff14ad0b8815",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69e716502e2c832e8f0cff14ad0b8815\n",
+      "stderr": ""
+    },
+    {
+      "name": "Research: Kafka Source Contract (Issue #1475)",
+      "prompt_file": "/Users/billeaston/Documents/repos/fastforward/.claude/worktrees/flickering-kindling-axolotl/dev-docs/research/fanout-2026-04-21/ws04-kafka-source-contract.prompt.md",
+      "attempts": 2,
+      "task_id": "task_e_69e71653cc40832e8c5358ee7510eb34",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69e71653cc40832e8c5358ee7510eb34",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69e71653cc40832e8c5358ee7510eb34\n",
+      "stderr": ""
+    },
+    {
+      "name": "Research: macOS OSLog/Unified Logging Feasibility (Issue #1478)",
+      "prompt_file": "/Users/billeaston/Documents/repos/fastforward/.claude/worktrees/flickering-kindling-axolotl/dev-docs/research/fanout-2026-04-21/ws05-macos-oslog-feasibility.prompt.md",
+      "attempts": 2,
+      "task_id": "task_e_69e716570fa8832e910c772e1dd187d5",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69e716570fa8832e910c772e1dd187d5",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69e716570fa8832e910c772e1dd187d5\n",
+      "stderr": ""
+    },
+    {
+      "name": "Research: Windows Event Log Feasibility (Issue #1476)",
+      "prompt_file": "/Users/billeaston/Documents/repos/fastforward/.claude/worktrees/flickering-kindling-axolotl/dev-docs/research/fanout-2026-04-21/ws06-windows-eventlog-feasibility.prompt.md",
+      "attempts": 2,
+      "task_id": "task_e_69e71659ccdc832e80314a30f2fdbd4f",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69e71659ccdc832e80314a30f2fdbd4f",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69e71659ccdc832e80314a30f2fdbd4f\n",
+      "stderr": ""
+    },
+    {
+      "name": "Research: Output Encode/Compress Worker Separation (Issue #1408)",
+      "prompt_file": "/Users/billeaston/Documents/repos/fastforward/.claude/worktrees/flickering-kindling-axolotl/dev-docs/research/fanout-2026-04-21/ws07-output-encode-workers.prompt.md",
+      "attempts": 2,
+      "task_id": "task_e_69e7165d0edc832e9f4fe5d12aa2f5e0",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69e7165d0edc832e9f4fe5d12aa2f5e0",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69e7165d0edc832e9f4fe5d12aa2f5e0\n",
+      "stderr": ""
+    },
+    {
+      "name": "Research: OTLP JSON Path Optimization (Issue #823)",
+      "prompt_file": "/Users/billeaston/Documents/repos/fastforward/.claude/worktrees/flickering-kindling-axolotl/dev-docs/research/fanout-2026-04-21/ws08-otlp-json-path.prompt.md",
+      "attempts": 2,
+      "task_id": "task_e_69e716603de0832e9b7b707ebb3b1b59",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69e716603de0832e9b7b707ebb3b1b59",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69e716603de0832e9b7b707ebb3b1b59\n",
+      "stderr": ""
+    }
+  ]
+}
