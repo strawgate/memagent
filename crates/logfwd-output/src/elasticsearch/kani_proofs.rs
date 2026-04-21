@@ -1,7 +1,7 @@
 //! Kani formal verification proofs for the Elasticsearch timestamp utilities.
 #![cfg(kani)]
 
-use super::*;
+use super::timestamp::*;
 
 /// Prove is_leap_year satisfies all four cases of the Gregorian calendar rule
 /// exhaustively for every possible u32 year value.
