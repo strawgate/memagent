@@ -1,0 +1,346 @@
+- generic [active] [ref=e1]:
+  - link "Skip to content" [ref=e2] [cursor=pointer]:
+    - /url: "#_top"
+  - generic [ref=e3]:
+    - banner [ref=e4]:
+      - generic [ref=e5]:
+        - link "FastForward" [ref=e7] [cursor=pointer]:
+          - /url: /fastforward/
+          - generic [ref=e8]: FastForward
+        - button "Search" [ref=e11] [cursor=pointer]:
+          - img [ref=e12]
+          - generic [ref=e14]: Search
+          - generic [ref=e15]:
+            - generic [ref=e16]: Ctrl
+            - generic [ref=e17]: K
+        - generic [ref=e18]:
+          - link "GitHub" [ref=e20] [cursor=pointer]:
+            - /url: https://github.com/strawgate/fastforward
+            - generic [ref=e21]: GitHub
+            - img [ref=e22]
+          - generic [ref=e25]:
+            - generic [ref=e26]: Select theme
+            - img
+            - combobox "Select theme" [ref=e27] [cursor=pointer]:
+              - option "Dark"
+              - option "Light"
+              - option "Auto" [selected]
+            - img
+    - navigation "Main":
+      - list [ref=e31]:
+        - listitem [ref=e32]:
+          - link "Quick Start" [ref=e33] [cursor=pointer]:
+            - /url: /fastforward/quick-start/
+        - listitem [ref=e34]:
+          - group [ref=e35]:
+            - generic "Learn" [ref=e36] [cursor=pointer]:
+              - generic [ref=e37]: Learn
+              - img [ref=e38]
+            - list [ref=e40]:
+              - listitem [ref=e41]:
+                - link "Overview" [ref=e42] [cursor=pointer]:
+                  - /url: /fastforward/learn/
+              - listitem [ref=e43]:
+                - link "Inputs" [ref=e44] [cursor=pointer]:
+                  - /url: /fastforward/learn/inputs/
+              - listitem [ref=e45]:
+                - link "Tailing" [ref=e46] [cursor=pointer]:
+                  - /url: /fastforward/learn/tailing/
+              - listitem [ref=e47]:
+                - link "Scanner Deep Dive" [ref=e48] [cursor=pointer]:
+                  - /url: /fastforward/learn/scanner/
+              - listitem [ref=e49]:
+                - link "Columnar" [ref=e50] [cursor=pointer]:
+                  - /url: /fastforward/learn/columnar/
+              - listitem [ref=e51]:
+                - link "Backpressure in Action" [ref=e52] [cursor=pointer]:
+                  - /url: /fastforward/learn/backpressure/
+              - listitem [ref=e53]:
+                - link "Checkpoint Ordering" [ref=e54] [cursor=pointer]:
+                  - /url: /fastforward/learn/checkpoints/
+              - listitem [ref=e55]:
+                - link "Performance" [ref=e56] [cursor=pointer]:
+                  - /url: /fastforward/learn/performance/
+        - listitem [ref=e57]:
+          - group [ref=e58]:
+            - generic "Configuration" [ref=e59] [cursor=pointer]:
+              - generic [ref=e60]: Configuration
+              - img [ref=e61]
+            - list [ref=e63]:
+              - listitem [ref=e64]:
+                - link "Config Builder" [ref=e65] [cursor=pointer]:
+                  - /url: /fastforward/configuration/config-builder/
+              - listitem [ref=e66]:
+                - link "SQL Transforms" [ref=e67] [cursor=pointer]:
+                  - /url: /fastforward/configuration/sql-transforms/
+              - listitem [ref=e68]:
+                - link "Input Types" [ref=e69] [cursor=pointer]:
+                  - /url: /fastforward/configuration/inputs/
+              - listitem [ref=e70]:
+                - link "Output Types" [ref=e71] [cursor=pointer]:
+                  - /url: /fastforward/configuration/outputs/
+              - listitem [ref=e72]:
+                - link "YAML Reference" [ref=e73] [cursor=pointer]:
+                  - /url: /fastforward/configuration/reference/
+        - listitem [ref=e74]:
+          - group [ref=e75]:
+            - generic "Deployment" [ref=e76] [cursor=pointer]:
+              - generic [ref=e77]: Deployment
+              - img [ref=e78]
+            - list [ref=e80]:
+              - listitem [ref=e81]:
+                - link "Kubernetes DaemonSet" [ref=e82] [cursor=pointer]:
+                  - /url: /fastforward/deployment/kubernetes/
+              - listitem [ref=e83]:
+                - link "Docker" [ref=e84] [cursor=pointer]:
+                  - /url: /fastforward/deployment/docker/
+              - listitem [ref=e85]:
+                - link "Monitoring & Diagnostics" [ref=e86] [cursor=pointer]:
+                  - /url: /fastforward/deployment/monitoring/
+        - listitem [ref=e87]:
+          - link "Troubleshooting" [ref=e88] [cursor=pointer]:
+            - /url: /fastforward/troubleshooting/
+        - listitem [ref=e89]:
+          - group [ref=e90]:
+            - generic "Development" [ref=e91] [cursor=pointer]:
+              - generic [ref=e92]: Development
+              - img [ref=e93]
+            - list [ref=e95]:
+              - listitem [ref=e96]:
+                - link "Contributing" [ref=e97] [cursor=pointer]:
+                  - /url: /fastforward/development/contributing/
+              - listitem [ref=e98]:
+                - link "Benchmarking" [ref=e99] [cursor=pointer]:
+                  - /url: /fastforward/development/benchmarking/
+    - generic [ref=e101]:
+      - complementary [ref=e102]:
+        - navigation "On this page" [ref=e107]:
+          - heading "On this page" [level=2] [ref=e108]
+          - list [ref=e109]:
+            - listitem [ref=e110]:
+              - link "Overview" [ref=e111] [cursor=pointer]:
+                - /url: "#_top"
+            - listitem [ref=e112]:
+              - link "What’s the alternative?" [ref=e113] [cursor=pointer]:
+                - /url: "#whats-the-alternative"
+            - listitem [ref=e114]:
+              - link "Backpressure and data loss" [ref=e115] [cursor=pointer]:
+                - /url: "#backpressure-and-data-loss"
+            - listitem [ref=e116]:
+              - link "How the cascade works" [ref=e117] [cursor=pointer]:
+                - /url: "#how-the-cascade-works"
+      - main [ref=e119]:
+        - heading "Backpressure in Action" [level=1] [ref=e122]
+        - generic [ref=e124]:
+          - generic [ref=e125]:
+            - paragraph [ref=e126]: Think of a log pipeline like a highway. When traffic flows freely, data cruises from the source through to the destination. But when the exit slows — a network blip, a struggling endpoint — data starts queuing on the road itself. Eventually the backup reaches the on-ramp and new data can’t even enter.
+            - paragraph [ref=e127]:
+              - text: That’s backpressure. And it’s
+              - strong [ref=e128]: exactly what you want
+              - text: .
+            - paragraph [ref=e129]: "Drag the slider to control how long the light stays green and watch traffic back up:"
+            - generic [ref=e130]:
+              - generic [ref=e131]:
+                - img [ref=e132]:
+                  - generic [ref=e145]: STOP
+                  - generic [ref=e153]: LOG SOURCE
+                  - generic [ref=e154]: LOG SOURCE
+                  - generic [ref=e155]: DESTINATION
+                  - generic [ref=e156]: MERGE
+                  - generic [ref=e157]: EXIT
+                  - generic [ref=e158]: FLOWING — TRAFFIC MOVING FREELY
+                  - generic [ref=e189]:
+                    - generic [ref=e190]:
+                      - generic [ref=e191]: 0/min
+                      - generic [ref=e192]: Throughput
+                    - generic [ref=e193]:
+                      - generic [ref=e194]: "8"
+                      - generic [ref=e195]: On Road
+                    - generic [ref=e196]:
+                      - generic [ref=e197]: 0%
+                      - generic [ref=e198]: Stalled
+                - generic [ref=e199]:
+                  - generic [ref=e200]: Auto · Green 80%
+                  - slider "Auto · Green 80%" [ref=e201] [cursor=pointer]: "80"
+              - status [ref=e202]: Flowing — traffic moving freely
+            - generic [ref=e203]:
+              - heading "What’s the alternative?" [level=2] [ref=e204]
+              - link "Section titled “What’s the alternative?”" [ref=e205] [cursor=pointer]:
+                - /url: "#whats-the-alternative"
+                - img [ref=e207]
+                - generic [ref=e209]: Section titled “What’s the alternative?”
+            - paragraph [ref=e210]:
+              - text: Without backpressure, there’s nothing to stop data from piling up. An unbounded queue just keeps growing — and growing — until the process runs out of memory and crashes.
+              - strong [ref=e211]: All queued data is lost.
+            - generic [ref=e212]:
+              - img [ref=e214]:
+                - generic [ref=e215]: LOGS IN
+                - generic [ref=e217]: UNBOUNDED QUEUE
+                - generic [ref=e219]: 16 MB
+                - generic [ref=e220]: SLOW OUTPUT
+                - generic [ref=e222]: DESTINATION
+                - generic [ref=e223]:
+                  - generic [ref=e224]: 💥
+                  - generic [ref=e225]: OOM KILLED — ALL DATA LOST
+              - generic [ref=e226]:
+                - button "⏸ Pause" [ref=e227] [cursor=pointer]
+                - generic [ref=e228]: Logs arriving faster than output can drain…
+            - paragraph [ref=e229]: Bounded channels trade a little throughput for a lot of safety. Instead of an OOM crash, you get a controlled slowdown — and data that can be retried survives intact.
+            - generic [ref=e230]:
+              - heading "Backpressure and data loss" [level=2] [ref=e231]
+              - link "Section titled “Backpressure and data loss”" [ref=e232] [cursor=pointer]:
+                - /url: "#backpressure-and-data-loss"
+                - img [ref=e234]
+                - generic [ref=e236]: Section titled “Backpressure and data loss”
+            - paragraph [ref=e237]: When traffic backs up all the way to the on-ramp, new cars can’t enter the highway. In a log pipeline, this is the moment backpressure reaches the source — and what happens next depends entirely on the source type.
+            - paragraph [ref=e238]:
+              - text: Pick your input type and watch what it
+              - emphasis [ref=e239]: feels
+              - text: "as pressure builds:"
+            - generic [ref=e240]:
+              - generic [ref=e241]:
+                - generic [ref=e242]: Output Speed
+                - generic [ref=e243]:
+                  - slider "Output Speed" [ref=e244] [cursor=pointer]: "100"
+                  - generic [ref=e245]: 100%
+                - generic [ref=e246]:
+                  - button "Fast" [pressed] [ref=e247] [cursor=pointer]
+                  - button "Slow" [ref=e248] [cursor=pointer]
+                  - button "Outage" [ref=e249] [cursor=pointer]
+              - generic [ref=e250]:
+                - generic [ref=e251]:
+                  - generic [ref=e252]:
+                    - generic [ref=e253]: File Input
+                    - generic [ref=e254]: OK
+                  - generic [ref=e255]:
+                    - button "File" [pressed] [ref=e256] [cursor=pointer]
+                    - button "UDP" [ref=e257] [cursor=pointer]
+                    - button "OTLP" [ref=e258] [cursor=pointer]
+                  - generic [ref=e263]: ▶ 08:23:40 INFO checkpoint flushed
+                - generic [ref=e267]: ▶
+                - generic [ref=e269]:
+                  - generic [ref=e270]:
+                    - generic [ref=e271]: CPU Worker
+                    - generic [ref=e272]: OK
+                  - generic [ref=e273]: scan → SQL transform
+                  - generic [ref=e291]: 0/16 slots
+                - generic [ref=e294]: ▶
+                - generic [ref=e296]:
+                  - generic [ref=e297]:
+                    - generic [ref=e298]: Output Pool
+                    - generic [ref=e299]: OK
+                  - generic [ref=e300]: 3 workers × MRU dispatch
+                  - generic [ref=e305]: 0/3 busy
+              - generic [ref=e308]:
+                - generic [ref=e309]:
+                  - generic [ref=e310]: Throughput
+                  - generic [ref=e311]: 9.6 batch/s
+                - generic [ref=e312]:
+                  - generic [ref=e313]: Latency
+                  - generic [ref=e314]: <50ms
+                - generic [ref=e315]:
+                  - generic [ref=e316]: Produced
+                  - generic [ref=e317]: "0"
+                - generic [ref=e318]:
+                  - generic [ref=e319]: Delivered
+                  - generic [ref=e320]: "0"
+                - generic [ref=e321]:
+                  - generic [ref=e322]: Source
+                  - generic [ref=e323]: caught up
+                - generic [ref=e324]:
+                  - generic [ref=e325]: CPU
+                  - generic [ref=e326]: scanning
+              - generic [ref=e328]: t=0000 Pipeline started — drag the slider or click a preset
+            - table [ref=e329]:
+              - rowgroup [ref=e330]:
+                - row "Input Under pressure Data lost?" [ref=e331]:
+                  - columnheader "Input" [ref=e332]
+                  - columnheader "Under pressure" [ref=e333]
+                  - columnheader "Data lost?" [ref=e334]
+              - rowgroup [ref=e335]:
+                - row "File Reader pauses — logs stay safe on disk No. Catches up from checkpoint on recovery" [ref=e336]:
+                  - cell "File" [ref=e337]:
+                    - strong [ref=e338]: File
+                  - cell "Reader pauses — logs stay safe on disk" [ref=e339]
+                  - cell "No. Catches up from checkpoint on recovery" [ref=e340]:
+                    - strong [ref=e341]: No.
+                    - text: Catches up from checkpoint on recovery
+                - row "UDP / Syslog OS socket buffer fills and overflows Yes. Dropped packets are gone forever" [ref=e342]:
+                  - cell "UDP / Syslog" [ref=e343]:
+                    - strong [ref=e344]: UDP / Syslog
+                  - cell "OS socket buffer fills and overflows" [ref=e345]
+                  - cell "Yes. Dropped packets are gone forever" [ref=e346]:
+                    - strong [ref=e347]: Yes.
+                    - text: Dropped packets are gone forever
+                - row "OTLP Returns 429 to senders, who back off No. Senders retry with exponential backoff" [ref=e348]:
+                  - cell "OTLP" [ref=e349]:
+                    - strong [ref=e350]: OTLP
+                  - cell "Returns 429 to senders, who back off" [ref=e351]
+                  - cell "No. Senders retry with exponential backoff" [ref=e352]:
+                    - strong [ref=e353]: No.
+                    - text: Senders retry with exponential backoff
+            - paragraph [ref=e354]: File inputs are the safest — the filesystem is a durable, practically infinite buffer. UDP is inherently lossy under pressure because there’s no flow control. OTLP pushes the problem back to the sender, keeping both sides honest.
+            - paragraph [ref=e355]:
+              - text: "The key insight:"
+              - strong [ref=e356]: bounded channels turn an OOM crash into a recoverable slowdown.
+              - text: Data that can be retried (files, OTLP) survives intact. Data that can’t (UDP) drops cleanly instead of taking the whole pipeline down with it.
+            - generic [ref=e357]:
+              - heading "How the cascade works" [level=2] [ref=e358]
+              - link "Section titled “How the cascade works”" [ref=e359] [cursor=pointer]:
+                - /url: "#how-the-cascade-works"
+                - img [ref=e361]
+                - generic [ref=e363]: Section titled “How the cascade works”
+            - paragraph [ref=e364]:
+              - text: Every input gets
+              - strong [ref=e365]: two dedicated OS threads
+              - text: "connected by a bounded channel:"
+            - figure [ref=e367]:
+              - code [ref=e369]:
+                - generic [ref=e371]: ┌──────────┐ bounded(4) ┌──────────┐ pipeline(16) ┌─────────────┐
+                - generic [ref=e373]: │ I/O │─────────────▶│ CPU │───────────────▶│ Output Pool │
+                - generic [ref=e375]: │ Worker │ │ Worker │ │ (MRU dispatch)│
+                - generic [ref=e377]: │ poll() │ │ scan() │ │ try_send() │
+                - generic [ref=e379]: │ accum() │ │ sql() │ │ per worker(1)│
+                - generic [ref=e381]: └──────────┘ └──────────┘ └─────────────┘
+                - generic [ref=e383]: OS thread OS thread async tasks
+              - button "Copy to clipboard" [ref=e386] [cursor=pointer]
+            - paragraph [ref=e388]: "Each arrow is a bounded channel with a fixed capacity. When the downstream channel fills:"
+            - list [ref=e389]:
+              - listitem [ref=e390]:
+                - strong [ref=e391]: Output pool full
+                - text: → workers retry with exponential backoff, their per-worker channels fill
+              - listitem [ref=e392]:
+                - strong [ref=e393]: Pipeline channel full (16)
+                - text: → CPU worker blocks on
+                - code [ref=e394]: blocking_send
+              - listitem [ref=e395]:
+                - strong [ref=e396]: I/O–CPU channel full (4)
+                - text: → I/O worker blocks,
+                - code [ref=e397]: poll()
+                - text: stops being called
+              - listitem [ref=e398]:
+                - strong [ref=e399]: Source feels the pressure
+                - text: → the input-specific behavior from the table above kicks in
+            - paragraph [ref=e400]: When the bottleneck clears, everything drains in order — file readers catch up from checkpointed offsets, and OTLP senders retry their held batches.
+          - generic [ref=e401]:
+            - generic [ref=e402]:
+              - link "Edit page" [ref=e403] [cursor=pointer]:
+                - /url: https://github.com/strawgate/fastforward/edit/main/book/src/content/docs/learn/backpressure.mdx
+                - img [ref=e404]
+                - text: Edit page
+              - paragraph [ref=e406]:
+                - text: "Last updated:"
+                - time [ref=e407]: Apr 19, 2026
+            - generic [ref=e408]:
+              - link "Previous Columnar" [ref=e409] [cursor=pointer]:
+                - /url: /fastforward/learn/columnar/
+                - img [ref=e410]
+                - generic [ref=e412]:
+                  - text: Previous
+                  - text: Columnar
+              - link "Next Checkpoint Ordering" [ref=e413] [cursor=pointer]:
+                - /url: /fastforward/learn/checkpoints/
+                - img [ref=e414]
+                - generic [ref=e416]:
+                  - text: Next
+                  - text: Checkpoint Ordering
