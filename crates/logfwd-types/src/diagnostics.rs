@@ -42,8 +42,10 @@ pub struct ComponentStats {
     /// UDP: actual kernel receive buffer size.
     pub udp_recv_buf: AtomicUsize,
     /// Total duration spent sending data in nanoseconds (for HTTP/RPC sinks).
+    #[cfg(not(kani))]
     pub send_ns_total: AtomicU64,
     /// Number of send operations executed (for HTTP/RPC sinks).
+    #[cfg(not(kani))]
     pub send_count: AtomicU64,
     // OTel counters (for OTLP push)
     otel_lines: Counter<u64>,
@@ -80,7 +82,9 @@ impl ComponentStats {
             tcp_active: AtomicUsize::new(0),
             udp_drops: AtomicU64::new(0),
             udp_recv_buf: AtomicUsize::new(0),
+            #[cfg(not(kani))]
             send_ns_total: AtomicU64::new(0),
+            #[cfg(not(kani))]
             send_count: AtomicU64::new(0),
             otel_lines: meter.u64_counter(format!("{prefix}_lines")).build(),
             otel_bytes: meter.u64_counter(format!("{prefix}_bytes")).build(),
@@ -167,10 +171,14 @@ impl ComponentStats {
     }
 
     /// Record a send operation and its duration in nanoseconds.
+    #[cfg(not(kani))]
     pub fn inc_send(&self, ns: u64) {
         self.send_ns_total.fetch_add(ns, Ordering::Relaxed);
         self.send_count.fetch_add(1, Ordering::Relaxed);
     }
+
+    #[cfg(kani)]
+    pub fn inc_send(&self, _ns: u64) {}
 
     /// Current line count (relaxed load).
     pub fn lines(&self) -> u64 {
@@ -213,13 +221,25 @@ impl ComponentStats {
     }
 
     /// Current send duration total in nanoseconds.
+    #[cfg(not(kani))]
     pub fn send_ns_total(&self) -> u64 {
         self.send_ns_total.load(Ordering::Relaxed)
     }
 
+    #[cfg(kani)]
+    pub fn send_ns_total(&self) -> u64 {
+        0
+    }
+
     /// Current send operation count.
+    #[cfg(not(kani))]
     pub fn send_count(&self) -> u64 {
         self.send_count.load(Ordering::Relaxed)
+    }
+
+    #[cfg(kani)]
+    pub fn send_count(&self) -> u64 {
+        0
     }
 
     /// Update the component's coarse health snapshot.
