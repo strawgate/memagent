@@ -123,12 +123,14 @@ function tAtLength(route, s) {
   return lerp(a.t, b.t, frac);
 }
 
-export const PATHS = {
-  ramp: 'M 30,280 C 30,258 180,100 220,100',
-  highway: 'M 30,100 L 560,100',
-  exit: 'M 560,100 C 600,100 730,200 730,280',
-  cont: 'M 560,100 L 775,100',
-};
+// Derive SVG path strings from ROUTE_DEFS so they never drift
+function buildPath(def) {
+  if (def.type === 'line') return 'M ' + def.p0.x + ',' + def.p0.y + ' L ' + def.p1.x + ',' + def.p1.y;
+  return 'M ' + def.p0.x + ',' + def.p0.y + ' C ' + def.p1.x + ',' + def.p1.y + ' ' + def.p2.x + ',' + def.p2.y + ' ' + def.p3.x + ',' + def.p3.y;
+}
+
+export const PATHS = {};
+for (const key in ROUTE_DEFS) PATHS[key] = buildPath(ROUTE_DEFS[key]);
 
 export const LENGTHS = {
   ramp: LUTS.ramp.length,
