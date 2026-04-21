@@ -448,16 +448,14 @@ output:
   compression: zstd
 ```
 
-### `http` output *(not yet supported)*
+### `http` output
 
-Reserved for newline-delimited JSON over HTTP POST. Config parsing recognizes
-the type, but config validation currently rejects it until runtime support
-lands.
+Send newline-delimited JSON over HTTP POST.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Full URL, e.g. `http://ingest.example.com/logs`. |
-| `compression` | enum | No | Reserved for future use. Recognized values are `zstd`, `gzip`, and `none`; the HTTP output itself is still not yet supported. |
+| `compression` | enum | No | Compression method: `zstd`, `gzip`, or `none`. |
 
 ```yaml
 output:
@@ -606,7 +604,7 @@ output:
 | Value | Status | Description |
 |-------|--------|-------------|
 | `otlp` | Implemented | OTLP protobuf over HTTP or gRPC. |
-| `http` | Not yet supported | Reserved for newline-delimited JSON over HTTP POST. |
+| `http` | Implemented | Send newline-delimited JSON over HTTP POST. |
 | `stdout` | Implemented | Print to stdout (JSON, console, or text). |
 | `elasticsearch` | Implemented | Elasticsearch Bulk API with index/compression/request-mode controls. |
 | `loki` | Implemented | Grafana Loki push API with label grouping. |

@@ -28,7 +28,7 @@ docker run -d \
   -p 9090:9090 \
   --cpus 1.0 \
   --memory 256m \
-  ghcr.io/strawgate/memagent:latest \
+  ghcr.io/strawgate/fastforward:latest \
   run --config /etc/logfwd/config.yaml
 ```
 
@@ -103,7 +103,7 @@ docker run -d \
   -p 9090:9090 \
   --cpus 1.0 \
   --memory 256m \
-  ghcr.io/strawgate/memagent:latest \
+  ghcr.io/strawgate/fastforward:latest \
   run --config /etc/logfwd/config.yaml
 ```
 
@@ -133,7 +133,7 @@ docker run -d \
   -p 5140:5140/udp \
   --cpus 1.0 \
   --memory 256m \
-  ghcr.io/strawgate/memagent:latest \
+  ghcr.io/strawgate/fastforward:latest \
   run --config /etc/logfwd/config.yaml
 ```
 
@@ -169,7 +169,7 @@ over OTLP to the collector sidecar, and exposes the diagnostics API.
 # docker-compose.yml
 services:
   logfwd:
-    image: ghcr.io/strawgate/memagent:latest
+    image: ghcr.io/strawgate/fastforward:latest
     command: ["run", "--config", "/etc/logfwd/config.yaml"]
     volumes:
       - /var/log:/var/log:ro
@@ -245,7 +245,7 @@ docker run -d \
   -v ./config.last-known-good.yaml:/etc/logfwd/config.yaml:ro \
   -v logfwd-data:/var/lib/logfwd \
   -p 9090:9090 \
-  ghcr.io/strawgate/memagent:<known-good-tag> \
+  ghcr.io/strawgate/fastforward:<known-good-tag> \
   run --config /etc/logfwd/config.yaml
 ```
 

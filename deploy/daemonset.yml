@@ -29,7 +29,7 @@ spec:
         fsGroup: 65532
       containers:
         - name: ff
-          image: ghcr.io/strawgate/memagent:latest
+          image: ghcr.io/strawgate/fastforward:latest
           imagePullPolicy: IfNotPresent
           args:
             - "run"
