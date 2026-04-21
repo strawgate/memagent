@@ -156,7 +156,7 @@ SubmitAfterDrain(item) ==
     /\ item \notin rejected
     /\ rejected' = rejected \cup {item}
     /\ UNCHANGED <<poolState, workers, workerState, workerHealth,
-                   pending, inFlight, assignment, cancelled, forcedAbort>>
+                   pending, inFlight, delivered, assignment, cancelled, forcedAbort>>
 
 \* Dispatch: send the first pending item to an idle worker.
 \* Models MRU dispatch: pick any idle worker (ordering is abstracted).
