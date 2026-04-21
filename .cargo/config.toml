@@ -1,5 +1,5 @@
-# [build]
-# rustc-wrapper = "sccache"
+[build]
+rustc-wrapper = "sccache"
 
 # Deny common mistakes in all builds (not just CI).
 [target.'cfg(all())']
