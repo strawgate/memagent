@@ -1,9 +1,21 @@
 version = 1
 
 [[seams]]
-path = "crates/logfwd-arrow/src/streaming_builder.rs"
+path = "crates/logfwd-arrow/src/streaming_builder/verification.rs"
 status = "required"
 reason = "Pure StructArray conflict-column assembly invariants are already Kani-proved here."
+issue = 1314
+
+[[seams]]
+path = "crates/logfwd-arrow/src/streaming_builder/mod.rs"
+status = "recommended"
+reason = "Contains cfg(kani) type aliases supporting proofs in verification.rs; no proof harnesses here."
+issue = 1314
+
+[[seams]]
+path = "crates/logfwd-output/src/elasticsearch/mod.rs"
+status = "recommended"
+reason = "Module shell declares cfg(kani) submodule; proofs live in kani_proofs.rs."
 issue = 1314
 
 [[seams]]
@@ -120,10 +132,11 @@ reason = "S3 input is an async/network orchestration shell; source metadata snap
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-output/src/elasticsearch.rs"
+path = "crates/logfwd-output/src/elasticsearch/kani_proofs.rs"
 status = "required"
 reason = "Local response classification helpers already carry Kani proofs."
 issue = 1314
+
 
 [[seams]]
 path = "crates/logfwd-output/src/lib.rs"

@@ -1,4 +1,5 @@
 //! Kani formal verification proofs for the Elasticsearch timestamp utilities.
+#![cfg(kani)]
 
 use super::*;
 

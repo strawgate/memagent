@@ -1,4 +1,5 @@
 //! Kani formal verification proofs for the streaming builder.
+#![cfg(kani)]
 
 use super::*;
 
