@@ -1,2 +1,0 @@
-[    8782ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://localhost:8083/fastforward/wasm/logfwd-config/logfwd_config_wasm.js:0
-[    8782ms] [ERROR] TypeError: Failed to fetch dynamically imported module: http://localhost:8083/fastforward/wasm/logfwd-config/logfwd_config_wasm.js @ http://localhost:8083/fastforward/configuration/config-builder/:449

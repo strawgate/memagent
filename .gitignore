@@ -30,3 +30,4 @@ error.log
 **/cloud-artifacts/
 .codex/
 scripts/__pycache__/
+.playwright-cli/

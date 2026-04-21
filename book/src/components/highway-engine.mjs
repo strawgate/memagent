@@ -10,8 +10,8 @@ const DEFAULTS = {
   greenPct: 80,
   cycleTotal: 3000,
   autoSpeed: 6, // pct per second
-  autoMin: 5,
-  autoMax: 100,
+  autoMin: 0,
+  autoMax: 75,
   minGap: 36,
   mergeGap: 36,
   accel: 180,
@@ -56,13 +56,11 @@ export function createHighwayEngine(overrides) {
   let cycleStart = 0;
   let lastSpawnHwy = -Infinity;
   let lastSpawnRamp = -Infinity;
-  let spawnOffset = false; // first tick initializes ramp offset
   let autoMode = true;
   let autoVal = cfg.greenPct;
   let autoDir = -1;
   let greenPct = cfg.greenPct;
   let lightIsGreen = true;
-  let prevLightIsGreen = true;
   let redPassCount = 0;
   let accumulatorMs = 0;
   let deliveries = [];
@@ -154,7 +152,6 @@ export function createHighwayEngine(overrides) {
     lightIsGreen = elapsed < cfg.cycleTotal * greenPct / 100;
     // Track red-phase passthrough: reset counter on transition to red
     if (wasGreen && !lightIsGreen) redPassCount = 0;
-    prevLightIsGreen = lightIsGreen;
   }
 
   function updateCarColors() {
@@ -316,9 +313,9 @@ export function createHighwayEngine(overrides) {
 
     let status;
     if (spawnBlockedTicks >= 60) {
-      status = { level: 'blocked', msg: 'Traffic backed up to the on-ramp — no new cars can enter' };
+      status = { level: 'blocked', msg: 'Heavy Traffic Expected — backed up to the on-ramp' };
     } else if (stallPct > 20) {
-      status = { level: 'congested', msg: 'Highway congested — cars queuing behind the light' };
+      status = { level: 'congested', msg: 'Heavy Traffic Expected — cars queuing behind the light' };
     } else {
       status = { level: 'flowing', msg: 'Flowing — traffic moving freely' };
     }
@@ -377,7 +374,7 @@ export function createHighwayEngine(overrides) {
       return snapshot(lastNow != null ? lastNow : Date.now()).cars;
     },
     setGreenPct(v) {
-      greenPct = clamp(v, 5, 100);
+      greenPct = clamp(v, 0, 75);
       autoMode = false;
     },
     exitAuto() {

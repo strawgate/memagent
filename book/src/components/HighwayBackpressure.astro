@@ -95,7 +95,7 @@ import { PATHS } from './highway-graph.mjs';
     <!-- Slider control -->
     <div class="hw-light-ctrl" id="hw-light-ctrl">
       <label class="hw-light-ctrl-label" for="hw-green" id="hw-slider-detail">Light Timing</label>
-      <input type="range" id="hw-green" class="hw-light-slider" min="5" max="100" value="80" />
+      <input type="range" id="hw-green" class="hw-light-slider" min="0" max="75" value="75" />
     </div>
   </div>
 
@@ -164,6 +164,15 @@ import { PATHS } from './highway-graph.mjs';
   .hw-status {
     position: absolute; width: 1px; height: 1px; overflow: hidden;
     clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+
+  /* Pulsing congestion header */
+  @keyframes hw-pulse-anim {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+  }
+  .hw-pulse {
+    animation: hw-pulse-anim 1.6s ease-in-out infinite;
   }
 </style>
 

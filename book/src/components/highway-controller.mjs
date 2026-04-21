@@ -23,7 +23,7 @@ import { angleAt, EXIT_GATE_S, pointAt } from './highway-graph.mjs';
   const carEls = {};
 
   const engine = createHighwayEngine({
-    greenPct: 80,
+    greenPct: 75,
   });
 
   (function positionLight() {
@@ -94,6 +94,7 @@ import { angleAt, EXIT_GATE_S, pointAt } from './highway-graph.mjs';
     }
 
     g.setAttribute('data-car-id', String(car.id));
+    g.setAttribute('class', 'car');
     carsG.appendChild(g);
     carEls[car.id] = { g, body };
   }
@@ -154,15 +155,11 @@ import { angleAt, EXIT_GATE_S, pointAt } from './highway-graph.mjs';
     if (statusEl) statusEl.textContent = frame.status.msg;
     if (pipelineLabel) {
       pipelineLabel.textContent = frame.status.msg.toUpperCase();
+      const isHeavy = frame.status.level === 'blocked' || frame.status.level === 'congested';
       const fill = frame.status.level === 'blocked' ? 'var(--hw-car-stop)' : frame.status.level === 'congested' ? 'var(--hw-car-slow)' : 'var(--hw-muted)';
       pipelineLabel.setAttribute('fill', fill);
+      pipelineLabel.classList.toggle('hw-pulse', isHeavy);
     }
-  }
-
-  function seedCars() {
-    engine.addCar('highway', 120);
-    engine.addCar('highway', 260);
-    engine.addCar('highway', 410);
   }
 
   let rafId = 0;
@@ -186,8 +183,6 @@ import { angleAt, EXIT_GATE_S, pointAt } from './highway-graph.mjs';
   slider.addEventListener('mousedown', exitAuto);
   slider.addEventListener('touchstart', exitAuto);
 
-  seedCars();
-
   if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
     updateFrame(engine.tick(Date.now()));
     slider.disabled = true;
@@ -204,5 +199,16 @@ import { angleAt, EXIT_GATE_S, pointAt } from './highway-graph.mjs';
       engine.resetClock();
       rafId = requestAnimationFrame(animate);
     }
+  });
+
+  // Teardown on Astro page swap to prevent leaked rAF and listeners
+  document.addEventListener('astro:before-swap', function teardown() {
+    cancelAnimationFrame(rafId);
+    rafId = 0;
+    slider.removeEventListener('input', onSliderInput);
+    slider.removeEventListener('pointerdown', exitAuto);
+    slider.removeEventListener('mousedown', exitAuto);
+    slider.removeEventListener('touchstart', exitAuto);
+    document.removeEventListener('astro:before-swap', teardown);
   });
 })();
