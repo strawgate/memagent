@@ -88,8 +88,7 @@ impl JsonLinesSink {
 
         let cols = build_col_infos(batch);
         for row in 0..num_rows {
-            write_row_json(batch, row, &cols, &mut self.batch_buf)?;
-            self.batch_buf.push(b'\n');
+            write_row_json(batch, row, &cols, &mut self.batch_buf, true)?;
         }
         Ok(num_rows as u64)
     }

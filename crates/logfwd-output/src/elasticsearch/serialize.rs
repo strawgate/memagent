@@ -63,8 +63,7 @@ impl ElasticsearchSink {
             self.batch_buf.extend_from_slice(action_bytes);
             // Write doc JSON, replacing trailing `}` with @timestamp if needed.
             let doc_start = self.batch_buf.len();
-            write_row_json(batch, row, &cols, &mut self.batch_buf)?;
-            self.batch_buf.push(b'\n');
+            write_row_json(batch, row, &cols, &mut self.batch_buf, true)?;
 
             // Inject @timestamp unless the batch already has a timestamp column.
             if !has_timestamp_col {
@@ -146,8 +145,7 @@ impl ElasticsearchSink {
         for row in 0..num_rows {
             chunk.extend_from_slice(action_bytes);
             let doc_start = chunk.len();
-            write_row_json(&batch, row, &cols, &mut chunk)?;
-            chunk.push(b'\n');
+            write_row_json(&batch, row, &cols, &mut chunk, true)?;
 
             if !has_timestamp_col {
                 let len = chunk.len();

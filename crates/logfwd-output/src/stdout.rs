@@ -1,3 +1,4 @@
+#![allow(clippy::undocumented_unsafe_blocks)]
 use std::borrow::Cow;
 use std::future::Future;
 use std::io::{self, IsTerminal, Write};
@@ -8,8 +9,6 @@ use arrow::array::{Array, AsArray};
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 use tokio::io::AsyncWriteExt;
-
-use memchr::memchr_iter;
 
 use logfwd_types::diagnostics::ComponentStats;
 use logfwd_types::field_names;
@@ -122,8 +121,7 @@ impl StdoutSink {
                     let cols = build_col_infos(batch);
                     let resolved = resolve_col_infos(batch, &cols);
                     for row in 0..num_rows {
-                        write_row_json_resolved(row, &resolved, dest)?;
-                        dest.push(b'\n');
+                        write_row_json_resolved(row, &resolved, dest, true)?;
                     }
                     num_rows
                 } else {
@@ -148,17 +146,13 @@ impl StdoutSink {
                 let cols = build_col_infos(batch);
                 let resolved = resolve_col_infos(batch, &cols);
                 for row in 0..num_rows {
-                    write_row_json_resolved(row, &resolved, dest)?;
-                    dest.push(b'\n');
+                    write_row_json_resolved(row, &resolved, dest, true)?;
                 }
                 num_rows
             }
             StdoutFormat::Console => {
-                let start_len = dest.len();
                 self.write_console(batch, dest)?;
-                // Console format: count lines in output (variable per row).
-                // Slice from start_len to count only newly-appended newlines.
-                memchr_iter(b'\n', &dest[start_len..]).count()
+                num_rows
             }
         };
         Ok(lines)
@@ -348,10 +342,13 @@ impl StdoutSink {
 /// Unlike `str_value` (which panics on non-string types), this handles all
 /// Arrow data types via `array_value_to_string` for non-Utf8 columns.
 fn safe_col_to_string(col: &dyn Array, row: usize) -> Cow<'_, str> {
+    // SAFETY: row is bounded by 0..batch.num_rows() which is the length of all columns in the batch
     match col.data_type() {
-        DataType::Utf8 => Cow::Borrowed(col.as_string::<i32>().value(row)),
-        DataType::Utf8View => Cow::Borrowed(col.as_string_view().value(row)),
-        DataType::LargeUtf8 => Cow::Borrowed(col.as_string::<i64>().value(row)),
+        DataType::Utf8 => Cow::Borrowed( unsafe { col.as_string::<i32>().value_unchecked(row) }),
+        DataType::Utf8View => Cow::Borrowed( unsafe { col.as_string_view().value_unchecked(row) }),
+        DataType::LargeUtf8 => {
+            Cow::Borrowed( unsafe { col.as_string::<i64>().value_unchecked(row) })
+        }
         DataType::Timestamp(arrow::datatypes::TimeUnit::Nanosecond, _) => {
             let Some(arr) = col
                 .as_any()
@@ -359,7 +356,7 @@ fn safe_col_to_string(col: &dyn Array, row: usize) -> Cow<'_, str> {
             else {
                 return Cow::Owned(safe_array_value_to_string(col, row));
             };
-            let ns = arr.value(row);
+            let ns =  unsafe { arr.value_unchecked(row) };
             let secs = ns.div_euclid(1_000_000_000);
             let nanos = ns.rem_euclid(1_000_000_000) as u32;
             Cow::Owned(logfwd_arrow::star_schema::chrono_timestamp(secs, nanos))
@@ -371,7 +368,7 @@ fn safe_col_to_string(col: &dyn Array, row: usize) -> Cow<'_, str> {
             else {
                 return Cow::Owned(safe_array_value_to_string(col, row));
             };
-            let us = arr.value(row);
+            let us =  unsafe { arr.value_unchecked(row) };
             let secs = us.div_euclid(1_000_000);
             let nanos = (us.rem_euclid(1_000_000) * 1_000) as u32;
             Cow::Owned(logfwd_arrow::star_schema::chrono_timestamp(secs, nanos))
@@ -383,7 +380,7 @@ fn safe_col_to_string(col: &dyn Array, row: usize) -> Cow<'_, str> {
             else {
                 return Cow::Owned(safe_array_value_to_string(col, row));
             };
-            let ms = arr.value(row);
+            let ms =  unsafe { arr.value_unchecked(row) };
             let secs = ms.div_euclid(1_000);
             let nanos = (ms.rem_euclid(1_000) * 1_000_000) as u32;
             Cow::Owned(logfwd_arrow::star_schema::chrono_timestamp(secs, nanos))
@@ -395,8 +392,8 @@ fn safe_col_to_string(col: &dyn Array, row: usize) -> Cow<'_, str> {
             else {
                 return Cow::Owned(safe_array_value_to_string(col, row));
             };
-            let s = arr.value(row);
-            Cow::Owned(logfwd_arrow::star_schema::chrono_timestamp(s, 0))
+            let secs =  unsafe { arr.value_unchecked(row) };
+            Cow::Owned(logfwd_arrow::star_schema::chrono_timestamp(secs, 0))
         }
         _ => Cow::Owned(safe_array_value_to_string(col, row)),
     }
@@ -1022,7 +1019,7 @@ mod tests {
 
         let mut expected = Vec::new();
         sink.write_batch_to(&batch, &meta, &mut expected).unwrap();
-        let expected_lines = memchr_iter(b'\n', &expected).count() as u64;
+        let expected_lines = expected.iter().filter(|&&b| b == b'\n').count() as u64;
 
         sink.send_batch(&batch, &meta).await.unwrap();
 

@@ -167,7 +167,7 @@ impl Sink for TcpSink {
             self.buf.clear();
             let cols = build_col_infos(batch);
             for row in 0..batch.num_rows() {
-                if let Err(e) = write_row_json(batch, row, &cols, &mut self.buf) {
+                if let Err(e) = write_row_json(batch, row, &cols, &mut self.buf, false) {
                     return SendResult::from_io_error(e);
                 }
                 self.buf.push(b'\n');
