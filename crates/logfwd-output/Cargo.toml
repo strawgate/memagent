@@ -47,7 +47,6 @@ zstd = "0.13"
 [dev-dependencies]
 arrow = { workspace = true, features = ["test_utils"] }
 insta = "1"
-kani = "0.0.1"
 memchr = "2"
 mockito = "1.7.2"
 opentelemetry-proto = { version = "0.31", features = [
