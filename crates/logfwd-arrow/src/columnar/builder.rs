@@ -434,6 +434,63 @@ impl ColumnarBatchBuilder {
         Ok(())
     }
 
+    /// Write lowercase hexadecimal text for `value` into the generated string buffer.
+    ///
+    /// This avoids a temporary scratch `Vec<u8>` for producers that need hex
+    /// strings but already have the raw bytes.
+    #[inline]
+    pub fn write_hex_bytes_lower(
+        &mut self,
+        handle: FieldHandle,
+        value: &[u8],
+    ) -> Result<(), BuilderError> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+
+        debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
+        debug_assert!(handle.index() < self.columns.len());
+        if !self.columns[handle.index()].accepts_str() {
+            return Ok(());
+        }
+        if self.dedup_enabled && self.is_duplicate(handle) {
+            return Ok(());
+        }
+
+        let encoded_len = value
+            .len()
+            .checked_mul(2)
+            .ok_or(BuilderError::StringBufferOverflow {
+                buffer_len: self.string_buf.len(),
+                value_len: value.len(),
+            })?;
+        let raw_offset = self
+            .original_buf
+            .len()
+            .checked_add(self.string_buf.len())
+            .ok_or(BuilderError::StringBufferOverflow {
+                buffer_len: self.string_buf.len(),
+                value_len: encoded_len,
+            })?;
+        let offset =
+            u32::try_from(raw_offset).map_err(|_e| BuilderError::StringBufferOverflow {
+                buffer_len: self.string_buf.len(),
+                value_len: encoded_len,
+            })?;
+        let len = u32::try_from(encoded_len).map_err(|_e| BuilderError::StringBufferOverflow {
+            buffer_len: self.string_buf.len(),
+            value_len: encoded_len,
+        })?;
+
+        self.string_buf.reserve(encoded_len);
+        for &byte in value {
+            self.string_buf.push(HEX[(byte >> 4) as usize]);
+            self.string_buf.push(HEX[(byte & 0x0f) as usize]);
+        }
+
+        let sref = StringRef { offset, len };
+        self.columns[handle.index()].push_str(self.lifecycle.row_count(), sref);
+        Ok(())
+    }
+
     /// Write a zero-copy reference to a subslice of the original input buffer.
     ///
     /// The `value` must be a subslice of the buffer previously set via
@@ -1606,6 +1663,21 @@ mod tests {
         let col = batch.column(0).as_string_view();
         assert_eq!(col.value(0), "original");
         assert_eq!(col.value(1), "generated");
+    }
+
+    #[test]
+    fn write_hex_bytes_lower_produces_correct_string() {
+        let mut plan = BatchPlan::new();
+        let name = plan.declare_planned("name", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        b.begin_batch();
+        b.begin_row();
+        b.write_hex_bytes_lower(name, &[0xde, 0xad, 0xbe, 0xef])
+            .unwrap();
+        b.end_row();
+        let batch = b.finish_batch().unwrap();
+        let col = batch.column(0).as_string_view();
+        assert_eq!(col.value(0), "deadbeef");
     }
 
     #[test]
