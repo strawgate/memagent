@@ -574,12 +574,19 @@ fn resolve_binary(
     bin_dir: &std::path::Path,
     no_download: bool,
 ) -> Option<PathBuf> {
-    // Check env override.
+    // Check env override.  For `ff`, also check legacy `LOGFWD`.
     let env_var = agent.name().to_uppercase().replace('-', "_");
-    if let Ok(val) = std::env::var(&env_var) {
-        let p = PathBuf::from(&val);
-        if p.exists() {
-            return Some(p);
+    let env_vars: Vec<&str> = if env_var == "FF" {
+        vec!["FF", "LOGFWD"]
+    } else {
+        vec![&env_var]
+    };
+    for var in env_vars {
+        if let Ok(val) = std::env::var(var) {
+            let p = PathBuf::from(&val);
+            if p.exists() {
+                return Some(p);
+            }
         }
     }
 
