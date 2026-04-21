@@ -156,8 +156,9 @@ import { angleAt, EXIT_GATE_S, pointAt } from './highway-graph.mjs';
     if (pipelineLabel) {
       pipelineLabel.textContent = frame.status.msg.toUpperCase();
       const isHeavy = frame.status.level === 'blocked' || frame.status.level === 'congested';
-      const fill = frame.status.level === 'blocked' ? 'var(--hw-car-stop)' : frame.status.level === 'congested' ? 'var(--hw-car-slow)' : 'var(--hw-muted)';
-      pipelineLabel.setAttribute('fill', fill);
+      const color = frame.status.level === 'blocked' ? 'var(--hw-car-stop)' : frame.status.level === 'congested' ? 'var(--hw-car-slow)' : 'var(--hw-muted)';
+      pipelineLabel.style.color = color;
+      pipelineLabel.style.borderColor = isHeavy ? color : 'color-mix(in srgb, var(--hw-muted) 35%, transparent)';
       pipelineLabel.classList.toggle('hw-pulse', isHeavy);
     }
   }

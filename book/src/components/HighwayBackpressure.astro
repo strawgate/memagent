@@ -8,6 +8,7 @@ import { PATHS } from './highway-graph.mjs';
 
 <div class="hw" id="highway-bp">
   <div class="hw-scene">
+    <div class="hw-banner" id="hw-pipeline-label" aria-hidden="true">FLOWING — TRAFFIC MOVING FREELY</div>
     <svg class="hw-svg" viewBox="0 0 800 280" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
       <defs>
         <path id="hw-path-ramp" d={PATHS.ramp} fill="none" />
@@ -68,9 +69,6 @@ import { PATHS } from './highway-graph.mjs';
       <text x="200" y="134" text-anchor="middle" fill="var(--hw-muted)" font-size="8" opacity="0.45">MERGE</text>
       <text x="560" y="134" text-anchor="middle" fill="var(--hw-muted)" font-size="8" opacity="0.45">EXIT</text>
 
-      <!-- Status label along highway -->
-      <text x="380" y="64" text-anchor="middle" fill="var(--hw-muted)" font-size="10" font-weight="600" id="hw-pipeline-label">FLOWING — TRAFFIC MOVING FREELY</text>
-
       <g id="hw-cars"></g>
 
       <!-- Stats below the highway -->
@@ -124,6 +122,28 @@ import { PATHS } from './highway-graph.mjs';
   .hw * { margin-top: 0 !important; }
   .hw-scene { position: relative; width: 100%; overflow: visible; }
   .hw-svg { width: 100%; height: auto; display: block; }
+  .hw-banner {
+    position: absolute;
+    top: 0.2rem;
+    left: 50%;
+    z-index: 2;
+    max-width: min(92%, 30rem);
+    padding: 0.25rem 0.7rem;
+    border: 1px solid color-mix(in srgb, var(--hw-muted) 35%, transparent);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--sl-color-bg-sidebar) 88%, transparent);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+    color: var(--hw-muted);
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    line-height: 1.2;
+    text-align: center;
+    text-transform: uppercase;
+    white-space: nowrap;
+    transform: translateX(-50%);
+    pointer-events: none;
+  }
 
   /* Slider near top-right, close to exit ramp area */
   .hw-light-ctrl {
@@ -170,11 +190,19 @@ import { PATHS } from './highway-graph.mjs';
 <!-- Pulse animation — separate style tag so Astro doesn't tree-shake the dynamically-applied class -->
 <style is:inline>
   @keyframes hw-pulse-anim {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.45; }
+    0%, 100% {
+      opacity: 1;
+      transform: translateX(-50%) scale(1);
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+    }
+    50% {
+      opacity: 0.72;
+      transform: translateX(-50%) scale(1.08);
+      box-shadow: 0 0 18px rgba(245, 158, 11, 0.55);
+    }
   }
   .hw-pulse {
-    animation: hw-pulse-anim 1.6s ease-in-out infinite;
+    animation: hw-pulse-anim 0.9s ease-in-out infinite;
   }
 </style>
 
