@@ -69,7 +69,6 @@ pub(super) fn write_hex_field(
     builder: &mut ColumnarBatchBuilder,
     handle: FieldHandle,
     bytes: &[u8],
-    _hex_buf: &mut Vec<u8>,
 ) -> Result<(), ProjectionError> {
     builder
         .write_hex_bytes_lower(handle, bytes)
