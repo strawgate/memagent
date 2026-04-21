@@ -448,6 +448,88 @@ fn subprocess_drop_stops_reader() {
 
 // ---------------------------------------------------------------------------
 // Native backend tests
+
+#[test]
+#[ignore = "requires systemd journal environment"]
+fn native_health_becomes_healthy() {
+    if !journald_available() {
+        eprintln!("SKIP: journald not available");
+        return;
+    }
+
+    let config = JournaldConfig {
+        backend: JournaldBackendPref::Native,
+        since_now: true,
+        current_boot_only: true,
+        ..Default::default()
+    };
+
+    let mut input = JournaldInput::new("test-health-native", config, make_stats())
+        .expect("failed to create journald input");
+
+    let tag = unique_tag("native-health");
+    write_journal_entries(&tag, 1);
+
+    let _ = poll_until_lines(&mut input, 1, Duration::from_secs(10));
+
+    let health = input.health();
+    assert!(
+        matches!(health, logfwd_types::diagnostics::ComponentHealth::Healthy),
+        "expected Healthy after receiving data, got {health:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires systemd journal environment"]
+fn native_exclude_units_filters() {
+    if !journald_available() {
+        eprintln!("SKIP: journald not available");
+        return;
+    }
+
+    let config = JournaldConfig {
+        backend: JournaldBackendPref::Native,
+        since_now: true,
+        current_boot_only: true,
+        exclude_units: vec!["ssh.service".to_string()],
+        ..Default::default()
+    };
+
+    let mut input = JournaldInput::new("test-exclude-native", config, make_stats())
+        .expect("failed to create journald input");
+
+    std::thread::sleep(Duration::from_millis(500));
+    let tag = unique_tag("native-excl");
+    write_journal_entries(&tag, 3);
+
+    let lines = poll_until_match(&mut input, &tag, Duration::from_secs(10));
+
+    let our_entries: Vec<&String> = lines.iter().filter(|l| l.contains(&tag)).collect();
+    assert!(
+        !our_entries.is_empty(),
+        "logger entries should not be excluded (tag={tag})"
+    );
+
+    let excluded_entries: Vec<&String> = lines
+        .iter()
+        .filter(|l| {
+            serde_json::from_str::<serde_json::Value>(l)
+                .ok()
+                .and_then(|v| {
+                    v.get("_systemd_unit")
+                        .and_then(|u| u.as_str())
+                        .map(String::from)
+                })
+                .is_some_and(|u| u == "ssh.service")
+        })
+        .collect();
+
+    assert!(
+        excluded_entries.is_empty(),
+        "exclude_units should filter ssh.service entries, found {} lines",
+        excluded_entries.len()
+    );
+}
 // ---------------------------------------------------------------------------
 
 /// Happy path: read entries via native sd_journal API.

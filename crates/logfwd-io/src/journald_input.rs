@@ -468,10 +468,14 @@ fn native_reader_loop(
 }
 
 fn update_native_wait_health(wait_result: &io::Result<i32>, health: &Arc<AtomicU8>) {
-    if wait_result.is_ok() {
-        health.store(HEALTH_OK, Ordering::Release);
-    } else {
-        health.store(HEALTH_DEGRADED, Ordering::Release);
+    match wait_result {
+        Ok(journal_ffi::SD_JOURNAL_APPEND) | Ok(SD_JOURNAL_INVALIDATE) => {
+            health.store(HEALTH_OK, Ordering::Release);
+        }
+        Ok(_) => {}
+        Err(_) => {
+            health.store(HEALTH_DEGRADED, Ordering::Release);
+        }
     }
 }
 
@@ -1026,16 +1030,15 @@ fn should_emit_export_entry(fields: &[(Vec<u8>, Vec<u8>)], exclude_units: &[Stri
         return true;
     }
     for (name, value) in fields {
-        if name == b"_SYSTEMD_UNIT" {
-            if let Ok(unit) = std::str::from_utf8(value) {
-                let normalized = fixup_unit(unit);
-                for excluded in exclude_units {
-                    if fixup_unit(excluded) == normalized {
-                        return false;
-                    }
+        if name == b"_SYSTEMD_UNIT"
+            && let Ok(unit) = std::str::from_utf8(value)
+        {
+            let normalized = fixup_unit(unit);
+            for excluded in exclude_units {
+                if fixup_unit(excluded) == normalized {
+                    return false;
                 }
             }
-            return true;
         }
     }
     true
@@ -1208,6 +1211,15 @@ mod tests {
     }
 
     #[test]
+    fn should_emit_export_entry_excludes_matching_unit_when_multiple() {
+        let fields = vec![
+            (b"_SYSTEMD_UNIT".to_vec(), b"session-1.scope".to_vec()),
+            (b"_SYSTEMD_UNIT".to_vec(), b"sshd.service".to_vec()),
+        ];
+        assert!(!should_emit_export_entry(&fields, &["sshd".to_string()]));
+    }
+
+    #[test]
     fn read_export_entries_applies_client_side_exclude_filter() {
         let mut export = Vec::new();
         export.extend_from_slice(b"MESSAGE=excluded\n");
@@ -1273,6 +1285,10 @@ mod tests {
 
         let second_error = Err(io::Error::other("second wait failure"));
         update_native_wait_health(&second_error, &health);
+        assert_eq!(health.load(Ordering::Acquire), HEALTH_DEGRADED);
+
+        let nop_timeout = Ok(journal_ffi::SD_JOURNAL_NOP);
+        update_native_wait_health(&nop_timeout, &health);
         assert_eq!(health.load(Ordering::Acquire), HEALTH_DEGRADED);
 
         let recovered = Ok(journal_ffi::SD_JOURNAL_APPEND);
