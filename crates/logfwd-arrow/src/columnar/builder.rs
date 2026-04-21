@@ -43,6 +43,12 @@ pub enum BuilderError {
     Materialize(MaterializeError),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct StringBufferOverflow {
+    buffer_len: usize,
+    value_len: usize,
+}
+
 impl std::fmt::Display for BuilderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -79,6 +85,84 @@ impl From<ArrowError> for BuilderError {
 impl From<MaterializeError> for BuilderError {
     fn from(e: MaterializeError) -> Self {
         BuilderError::Materialize(e)
+    }
+}
+
+impl From<StringBufferOverflow> for BuilderError {
+    fn from(e: StringBufferOverflow) -> Self {
+        BuilderError::StringBufferOverflow {
+            buffer_len: e.buffer_len,
+            value_len: e.value_len,
+        }
+    }
+}
+
+#[inline]
+fn current_buffer_len(
+    original_len: usize,
+    generated_len: usize,
+    value_len: usize,
+) -> Result<usize, StringBufferOverflow> {
+    original_len
+        .checked_add(generated_len)
+        .ok_or(StringBufferOverflow {
+            buffer_len: usize::MAX,
+            value_len,
+        })
+}
+
+#[inline]
+fn checked_generated_append_len(
+    generated_len: usize,
+    value_len: usize,
+    buffer_len: usize,
+) -> Result<(), StringBufferOverflow> {
+    generated_len
+        .checked_add(value_len)
+        .ok_or(StringBufferOverflow {
+            buffer_len,
+            value_len,
+        })?;
+    Ok(())
+}
+
+#[inline]
+fn string_ref_at_buffer_len(
+    buffer_len: usize,
+    value_len: usize,
+) -> Result<StringRef, StringBufferOverflow> {
+    let offset = u32::try_from(buffer_len).map_err(|_e| StringBufferOverflow {
+        buffer_len,
+        value_len,
+    })?;
+    let len = u32::try_from(value_len).map_err(|_e| StringBufferOverflow {
+        buffer_len,
+        value_len,
+    })?;
+    Ok(StringRef { offset, len })
+}
+
+#[inline]
+fn checked_hex_encoded_len(
+    input_len: usize,
+    buffer_len: usize,
+) -> Result<usize, StringBufferOverflow> {
+    input_len.checked_mul(2).ok_or(StringBufferOverflow {
+        buffer_len,
+        value_len: usize::MAX,
+    })
+}
+
+#[inline]
+fn encode_hex_lower_into(out: &mut Vec<u8>, value: &[u8], encoded_len: usize) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let old_len = out.len();
+    out.resize(old_len + encoded_len, 0);
+    let encoded = &mut out[old_len..old_len + encoded_len];
+    for (i, &byte) in value.iter().enumerate() {
+        encoded[i * 2] = HEX[(byte >> 4) as usize];
+        encoded[i * 2 + 1] = HEX[(byte & 0x0f) as usize];
     }
 }
 
@@ -346,28 +430,13 @@ impl ColumnarBatchBuilder {
         if self.dedup_enabled && self.is_duplicate(handle) {
             return Ok(());
         }
-        // Generated string offsets are shifted by original_buf.len() so that
-        // the 2-buffer model can distinguish original vs generated at
-        // materialization time.
-        let raw_offset = self
-            .original_buf
-            .len()
-            .checked_add(self.string_buf.len())
-            .ok_or(BuilderError::StringBufferOverflow {
-                buffer_len: self.string_buf.len(),
-                value_len: value.len(),
-            })?;
-        let offset =
-            u32::try_from(raw_offset).map_err(|_e| BuilderError::StringBufferOverflow {
-                buffer_len: self.string_buf.len(),
-                value_len: value.len(),
-            })?;
-        let len = u32::try_from(value.len()).map_err(|_e| BuilderError::StringBufferOverflow {
-            buffer_len: self.string_buf.len(),
-            value_len: value.len(),
-        })?;
+        let buffer_len =
+            current_buffer_len(self.original_buf.len(), self.string_buf.len(), value.len())
+                .map_err(BuilderError::from)?;
+        checked_generated_append_len(self.string_buf.len(), value.len(), buffer_len)
+            .map_err(BuilderError::from)?;
+        let sref = string_ref_at_buffer_len(buffer_len, value.len()).map_err(BuilderError::from)?;
         self.string_buf.extend_from_slice(value.as_bytes());
-        let sref = StringRef { offset, len };
         self.columns[handle.index()].push_str(self.lifecycle.row_count(), sref);
         Ok(())
     }
@@ -411,25 +480,51 @@ impl ColumnarBatchBuilder {
         if self.dedup_enabled && self.is_duplicate(handle) {
             return Ok(());
         }
-        let raw_offset = self
-            .original_buf
-            .len()
-            .checked_add(self.string_buf.len())
-            .ok_or(BuilderError::StringBufferOverflow {
-                buffer_len: self.string_buf.len(),
-                value_len: value.len(),
-            })?;
-        let offset =
-            u32::try_from(raw_offset).map_err(|_e| BuilderError::StringBufferOverflow {
-                buffer_len: self.string_buf.len(),
-                value_len: value.len(),
-            })?;
-        let len = u32::try_from(value.len()).map_err(|_e| BuilderError::StringBufferOverflow {
-            buffer_len: self.string_buf.len(),
-            value_len: value.len(),
-        })?;
+        let buffer_len =
+            current_buffer_len(self.original_buf.len(), self.string_buf.len(), value.len())
+                .map_err(BuilderError::from)?;
+        checked_generated_append_len(self.string_buf.len(), value.len(), buffer_len)
+            .map_err(BuilderError::from)?;
+        let sref = string_ref_at_buffer_len(buffer_len, value.len()).map_err(BuilderError::from)?;
         self.string_buf.extend_from_slice(value);
-        let sref = StringRef { offset, len };
+        self.columns[handle.index()].push_str(self.lifecycle.row_count(), sref);
+        Ok(())
+    }
+
+    /// Write lowercase hexadecimal text for `value` into the generated string buffer.
+    ///
+    /// This avoids a temporary scratch `Vec<u8>` for producers that need hex
+    /// strings but already have the raw bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` if the encoded hex string or its resulting offset would
+    /// exceed `u32::MAX`, or if extending the generated string buffer would
+    /// overflow addressable `usize` space.
+    #[inline]
+    pub fn write_hex_bytes_lower(
+        &mut self,
+        handle: FieldHandle,
+        value: &[u8],
+    ) -> Result<(), BuilderError> {
+        debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
+        debug_assert!(handle.index() < self.columns.len());
+        if !self.columns[handle.index()].accepts_str() {
+            return Ok(());
+        }
+        if self.dedup_enabled && self.is_duplicate(handle) {
+            return Ok(());
+        }
+
+        let buffer_len =
+            current_buffer_len(self.original_buf.len(), self.string_buf.len(), value.len())
+                .map_err(BuilderError::from)?;
+        let encoded_len =
+            checked_hex_encoded_len(value.len(), buffer_len).map_err(BuilderError::from)?;
+        checked_generated_append_len(self.string_buf.len(), encoded_len, buffer_len)
+            .map_err(BuilderError::from)?;
+        let sref = string_ref_at_buffer_len(buffer_len, encoded_len).map_err(BuilderError::from)?;
+        encode_hex_lower_into(&mut self.string_buf, value, encoded_len);
         self.columns[handle.index()].push_str(self.lifecycle.row_count(), sref);
         Ok(())
     }
@@ -1609,6 +1704,36 @@ mod tests {
     }
 
     #[test]
+    fn write_hex_bytes_lower_produces_correct_string() {
+        let mut plan = BatchPlan::new();
+        let name = plan.declare_planned("name", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        b.begin_batch();
+        b.begin_row();
+        b.write_hex_bytes_lower(name, &[0xde, 0xad, 0xbe, 0xef])
+            .unwrap();
+        b.end_row();
+        let batch = b.finish_batch().unwrap();
+        let col = batch.column(0).as_string_view();
+        assert_eq!(col.value(0), "deadbeef");
+    }
+
+    #[test]
+    fn write_hex_bytes_lower_respects_dedup() {
+        let mut plan = BatchPlan::new();
+        let name = plan.declare_planned("name", FieldKind::Utf8View).unwrap();
+        let mut b = ColumnarBatchBuilder::new(plan);
+        b.begin_batch();
+        b.begin_row();
+        b.write_hex_bytes_lower(name, &[0xde, 0xad]).unwrap();
+        b.write_hex_bytes_lower(name, &[0xbe, 0xef]).unwrap();
+        b.end_row();
+        let batch = b.finish_batch().unwrap();
+        let col = batch.column(0).as_string_view();
+        assert_eq!(col.value(0), "dead");
+    }
+
+    #[test]
     fn write_input_ref_returns_error_on_oob() {
         let mut plan = BatchPlan::new();
         let f = plan.declare_planned("field", FieldKind::Utf8View).unwrap();
@@ -1620,6 +1745,148 @@ mod tests {
         // Not a subslice of original buffer — should return error.
         let result = b.write_input_ref(f, b"external");
         assert!(result.is_err());
+    }
+}
+
+#[cfg(kani)]
+mod verification {
+    use super::*;
+
+    fn hex_oracle(bytes: &[u8]) -> Vec<u8> {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut out = Vec::with_capacity(bytes.len() * 2);
+        for &byte in bytes {
+            out.push(HEX[(byte >> 4) as usize]);
+            out.push(HEX[(byte & 0x0f) as usize]);
+        }
+        out
+    }
+
+    #[kani::proof]
+    fn verify_current_buffer_len_matches_checked_add() {
+        let original_len: usize = kani::any();
+        let generated_len: usize = kani::any();
+        let value_len: usize = kani::any();
+
+        let result = current_buffer_len(original_len, generated_len, value_len);
+        match original_len.checked_add(generated_len) {
+            Some(sum) => {
+                assert!(result.is_ok());
+                assert_eq!(result.unwrap(), sum);
+            }
+            None => {
+                assert!(result.is_err());
+                let err = result.unwrap_err();
+                assert_eq!(err.buffer_len, usize::MAX);
+                assert_eq!(err.value_len, value_len);
+            }
+        }
+
+        kani::cover!(original_len == 0, "zero original buffer");
+        kani::cover!(generated_len == 0, "zero generated buffer");
+        kani::cover!(
+            original_len.checked_add(generated_len).is_none(),
+            "combined buffer length overflow"
+        );
+    }
+
+    #[kani::proof]
+    fn verify_checked_generated_append_len_matches_checked_add() {
+        let generated_len: usize = kani::any();
+        let value_len: usize = kani::any();
+        let buffer_len: usize = kani::any();
+
+        let result = checked_generated_append_len(generated_len, value_len, buffer_len);
+        match generated_len.checked_add(value_len) {
+            Some(_sum) => assert!(result.is_ok()),
+            None => {
+                assert!(result.is_err());
+                let err = result.unwrap_err();
+                assert_eq!(err.buffer_len, buffer_len);
+                assert_eq!(err.value_len, value_len);
+            }
+        }
+
+        kani::cover!(generated_len == 0, "empty generated buffer");
+        kani::cover!(value_len == 0, "empty append");
+        kani::cover!(
+            generated_len.checked_add(value_len).is_none(),
+            "generated append length overflow"
+        );
+    }
+
+    #[kani::proof]
+    fn verify_string_ref_at_buffer_len_matches_u32_conversions() {
+        let buffer_len: usize = kani::any();
+        let value_len: usize = kani::any();
+
+        let result = string_ref_at_buffer_len(buffer_len, value_len);
+        match (u32::try_from(buffer_len), u32::try_from(value_len)) {
+            (Ok(offset), Ok(len)) => {
+                assert!(result.is_ok());
+                let sref = result.unwrap();
+                assert_eq!(sref.offset, offset);
+                assert_eq!(sref.len, len);
+            }
+            _ => {
+                assert!(result.is_err());
+                let err = result.unwrap_err();
+                assert_eq!(err.buffer_len, buffer_len);
+                assert_eq!(err.value_len, value_len);
+            }
+        }
+
+        kani::cover!(buffer_len <= u32::MAX as usize, "offset fits in u32");
+        kani::cover!(value_len <= u32::MAX as usize, "length fits in u32");
+        kani::cover!(buffer_len > u32::MAX as usize, "offset overflow");
+        kani::cover!(value_len > u32::MAX as usize, "length overflow");
+    }
+
+    #[kani::proof]
+    fn verify_checked_hex_encoded_len_matches_doubling() {
+        let input_len: usize = kani::any();
+        let buffer_len: usize = kani::any();
+
+        let result = checked_hex_encoded_len(input_len, buffer_len);
+        match input_len.checked_mul(2) {
+            Some(encoded_len) => {
+                assert!(result.is_ok());
+                assert_eq!(result.unwrap(), encoded_len);
+            }
+            None => {
+                assert!(result.is_err());
+                let err = result.unwrap_err();
+                assert_eq!(err.buffer_len, buffer_len);
+                assert_eq!(err.value_len, usize::MAX);
+            }
+        }
+
+        kani::cover!(input_len == 0, "empty hex input");
+        kani::cover!(input_len == 1, "single-byte hex input");
+        kani::cover!(input_len.checked_mul(2).is_none(), "hex length overflow");
+    }
+
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn verify_encode_hex_lower_into_matches_oracle() {
+        let prefix: [u8; 2] = kani::any();
+        let bytes: [u8; 2] = kani::any();
+
+        let mut out = prefix.to_vec();
+        let old_len = out.len();
+        let expected = hex_oracle(&bytes);
+        encode_hex_lower_into(&mut out, &bytes, expected.len());
+
+        assert_eq!(&out[..old_len], &prefix);
+        assert_eq!(&out[old_len..], expected.as_slice());
+        assert!(
+            out[old_len..]
+                .iter()
+                .all(|&b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        );
+
+        kani::cover!(bytes[0] == 0x00, "hex oracle covers 00");
+        kani::cover!(bytes[1] == 0xff, "hex oracle covers ff");
     }
 }
 
@@ -1876,6 +2143,28 @@ mod proptests {
                     prop_assert_eq!(strs.value(row), expected_label.as_str());
                 }
             }
+        }
+
+        #[test]
+        fn write_hex_bytes_lower_matches_oracle(
+            bytes in proptest::collection::vec(any::<u8>(), 0..128),
+        ) {
+            let mut plan = BatchPlan::new();
+            let field = plan.declare_planned("hex", FieldKind::Utf8View).unwrap();
+            let mut builder = ColumnarBatchBuilder::new(plan);
+
+            builder.begin_batch();
+            builder.begin_row();
+            builder.write_hex_bytes_lower(field, &bytes).unwrap();
+            builder.end_row();
+
+            let batch = builder.finish_batch().unwrap();
+            let col = batch.column(0).as_any().downcast_ref::<StringViewArray>().unwrap();
+            let expected = bytes
+                .iter()
+                .flat_map(|byte| [b"0123456789abcdef"[(byte >> 4) as usize] as char, b"0123456789abcdef"[(byte & 0x0f) as usize] as char])
+                .collect::<String>();
+            prop_assert_eq!(col.value(0), expected);
         }
     }
 }
