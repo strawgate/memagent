@@ -398,8 +398,8 @@ fn parse_bulk_response_error() {
             {"index":{"error":{"type":"mapper_parsing_exception","reason":"failed to parse"},"status":400}}
         ]
     }"#;
-    let err = ElasticsearchSink::parse_bulk_response(response)
-        .expect_err("should error on bulk failure");
+    let err =
+        ElasticsearchSink::parse_bulk_response(response).expect_err("should error on bulk failure");
     // Mixed result: 1 succeeded + 1 rejected → InvalidData to prevent duplication (#1880).
     assert_eq!(
         err.kind(),
@@ -841,8 +841,7 @@ fn test_send_batch_oversized_single_row() {
     let large_str = "A".repeat(5 * 1024 * 1024 + 1024);
     let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, false)]));
     let batch =
-        RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec![large_str]))])
-            .unwrap();
+        RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec![large_str]))]).unwrap();
 
     let meta = zero_metadata();
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -1855,11 +1854,7 @@ async fn split_both_halves_fail_returns_retryable() {
     );
 }
 
-fn test_es_config(
-    endpoint: &str,
-    index: &str,
-    max_bulk_bytes: usize,
-) -> Arc<ElasticsearchConfig> {
+fn test_es_config(endpoint: &str, index: &str, max_bulk_bytes: usize) -> Arc<ElasticsearchConfig> {
     test_es_config_with_mode(
         endpoint,
         index,

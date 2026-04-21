@@ -3,10 +3,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use arrow::array::{
-        Array, Float64Array, Int64Array,
-        StructArray as ArrowStructArray,
-    };
+    use arrow::array::{Array, Float64Array, Int64Array, StructArray as ArrowStructArray};
     use arrow::datatypes::DataType;
 
     #[test]
@@ -767,13 +764,21 @@ mod tests {
             col.data_type()
         );
         let sa = col.as_any().downcast_ref::<ArrowStructArray>().unwrap();
-        let names: Vec<&str> = sa.fields().iter().map(|f: &arrow::datatypes::FieldRef| f.name().as_str()).collect();
+        let names: Vec<&str> = sa
+            .fields()
+            .iter()
+            .map(|f: &arrow::datatypes::FieldRef| f.name().as_str())
+            .collect();
         assert!(names.contains(&"int"), "int child missing");
         assert!(names.contains(&"float"), "float child missing");
         assert!(names.contains(&"str"), "str child missing");
 
         // Row 0: int=42, float=null, str=null
-        let int_idx = sa.fields().iter().position(|f: &arrow::datatypes::FieldRef| f.name() == "int").unwrap();
+        let int_idx = sa
+            .fields()
+            .iter()
+            .position(|f: &arrow::datatypes::FieldRef| f.name() == "int")
+            .unwrap();
         let int_col = sa
             .column(int_idx)
             .as_any()

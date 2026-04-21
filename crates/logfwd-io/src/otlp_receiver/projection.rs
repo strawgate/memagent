@@ -24,7 +24,7 @@ mod write;
 use generated::field_numbers as otlp_field;
 
 // Re-export submodule items so the generated module can access them via `super::`.
-use wire::{for_each_field, require_utf8, StringStorage, WireAny, WireField, WireScratch};
+use wire::{StringStorage, WireAny, WireField, WireScratch, for_each_field, require_utf8};
 use write::{
     write_hex_field, write_hex_to_buf, write_json_escaped_bytes, write_wire_any_complex_json,
     write_wire_str,
@@ -69,7 +69,12 @@ pub(super) fn decode_projected_otlp_logs(
     body: &[u8],
     resource_prefix: &str,
 ) -> Result<RecordBatch, ProjectionError> {
-    decode::decode_projected_otlp_logs_inner(body, Bytes::new(), resource_prefix, StringStorage::Decoded)
+    decode::decode_projected_otlp_logs_inner(
+        body,
+        Bytes::new(),
+        resource_prefix,
+        StringStorage::Decoded,
+    )
 }
 
 #[cfg(any(feature = "otlp-research", test))]

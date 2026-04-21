@@ -5,8 +5,8 @@ use std::io;
 
 use arrow::record_batch::RecordBatch;
 
-use super::types::{ElasticsearchSink, SendAttempt};
 use super::super::BatchMetadata;
+use super::types::{ElasticsearchSink, SendAttempt};
 
 impl crate::sink::Sink for ElasticsearchSink {
     fn begin_batch(&mut self) {

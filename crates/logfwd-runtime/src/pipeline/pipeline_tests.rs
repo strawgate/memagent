@@ -11,8 +11,7 @@ use std::time::Instant;
 
 use arrow::record_batch::RecordBatch;
 use logfwd_config::{
-    CompressionFormat, Format, OtlpOutputConfig, OtlpProtocol, OutputConfigV2,
-    StdoutOutputConfig,
+    CompressionFormat, Format, OtlpOutputConfig, OtlpProtocol, OutputConfigV2, StdoutOutputConfig,
 };
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_diagnostics::diagnostics::ComponentStats;
@@ -55,8 +54,7 @@ fn test_build_sink_factory_stdout() {
         name: Some("test".to_string()),
         format: Some(Format::Json),
     });
-    let factory =
-        build_sink_factory("test", &cfg, None, Arc::new(ComponentStats::new())).unwrap();
+    let factory = build_sink_factory("test", &cfg, None, Arc::new(ComponentStats::new())).unwrap();
     assert_eq!(factory.name(), "test");
     let sink = factory.create().expect("create should succeed");
     assert_eq!(sink.name(), "test");
@@ -71,8 +69,7 @@ fn test_build_sink_factory_otlp() {
         compression: Some(CompressionFormat::Zstd),
         ..Default::default()
     });
-    let factory =
-        build_sink_factory("otel", &cfg, None, Arc::new(ComponentStats::new())).unwrap();
+    let factory = build_sink_factory("otel", &cfg, None, Arc::new(ComponentStats::new())).unwrap();
     assert_eq!(factory.name(), "otel");
 }
 
@@ -915,8 +912,7 @@ output:
 
     // This must complete without deadlock. If the drain/join order is
     // wrong, this will hang and the test will time out.
-    let result =
-        tokio::time::timeout(Duration::from_secs(5), pipeline.run_async(&shutdown)).await;
+    let result = tokio::time::timeout(Duration::from_secs(5), pipeline.run_async(&shutdown)).await;
 
     assert!(
         result.is_ok(),
@@ -967,8 +963,7 @@ output:
     pipeline.set_pool_drain_timeout(Duration::from_secs(1));
 
     let shutdown = CancellationToken::new();
-    let result =
-        tokio::time::timeout(Duration::from_secs(5), pipeline.run_async(&shutdown)).await;
+    let result = tokio::time::timeout(Duration::from_secs(5), pipeline.run_async(&shutdown)).await;
 
     assert!(
         result.is_ok(),
@@ -1130,8 +1125,7 @@ output:
         sd.cancel();
     });
 
-    let result =
-        tokio::time::timeout(Duration::from_secs(2), pipeline.run_async(&shutdown)).await;
+    let result = tokio::time::timeout(Duration::from_secs(2), pipeline.run_async(&shutdown)).await;
 
     assert!(result.is_ok(), "empty pipeline should shut down cleanly");
     assert!(result.unwrap().is_ok());
@@ -1166,8 +1160,7 @@ output:
     // Cancel immediately, before even starting.
     shutdown.cancel();
 
-    let result =
-        tokio::time::timeout(Duration::from_secs(2), pipeline.run_async(&shutdown)).await;
+    let result = tokio::time::timeout(Duration::from_secs(2), pipeline.run_async(&shutdown)).await;
 
     assert!(result.is_ok(), "immediate shutdown must not hang");
     assert!(result.unwrap().is_ok(), "immediate shutdown must not error");
@@ -1356,8 +1349,7 @@ output:
         sd.cancel();
     });
 
-    let result =
-        tokio::time::timeout(Duration::from_secs(2), pipeline.run_async(&shutdown)).await;
+    let result = tokio::time::timeout(Duration::from_secs(2), pipeline.run_async(&shutdown)).await;
 
     assert!(result.is_ok(), "repeated shutdown must not hang");
     assert!(result.unwrap().is_ok());
@@ -1472,8 +1464,7 @@ output:
         ft.cancel();
     });
 
-    let result =
-        tokio::time::timeout(Duration::from_secs(5), pipeline.run_async(&shutdown)).await;
+    let result = tokio::time::timeout(Duration::from_secs(5), pipeline.run_async(&shutdown)).await;
 
     assert!(
         result.is_ok(),
@@ -1608,8 +1599,7 @@ output:
         ft.cancel();
     });
 
-    let result =
-        tokio::time::timeout(Duration::from_secs(5), pipeline.run_async(&shutdown)).await;
+    let result = tokio::time::timeout(Duration::from_secs(5), pipeline.run_async(&shutdown)).await;
 
     assert!(
         result.is_ok(),
@@ -1697,8 +1687,7 @@ output:
         sd.cancel();
     });
 
-    let result =
-        tokio::time::timeout(Duration::from_secs(5), pipeline.run_async(&shutdown)).await;
+    let result = tokio::time::timeout(Duration::from_secs(5), pipeline.run_async(&shutdown)).await;
 
     assert!(result.is_ok(), "concurrent write + shutdown must not hang");
     assert!(result.unwrap().is_ok());

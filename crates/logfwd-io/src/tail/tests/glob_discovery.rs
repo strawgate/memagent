@@ -6,8 +6,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::super::*;
 use super::super::glob::expand_glob_patterns;
+use super::super::*;
 use super::{create_test_stats, poll_until};
 
 /// Verify that `new_with_globs` picks up files that exist at construction time.

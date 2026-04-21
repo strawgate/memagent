@@ -261,9 +261,9 @@ pub(super) fn resolve_batch_columns<'a>(
                 let col = batch.column(idx);
                 let resolved = match field.data_type() {
                     DataType::Int64 => Some(FlagsArray::Int64(col.as_primitive::<Int64Type>())),
-                    DataType::UInt32 => {
-                        Some(FlagsArray::UInt32(col.as_primitive::<arrow::datatypes::UInt32Type>()))
-                    }
+                    DataType::UInt32 => Some(FlagsArray::UInt32(
+                        col.as_primitive::<arrow::datatypes::UInt32Type>(),
+                    )),
                     DataType::UInt64 => Some(FlagsArray::UInt64(col.as_primitive::<UInt64Type>())),
                     _ => None,
                 };

@@ -9,7 +9,7 @@ publish = false
 doctest = false
 
 [package.metadata.cargo-machete]
-ignored = ["turmoil", "flate2"]  # flate2 is optional (cpu-profiling feature)
+ignored = ["turmoil", "flate2"] # flate2 is optional (cpu-profiling feature)
 
 [features]
 default = ["datafusion"]
@@ -28,6 +28,7 @@ backon = { workspace = true }
 bytes = { workspace = true }
 dhat = { version = "0.3", optional = true }
 fail = { workspace = true, optional = true }
+flate2 = { version = "1", optional = true }
 futures-util = { workspace = true }
 libc = "0.2"
 logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
@@ -43,8 +44,10 @@ memchr = "2"
 opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
-flate2 = { version = "1", optional = true }
-pprof = { version = "0.15", features = ["flamegraph", "prost-codec"], optional = true }
+pprof = { version = "0.15", features = [
+    "flamegraph",
+    "prost-codec",
+], optional = true }
 smallvec = { workspace = true }
 thiserror = { workspace = true }
 tokio = { version = "1", features = [

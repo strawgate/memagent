@@ -5,8 +5,8 @@ use std::io;
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 
-use logfwd_arrow::conflict_schema::normalize_conflict_columns;
 use arrow::array::Array;
+use logfwd_arrow::conflict_schema::normalize_conflict_columns;
 use logfwd_core::otlp::{
     self, Severity, bytes_field_size, encode_bytes_field, encode_fixed64, encode_varint_field,
     hex_decode, parse_severity, parse_timestamp_nanos, varint_len,
@@ -349,10 +349,7 @@ impl OtlpSink {
     }
 }
 
-pub(super) fn estimate_records_buf_capacity(
-    num_rows: usize,
-    columns: &BatchColumns<'_>,
-) -> usize {
+pub(super) fn estimate_records_buf_capacity(num_rows: usize, columns: &BatchColumns<'_>) -> usize {
     const MIN_RECORD_BYTES: usize = 128;
     // 64 bytes/attr covers typical string attribute values (~30 bytes) plus
     // protobuf framing overhead (~27 bytes key+tag+varint) with some margin.
@@ -551,12 +548,7 @@ pub(super) fn encode_key_value_int(buf: &mut Vec<u8>, field_number: u32, key: &[
 /// key tag + varint + key bytes on every row by using `col.key_encoding` and
 /// `col.kv_key_cost` which were computed once in `resolve_batch_columns`.
 #[inline(always)]
-pub(super) fn encode_col_attr(
-    buf: &mut Vec<u8>,
-    field_number: u32,
-    col: &ColAttr<'_>,
-    row: usize,
-) {
+pub(super) fn encode_col_attr(buf: &mut Vec<u8>, field_number: u32, col: &ColAttr<'_>, row: usize) {
     // Shared helper for string-value KV pairs.
     //
     // When `value.len() <= 125` every intermediate length fits in a single
@@ -725,12 +717,7 @@ pub(super) fn encode_key_value_double(
 }
 
 /// Encode a KeyValue with boolean AnyValue (`AnyValue.bool_value`).
-pub(super) fn encode_key_value_bool(
-    buf: &mut Vec<u8>,
-    field_number: u32,
-    key: &[u8],
-    value: bool,
-) {
+pub(super) fn encode_key_value_bool(buf: &mut Vec<u8>, field_number: u32, key: &[u8], value: bool) {
     let anyvalue_inner = 1 + 1; // tag(1 byte) + varint(1 byte)
     let kv_inner = bytes_field_size(otlp::KEY_VALUE_KEY, key.len())
         + bytes_field_size(otlp::KEY_VALUE_VALUE, anyvalue_inner);

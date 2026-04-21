@@ -10,14 +10,14 @@ use bytes::Bytes;
 use logfwd_arrow::columnar::builder::ColumnarBatchBuilder;
 use logfwd_arrow::columnar::plan::FieldHandle;
 
+use super::ProjectionError;
 use super::generated;
 use super::generated::field_numbers as otlp_field;
 use super::wire::{
-    for_each_field, require_utf8, subslice_range, AttrFieldCache, ScopeFields, StringStorage,
-    WireAny, WireField, WireScratch,
+    AttrFieldCache, ScopeFields, StringStorage, WireAny, WireField, WireScratch, for_each_field,
+    require_utf8, subslice_range,
 };
 use super::write::{write_hex_field, write_wire_str};
-use super::ProjectionError;
 
 pub(super) fn decode_projected_otlp_logs_inner(
     body: &[u8],

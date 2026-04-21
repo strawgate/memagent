@@ -6,7 +6,7 @@ mod tests {
 
     use arrow::array::{
         Array, ArrayRef, AsArray, BinaryArray, BooleanArray, Float64Array, Int32Array, Int64Array,
-        StringArray, TimestampNanosecondArray, UInt32Array, UInt8Array,
+        StringArray, TimestampNanosecondArray, UInt8Array, UInt32Array,
     };
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
@@ -15,8 +15,8 @@ mod tests {
         build_fixed_binary_array, parse_rfc3339_nanos, parse_timestamp_to_nanos,
     };
     use super::super::star_to_flat::collect_template_values_by_id;
-    use super::super::{attrs_schema, flat_to_star, logs_schema, star_to_flat, StarSchema};
     use super::super::{ATTR_TYPE_BYTES, ATTR_TYPE_STR};
+    use super::super::{StarSchema, attrs_schema, flat_to_star, logs_schema, star_to_flat};
 
     /// Helper: create a flat RecordBatch with mixed columns.
     fn make_test_batch() -> RecordBatch {

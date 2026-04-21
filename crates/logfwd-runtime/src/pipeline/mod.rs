@@ -20,11 +20,11 @@ mod source_metadata;
 mod submit;
 
 #[cfg(test)]
-mod pipeline_tests;
-#[cfg(test)]
 mod pipeline_format_tests;
 #[cfg(test)]
 mod pipeline_proptest;
+#[cfg(test)]
+mod pipeline_tests;
 
 use std::collections::HashMap;
 use std::io;
@@ -38,30 +38,30 @@ use bytes::BytesMut;
 use arrow::record_batch::RecordBatch;
 use logfwd_arrow::Scanner;
 
+#[cfg(test)]
+use self::checkpoint_policy::TicketDisposition;
 use crate::processor::Processor;
 use crate::transform::SqlTransform;
+#[cfg(test)]
+use crate::worker_pool::AckItem;
 use crate::worker_pool::OutputWorkerPool;
 use logfwd_diagnostics::diagnostics::{ComponentHealth, ComponentStats, PipelineMetrics};
+use logfwd_io::checkpoint::CheckpointStore;
 #[cfg(test)]
 use logfwd_io::checkpoint::FileCheckpointStore;
-use logfwd_io::checkpoint::CheckpointStore;
 #[cfg(test)]
 use logfwd_io::format::FormatDecoder;
 #[cfg(test)]
 use logfwd_io::input::InputEvent;
 use logfwd_io::input::InputSource;
 use logfwd_io::tail::ByteOffset;
+use logfwd_output::OnceAsyncFactory;
 #[cfg(feature = "turmoil")]
 use logfwd_output::SinkFactory;
 #[cfg(test)]
 use logfwd_output::build_sink_factory;
-use logfwd_output::OnceAsyncFactory;
 use logfwd_types::pipeline::{PipelineMachine, Running, SourceId};
 use logfwd_types::source_metadata::{SourceMetadataPlan, SourcePathColumn};
-#[cfg(test)]
-use crate::worker_pool::AckItem;
-#[cfg(test)]
-use self::checkpoint_policy::TicketDisposition;
 #[cfg(test)]
 use tokio_util::sync::CancellationToken;
 

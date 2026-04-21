@@ -11,11 +11,11 @@ test_tool = "nextest"
 # under `cargo kani`, not `cargo test`.  Without this exclusion ~32% of
 # logfwd-core mutants are false-positive "missed".
 exclude_re = [
-    "verification::",          # Kani proof harnesses (all crates)
-    "::tests::",               # test-only helper functions
-    "impl.*Display",           # Display impls — cosmetic, not logic
-    "impl.*Debug",             # Debug impls — cosmetic
-    "tracing::",               # tracing instrumentation
+    "verification::", # Kani proof harnesses (all crates)
+    "::tests::",      # test-only helper functions
+    "impl.*Display",  # Display impls — cosmetic, not logic
+    "impl.*Debug",    # Debug impls — cosmetic
+    "tracing::",      # tracing instrumentation
 ]
 
 # Skip mutations inside calls to these functions — they're side-effect-only
@@ -39,11 +39,7 @@ skip_calls = [
 skip_calls_defaults = true
 
 # Exclude generated code and benchmarks from mutation.
-exclude_globs = [
-    "**/generated/**",
-    "**/benches/**",
-    "**/examples/**",
-]
+exclude_globs = ["**/generated/**", "**/benches/**", "**/examples/**"]
 
 # Cap lint level to avoid deny-warnings build failures on mutated code.
 cap_lints = true

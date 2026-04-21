@@ -10,11 +10,11 @@ crate-type = ["cdylib", "rlib"]
 doctest = false
 
 [dependencies]
+js-sys = { workspace = true }
 logfwd-config = { version = "0.1.0", path = "../logfwd-config" }
-wasm-bindgen = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
 
 [package.metadata.wasm-pack.profile.release]
 # Disable wasm-opt to avoid downloading binaryen at build time.

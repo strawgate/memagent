@@ -122,10 +122,9 @@ fn projected_primitive_request_matches_prost_conversion() {
 #[test]
 fn projected_bytes_api_keeps_supported_strings_attached_to_request_body() {
     let body = Bytes::from(primitive_request().encode_to_vec());
-    let batch = crate::otlp_receiver::decode_protobuf_bytes_to_batch_projected_experimental(
-        body.clone(),
-    )
-    .expect("experimental projection should decode primitive request");
+    let batch =
+        crate::otlp_receiver::decode_protobuf_bytes_to_batch_projected_experimental(body.clone())
+            .expect("experimental projection should decode primitive request");
 
     assert!(
         logfwd_arrow::materialize::is_attached(&batch, &body),
@@ -610,9 +609,8 @@ fn invalid_utf8_string_field_is_rejected_by_projection() {
         &resource_logs,
     );
 
-    let projection_err =
-        decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
-            .expect_err("invalid UTF-8 should fail projection");
+    let projection_err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+        .expect_err("invalid UTF-8 should fail projection");
     assert!(
         matches!(projection_err, ProjectionError::Invalid(_)),
         "expected invalid projection reason, got {projection_err:?}"
@@ -625,9 +623,8 @@ fn invalid_utf8_string_field_is_rejected_by_projection() {
 
 #[test]
 fn projected_truncated_length_field_is_invalid() {
-    let err =
-        decode_projected_otlp_logs(&[0x0a, 0x05, 0x01], field_names::DEFAULT_RESOURCE_PREFIX)
-            .expect_err("truncated top-level resource_logs field should fail projection");
+    let err = decode_projected_otlp_logs(&[0x0a, 0x05, 0x01], field_names::DEFAULT_RESOURCE_PREFIX)
+        .expect_err("truncated top-level resource_logs field should fail projection");
 
     assert!(
         matches!(err, ProjectionError::Invalid(_)),
@@ -677,9 +674,8 @@ fn projected_known_log_record_field_with_wrong_wire_type_is_invalid() {
         &resource_logs,
     );
 
-    let projection_err =
-        decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
-            .expect_err("wrong wire type should fail projection");
+    let projection_err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+        .expect_err("wrong wire type should fail projection");
     assert!(
         matches!(projection_err, ProjectionError::Invalid(_)),
         "expected invalid projection reason, got {projection_err:?}"
@@ -699,9 +695,8 @@ fn projected_top_level_known_field_with_wrong_wire_type_is_invalid() {
         0,
     );
 
-    let projection_err =
-        decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
-            .expect_err("wrong top-level wire type should fail projection");
+    let projection_err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+        .expect_err("wrong top-level wire type should fail projection");
     assert!(
         matches!(projection_err, ProjectionError::Invalid(_)),
         "expected invalid projection reason, got {projection_err:?}"
@@ -790,8 +785,7 @@ fn assert_projected_payload_matches_prost(payload: &[u8]) {
         .expect("prost reference should decode handcrafted payload");
     let expected =
         convert_request_to_batch(&request, field_names::DEFAULT_RESOURCE_PREFIX).unwrap();
-    let actual =
-        decode_projected_otlp_logs(payload, field_names::DEFAULT_RESOURCE_PREFIX).unwrap();
+    let actual = decode_projected_otlp_logs(payload, field_names::DEFAULT_RESOURCE_PREFIX).unwrap();
 
     assert_batches_match(&expected, &actual);
 }
@@ -840,8 +834,7 @@ fn assert_batches_match(expected: &RecordBatch, actual: &RecordBatch) {
                         (new_field, child)
                     })
                     .collect();
-                let (new_field_refs, new_arrays): (Vec<_>, Vec<_>) =
-                    new_fields.into_iter().unzip();
+                let (new_field_refs, new_arrays): (Vec<_>, Vec<_>) = new_fields.into_iter().unzip();
                 Arc::new(
                     StructArray::try_new(
                         new_field_refs.into(),
@@ -1756,15 +1749,13 @@ fn projected_complex_anyvalue_plus_malformed_wire_remains_error() {
         &resource_logs,
     );
 
-    let projection_err =
-        decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
-            .expect_err("projection should reject malformed trailing wire");
+    let projection_err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+        .expect_err("projection should reject malformed trailing wire");
     assert!(matches!(projection_err, ProjectionError::Invalid(_)));
 
-    let fallback_err =
-        crate::otlp_receiver::decode_protobuf_bytes_to_batch_projected_experimental(
-            Bytes::from(payload),
-        );
+    let fallback_err = crate::otlp_receiver::decode_protobuf_bytes_to_batch_projected_experimental(
+        Bytes::from(payload),
+    );
     assert!(
         fallback_err.is_err(),
         "unsupported projection fallback must preserve prost malformed-wire rejection"
@@ -1942,9 +1933,8 @@ fn projected_complex_anyvalue_malformed_nested_length_is_invalid() {
         &resource_logs,
     );
 
-    let projection_err =
-        decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
-            .expect_err("truncated nested complex AnyValue should fail projection");
+    let projection_err = decode_projected_otlp_logs(&payload, field_names::DEFAULT_RESOURCE_PREFIX)
+        .expect_err("truncated nested complex AnyValue should fail projection");
     assert!(matches!(projection_err, ProjectionError::Invalid(_)));
     assert!(
         crate::otlp_receiver::decode_protobuf_to_batch(&payload).is_err(),
@@ -2122,8 +2112,7 @@ fn randomized_multi_container_request(
                                 observed_time_unix_nano: 1_700_000_000_000_001_000u64
                                     .saturating_add(row as u64),
                                 severity_number: (row % 24) as i32,
-                                severity_text: ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"]
-                                    [row % 5]
+                                severity_text: ["TRACE", "DEBUG", "INFO", "WARN", "ERROR"][row % 5]
                                     .to_string(),
                                 body: Some(any_string(&format!("row-{row}"))),
                                 attributes,

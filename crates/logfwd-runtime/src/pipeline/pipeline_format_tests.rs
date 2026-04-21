@@ -6,8 +6,7 @@ use logfwd_core::scan_config::ScanConfig;
 /// JSON format: raw bytes pass directly through to scanner.
 #[test]
 fn json_format_direct_to_scanner() {
-    let input =
-        b"{\"level\":\"INFO\",\"msg\":\"hello\"}\n{\"level\":\"WARN\",\"msg\":\"world\"}\n";
+    let input = b"{\"level\":\"INFO\",\"msg\":\"hello\"}\n{\"level\":\"WARN\",\"msg\":\"world\"}\n";
     let config = ScanConfig {
         wanted_fields: vec![],
         extract_all: true,

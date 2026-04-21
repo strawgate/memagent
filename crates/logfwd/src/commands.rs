@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use clap::CommandFactory;
 
+use crate::VERSION;
 use crate::cli::{
     BlastArgs, BlastDestination, Cli, CliError, Commands, CompletionShell, DevourArgs, DevourMode,
     SendArgs, bold, dim, green, red, reset, use_color, use_json_logs_for_stderr,
@@ -15,7 +16,6 @@ use crate::send::{build_stdin_send_config_yaml, resolve_send_config_path};
 use crate::validate::{
     validate_generated_config_read_only, validate_pipelines, validate_pipelines_read_only,
 };
-use crate::VERSION;
 
 // ---------------------------------------------------------------------------
 // Command dispatch
@@ -749,9 +749,7 @@ pub(crate) fn format_bytes(b: u64) -> String {
 
 /// Test-only synchronous wrapper around [`cmd_effective_config`].
 #[cfg(test)]
-pub(crate) fn run_command_sync_effective_config(
-    config_path: Option<&str>,
-) -> Result<(), CliError> {
+pub(crate) fn run_command_sync_effective_config(config_path: Option<&str>) -> Result<(), CliError> {
     cmd_effective_config(config_path)
 }
 
@@ -944,10 +942,8 @@ output:
         )
         .expect("write config");
 
-        run_command_sync_effective_config(
-            Some(file.path().to_str().expect("utf-8 temp path")),
-        )
-        .expect("read-only validation should not bind the configured port");
+        run_command_sync_effective_config(Some(file.path().to_str().expect("utf-8 temp path")))
+            .expect("read-only validation should not bind the configured port");
     }
 
     #[test]

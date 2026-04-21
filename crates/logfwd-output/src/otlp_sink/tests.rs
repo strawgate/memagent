@@ -233,9 +233,8 @@ fn assert_timestamp_encoding_parity(
 
     let mut handwritten = make_sink();
     handwritten.encode_batch(&batch, &metadata);
-    let handwritten_request =
-        ExportLogsServiceRequest::decode(handwritten.encoder_buf.as_slice())
-            .expect("prost must decode handwritten output");
+    let handwritten_request = ExportLogsServiceRequest::decode(handwritten.encoder_buf.as_slice())
+        .expect("prost must decode handwritten output");
 
     let mut generated = make_sink();
     generated.encode_batch_generated_fast(&batch, &metadata);
@@ -373,8 +372,8 @@ fn encode_trace_id_as_field_9() {
     // field 9, wire type 2: tag = (9 << 3) | 2 = 0x4A; length = 16 = 0x10
     let mut expected = vec![0x4Au8, 0x10u8];
     expected.extend_from_slice(&[
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
-        0x0f, 0x10,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10,
     ]);
     assert!(
         contains_bytes(&sink.encoder_buf, &expected),
@@ -1170,13 +1169,12 @@ fn otlp_encoder_keeps_unselected_body_alias_as_attribute() {
         _ => None,
     });
     let message_attr = record.attributes.iter().find(|kv| kv.key == "message");
-    let message_attr =
-        message_attr
-            .and_then(|kv| kv.value.as_ref())
-            .and_then(|v| match &v.value {
-                Some(Value::StringValue(s)) => Some(s.as_str()),
-                _ => None,
-            });
+    let message_attr = message_attr
+        .and_then(|kv| kv.value.as_ref())
+        .and_then(|v| match &v.value {
+            Some(Value::StringValue(s)) => Some(s.as_str()),
+            _ => None,
+        });
 
     assert_eq!(body, Some("canonical-body"));
     assert_eq!(message_attr, Some("alias-body"));
@@ -1219,9 +1217,8 @@ fn body_column_falls_back_when_message_is_null_for_row() {
     .expect("handwritten sink")
     .with_message_field("message".to_string());
     handwritten.encode_batch(&batch, &metadata);
-    let handwritten_request =
-        ExportLogsServiceRequest::decode(handwritten.encoder_buf.as_slice())
-            .expect("prost must decode handwritten output");
+    let handwritten_request = ExportLogsServiceRequest::decode(handwritten.encoder_buf.as_slice())
+        .expect("prost must decode handwritten output");
 
     let mut generated = OtlpSink::new(
         "test".to_string(),
@@ -1878,8 +1875,7 @@ fn int64_timestamp_column_is_recognised() {
     ]));
     let ts_arr = Int64Array::from(vec![EXPECTED_NS as i64]);
     let body_arr = StringArray::from(vec!["hello"]);
-    let batch =
-        RecordBatch::try_new(schema, vec![Arc::new(ts_arr), Arc::new(body_arr)]).unwrap();
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(ts_arr), Arc::new(body_arr)]).unwrap();
 
     let mut sink = make_sink();
     sink.encode_batch(&batch, &make_metadata());
@@ -1943,8 +1939,7 @@ fn uint64_timestamp_column_is_recognised() {
     ]));
     let ts_arr = UInt64Array::from(vec![EXPECTED_NS]);
     let body_arr = StringArray::from(vec!["hello"]);
-    let batch =
-        RecordBatch::try_new(schema, vec![Arc::new(ts_arr), Arc::new(body_arr)]).unwrap();
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(ts_arr), Arc::new(body_arr)]).unwrap();
 
     let mut sink = make_sink();
     sink.encode_batch(&batch, &make_metadata());

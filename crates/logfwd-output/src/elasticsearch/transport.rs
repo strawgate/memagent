@@ -9,8 +9,8 @@ use arrow::record_batch::RecordBatch;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::types::{ElasticsearchSink, SendAttempt};
 use super::super::BatchMetadata;
+use super::types::{ElasticsearchSink, SendAttempt};
 
 impl ElasticsearchSink {
     pub async fn query_arrow(&self, query: &str) -> io::Result<Vec<RecordBatch>> {
@@ -317,7 +317,9 @@ impl ElasticsearchSink {
         }
     }
 
-    pub(super) fn streaming_producer_error(producer_result: io::Result<io::Result<()>>) -> Option<io::Error> {
+    pub(super) fn streaming_producer_error(
+        producer_result: io::Result<io::Result<()>>,
+    ) -> Option<io::Error> {
         match producer_result {
             Ok(Ok(())) => None,
             Ok(Err(producer_error)) => Some(io::Error::other(format!(

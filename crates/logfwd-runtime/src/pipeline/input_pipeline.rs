@@ -35,9 +35,9 @@ use tokio_util::sync::CancellationToken;
 use logfwd_diagnostics::diagnostics::PipelineMetrics;
 
 #[cfg(not(feature = "turmoil"))]
-use super::io_worker::{IoWorkItem, io_worker_loop};
-#[cfg(not(feature = "turmoil"))]
 use super::cpu_worker::cpu_worker_loop;
+#[cfg(not(feature = "turmoil"))]
+use super::io_worker::{IoWorkItem, io_worker_loop};
 #[cfg(not(feature = "turmoil"))]
 use super::{InputState, InputTransform};
 

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use arrow::array::{
     ArrayRef, BinaryArray, BooleanArray, Float64Array, Int32Array, Int64Array, LargeBinaryArray,
-    StringArray, TimestampNanosecondArray, UInt32Array, UInt8Array,
+    StringArray, TimestampNanosecondArray, UInt8Array, UInt32Array,
 };
 use arrow::datatypes::DataType;
 use arrow::error::ArrowError;
@@ -20,10 +20,10 @@ use super::helpers::{
     severity_text_to_number, str_value_at,
 };
 use super::{
-    attrs_schema, is_well_known_body, is_well_known_flags, is_well_known_severity,
-    is_well_known_span_id, is_well_known_timestamp, is_well_known_trace_id, logs_schema,
-    StarSchema, ATTR_TYPE_BOOL, ATTR_TYPE_BYTES, ATTR_TYPE_DOUBLE, ATTR_TYPE_INT, ATTR_TYPE_STR,
-    RESOURCE_PREFIX,
+    ATTR_TYPE_BOOL, ATTR_TYPE_BYTES, ATTR_TYPE_DOUBLE, ATTR_TYPE_INT, ATTR_TYPE_STR,
+    RESOURCE_PREFIX, StarSchema, attrs_schema, is_well_known_body, is_well_known_flags,
+    is_well_known_severity, is_well_known_span_id, is_well_known_timestamp, is_well_known_trace_id,
+    logs_schema,
 };
 
 /// Build an empty `StarSchema` with zero rows.

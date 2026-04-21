@@ -13,7 +13,6 @@ pub use types::OtlpSink;
 
 use crate::Compression;
 
-
 #[cfg(test)]
 mod otlp_sink_correctness_tests;
 

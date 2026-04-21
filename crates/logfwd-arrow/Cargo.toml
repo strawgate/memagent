@@ -14,11 +14,11 @@ doctest = false
 _test-internals = []
 
 [dependencies]
-logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
-logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
-logfwd-lint-attrs = { version = "0.1.0", path = "../logfwd-lint-attrs" }
 arrow = { workspace = true }
 bytes = "1"
+logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
+logfwd-lint-attrs = { version = "0.1.0", path = "../logfwd-lint-attrs" }
+logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 
 [dev-dependencies]
 proptest = { workspace = true }

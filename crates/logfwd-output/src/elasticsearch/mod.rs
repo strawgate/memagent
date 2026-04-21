@@ -14,7 +14,6 @@ mod types;
 pub use factory::ElasticsearchSinkFactory;
 pub use types::{ElasticsearchRequestMode, ElasticsearchSink};
 
-
 #[cfg(test)]
 mod tests;
 

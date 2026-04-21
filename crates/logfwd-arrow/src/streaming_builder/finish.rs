@@ -13,7 +13,7 @@ use arrow::record_batch::{RecordBatch, RecordBatchOptions};
 
 use logfwd_core::scanner::BuilderState;
 
-use super::{append_string_view, new_emitted_name_set, StreamingBuilder};
+use super::{StreamingBuilder, append_string_view, new_emitted_name_set};
 
 impl StreamingBuilder {
     /// Build a RecordBatch with zero-copy StringViewArrays.

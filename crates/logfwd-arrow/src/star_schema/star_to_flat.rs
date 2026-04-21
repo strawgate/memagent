@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray,
-    UInt32Array, UInt8Array,
+    UInt8Array, UInt32Array,
 };
 use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use arrow::error::ArrowError;
@@ -15,8 +15,8 @@ use super::helpers::{
     attrs_row_value_to_string, chrono_timestamp, hex_encode_lower, str_from_array,
 };
 use super::{
-    StarSchema, ATTR_TYPE_BOOL, ATTR_TYPE_BYTES, ATTR_TYPE_DOUBLE, ATTR_TYPE_INT, ATTR_TYPE_STR,
-    RESOURCE_PREFIX,
+    ATTR_TYPE_BOOL, ATTR_TYPE_BYTES, ATTR_TYPE_DOUBLE, ATTR_TYPE_INT, ATTR_TYPE_STR,
+    RESOURCE_PREFIX, StarSchema,
 };
 
 use arrow::array::TimestampNanosecondArray;

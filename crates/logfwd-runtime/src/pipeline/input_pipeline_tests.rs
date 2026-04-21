@@ -294,8 +294,7 @@ fn append_cri_metadata_for_data_pads_prior_and_later_rows() {
 #[test]
 fn cri_metadata_columns_are_queryable_before_sql() {
     let mut transform =
-        SqlTransform::new("SELECT _timestamp, _stream, msg FROM logs")
-            .expect("sql");
+        SqlTransform::new("SELECT _timestamp, _stream, msg FROM logs").expect("sql");
     let mut scanner = Scanner::new(transform.scan_config());
     let scanned = scanner
         .scan(Bytes::from_static(b"{\"msg\":\"hello\"}\n"))
@@ -545,9 +544,8 @@ impl InputSource for BatchSource {
         }
         self.emitted = true;
         let schema = Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, true)]));
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["a", "b"]))])
-                .expect("batch");
+        let batch = RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(vec!["a", "b"]))])
+            .expect("batch");
         Ok(vec![InputEvent::Batch {
             batch,
             source_id: Some(SourceId(12)),
@@ -660,9 +658,7 @@ const SHUTDOWN_DRAIN_PROGRESS_LOG_INTERVAL_ROUNDS: usize = 64;
 fn io_worker_uses_configured_input_name_for_source_metadata() {
     let (tx, mut rx) = mpsc::channel(IO_CPU_CHANNEL_CAPACITY);
     let shutdown = CancellationToken::new();
-    let stats = Arc::new(ComponentStats::new_with_health(
-        ComponentHealth::Starting,
-    ));
+    let stats = Arc::new(ComponentStats::new_with_health(ComponentHealth::Starting));
     let input = InputState {
         source: Box::new(SingleDataSource { emitted: false }),
         buf: BytesMut::new(),
@@ -716,9 +712,7 @@ fn io_worker_uses_configured_input_name_for_source_metadata() {
 fn io_worker_counts_split_line_origin_once() {
     let (tx, mut rx) = mpsc::channel(IO_CPU_CHANNEL_CAPACITY);
     let shutdown = CancellationToken::new();
-    let stats = Arc::new(ComponentStats::new_with_health(
-        ComponentHealth::Starting,
-    ));
+    let stats = Arc::new(ComponentStats::new_with_health(ComponentHealth::Starting));
     let input = InputState {
         source: Box::new(SplitLineSource { emitted: false }),
         buf: BytesMut::new(),
@@ -774,9 +768,7 @@ fn io_worker_counts_split_line_origin_once() {
 fn io_worker_attaches_source_metadata_to_batch_event() {
     let (tx, mut rx) = mpsc::channel(IO_CPU_CHANNEL_CAPACITY);
     let shutdown = CancellationToken::new();
-    let stats = Arc::new(ComponentStats::new_with_health(
-        ComponentHealth::Starting,
-    ));
+    let stats = Arc::new(ComponentStats::new_with_health(ComponentHealth::Starting));
     let input = InputState {
         source: Box::new(BatchSource { emitted: false }),
         buf: BytesMut::new(),
@@ -835,9 +827,7 @@ fn io_worker_attaches_source_metadata_to_batch_event() {
 fn io_worker_shutdown_drains_buffered_source_metadata() {
     let (tx, mut rx) = mpsc::channel(IO_CPU_CHANNEL_CAPACITY);
     let shutdown = CancellationToken::new();
-    let stats = Arc::new(ComponentStats::new_with_health(
-        ComponentHealth::Starting,
-    ));
+    let stats = Arc::new(ComponentStats::new_with_health(ComponentHealth::Starting));
     let input = InputState {
         source: Box::new(ShutdownDrainSource { emitted: false }),
         buf: BytesMut::new(),
@@ -891,9 +881,7 @@ fn io_worker_shutdown_drains_buffered_source_metadata() {
 fn io_worker_shutdown_repolls_until_source_finishes() {
     let (tx, mut rx) = mpsc::channel(IO_CPU_CHANNEL_CAPACITY);
     let shutdown = CancellationToken::new();
-    let stats = Arc::new(ComponentStats::new_with_health(
-        ComponentHealth::Starting,
-    ));
+    let stats = Arc::new(ComponentStats::new_with_health(ComponentHealth::Starting));
     let input = InputState {
         source: Box::new(MultiShutdownPollSource {
             remaining: SHUTDOWN_DRAIN_PROGRESS_LOG_INTERVAL_ROUNDS + 2,
@@ -1019,9 +1007,7 @@ fn source_metadata_attach_rejects_row_count_mismatch() {
 
 #[test]
 fn public_source_path_attached_before_sql_is_queryable() {
-    let mut transform =
-        SqlTransform::new(r#"SELECT "file.path", msg FROM logs"#)
-            .expect("sql");
+    let mut transform = SqlTransform::new(r#"SELECT "file.path", msg FROM logs"#).expect("sql");
     let mut scanner = Scanner::new(transform.scan_config());
     let scanned = scanner
         .scan(Bytes::from_static(b"{\"msg\":\"hello\"}\n"))
@@ -1136,8 +1122,7 @@ fn select_star_does_not_attach_source_metadata() {
 
 #[test]
 fn explicit_projection_preserves_new_source_metadata_columns() {
-    let mut transform =
-        SqlTransform::new("SELECT msg, __source_id FROM logs").expect("sql");
+    let mut transform = SqlTransform::new("SELECT msg, __source_id FROM logs").expect("sql");
     let mut scanner = Scanner::new(transform.scan_config());
     let scanned = scanner
         .scan(Bytes::from_static(b"{\"msg\":\"hello\"}\n"))
@@ -1190,8 +1175,7 @@ output:
     let config = logfwd_config::Config::load_str(yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
     let meter = opentelemetry::global::meter("test");
-    let mut pipeline =
-        Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
+    let mut pipeline = Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
     pipeline.set_batch_timeout(Duration::from_millis(10));
 
     let shutdown = CancellationToken::new();
@@ -1242,8 +1226,7 @@ output:
     let config = logfwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
     let meter = opentelemetry::global::meter("test");
-    let mut pipeline =
-        Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
+    let mut pipeline = Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
     pipeline.set_batch_timeout(Duration::from_millis(10));
 
     let shutdown = CancellationToken::new();
@@ -1338,8 +1321,7 @@ pipelines:
     let config = logfwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
     let meter = opentelemetry::global::meter("test");
-    let mut pipeline =
-        Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
+    let mut pipeline = Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
     pipeline.set_batch_timeout(Duration::from_millis(10));
 
     let shutdown = CancellationToken::new();
@@ -1417,8 +1399,7 @@ output:
     let config = logfwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
     let meter = opentelemetry::global::meter("test");
-    let mut pipeline =
-        Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
+    let mut pipeline = Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
     pipeline.set_batch_timeout(Duration::from_millis(10));
 
     let shutdown = CancellationToken::new();
@@ -1492,8 +1473,7 @@ output:
     let config = logfwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
     let meter = opentelemetry::global::meter("test");
-    let mut pipeline =
-        Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
+    let mut pipeline = Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
     pipeline.set_batch_timeout(Duration::from_secs(60));
 
     let shutdown = CancellationToken::new();
@@ -1551,8 +1531,7 @@ output:
     let config = logfwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
     let meter = opentelemetry::global::meter("test");
-    let mut pipeline =
-        Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
+    let mut pipeline = Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
     pipeline.set_batch_timeout(Duration::from_millis(10));
 
     let shutdown = CancellationToken::new();
@@ -1618,8 +1597,7 @@ output:
     let config = logfwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
     let meter = opentelemetry::global::meter("test");
-    let mut pipeline =
-        Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
+    let mut pipeline = Pipeline::from_config("default", pipe_cfg, &meter, None).unwrap();
     pipeline.set_batch_timeout(Duration::from_millis(10));
 
     // Processor that always returns a transient error.
@@ -1630,8 +1608,7 @@ output:
             &mut self,
             _batch: RecordBatch,
             _meta: &logfwd_output::BatchMetadata,
-        ) -> Result<smallvec::SmallVec<[RecordBatch; 1]>, ProcessorError>
-        {
+        ) -> Result<smallvec::SmallVec<[RecordBatch; 1]>, ProcessorError> {
             Err(ProcessorError::Transient(
                 "test transient error".to_string(),
             ))

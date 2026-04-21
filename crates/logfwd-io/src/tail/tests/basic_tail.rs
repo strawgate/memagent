@@ -5,8 +5,8 @@ use std::fs::{self, File};
 use std::io::{self, Write};
 use std::time::Duration;
 
-use super::super::*;
 use super::super::identity::identify_file;
+use super::super::*;
 use super::{create_test_stats, poll_until};
 
 #[test]

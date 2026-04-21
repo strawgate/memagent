@@ -10,11 +10,14 @@ use arrow::record_batch::RecordBatch;
 
 use logfwd_config::ElasticsearchRequestMode;
 
-use super::types::{BulkItemResult, ElasticsearchSink, SendAttempt};
 use super::super::BatchMetadata;
+use super::types::{BulkItemResult, ElasticsearchSink, SendAttempt};
 
 impl ElasticsearchSink {
-    pub(super) fn project_batch_rows(batch: &RecordBatch, row_ids: &[u32]) -> io::Result<RecordBatch> {
+    pub(super) fn project_batch_rows(
+        batch: &RecordBatch,
+        row_ids: &[u32],
+    ) -> io::Result<RecordBatch> {
         if row_ids.len() == batch.num_rows()
             && row_ids
                 .iter()
@@ -76,7 +79,10 @@ impl ElasticsearchSink {
         }
     }
 
-    pub(super) fn bulk_attempt_from_result(row_ids: Vec<u32>, result: BulkItemResult) -> SendAttempt {
+    pub(super) fn bulk_attempt_from_result(
+        row_ids: Vec<u32>,
+        result: BulkItemResult,
+    ) -> SendAttempt {
         if result.retry_items.is_empty() && result.permanent_errors.is_empty() {
             return SendAttempt::Ok;
         }
@@ -535,13 +541,20 @@ impl ElasticsearchSink {
         }
     }
 
-    pub(super) fn combine_io_errors(left: io::Error, right_prefix: &str, right: io::Error) -> io::Error {
+    pub(super) fn combine_io_errors(
+        left: io::Error,
+        right_prefix: &str,
+        right: io::Error,
+    ) -> io::Error {
         io::Error::new(left.kind(), format!("{left}; {right_prefix}: {right}"))
     }
 
     /// Convert a [`SendResult`](crate::sink::SendResult) into a [`SendAttempt`],
     /// carrying `row_ids` forward as `pending_rows` for retryable/IO variants.
-    pub(super) fn attempt_from_send_result(row_ids: Vec<u32>, result: crate::sink::SendResult) -> SendAttempt {
+    pub(super) fn attempt_from_send_result(
+        row_ids: Vec<u32>,
+        result: crate::sink::SendResult,
+    ) -> SendAttempt {
         match result {
             crate::sink::SendResult::Ok => SendAttempt::Ok,
             crate::sink::SendResult::Rejected(reason) => SendAttempt::Rejected {
@@ -625,5 +638,4 @@ impl ElasticsearchSink {
             }
         }
     }
-
 }

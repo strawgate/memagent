@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use opentelemetry::metrics::MeterProvider;
 
-use crate::cli::{CliError, green, red, reset, bold};
+use crate::cli::{CliError, bold, green, red, reset};
 
 // ---------------------------------------------------------------------------
 // Public validation entry points

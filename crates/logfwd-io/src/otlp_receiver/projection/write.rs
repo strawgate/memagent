@@ -6,9 +6,9 @@
 use logfwd_arrow::columnar::builder::ColumnarBatchBuilder;
 use logfwd_arrow::columnar::plan::FieldHandle;
 
+use super::ProjectionError;
 use super::generated;
 use super::wire::{StringStorage, WireAny, WireScratch};
-use super::ProjectionError;
 
 pub(super) fn write_wire_any_complex_json(
     builder: &mut ColumnarBatchBuilder,
