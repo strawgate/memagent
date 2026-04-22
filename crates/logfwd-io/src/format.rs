@@ -133,6 +133,17 @@ impl FormatDecoder {
         matches!(self, Self::Cri { .. } | Self::Auto { .. })
     }
 
+    /// Return true when this decoder passes lines through verbatim
+    /// (no rewriting, no CRI extraction). Passthrough formats are eligible
+    /// for zero-copy fast paths in framing.
+    #[must_use]
+    pub fn is_passthrough(&self) -> bool {
+        matches!(
+            self,
+            Self::Passthrough { .. } | Self::PassthroughJson { .. }
+        )
+    }
+
     /// Create a new instance with fresh state but the same format and stats.
     ///
     /// Used to create per-source format processors so that stateful formats
@@ -251,7 +262,7 @@ impl FormatDecoder {
 /// whitespace (`' '`, `'\t'`, `'\r'`), it begins with `{`.  Empty lines
 /// are ignored.  Lines are forwarded to `out` unchanged — this function
 /// only updates the counter.
-fn count_json_parse_errors(chunk: &[u8], stats: &ComponentStats) {
+pub(crate) fn count_json_parse_errors(chunk: &[u8], stats: &ComponentStats) {
     let mut pos = 0;
     while pos < chunk.len() {
         let eol = memchr::memchr(b'\n', &chunk[pos..]).map_or(chunk.len(), |o| pos + o);

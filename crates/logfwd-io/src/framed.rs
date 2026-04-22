@@ -150,7 +150,104 @@ impl FramedInput {
                     };
                     let tainted_on_entry = state.overflow_tainted;
 
-                    // Prepend remainder from last poll for this source,
+                    // --- ZERO-COPY FAST PATH ---
+                    // For passthrough formats with no remainder and no tainted
+                    // state, forward the Bytes directly without copying.
+                    if state.format.is_passthrough()
+                        && state.remainder.is_empty()
+                        && !tainted_on_entry
+                    {
+                        let last_nl = memchr::memrchr(b'\n', &bytes);
+                        match last_nl {
+                            Some(pos) if pos + 1 == bytes.len() => {
+                                // Entire chunk is complete lines — zero-copy pass.
+                                state.tracker.apply_read(n_bytes, Some(n_bytes - 1));
+                                let line_count = memchr::memchr_iter(b'\n', &bytes).count();
+                                self.stats.inc_lines(line_count as u64);
+                                if let FormatDecoder::PassthroughJson { stats, .. } = &state.format
+                                {
+                                    crate::format::count_json_parse_errors(&bytes, stats);
+                                }
+                                result_events.push(InputEvent::Data {
+                                    bytes,
+                                    source_id,
+                                    accounted_bytes: 0,
+                                    cri_metadata: None,
+                                });
+                                if key.is_some()
+                                    && self.inner.should_reclaim_completed_source_state()
+                                    && self
+                                        .sources
+                                        .get(&key)
+                                        .is_some_and(SourceState::is_reclaimable)
+                                {
+                                    self.sources.remove(&key);
+                                }
+                                continue;
+                            }
+                            Some(pos) => {
+                                // Complete lines + remainder tail.
+                                let complete = bytes.slice(0..=pos);
+                                state.tracker.apply_read(n_bytes, Some(pos as u64));
+                                let tail = &bytes[pos + 1..];
+                                if tail.len() > MAX_REMAINDER_BYTES {
+                                    tracing::warn!(
+                                        source_id = ?key,
+                                        tail_bytes = tail.len(),
+                                        max_remainder_bytes = MAX_REMAINDER_BYTES,
+                                        "framed.remainder_overflow — tail after newline \
+                                         exceeds MAX_REMAINDER_BYTES; keeping last \
+                                         MAX_REMAINDER_BYTES bytes"
+                                    );
+                                    self.stats.inc_parse_errors(1);
+                                    let start = tail.len() - MAX_REMAINDER_BYTES;
+                                    state.remainder = tail[start..].to_vec();
+                                    state.format.reset();
+                                    state.overflow_tainted = true;
+                                } else {
+                                    state.remainder = tail.to_vec();
+                                }
+                                let line_count = memchr::memchr_iter(b'\n', &complete).count();
+                                self.stats.inc_lines(line_count as u64);
+                                if let FormatDecoder::PassthroughJson { stats, .. } = &state.format
+                                {
+                                    crate::format::count_json_parse_errors(&complete, stats);
+                                }
+                                result_events.push(InputEvent::Data {
+                                    bytes: complete,
+                                    source_id,
+                                    accounted_bytes: 0,
+                                    cri_metadata: None,
+                                });
+                                continue;
+                            }
+                            None => {
+                                // No newline — entire chunk is remainder.
+                                state.tracker.apply_read(n_bytes, None);
+                                if bytes.len() > MAX_REMAINDER_BYTES {
+                                    tracing::warn!(
+                                        source_id = ?key,
+                                        chunk_bytes = bytes.len(),
+                                        max_remainder_bytes = MAX_REMAINDER_BYTES,
+                                        "framed.remainder_overflow — partial line exceeds \
+                                         MAX_REMAINDER_BYTES; keeping last MAX_REMAINDER_BYTES \
+                                         bytes and resetting format state"
+                                    );
+                                    self.stats.inc_parse_errors(1);
+                                    let start = bytes.len() - MAX_REMAINDER_BYTES;
+                                    state.remainder = bytes[start..].to_vec();
+                                    state.format.reset();
+                                    state.overflow_tainted = true;
+                                } else {
+                                    state.remainder = bytes.to_vec();
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    // --- END ZERO-COPY FAST PATH ---
+
+                    // General path: prepend remainder from last poll,
                     // reusing the Vec's capacity.
                     let mut chunk = std::mem::take(&mut state.remainder);
                     chunk.extend_from_slice(&bytes);
