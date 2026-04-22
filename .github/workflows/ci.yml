@@ -363,7 +363,7 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
       (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 90
     env:
       RUSTC_WRAPPER: ""
     steps:

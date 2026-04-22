@@ -1330,20 +1330,18 @@ mod verification {
         kani::cover!(field_number == 0x1FFFFFFF && wire_type == 5);
     }
 
-    /// Oracle proof: days_from_civil matches a naive year/month
-    /// iteration for bounded date components with year in [1970, 2100].
+    /// Oracle proof: days_from_civil matches a closed-form Julian Day
+    /// Number calculation for bounded date components in [1970, 2100].
     ///
-    /// Note: this proof range includes potentially non-calendar-valid
-    /// day-of-month combinations (e.g. Feb 31); it does not claim to
-    /// admit only valid civil dates. The oracle and the implementation
-    /// agree on all such inputs regardless.
+    /// Uses the Fliegel-Van Flandern JDN formula (a completely different
+    /// algorithm from the Hinnant formula in days_from_civil) as the
+    /// Kani-compatible oracle. Both are pure arithmetic with no loops,
+    /// so no unwind bound is needed.
     ///
-    /// Uses a completely different algorithm (cumulative day counting)
-    /// from the Hinnant formula. Kani can't use chrono, so this naive
-    /// oracle serves as the Kani-compatible reference. A chrono-based
-    /// oracle test below covers the same property in test mode.
+    /// Note: this proof range includes non-calendar-valid day-of-month
+    /// combinations (e.g. Feb 31); the oracle and implementation agree
+    /// on all such inputs regardless.
     #[kani::proof]
-    #[kani::unwind(142)] // naive_days_from_epoch: up to 130 year-loop + 11 month-loop iterations + 1
     #[kani::solver(kissat)]
     fn verify_days_from_civil_oracle() {
         let year: i64 = kani::any();
@@ -1354,43 +1352,31 @@ mod verification {
         kani::assume(month >= 1 && month <= 12);
         kani::assume(day >= 1 && day <= 31);
 
-        // Cover checks ensure the assume region is actually exercised (non-vacuous proof).
         kani::cover!(year == 1970 && month == 1 && day == 1, "epoch start");
         kani::cover!(year == 2100 && month == 12 && day == 31, "upper boundary");
         kani::cover!(year == 2000 && month == 2 && day == 29, "leap-year Feb 29");
         kani::cover!(year == 1971 && month == 6 && day == 15, "typical mid-range");
 
         let result = days_from_civil(year, month, day);
-
-        let oracle = naive_days_from_epoch(year, month, day);
+        let oracle = jdn_days_from_epoch(year, month, day);
         assert!(
             result == oracle,
-            "days_from_civil disagrees with naive oracle"
+            "days_from_civil disagrees with JDN oracle"
         );
     }
 
-    fn naive_days_from_epoch(year: i64, month: u32, day: u32) -> i64 {
-        let mut days: i64 = 0;
-        let mut y = 1970i64;
-        while y < year {
-            days += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
-                366
-            } else {
-                365
-            };
-            y += 1;
-        }
-        let month_days: [i64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-        let mut m = 1u32;
-        while m < month {
-            let mut d = month_days[(m - 1) as usize];
-            if m == 2 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
-                d += 1;
-            }
-            days += d;
-            m += 1;
-        }
-        days + day as i64 - 1
+    /// Closed-form oracle using Fliegel-Van Flandern Julian Day Number.
+    /// Returns days since 1970-01-01 without any loops.
+    fn jdn_days_from_epoch(year: i64, month: u32, day: u32) -> i64 {
+        // Fliegel-Van Flandern JDN formula (integer arithmetic).
+        let m = month as i64;
+        let d = day as i64;
+        let a = (14 - m) / 12;
+        let y = year + 4800 - a;
+        let mo = m + 12 * a - 3;
+        let jdn = d + (153 * mo + 2) / 5 + 365 * y + y / 4 - y / 100 + y / 400 - 32045;
+        // JDN of 1970-01-01 is 2440588.
+        jdn - 2440588
     }
 
     /// Prove bytes_field_size matches actual encode_bytes_field output for the
