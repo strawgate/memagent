@@ -25,21 +25,26 @@ python scripts/audit_large_rust_files.py --root . --threshold 1000 --target 600 
 
 ## Refactor pattern to apply per file
 
-Use a `mod.rs` plus thematic submodules, preserving public API and behavior:
+Prefer the least disruptive split that materially improves navigability while
+preserving the public API:
 
-1. Convert `<module>.rs` into `<module>/mod.rs` with only:
-   - imports shared across submodules,
-   - public types and public re-exports,
-   - submodule declarations.
-2. Split logic into submodules by cohesive concern (parser, builder, state, io, tests).
-3. Keep each submodule below 600 lines; if one grows, split again by function family.
-4. Keep tests close to changed code unless test-only files are already established.
-5. Run crate-targeted tests first, then workspace-level checks.
+1. Keep the existing wrapper file (`<module>.rs`) as the public entrypoint when
+   callers already import that path and the split is primarily about file size.
+2. Shard large implementations into thematic companion files (`<module>_parts/`,
+   `generated_parts/`, `tests_parts/`) and have the wrapper file include or
+   delegate to them.
+3. Promote to a full `<module>/mod.rs` tree only when the split exposes stable
+   internal seams that benefit from real submodule visibility boundaries.
+4. Keep each shard below ~600 lines; if one grows, split again by function
+   family or test theme.
+5. Keep tests close to the wrapper/module they validate unless an existing
+   generated/test-only layout already exists.
+6. Run crate-targeted tests first, then workspace-level checks.
 
 ## Proposed split skeletons
 
 ### `json_scanner`
-- `json_scanner/mod.rs`
+- `json_scanner.rs` wrapper or `json_scanner/mod.rs`
 - `json_scanner/tokenize.rs`
 - `json_scanner/parse.rs`
 - `json_scanner/scan_state.rs`
@@ -47,7 +52,7 @@ Use a `mod.rs` plus thematic submodules, preserving public API and behavior:
 - `json_scanner/tests.rs`
 
 ### `validate`
-- `validate/mod.rs`
+- `validate.rs` wrapper or `validate/mod.rs`
 - `validate/schema.rs`
 - `validate/rules.rs`
 - `validate/errors.rs`
@@ -55,7 +60,7 @@ Use a `mod.rs` plus thematic submodules, preserving public API and behavior:
 - `validate/tests.rs`
 
 ### `query_analyzer`
-- `query_analyzer/mod.rs`
+- `query_analyzer.rs` wrapper or `query_analyzer/mod.rs`
 - `query_analyzer/ast.rs`
 - `query_analyzer/rewrite.rs`
 - `query_analyzer/validation.rs`
@@ -63,7 +68,7 @@ Use a `mod.rs` plus thematic submodules, preserving public API and behavior:
 - `query_analyzer/tests.rs`
 
 ### `diagnostics/server`
-- `diagnostics/server/mod.rs`
+- `diagnostics/server.rs` wrapper or `diagnostics/server/mod.rs`
 - `diagnostics/server/router.rs`
 - `diagnostics/server/handlers.rs`
 - `diagnostics/server/state.rs`
@@ -71,7 +76,7 @@ Use a `mod.rs` plus thematic submodules, preserving public API and behavior:
 - `diagnostics/server/tests.rs`
 
 ### `enrichment`
-- `enrichment/mod.rs`
+- `enrichment.rs` wrapper or `enrichment/mod.rs`
 - `enrichment/catalog.rs`
 - `enrichment/lookup.rs`
 - `enrichment/record_batch.rs`
@@ -79,7 +84,7 @@ Use a `mod.rs` plus thematic submodules, preserving public API and behavior:
 - `enrichment/tests.rs`
 
 ### `host_metrics`
-- `host_metrics/mod.rs`
+- `host_metrics.rs` wrapper or `host_metrics/mod.rs`
 - `host_metrics/cpu.rs`
 - `host_metrics/memory.rs`
 - `host_metrics/disk.rs`
@@ -87,33 +92,26 @@ Use a `mod.rs` plus thematic submodules, preserving public API and behavior:
 - `host_metrics/tests.rs`
 
 ### `generator`
-- `generator/mod.rs`
-- `generator/config.rs`
-- `generator/sources.rs`
-- `generator/scheduling.rs`
-- `generator/tests.rs`
+- `generator.rs` wrapper
+- `generator_parts/part_*.rs`
+- `generator_parts/tests_*.rs`
 
 ### `projection/tests`
-- `projection/tests/mod.rs`
-- `projection/tests/roundtrip.rs`
-- `projection/tests/type_coercion.rs`
-- `projection/tests/error_paths.rs`
-- `projection/tests/edge_cases.rs`
+- `projection/tests.rs` wrapper
+- `projection/tests_parts/part_*.rs`
 
 ### `tcp_input`
-- `tcp_input/mod.rs`
-- `tcp_input/listener.rs`
-- `tcp_input/connection.rs`
-- `tcp_input/framing.rs`
-- `tcp_input/tests.rs`
+- `tcp_input.rs` wrapper
+- `tcp_input_parts/part_*.rs`
+- `tcp_input_parts/tests_*.rs`
 
 ### `projection/generated`
-- keep generated origin path unchanged if required by codegen, but emit segmented includes:
-  - `projection/generated.rs` (wrapper + include declarations)
-  - `projection/generated/part_1.rs`
-  - `projection/generated/part_2.rs`
-  - `projection/generated/part_3.rs`
-  - `projection/generated/part_4.rs`
+- keep generated origin path unchanged if required by codegen, but emit segmented shards behind the wrapper:
+  - `projection/generated.rs` (wrapper + shard declarations)
+  - `projection/generated_parts/part_1.rs`
+  - `projection/generated_parts/part_2.rs`
+  - `projection/generated_parts/part_3.rs`
+  - `projection/generated_parts/part_4.rs`
 
 ## Recommended execution order
 
@@ -128,4 +126,3 @@ Use a `mod.rs` plus thematic submodules, preserving public API and behavior:
 - `just clippy`
 - `just test`
 - plus crate-focused checks for each touched crate (for faster iteration)
-

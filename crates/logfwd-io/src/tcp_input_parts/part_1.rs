@@ -1,6 +1,6 @@
 use std::io::{self, Read};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Once;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -56,7 +56,7 @@ const MAX_BYTES_PER_CLIENT_PER_POLL: usize = 512 * 1024;
 /// Complements the byte cap so highly fragmented payloads are also bounded.
 const MAX_READS_PER_CLIENT_PER_POLL: usize = 64;
 
-static TLS_PROVIDER_INIT: Once = Once::new();
+static TLS_PROVIDER_INIT: OnceLock<()> = OnceLock::new();
 
 #[inline]
 const fn should_stop_client_read(bytes_read: usize, reads_done: usize) -> bool {

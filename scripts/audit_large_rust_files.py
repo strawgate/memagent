@@ -57,6 +57,8 @@ def main() -> int:
     parser.add_argument("--target", type=int, default=600)
     parser.add_argument("--top", type=int, default=10)
     args = parser.parse_args()
+    if args.target <= 0:
+        parser.error("--target must be a positive integer")
 
     stats = collect(args.root, args.threshold)
     selected = stats[: args.top]

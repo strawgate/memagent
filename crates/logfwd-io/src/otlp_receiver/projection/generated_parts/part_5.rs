@@ -8,6 +8,7 @@ fn scan_message(input: &[u8], message: MessageKind) -> Result<(), ProjectionErro
         let key = read_varint(&mut input)?;
         let field = decode_field_number(key)?;
         let wire = decode_wire_kind((key & 0x07) as u8)?;
+        let rule = lookup_field(message, field);
         match wire {
             WireKind::Varint => {
                 let _ = read_varint(&mut input)?;
@@ -15,7 +16,7 @@ fn scan_message(input: &[u8], message: MessageKind) -> Result<(), ProjectionErro
             WireKind::Fixed64 => consume_fixed(&mut input, 8, "truncated fixed64 field")?,
             WireKind::Len => {
                 let bytes = consume_len(&mut input)?;
-                if let Some(rule) = lookup_field(message, field) {
+                if let Some(rule) = rule {
                     if rule.expected_wire != WireKind::Len {
                         return Err(ProjectionError::Invalid(
                             "invalid wire type for projected OTLP field",
@@ -33,7 +34,7 @@ fn scan_message(input: &[u8], message: MessageKind) -> Result<(), ProjectionErro
             WireKind::Fixed32 => consume_fixed(&mut input, 4, "truncated fixed32 field")?,
         }
 
-        if let Some(rule) = lookup_field(message, field)
+        if let Some(rule) = rule
             && wire != rule.expected_wire
         {
             return Err(ProjectionError::Invalid(

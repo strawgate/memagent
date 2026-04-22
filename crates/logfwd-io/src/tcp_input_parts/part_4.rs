@@ -28,6 +28,7 @@ impl InputSource for TcpInput {
                         under_pressure = true;
                         continue; // dropped immediately
                     }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(e) => {
                         if let Some(raw) = e.raw_os_error()
@@ -89,6 +90,7 @@ impl InputSource for TcpInput {
                         unaccounted_bytes: 0,
                     });
                 }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                 Err(e) if e.kind() == io::ErrorKind::ConnectionAborted => {
                     // Peer reset before we accepted — harmless, keep going.
@@ -189,6 +191,7 @@ impl InputSource for TcpInput {
                             break;
                         }
                     }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(e) if e.kind() == io::ErrorKind::ConnectionReset => {
                         // Peer sent RST — treat as a close.

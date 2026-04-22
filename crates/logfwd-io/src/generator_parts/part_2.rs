@@ -223,5 +223,3 @@ fn parse_digits(b: &[u8], offset: usize, count: usize) -> Option<u64> {
     }
     Some(v)
 }
-
-#[derive(Debug, Clone)]

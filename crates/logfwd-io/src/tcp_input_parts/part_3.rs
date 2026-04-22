@@ -1,3 +1,8 @@
+/// TCP input that accepts connections and reads newline-delimited data.
+///
+/// Each connection is assigned a unique `SourceId` so downstream components
+/// can track per-connection state, including partial-line remainders and
+/// connection-scoped checkpoint/accounting metadata.
 pub struct TcpInput {
     name: String,
     listener: TcpListener,
@@ -20,8 +25,15 @@ pub struct TcpInput {
 
 impl TcpInput {
     fn ensure_tls_provider_installed() {
-        TLS_PROVIDER_INIT.call_once(|| {
-            let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        TLS_PROVIDER_INIT.get_or_init(|| {
+            if let Err(existing_provider) =
+                rustls::crypto::aws_lc_rs::default_provider().install_default()
+            {
+                tracing::debug!(
+                    provider = ?existing_provider,
+                    "tcp input reusing previously installed rustls crypto provider"
+                );
+            }
         });
     }
 

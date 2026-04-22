@@ -179,8 +179,16 @@ pub(crate) struct TimestampParts {
 
 impl TimestampParts {
     /// Format as `YYYY-MM-DDTHH:MM:SS.mmmZ` into a stack buffer.
+    ///
+    /// This compact formatter intentionally supports only four-digit, non-negative
+    /// years because the generator's fixed-width JSON path assumes a 24-byte
+    /// timestamp string. Callers must reject out-of-range years before invoking it.
     pub fn write_iso8601(&self, out: &mut [u8; 24]) {
         // "2024-01-15T00:00:00.000Z"
+        debug_assert!(
+            (0..=9999).contains(&self.year),
+            "TimestampParts::write_iso8601 requires year in 0000..=9999"
+        );
         let y = self.year as u32;
         out[0] = b'0' + (y / 1000 % 10) as u8;
         out[1] = b'0' + (y / 100 % 10) as u8;
@@ -209,6 +217,8 @@ impl TimestampParts {
     }
 
     /// Append `YYYY-MM-DDTHH:MM:SS.mmmZ` to `buf` (avoids a separate stack buffer).
+    ///
+    /// Shares the same four-digit-year invariant as [`Self::write_iso8601`].
     pub fn write_iso8601_into(&self, buf: &mut Vec<u8>) {
         let mut tmp = [0u8; 24];
         self.write_iso8601(&mut tmp);
@@ -267,6 +277,9 @@ pub(crate) fn compute_log_fields<'a>(
         .checked_mul(timestamp_config.step_ms)
         .and_then(|offset| timestamp_config.start_epoch_ms.checked_add(offset))?;
     let (year, month, day, hour, min, sec, ms) = epoch_ms_to_parts(event_ms);
+    if !(0..=9999).contains(&year) {
+        return None;
+    }
 
     let complexity_fields = match complexity {
         GeneratorComplexity::Simple => ComplexityFields::Simple,

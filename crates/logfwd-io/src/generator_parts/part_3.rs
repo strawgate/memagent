@@ -1,3 +1,4 @@
+#[derive(Debug, Clone)]
 struct RecordFields {
     attributes: Vec<Vec<u8>>,
     sequence: Option<GeneratorGeneratedFieldState>,
@@ -43,7 +44,7 @@ impl GeneratorInput {
         // Pre-escape the message_template so we don't re-escape on every event.
         let message_template_escaped = config.message_template.as_deref().map(|tmpl| {
             let mut escaped = Vec::with_capacity(tmpl.len() + 4);
-            write_json_escaped_string_contents(&mut escaped, tmpl);
+            json_escape_bytes(tmpl.as_bytes(), &mut escaped);
             escaped
         });
         Self {
