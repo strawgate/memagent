@@ -48,6 +48,7 @@ fn config_3_fields() -> ScanConfig {
         extract_all: false,
         line_field_name: None,
         validate_utf8: false,
+        row_predicate: None,
     }
 }
 

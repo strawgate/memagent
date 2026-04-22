@@ -9,6 +9,7 @@
 // through structural positions sequentially.
 
 use crate::scan_config::{ScanConfig, parse_int_fast};
+use crate::scan_predicate::ExtractedValue;
 use crate::scanner::ScanBuilder;
 use crate::structural::{StreamingClassifier, find_structural_chars};
 
@@ -25,6 +26,14 @@ struct StoredBitmasks<'a> {
 struct DecodeScratch {
     key: alloc::vec::Vec<u8>,
     value: alloc::vec::Vec<u8>,
+}
+
+/// Reusable scratch buffers for per-line scanning (decode + predicate).
+/// Allocated once in `scan_streaming` and reused across lines.
+struct LineScratch {
+    decode: DecodeScratch,
+    pred: Option<PredicateScratch>,
+    deferred: alloc::vec::Vec<DeferredField>,
 }
 
 /// Scan an NDJSON buffer using streaming structural iteration.
@@ -129,16 +138,32 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
         close_bracket: &close_bracket,
     };
 
-    // Scratch buffers for decoding JSON escape sequences. Allocated once and
-    // reused across lines via clear() so escaped strings avoid per-line allocs.
-    let mut scratch = DecodeScratch {
-        key: alloc::vec::Vec::new(),
-        value: alloc::vec::Vec::new(),
+    // Scratch buffers allocated once and reused across lines to avoid per-line
+    // heap allocations. Predicate scratch is only allocated when needed.
+    let mut line_scratch = LineScratch {
+        decode: DecodeScratch {
+            key: alloc::vec::Vec::new(),
+            value: alloc::vec::Vec::new(),
+        },
+        pred: if config.row_predicate.is_some() {
+            Some(PredicateScratch::new())
+        } else {
+            None
+        },
+        deferred: alloc::vec::Vec::new(),
     };
 
     // Phase 2: Scan each line using stored bitmasks for quote/nested lookups.
     for (start, end) in line_ranges {
-        scan_line(buf, start, end, &bitmasks, config, builder, &mut scratch);
+        scan_line(
+            buf,
+            start,
+            end,
+            &bitmasks,
+            config,
+            builder,
+            &mut line_scratch,
+        );
     }
 }
 
@@ -150,8 +175,13 @@ fn scan_line<B: ScanBuilder>(
     blocks: &StoredBitmasks<'_>,
     config: &ScanConfig,
     builder: &mut B,
-    scratch: &mut DecodeScratch,
+    line_scratch: &mut LineScratch,
 ) {
+    if config.row_predicate.is_some() {
+        scan_line_with_predicate(buf, start, end, blocks, config, builder, line_scratch);
+        return;
+    }
+    let scratch = &mut line_scratch.decode;
     builder.begin_row();
     if config.captures_line() {
         builder.append_line(&buf[start..end]);
@@ -311,6 +341,424 @@ fn scan_line<B: ScanBuilder>(
         pos = skip_whitespace(buf, pos, end);
         if pos < end && buf[pos] == b',' {
             pos += 1;
+        }
+    }
+    builder.end_row();
+}
+
+// ---------------------------------------------------------------------------
+// Predicate-aware scan_line — deferred builder writes
+// ---------------------------------------------------------------------------
+
+/// A field value extracted during scanning, deferred until predicate evaluation.
+///
+/// Stores byte ranges into the input buffer to avoid copying. For decoded
+/// strings (with JSON escapes), the decoded bytes are stored in the scratch
+/// buffer and a flag is set.
+struct DeferredField {
+    /// Column index from `resolve_field`.
+    idx: usize,
+    /// The value to write.
+    kind: DeferredValue,
+}
+
+/// Value types that can be deferred during predicate-aware scanning.
+enum DeferredValue {
+    /// Raw string (subslice of input buffer).
+    Str { start: usize, end: usize },
+    /// Decoded string (stored in scratch.value, copied here because scratch
+    /// is reused per field).
+    DecodedStr(alloc::vec::Vec<u8>),
+    /// Nested object/array (subslice of input buffer).
+    Nested { start: usize, end: usize },
+    /// Integer (raw ASCII digits in input buffer).
+    Int { start: usize, end: usize },
+    /// Float (raw ASCII in input buffer).
+    Float { start: usize, end: usize },
+    /// Boolean.
+    Bool(bool),
+    /// Null.
+    Null,
+}
+
+/// Scratch space for predicate field values, reused across lines.
+struct PredicateScratch {
+    /// Field name → extracted value for predicate evaluation.
+    /// Cleared per line. Uses Vec of (name, value) pairs to avoid HashMap
+    /// (keeping no_std simple; predicate field count is small).
+    fields: alloc::vec::Vec<(alloc::vec::Vec<u8>, PredicateFieldValue)>,
+}
+
+/// A predicate field value extracted during scanning.
+enum PredicateFieldValue {
+    Str(alloc::vec::Vec<u8>),
+    Int(i64),
+    Float(f64),
+    Bool(bool),
+    Null,
+}
+
+impl PredicateScratch {
+    fn new() -> Self {
+        Self {
+            fields: alloc::vec::Vec::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.fields.clear();
+    }
+
+    fn insert(&mut self, key: &[u8], value: PredicateFieldValue) {
+        self.fields.push((key.to_vec(), value));
+    }
+
+    fn lookup<'a>(&'a self, name: &str) -> ExtractedValue<'a> {
+        for (key, val) in &self.fields {
+            if key.eq_ignore_ascii_case(name.as_bytes()) {
+                return match val {
+                    PredicateFieldValue::Str(s) => ExtractedValue::Str(s.as_slice()),
+                    PredicateFieldValue::Int(n) => ExtractedValue::Int(*n),
+                    PredicateFieldValue::Float(f) => ExtractedValue::Float(*f),
+                    PredicateFieldValue::Bool(b) => ExtractedValue::Bool(*b),
+                    PredicateFieldValue::Null => ExtractedValue::Null,
+                };
+            }
+        }
+        ExtractedValue::Missing
+    }
+}
+
+/// Scan a single JSON line with predicate evaluation.
+///
+/// Parses all fields in a single pass, deferring builder writes. Predicate
+/// fields are extracted into a scratch buffer for evaluation. If the predicate
+/// passes, deferred writes are replayed into the builder. If it fails, the
+/// row is skipped entirely (no begin_row/end_row).
+fn scan_line_with_predicate<B: ScanBuilder>(
+    buf: &[u8],
+    start: usize,
+    end: usize,
+    blocks: &StoredBitmasks<'_>,
+    config: &ScanConfig,
+    builder: &mut B,
+    line_scratch: &mut LineScratch,
+) {
+    let predicate = match config.row_predicate.as_ref() {
+        Some(p) => p,
+        None => {
+            // Should not be called without a predicate, but handle gracefully.
+            builder.begin_row();
+            if config.captures_line() {
+                builder.append_line(&buf[start..end]);
+            }
+            builder.end_row();
+            return;
+        }
+    };
+
+    let scratch = &mut line_scratch.decode;
+    let pred_scratch = line_scratch.pred.get_or_insert_with(PredicateScratch::new);
+    pred_scratch.clear();
+    let deferred = &mut line_scratch.deferred;
+    deferred.clear();
+
+    // If the predicate references the line-capture field, store the line
+    // content in the predicate scratch so IS NOT NULL and string comparisons
+    // on the synthetic line column work correctly.
+    if let Some(ref line_name) = config.line_field_name {
+        if predicate.references_field(line_name.as_bytes()) {
+            pred_scratch.insert(
+                line_name.as_bytes(),
+                PredicateFieldValue::Str(buf[start..end].to_vec()),
+            );
+        }
+    }
+    let has_line_capture = config.captures_line();
+
+    // Find the opening '{'
+    let mut pos = skip_whitespace(buf, start, end);
+    if pos >= end || buf[pos] != b'{' {
+        // Empty or non-object line — evaluate predicate (will likely fail
+        // since no fields extracted), then emit empty row if it passes.
+        if predicate.evaluate(&|name| pred_scratch.lookup(name)) {
+            builder.begin_row();
+            if has_line_capture {
+                builder.append_line(&buf[start..end]);
+            }
+            builder.end_row();
+        }
+        return;
+    }
+    pos += 1;
+
+    // Parse key-value pairs — extract all wanted fields, defer writes
+    loop {
+        pos = skip_whitespace(buf, pos, end);
+        if pos >= end || buf[pos] == b'}' {
+            break;
+        }
+        if buf[pos] != b'"' {
+            break;
+        }
+
+        // Scan key
+        let key_start = pos + 1;
+        let key_end = match next_quote(pos + 1, end, blocks) {
+            Some(p) => p,
+            None => break,
+        };
+        let raw_key = &buf[key_start..key_end];
+        let key = if memchr::memchr(b'\\', raw_key).is_some() {
+            decode_json_escapes(raw_key, &mut scratch.key);
+            scratch.key.as_slice()
+        } else {
+            raw_key
+        };
+        pos = key_end + 1;
+
+        // Expect colon
+        pos = skip_whitespace(buf, pos, end);
+        if pos >= end || buf[pos] != b':' {
+            break;
+        }
+        pos += 1;
+
+        // Parse value
+        pos = skip_whitespace(buf, pos, end);
+        if pos >= end {
+            break;
+        }
+
+        let wanted = config.is_wanted(key);
+        let is_pred_field = predicate.references_field(key);
+
+        match buf[pos] {
+            b'"' => {
+                let val_start = pos + 1;
+                let val_end = match next_quote(pos + 1, end, blocks) {
+                    Some(p) => p,
+                    None => break,
+                };
+                if wanted {
+                    let idx = builder.resolve_field(key);
+                    let raw = &buf[val_start..val_end];
+                    if memchr::memchr(b'\\', raw).is_some() {
+                        decode_json_escapes(raw, &mut scratch.value);
+                        // Clone once; move to deferred, clone for predicate only
+                        // when both paths need it (avoids the prior double-clone).
+                        let decoded = scratch.value.clone();
+                        if is_pred_field {
+                            pred_scratch.insert(key, PredicateFieldValue::Str(decoded.clone()));
+                        }
+                        deferred.push(DeferredField {
+                            idx,
+                            kind: DeferredValue::DecodedStr(decoded),
+                        });
+                    } else {
+                        if is_pred_field {
+                            pred_scratch.insert(key, PredicateFieldValue::Str(raw.to_vec()));
+                        }
+                        deferred.push(DeferredField {
+                            idx,
+                            kind: DeferredValue::Str {
+                                start: val_start,
+                                end: val_end,
+                            },
+                        });
+                    }
+                } else if is_pred_field {
+                    let raw = &buf[val_start..val_end];
+                    if memchr::memchr(b'\\', raw).is_some() {
+                        decode_json_escapes(raw, &mut scratch.value);
+                        pred_scratch.insert(key, PredicateFieldValue::Str(scratch.value.clone()));
+                    } else {
+                        pred_scratch.insert(key, PredicateFieldValue::Str(raw.to_vec()));
+                    }
+                }
+                pos = val_end + 1;
+            }
+            b'{' | b'[' => {
+                let nested_start = pos;
+                pos = skip_nested(buf, pos, end, blocks);
+                if wanted {
+                    let idx = builder.resolve_field(key);
+                    deferred.push(DeferredField {
+                        idx,
+                        kind: DeferredValue::Nested {
+                            start: nested_start,
+                            end: pos,
+                        },
+                    });
+                }
+                if is_pred_field {
+                    // Store the actual nested JSON bytes so predicates like
+                    // `payload LIKE '%"a":1%'` see the real slice. This also
+                    // makes IS NOT NULL work correctly (field is present).
+                    pred_scratch.insert(
+                        key,
+                        PredicateFieldValue::Str(buf[nested_start..pos].to_vec()),
+                    );
+                }
+            }
+            b't' => {
+                if pos + 4 <= end
+                    && &buf[pos..pos + 4] == b"true"
+                    && (pos + 4 >= end || is_json_delimiter(buf[pos + 4]))
+                {
+                    if is_pred_field {
+                        pred_scratch.insert(key, PredicateFieldValue::Bool(true));
+                    }
+                    if wanted {
+                        let idx = builder.resolve_field(key);
+                        deferred.push(DeferredField {
+                            idx,
+                            kind: DeferredValue::Bool(true),
+                        });
+                    }
+                    pos += 4;
+                } else {
+                    pos = skip_bare_value(buf, pos, end);
+                }
+            }
+            b'f' => {
+                if pos + 5 <= end
+                    && &buf[pos..pos + 5] == b"false"
+                    && (pos + 5 >= end || is_json_delimiter(buf[pos + 5]))
+                {
+                    if is_pred_field {
+                        pred_scratch.insert(key, PredicateFieldValue::Bool(false));
+                    }
+                    if wanted {
+                        let idx = builder.resolve_field(key);
+                        deferred.push(DeferredField {
+                            idx,
+                            kind: DeferredValue::Bool(false),
+                        });
+                    }
+                    pos += 5;
+                } else {
+                    pos = skip_bare_value(buf, pos, end);
+                }
+            }
+            b'n' => {
+                if pos + 4 <= end
+                    && &buf[pos..pos + 4] == b"null"
+                    && (pos + 4 >= end || is_json_delimiter(buf[pos + 4]))
+                {
+                    if is_pred_field {
+                        pred_scratch.insert(key, PredicateFieldValue::Null);
+                    }
+                    if wanted {
+                        let idx = builder.resolve_field(key);
+                        deferred.push(DeferredField {
+                            idx,
+                            kind: DeferredValue::Null,
+                        });
+                    }
+                    pos += 4;
+                } else {
+                    pos = skip_bare_value(buf, pos, end);
+                }
+            }
+            _ => {
+                // Number
+                let num_start = pos;
+                let mut is_float = false;
+                while pos < end {
+                    let c = buf[pos];
+                    if c == b'.' || c == b'e' || c == b'E' {
+                        is_float = true;
+                        pos += 1;
+                    } else if is_json_delimiter(c) {
+                        break;
+                    } else {
+                        pos += 1;
+                    }
+                }
+                if is_pred_field {
+                    let val = &buf[num_start..pos];
+                    if is_float {
+                        if let Some(f) = crate::scan_config::parse_float_fast(val) {
+                            pred_scratch.insert(key, PredicateFieldValue::Float(f));
+                        }
+                    } else if let Some(n) = parse_int_fast(val) {
+                        pred_scratch.insert(key, PredicateFieldValue::Int(n));
+                    } else if let Some(f) = crate::scan_config::parse_float_fast(val) {
+                        pred_scratch.insert(key, PredicateFieldValue::Float(f));
+                    }
+                }
+                if wanted {
+                    let idx = builder.resolve_field(key);
+                    if is_float {
+                        deferred.push(DeferredField {
+                            idx,
+                            kind: DeferredValue::Float {
+                                start: num_start,
+                                end: pos,
+                            },
+                        });
+                    } else if parse_int_fast(&buf[num_start..pos]).is_some() {
+                        deferred.push(DeferredField {
+                            idx,
+                            kind: DeferredValue::Int {
+                                start: num_start,
+                                end: pos,
+                            },
+                        });
+                    } else {
+                        deferred.push(DeferredField {
+                            idx,
+                            kind: DeferredValue::Float {
+                                start: num_start,
+                                end: pos,
+                            },
+                        });
+                    }
+                }
+            }
+        }
+
+        // Skip comma
+        pos = skip_whitespace(buf, pos, end);
+        if pos < end && buf[pos] == b',' {
+            pos += 1;
+        }
+    }
+
+    // Evaluate predicate
+    if !predicate.evaluate(&|name| pred_scratch.lookup(name)) {
+        return; // Row filtered out — no builder calls.
+    }
+
+    // Predicate passed — replay deferred writes.
+    builder.begin_row();
+    if has_line_capture {
+        builder.append_line(&buf[start..end]);
+    }
+    for field in deferred.iter() {
+        match &field.kind {
+            DeferredValue::Str { start: s, end: e } => {
+                builder.append_str_by_idx(field.idx, &buf[*s..*e]);
+            }
+            DeferredValue::DecodedStr(bytes) => {
+                builder.append_decoded_str_by_idx(field.idx, bytes.as_slice());
+            }
+            DeferredValue::Nested { start: s, end: e } => {
+                builder.append_str_by_idx(field.idx, &buf[*s..*e]);
+            }
+            DeferredValue::Int { start: s, end: e } => {
+                builder.append_int_by_idx(field.idx, &buf[*s..*e]);
+            }
+            DeferredValue::Float { start: s, end: e } => {
+                builder.append_float_by_idx(field.idx, &buf[*s..*e]);
+            }
+            DeferredValue::Bool(b) => {
+                builder.append_bool_by_idx(field.idx, *b);
+            }
+            DeferredValue::Null => {
+                builder.append_null_by_idx(field.idx);
+            }
         }
     }
     builder.end_row();
@@ -719,6 +1167,7 @@ mod tests {
             extract_all: false,
             line_field_name: None,
             validate_utf8: false,
+            row_predicate: None,
         };
         let mut builder = TestBuilder::new();
         scan_streaming(&buf, &config, &mut builder);
@@ -744,6 +1193,7 @@ mod tests {
             extract_all: false,
             line_field_name: None,
             validate_utf8: false,
+            row_predicate: None,
         };
         let mut builder = TestBuilder::new();
         scan_streaming(input.as_bytes(), &config, &mut builder);
@@ -1423,6 +1873,7 @@ mod tests {
             extract_all: true,
             line_field_name: Some("body".to_string()),
             validate_utf8: false,
+            row_predicate: None,
         };
 
         let mut builder = TestBuilder::new();
@@ -1481,6 +1932,7 @@ mod tests {
             extract_all: true,
             line_field_name: None,
             validate_utf8: false,
+            row_predicate: None,
         };
         let mut builder = TestBuilder::new();
         scan_streaming(buf, &config, &mut builder);
@@ -1502,6 +1954,7 @@ mod tests {
             extract_all: true,
             line_field_name: Some("body".to_string()),
             validate_utf8: false,
+            row_predicate: None,
         };
         let mut builder = TestBuilder::new();
         scan_streaming(buf, &config, &mut builder);
@@ -1520,6 +1973,7 @@ mod tests {
             extract_all: true,
             line_field_name: Some("body".to_string()),
             validate_utf8: false,
+            row_predicate: None,
         };
         let mut builder = TestBuilder::new();
         scan_streaming(buf, &config, &mut builder);
@@ -1537,6 +1991,7 @@ mod tests {
             extract_all: true,
             line_field_name: Some("body".to_string()),
             validate_utf8: false,
+            row_predicate: None,
         };
         let mut builder = TestBuilder::new();
         scan_streaming(buf, &config, &mut builder);
@@ -1570,6 +2025,7 @@ mod tests {
             extract_all: true,
             line_field_name: None,
             validate_utf8: false,
+            row_predicate: None,
         };
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);
@@ -1577,6 +2033,421 @@ mod tests {
             builder.rows.len(),
             1,
             "one JSON line should produce one row"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Predicate pushdown tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn predicate_filters_non_matching_rows() {
+        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+
+        let input = b"{\"level\":\"info\",\"msg\":\"hello\"}\n{\"level\":\"error\",\"msg\":\"bad\"}\n{\"level\":\"debug\",\"msg\":\"trace\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::Compare {
+                field: "level".into(),
+                op: CmpOp::Eq,
+                value: ScalarValue::Str("error".into()),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+
+        // Only the "error" row should pass the predicate.
+        assert_eq!(builder.rows.len(), 1, "predicate should filter to 1 row");
+        let row = &builder.rows[0];
+        let msg = row
+            .iter()
+            .find(|(k, _)| k == "msg")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(msg, Some("bad"), "the error row should have msg=bad");
+    }
+
+    #[test]
+    fn predicate_passes_all_when_all_match() {
+        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+
+        let input = b"{\"level\":\"error\",\"msg\":\"a\"}\n{\"level\":\"error\",\"msg\":\"b\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::Compare {
+                field: "level".into(),
+                op: CmpOp::Eq,
+                value: ScalarValue::Str("error".into()),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        assert_eq!(builder.rows.len(), 2, "all rows should pass");
+    }
+
+    #[test]
+    fn predicate_filters_all_when_none_match() {
+        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+
+        let input = b"{\"level\":\"info\"}\n{\"level\":\"debug\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::Compare {
+                field: "level".into(),
+                op: CmpOp::Eq,
+                value: ScalarValue::Str("error".into()),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        assert_eq!(builder.rows.len(), 0, "no rows should pass");
+    }
+
+    #[test]
+    fn predicate_with_numeric_comparison() {
+        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+
+        let input = b"{\"status\":200,\"msg\":\"ok\"}\n{\"status\":503,\"msg\":\"fail\"}\n{\"status\":404,\"msg\":\"miss\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::Compare {
+                field: "status".into(),
+                op: CmpOp::Ge,
+                value: ScalarValue::Int(500),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        assert_eq!(builder.rows.len(), 1, "only status>=500 should pass");
+        let msg = builder.rows[0]
+            .iter()
+            .find(|(k, _)| k == "msg")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(msg, Some("fail"));
+    }
+
+    #[test]
+    fn predicate_and_chain() {
+        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+
+        let input = b"{\"level\":\"error\",\"status\":503}\n{\"level\":\"error\",\"status\":200}\n{\"level\":\"info\",\"status\":503}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::And(vec![
+                ScanPredicate::Compare {
+                    field: "level".into(),
+                    op: CmpOp::Eq,
+                    value: ScalarValue::Str("error".into()),
+                },
+                ScanPredicate::Compare {
+                    field: "status".into(),
+                    op: CmpOp::Ge,
+                    value: ScalarValue::Int(500),
+                },
+            ])),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        assert_eq!(
+            builder.rows.len(),
+            1,
+            "only level=error AND status>=500 should pass"
+        );
+    }
+
+    #[test]
+    fn no_predicate_unchanged_behavior() {
+        let input = b"{\"a\":\"1\"}\n{\"a\":\"2\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: None,
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        assert_eq!(builder.rows.len(), 2, "no predicate = all rows");
+    }
+
+    // -----------------------------------------------------------------------
+    // Predicate edge case tests (reviewer-requested coverage)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn predicate_with_escape_crossing_64_byte_boundary() {
+        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+
+        // Build a line where the "level" value crosses a 64-byte block boundary
+        // by padding the key with enough characters. The escape \" in the value
+        // forces the decode path.
+        let mut line = String::new();
+        line.push_str("{\"");
+        // Pad key to push the value near the 64-byte boundary
+        for _ in 0..50 {
+            line.push('x');
+        }
+        line.push_str("\":\"pad\",\"level\":\"err\\\"or\"}");
+        line.push('\n');
+
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::Compare {
+                field: "level".into(),
+                op: CmpOp::Eq,
+                value: ScalarValue::Str("err\"or".into()),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(line.as_bytes(), &config, &mut builder);
+        assert_eq!(
+            builder.rows.len(),
+            1,
+            "escaped value should match after decode"
+        );
+    }
+
+    #[test]
+    fn predicate_field_order_independence() {
+        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+
+        // Same fields in different order — predicate should work regardless.
+        let input =
+            b"{\"msg\":\"hello\",\"level\":\"error\"}\n{\"level\":\"info\",\"msg\":\"world\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::Compare {
+                field: "level".into(),
+                op: CmpOp::Eq,
+                value: ScalarValue::Str("error".into()),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        assert_eq!(builder.rows.len(), 1);
+        let msg = builder.rows[0]
+            .iter()
+            .find(|(k, _)| k == "msg")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(msg, Some("hello"));
+    }
+
+    #[test]
+    fn predicate_duplicate_keys_first_write_wins() {
+        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+
+        // Duplicate "level" key — first value should win for both
+        // predicate evaluation and output.
+        let input = b"{\"level\":\"error\",\"level\":\"info\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::Compare {
+                field: "level".into(),
+                op: CmpOp::Eq,
+                value: ScalarValue::Str("error".into()),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        // First "level" is "error" → predicate passes.
+        assert_eq!(builder.rows.len(), 1);
+        let level = builder.rows[0]
+            .iter()
+            .find(|(k, _)| k == "level")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(level, Some("error"), "first-write-wins for output");
+    }
+
+    #[test]
+    fn predicate_duplicate_keys_different_types() {
+        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+
+        // Same key appears as string then int — scanner creates conflict columns.
+        // Predicate evaluates against the first occurrence (string "200").
+        let input = b"{\"status\":\"200\",\"status\":503}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::Compare {
+                field: "status".into(),
+                op: CmpOp::Eq,
+                value: ScalarValue::Str("200".into()),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        // First "status" is string "200" → predicate matches.
+        assert_eq!(builder.rows.len(), 1);
+    }
+
+    #[test]
+    fn predicate_nested_json_is_not_null() {
+        use crate::scan_predicate::ScanPredicate;
+
+        // Nested object should be treated as non-null.
+        let input = b"{\"payload\":{\"key\":\"val\"},\"level\":\"error\"}\n{\"level\":\"info\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::IsNull {
+                field: "payload".into(),
+                negated: true, // IS NOT NULL
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        // First row has payload (nested object) → IS NOT NULL passes.
+        // Second row has no payload → IS NOT NULL fails.
+        assert_eq!(builder.rows.len(), 1);
+    }
+
+    #[test]
+    fn predicate_cross_type_string_vs_int() {
+        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+
+        // JSON has status as string "503", predicate compares as int 503.
+        let input = b"{\"status\":\"503\",\"msg\":\"fail\"}\n{\"status\":\"200\",\"msg\":\"ok\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::Compare {
+                field: "status".into(),
+                op: CmpOp::Ge,
+                value: ScalarValue::Int(500),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        // String "503" should coerce to int 503 for comparison.
+        assert_eq!(builder.rows.len(), 1);
+    }
+
+    #[test]
+    fn predicate_in_list_filters_correctly() {
+        use crate::scan_predicate::{ScalarValue, ScanPredicate};
+
+        let input = b"{\"level\":\"error\"}\n{\"level\":\"fatal\"}\n{\"level\":\"info\"}\n{\"level\":\"warn\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::InList {
+                field: "level".into(),
+                values: vec![
+                    ScalarValue::Str("error".into()),
+                    ScalarValue::Str("fatal".into()),
+                ],
+                negated: false,
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        assert_eq!(
+            builder.rows.len(),
+            2,
+            "only error + fatal should pass IN list"
+        );
+    }
+
+    #[test]
+    fn predicate_contains_substring_match() {
+        use crate::scan_predicate::ScanPredicate;
+
+        let input = b"{\"msg\":\"connection timeout after 30s\"}\n{\"msg\":\"request completed\"}\n{\"msg\":\"read timeout\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::Contains {
+                field: "msg".into(),
+                substring: "timeout".into(),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        assert_eq!(builder.rows.len(), 2, "both timeout messages should pass");
+    }
+
+    #[test]
+    fn predicate_starts_with_prefix_match() {
+        use crate::scan_predicate::ScanPredicate;
+
+        let input =
+            b"{\"msg\":\"ERROR: disk full\"}\n{\"msg\":\"INFO: ok\"}\n{\"msg\":\"ERROR: oom\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::StartsWith {
+                field: "msg".into(),
+                prefix: "ERROR".into(),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        assert_eq!(
+            builder.rows.len(),
+            2,
+            "both ERROR-prefixed messages should pass"
+        );
+    }
+
+    #[test]
+    fn predicate_on_line_capture_field() {
+        use crate::scan_predicate::ScanPredicate;
+
+        // When line_field_name is set and predicate references it,
+        // the line content should be available for predicate evaluation.
+        let input = b"{\"level\":\"error\"}\n{\"level\":\"info\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: Some("body".into()),
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::IsNull {
+                field: "body".into(),
+                negated: true, // IS NOT NULL
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        // Both rows have line content → IS NOT NULL should pass both.
+        assert_eq!(
+            builder.rows.len(),
+            2,
+            "line capture field should be non-null"
         );
     }
 }

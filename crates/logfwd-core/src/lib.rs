@@ -29,6 +29,8 @@ pub mod otlp;
 pub mod reassembler;
 /// Scanner configuration and field selection.
 pub mod scan_config;
+/// Row-level predicate IR for scanner-level filtering.
+pub mod scan_predicate;
 /// Scanner-to-builder protocol boundary.
 pub mod scanner;
 /// Streaming SIMD structural character detection.

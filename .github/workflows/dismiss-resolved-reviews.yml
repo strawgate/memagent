@@ -15,7 +15,10 @@ permissions:
 
 concurrency:
   group: dismiss-resolved-reviews-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  # Do not cancel in-progress runs — cancelled runs show as failures on the PR
+  # checks list, creating noise. The job is idempotent and fast (~5s), so
+  # letting both runs complete is cheaper than the false-failure signal.
+  cancel-in-progress: false
 
 jobs:
   dismiss-resolved-reviews:

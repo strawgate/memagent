@@ -52,6 +52,7 @@ async fn path_a_extraction(json_data: &[u8], num_fields: usize) -> RecordBatch {
         extract_all: true,
         line_field_name: None,
         validate_utf8: false,
+        row_predicate: None,
     };
     let mut scanner = logfwd_arrow::Scanner::new(config);
     let batch = scanner
@@ -81,6 +82,7 @@ async fn path_a_passthrough(json_data: &[u8]) -> RecordBatch {
         extract_all: true,
         line_field_name: None,
         validate_utf8: false,
+        row_predicate: None,
     };
     let mut scanner = logfwd_arrow::Scanner::new(config);
     let batch = scanner
