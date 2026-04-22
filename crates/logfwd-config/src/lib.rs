@@ -8,6 +8,7 @@
 //! Environment variables in values are expanded using `${VAR}` syntax.
 
 mod compat;
+/// Shared metadata for config starter templates and generated reference tables.
 pub mod docspec;
 mod env;
 mod load;

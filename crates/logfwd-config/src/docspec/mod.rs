@@ -4,21 +4,31 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SupportLevel {
+    /// Supported and intended for production use.
     Stable,
+    /// Available for evaluation, but still changing quickly.
     Experimental,
+    /// Implemented and usable, but still settling.
     Beta,
+    /// Mentioned in the schema surface, but not implemented yet.
     NotYetSupported,
+    /// Internal-only surface that should not appear in public docs.
     Hidden,
 }
 
 /// A single editable field in a starter template.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BuilderFieldDoc {
+    /// Stable field identifier used by builder clients.
     pub key: &'static str,
+    /// Human-facing field label.
     pub label: &'static str,
+    /// Default value presented to the user.
     #[serde(rename = "default")]
     pub default_value: &'static str,
+    /// Example value shown before editing.
     pub placeholder: &'static str,
+    /// Fixed choices, when the field is an enum-like selector.
     pub options: &'static [&'static str],
 }
 
@@ -46,11 +56,15 @@ pub struct TemplateDoc {
 /// A documented config component type for support/inventory tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComponentTypeDoc {
+    /// The config `type:` value used in YAML.
     pub type_tag: &'static str,
+    /// Public support level shown in generated tables.
     pub support: SupportLevel,
+    /// Short description used in generated docs.
     pub description: &'static str,
 }
 
+/// Starter templates exposed for documented input configurations.
 pub const INPUT_TEMPLATES: &[TemplateDoc] = &[
     TemplateDoc {
         id: "file_json",
@@ -237,6 +251,7 @@ pub const INPUT_TEMPLATES: &[TemplateDoc] = &[
     },
 ];
 
+/// Starter templates exposed for documented output configurations.
 pub const OUTPUT_TEMPLATES: &[TemplateDoc] = &[
     TemplateDoc {
         id: "otlp",
@@ -327,12 +342,12 @@ pub const OUTPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "NDJSON file",
         description: "Write logs as newline-delimited JSON to a file.",
         support: SupportLevel::Stable,
-        snippet: "output:\n  type: file\n  path: /var/log/out.ndjson\n",
+        snippet: "output:\n  type: file\n  path: ./out.ndjson\n",
         fields: &[BuilderFieldDoc {
             key: "path",
             label: "Path",
-            default_value: "/var/log/out.ndjson",
-            placeholder: "/var/log/out.ndjson",
+            default_value: "./out.ndjson",
+            placeholder: "./out.ndjson",
             options: &[],
         }],
     },
@@ -358,6 +373,7 @@ pub const OUTPUT_TEMPLATES: &[TemplateDoc] = &[
     },
 ];
 
+/// Input component inventory used for generated support tables.
 pub const INPUT_TYPE_DOCS: &[ComponentTypeDoc] = &[
     ComponentTypeDoc {
         type_tag: "file",
@@ -431,6 +447,7 @@ pub const INPUT_TYPE_DOCS: &[ComponentTypeDoc] = &[
     },
 ];
 
+/// Output component inventory used for generated support tables.
 pub const OUTPUT_TYPE_DOCS: &[ComponentTypeDoc] = &[
     ComponentTypeDoc {
         type_tag: "otlp",
@@ -489,18 +506,24 @@ pub const OUTPUT_TYPE_DOCS: &[ComponentTypeDoc] = &[
     },
 ];
 
+/// Look up an input starter template by its stable template identifier.
 pub fn input_template(id: &str) -> Option<&'static TemplateDoc> {
     INPUT_TEMPLATES.iter().find(|template| template.id == id)
 }
 
+/// Look up an output starter template by its stable template identifier.
 pub fn output_template(id: &str) -> Option<&'static TemplateDoc> {
     OUTPUT_TEMPLATES.iter().find(|template| template.id == id)
 }
 
+/// Render a Markdown support table for public component types.
 pub fn render_component_type_table(entries: &[ComponentTypeDoc]) -> String {
     let mut out =
         String::from("| Value | Status | Description |\n|-------|--------|-------------|\n");
     for entry in entries {
+        if entry.support == SupportLevel::Hidden {
+            continue;
+        }
         let status = match entry.support {
             SupportLevel::Stable => "Implemented",
             SupportLevel::Experimental => "Experimental",
