@@ -11,7 +11,7 @@
 <body>
 <div class="container">
   <header class="hero">
-    <p class="eyebrow">logfwd benchmark suite</p>
+    <p class="eyebrow">ff benchmark suite</p>
     <h1>Benchmark Control Room</h1>
     <p class="lede">Track competitive throughput, development resource curves, and run-level details from nightly data in one view.</p>
     <div class="hero-tags">
@@ -80,7 +80,7 @@ function getScenarioTitle(sn) {
 }
 
 const AGENT_COLORS = {
-  'logfwd': '#2563eb', 'vector': '#7c3aed', 'fluent-bit': '#059669',
+  'ff': '#2563eb', 'logfwd': '#2563eb', 'vector': '#7c3aed', 'fluent-bit': '#059669',
   'filebeat': '#d97706', 'otelcol': '#dc2626', 'vlagent': '#64748b'
 };
 
@@ -250,14 +250,15 @@ async function main() {
   if (latestRun && latestRun.scenarios) {
     for (const sn of (latestRun.scenario_names || Object.keys(latestRun.scenarios))) {
       const sc = latestRun.scenarios[sn];
-      if (!sc?.logfwd) continue;
-      const scenarioLogfwdLps = averageLps(sc.logfwd);
-      if (!(scenarioLogfwdLps > 0)) continue;
+      const ffLps = averageLps(sc?.ff);
+      const logfwdLps = averageLps(sc?.logfwd);
+      const scenarioFfLps = ffLps > 0 ? ffLps : logfwdLps;
+      if (!(scenarioFfLps > 0)) continue;
       for (const agent of Object.keys(sc)) {
-        if (agent === 'logfwd') continue;
+        if (agent === 'ff' || agent === 'logfwd') continue;
         const competitorLps = averageLps(sc[agent]) || 0;
         if (!(competitorLps > 0)) continue;
-        const ratio = scenarioLogfwdLps / competitorLps;
+        const ratio = scenarioFfLps / competitorLps;
         if (!bestRatio || ratio > bestRatio.value) bestRatio = { value: ratio, vs: agent, scenario: sn };
       }
     }

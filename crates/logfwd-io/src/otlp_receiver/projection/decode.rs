@@ -176,10 +176,10 @@ fn decode_log_record_wire(
         fields.write_body(builder, value, scratch, string_storage)?;
     }
     if let Some(value) = record.trace_id {
-        fields.write_trace_id(builder, value, scratch)?;
+        fields.write_trace_id(builder, value)?;
     }
     if let Some(value) = record.span_id {
-        fields.write_span_id(builder, value, scratch)?;
+        fields.write_span_id(builder, value)?;
     }
     if record.flags > 0 {
         fields.write_flags(builder, record.flags);

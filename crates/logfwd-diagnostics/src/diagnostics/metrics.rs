@@ -54,6 +54,8 @@ pub struct PipelineMetrics {
     pub last_batch_time_ns: AtomicU64,
     /// Number of batches currently submitted to workers but not yet acked.
     pub inflight_batches: AtomicU64,
+    pub channel_depth: AtomicU64,
+    pub channel_capacity: AtomicU64,
     pub active_batches: std::sync::Mutex<HashMap<u64, ActiveBatch>>,
     pub next_batch_id: AtomicU64,
     // OTel counters (for OTLP push)
@@ -117,6 +119,8 @@ impl PipelineMetrics {
             batch_latency_nanos_total: AtomicU64::new(0),
             last_batch_time_ns: AtomicU64::new(0),
             inflight_batches: AtomicU64::new(0),
+            channel_depth: AtomicU64::new(0),
+            channel_capacity: AtomicU64::new(16),
             active_batches: std::sync::Mutex::new(HashMap::new()),
             next_batch_id: AtomicU64::new(0),
             otel_transform_errors: meter.u64_counter("logfwd_transform_errors").build(),
@@ -308,6 +312,20 @@ impl PipelineMetrics {
     pub fn inc_parse_error(&self) {
         self.parse_errors_total.fetch_add(1, Ordering::Relaxed);
         self.otel_parse_errors.add(1, &self.otel_attrs);
+    }
+
+    pub fn set_channel_capacity(&self, capacity: u64) {
+        self.channel_capacity.store(capacity, Ordering::Relaxed);
+    }
+
+    pub fn inc_channel_depth(&self) {
+        self.channel_depth.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn dec_channel_depth(&self) {
+        let _ = self
+            .channel_depth
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_sub(1));
     }
 
     pub fn alloc_batch_id(&self) -> u64 {

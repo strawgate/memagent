@@ -205,7 +205,7 @@ jobs:
             --json-file rate-bench-result.json \
             --gh-bench-file rate-gh-bench.json
         env:
-          LOGFWD: ./bin/ff
+          FF: ./bin/ff
 
       - uses: actions/upload-artifact@v7
         with:
@@ -309,7 +309,7 @@ jobs:
       - run: chmod +x bin/*
 
       - uses: ./.github/actions/setup-rust
-      - name: Build logfwd with profiling
+      - name: Build ff with profiling
         env:
           RUSTFLAGS: ${{ env.BENCH_RUSTFLAGS }}
         run: |
