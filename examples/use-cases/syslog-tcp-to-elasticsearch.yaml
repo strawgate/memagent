@@ -1,4 +1,4 @@
-# logfwd example
+# FastForward example
 # Use case: TCP raw line logs to Elasticsearch
 # Replace paths/endpoints with values for your environment.
 

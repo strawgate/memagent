@@ -74,7 +74,9 @@ impl Pipeline {
         // Spawn input threads. Each polls its source, parses format, and
         // sends accumulated JSON lines through a bounded channel.
         // Backpressure: when the channel is full, the input thread blocks.
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<ChannelMsg>(16);
+        const CHANNEL_CAPACITY: usize = 16;
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ChannelMsg>(CHANNEL_CAPACITY);
+        self.metrics.set_channel_capacity(CHANNEL_CAPACITY as u64);
 
         let batch_target = self.batch_target_bytes;
         let batch_timeout = self.batch_timeout;
@@ -150,6 +152,7 @@ impl Pipeline {
 
                 msg = rx.recv() => {
                     if let Some(msg) = msg {
+                        self.metrics.dec_channel_depth();
                         if self.submit_batch(msg, shutdown).await {
                             // Terminal processor/checkpoint paths stop accepting
                             // additional channel messages.
@@ -203,6 +206,7 @@ impl Pipeline {
             // This prevents deadlock during shutdown if a producer is blocked in
             // `blocking_send` while the bounded channel is full.
             while let Some(msg) = rx.recv().await {
+                self.metrics.dec_channel_depth();
                 if self.submit_batch(msg, shutdown).await {
                     break;
                 }
