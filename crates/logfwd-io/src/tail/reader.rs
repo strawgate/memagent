@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::io::{self, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -11,28 +11,10 @@ use super::state::{EOF_IDLE_POLLS_BEFORE_EMIT, EofState};
 use super::tailer::{TailConfig, TailEvent};
 
 /// State tracked per tailed file.
-pub(super) struct TailedFile {
-    /// Stable identity used to derive the source id.
-    pub(super) identity: FileIdentity,
-    /// Fingerprint used for rotation and eviction comparisons; promoted as the file grows.
-    pub(super) comparison_fingerprint: u64,
-    pub(super) fingerprint_len: u64,
-    pub(super) file: File,
-    pub(super) offset: u64,
-    pub(super) last_read: Instant,
-    pub(super) eof_state: EofState,
-}
+pub(super) use super::lifecycle::Active as TailedFile;
 
 /// Saved state for a file evicted from the open-file LRU cache.
-pub(super) struct EvictedFile {
-    pub(super) identity: FileIdentity,
-    pub(super) comparison_fingerprint: u64,
-    pub(super) fingerprint_len: u64,
-    pub(super) eof_state: EofState,
-    pub(super) offset: u64,
-    pub(super) path: PathBuf,
-    pub(super) source_id: SourceId,
-}
+pub(super) use super::lifecycle::EvictedClosedCached as EvictedFile;
 
 /// Internal result from read_new_data — distinguishes truncation from no-data.
 pub(super) enum ReadResult {
@@ -42,7 +24,7 @@ pub(super) enum ReadResult {
     NoData,
 }
 
-fn classify_empty_read_result(was_truncated: bool) -> ReadResult {
+pub(super) fn classify_empty_read_result(was_truncated: bool) -> ReadResult {
     if was_truncated {
         ReadResult::Truncated
     } else {
@@ -208,82 +190,18 @@ impl FileReader {
     }
 
     pub(super) fn read_new_data(&mut self, path: &Path) -> io::Result<ReadResult> {
+        let fingerprint_bytes = self.config.fingerprint_bytes;
+        let per_file_budget = self
+            .config
+            .per_file_read_budget_bytes
+            .clamp(1, Self::MAX_READ_PER_POLL);
+
         let tailed = match self.files.get_mut(path) {
             Some(t) => t,
             None => return Ok(ReadResult::NoData),
         };
 
-        let fingerprint_bytes = self.config.fingerprint_bytes;
-        let meta = tailed.file.metadata()?;
-        let current_size = meta.len();
-
-        let was_truncated = current_size < tailed.offset;
-        if was_truncated {
-            tailed.offset = 0;
-            tailed.eof_state.on_data();
-            tailed.file.seek(SeekFrom::Start(0))?;
-            tailed.identity.fingerprint = compute_fingerprint(&mut tailed.file, fingerprint_bytes)?;
-            tailed.comparison_fingerprint = tailed.identity.fingerprint;
-            tailed.fingerprint_len = observed_fingerprint_len(
-                tailed.identity.fingerprint,
-                current_size,
-                fingerprint_bytes,
-            );
-        }
-
-        if current_size <= tailed.offset {
-            return Ok(if was_truncated {
-                ReadResult::Truncated
-            } else {
-                ReadResult::NoData
-            });
-        }
-
-        let per_file_budget = self
-            .config
-            .per_file_read_budget_bytes
-            .clamp(1, Self::MAX_READ_PER_POLL);
-        let mut result = Vec::with_capacity(self.config.read_buf_size);
-        loop {
-            let remaining = per_file_budget.saturating_sub(result.len());
-            if remaining == 0 {
-                break;
-            }
-            let read_len = remaining.min(self.read_buf.len());
-            let n = tailed.file.read(&mut self.read_buf[..read_len])?;
-            if n == 0 {
-                break;
-            }
-            result.extend_from_slice(&self.read_buf[..n]);
-            tailed.offset += n as u64;
-        }
-
-        if result.is_empty() {
-            return Ok(classify_empty_read_result(was_truncated));
-        }
-
-        tailed.last_read = Instant::now();
-
-        if fingerprint_bytes > 0
-            && tailed.fingerprint_len < fingerprint_bytes as u64
-            && current_size > tailed.fingerprint_len
-        {
-            let new_fp = compute_fingerprint(&mut tailed.file, fingerprint_bytes)?;
-            if new_fp != 0 {
-                if tailed.identity.fingerprint == 0 {
-                    tailed.identity.fingerprint = new_fp;
-                }
-                tailed.comparison_fingerprint = new_fp;
-                tailed.fingerprint_len =
-                    observed_fingerprint_len(new_fp, current_size, fingerprint_bytes);
-            }
-        }
-
-        Ok(if was_truncated {
-            ReadResult::TruncatedThenData(result)
-        } else {
-            ReadResult::Data(result)
-        })
+        tailed.read_new_data(&mut self.read_buf, per_file_budget, fingerprint_bytes)
     }
 
     pub(super) fn drain_file(

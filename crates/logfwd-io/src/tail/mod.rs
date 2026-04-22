@@ -13,6 +13,7 @@
 mod discovery;
 mod glob;
 mod identity;
+mod lifecycle;
 mod reader;
 mod state;
 mod tailer;
