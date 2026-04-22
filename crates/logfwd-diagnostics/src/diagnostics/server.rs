@@ -587,6 +587,8 @@ fn status_payload(state: &DiagnosticsState) -> StatusSnapshotResponse {
                 last_batch_time_ns: last_batch_ns.to_string(),
                 batch_latency_avg_ns,
                 inflight,
+                channel_depth: pm.channel_depth.load(Ordering::Relaxed),
+                channel_capacity: pm.channel_capacity.load(Ordering::Relaxed),
                 rows_total: batch_rows,
             },
             stage_seconds: StageSeconds {
@@ -669,6 +671,8 @@ fn build_stats_body(state: &DiagnosticsState) -> String {
     let mut total_output_ns: u64 = 0;
     let mut total_backpressure: u64 = 0;
     let mut total_inflight: u64 = 0;
+    let mut channel_depth: u64 = 0;
+    let mut channel_capacity: u64 = 0;
 
     for pm in &state.pipelines {
         for (_, _, stats) in &pm.inputs {
@@ -686,6 +690,8 @@ fn build_stats_body(state: &DiagnosticsState) -> String {
         total_output_ns += pm.output_nanos_total.load(Ordering::Relaxed);
         total_backpressure += pm.backpressure_stalls.load(Ordering::Relaxed);
         total_inflight += pm.inflight_batches.load(Ordering::Relaxed);
+        channel_depth += pm.channel_depth.load(Ordering::Relaxed);
+        channel_capacity += pm.channel_capacity.load(Ordering::Relaxed);
     }
 
     let mem_json = match state.memory_stats_fn.and_then(|f| f()) {
@@ -697,7 +703,7 @@ fn build_stats_body(state: &DiagnosticsState) -> String {
     };
 
     format!(
-        r#"{{"uptime_sec":{:.3}{},"input_lines":{},"input_bytes":{},"output_lines":{},"output_bytes":{},"output_errors":{},"batches":{},"scan_sec":{:.6},"transform_sec":{:.6},"output_sec":{:.6},"backpressure_stalls":{},"inflight_batches":{}{}}}"#,
+        r#"{{"uptime_sec":{:.3}{},"input_lines":{},"input_bytes":{},"output_lines":{},"output_bytes":{},"output_errors":{},"batches":{},"scan_sec":{:.6},"transform_sec":{:.6},"output_sec":{:.6},"backpressure_stalls":{},"inflight_batches":{},"channel_depth":{},"channel_capacity":{}{}}}"#,
         uptime_s,
         process_json,
         total_input_lines,
@@ -711,6 +717,8 @@ fn build_stats_body(state: &DiagnosticsState) -> String {
         total_output_ns as f64 / 1e9,
         total_backpressure,
         total_inflight,
+        channel_depth,
+        channel_capacity,
         mem_json,
     )
 }

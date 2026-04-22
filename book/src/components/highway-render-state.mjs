@@ -75,8 +75,9 @@ export function createRenderState(overrides) {
 
   function stepCar(car) {
     if (car.waypoints.length === 0) {
-      // No target — decelerate to stop
-      car.speed = Math.max(0, car.speed - cfg.accel * 2);
+      // No target yet — bleed speed slowly so sparse waypoint updates do not
+      // produce visible stop/start stutter between sim ticks.
+      car.speed = Math.max(0, car.speed - cfg.accel * 0.5);
       return;
     }
 
@@ -94,7 +95,6 @@ export function createRenderState(overrides) {
       car.opacity = wp.opacity;
       car.waypoints.shift();
       if (car.waypoints.length > 0) return; // next frame picks up next wp
-      car.speed = 0;
       return;
     }
 

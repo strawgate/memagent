@@ -41,7 +41,7 @@ input:
 
 ```bash
 cat app.log | ff send --config destination.yaml --format json
-kubectl logs pod/app | LOGFWD_CONFIG=destination.yaml ff --format cri
+kubectl logs pod/app | LOGFWD_CONFIG=destination.yaml ff send --format cri
 ```
 
 Use `file` input for daemon-style tailing. `stdin` is finite command input; it does not watch paths or discover rotated files.

@@ -156,7 +156,7 @@ SubmitAfterDrain(item) ==
     /\ item \notin rejected
     /\ rejected' = rejected \cup {item}
     /\ UNCHANGED <<poolState, workers, workerState, workerHealth,
-                   pending, inFlight, assignment, cancelled, forcedAbort>>
+                   pending, inFlight, delivered, assignment, cancelled, forcedAbort>>
 
 \* Dispatch: send the first pending item to an idle worker.
 \* Models MRU dispatch: pick any idle worker (ordering is abstracted).
@@ -198,7 +198,7 @@ WorkerComplete(w, item) ==
     /\ item \in inFlight
     /\ assignment[item] = w
     /\ workerState' = [workerState EXCEPT ![w] = "Idle"]
-    /\ workerHealth' = [workerHealth EXCEPT ![w] = "Healthy"]
+    /\ workerHealth' = [workerHealth EXCEPT ![w] = (IF workerHealth[w] = "Failed" THEN "Failed" ELSE "Healthy")]
     /\ inFlight'    = inFlight \ {item}
     /\ delivered'   = delivered \cup {item}
     /\ UNCHANGED <<poolState, workers, pending, rejected,
@@ -389,11 +389,12 @@ NoSubmitAfterDrain ==
  * Temporal safety properties (action-level)
  * ----------------------------------------------------------------------- *)
 
-\* FailureIsSticky as a temporal property: once Failed, stays Failed.
+\* FailureIsSticky as a temporal property: once Failed, stays Failed
+\* UNLESS the worker is re-spawned (added back to the workers set).
 FailureIsStickyTemporal ==
     \A w \in WorkerIds :
-        [](workerHealth[w] = "Failed" =>
-           [](workerHealth[w] = "Failed" \/ workerState[w] = "Stopped"))
+        [][workerHealth[w] = "Failed" =>
+           (workerHealth'[w] = "Failed" \/ (w \notin workers /\ w \in workers'))]_vars
 
 \* ForceAbort accounts for all unfinished work.
 ForceAbortAccountsForAll ==
