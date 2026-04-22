@@ -1,3 +1,8 @@
+// Scaffolding module: several lifecycle states and the generic `Session` wrapper
+// are defined ahead of their first use.  Suppress dead-code warnings for the
+// entire module until the remaining transitions are wired up.
+#![allow(dead_code)]
+
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;
@@ -9,11 +14,9 @@ use super::identity::FileIdentity;
 use super::state::EofState;
 
 /// Untracked state: file is not known to the tailer.
-#[allow(dead_code)]
 pub struct Untracked;
 
 /// Discovered but unopened: file path is known from a glob, but not yet stat'd or opened.
-#[allow(dead_code)]
 pub struct DiscoveredUnopened;
 
 /// Active state: file is open and actively being tailed.
@@ -39,21 +42,17 @@ pub struct EvictedClosedCached {
 }
 
 /// Deleted but cleanup pending: file removed from disk, but we haven't flushed remaining buffers/events.
-#[allow(dead_code)]
 pub struct DeletedCleanupPending;
 
 /// Terminal, removed: file is fully removed from tailer tracking.
-#[allow(dead_code)]
 pub struct TerminalRemoved;
 
 /// Generic session wrapper over a specific state.
-#[allow(dead_code)]
 pub struct Session<S> {
     pub state: S,
 }
 
 impl<S> Session<S> {
-    #[allow(dead_code)]
     pub fn new(state: S) -> Self {
         Self { state }
     }
@@ -95,7 +94,7 @@ impl Active {
             });
         }
 
-        let mut result = Vec::with_capacity(read_buf.len());
+        let mut result = Vec::with_capacity(per_file_budget);
         loop {
             let remaining = per_file_budget.saturating_sub(result.len());
             if remaining == 0 {

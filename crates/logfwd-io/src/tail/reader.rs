@@ -40,7 +40,11 @@ fn classify_empty_read_result(was_truncated: bool) -> ReadResult {
 /// zero fingerprint or disabled fingerprint window returns 0. Otherwise the
 /// returned length is `min(file_size, fingerprint_bytes)`, because a file can
 /// be shorter than the configured identity window when it is first observed.
-pub fn observed_fingerprint_len(fingerprint: u64, file_size: u64, fingerprint_bytes: usize) -> u64 {
+pub(super) fn observed_fingerprint_len(
+    fingerprint: u64,
+    file_size: u64,
+    fingerprint_bytes: usize,
+) -> u64 {
     if fingerprint == 0 || fingerprint_bytes == 0 {
         0
     } else {
