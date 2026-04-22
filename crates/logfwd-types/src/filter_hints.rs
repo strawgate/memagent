@@ -5,7 +5,7 @@
 /// advisory — the SQL transform still applies all predicates, so correctness
 /// doesn't depend on pushdown. It only affects performance.
 ///
-/// See `docs/PREDICATE_PUSHDOWN.md` for the full design.
+/// See `dev-docs/research/predicate-pushdown-design.md` for the full design.
 #[derive(Debug, Clone, Default)]
 pub struct FilterHints {
     /// Syslog: only forward messages with severity <= this value.

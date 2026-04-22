@@ -1,266 +1,179 @@
-# PR Process: Issue → PR → Review → Merge
+# PR Process
 
-This document describes the mechanics of our issue-to-merge workflow, covering both Copilot-generated and human-authored PRs.
+Repo-local mechanics for taking a change from issue to merged PR.
+
+This document is intentionally about durable workflow, not bot-specific IDs,
+model names, or one-off automation details that drift quickly.
 
 ## Overview
 
+```text
+Issue scoped -> branch or PR opened -> implementation + docs + verification ->
+review -> follow-up fixes -> merge or close
 ```
-Issue filed → Assign to Copilot → Copilot creates draft PR → Mark ready →
-  Review (architecture + code quality) → Fix lint/bugs → Merge or Close
-```
 
-## Pre-PR Checklist (Required)
+## Pre-PR Checklist
 
-Before opening a PR, confirm all items:
+Before opening or marking a PR ready, confirm all of these:
 
-- [ ] The PR description states exactly what behavior changed.
-- [ ] If behavior changed, docs changed in the same PR (user docs in `book/src/content/docs/`, contributor docs in `dev-docs/` as needed).
-- [ ] If config semantics changed, `book/src/content/docs/configuration/reference.mdx` was updated.
-- [ ] If pipeline/architecture behavior changed, update `dev-docs/ARCHITECTURE.md` and/or `dev-docs/DESIGN.md`.
-- [ ] If invariants/proofs changed, update `dev-docs/VERIFICATION.md` and related harnesses.
-- [ ] Commands in docs were copy/paste verified in the target environment.
+- The PR description states exactly what behavior changed and why.
+- Docs changed in the same PR when behavior or policy changed.
+- Config changes updated `book/src/content/docs/configuration/reference.mdx`.
+- Architecture changes updated `dev-docs/ARCHITECTURE.md` and/or `dev-docs/DESIGN.md`.
+- Invariant or proof changes updated `dev-docs/VERIFICATION.md` and related evidence.
+- Commands in the PR body and docs were actually run in the target environment.
 
-Use [CHANGE_MAP](CHANGE_MAP.md) to identify all required companion updates.
+Use [CHANGE_MAP.md](CHANGE_MAP.md) before coding when the change crosses boundaries.
 
-## 1. Filing Issues for Copilot
+## 1. Scope The Work First
 
-Write focused, well-scoped issues. Include:
-- What to change (1-2 sentences)
-- Which files are involved
-- Any constraints or patterns to follow
-- Reference to closed PRs if this replaces stale work
+Every issue or PR should have one clear concern:
 
-## 2. Assigning Issues to Copilot
+- one bug
+- one feature slice
+- one refactor with one goal
+- one docs or verification cleanup
 
-Use the GraphQL API with model and custom agent selection:
+If a branch has mixed concerns, split it before review.
+
+Good issue scope includes:
+
+- concrete behavior to change
+- touched files or modules
+- invariants or contracts that must stay true
+- links to parent metas or superseded work
+
+## 2. Open The PR Early
+
+Prefer an early draft PR over a large surprise diff.
+
+Required conventions:
+
+- PR title: `type: concise description`
+- one concern per PR
+- include validation commands in the body
+- include benchmark deltas when claiming performance changes
+
+Useful commands:
 
 ```bash
-# Required: get the issue's GraphQL ID
-gh api graphql -f query='
-{
-  repository(owner: "strawgate", name: "memagent") {
-    issue(number: ISSUE_NUMBER) { id }
-  }
-}'
-
-# Assign with model + custom agent
-gh api graphql \
-  -H "GraphQL-Features: issues_copilot_assignment_api_support" \
-  -H "GraphQL-Features: coding_agent_model_selection" \
-  -f query='
-mutation {
-  updateIssue(input: {
-    id: "ISSUE_GRAPHQL_ID"
-    assigneeIds: ["BOT_kgDOC9w8XQ"]
-    agentAssignment: {
-      targetRepositoryId: "R_kgDORzg8fA"
-      customAgent: "issue-worker"
-      model: "claude-opus-4.6"
-    }
-  }) {
-    issue { title assignees(first: 5) { nodes { login } } }
-  }
-}'
+gh pr create --draft
+gh pr view PR_NUMBER
+gh pr ready PR_NUMBER
 ```
 
-**Key IDs (this repo):**
-- Copilot bot ID: `BOT_kgDOC9w8XQ`
-- Repository ID: `R_kgDORzg8fA`
-- Custom agent: `issue-worker` (defined in `.github/agents/issue-worker.agent.md`)
-- Model: `claude-opus-4.6` (or `gpt-4o`, `claude-sonnet-4.6`, etc.)
+## 3. Keep The Branch Healthy
 
-**Simple REST fallback** (no model/agent selection):
-```bash
-gh api --method PATCH "/repos/strawgate/memagent/issues/ISSUE_NUMBER" \
-  -f 'assignees[]=copilot-swe-agent[bot]'
-```
+Before requesting review:
 
-## 3. PR Triage Loop
+- run the smallest relevant local loop during development
+- run `just ci` at minimum before pushing
+- run `just ci-all` when the change touches cross-workspace behavior
+- keep the branch current with `main` if CI or review context drifted
 
-When Copilot PRs arrive, process them in batches:
-
-### a. Inventory
-```bash
-# List all open Copilot PRs
-gh pr list --author "app/copilot-swe-agent" --state open \
-  --json number,title,isDraft,mergeable \
-  --jq '.[] | "#\(.number) draft=\(.isDraft) mergeable=\(.mergeable) \(.title)"'
-```
-
-### b. Skip WIP PRs
-PRs with `[WIP]` in the title are still being worked on by Copilot. Leave them as drafts.
-
-### c. Mark non-WIP drafts as ready
+Useful commands:
 
 ```bash
-gh pr ready ISSUE_NUMBER
+just ci
+just ci-all
+gh pr checks PR_NUMBER
+gh pr update-branch PR_NUMBER
 ```
 
-### d. Update branches with main
+If the CLI branch update is unavailable or branch protection requires it, merge
+or rebase `origin/main` manually using normal non-interactive git commands.
+
+## 4. Review Expectations
+
+Every PR is reviewed for:
+
+1. Behavior: what changed, and is it correct?
+2. Scope: is the diff focused and appropriately sized?
+3. Risk: does it touch core contracts, runtime invariants, or hot paths?
+4. Validation: were the right tests, proofs, and docs updated?
+5. Merge fitness: would we be comfortable owning this on `main` tomorrow?
+
+Use the checklist docs in [`review-guides/`](review-guides/) during review.
+
+## 5. AI-Agent PRs
+
+Agent-authored PRs are held to the same bar as human-authored PRs.
+
+Common failure modes:
+
+- stale base branch
+- docs not updated
+- lint or test failures
+- dead config or partially wired behavior
+- plausible-looking code that violates crate boundaries or invariants
+
+If a PR is easier to replace than salvage:
+
+- close it
+- file or refine a focused issue
+- restart from current `main`
+
+Do not merge weak code just because the diff is small or mostly generated.
+
+## 6. Address Review Feedback Deliberately
+
+When fixing review feedback:
+
+- push the exact fix for the comment
+- say what changed when the fix is non-obvious
+- leave architectural questions open until resolved
+- resolve threads only when the concern is actually addressed
+
+Useful commands:
 
 ```bash
-gh api repos/{owner}/{repo}/pulls/ISSUE_NUMBER/update-branch \
-  -X PUT -f update_method=merge
+gh pr view PR_NUMBER --comments
+gh pr comment PR_NUMBER --body "Addressed in <commit-or-summary>."
+gh pr review PR_NUMBER --approve
+gh pr review PR_NUMBER --request-changes --body "..."
 ```
 
-### e. Check CI
-```bash
-gh pr checks ISSUE_NUMBER
-```
+If thread-resolution state matters and the regular CLI is insufficient, use
+`gh api graphql` against the current repository. Keep those commands local to
+the task at hand instead of hard-coding them into this doc.
 
-## 4. Review Criteria
+## 7. Merge Or Close
 
-Every PR gets reviewed for:
-
-1. **What it changes** — 1-2 sentence summary
-2. **Size/scope** — files changed, lines added/removed
-3. **Risk** — safe and isolated vs touches core architecture
-4. **Code quality** — bugs, missing error handling, questionable patterns
-5. **Verdict** — one of:
-   - **Safe to merge** — fix lint if needed, then merge
-   - **Needs minor fixes** — specific actionable items, then merge
-   - **Needs architectural review** — design questions to resolve first
-   - **Close** — superseded, too stale, or fundamentally flawed
-
-### Common Copilot issues to watch for
-- **Lint failures** — Copilot doesn't run `cargo fmt` or `cargo clippy`. Every PR needs lint fixes.
-- **Approx constant test values** — using `3.14` (too close to PI) triggers `clippy::approx_constant`
-- **API drift** — Copilot branches from old commits, uses removed methods (e.g., `execute` → `execute_blocking`)
-- **Dead config** — adding config fields that are parsed but never used at runtime
-- **Formatting noise** — 50%+ of diff is `rustfmt` changes to unrelated files
-
-## 5. Fixing PRs
-
-Fix lint and minor issues directly on the PR branch using worktree agents:
+Default merge mode is squash unless there is a strong reason not to.
 
 ```bash
-# Launch a worktree agent to fix lint on a PR
-# (from Claude Code — the agent checks out the branch, fixes clippy/fmt, runs tests, pushes)
+gh pr merge PR_NUMBER --squash
+gh pr merge PR_NUMBER --squash --auto
+gh pr close PR_NUMBER --comment "Closing — superseded or stale; follow-up tracked in #NNNN."
 ```
 
-For conflict resolution:
-```bash
-# Merge main into the PR branch
-cd worktree-path
-git fetch origin main
-git merge origin/main
-# Resolve conflicts (usually approx_constant values — accept main's version)
-git checkout --theirs conflicted-file.rs
-git add conflicted-file.rs
-git commit --no-edit
-git push origin HEAD:branch-name
-```
+Close a PR when it is:
 
-## 6. Resolving Review Comments
+- fully superseded
+- based on outdated assumptions
+- too broad to review safely
+- missing enough context that a focused restart is cheaper
 
-After fixing review feedback, resolve the addressed threads via GraphQL (the REST API doesn't support review threads):
+## 8. After Merge
 
-```bash
-# List all unresolved review threads on a PR
-gh api graphql -f query='
-{
-  repository(owner: "strawgate", name: "memagent") {
-    pullRequest(number: PR_NUMBER) {
-      reviewThreads(first: 100) {
-        nodes {
-          id
-          isResolved
-          comments(first: 1) {
-            nodes {
-              body
-              author { login }
-            }
-          }
-        }
-      }
-    }
-  }
-}'
+After merging a batch or risky change:
 
-# Resolve a specific thread by ID
-gh api graphql -f query='
-mutation {
-  resolveReviewThread(input: {
-    threadId: "THREAD_NODE_ID"
-  }) {
-    thread { isResolved }
-  }
-}'
-```
+- confirm the latest `main` CI run is healthy
+- check whether follow-up issues or docs cleanup are still needed
+- close or update linked issues accordingly
 
-**When to resolve:**
-- The fix is pushed and addresses the reviewer's exact concern
-- The thread is outdated (code was refactored/removed)
-- The comment was informational (no action needed)
-
-**When NOT to resolve:**
-- The fix is partial or a workaround — leave open for the reviewer
-- The comment raises an architectural question that needs discussion
-
-**Bulk resolve** — after pushing fixes, resolve all clearly-addressed threads in one pass:
+Useful commands:
 
 ```bash
-# Get all unresolved thread IDs
-THREADS=$(gh api graphql -f query='
-{
-  repository(owner: "strawgate", name: "memagent") {
-    pullRequest(number: PR_NUMBER) {
-      reviewThreads(first: 100) {
-        nodes { id isResolved }
-      }
-    }
-  }
-}' --jq '.data.repository.pullRequest.reviewThreads.nodes[] | select(.isResolved == false) | .id')
-
-# Review what will be resolved
-echo "Unresolved threads:"
-echo "$THREADS"
-
-# Resolve each one
-for tid in $THREADS; do
-  gh api graphql -f query="mutation { resolveReviewThread(input: { threadId: \"$tid\" }) { thread { isResolved } } }"
-done
+gh run list --branch main --workflow CI --limit 1
+gh issue list --state open
+gh issue list --label work-unit --state open
 ```
 
-## 7. Merging
+## Review Bar
 
-```bash
-# Squash merge (preferred for Copilot PRs)
-gh pr merge ISSUE_NUMBER --squash
+The default question is not "can this merge?"
 
-# If branch protection requires CI:
-gh pr merge ISSUE_NUMBER --squash --auto
-```
+It is "is this the shape we want to maintain?"
 
-## 8. Closing Stale PRs
-
-When PRs are superseded or too stale to salvage:
-```bash
-gh pr close ISSUE_NUMBER --comment "Closing — [reason]. [what to do instead]."
-```
-
-If the underlying work is still needed, file a focused issue and assign to Copilot.
-
-## 9. Stale PR Triage
-
-Periodically check if WIP PRs are still relevant:
-
-1. List all WIP PRs
-2. For each, check if the feature already exists on main (search git log, grep source)
-3. **Fully superseded** → close with explanation
-4. **Partially superseded** → close, file focused issue for remaining work
-5. **Still needed** → leave open or close and refile with updated scope
-
-## 10. Main CI Health
-
-After merging batches, verify main CI is green:
-
-```bash
-gh run list --branch main --workflow CI --limit 1 \
-  --json conclusion -q '.[0].conclusion'
-```
-
-Common fixes:
-- **Lint failure** → `cargo fmt --all` on main
-- **ARM64 cross-compile** → `apt-get update` before package install
-- **Flaky tests** → investigate timing-dependent assertions
+If the answer is no, either fix it or narrow the scope until the answer is yes.

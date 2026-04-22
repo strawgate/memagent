@@ -466,13 +466,13 @@ fn scan_line_with_predicate<B: ScanBuilder>(
     // If the predicate references the line-capture field, store the line
     // content in the predicate scratch so IS NOT NULL and string comparisons
     // on the synthetic line column work correctly.
-    if let Some(ref line_name) = config.line_field_name {
-        if predicate.references_field(line_name.as_bytes()) {
-            pred_scratch.insert(
-                line_name.as_bytes(),
-                PredicateFieldValue::Str(buf[start..end].to_vec()),
-            );
-        }
+    if let Some(ref line_name) = config.line_field_name
+        && predicate.references_field(line_name.as_bytes())
+    {
+        pred_scratch.insert(
+            line_name.as_bytes(),
+            PredicateFieldValue::Str(buf[start..end].to_vec()),
+        );
     }
     let has_line_capture = config.captures_line();
 

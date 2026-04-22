@@ -26,6 +26,7 @@ Contributor and agent entrypoint for repo-critical engineering context.
 - [DESIGN.md](DESIGN.md): architecture decisions and tradeoffs.
 - [CRATE_RULES.md](CRATE_RULES.md): crate-level constraints.
 - [VERIFICATION.md](VERIFICATION.md): Kani/TLA+/proptest requirements.
+- [verification/README.md](verification/README.md): verification inventory, entrypoints, manifests, and organization plan.
 - [SCANNER_CONTRACT.md](SCANNER_CONTRACT.md): scanner IO contract.
 - [ADAPTER_CONTRACT.md](ADAPTER_CONTRACT.md): boundary correctness contract.
 - [CODE_STYLE.md](CODE_STYLE.md): style rules.
@@ -42,3 +43,4 @@ If a reference is generic Rust/library education, remove it or replace with an u
 
 Use [dev-docs/research/README.md](research/README.md) to find active investigations.
 Research docs are point-in-time artifacts and are never canonical for runtime behavior.
+Exploratory design deep-dives belong there, not in the canonical `dev-docs/*.md` layer.
