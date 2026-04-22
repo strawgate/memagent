@@ -64,7 +64,10 @@ clap_complete = "4.5"
 clap_complete_nushell = "4.6"
 config = { version = "0.15.22", default-features = false }
 arrow-json = "58"
-parquet = { version = "58", features = ["zstd"] }
+parquet = { version = "58", default-features = false, features = [
+    "arrow",
+    "zstd",
+] }
 datafusion = { version = "53", default-features = false, features = [
     "sql",
     "string_expressions",
@@ -75,8 +78,15 @@ datafusion = { version = "53", default-features = false, features = [
 fail = "0.5"
 futures-util = "0.3"
 globset = "0.4"
-opentelemetry = "0.31"
-opentelemetry_sdk = { version = "0.31", features = ["rt-tokio"] }
+opentelemetry = { version = "0.31", default-features = false, features = [
+    "trace",
+    "metrics",
+] }
+opentelemetry_sdk = { version = "0.31", default-features = false, features = [
+    "trace",
+    "metrics",
+    "rt-tokio",
+] }
 opentelemetry-otlp = { version = "0.31", default-features = false, features = [
     "http-proto",
     "reqwest-client",
@@ -169,15 +179,33 @@ implicit_clone = "warn"
 needless_for_each = "warn"
 or_fun_call = "warn"
 checked_conversions = "warn"
-# Tier 3: restriction-group correctness lints (opt-in, not in pedantic).
-unimplemented = "warn"
-todo = "warn"
+# Tier 3: catches stubs and forgotten markers.
+todo = "deny"
+unimplemented = "deny"
+# Tier 3b: restriction-group correctness lints (opt-in, not in pedantic).
 rc_mutex = "deny"
 lossy_float_literal = "warn"
 float_cmp_const = "warn"
 fn_to_numeric_cast_any = "warn"
 verbose_file_reads = "warn"
 unnecessary_self_imports = "warn"
+# Tier 4: nursery lints adopted from Reth — all zero existing violations.
+collection_is_never_read = "warn"
+derive_partial_eq_without_eq = "warn"
+empty_line_after_doc_comments = "warn"
+empty_line_after_outer_attr = "warn"
+explicit_into_iter_loop = "warn"
+explicit_iter_loop = "warn"
+flat_map_option = "warn"
+iter_on_empty_collections = "warn"
+iter_on_single_items = "warn"
+manual_assert = "warn"
+manual_string_new = "warn"
+naive_bytecount = "warn"
+path_buf_push_overwrite = "warn"
+string_lit_as_bytes = "warn"
+unnecessary_struct_initialization = "warn"
+zero_sized_map_values = "warn"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

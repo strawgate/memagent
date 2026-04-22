@@ -6,6 +6,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::panic)]
 
 extern crate alloc;
 
