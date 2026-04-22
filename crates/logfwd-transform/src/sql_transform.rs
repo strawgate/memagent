@@ -163,7 +163,11 @@ impl SqlTransform {
             }
         }
 
-        // Execute the SQL.
+        self.execute_plan(ctx).await
+    }
+
+    /// Execute the cached SQL plan and collect results into a single RecordBatch.
+    async fn execute_plan(&self, ctx: &SessionContext) -> Result<RecordBatch, TransformError> {
         let sql = &self.user_sql;
         let df = ctx
             .sql(sql)
@@ -232,6 +236,92 @@ impl SqlTransform {
     /// runtime.
     ///
     /// When the calling code is made async, switch to `execute().await` directly.
+    /// Execute the SQL transform over multiple batches with the same schema.
+    ///
+    /// All batches are registered as a single MemTable so DataFusion executes
+    /// the query once over all rows. This amortizes the per-execution overhead
+    /// (context setup, plan caching, table registration) across many batches.
+    ///
+    /// The caller must ensure all batches have identical schemas. If they don't,
+    /// use [`execute_blocking`] per batch or group by schema first.
+    pub fn execute_multi_batch_blocking(
+        &mut self,
+        batches: Vec<RecordBatch>,
+    ) -> Result<RecordBatch, TransformError> {
+        if batches.is_empty() {
+            return Err(TransformError::Sql("No batches to execute".to_string()));
+        }
+        if batches.len() == 1 {
+            return self.execute_blocking(batches.into_iter().next().expect("len checked"));
+        }
+
+        // Normalize all batches.
+        let batches: Vec<RecordBatch> = batches
+            .into_iter()
+            .map(conflict_schema::normalize_conflict_columns)
+            .collect();
+
+        let schema = batches[0].schema();
+        let new_hash = hash_schema(schema.clone());
+        if new_hash != self.schema_hash {
+            self.ctx = None;
+        }
+        self.schema_hash = new_hash;
+
+        self.ensure_context();
+        let ctx = self.ctx.as_ref().ok_or_else(|| {
+            TransformError::Sql(
+                "Failed to initialize SessionContext after ensure_context()".to_string(),
+            )
+        })?;
+
+        // Register all batches as one MemTable.
+        let table = MemTable::try_new(schema, vec![batches])
+            .map_err(|e| TransformError::Sql(format!("Failed to create MemTable: {e}")))?;
+        let _ = ctx.deregister_table("logs");
+        ctx.register_table("logs", Arc::new(table))
+            .map_err(|e| TransformError::Sql(format!("Failed to register table: {e}")))?;
+
+        // Swap enrichment tables.
+        for et in &self.enrichment_tables {
+            let _ = ctx.deregister_table(et.name());
+            if let Some(snapshot) = et.snapshot() {
+                let et_table =
+                    MemTable::try_new(snapshot.schema(), vec![vec![snapshot]]).map_err(|e| {
+                        TransformError::Sql(format!(
+                            "Failed to create enrichment MemTable for '{}': {e}",
+                            et.name()
+                        ))
+                    })?;
+                ctx.register_table(et.name(), Arc::new(et_table))
+                    .map_err(|e| {
+                        TransformError::Sql(format!(
+                            "Failed to register enrichment table '{}': {e}",
+                            et.name()
+                        ))
+                    })?;
+            }
+        }
+
+        // Execute SQL once over all batches.
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(|| {
+                    handle.block_on(self.execute_plan(ctx))
+                })
+            }
+            Ok(_) | Err(_) => {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| {
+                        TransformError::Sql(format!("Failed to create tokio runtime: {e}"))
+                    })?;
+                rt.block_on(self.execute_plan(ctx))
+            }
+        }
+    }
+
     pub fn execute_blocking(&mut self, batch: RecordBatch) -> Result<RecordBatch, TransformError> {
         match tokio::runtime::Handle::try_current() {
             Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {

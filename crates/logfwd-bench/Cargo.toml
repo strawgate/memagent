@@ -240,6 +240,13 @@ test = false
 required-features = ["bench-tools"]
 
 [[bin]]
+name = "multi_batch_transform"
+path = "src/bin/multi_batch_transform.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
 name = "batch_size_sweep"
 path = "src/bin/batch_size_sweep.rs"
 bench = false

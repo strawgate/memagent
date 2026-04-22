@@ -1,0 +1,56 @@
+{
+  "created_at": "2026-04-20T05:43:34.138570+00:00",
+  "cwd": "/Users/billeaston/Documents/repos/memagent",
+  "prompt_dir": "/Users/billeaston/Documents/repos/memagent/dev-docs/research/fanout-2026-04-20-verification-enforcement",
+  "pattern": "*.prompt.md",
+  "branch": "research/dylint-verification-lints",
+  "env_id": "69d280173d5c8191b89e9c25ccfef74c",
+  "env_label": "strawgate/memagent",
+  "attempts_requested": 2,
+  "prompt_attempt_overrides": {
+    "/Users/billeaston/Documents/repos/memagent/task_a_xtask-verify-impl.prompt.md": 3,
+    "/Users/billeaston/Documents/repos/memagent/task_d_proptest-gaps.prompt.md": 3
+  },
+  "tasks": [
+    {
+      "name": "Workstream A: Build `cargo xtask verify` structural checker",
+      "prompt_file": "/Users/billeaston/Documents/repos/memagent/dev-docs/research/fanout-2026-04-20-verification-enforcement/task_a_xtask-verify-impl.prompt.md",
+      "attempts": 2,
+      "task_id": "task_e_69e5bd083fdc832eaf80615167d1c413",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69e5bd083fdc832eaf80615167d1c413",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69e5bd083fdc832eaf80615167d1c413\n",
+      "stderr": ""
+    },
+    {
+      "name": "Workstream B: Compile-time verification attribute macros",
+      "prompt_file": "/Users/billeaston/Documents/repos/memagent/dev-docs/research/fanout-2026-04-20-verification-enforcement/task_b_verified-attrs.prompt.md",
+      "attempts": 2,
+      "task_id": "task_e_69e5bd0aa3c4832e93e9eeb62facd152",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69e5bd0aa3c4832e93e9eeb62facd152",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69e5bd0aa3c4832e93e9eeb62facd152\n",
+      "stderr": ""
+    },
+    {
+      "name": "Workstream C: Fuzz targets for trust boundaries",
+      "prompt_file": "/Users/billeaston/Documents/repos/memagent/dev-docs/research/fanout-2026-04-20-verification-enforcement/task_c_fuzz-targets.prompt.md",
+      "attempts": 2,
+      "task_id": "task_e_69e5bd0dceec832eae168a8a4c105d54",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69e5bd0dceec832eae168a8a4c105d54",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69e5bd0dceec832eae168a8a4c105d54\n",
+      "stderr": ""
+    },
+    {
+      "name": "Workstream D: Proptest coverage for zero-test output modules",
+      "prompt_file": "/Users/billeaston/Documents/repos/memagent/dev-docs/research/fanout-2026-04-20-verification-enforcement/task_d_proptest-gaps.prompt.md",
+      "attempts": 2,
+      "task_id": "task_e_69e5bd13f99c832e971981d1c0bc3148",
+      "url": "https://chatgpt.com/codex/tasks/task_e_69e5bd13f99c832e971981d1c0bc3148",
+      "returncode": 0,
+      "stdout": "https://chatgpt.com/codex/tasks/task_e_69e5bd13f99c832e971981d1c0bc3148\n",
+      "stderr": ""
+    }
+  ]
+}
