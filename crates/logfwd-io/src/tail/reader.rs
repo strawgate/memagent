@@ -19,6 +19,7 @@ pub(super) struct TailedFile {
     pub(super) fingerprint_len: u64,
     pub(super) file: File,
     pub(super) offset: u64,
+    pub(super) read_buf: bytes::BytesMut,
     pub(super) last_read: Instant,
     pub(super) eof_state: EofState,
 }
@@ -36,8 +37,8 @@ pub(super) struct EvictedFile {
 
 /// Internal result from read_new_data — distinguishes truncation from no-data.
 pub(super) enum ReadResult {
-    Data(Vec<u8>),
-    TruncatedThenData(Vec<u8>),
+    Data(bytes::BytesMut),
+    TruncatedThenData(bytes::BytesMut),
     Truncated,
     NoData,
 }
@@ -100,7 +101,6 @@ fn evicted_matches_open_file(
 /// Owns the open file descriptors, read buffer, and byte-level I/O.
 pub(super) struct FileReader {
     pub(super) files: HashMap<PathBuf, TailedFile>,
-    pub(super) read_buf: Vec<u8>,
     pub(super) evicted_offsets: HashMap<PathBuf, EvictedFile>,
     pub(super) scratch_paths: Vec<PathBuf>,
     pub(super) last_read_had_data: bool,
@@ -199,6 +199,7 @@ impl FileReader {
                 fingerprint_len: stored_fingerprint_len,
                 file,
                 offset,
+                read_buf: bytes::BytesMut::new(),
                 last_read: Instant::now(),
                 eof_state: stored_eof_state,
             },
@@ -243,24 +244,47 @@ impl FileReader {
             .config
             .per_file_read_budget_bytes
             .clamp(1, Self::MAX_READ_PER_POLL);
-        let mut result = Vec::with_capacity(self.config.read_buf_size);
+
+        let mut bytes_read_in_poll = 0;
         loop {
-            let remaining = per_file_budget.saturating_sub(result.len());
+            let remaining = per_file_budget.saturating_sub(bytes_read_in_poll);
             if remaining == 0 {
                 break;
             }
-            let read_len = remaining.min(self.read_buf.len());
-            let n = tailed.file.read(&mut self.read_buf[..read_len])?;
+
+            if tailed.read_buf.capacity() - tailed.read_buf.len() < 8192 {
+                tailed.read_buf.reserve(self.config.read_buf_size);
+            }
+
+            let buf_len = tailed.read_buf.len();
+            let buf_cap = tailed.read_buf.capacity();
+            let read_len = remaining.min(buf_cap - buf_len);
+
+            tailed.read_buf.resize(buf_len + read_len, 0);
+
+            let n = match tailed.file.read(&mut tailed.read_buf[buf_len..buf_len + read_len]) {
+                Ok(n) => n,
+                Err(e) => {
+                    tailed.read_buf.truncate(buf_len);
+                    return Err(e);
+                }
+            };
+
+            tailed.read_buf.truncate(buf_len + n);
+
             if n == 0 {
                 break;
             }
-            result.extend_from_slice(&self.read_buf[..n]);
+
+            bytes_read_in_poll += n;
             tailed.offset += n as u64;
         }
 
-        if result.is_empty() {
+        if bytes_read_in_poll == 0 {
             return Ok(classify_empty_read_result(was_truncated));
         }
+
+        let result = tailed.read_buf.split();
 
         tailed.last_read = Instant::now();
 
@@ -578,7 +602,6 @@ mod tests {
     fn test_reader() -> FileReader {
         FileReader {
             files: HashMap::new(),
-            read_buf: vec![0u8; 64],
             evicted_offsets: HashMap::new(),
             scratch_paths: Vec::new(),
             last_read_had_data: false,
@@ -968,7 +991,7 @@ mod tests {
 
         let got = reader.read_new_data(&path).unwrap();
         assert!(
-            matches!(got, ReadResult::TruncatedThenData(bytes) if bytes == b"abc"),
+            matches!(got, ReadResult::TruncatedThenData(bytes) if bytes.as_ref() == b"abc"),
             "reader should preserve the saved offset until read_new_data emits truncation"
         );
     }
@@ -1019,7 +1042,7 @@ mod tests {
 
         let got = reader.read_new_data(&path).unwrap();
         assert!(
-            matches!(got, ReadResult::Data(bytes) if bytes == b"prefix-rewritten-after-eviction"),
+            matches!(got, ReadResult::Data(bytes) if bytes.as_ref() == b"prefix-rewritten-after-eviction"),
             "failed partial-prefix restores must leave the cursor at byte 0"
         );
     }
@@ -1192,6 +1215,7 @@ mod tests {
                 fingerprint_len: 3,
                 file,
                 offset: 0,
+                read_buf: bytes::BytesMut::new(),
                 last_read: Instant::now(),
                 eof_state: EofState::default(),
             },
@@ -1223,6 +1247,7 @@ mod tests {
                 fingerprint_len: 3,
                 file,
                 offset: 0,
+                read_buf: bytes::BytesMut::new(),
                 last_read: Instant::now(),
                 eof_state: EofState::default(),
             },

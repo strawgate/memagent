@@ -21,7 +21,7 @@ use super::state::{backoff_transition, shutdown_should_emit_eof};
 pub enum TailEvent {
     Data {
         path: PathBuf,
-        bytes: Vec<u8>,
+        bytes: bytes::BytesMut,
         source_id: Option<SourceId>,
     },
     Rotated {
@@ -126,8 +126,6 @@ impl FileTailer {
             }
         }
 
-        let read_buf_size = config.read_buf_size;
-
         let mut tailer = FileTailer {
             discovery: FileDiscovery {
                 watcher,
@@ -139,7 +137,6 @@ impl FileTailer {
             },
             reader: FileReader {
                 files: HashMap::new(),
-                read_buf: vec![0u8; read_buf_size],
                 evicted_offsets: HashMap::new(),
                 scratch_paths: Vec::new(),
                 last_read_had_data: false,
