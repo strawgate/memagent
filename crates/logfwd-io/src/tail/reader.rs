@@ -18,8 +18,8 @@ pub(super) use super::lifecycle::EvictedClosedCached as EvictedFile;
 
 /// Internal result from read_new_data — distinguishes truncation from no-data.
 pub(super) enum ReadResult {
-    Data(Vec<u8>),
-    TruncatedThenData(Vec<u8>),
+    Data(bytes::BytesMut),
+    TruncatedThenData(bytes::BytesMut),
     Truncated,
     NoData,
 }
@@ -82,7 +82,6 @@ fn evicted_matches_open_file(
 /// Owns the open file descriptors, read buffer, and byte-level I/O.
 pub(super) struct FileReader {
     pub(super) files: HashMap<PathBuf, TailedFile>,
-    pub(super) read_buf: Vec<u8>,
     pub(super) evicted_offsets: HashMap<PathBuf, EvictedFile>,
     pub(super) scratch_paths: Vec<PathBuf>,
     pub(super) last_read_had_data: bool,
@@ -181,6 +180,7 @@ impl FileReader {
                 fingerprint_len: stored_fingerprint_len,
                 file,
                 offset,
+                read_buf: bytes::BytesMut::new(),
                 last_read: Instant::now(),
                 eof_state: stored_eof_state,
             },
@@ -201,7 +201,7 @@ impl FileReader {
             None => return Ok(ReadResult::NoData),
         };
 
-        tailed.read_new_data(&mut self.read_buf, per_file_budget, fingerprint_bytes)
+        tailed.read_new_data(per_file_budget, fingerprint_bytes)
     }
 
     pub(super) fn drain_file(
@@ -496,7 +496,6 @@ mod tests {
     fn test_reader() -> FileReader {
         FileReader {
             files: HashMap::new(),
-            read_buf: vec![0u8; 64],
             evicted_offsets: HashMap::new(),
             scratch_paths: Vec::new(),
             last_read_had_data: false,
@@ -886,7 +885,7 @@ mod tests {
 
         let got = reader.read_new_data(&path).unwrap();
         assert!(
-            matches!(got, ReadResult::TruncatedThenData(bytes) if bytes == b"abc"),
+            matches!(got, ReadResult::TruncatedThenData(bytes) if bytes.as_ref() == b"abc"),
             "reader should preserve the saved offset until read_new_data emits truncation"
         );
     }
@@ -937,7 +936,7 @@ mod tests {
 
         let got = reader.read_new_data(&path).unwrap();
         assert!(
-            matches!(got, ReadResult::Data(bytes) if bytes == b"prefix-rewritten-after-eviction"),
+            matches!(got, ReadResult::Data(bytes) if bytes.as_ref() == b"prefix-rewritten-after-eviction"),
             "failed partial-prefix restores must leave the cursor at byte 0"
         );
     }
@@ -1110,6 +1109,7 @@ mod tests {
                 fingerprint_len: 3,
                 file,
                 offset: 0,
+                read_buf: bytes::BytesMut::new(),
                 last_read: Instant::now(),
                 eof_state: EofState::default(),
             },
@@ -1141,6 +1141,7 @@ mod tests {
                 fingerprint_len: 3,
                 file,
                 offset: 0,
+                read_buf: bytes::BytesMut::new(),
                 last_read: Instant::now(),
                 eof_state: EofState::default(),
             },

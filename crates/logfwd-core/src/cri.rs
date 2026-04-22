@@ -143,15 +143,11 @@ where
 }
 
 /// Process CRI data and write extracted messages directly into an output buffer.
-/// Each message is written as: optional JSON prefix + message bytes + newline.
+/// Each message is written as: message bytes + newline.
 ///
 /// For the common case (full lines, no partials), the message bytes come straight
 /// from the input chunk — zero per-line allocation. Only partial line reassembly
 /// copies into the reassembler's internal buffer.
-///
-/// `json_prefix`: if Some, injected after the opening `{` of each JSON message.
-///   Example: `Some(b"\"kubernetes.pod_name\":\"my-pod\",")` turns
-///   `{"msg":"hi"}` into `{"kubernetes.pod_name":"my-pod","msg":"hi"}`
 ///
 /// Returns `(lines_ok, parse_errors)` where `parse_errors` is the number of
 /// non-empty lines that could not be parsed as valid CRI format **plus** the
@@ -160,10 +156,9 @@ where
 pub(crate) fn process_cri_to_buf(
     chunk: &[u8],
     reassembler: &mut CriReassembler,
-    json_prefix: Option<&[u8]>,
     out: &mut Vec<u8>,
 ) -> (usize, usize) {
-    process_cri_to_buf_with_plain_text_field(chunk, reassembler, json_prefix, "body", out)
+    process_cri_to_buf_with_plain_text_field(chunk, reassembler, "body", out)
 }
 
 /// Same as `process_cri_to_buf` but allows choosing the field name used when
@@ -171,7 +166,6 @@ pub(crate) fn process_cri_to_buf(
 pub fn process_cri_to_buf_with_plain_text_field(
     chunk: &[u8],
     reassembler: &mut CriReassembler,
-    json_prefix: Option<&[u8]>,
     plain_text_field_name: &str,
     out: &mut Vec<u8>,
 ) -> (usize, usize) {
@@ -188,22 +182,12 @@ pub fn process_cri_to_buf_with_plain_text_field(
             match parse_cri_line(line) {
                 Some(cri) => match reassembler.feed(cri.message, cri.is_full) {
                     AggregateResult::Complete(msg) => {
-                        write_json_line_for_plain_text_field(
-                            msg,
-                            json_prefix,
-                            plain_text_field_name,
-                            out,
-                        );
+                        write_json_line_for_plain_text_field(msg, plain_text_field_name, out);
                         reassembler.reset();
                         (1, 0)
                     }
                     AggregateResult::Truncated(msg) => {
-                        write_json_line_for_plain_text_field(
-                            msg,
-                            json_prefix,
-                            plain_text_field_name,
-                            out,
-                        );
+                        write_json_line_for_plain_text_field(msg, plain_text_field_name, out);
                         reassembler.reset();
                         (1, 1)
                     }
@@ -269,14 +253,13 @@ fn process_cri_chunk_lines<F>(
 #[inline]
 fn write_json_line_for_plain_text_field(
     msg: &[u8],
-    json_prefix: Option<&[u8]>,
     plain_text_field_name: &str,
     out: &mut Vec<u8>,
 ) {
     if plain_text_field_name == "body" {
-        write_json_line(msg, json_prefix, out);
+        write_json_line(msg, out);
     } else {
-        write_json_line_with_plain_text_field(msg, json_prefix, plain_text_field_name, out);
+        write_json_line_with_plain_text_field(msg, plain_text_field_name, out);
     }
 }
 
@@ -307,60 +290,26 @@ pub fn json_escape_bytes(src: &[u8], dst: &mut Vec<u8>) {
     }
 }
 
-/// Write a single message into the output buffer with optional JSON prefix injection.
+/// Write a single message into the output buffer.
 ///
-/// If `msg` starts with `{` it is treated as a JSON object and the optional
-/// `json_prefix` is injected after the opening brace.  Otherwise `msg` is
-/// plain text and is written as
-/// `{"<plain_text_field_name>":"<json-escaped msg>"}` so that no
-/// content is silently lost when the downstream scanner processes the line.
+/// If `msg` starts with `{` it is treated as a JSON object and written
+/// verbatim.  Otherwise `msg` is plain text and is written as
+/// `{"body":"<json-escaped msg>"}` so that no content is silently lost
+/// when the downstream scanner processes the line.
 #[inline]
 #[allow(dead_code)] // called by process_cri_to_buf
-fn write_json_line(msg: &[u8], json_prefix: Option<&[u8]>, out: &mut Vec<u8>) {
-    write_json_line_with_plain_text_field(msg, json_prefix, "body", out);
+fn write_json_line(msg: &[u8], out: &mut Vec<u8>) {
+    write_json_line_with_plain_text_field(msg, "body", out);
 }
 
 #[inline]
 fn write_json_line_with_plain_text_field(
     msg: &[u8],
-    json_prefix: Option<&[u8]>,
     plain_text_field_name: &str,
     out: &mut Vec<u8>,
 ) {
     if msg.first() == Some(&b'{') {
-        if let Some(prefix) = json_prefix {
-            out.push(b'{');
-
-            let mut is_empty_obj = false;
-            let mut i = 1;
-            while i < msg.len() {
-                match msg[i] {
-                    b' ' | b'\t' | b'\r' | b'\n' => i += 1,
-                    b'}' => {
-                        is_empty_obj = true;
-                        break;
-                    }
-                    _ => break,
-                }
-            }
-
-            let mut prefix_end = prefix.len();
-            while prefix_end > 0 && matches!(prefix[prefix_end - 1], b' ' | b'\t' | b'\r' | b'\n') {
-                prefix_end -= 1;
-            }
-
-            if is_empty_obj && prefix_end > 0 && prefix[prefix_end - 1] == b',' {
-                out.extend_from_slice(&prefix[..prefix_end - 1]);
-                // Append the trailing whitespace we stripped from prefix
-                out.extend_from_slice(&prefix[prefix_end..]);
-            } else {
-                out.extend_from_slice(prefix);
-            }
-
-            out.extend_from_slice(&msg[1..]);
-        } else {
-            out.extend_from_slice(msg);
-        }
+        out.extend_from_slice(msg);
     } else {
         // Non-JSON plain text: wrap as {"<field>":"<escaped>"} so the scanner
         // sees a valid JSON object and message content is preserved.
@@ -372,7 +321,6 @@ fn write_json_line_with_plain_text_field(
     }
     out.push(b'\n');
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -528,7 +476,7 @@ mod tests {
                        2024-01-15T10:30:00Z stdout F {\"msg\":\"ok\"}\n";
         let mut reassembler = CriReassembler::new(1024 * 1024);
         let mut out = Vec::new();
-        let (count, errors) = process_cri_to_buf(chunk, &mut reassembler, None, &mut out);
+        let (count, errors) = process_cri_to_buf(chunk, &mut reassembler, &mut out);
         assert_eq!(count, 1);
         assert_eq!(errors, 1);
     }
@@ -542,14 +490,14 @@ mod tests {
         let c2 = b"lo\n";
 
         let (count1, errors1) =
-            process_cri_to_buf_with_plain_text_field(c1, &mut reassembler, None, "body", &mut out);
+            process_cri_to_buf_with_plain_text_field(c1, &mut reassembler, "body", &mut out);
         assert_eq!(count1, 0);
         assert_eq!(errors1, 0);
         assert!(out.is_empty());
         assert!(reassembler.has_line_fragment());
 
         let (count2, errors2) =
-            process_cri_to_buf_with_plain_text_field(c2, &mut reassembler, None, "body", &mut out);
+            process_cri_to_buf_with_plain_text_field(c2, &mut reassembler, "body", &mut out);
         assert_eq!(count2, 1);
         assert_eq!(errors2, 0);
         assert_eq!(out, b"{\"body\":\"hello\"}\n");
@@ -625,38 +573,10 @@ mod tests {
     }
 
     #[test]
-    fn test_write_json_line_empty_object_no_trailing_comma() {
-        // If msg is an empty JSON object like {}, the injected prefix should not
-        // end with a comma. Otherwise, the result is `{"prefix":"val",}` which
-        // is invalid JSON.
-        let mut out = Vec::new();
-        write_json_line(b"{}", Some(b"\"prefix\":\"val\","), &mut out);
-        assert_eq!(out, b"{\"prefix\":\"val\"}\n");
-
-        let mut out = Vec::new();
-        write_json_line(b"{ \t\r\n}", Some(b"\"prefix\":\"val\","), &mut out);
-        assert_eq!(out, b"{\"prefix\":\"val\" \t\r\n}\n");
-    }
-
-    #[test]
-    fn test_write_json_line_empty_object_prefix_trailing_whitespace_after_comma() {
-        // Regression: prefix like `"k":"v", ` (comma then whitespace) must have
-        // the comma stripped and the trailing whitespace preserved.
-        let mut out = Vec::new();
-        write_json_line(b"{}", Some(b"\"k\":\"v\", "), &mut out);
-        assert_eq!(out, b"{\"k\":\"v\" }\n");
-
-        // Tab and CRLF after comma
-        let mut out = Vec::new();
-        write_json_line(b"{}", Some(b"\"k\":\"v\",\t\r\n"), &mut out);
-        assert_eq!(out, b"{\"k\":\"v\"\t\r\n}\n");
-    }
-
-    #[test]
     fn test_write_json_line_plain_text_wrapped_as_body() {
         // Plain-text (non-JSON) messages must be wrapped as {"body":"..."}.
         let mut out = Vec::new();
-        write_json_line(b"application started", None, &mut out);
+        write_json_line(b"application started", &mut out);
         assert_eq!(out, b"{\"body\":\"application started\"}\n");
     }
 
@@ -668,7 +588,6 @@ mod tests {
         let (count, errors) = process_cri_to_buf_with_plain_text_field(
             chunk,
             &mut reassembler,
-            None,
             "plain_text",
             &mut out,
         );
@@ -681,7 +600,7 @@ mod tests {
     fn test_write_json_line_plain_text_escapes_special_chars() {
         // JSON-special characters in the message must be escaped.
         let mut out = Vec::with_capacity(256);
-        write_json_line(b"say \"hello\"", None, &mut out);
+        write_json_line(b"say \"hello\"", &mut out);
         assert_eq!(out, b"{\"body\":\"say \\\"hello\\\"\"}\n");
     }
 
@@ -692,7 +611,7 @@ mod tests {
                        2024-01-15T10:30:01Z stdout F {\"msg\":\"ok\"}\n";
         let mut reassembler = CriReassembler::new(1024 * 1024);
         let mut out = Vec::new();
-        let (count, errors) = process_cri_to_buf(chunk, &mut reassembler, None, &mut out);
+        let (count, errors) = process_cri_to_buf(chunk, &mut reassembler, &mut out);
         assert_eq!(count, 2);
         assert_eq!(errors, 0);
         assert_eq!(
@@ -983,26 +902,14 @@ mod verification {
     #[kani::solver(kissat)]
     fn verify_process_cri_to_buf_with_plain_text_field_no_panic() {
         let chunk: [u8; 48] = kani::any();
-        let prefix: [u8; 4] = kani::any();
         let mut out = Vec::new();
         let mut reassembler = CriReassembler::new(64);
-        let _ = process_cri_to_buf_with_plain_text_field(
-            &chunk,
-            &mut reassembler,
-            Some(&prefix),
-            "body",
-            &mut out,
-        );
+        let _ =
+            process_cri_to_buf_with_plain_text_field(&chunk, &mut reassembler, "body", &mut out);
 
         out.clear();
         reassembler.reset();
-        let _ = process_cri_to_buf_with_plain_text_field(
-            &chunk,
-            &mut reassembler,
-            Some(&prefix),
-            "msg",
-            &mut out,
-        );
+        let _ = process_cri_to_buf_with_plain_text_field(&chunk, &mut reassembler, "msg", &mut out);
     }
 
     /// Prove a valid CRI line split across chunks is equivalent to the same
@@ -1019,14 +926,12 @@ mod verification {
         let first_counts = process_cri_to_buf_with_plain_text_field(
             first,
             &mut split_reassembler,
-            None,
             SHORT_FIELD_NAME,
             &mut split_out,
         );
         let second_counts = process_cri_to_buf_with_plain_text_field(
             second,
             &mut split_reassembler,
-            None,
             SHORT_FIELD_NAME,
             &mut split_out,
         );
@@ -1036,7 +941,6 @@ mod verification {
         let unsplit_counts = process_cri_to_buf_with_plain_text_field(
             whole,
             &mut unsplit_reassembler,
-            None,
             SHORT_FIELD_NAME,
             &mut unsplit_out,
         );
@@ -1232,16 +1136,9 @@ mod verification {
     #[kani::unwind(52)]
     fn verify_write_json_line_parametric() {
         let msg: [u8; 8] = kani::any();
-        let prefix: [u8; 8] = kani::any();
-        let has_prefix: bool = kani::any();
-        let prefix_opt = if has_prefix {
-            Some(prefix.as_slice())
-        } else {
-            None
-        };
 
         let mut out = Vec::with_capacity(128);
-        write_json_line_with_plain_text_field(&msg, prefix_opt, SHORT_FIELD_NAME, &mut out);
+        write_json_line_with_plain_text_field(&msg, SHORT_FIELD_NAME, &mut out);
 
         // Output is never empty (at minimum contains a newline)
         assert!(!out.is_empty());
@@ -1253,20 +1150,10 @@ mod verification {
         let body = &out[..out.len() - 1];
 
         if msg[0] == b'{' {
-            // JSON path: output must start with '{' (from the message or prefix injection)
+            // JSON path: output must start with '{'
             assert_eq!(body[0], b'{');
-
-            if has_prefix {
-                // Prefix injection: '{' + prefix + msg[1..]
-                // The opening brace comes from write_json_line, not from msg directly.
-                // Verify the msg tail (everything after '{') appears at the end.
-                let msg_tail = &msg[1..];
-                let body_tail = &body[body.len() - msg_tail.len()..];
-                assert_bytes_eq(body_tail, msg_tail);
-            } else {
-                // No prefix: output == msg verbatim
-                assert_bytes_eq(body, &msg);
-            }
+            // output == msg verbatim
+            assert_bytes_eq(body, &msg);
         } else {
             // Plain-text path: output is {"b":"<escaped>"}\n
             // Must start with {"b":" and end with "}
@@ -1275,57 +1162,18 @@ mod verification {
             assert_eq!(body[body.len() - 1], b'}');
         }
 
-        kani::cover!(has_prefix, "prefix path");
-        kani::cover!(!has_prefix, "no-prefix path");
         kani::cover!(msg[0] == b'{', "JSON-like message");
         kani::cover!(msg[0] == b'"', "quoted message");
         kani::cover!(msg[0] == b'\\', "backslash message");
         kani::cover!(msg[0] < 0x20, "control char message");
-        kani::cover!(
-            has_prefix && msg[0] == b'{',
-            "prefix injection into JSON object"
-        );
     }
-
-    /// Prove prefix injection correctness: trailing comma is stripped for
-    /// empty objects, whitespace is preserved, and non-empty objects get
-    /// the prefix injected verbatim.
-    #[kani::proof]
-    #[kani::unwind(8)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_prefix_injection() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"{}", Some(b"a,"), SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{a}\n");
-    }
-
-    /// Prove comma stripping also works when the prefix ends in whitespace.
-    #[kani::proof]
-    #[kani::unwind(8)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_prefix_injection_ws_stripped() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"{}", Some(b", "), SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{ }\n");
-    }
-
-    /// Prove non-empty JSON gets the prefix injected without comma stripping.
-    #[kani::proof]
-    #[kani::unwind(8)]
-    #[kani::solver(kissat)]
-    fn verify_write_json_line_prefix_injection_non_empty_json() {
-        let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"{x", Some(b"ab"), SHORT_FIELD_NAME, &mut out);
-        assert_bytes_eq(&out, b"{abx\n");
-    }
-
     /// Prove quote escaping for plain-text messages.
     #[kani::proof]
     #[kani::unwind(16)]
     #[kani::solver(kissat)]
     fn verify_write_json_line_no_prefix_quote_escape() {
         let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"\"", None, SHORT_FIELD_NAME, &mut out);
+        write_json_line_with_plain_text_field(b"\"", SHORT_FIELD_NAME, &mut out);
         assert_bytes_eq(&out, b"{\"b\":\"\\\"\"}\n");
     }
 
@@ -1335,7 +1183,7 @@ mod verification {
     #[kani::solver(kissat)]
     fn verify_write_json_line_no_prefix_backslash_escape() {
         let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(b"\\", None, SHORT_FIELD_NAME, &mut out);
+        write_json_line_with_plain_text_field(b"\\", SHORT_FIELD_NAME, &mut out);
         assert_bytes_eq(&out, b"{\"b\":\"\\\\\"}\n");
     }
 
@@ -1345,7 +1193,7 @@ mod verification {
     #[kani::solver(kissat)]
     fn verify_write_json_line_no_prefix_control_escape() {
         let mut out = Vec::with_capacity(64);
-        write_json_line_with_plain_text_field(&[0x1F], None, SHORT_FIELD_NAME, &mut out);
+        write_json_line_with_plain_text_field(&[0x1F], SHORT_FIELD_NAME, &mut out);
         assert_bytes_eq(&out, b"{\"b\":\"\\u001f\"}\n");
     }
 
@@ -1379,7 +1227,7 @@ mod verification {
     #[kani::proof]
     fn verify_write_json_line_default_plain_text_field() {
         let mut out = Vec::with_capacity(32);
-        write_json_line(b"x", None, &mut out);
+        write_json_line(b"x", &mut out);
         assert_bytes_eq(&out, b"{\"body\":\"x\"}\n");
     }
 }

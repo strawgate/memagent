@@ -322,7 +322,6 @@ mod tests {
     fn test_reader() -> FileReader {
         FileReader {
             files: HashMap::new(),
-            read_buf: vec![0u8; 128],
             evicted_offsets: HashMap::new(),
             scratch_paths: Vec::new(),
             last_read_had_data: false,
@@ -606,6 +605,7 @@ mod tests {
                 fingerprint_len: 1024,
                 file,
                 offset: 2048,
+                read_buf: bytes::BytesMut::new(),
                 last_read: Instant::now(),
                 eof_state: EofState::default(),
             },

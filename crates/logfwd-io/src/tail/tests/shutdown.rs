@@ -25,7 +25,7 @@ fn poll_shutdown_emits_eof_for_caught_up_file() {
     let data: Vec<u8> = events
         .iter()
         .filter_map(|event| match event {
-            TailEvent::Data { bytes, .. } => Some(bytes.as_slice()),
+            TailEvent::Data { bytes, .. } => Some(bytes.as_ref()),
             _ => None,
         })
         .flatten()
