@@ -400,6 +400,67 @@ pub(super) fn flush_buf(
     }
 }
 
+/// Flush a `Bytes` directly to the CPU worker without copying into BytesMut.
+///
+/// Used when the accumulation buffer is empty and a single chunk from
+/// framing already meets the batch target size. Avoids the
+/// `extend_from_slice` copy in the common case of large file reads.
+#[cfg(not(feature = "turmoil"))]
+#[allow(clippy::too_many_arguments)]
+fn flush_bytes_direct(
+    data: Bytes,
+    row_origins: &mut Vec<RowOriginSpan>,
+    pending_row_origin: &mut Option<PendingRowOrigin>,
+    buffered_source_paths: &mut HashMap<SourceId, String>,
+    cri_metadata: &mut CriMetadata,
+    source: &dyn logfwd_io::input::InputSource,
+    tx: &mpsc::Sender<IoWorkItem>,
+    metrics: &PipelineMetrics,
+    last_bp_warn: &mut Option<Instant>,
+    input_index: usize,
+    source_metadata_plan: SourceMetadataPlan,
+) -> bool {
+    if source_metadata_plan.has_any() {
+        finalize_pending_row_origin(row_origins, pending_row_origin);
+    } else {
+        *pending_row_origin = None;
+    }
+    let cri_md = if cri_metadata.is_empty() {
+        cri_metadata.clear();
+        None
+    } else {
+        Some(take_cri_metadata_preserving_capacity(cri_metadata))
+    };
+    let checkpoints = source.checkpoint_data();
+    let source_paths = if source_metadata_plan.has_source_path() {
+        std::mem::take(buffered_source_paths)
+    } else {
+        buffered_source_paths.clear();
+        HashMap::new()
+    };
+    let chunk = IoWorkItem::Bytes(IoChunk {
+        bytes: data,
+        checkpoints,
+        row_origins: std::mem::take(row_origins),
+        source_paths,
+        cri_metadata: cri_md,
+        queued_at: tokio::time::Instant::now(),
+        input_index,
+    });
+    match tx.try_send(chunk) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(chunk)) => {
+            if last_bp_warn.is_none_or(|t| t.elapsed() >= Duration::from_secs(5)) {
+                tracing::warn!(input = source.name(), "input.backpressure");
+                *last_bp_warn = Some(Instant::now());
+            }
+            metrics.inc_backpressure_stall();
+            tx.blocking_send(chunk).is_ok()
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // process_io_events
 // ---------------------------------------------------------------------------
@@ -455,6 +516,37 @@ pub(super) fn process_io_events(
                     &input.buf,
                     &bytes,
                 );
+
+                // Fast path: when the accumulation buffer is empty and this
+                // single chunk is large enough for efficient scanning, send
+                // it directly without copying into BytesMut.
+                //
+                // Benchmark data (batch_size_sweep): per-scan overhead is
+                // negligible above 64KB, so we flush directly any chunk that
+                // exceeds this threshold. This makes the common case of a
+                // 256KB file read zero-copy end-to-end.
+                const MIN_DIRECT_FLUSH_BYTES: usize = 64 * 1024;
+                if input.buf.is_empty() && bytes.len() >= MIN_DIRECT_FLUSH_BYTES {
+                    metrics.inc_flush_by_size();
+                    if !flush_bytes_direct(
+                        bytes,
+                        &mut input.row_origins,
+                        pending_row_origin,
+                        &mut input.source_paths,
+                        &mut input.cri_metadata,
+                        &*input.source,
+                        tx,
+                        metrics,
+                        last_bp_warn,
+                        input_index,
+                        source_metadata_plan,
+                    ) {
+                        return false;
+                    }
+                    *buffered_since = None;
+                    continue;
+                }
+
                 input.buf.extend_from_slice(&bytes);
                 // Flush eagerly when the buffer reaches the target so
                 // that a single poll returning many Data events cannot
