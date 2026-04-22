@@ -2666,6 +2666,17 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn qualified_column_not_pushed() {
+        // Qualified column reference (e.g., from a join) should NOT be pushed.
+        let pred = predicate_for(
+            "SELECT * FROM logs JOIN env ON logs.id = env.id WHERE env.level = 'error'",
+        );
+        // env.level is a CompoundIdentifier — should not be pushed.
+        assert!(pred.is_none());
+    }
+
+    #[test]
     fn negative_number_literal() {
         let pred = predicate_for("SELECT * FROM logs WHERE temp > -10");
         assert!(pred.is_some());

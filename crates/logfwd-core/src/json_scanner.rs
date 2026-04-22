@@ -2165,6 +2165,222 @@ mod tests {
         scan_streaming(input, &config, &mut builder);
         assert_eq!(builder.rows.len(), 2, "no predicate = all rows");
     }
+
+    // -----------------------------------------------------------------------
+    // Predicate edge case tests (reviewer-requested coverage)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn predicate_with_escape_crossing_64_byte_boundary() {
+        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+
+        // Build a line where the "level" value crosses a 64-byte block boundary
+        // by padding the key with enough characters. The escape \" in the value
+        // forces the decode path.
+        let mut line = String::new();
+        line.push_str("{\"");
+        // Pad key to push the value near the 64-byte boundary
+        for _ in 0..50 {
+            line.push('x');
+        }
+        line.push_str("\":\"pad\",\"level\":\"err\\\"or\"}");
+        line.push('\n');
+
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::Compare {
+                field: "level".into(),
+                op: CmpOp::Eq,
+                value: ScalarValue::Str("err\"or".into()),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(line.as_bytes(), &config, &mut builder);
+        assert_eq!(
+            builder.rows.len(),
+            1,
+            "escaped value should match after decode"
+        );
+    }
+
+    #[test]
+    fn predicate_field_order_independence() {
+        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+
+        // Same fields in different order — predicate should work regardless.
+        let input =
+            b"{\"msg\":\"hello\",\"level\":\"error\"}\n{\"level\":\"info\",\"msg\":\"world\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::Compare {
+                field: "level".into(),
+                op: CmpOp::Eq,
+                value: ScalarValue::Str("error".into()),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        assert_eq!(builder.rows.len(), 1);
+        let msg = builder.rows[0]
+            .iter()
+            .find(|(k, _)| k == "msg")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(msg, Some("hello"));
+    }
+
+    #[test]
+    fn predicate_duplicate_keys_first_write_wins() {
+        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+
+        // Duplicate "level" key — first value should win for both
+        // predicate evaluation and output.
+        let input = b"{\"level\":\"error\",\"level\":\"info\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::Compare {
+                field: "level".into(),
+                op: CmpOp::Eq,
+                value: ScalarValue::Str("error".into()),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        // First "level" is "error" → predicate passes.
+        assert_eq!(builder.rows.len(), 1);
+        let level = builder.rows[0]
+            .iter()
+            .find(|(k, _)| k == "level")
+            .map(|(_, v)| v.as_str());
+        assert_eq!(level, Some("error"), "first-write-wins for output");
+    }
+
+    #[test]
+    fn predicate_nested_json_is_not_null() {
+        use crate::scan_predicate::ScanPredicate;
+
+        // Nested object should be treated as non-null.
+        let input = b"{\"payload\":{\"key\":\"val\"},\"level\":\"error\"}\n{\"level\":\"info\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::IsNull {
+                field: "payload".into(),
+                negated: true, // IS NOT NULL
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        // First row has payload (nested object) → IS NOT NULL passes.
+        // Second row has no payload → IS NOT NULL fails.
+        assert_eq!(builder.rows.len(), 1);
+    }
+
+    #[test]
+    fn predicate_cross_type_string_vs_int() {
+        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+
+        // JSON has status as string "503", predicate compares as int 503.
+        let input = b"{\"status\":\"503\",\"msg\":\"fail\"}\n{\"status\":\"200\",\"msg\":\"ok\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::Compare {
+                field: "status".into(),
+                op: CmpOp::Ge,
+                value: ScalarValue::Int(500),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        // String "503" should coerce to int 503 for comparison.
+        assert_eq!(builder.rows.len(), 1);
+    }
+
+    #[test]
+    fn predicate_in_list_filters_correctly() {
+        use crate::scan_predicate::{ScalarValue, ScanPredicate};
+
+        let input = b"{\"level\":\"error\"}\n{\"level\":\"fatal\"}\n{\"level\":\"info\"}\n{\"level\":\"warn\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::InList {
+                field: "level".into(),
+                values: vec![
+                    ScalarValue::Str("error".into()),
+                    ScalarValue::Str("fatal".into()),
+                ],
+                negated: false,
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        assert_eq!(
+            builder.rows.len(),
+            2,
+            "only error + fatal should pass IN list"
+        );
+    }
+
+    #[test]
+    fn predicate_contains_substring_match() {
+        use crate::scan_predicate::ScanPredicate;
+
+        let input = b"{\"msg\":\"connection timeout after 30s\"}\n{\"msg\":\"request completed\"}\n{\"msg\":\"read timeout\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::Contains {
+                field: "msg".into(),
+                substring: "timeout".into(),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        assert_eq!(builder.rows.len(), 2, "both timeout messages should pass");
+    }
+
+    #[test]
+    fn predicate_starts_with_prefix_match() {
+        use crate::scan_predicate::ScanPredicate;
+
+        let input =
+            b"{\"msg\":\"ERROR: disk full\"}\n{\"msg\":\"INFO: ok\"}\n{\"msg\":\"ERROR: oom\"}\n";
+        let config = ScanConfig {
+            wanted_fields: vec![],
+            extract_all: true,
+            line_field_name: None,
+            validate_utf8: false,
+            row_predicate: Some(ScanPredicate::StartsWith {
+                field: "msg".into(),
+                prefix: "ERROR".into(),
+            }),
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input, &config, &mut builder);
+        assert_eq!(
+            builder.rows.len(),
+            2,
+            "both ERROR-prefixed messages should pass"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
