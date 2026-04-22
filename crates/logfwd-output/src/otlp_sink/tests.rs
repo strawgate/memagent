@@ -759,7 +759,7 @@ fn roundtrip_encode_decode_via_prost() {
     .expect("valid batch");
 
     let observed_ns: u64 = 1_700_000_000_000_000_000;
-    let resource_attrs = Arc::new(vec![("k8s.pod.name".to_string(), "my-pod".to_string())]);
+    let resource_attrs = Arc::from([("k8s.pod.name".to_string(), "my-pod".to_string())]);
     let metadata = BatchMetadata {
         resource_attrs,
         observed_time_ns: observed_ns,
