@@ -153,6 +153,15 @@ impl ScanPredicate {
                 if matches!(extracted, ExtractedValue::Null | ExtractedValue::Missing) {
                     return false; // NULL IN (...) is false per SQL semantics.
                 }
+                // If any list value has an incomparable type, bail out and keep
+                // the row — let DataFusion handle it with full coercion rules.
+                // Without this, type-mismatch comparisons return `true` from
+                // `compare_values` (conservative for scalar Compare), but IN/NOT IN
+                // aggregates equality results: `any(true)` makes IN return true
+                // and NOT IN return false, both potentially incorrect.
+                if values.iter().any(|v| !types_comparable(&extracted, v)) {
+                    return true;
+                }
                 let found = values
                     .iter()
                     .any(|v| compare_values(&extracted, CmpOp::Eq, v));
@@ -185,6 +194,33 @@ impl ScanPredicate {
             ScanPredicate::Or(preds) => preds.iter().any(|p| p.evaluate(lookup)),
             ScanPredicate::Not(inner) => !inner.evaluate(lookup),
         }
+    }
+}
+
+/// Returns `true` if the extracted value and scalar literal have comparable
+/// types (same type, or numeric cross-type like Int/Float). String-to-number
+/// coercion is considered comparable since `compare_values` attempts parsing.
+///
+/// Used by `InList` evaluation to bail out early when types are incompatible,
+/// rather than letting `compare_values`'s conservative `true` return corrupt
+/// the IN/NOT IN aggregation logic.
+fn types_comparable(extracted: &ExtractedValue<'_>, literal: &ScalarValue) -> bool {
+    match (extracted, literal) {
+        (ExtractedValue::Str(_), ScalarValue::Str(_))
+        | (ExtractedValue::Int(_), ScalarValue::Int(_))
+        | (ExtractedValue::Float(_), ScalarValue::Float(_))
+        | (ExtractedValue::Bool(_), ScalarValue::Bool(_))
+        // Cross-type numeric: Int vs Float in either direction.
+        | (ExtractedValue::Int(_), ScalarValue::Float(_))
+        | (ExtractedValue::Float(_), ScalarValue::Int(_))
+        // String-to-number coercion: compare_values attempts parsing.
+        | (ExtractedValue::Str(_), ScalarValue::Int(_))
+        | (ExtractedValue::Str(_), ScalarValue::Float(_))
+        | (ExtractedValue::Int(_), ScalarValue::Str(_))
+        | (ExtractedValue::Float(_), ScalarValue::Str(_))
+        // NULL is handled before this is called, but include for completeness.
+        | (ExtractedValue::Null, ScalarValue::Null) => true,
+        _ => false,
     }
 }
 
@@ -715,6 +751,71 @@ mod tests {
             }
         };
         assert!(pred.evaluate(&lookup));
+    }
+
+    #[test]
+    fn evaluate_in_list_type_mismatch_keeps_row() {
+        // IN with type mismatch (Int value vs Bool list) should keep the row.
+        let pred = ScanPredicate::InList {
+            field: "x".to_string(),
+            values: alloc::vec![ScalarValue::Bool(true), ScalarValue::Bool(false)],
+            negated: false,
+        };
+        let lookup = |name: &str| -> ExtractedValue<'_> {
+            if name == "x" {
+                ExtractedValue::Int(1)
+            } else {
+                ExtractedValue::Missing
+            }
+        };
+        // Must return true (keep row) so DataFusion can decide.
+        assert!(pred.evaluate(&lookup));
+    }
+
+    #[test]
+    fn evaluate_not_in_list_type_mismatch_keeps_row() {
+        // NOT IN with type mismatch (Int value vs Bool list) should keep the row.
+        let pred = ScanPredicate::InList {
+            field: "x".to_string(),
+            values: alloc::vec![ScalarValue::Bool(true), ScalarValue::Bool(false)],
+            negated: true,
+        };
+        let lookup = |name: &str| -> ExtractedValue<'_> {
+            if name == "x" {
+                ExtractedValue::Int(1)
+            } else {
+                ExtractedValue::Missing
+            }
+        };
+        // Must return true (keep row) so DataFusion can decide.
+        assert!(pred.evaluate(&lookup));
+    }
+
+    #[test]
+    fn evaluate_in_list_string_vs_int_is_comparable() {
+        // String value vs Int list should still work (coercion is attempted).
+        let pred = ScanPredicate::InList {
+            field: "x".to_string(),
+            values: alloc::vec![ScalarValue::Int(42), ScalarValue::Int(99)],
+            negated: false,
+        };
+        let hit = |name: &str| -> ExtractedValue<'_> {
+            if name == "x" {
+                ExtractedValue::Str(b"42")
+            } else {
+                ExtractedValue::Missing
+            }
+        };
+        assert!(pred.evaluate(&hit));
+
+        let miss = |name: &str| -> ExtractedValue<'_> {
+            if name == "x" {
+                ExtractedValue::Str(b"100")
+            } else {
+                ExtractedValue::Missing
+            }
+        };
+        assert!(!pred.evaluate(&miss));
     }
 }
 
