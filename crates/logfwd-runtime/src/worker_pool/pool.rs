@@ -438,6 +438,11 @@ impl OutputWorkerPool {
         // race with the start of drain are rejected, closing the window between
         // the guard check in submit() and the actual teardown below.
         self.is_draining = true;
+        #[cfg(feature = "turmoil")]
+        crate::turmoil_barriers::trigger(
+            crate::turmoil_barriers::RuntimeBarrierEvent::PoolDrainBegin,
+        )
+        .await;
         self.output_health
             .set_pool_health(ComponentHealth::Stopping);
         let mut forced_abort = false;
@@ -499,6 +504,11 @@ impl OutputWorkerPool {
         } else {
             self.output_health.set_pool_health(ComponentHealth::Stopped);
         }
+        #[cfg(feature = "turmoil")]
+        crate::turmoil_barriers::trigger(
+            crate::turmoil_barriers::RuntimeBarrierEvent::PoolDrainComplete { forced_abort },
+        )
+        .await;
         self.cancel.cancel();
     }
 

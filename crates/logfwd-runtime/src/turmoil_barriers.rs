@@ -57,6 +57,10 @@ pub enum RuntimeBarrierEvent {
     },
     /// Emitted when a batch is held (non-terminal failure).
     BatchHeld { batch_id: u64 },
+    /// Emitted when the worker pool begins its drain sequence.
+    PoolDrainBegin,
+    /// Emitted when the worker pool drain completes.
+    PoolDrainComplete { forced_abort: bool },
     /// Emitted by checkpoint I/O immediately before each flush attempt.
     BeforeCheckpointFlushAttempt { attempt: u32 },
     /// Emitted by checkpoint I/O after a flush attempt resolves.

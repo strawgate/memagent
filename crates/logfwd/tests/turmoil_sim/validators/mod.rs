@@ -4,6 +4,7 @@
 //! TLA+ invariants/temporal properties against a [`NormalizedTrace`].
 
 pub mod pipeline_machine;
+pub mod worker_pool;
 
 use crate::trace_bridge::{EventValidator, NormalizedTrace};
 
@@ -20,5 +21,6 @@ pub fn run_all(trace: &NormalizedTrace) -> Result<(), String> {
 pub fn all_validators() -> Vec<Box<dyn EventValidator>> {
     let mut vs: Vec<Box<dyn EventValidator>> = Vec::new();
     vs.extend(pipeline_machine::validators());
+    vs.extend(worker_pool::validators());
     vs
 }

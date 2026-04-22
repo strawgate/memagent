@@ -46,6 +46,12 @@ pub enum TraceEvent {
         batch_id: u64,
         source_id: u64,
     },
+    /// Worker pool drain sequence started.
+    PoolDrainBegin,
+    /// Worker pool drain sequence completed.
+    PoolDrainComplete {
+        forced_abort: bool,
+    },
 }
 
 /// Terminal disposition of a batch as observed in the trace.
@@ -85,6 +91,8 @@ impl TraceEvent {
             Self::CheckpointFlush { .. } => "checkpoint_flush",
             Self::BatchTerminal { .. } => "batch_terminal",
             Self::BatchHold { .. } => "batch_hold",
+            Self::PoolDrainBegin => "pool_drain_begin",
+            Self::PoolDrainComplete { .. } => "pool_drain_complete",
         }
     }
 
@@ -119,6 +127,10 @@ impl TraceEvent {
                 batch_id,
                 source_id,
             } => format!("batch_hold batch={batch_id} source={source_id}"),
+            Self::PoolDrainBegin => "pool_drain_begin".to_string(),
+            Self::PoolDrainComplete { forced_abort } => {
+                format!("pool_drain_complete forced_abort={forced_abort}")
+            }
         }
     }
 }
@@ -196,6 +208,12 @@ pub fn trace_event_from_runtime_barrier(event: &RuntimeBarrierEvent) -> Vec<Trac
             batch_id: *batch_id,
             source_id: 0, // source correlation via batch_begin events
         }],
+        RuntimeBarrierEvent::PoolDrainBegin => vec![TraceEvent::PoolDrainBegin],
+        RuntimeBarrierEvent::PoolDrainComplete { forced_abort } => {
+            vec![TraceEvent::PoolDrainComplete {
+                forced_abort: *forced_abort,
+            }]
+        }
         RuntimeBarrierEvent::BeforeCheckpointFlushAttempt { .. } => Vec::new(),
     }
 }
@@ -293,6 +311,12 @@ impl TraceEvent {
             } => {
                 json!({"event": "batch_hold", "batch_id": batch_id, "source_id": source_id})
             }
+            TraceEvent::PoolDrainBegin => {
+                json!({"event": "pool_drain_begin"})
+            }
+            TraceEvent::PoolDrainComplete { forced_abort } => {
+                json!({"event": "pool_drain_complete", "forced_abort": forced_abort})
+            }
         }
     }
 
@@ -385,6 +409,15 @@ impl TraceEvent {
                     source_id,
                 })
             }
+            "pool_drain_begin" => Ok(Self::PoolDrainBegin),
+            "pool_drain_complete" => {
+                let Some(forced_abort) = v.get("forced_abort").and_then(Value::as_bool) else {
+                    return Err(
+                        "pool_drain_complete missing bool field: forced_abort".to_string(),
+                    );
+                };
+                Ok(Self::PoolDrainComplete { forced_abort })
+            }
             other => Err(format!("unknown event kind '{other}'")),
         }
     }
@@ -475,6 +508,10 @@ pub fn normalized_contract_trace(events: &[TraceEvent]) -> Vec<String> {
                 batch_id,
                 source_id,
             } => format!("batch_hold:{batch_id}:{source_id}"),
+            TraceEvent::PoolDrainBegin => "pool_drain_begin".to_string(),
+            TraceEvent::PoolDrainComplete { forced_abort } => {
+                format!("pool_drain_complete:{forced_abort}")
+            }
         })
         .collect()
 }
@@ -672,6 +709,10 @@ impl NormalizedTrace {
                         attributes.insert("batch_id", batch_id.to_string());
                         attributes.insert("source_id", source_id.to_string());
                     }
+                    TraceEvent::PoolDrainBegin => {}
+                    TraceEvent::PoolDrainComplete { forced_abort } => {
+                        attributes.insert("forced_abort", forced_abort.to_string());
+                    }
                 }
                 NormalizedTraceEvent {
                     index,
@@ -864,10 +905,13 @@ impl TransitionValidator {
                         ));
                     }
                 }
-                // Batch terminal and hold events are valid in any non-stopped phase.
-                // Detailed validation of terminal state consistency is handled by
-                // pluggable EventValidator implementations (NoDoubleComplete, etc.).
-                TraceEvent::BatchTerminal { .. } | TraceEvent::BatchHold { .. } => {}
+                // Batch terminal/hold and pool drain events are valid in any non-stopped
+                // phase. Detailed validation is handled by pluggable EventValidator
+                // implementations (NoDoubleComplete, ForceAbortAccountsForAll, etc.).
+                TraceEvent::BatchTerminal { .. }
+                | TraceEvent::BatchHold { .. }
+                | TraceEvent::PoolDrainBegin
+                | TraceEvent::PoolDrainComplete { .. } => {}
             }
         }
 
