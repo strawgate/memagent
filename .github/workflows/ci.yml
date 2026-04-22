@@ -357,7 +357,7 @@ jobs:
       - uses: ./.github/actions/build-dashboard
 
       - uses: ./.github/actions/setup-rust
-      - uses: taiki-e/install-action@cargo-hack
+      - uses: taiki-e/install-action@e445549abfcabe1b4106a8da1be899f392a60abc # cargo-hack
 
       - name: Check each feature compiles independently
         run: >-

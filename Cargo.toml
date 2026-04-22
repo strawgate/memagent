@@ -182,6 +182,13 @@ checked_conversions = "warn"
 # Tier 3: catches stubs and forgotten markers.
 todo = "deny"
 unimplemented = "deny"
+# Tier 3b: restriction-group correctness lints (opt-in, not in pedantic).
+rc_mutex = "deny"
+lossy_float_literal = "warn"
+float_cmp_const = "warn"
+fn_to_numeric_cast_any = "warn"
+verbose_file_reads = "warn"
+unnecessary_self_imports = "warn"
 # Tier 4: nursery lints adopted from Reth — all zero existing violations.
 collection_is_never_read = "warn"
 derive_partial_eq_without_eq = "warn"

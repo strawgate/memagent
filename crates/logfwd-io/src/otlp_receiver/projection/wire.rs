@@ -209,7 +209,6 @@ pub(super) fn subslice_range(
 
 #[derive(Default)]
 pub(super) struct WireScratch {
-    pub(super) hex: Vec<u8>,
     pub(super) decimal: Vec<u8>,
     pub(super) json: Vec<u8>,
     pub(super) resource_key: Vec<u8>,

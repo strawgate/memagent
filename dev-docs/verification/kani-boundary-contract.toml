@@ -227,3 +227,8 @@ path = "crates/logfwd-arrow/src/columnar/row_protocol.rs"
 status = "required"
 reason = "RowLifecycle state machine transitions are bounded pure seams with symbolic action sequence proofs."
 issue = 2072
+
+[[seams]]
+path = "crates/logfwd-arrow/src/columnar/builder.rs"
+status = "recommended"
+reason = "Generated-string offset accounting and lowercase hex emission are bounded pure seams inside the broader builder shell."

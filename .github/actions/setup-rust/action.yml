@@ -10,7 +10,7 @@ runs:
 
     - name: Install mold linker
       if: runner.os == 'Linux'
-      uses: rui314/setup-mold@v1
+      uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
 
     - name: Configure mold as linker
       if: runner.os == 'Linux'
