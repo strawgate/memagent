@@ -468,7 +468,7 @@ fn run_pipeline_once(scenario: &Scenario) -> StageSample {
     let encode_start = Instant::now();
     let mut sink = make_otlp_sink(Compression::None);
     let metadata = BatchMetadata {
-        resource_attrs: Arc::new(vec![]),
+        resource_attrs: Arc::from([]),
         observed_time_ns: 0,
     };
     sink.encode_batch(&batch, &metadata);

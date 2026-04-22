@@ -659,7 +659,7 @@ impl Pipeline {
             poll_interval: config
                 .poll_interval_ms
                 .map_or(DEFAULT_POLL_INTERVAL, Into::into),
-            resource_attrs: Arc::new(resource_attrs),
+            resource_attrs: Arc::from(resource_attrs),
             machine: Some(PipelineMachine::new().start()),
             checkpoint_store,
             held_tickets: Vec::new(),

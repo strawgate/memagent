@@ -126,7 +126,7 @@ fn elasticsearch_sink_sends_bulk_data() {
     let mut sink = factory.create().unwrap();
 
     let metadata = BatchMetadata {
-        resource_attrs: Arc::new(vec![]),
+        resource_attrs: Arc::from([]),
         observed_time_ns: 0,
     };
 
@@ -178,7 +178,7 @@ fn elasticsearch_sink_handles_empty_batch() {
     let mut sink = factory.create().unwrap();
 
     let metadata = BatchMetadata {
-        resource_attrs: Arc::new(vec![]),
+        resource_attrs: Arc::from([]),
         observed_time_ns: 0,
     };
 
@@ -222,7 +222,7 @@ fn elasticsearch_sink_multiple_batches() {
     let mut sink = factory.create().unwrap();
 
     let metadata = BatchMetadata {
-        resource_attrs: Arc::new(vec![]),
+        resource_attrs: Arc::from([]),
         observed_time_ns: 0,
     };
 
@@ -289,7 +289,7 @@ fn elasticsearch_streaming_mode_uses_chunked_transfer() {
     let mut sink = factory.create().unwrap();
 
     let metadata = BatchMetadata {
-        resource_attrs: Arc::new(vec![]),
+        resource_attrs: Arc::from([]),
         observed_time_ns: 0,
     };
 

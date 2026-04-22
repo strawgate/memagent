@@ -576,25 +576,23 @@ fn extract_scan_predicate_from_expr(expr: &SqlExpr) -> Option<ScanPredicate> {
         SqlExpr::BinaryOp { left, op, right } => {
             // Try column on left, literal on right.
             if let (Some(col), Some(val)) = (expr_as_bare_column(left), expr_as_scalar_value(right))
+                && let Some(cmp_op) = sql_op_to_cmp_op(op)
             {
-                if let Some(cmp_op) = sql_op_to_cmp_op(op) {
-                    return Some(ScanPredicate::Compare {
-                        field: col.to_ascii_lowercase(),
-                        op: cmp_op,
-                        value: val,
-                    });
-                }
+                return Some(ScanPredicate::Compare {
+                    field: col.to_ascii_lowercase(),
+                    op: cmp_op,
+                    value: val,
+                });
             }
             // Try literal on left, column on right (reversed operand order).
             if let (Some(val), Some(col)) = (expr_as_scalar_value(left), expr_as_bare_column(right))
+                && let Some(cmp_op) = sql_op_to_cmp_op_reversed(op)
             {
-                if let Some(cmp_op) = sql_op_to_cmp_op_reversed(op) {
-                    return Some(ScanPredicate::Compare {
-                        field: col.to_ascii_lowercase(),
-                        op: cmp_op,
-                        value: val,
-                    });
-                }
+                return Some(ScanPredicate::Compare {
+                    field: col.to_ascii_lowercase(),
+                    op: cmp_op,
+                    value: val,
+                });
             }
             None
         }
@@ -645,23 +643,25 @@ fn extract_scan_predicate_from_expr(expr: &SqlExpr) -> Option<ScanPredicate> {
         } if !negated && escape_char.is_none() => {
             let col = expr_as_bare_column(expr)?;
             let pat = expr_as_string_literal(pattern)?;
-            if let Some(prefix) = pat.strip_suffix('%') {
-                if !prefix.contains('%') && !prefix.contains('_') {
-                    // 'prefix%' → StartsWith
-                    return Some(ScanPredicate::StartsWith {
-                        field: col.to_ascii_lowercase(),
-                        prefix: prefix.to_string(),
-                    });
-                }
+            if let Some(prefix) = pat.strip_suffix('%')
+                && !prefix.contains('%')
+                && !prefix.contains('_')
+            {
+                // 'prefix%' → StartsWith
+                return Some(ScanPredicate::StartsWith {
+                    field: col.to_ascii_lowercase(),
+                    prefix: prefix.to_string(),
+                });
             }
-            if let Some(inner) = pat.strip_prefix('%').and_then(|s| s.strip_suffix('%')) {
-                if !inner.contains('%') && !inner.contains('_') {
-                    // '%substring%' → Contains
-                    return Some(ScanPredicate::Contains {
-                        field: col.to_ascii_lowercase(),
-                        substring: inner.to_string(),
-                    });
-                }
+            if let Some(inner) = pat.strip_prefix('%').and_then(|s| s.strip_suffix('%'))
+                && !inner.contains('%')
+                && !inner.contains('_')
+            {
+                // '%substring%' → Contains
+                return Some(ScanPredicate::Contains {
+                    field: col.to_ascii_lowercase(),
+                    substring: inner.to_string(),
+                });
             }
             None
         }

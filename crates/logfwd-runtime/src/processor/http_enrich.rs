@@ -605,7 +605,7 @@ mod tests {
         let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).expect("valid batch");
 
         let meta = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 0,
         };
         let out = proc.process(batch, &meta).expect("process should succeed");
@@ -620,7 +620,7 @@ mod tests {
 
     fn test_meta() -> BatchMetadata {
         BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 0,
         }
     }

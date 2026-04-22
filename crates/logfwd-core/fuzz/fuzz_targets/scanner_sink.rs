@@ -27,7 +27,7 @@ fn run_sinks(data: &[u8], validate_utf8: bool, line_field_name: Option<&str>) {
     let Ok(batch) = scanner.scan_detached(bytes::Bytes::copy_from_slice(data)) else { return; };
 
     let metadata = BatchMetadata {
-        resource_attrs: Arc::new(vec![]),
+        resource_attrs: Arc::from([]),
         observed_time_ns: 0,
     };
 

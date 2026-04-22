@@ -1346,7 +1346,7 @@ fn resource_columns_group_rows_into_distinct_resource_logs() {
     sink.encode_batch(
         &batch,
         &BatchMetadata {
-            resource_attrs: Arc::new(vec![(
+            resource_attrs: Arc::from([(
                 "deployment.environment".to_string(),
                 "test".to_string(),
             )]),
@@ -1716,7 +1716,7 @@ fn generated_fast_otlp_matches_handwritten_encoder() {
     .expect("valid batch");
 
     let metadata = BatchMetadata {
-        resource_attrs: Arc::new(vec![("service.name".to_string(), "otlp-test".to_string())]),
+        resource_attrs: Arc::from([("service.name".to_string(), "otlp-test".to_string())]),
         observed_time_ns: 1_700_000_000_000_000_000,
     };
 
@@ -1778,7 +1778,7 @@ fn generated_fast_otlp_matches_handwritten_encoder_with_string_views() {
     .expect("valid batch");
 
     let metadata = BatchMetadata {
-        resource_attrs: Arc::new(vec![("service.name".to_string(), "otlp-test".to_string())]),
+        resource_attrs: Arc::from([("service.name".to_string(), "otlp-test".to_string())]),
         observed_time_ns: 1_700_000_000_000_000_000,
     };
 
@@ -1840,7 +1840,7 @@ fn generated_fast_otlp_matches_handwritten_encoder_with_large_strings() {
     .expect("valid batch");
 
     let metadata = BatchMetadata {
-        resource_attrs: Arc::new(vec![("service.name".to_string(), "otlp-test".to_string())]),
+        resource_attrs: Arc::from([("service.name".to_string(), "otlp-test".to_string())]),
         observed_time_ns: 1_700_000_000_000_000_000,
     };
 

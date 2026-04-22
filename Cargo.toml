@@ -207,6 +207,7 @@ string_lit_as_bytes = "warn"
 unnecessary_struct_initialization = "warn"
 zero_sized_map_values = "warn"
 # Tier 5: additional restriction-group lints (low-risk correctness).
+rc_buffer = "warn"
 get_unwrap = "warn"
 if_then_some_else_none = "warn"
 pub_without_shorthand = "warn"

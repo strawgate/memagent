@@ -192,7 +192,7 @@ pub struct Pipeline {
     batch_timeout: Duration,
     poll_interval: Duration,
     /// Static OTLP resource attributes (e.g. `service.name`) emitted with every batch.
-    resource_attrs: Arc<Vec<(String, String)>>,
+    resource_attrs: Arc<[(String, String)]>,
     /// Batch lifecycle state machine. Option because begin_drain() consumes self.
     /// Some during run_async, None only after shutdown drain transition.
     machine: Option<PipelineMachine<Running, u64>>,
@@ -383,7 +383,7 @@ impl Pipeline {
             batch_target_bytes: 64 * 1024,
             batch_timeout: Duration::from_millis(50),
             poll_interval: Duration::from_millis(5),
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             machine: Some(PipelineMachine::new().start()),
             checkpoint_store: None,
             held_tickets: Vec::new(),
@@ -419,7 +419,7 @@ impl Pipeline {
             batch_target_bytes: 64 * 1024,
             batch_timeout: Duration::from_millis(50),
             poll_interval: Duration::from_millis(5),
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             machine: Some(PipelineMachine::new().start()),
             checkpoint_store: None,
             held_tickets: Vec::new(),

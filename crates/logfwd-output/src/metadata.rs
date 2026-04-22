@@ -6,7 +6,7 @@ use logfwd_config::AuthConfig;
 #[derive(Clone)]
 pub struct BatchMetadata {
     /// Resource attributes (k8s pod name, namespace, etc.) — Arc so cloning is cheap.
-    pub resource_attrs: Arc<Vec<(String, String)>>,
+    pub resource_attrs: Arc<[(String, String)]>,
     /// Observed timestamp in nanoseconds.
     pub observed_time_ns: u64,
 }
