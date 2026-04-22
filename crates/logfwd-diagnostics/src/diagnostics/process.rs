@@ -102,7 +102,7 @@ fn getconf_u64(name: &str) -> Option<u64> {
         };
         // SAFETY: `sysconf` is thread-safe and we pass a valid key constant.
         let value = unsafe { libc::sysconf(key) };
-        if value > 0 { Some(value as u64) } else { None }
+        (value > 0).then_some(value as u64)
     }
     #[cfg(not(unix))]
     {

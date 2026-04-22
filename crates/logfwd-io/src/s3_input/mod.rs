@@ -1175,11 +1175,8 @@ async fn fetch_object(
             bytes: buf[..filled].to_vec(),
             accounted_bytes: ab,
             source_id,
-            source_path: if options.should_expose_source_paths && is_first_chunk {
-                Some(key.to_string())
-            } else {
-                None
-            },
+            source_path: (options.should_expose_source_paths && is_first_chunk)
+                .then(|| key.to_string()),
             is_eof: eof_reached,
         };
         let tx = out_tx.clone();
@@ -1316,11 +1313,8 @@ async fn fetch_parallel_stream(
                 bytes: data[pos..end].to_vec(),
                 accounted_bytes: ab,
                 source_id,
-                source_path: if options.should_expose_source_paths && is_first_chunk {
-                    Some(key.to_string())
-                } else {
-                    None
-                },
+                source_path: (options.should_expose_source_paths && is_first_chunk)
+                    .then(|| key.to_string()),
                 is_eof: false,
             };
             let tx = out_tx.clone();

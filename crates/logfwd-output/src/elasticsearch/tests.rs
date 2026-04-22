@@ -31,7 +31,7 @@ type RandomRow = (
 
 fn zero_metadata() -> BatchMetadata {
     BatchMetadata {
-        resource_attrs: Arc::new(vec![]),
+        resource_attrs: Arc::from([]),
         observed_time_ns: 0,
     }
 }
@@ -307,7 +307,7 @@ fn streaming_canonical_timestamp_variants_suppress_at_timestamp_injection() {
             let config_clone = Arc::clone(&config);
             let batch_clone = batch.clone();
             let meta = BatchMetadata {
-                resource_attrs: Arc::new(vec![]),
+                resource_attrs: Arc::from([]),
                 observed_time_ns: 0,
             };
             let tx_clone = tx.clone();
@@ -371,7 +371,7 @@ proptest! {
     ) {
         let batch = build_random_batch(&rows, include_timestamp);
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns,
         };
 
@@ -785,7 +785,7 @@ fn bench_serialize_batch_fast_vs_simple() {
         .collect();
     let batch = build_random_batch(&rows, false);
     let metadata = BatchMetadata {
-        resource_attrs: Arc::new(vec![]),
+        resource_attrs: Arc::from([]),
         observed_time_ns: 1_710_000_000_123_456_789,
     };
     let index = "bench-index";
@@ -1924,7 +1924,7 @@ mod snapshot_tests {
 
     fn zero_metadata() -> BatchMetadata {
         BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 0,
         }
     }

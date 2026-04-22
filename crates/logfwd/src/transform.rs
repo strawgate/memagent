@@ -87,6 +87,7 @@ mod passthrough {
                 extract_all: true,
                 line_field_name: None,
                 validate_utf8: false,
+                row_predicate: None,
             }
         }
 

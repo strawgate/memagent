@@ -206,6 +206,15 @@ path_buf_push_overwrite = "warn"
 string_lit_as_bytes = "warn"
 unnecessary_struct_initialization = "warn"
 zero_sized_map_values = "warn"
+# Tier 5: additional restriction-group lints (low-risk correctness).
+rc_buffer = "warn"
+get_unwrap = "warn"
+if_then_some_else_none = "warn"
+pub_without_shorthand = "warn"
+unneeded_field_pattern = "warn"
+empty_drop = "warn"
+unnecessary_safety_comment = "warn"
+unnecessary_safety_doc = "warn"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

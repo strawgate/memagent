@@ -220,11 +220,7 @@ impl GeoDatabase for CsvRangeDatabase {
             .checked_sub(1)?;
 
         let entry = &self.ranges[idx];
-        if entry.end >= key {
-            Some(entry.result.clone())
-        } else {
-            None
-        }
+        (entry.end >= key).then(|| entry.result.clone())
     }
 }
 

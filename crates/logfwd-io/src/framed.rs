@@ -164,15 +164,10 @@ impl FramedInput {
                     // only sees bytes read from the file, not the remainder
                     // prefix.
                     let remainder_prefix_len = chunk.len() - bytes.len();
+                    // If the last newline is inside the old remainder (not
+                    // the new bytes), the tracker sees no newline in the read.
                     let last_newline_in_new_bytes = last_newline_pos.and_then(|pos| {
-                        if pos >= remainder_prefix_len {
-                            Some((pos - remainder_prefix_len) as u64)
-                        } else {
-                            // The last newline is inside the old remainder,
-                            // not in the new bytes. From the tracker's
-                            // perspective, the new bytes have no newline.
-                            None
-                        }
+                        (pos >= remainder_prefix_len).then(|| (pos - remainder_prefix_len) as u64)
                     });
 
                     // Update checkpoint tracker with the new read.

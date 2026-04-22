@@ -534,11 +534,7 @@ impl SegmentWriter {
         }
 
         self.ipc_buf.clear();
-        let compression = if self.header.flags & FLAG_ZSTD != 0 {
-            Some(CompressionType::ZSTD)
-        } else {
-            None
-        };
+        let compression = (self.header.flags & FLAG_ZSTD != 0).then_some(CompressionType::ZSTD);
         let opts = IpcWriteOptions::default()
             .try_with_compression(compression)
             .map_err(|e| io::Error::other(e.to_string()))?;

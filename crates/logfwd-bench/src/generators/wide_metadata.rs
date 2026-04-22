@@ -252,7 +252,7 @@ pub fn gen_wide_batch(count: usize, seed: u64) -> RecordBatch {
 /// Create benchmark-standard `BatchMetadata` with typical K8s resource attributes.
 pub fn make_metadata() -> BatchMetadata {
     BatchMetadata {
-        resource_attrs: Arc::new(vec![
+        resource_attrs: Arc::from([
             ("service.name".into(), "bench-service".into()),
             ("service.version".into(), "1.0.0".into()),
             ("host.name".into(), "bench-node-01".into()),

@@ -161,11 +161,7 @@ impl HttpEnrichProcessor {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         cache.get(key).and_then(|entry| {
-            if entry.inserted_at.elapsed() <= self.config.ttl {
-                Some(entry.result.clone())
-            } else {
-                None
-            }
+            (entry.inserted_at.elapsed() <= self.config.ttl).then(|| entry.result.clone())
         })
     }
 
@@ -609,7 +605,7 @@ mod tests {
         let batch = RecordBatch::try_new(schema, vec![Arc::new(arr)]).expect("valid batch");
 
         let meta = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 0,
         };
         let out = proc.process(batch, &meta).expect("process should succeed");
@@ -624,7 +620,7 @@ mod tests {
 
     fn test_meta() -> BatchMetadata {
         BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 0,
         }
     }

@@ -121,7 +121,7 @@ fn run_worker(
     let mut scanner = Scanner::new(ScanConfig::default());
     let mut transform = SqlTransform::new("SELECT * FROM logs").unwrap();
     let meta = BatchMetadata {
-        resource_attrs: Arc::new(vec![("service.name".into(), "es-bench".into())]),
+        resource_attrs: Arc::from([("service.name".into(), "es-bench".into())]),
         observed_time_ns: 0,
     };
 

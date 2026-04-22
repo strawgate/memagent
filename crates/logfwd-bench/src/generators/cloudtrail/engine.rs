@@ -34,18 +34,17 @@ pub fn gen_cloudtrail_audit_with_profile(
         let identity_kind = pick_cloudtrail_identity_kind(&mut rng, service.kind, action.read_only);
         let principal_id = state.principal_id(identity_kind, account_slot, principal_slot);
         let user_arn = state.arn(identity_kind, account_slot, principal_slot);
-        let shared_event_id =
-            if action.data_event || chance(&mut rng, profile.optional_field_density / 3) {
-                Some(state.shared_event_id(shared_event_slot(
-                    i,
-                    account_slot,
-                    principal_slot,
-                    state.shared_event_ids.len(),
-                    profile,
-                )))
-            } else {
-                None
-            };
+        let shared_event_id = (action.data_event
+            || chance(&mut rng, profile.optional_field_density / 3))
+        .then(|| {
+            state.shared_event_id(shared_event_slot(
+                i,
+                account_slot,
+                principal_slot,
+                state.shared_event_ids.len(),
+                profile,
+            ))
+        });
         let source_ip = cloudtrail_source_ip(
             &mut rng,
             &state,
@@ -115,13 +114,9 @@ pub fn gen_cloudtrail_audit_with_profile(
         } else {
             "Management"
         };
-        let vpc_endpoint_id = if chance(&mut rng, profile.optional_field_density / 4)
-            && !matches!(service.kind, CloudTrailServiceKind::CloudTrail)
-        {
-            Some(format!("vpce-{:08x}", rng.u32(..)))
-        } else {
-            None
-        };
+        let vpc_endpoint_id = (chance(&mut rng, profile.optional_field_density / 4)
+            && !matches!(service.kind, CloudTrailServiceKind::CloudTrail))
+        .then(|| format!("vpce-{:08x}", rng.u32(..)));
         let tls_details =
             build_tls_details_json(&mut rng, service.kind, profile.optional_field_density);
 
@@ -216,18 +211,17 @@ pub fn gen_cloudtrail_batch_with_profile(
         let identity_kind = pick_cloudtrail_identity_kind(&mut rng, service.kind, action.read_only);
         let principal_id = state.principal_id(identity_kind, account_slot, principal_slot);
         let user_arn = state.arn(identity_kind, account_slot, principal_slot);
-        let shared_event_id =
-            if action.data_event || chance(&mut rng, profile.optional_field_density / 3) {
-                Some(state.shared_event_id(shared_event_slot(
-                    i,
-                    account_slot,
-                    principal_slot,
-                    state.shared_event_ids.len(),
-                    profile,
-                )))
-            } else {
-                None
-            };
+        let shared_event_id = (action.data_event
+            || chance(&mut rng, profile.optional_field_density / 3))
+        .then(|| {
+            state.shared_event_id(shared_event_slot(
+                i,
+                account_slot,
+                principal_slot,
+                state.shared_event_ids.len(),
+                profile,
+            ))
+        });
         let source_ip = cloudtrail_source_ip(
             &mut rng,
             &state,
@@ -252,52 +246,35 @@ pub fn gen_cloudtrail_batch_with_profile(
         } else {
             "Management"
         };
-        let vpc_endpoint_id = if chance(&mut rng, profile.optional_field_density / 4)
-            && !matches!(service.kind, CloudTrailServiceKind::CloudTrail)
-        {
-            Some(format!("vpce-{:08x}", rng.u32(..)))
-        } else {
-            None
-        };
-        let additional_event_data_tls_version = if additional_event_data_present {
-            Some(pick(&mut rng, &["TLSv1.3", "TLSv1.2"]))
-        } else {
-            None
-        };
+        let vpc_endpoint_id = (chance(&mut rng, profile.optional_field_density / 4)
+            && !matches!(service.kind, CloudTrailServiceKind::CloudTrail))
+        .then(|| format!("vpce-{:08x}", rng.u32(..)));
+        let additional_event_data_tls_version =
+            additional_event_data_present.then(|| pick(&mut rng, &["TLSv1.3", "TLSv1.2"]));
         let tls_details_present = !matches!(service.kind, CloudTrailServiceKind::CloudTrail)
             && chance(&mut rng, profile.optional_field_density / 3);
-        let tls_details_version = if tls_details_present {
-            Some(pick(&mut rng, &["TLSv1.3", "TLSv1.2"]))
-        } else {
-            None
-        };
-        let tls_details_cipher = if tls_details_present {
-            Some(pick(
+        let tls_details_version =
+            tls_details_present.then(|| pick(&mut rng, &["TLSv1.3", "TLSv1.2"]));
+        let tls_details_cipher = tls_details_present.then(|| {
+            pick(
                 &mut rng,
                 &["TLS_AES_128_GCM_SHA256", "ECDHE-RSA-AES128-GCM-SHA256"],
-            ))
-        } else {
-            None
-        };
-        let tls_details_host = if tls_details_present {
-            Some(pick(
+            )
+        });
+        let tls_details_host = tls_details_present.then(|| {
+            pick(
                 &mut rng,
                 &[
                     "console.aws.amazon.com",
                     "api.aws.amazon.com",
                     "s3.amazonaws.com",
                 ],
-            ))
-        } else {
-            None
-        };
-        let tls_details_client_principal = if tls_details_present {
-            Some(pick(&mut rng, &["console", "cli", "sdk"]))
-        } else {
-            None
-        };
-        let resource_arn = if resources_present {
-            Some(cloudtrail_resource_arn(
+            )
+        });
+        let tls_details_client_principal =
+            tls_details_present.then(|| pick(&mut rng, &["console", "cli", "sdk"]));
+        let resource_arn = resources_present.then(|| {
+            cloudtrail_resource_arn(
                 service.kind,
                 action,
                 account_id,
@@ -307,30 +284,15 @@ pub fn gen_cloudtrail_batch_with_profile(
                 region,
                 i,
                 0,
-            ))
-        } else {
-            None
-        };
-        let resource_name = if resources_present && chance(&mut rng, 35) {
-            Some(cloudtrail_resource_name(
-                service.kind,
-                action,
-                principal_name,
-                i,
-                0,
-            ))
-        } else {
-            None
-        };
-        let invoked_by = if matches!(
+            )
+        });
+        let resource_name = (resources_present && chance(&mut rng, 35))
+            .then(|| cloudtrail_resource_name(service.kind, action, principal_name, i, 0));
+        let invoked_by = (matches!(
             service.kind,
             CloudTrailServiceKind::Sts | CloudTrailServiceKind::CloudTrail
-        ) || matches!(identity_kind, CloudTrailIdentityKind::AwsService)
-        {
-            Some("cloudtrail.amazonaws.com")
-        } else {
-            None
-        };
+        ) || matches!(identity_kind, CloudTrailIdentityKind::AwsService))
+        .then_some("cloudtrail.amazonaws.com");
         let user_name = match identity_kind {
             CloudTrailIdentityKind::IamUser
             | CloudTrailIdentityKind::AssumedRole

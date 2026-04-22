@@ -38,7 +38,7 @@ struct GeneratedRowRefs<'a> {
 
 fn make_metadata() -> BatchMetadata {
     BatchMetadata {
-        resource_attrs: Arc::new(vec![
+        resource_attrs: Arc::from([
             (
                 "service.name".to_string(),
                 "smart-codegen-bench".to_string(),

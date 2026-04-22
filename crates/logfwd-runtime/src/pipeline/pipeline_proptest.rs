@@ -40,6 +40,7 @@ proptest! {
             extract_all: true,
             line_field_name: None,
             validate_utf8: false,
+            row_predicate: None,
         };
         let mut scanner_whole = Scanner::new(config);
         let batch_whole = scanner_whole.scan_detached(Bytes::from(ndjson.clone())).unwrap();
@@ -81,6 +82,7 @@ proptest! {
             extract_all: true,
             line_field_name: None,
             validate_utf8: false,
+            row_predicate: None,
         };
         let mut scanner_split = Scanner::new(config2);
         let batch_split = scanner_split.scan_detached(Bytes::from(buf.clone())).unwrap();

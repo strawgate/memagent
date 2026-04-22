@@ -121,7 +121,7 @@ fn test_otlp_encoding() {
     .unwrap();
 
     let meta = BatchMetadata {
-        resource_attrs: Arc::new(vec![("k8s.pod.name".to_string(), "myapp-abc".to_string())]),
+        resource_attrs: Arc::from([("k8s.pod.name".to_string(), "myapp-abc".to_string())]),
         observed_time_ns: 1_700_000_000_000_000_000,
     };
 

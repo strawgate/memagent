@@ -45,7 +45,7 @@ fn main() {
     )
     .unwrap();
     let metadata = BatchMetadata {
-        resource_attrs: Arc::new(vec![]),
+        resource_attrs: Arc::from([]),
         observed_time_ns: 0,
     };
     otlp_sink.encode_batch(&result, &metadata);
@@ -140,7 +140,7 @@ fn main() {
         )
         .unwrap();
         let meta = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 0,
         };
         sink.encode_batch(&result, &meta);

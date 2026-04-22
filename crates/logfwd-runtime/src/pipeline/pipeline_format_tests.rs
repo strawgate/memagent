@@ -12,6 +12,7 @@ fn json_format_direct_to_scanner() {
         extract_all: true,
         line_field_name: None,
         validate_utf8: false,
+        row_predicate: None,
     };
     let mut scanner = Scanner::new(config);
     let batch = scanner.scan_detached(Bytes::from(input.to_vec())).unwrap();
@@ -30,6 +31,7 @@ fn raw_format_captures_lines() {
         extract_all: true,
         line_field_name: Some("body".to_string()),
         validate_utf8: false,
+        row_predicate: None,
     };
     let mut scanner = Scanner::new(config);
     let batch = scanner.scan_detached(Bytes::from(input.to_vec())).unwrap();
@@ -66,6 +68,7 @@ fn raw_format_json_line_prefers_full_line_body() {
         extract_all: true,
         line_field_name: Some("body".to_string()),
         validate_utf8: false,
+        row_predicate: None,
     };
     let mut scanner = Scanner::new(config);
     let batch = scanner.scan_detached(Bytes::from(with_newline)).unwrap();
@@ -102,6 +105,7 @@ fn cri_extraction_produces_json() {
         extract_all: true,
         line_field_name: None,
         validate_utf8: false,
+        row_predicate: None,
     };
     let mut scanner = Scanner::new(config);
     let batch = scanner.scan_detached(Bytes::from(out.clone())).unwrap();
@@ -124,6 +128,7 @@ fn cri_pf_merge_then_scan() {
         extract_all: true,
         line_field_name: None,
         validate_utf8: false,
+        row_predicate: None,
     };
     let mut scanner = Scanner::new(config);
     let batch = scanner.scan_detached(Bytes::from(out)).unwrap();

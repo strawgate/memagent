@@ -1157,7 +1157,7 @@ mod tests {
         )
         .unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 99_999,
         };
 
@@ -1209,7 +1209,7 @@ mod tests {
         )
         .unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 99_999,
         };
 
@@ -1265,7 +1265,7 @@ mod tests {
         )
         .unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 99_999_999_999,
         };
 
@@ -1321,7 +1321,7 @@ mod tests {
         let values = StringArray::from(vec![Some("checkout")]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 1_000,
         };
 
@@ -1360,7 +1360,7 @@ mod tests {
         let values = StringArray::from(vec![Some("ok")]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 1_000,
         };
 
@@ -1401,7 +1401,7 @@ mod tests {
         let right: ArrayRef = Arc::new(StringArray::from(vec![Some("payments")]));
         let batch = RecordBatch::try_new(schema, vec![left, right]).unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 1_000,
         };
 
@@ -1438,7 +1438,7 @@ mod tests {
         let ts_arr = Int64Array::from(vec![Some(-100i64), Some(100i64)]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(ts_arr)]).unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 12345,
         };
 
@@ -1493,7 +1493,7 @@ mod tests {
         )
         .unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 1,
         };
 
@@ -1531,7 +1531,7 @@ mod tests {
         let env_arr = StringArray::from(vec![Some("staging")]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(env_arr)]).unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 1_000,
         };
 
@@ -1567,7 +1567,7 @@ mod tests {
         let values = StringArray::from(vec![Some("checkout")]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(values)]).unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 1_000,
         };
 
@@ -1605,7 +1605,7 @@ mod tests {
         let ns_arr = StringArray::from(vec![Some("")]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(ns_arr)]).unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 1_000,
         };
 
@@ -1648,7 +1648,7 @@ mod tests {
         let ts_arr = Int64Array::from(vec![None, Some(100i64)]);
         let batch = RecordBatch::try_new(schema, vec![Arc::new(ts_arr)]).unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 12345,
         };
 
@@ -1705,7 +1705,7 @@ mod tests {
         )
         .unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 99_999,
         };
 
@@ -1751,7 +1751,7 @@ mod tests {
         )
         .unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 99_999,
         };
 
@@ -1793,7 +1793,7 @@ mod tests {
         )
         .unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 99_999,
         };
 
@@ -1835,7 +1835,7 @@ mod tests {
         )
         .unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 99_999,
         };
 
@@ -1875,7 +1875,7 @@ mod tests {
         )
         .unwrap();
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 42,
         };
 

@@ -113,7 +113,7 @@ async fn setup_test_data(sink: &mut Box<dyn logfwd_output::Sink>) -> RecordBatch
     .expect("batch creation failed");
 
     let metadata = BatchMetadata {
-        resource_attrs: Arc::new(vec![]),
+        resource_attrs: Arc::from([]),
         observed_time_ns: 0,
     };
 

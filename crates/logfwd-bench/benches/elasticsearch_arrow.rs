@@ -106,7 +106,7 @@ fn index_batch(
     batch: &RecordBatch,
 ) -> Result<(), std::io::Error> {
     let metadata = BatchMetadata {
-        resource_attrs: Arc::new(vec![]),
+        resource_attrs: Arc::from([]),
         observed_time_ns: 0,
     };
     let result = rt.block_on(sink.send_batch(batch, &metadata));

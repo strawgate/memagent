@@ -46,6 +46,7 @@ issue = 1314
 path = "crates/logfwd-types/src/diagnostics.rs"
 status = "recommended"
 reason = "Contains cfg(kani) stubs for atomic counter operations (inc_send, send_ns_total, send_count) that Kani cannot model; no proof harnesses, only Kani-compatible no-op implementations."
+issue = 2486
 
 [[seams]]
 path = "crates/logfwd-types/src/diagnostics/health.rs"

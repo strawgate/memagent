@@ -567,7 +567,7 @@ mod tests {
             .expect("test client should build");
         let mut sink = ArrowIpcSink::new("test".to_string(), config, client, stats);
         let metadata = BatchMetadata {
-            resource_attrs: Arc::new(Vec::new()),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 0,
         };
 

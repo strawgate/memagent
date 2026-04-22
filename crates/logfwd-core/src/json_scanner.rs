@@ -145,11 +145,7 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
             key: alloc::vec::Vec::new(),
             value: alloc::vec::Vec::new(),
         },
-        pred: if config.row_predicate.is_some() {
-            Some(PredicateScratch::new())
-        } else {
-            None
-        },
+        pred: config.row_predicate.is_some().then(PredicateScratch::new),
         deferred: alloc::vec::Vec::new(),
     };
 

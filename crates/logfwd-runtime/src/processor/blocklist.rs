@@ -362,7 +362,7 @@ mod tests {
 
     fn meta() -> BatchMetadata {
         BatchMetadata {
-            resource_attrs: Arc::new(vec![]),
+            resource_attrs: Arc::from([]),
             observed_time_ns: 0,
         }
     }
