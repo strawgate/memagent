@@ -9,14 +9,14 @@ This folder contains 20 starter configurations for common collection targets (Re
 3. Validate before running:
 
 ```bash
-logfwd validate --config logfwd.yaml
+ff validate --config logfwd.yaml
 ```
 
 If you want to inspect expansion and normalization before editing host-specific
 paths, run:
 
 ```bash
-logfwd effective-config --config logfwd.yaml
+ff effective-config --config logfwd.yaml
 ```
 
 ## Included examples
@@ -42,4 +42,4 @@ logfwd effective-config --config logfwd.yaml
 19. `syslog-udp-to-otlp.yaml`
 20. `system-journal-export-to-otlp.yaml`
 
-The CLI wizard (`logfwd wizard`) uses the same template ideas so examples and generated configs stay aligned.
+The CLI wizard (`ff wizard`) uses the same template ideas so examples and generated configs stay aligned.

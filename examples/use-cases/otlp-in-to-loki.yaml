@@ -1,4 +1,4 @@
-# logfwd example
+# FastForward example
 # Use case: OTLP input to Loki
 # Replace paths/endpoints with values for your environment.
 

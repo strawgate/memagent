@@ -597,10 +597,11 @@ describe('test helper controls', function () {
     assert.equal(sim.getCars().length, 0);
   });
 
-  it('newly added stopped cars use stopped color until they move', function () {
+  it('newly added cars start with flow color and become stop when stuck', function () {
     var sim = createSimulation({}, fixedScale(1));
     var car = sim.addCar('highway', 0);
     assert.equal(car.speed, 0);
-    assert.equal(car.color, 'stop');
+    assert.equal(car.color, 'flow');
+    assert.equal(car.stuckTicks, 0);
   });
 });

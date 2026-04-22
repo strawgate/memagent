@@ -169,6 +169,15 @@ implicit_clone = "warn"
 needless_for_each = "warn"
 or_fun_call = "warn"
 checked_conversions = "warn"
+# Tier 3: restriction-group correctness lints (opt-in, not in pedantic).
+unimplemented = "warn"
+todo = "warn"
+rc_mutex = "deny"
+lossy_float_literal = "warn"
+float_cmp_const = "warn"
+fn_to_numeric_cast_any = "warn"
+verbose_file_reads = "warn"
+unnecessary_self_imports = "warn"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
