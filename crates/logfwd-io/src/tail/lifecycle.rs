@@ -66,7 +66,7 @@ impl Active {
         fingerprint_bytes: usize,
     ) -> io::Result<super::reader::ReadResult> {
         use super::identity::compute_fingerprint;
-        use super::reader::observed_fingerprint_len;
+        use super::reader::{classify_empty_read_result, observed_fingerprint_len};
         use std::io::{Read, Seek, SeekFrom};
 
         let meta = self.file.metadata()?;
@@ -87,11 +87,7 @@ impl Active {
         }
 
         if current_size <= self.offset {
-            return Ok(if was_truncated {
-                super::reader::ReadResult::Truncated
-            } else {
-                super::reader::ReadResult::NoData
-            });
+            return Ok(classify_empty_read_result(was_truncated));
         }
 
         let mut result = Vec::with_capacity(per_file_budget);
@@ -110,11 +106,7 @@ impl Active {
         }
 
         if result.is_empty() {
-            return Ok(if was_truncated {
-                super::reader::ReadResult::Truncated
-            } else {
-                super::reader::ReadResult::NoData
-            });
+            return Ok(classify_empty_read_result(was_truncated));
         }
 
         self.last_read = Instant::now();

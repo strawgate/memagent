@@ -24,8 +24,7 @@ pub(super) enum ReadResult {
     NoData,
 }
 
-#[allow(dead_code)]
-fn classify_empty_read_result(was_truncated: bool) -> ReadResult {
+pub(super) fn classify_empty_read_result(was_truncated: bool) -> ReadResult {
     if was_truncated {
         ReadResult::Truncated
     } else {
