@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use serde::Serialize;
 
 /// Public support level for a documented config surface.
@@ -538,10 +540,11 @@ pub fn render_component_type_table(entries: &[ComponentTypeDoc]) -> String {
             SupportLevel::NotYetSupported => "Not yet supported",
             SupportLevel::Hidden => "Hidden",
         };
-        out.push_str(&format!(
-            "| `{}` | {} | {} |\n",
+        let _ = writeln!(
+            out,
+            "| `{}` | {} | {} |",
             entry.type_tag, status, entry.description
-        ));
+        );
     }
     out
 }
@@ -589,20 +592,34 @@ mod tests {
     #[test]
     fn every_template_type_is_present_in_component_inventory() {
         for template in INPUT_TEMPLATES {
-            assert!(
-                INPUT_TYPE_DOCS
-                    .iter()
-                    .any(|entry| entry.type_tag == template.type_tag),
-                "missing input type doc for template type {}",
+            let entry = INPUT_TYPE_DOCS
+                .iter()
+                .find(|entry| entry.type_tag == template.type_tag)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "missing input type doc for template type {}",
+                        template.type_tag
+                    )
+                });
+            assert_eq!(
+                entry.support, template.support,
+                "input support mismatch for template type {}",
                 template.type_tag
             );
         }
         for template in OUTPUT_TEMPLATES {
-            assert!(
-                OUTPUT_TYPE_DOCS
-                    .iter()
-                    .any(|entry| entry.type_tag == template.type_tag),
-                "missing output type doc for template type {}",
+            let entry = OUTPUT_TYPE_DOCS
+                .iter()
+                .find(|entry| entry.type_tag == template.type_tag)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "missing output type doc for template type {}",
+                        template.type_tag
+                    )
+                });
+            assert_eq!(
+                entry.support, template.support,
+                "output support mismatch for template type {}",
                 template.type_tag
             );
         }
