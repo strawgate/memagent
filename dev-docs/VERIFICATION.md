@@ -377,6 +377,7 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `logfwd-runtime/worker_pool.rs` | MRU dispatch decision + typed delivery outcome helpers | Kani (8 dispatch/outcome proofs) + unit tests for worker-slot aggregation, drain-phase stickiness, and create-failure behavior |
 | `logfwd-arrow/storage_builder.rs` | StructArray conflict column assembly | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
 | `logfwd-arrow/streaming_builder.rs` | StructArray conflict column assembly (StringView) | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
+| `logfwd-arrow/columnar/builder.rs` | Generated-string offset accounting and lowercase hex append helpers | Kani recommended (5 proofs: buffer-len add, append-len add, `StringRef` conversion, hex-length doubling, hex oracle) + unit tests + proptest hex oracle |
 | `logfwd-arrow/conflict_schema.rs` | Conflict-struct detection + row-level precedence selection | Kani recommended (2 proofs) + unit tests |
 | `scanner_conformance.rs` (accumulation) | BytesMut accumulation → Bytes → Scanner equivalence | proptest (3 tests × 256 cases: random split, single chunk, per-line split; full value comparison) |
 
