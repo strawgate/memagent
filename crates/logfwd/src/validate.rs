@@ -1,6 +1,7 @@
 //! Config and pipeline validation logic used by `validate`, `dry-run`,
 //! `effective-config`, and the wizard.
 
+use logfwd_runtime::pipeline::topology::{PipelineSpec, compile_topology};
 use std::sync::Arc;
 
 use opentelemetry::metrics::MeterProvider;
@@ -46,7 +47,17 @@ where
                     errors += 1;
                     continue;
                 }
-                on_ready(name);
+
+                let spec = PipelineSpec {
+                    name,
+                    config: pipe_cfg,
+                };
+                if let Err(e) = compile_topology(&spec) {
+                    on_error(format!("pipeline '{name}' topology compilation: {e}"));
+                    errors += 1;
+                } else {
+                    on_ready(name);
+                }
             }
             Err(e) => {
                 on_error(format!("pipeline '{name}': {e}"));
@@ -77,7 +88,9 @@ where
     let mut errors = 0;
     for (name, pipe_cfg) in &config.pipelines {
         match validate_pipeline_read_only(pipe_cfg, base_path) {
-            Ok(()) => on_ready(name),
+            Ok(()) => {
+                on_ready(name);
+            }
             Err(err) => {
                 on_error(format!("pipeline '{name}': {err}"));
                 errors += 1;
