@@ -9,7 +9,9 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use logfwd_runtime::turmoil_barriers::{BatchTerminalState, PipelinePhase, RuntimeBarrierEvent};
+use logfwd_runtime::turmoil_barriers::{
+    BatchTerminalState, PipelinePhase, RetryReason, RuntimeBarrierEvent,
+};
 use logfwd_runtime::worker_pool::DeliveryOutcome;
 use serde_json::{Value, json};
 
@@ -46,6 +48,14 @@ pub enum TraceEvent {
     BatchHold {
         batch_id: u64,
         source_id: u64,
+    },
+    /// Retry attempt inside the worker delivery loop.
+    RetryAttempt {
+        worker_id: usize,
+        batch_id: u64,
+        attempt: usize,
+        backoff_ms: u64,
+        reason: String,
     },
     /// Worker pool drain sequence started.
     PoolDrainBegin,
@@ -92,6 +102,7 @@ impl TraceEvent {
             Self::CheckpointFlush { .. } => "checkpoint_flush",
             Self::BatchTerminal { .. } => "batch_terminal",
             Self::BatchHold { .. } => "batch_hold",
+            Self::RetryAttempt { .. } => "retry_attempt",
             Self::PoolDrainBegin => "pool_drain_begin",
             Self::PoolDrainComplete { .. } => "pool_drain_complete",
         }
@@ -135,6 +146,18 @@ impl TraceEvent {
                 batch_id,
                 source_id,
             } => format!("batch_hold batch={batch_id} source={source_id}"),
+            Self::RetryAttempt {
+                worker_id,
+                batch_id,
+                attempt,
+                backoff_ms,
+                reason,
+            } => {
+                format!(
+                    "retry_attempt worker={worker_id} batch={batch_id} attempt={attempt} \
+                     backoff_ms={backoff_ms} reason={reason}"
+                )
+            }
             Self::PoolDrainBegin => "pool_drain_begin".to_string(),
             Self::PoolDrainComplete { forced_abort } => {
                 format!("pool_drain_complete forced_abort={forced_abort}")
@@ -220,6 +243,26 @@ pub fn trace_event_from_runtime_barrier(event: &RuntimeBarrierEvent) -> Vec<Trac
             batch_id: *batch_id,
             source_id: 0, // source correlation via batch_begin events
         }],
+        RuntimeBarrierEvent::RetryAttempt {
+            worker_id,
+            batch_id,
+            attempt,
+            backoff_ms,
+            reason,
+        } => {
+            let reason_str = match reason {
+                RetryReason::Timeout => "timeout",
+                RetryReason::RetryAfter => "retry_after",
+                RetryReason::IoError => "io_error",
+            };
+            vec![TraceEvent::RetryAttempt {
+                worker_id: *worker_id,
+                batch_id: *batch_id,
+                attempt: *attempt,
+                backoff_ms: *backoff_ms,
+                reason: reason_str.to_string(),
+            }]
+        }
         RuntimeBarrierEvent::PoolDrainBegin => vec![TraceEvent::PoolDrainBegin],
         RuntimeBarrierEvent::PoolDrainComplete { forced_abort } => {
             vec![TraceEvent::PoolDrainComplete {
@@ -327,6 +370,15 @@ impl TraceEvent {
             } => {
                 json!({"event": "batch_hold", "batch_id": batch_id, "source_id": source_id})
             }
+            TraceEvent::RetryAttempt {
+                worker_id,
+                batch_id,
+                attempt,
+                backoff_ms,
+                reason,
+            } => {
+                json!({"event": "retry_attempt", "worker_id": worker_id, "batch_id": batch_id, "attempt": attempt, "backoff_ms": backoff_ms, "reason": reason})
+            }
             TraceEvent::PoolDrainBegin => {
                 json!({"event": "pool_drain_begin"})
             }
@@ -433,6 +485,28 @@ impl TraceEvent {
                     source_id,
                 })
             }
+            "retry_attempt" => {
+                let worker_id = v.get("worker_id").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let Some(batch_id) = v.get("batch_id").and_then(Value::as_u64) else {
+                    return Err("retry_attempt missing u64 field: batch_id".to_string());
+                };
+                let Some(attempt) = v.get("attempt").and_then(Value::as_u64) else {
+                    return Err("retry_attempt missing u64 field: attempt".to_string());
+                };
+                let Some(backoff_ms) = v.get("backoff_ms").and_then(Value::as_u64) else {
+                    return Err("retry_attempt missing u64 field: backoff_ms".to_string());
+                };
+                let Some(reason) = v.get("reason").and_then(Value::as_str) else {
+                    return Err("retry_attempt missing string field: reason".to_string());
+                };
+                Ok(Self::RetryAttempt {
+                    worker_id,
+                    batch_id,
+                    attempt: attempt as usize,
+                    backoff_ms,
+                    reason: reason.to_string(),
+                })
+            }
             "pool_drain_begin" => Ok(Self::PoolDrainBegin),
             "pool_drain_complete" => {
                 let Some(forced_abort) = v.get("forced_abort").and_then(Value::as_bool) else {
@@ -536,6 +610,13 @@ pub fn normalized_contract_trace(events: &[TraceEvent]) -> Vec<String> {
                 batch_id,
                 source_id,
             } => format!("batch_hold:{batch_id}:{source_id}"),
+            TraceEvent::RetryAttempt {
+                worker_id,
+                attempt,
+                backoff_ms,
+                reason,
+                ..
+            } => format!("retry:{worker_id}:{attempt}:{backoff_ms}:{reason}"),
             TraceEvent::PoolDrainBegin => "pool_drain_begin".to_string(),
             TraceEvent::PoolDrainComplete { forced_abort } => {
                 format!("pool_drain_complete:{forced_abort}")
@@ -742,6 +823,19 @@ impl NormalizedTrace {
                         attributes.insert("batch_id", batch_id.to_string());
                         attributes.insert("source_id", source_id.to_string());
                     }
+                    TraceEvent::RetryAttempt {
+                        worker_id,
+                        batch_id,
+                        attempt,
+                        backoff_ms,
+                        reason,
+                    } => {
+                        attributes.insert("worker_id", worker_id.to_string());
+                        attributes.insert("batch_id", batch_id.to_string());
+                        attributes.insert("attempt", attempt.to_string());
+                        attributes.insert("backoff_ms", backoff_ms.to_string());
+                        attributes.insert("reason", reason.clone());
+                    }
                     TraceEvent::PoolDrainBegin => {}
                     TraceEvent::PoolDrainComplete { forced_abort } => {
                         attributes.insert("forced_abort", forced_abort.to_string());
@@ -943,6 +1037,7 @@ impl TransitionValidator {
                 // implementations (NoDoubleComplete, ForceAbortAccountsForAll, etc.).
                 TraceEvent::BatchTerminal { .. }
                 | TraceEvent::BatchHold { .. }
+                | TraceEvent::RetryAttempt { .. }
                 | TraceEvent::PoolDrainBegin
                 | TraceEvent::PoolDrainComplete { .. } => {}
             }

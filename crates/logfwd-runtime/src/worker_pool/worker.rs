@@ -91,6 +91,7 @@ pub(super) async fn worker_task(
                                 &metadata,
                                 max_retry_delay,
                                 &cancel,
+                                batch_id,
                             )
                             .instrument(output_span.clone()),
                         )
@@ -231,6 +232,7 @@ pub(super) async fn process_item(
     metadata: &BatchMetadata,
     max_retry_delay: Duration,
     cancel: &tokio_util::sync::CancellationToken,
+    #[cfg_attr(not(feature = "turmoil"), allow(unused_variables))] batch_id: u64,
 ) -> (DeliveryOutcome, u64, usize) {
     sink.begin_batch();
 
@@ -289,6 +291,17 @@ pub(super) async fn process_item(
                 retries_count += 1;
                 let delay = next_delay(&mut backoff, max_retry_delay);
                 output_health.apply_worker_event(worker_id, OutputHealthEvent::Retrying);
+                #[cfg(feature = "turmoil")]
+                crate::turmoil_barriers::trigger(
+                    crate::turmoil_barriers::RuntimeBarrierEvent::RetryAttempt {
+                        worker_id,
+                        batch_id,
+                        attempt: retries_count,
+                        backoff_ms: delay.as_millis() as u64,
+                        reason: crate::turmoil_barriers::RetryReason::Timeout,
+                    },
+                )
+                .await;
                 if retries_count <= WARN_RETRY_LIMIT {
                     tracing::warn!(
                         worker_id,
@@ -336,6 +349,17 @@ pub(super) async fn process_item(
                 retries_count += 1;
                 let sleep_for = retry_dur.min(max_retry_delay);
                 output_health.apply_worker_event(worker_id, OutputHealthEvent::Retrying);
+                #[cfg(feature = "turmoil")]
+                crate::turmoil_barriers::trigger(
+                    crate::turmoil_barriers::RuntimeBarrierEvent::RetryAttempt {
+                        worker_id,
+                        batch_id,
+                        attempt: retries_count,
+                        backoff_ms: sleep_for.as_millis() as u64,
+                        reason: crate::turmoil_barriers::RetryReason::RetryAfter,
+                    },
+                )
+                .await;
                 tracing::warn!(
                     worker_id,
                     ?sleep_for,
@@ -358,6 +382,17 @@ pub(super) async fn process_item(
                 retries_count += 1;
                 let delay = next_delay(&mut backoff, max_retry_delay);
                 output_health.apply_worker_event(worker_id, OutputHealthEvent::Retrying);
+                #[cfg(feature = "turmoil")]
+                crate::turmoil_barriers::trigger(
+                    crate::turmoil_barriers::RuntimeBarrierEvent::RetryAttempt {
+                        worker_id,
+                        batch_id,
+                        attempt: retries_count,
+                        backoff_ms: delay.as_millis() as u64,
+                        reason: crate::turmoil_barriers::RetryReason::IoError,
+                    },
+                )
+                .await;
                 if retries_count <= WARN_RETRY_LIMIT {
                     tracing::warn!(
                         worker_id,
@@ -575,6 +610,7 @@ mod tests {
             &metadata,
             Duration::from_millis(10),
             &cancel,
+            0, // batch_id (test only)
         )
         .await;
 

@@ -3,6 +3,7 @@
 //! Each validator implements [`EventValidator`] and checks one or more
 //! TLA+ invariants/temporal properties against a [`NormalizedTrace`].
 
+pub mod delivery_retry;
 pub mod pipeline_machine;
 pub mod shutdown;
 pub mod worker_pool;
@@ -24,5 +25,6 @@ pub fn all_validators() -> Vec<Box<dyn EventValidator>> {
     vs.extend(pipeline_machine::validators());
     vs.extend(worker_pool::validators());
     vs.extend(shutdown::validators());
+    vs.extend(delivery_retry::validators());
     vs
 }

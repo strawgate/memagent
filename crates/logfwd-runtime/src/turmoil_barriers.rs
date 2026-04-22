@@ -25,6 +25,17 @@ pub enum BatchTerminalState {
     Abandoned,
 }
 
+/// Reason for a delivery retry attempt.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum RetryReason {
+    /// Per-batch send timeout elapsed.
+    Timeout,
+    /// Server returned RetryAfter with a directed delay.
+    RetryAfter,
+    /// Transient I/O error (connection reset, network partition, etc.).
+    IoError,
+}
+
 /// Barrier events emitted by runtime seam hooks.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum RuntimeBarrierEvent {
@@ -61,6 +72,14 @@ pub enum RuntimeBarrierEvent {
     PoolDrainBegin,
     /// Emitted when the worker pool drain completes.
     PoolDrainComplete { forced_abort: bool },
+    /// Emitted on each retry attempt inside process_item's retry loop.
+    RetryAttempt {
+        worker_id: usize,
+        batch_id: u64,
+        attempt: usize,
+        backoff_ms: u64,
+        reason: RetryReason,
+    },
     /// Emitted by checkpoint I/O immediately before each flush attempt.
     BeforeCheckpointFlushAttempt { attempt: u32 },
     /// Emitted by checkpoint I/O after a flush attempt resolves.
