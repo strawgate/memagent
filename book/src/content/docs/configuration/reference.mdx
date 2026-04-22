@@ -384,6 +384,7 @@ Behavior:
 
 ## Input types
 
+{/* BEGIN GENERATED: input-types */}
 | Value | Status | Description |
 |-------|--------|-------------|
 | `file` | Implemented | Tail files matching a glob pattern. |
@@ -397,8 +398,10 @@ Behavior:
 | `linux_ebpf_sensor` | Implemented | Linux eBPF sensor input (Arrow-native control + signal rows). |
 | `macos_es_sensor` | Implemented | macOS EndpointSecurity sensor input (Arrow-native control + signal rows). |
 | `windows_ebpf_sensor` | Implemented | Windows eBPF sensor input (Arrow-native control + signal rows). |
+| `journald` | Beta | Read structured journal entries from systemd journald. |
 | `host_metrics` | Implemented | Host metrics input — process snapshots, CPU, memory, network stats via sysinfo (Arrow-native). |
 | `arrow_ipc` | Implemented | Receive Arrow IPC stream batches via HTTP `POST /v1/arrow`. |
+{/* END GENERATED: input-types */}
 
 ---
 
@@ -603,6 +606,7 @@ output:
 
 ## Output types
 
+{/* BEGIN GENERATED: output-types */}
 | Value | Status | Description |
 |-------|--------|-------------|
 | `otlp` | Implemented | OTLP protobuf over HTTP or gRPC. |
@@ -616,6 +620,7 @@ output:
 | `udp` | Implemented | Send records to a UDP endpoint. |
 | `arrow_ipc` | Implemented | Send Arrow IPC payloads to an HTTP endpoint. |
 | `parquet` | Not yet supported | Reserved for Parquet file output. |
+{/* END GENERATED: output-types */}
 
 ---
 

@@ -8,6 +8,7 @@
 //! Environment variables in values are expanded using `${VAR}` syntax.
 
 mod compat;
+pub mod docspec;
 mod env;
 mod load;
 mod serde_helpers;
