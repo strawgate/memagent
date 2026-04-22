@@ -43,16 +43,16 @@ reason = "Registry ordering and apply-ack helpers are bounded pure logic with ex
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-types/src/diagnostics/health.rs"
-status = "required"
-reason = "Shared control-plane health lattice is an isolated pure seam and should stay Kani-covered."
-issue = 1437
-
-[[seams]]
 path = "crates/logfwd-types/src/diagnostics.rs"
 status = "recommended"
 reason = "cfg(kani) stubs that disable OTel metric side effects during Kani runs; no proof harnesses here."
 issue = 2486
+
+[[seams]]
+path = "crates/logfwd-types/src/diagnostics/health.rs"
+status = "required"
+reason = "Shared control-plane health lattice is an isolated pure seam and should stay Kani-covered."
+issue = 1437
 
 [[seams]]
 path = "crates/logfwd-io/src/format.rs"

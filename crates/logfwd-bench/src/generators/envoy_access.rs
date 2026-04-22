@@ -304,7 +304,8 @@ pub fn gen_envoy_access_with_profile(
             EnvoyAccessKind::PublicWrite => 20.0 + rng.f64() * 180.0,
             EnvoyAccessKind::Graphql => 25.0 + rng.f64() * 220.0,
         };
-        let upstream_service_time_ms = (response_code >= 500 || rng.usize(..100) < 90).then(|| (duration_ms * (0.35 + rng.f64() * 0.45)).max(1.0));
+        let upstream_service_time_ms = (response_code >= 500 || rng.usize(..100) < 90)
+            .then(|| (duration_ms * (0.35 + rng.f64() * 0.45)).max(1.0));
         let xff =
             make_x_forwarded_for(&mut rng, current_source_bucket, profile.xff_hops_max.max(1));
         let is_tls = current_scenario.kind != EnvoyAccessKind::Metrics && rng.usize(..100) < 96;
@@ -473,9 +474,9 @@ pub fn gen_envoy_access_batch_with_profile(
             EnvoyAccessKind::PublicWrite => 20.0 + rng.f64() * 180.0,
             EnvoyAccessKind::Graphql => 25.0 + rng.f64() * 220.0,
         };
-        let upstream_service_time_ms_value = (response_code_value >= 500 || rng.usize(..100) < 90).then(|| round_tenths(
-                (raw_duration_ms_value * (0.35 + rng.f64() * 0.45)).max(1.0),
-            ));
+        let upstream_service_time_ms_value = (response_code_value >= 500
+            || rng.usize(..100) < 90)
+            .then(|| round_tenths((raw_duration_ms_value * (0.35 + rng.f64() * 0.45)).max(1.0)));
         let duration_ms_value = round_tenths(raw_duration_ms_value);
         make_x_forwarded_for_into(
             &mut rng,

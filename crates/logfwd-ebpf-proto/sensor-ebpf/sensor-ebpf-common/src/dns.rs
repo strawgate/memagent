@@ -51,7 +51,8 @@ pub fn dns_wire_to_dotted(wire: &[u8]) -> (Option<String>, Option<u16>) {
 
 /// Extract the 2-byte big-endian QTYPE at the given position, if available.
 fn extract_qtype(wire: &[u8], pos: usize) -> Option<u16> {
-    (pos + 2 <= wire.len()).then(|| u16::from_be_bytes([wire[pos], wire[pos + 1]]))
+    let bytes = wire.get(pos..)?.get(..2)?;
+    Some(u16::from_be_bytes([bytes[0], bytes[1]]))
 }
 
 #[cfg(test)]

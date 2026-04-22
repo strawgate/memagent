@@ -1346,10 +1346,7 @@ fn resource_columns_group_rows_into_distinct_resource_logs() {
     sink.encode_batch(
         &batch,
         &BatchMetadata {
-            resource_attrs: Arc::from([(
-                "deployment.environment".to_string(),
-                "test".to_string(),
-            )]),
+            resource_attrs: Arc::from([("deployment.environment".to_string(), "test".to_string())]),
             observed_time_ns: 1,
         },
     );
