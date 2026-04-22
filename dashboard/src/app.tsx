@@ -148,9 +148,11 @@ export function App() {
       output_sec: 0,
       backpressure_stalls: val("logfwd.backpressure_stalls"),
       inflight_batches: val("logfwd.inflight_batches"),
-      mem_resident: val("process.memory.resident") || undefined,
-      mem_allocated: val("process.memory.allocated") || undefined,
-      mem_active: val("process.memory.active") || undefined,
+      channel_depth: val("logfwd.channel_depth") ?? undefined,
+      channel_capacity: val("logfwd.channel_capacity") ?? undefined,
+      mem_resident: val("process.memory.resident") ?? undefined,
+      mem_allocated: val("process.memory.allocated") ?? undefined,
+      mem_active: val("process.memory.active") ?? undefined,
     });
     setTotalErrors(val("logfwd.output_errors"));
   }, [store]);

@@ -11,7 +11,7 @@ import DataFlowAnimation from '../../components/DataFlowAnimation.astro';
 FastForward is a research project exploring how to build a fast log forwarder with Rust. This guide gets you from zero to a working pipeline in about 15 minutes.
 
 :::note
-The Cargo package is named `logfwd`; the installed CLI binary is `ff`. Docker images still reference `memagent` (the original image name).
+The Cargo package is named `logfwd`; the installed CLI binary is `ff`. Docker images are published to `ghcr.io/strawgate/fastforward`.
 :::
 
 ## Install
@@ -32,10 +32,10 @@ The Cargo package is named `logfwd`; the installed CLI binary is `ff`. Docker im
     docker run --rm \
       -v /var/log:/var/log:ro \
       -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
-      ghcr.io/strawgate/memagent:latest run --config /etc/logfwd/config.yaml
+      ghcr.io/strawgate/fastforward:latest run --config /etc/logfwd/config.yaml
     ```
 
-    Images are published to `ghcr.io/strawgate/memagent` for `linux/amd64` and `linux/arm64`. See [Docker deployment](/deployment/docker/) for compose files and volume configuration.
+    Images are published to `ghcr.io/strawgate/fastforward` for `linux/amd64` and `linux/arm64`. See [Docker deployment](/deployment/docker/) for compose files and volume configuration.
   </TabItem>
   <TabItem label="Kubernetes" icon="cloud">
     ```bash
@@ -168,10 +168,17 @@ Full SQL works: `JOIN`, `GROUP BY`, `HAVING`, subqueries, window functions. Buil
 
 FastForward sends OTLP protobuf to an OpenTelemetry Collector, Grafana Alloy, or any OTLP-compatible backend.
 
-Test locally with FastForward's built-in blackhole receiver:
+Test locally with FastForward's built-in blackhole receiver (`devour` mode):
 
 ```bash
-ff blackhole &
+ff devour --mode otlp --listen 127.0.0.1:4318 &
+```
+*(The `ff blackhole` command is an alias for this.)*
+
+You can also blast generated data into a destination sink to test throughput:
+
+```bash
+ff blast --destination otlp --endpoint http://127.0.0.1:4318/v1/logs
 ```
 
 ```yaml
@@ -269,8 +276,8 @@ pipelines:
         path: /var/log/pods/**/*.log
         format: cri
     transform: |
-      SELECT level, message, _timestamp, _stream
-      FROM logs WHERE level IN ('ERROR', 'WARN')
+      SELECT * FROM logs
+      WHERE level IN ('ERROR', 'WARN')
     outputs:
       - type: otlp
         endpoint: https://otel-collector:4318/v1/logs

@@ -202,5 +202,6 @@ pub(super) fn cpu_worker_loop(
         if tx.blocking_send(msg).is_err() {
             break;
         }
+        metrics.inc_channel_depth();
     }
 }

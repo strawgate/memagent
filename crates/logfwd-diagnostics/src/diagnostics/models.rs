@@ -199,6 +199,8 @@ pub struct BatchStatus {
     pub last_batch_time_ns: String,
     pub batch_latency_avg_ns: u64,
     pub inflight: u64,
+    pub channel_depth: u64,
+    pub channel_capacity: u64,
     pub rows_total: u64,
 }
 
