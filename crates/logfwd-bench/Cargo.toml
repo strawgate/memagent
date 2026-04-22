@@ -240,6 +240,13 @@ test = false
 required-features = ["bench-tools"]
 
 [[bin]]
+name = "io_worker_options"
+path = "src/bin/io_worker_options.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
 name = "copy_chain_profile"
 path = "src/bin/copy_chain_profile.rs"
 bench = false
