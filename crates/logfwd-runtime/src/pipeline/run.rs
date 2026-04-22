@@ -361,11 +361,36 @@ impl Pipeline {
         crate::turmoil_barriers::trigger(
             crate::turmoil_barriers::RuntimeBarrierEvent::AckApplied {
                 batch_id,
-                outcome: outcome_for_event,
+                outcome: outcome_for_event.clone(),
                 checkpoint_advances: _checkpoint_advances,
             },
         )
         .await;
+        #[cfg(feature = "turmoil")]
+        {
+            use crate::turmoil_barriers::{BatchTerminalState, RuntimeBarrierEvent};
+            let disposition = default_ticket_disposition(&outcome_for_event);
+            match disposition {
+                TicketDisposition::Ack => {
+                    crate::turmoil_barriers::trigger(RuntimeBarrierEvent::BatchTerminalized {
+                        batch_id,
+                        terminal_state: BatchTerminalState::Acked,
+                    })
+                    .await;
+                }
+                TicketDisposition::Reject => {
+                    crate::turmoil_barriers::trigger(RuntimeBarrierEvent::BatchTerminalized {
+                        batch_id,
+                        terminal_state: BatchTerminalState::Rejected,
+                    })
+                    .await;
+                }
+                TicketDisposition::Hold => {
+                    crate::turmoil_barriers::trigger(RuntimeBarrierEvent::BatchHeld { batch_id })
+                        .await;
+                }
+            }
+        }
         has_held
     }
 

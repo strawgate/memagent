@@ -179,7 +179,6 @@ pub fn trace_event_from_runtime_barrier(event: &RuntimeBarrierEvent) -> Vec<Trac
             .collect(),
         RuntimeBarrierEvent::BatchTerminalized {
             batch_id,
-            source_id,
             terminal_state,
         } => {
             let terminal = match terminal_state {
@@ -189,16 +188,13 @@ pub fn trace_event_from_runtime_barrier(event: &RuntimeBarrierEvent) -> Vec<Trac
             };
             vec![TraceEvent::BatchTerminal {
                 batch_id: *batch_id,
-                source_id: *source_id,
+                source_id: 0, // source correlation via batch_begin events
                 terminal,
             }]
         }
-        RuntimeBarrierEvent::BatchHeld {
-            batch_id,
-            source_id,
-        } => vec![TraceEvent::BatchHold {
+        RuntimeBarrierEvent::BatchHeld { batch_id } => vec![TraceEvent::BatchHold {
             batch_id: *batch_id,
-            source_id: *source_id,
+            source_id: 0, // source correlation via batch_begin events
         }],
         RuntimeBarrierEvent::BeforeCheckpointFlushAttempt { .. } => Vec::new(),
     }
