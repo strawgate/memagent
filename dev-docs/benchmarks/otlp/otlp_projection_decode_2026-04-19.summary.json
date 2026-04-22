@@ -1,0 +1,228 @@
+{
+  "artifact": "otlp_projection_decode_2026-04-19",
+  "status": "completed",
+  "date": "2026-04-19",
+  "repo": {
+    "head": "484b2d055e28050dd8dbde023bb62e28602c7e29",
+    "head_short": "484b2d055e28",
+    "branch": "codex/otlp-projection-bench-gates"
+  },
+  "environment": {
+    "host": "Darwin Mac.ad.weaston.org 25.3.0 arm64",
+    "cpu": "Apple M4",
+    "rustc": "rustc 1.94.1 (e408947bf 2026-03-25)",
+    "criterion_sample_size": 10,
+    "gnuplot": "unavailable; plotters backend used"
+  },
+  "command": "just bench-otlp-io otlp_input_decode_materialize",
+  "criterion_group": "otlp_input_decode_materialize",
+  "gate_definitions": {
+    "primitive": {
+      "candidate": "projected_detached_to_batch",
+      "baseline": "prost_reference_to_batch",
+      "operator": "<=",
+      "multiplier": 0.8
+    },
+    "complex_fallback": {
+      "candidate": "projected_fallback_to_batch",
+      "baseline": "prost_reference_to_batch",
+      "operator": "<=",
+      "multiplier": 1.05
+    }
+  },
+  "gate_summary": {
+    "primitive": {
+      "passed": 2,
+      "failed": 1
+    },
+    "complex_fallback": {
+      "passed": 1,
+      "failed": 1
+    },
+    "overall": "fail"
+  },
+  "recommendation": {
+    "decision": "defer_default_switch",
+    "summary": "Keep prost as the default. Projected decode is strong on primitive-heavy fixtures, but trace-heavy misses the strict primitive gate and complex-anyvalue fails the fallback gate."
+  },
+  "fixtures": [
+    {
+      "name": "narrow-1k",
+      "bucket": "primitive",
+      "rows": 1000,
+      "results": {
+        "prost_reference_to_batch": {
+          "median_ns": 710968.356299,
+          "ci_low_ns": 710005.843012,
+          "ci_high_ns": 719401.439258,
+          "ns_per_row": 710.968
+        },
+        "projected_fallback_to_batch": {
+          "median_ns": 361639.49504,
+          "ci_low_ns": 361231.861558,
+          "ci_high_ns": 366938.740079,
+          "ns_per_row": 361.639
+        },
+        "projected_detached_to_batch": {
+          "median_ns": 418210.824413,
+          "ci_low_ns": 417665.517019,
+          "ci_high_ns": 422019.706573,
+          "ns_per_row": 418.211
+        },
+        "projected_view_to_batch": {
+          "median_ns": 360373.791831,
+          "ci_low_ns": 359117.333992,
+          "ci_high_ns": 361233.692547,
+          "ns_per_row": 360.374
+        }
+      },
+      "gates": {
+        "primitive": {
+          "threshold_ns": 568774.685039,
+          "ratio": 0.588225,
+          "passed": true
+        }
+      }
+    },
+    {
+      "name": "attrs-heavy",
+      "bucket": "primitive",
+      "rows": 2000,
+      "results": {
+        "prost_reference_to_batch": {
+          "median_ns": 9038697.29,
+          "ci_low_ns": 9027115.291667,
+          "ci_high_ns": 9051954.574107,
+          "ns_per_row": 4519.349
+        },
+        "projected_fallback_to_batch": {
+          "median_ns": 3692592.316667,
+          "ci_low_ns": 3684347.8525,
+          "ci_high_ns": 3713742.142857,
+          "ns_per_row": 1846.296
+        },
+        "projected_detached_to_batch": {
+          "median_ns": 4013482.987578,
+          "ci_low_ns": 3994414.130435,
+          "ci_high_ns": 4026268.153986,
+          "ns_per_row": 2006.741
+        },
+        "projected_view_to_batch": {
+          "median_ns": 3721451.0,
+          "ci_low_ns": 3704844.375,
+          "ci_high_ns": 3749538.5,
+          "ns_per_row": 1860.726
+        }
+      },
+      "gates": {
+        "primitive": {
+          "threshold_ns": 7230957.832,
+          "ratio": 0.443911,
+          "passed": true
+        }
+      }
+    },
+    {
+      "name": "trace-heavy",
+      "bucket": "primitive",
+      "rows": 8000,
+      "results": {
+        "prost_reference_to_batch": {
+          "median_ns": 9458854.004167,
+          "ci_low_ns": 9431603.12625,
+          "ci_high_ns": 9470192.559524,
+          "ns_per_row": 1182.357
+        },
+        "projected_fallback_to_batch": {
+          "median_ns": 7745377.900463,
+          "ci_low_ns": 7375234.944444,
+          "ci_high_ns": 9207787.410417,
+          "ns_per_row": 968.172
+        },
+        "projected_detached_to_batch": {
+          "median_ns": 8617442.517045,
+          "ci_low_ns": 8514215.909091,
+          "ci_high_ns": 8654508.318182,
+          "ns_per_row": 1077.18
+        },
+        "projected_view_to_batch": {
+          "median_ns": 7334697.916667,
+          "ci_low_ns": 7307231.770833,
+          "ci_high_ns": 8021825.870833,
+          "ns_per_row": 916.837
+        }
+      },
+      "gates": {
+        "primitive": {
+          "threshold_ns": 7567083.203334,
+          "ratio": 0.910993,
+          "passed": false
+        }
+      }
+    },
+    {
+      "name": "complex-anyvalue",
+      "bucket": "complex_fallback",
+      "rows": 2000,
+      "results": {
+        "prost_reference_to_batch": {
+          "median_ns": 5252852.295635,
+          "ci_low_ns": 5218715.166667,
+          "ci_high_ns": 5314791.211111,
+          "ns_per_row": 2626.426
+        },
+        "projected_fallback_to_batch": {
+          "median_ns": 10811040.044444,
+          "ci_low_ns": 10801193.277778,
+          "ci_high_ns": 10912925.944444,
+          "ns_per_row": 5405.52
+        }
+      },
+      "gates": {
+        "complex_fallback": {
+          "threshold_ns": 5515494.910417,
+          "ratio": 2.058127,
+          "passed": false
+        }
+      }
+    },
+    {
+      "name": "compression-relevant",
+      "bucket": "complex_fallback",
+      "rows": 5000,
+      "results": {
+        "prost_reference_to_batch": {
+          "median_ns": 14423186.765306,
+          "ci_low_ns": 14105401.785714,
+          "ci_high_ns": 15466948.087302,
+          "ns_per_row": 2884.637
+        },
+        "projected_fallback_to_batch": {
+          "median_ns": 6572763.89881,
+          "ci_low_ns": 6409845.521259,
+          "ci_high_ns": 6804447.321429,
+          "ns_per_row": 1314.553
+        },
+        "projected_detached_to_batch": {
+          "median_ns": 7741169.263889,
+          "ci_low_ns": 7555495.118056,
+          "ci_high_ns": 9093607.642857,
+          "ns_per_row": 1548.234
+        },
+        "projected_view_to_batch": {
+          "median_ns": 6312866.492593,
+          "ci_low_ns": 6210626.85,
+          "ci_high_ns": 6485328.333333,
+          "ns_per_row": 1262.573
+        }
+      },
+      "gates": {
+        "complex_fallback": {
+          "threshold_ns": 15144346.103571,
+          "ratio": 0.455709,
+          "passed": true
+        }
+      }
+    }
+  ]
+}

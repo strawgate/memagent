@@ -9,9 +9,11 @@
 //!
 //! Loki requires entries within each stream to be strictly monotonically
 //! increasing by nanosecond timestamp. If two records share a timestamp,
-//! the second is incremented by 1 ns. If the batch already has a `_timestamp`
-//! or `@timestamp` column, those values are used; otherwise the batch's
-//! `observed_time_ns` is used for all records.
+//! the second is incremented by 1 ns. The sink also tracks the last timestamp
+//! sent per stream and bumps future batches forward when needed, so duplicate
+//! or older timestamps in a later batch do not trigger out-of-order rejects.
+//! If the batch already has a `_timestamp` or `@timestamp` column, those values
+//! are used; otherwise the batch's `observed_time_ns` is used for all records.
 //!
 //! # Label extraction
 //!
@@ -37,7 +39,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arrow::array::AsArray;
@@ -62,6 +64,8 @@ type StreamLabels = Vec<(String, String)>;
 
 /// Collect entries per stream label set.
 type StreamMap = BTreeMap<StreamLabels, Vec<LokiEntry>>;
+
+type SharedTimestampState = Arc<Mutex<HashMap<StreamLabels, u64>>>;
 
 fn sanitize_loki_label_name(name: &str) -> String {
     let mut out = String::with_capacity(name.len().max(1));
@@ -118,11 +122,27 @@ fn sanitize_static_labels(static_labels: &[(String, String)]) -> io::Result<Vec<
 /// # Invariant (tested with proptest)
 ///
 /// After calling this function, `entries[i].0 > entries[i-1].0` for all `i > 0`.
-pub fn sort_and_dedup_timestamps(entries: &mut Vec<LokiEntry>) -> usize {
-    if entries.len() <= 1 {
-        return entries.len();
+/// If `min_timestamp_exclusive` is provided, the first entry is additionally
+/// forced to be greater than that value.
+pub fn sort_and_dedup_timestamps(
+    entries: &mut Vec<LokiEntry>,
+    min_timestamp_exclusive: Option<u64>,
+) -> usize {
+    if entries.is_empty() {
+        return 0;
     }
     entries.sort_unstable_by_key(|(ts, _)| *ts);
+    if let Some(min_ts) = min_timestamp_exclusive
+        && entries[0].0 <= min_ts
+    {
+        match min_ts.checked_add(1) {
+            Some(next) => entries[0].0 = next,
+            None => {
+                entries.clear();
+                return 0;
+            }
+        }
+    }
     let mut i = 1;
     while i < entries.len() {
         if entries[i].0 <= entries[i - 1].0 {
@@ -153,26 +173,56 @@ struct LokiConfig {
     headers: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
 }
 
+/// Maximum JSON payload size target for a single Loki push request.
+const LOKI_MAX_PAYLOAD_BYTES: usize = 1_048_576;
+
+#[derive(Debug)]
+struct PreparedPayload {
+    payload: String,
+    row_count: u64,
+    stream_labels: StreamLabels,
+    last_timestamp_ns: u64,
+}
+
 /// Async Loki sink using reqwest.
 pub struct LokiSink {
     config: Arc<LokiConfig>,
     client: Arc<reqwest::Client>,
     name: String,
     stats: Arc<ComponentStats>,
+    last_timestamp_by_stream: SharedTimestampState,
 }
 
 impl LokiSink {
+    #[cfg(test)]
     fn new(
         name: String,
         config: Arc<LokiConfig>,
         client: Arc<reqwest::Client>,
         stats: Arc<ComponentStats>,
     ) -> Self {
+        Self::with_timestamp_state(
+            name,
+            config,
+            client,
+            stats,
+            Arc::new(Mutex::new(HashMap::new())),
+        )
+    }
+
+    fn with_timestamp_state(
+        name: String,
+        config: Arc<LokiConfig>,
+        client: Arc<reqwest::Client>,
+        stats: Arc<ComponentStats>,
+        last_timestamp_by_stream: SharedTimestampState,
+    ) -> Self {
         LokiSink {
             config,
             client,
             name,
             stats,
+            last_timestamp_by_stream,
         }
     }
 
@@ -358,40 +408,101 @@ impl LokiSink {
         Ok(stream_map)
     }
 
-    /// Serialize `stream_map` to Loki push JSON payload.
-    ///
-    /// Returns `(payload, retained_row_count)`. The retained count may be less than
-    /// the original row count if overflow truncation occurred in any stream
-    /// (see [`sort_and_dedup_timestamps`]).
-    fn serialize_loki_json(stream_map: &mut StreamMap) -> (String, u64) {
-        let mut streams_json = Vec::new();
-        let mut retained: u64 = 0;
+    fn serialize_stream_chunks(
+        labels: &StreamLabels,
+        entries: &[LokiEntry],
+        max_payload_bytes: usize,
+    ) -> Vec<PreparedPayload> {
+        let labels_str = labels
+            .iter()
+            .map(|(k, v)| format!("\"{}\":\"{}\"", escape_json(k), escape_json(v)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let prefix = format!("{{\"streams\":[{{\"stream\":{{{labels_str}}},\"values\":[");
+        let suffix = "]}]}";
+
+        let mut payloads = Vec::new();
+        let mut encoded_values = String::new();
+        let mut row_count: u64 = 0;
+        let mut last_timestamp_ns: u64 = 0;
+
+        for (ts, line) in entries {
+            let value = format!("[\"{ts}\",{}]", escape_json_raw(line));
+            let sep_len = usize::from(row_count > 0);
+            let projected_len =
+                prefix.len() + encoded_values.len() + sep_len + value.len() + suffix.len();
+            if row_count > 0 && projected_len > max_payload_bytes {
+                let payload = format!("{prefix}{encoded_values}{suffix}");
+                payloads.push(PreparedPayload {
+                    payload,
+                    row_count,
+                    stream_labels: labels.clone(),
+                    last_timestamp_ns,
+                });
+                encoded_values.clear();
+                row_count = 0;
+            }
+
+            if row_count > 0 {
+                encoded_values.push(',');
+            }
+            encoded_values.push_str(&value);
+            row_count += 1;
+            last_timestamp_ns = *ts;
+        }
+
+        if row_count > 0 {
+            let payload = format!("{prefix}{encoded_values}{suffix}");
+            payloads.push(PreparedPayload {
+                payload,
+                row_count,
+                stream_labels: labels.clone(),
+                last_timestamp_ns,
+            });
+        }
+
+        payloads
+    }
+
+    fn prepare_payloads(
+        stream_map: &mut StreamMap,
+        last_timestamp_by_stream: &HashMap<StreamLabels, u64>,
+        max_payload_bytes: usize,
+    ) -> Vec<PreparedPayload> {
+        let mut payloads = Vec::new();
 
         for (labels, entries) in stream_map.iter_mut() {
-            retained += sort_and_dedup_timestamps(entries) as u64;
-
-            // Build stream JSON.
-            let labels_str = labels
-                .iter()
-                .map(|(k, v)| format!("\"{}\":\"{}\"", escape_json(k), escape_json(v)))
-                .collect::<Vec<_>>()
-                .join(",");
-
-            let values_str = entries
-                .iter()
-                .map(|(ts, line)| format!("[\"{ts}\",{}]", escape_json_raw(line)))
-                .collect::<Vec<_>>()
-                .join(",");
-
-            streams_json.push(format!(
-                "{{\"stream\":{{{labels_str}}},\"values\":[{values_str}]}}"
+            let retained =
+                sort_and_dedup_timestamps(entries, last_timestamp_by_stream.get(labels).copied());
+            if retained == 0 {
+                continue;
+            }
+            payloads.extend(Self::serialize_stream_chunks(
+                labels,
+                entries,
+                max_payload_bytes,
             ));
         }
 
-        (
-            format!("{{\"streams\":[{}]}}", streams_json.join(",")),
-            retained,
-        )
+        payloads
+    }
+
+    fn prepare_and_reserve_payloads(
+        &self,
+        stream_map: &mut StreamMap,
+    ) -> io::Result<Vec<PreparedPayload>> {
+        let mut timestamp_state = self
+            .last_timestamp_by_stream
+            .lock()
+            .map_err(|_e| io::Error::other("Loki timestamp state lock poisoned"))?;
+        let payloads = Self::prepare_payloads(stream_map, &timestamp_state, LOKI_MAX_PAYLOAD_BYTES);
+        // Reserve before awaiting network IO so concurrent workers cannot prepare
+        // overlapping timestamp ranges for the same Loki stream. A failed send may
+        // leave timestamp gaps, which Loki accepts; going backwards is rejected.
+        for prepared in &payloads {
+            timestamp_state.insert(prepared.stream_labels.clone(), prepared.last_timestamp_ns);
+        }
+        Ok(payloads)
     }
 
     async fn do_send(
@@ -455,11 +566,18 @@ impl super::sink::Sink for LokiSink {
                 Ok(m) => m,
                 Err(e) => return super::sink::SendResult::from_io_error(e),
             };
-            let (payload, retained_rows) = Self::serialize_loki_json(&mut stream_map);
-            match self.do_send(payload, retained_rows).await {
-                Ok(r) => r,
-                Err(e) => super::sink::SendResult::from_io_error(e),
+            let payloads = match self.prepare_and_reserve_payloads(&mut stream_map) {
+                Ok(payloads) => payloads,
+                Err(e) => return super::sink::SendResult::from_io_error(e),
+            };
+            for prepared in payloads {
+                match self.do_send(prepared.payload, prepared.row_count).await {
+                    Ok(super::sink::SendResult::Ok) => {}
+                    Ok(other) => return other,
+                    Err(e) => return super::sink::SendResult::from_io_error(e),
+                }
             }
+            super::sink::SendResult::Ok
         })
     }
 
@@ -486,6 +604,7 @@ pub struct LokiSinkFactory {
     config: Arc<LokiConfig>,
     client: Arc<reqwest::Client>,
     stats: Arc<ComponentStats>,
+    last_timestamp_by_stream: SharedTimestampState,
 }
 
 impl LokiSinkFactory {
@@ -560,17 +679,19 @@ impl LokiSinkFactory {
             }),
             client: Arc::new(client),
             stats,
+            last_timestamp_by_stream: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 }
 
 impl super::sink::SinkFactory for LokiSinkFactory {
     fn create(&self) -> io::Result<Box<dyn super::sink::Sink>> {
-        Ok(Box::new(LokiSink::new(
+        Ok(Box::new(LokiSink::with_timestamp_state(
             self.name.clone(),
             Arc::clone(&self.config),
             Arc::clone(&self.client),
             Arc::clone(&self.stats),
+            Arc::clone(&self.last_timestamp_by_stream),
         )))
     }
 
@@ -582,11 +703,12 @@ impl super::sink::SinkFactory for LokiSinkFactory {
 impl LokiSinkFactory {
     #[cfg(test)]
     fn create_sink(&self) -> LokiSink {
-        LokiSink::new(
+        LokiSink::with_timestamp_state(
             self.name.clone(),
             Arc::clone(&self.config),
             Arc::clone(&self.client),
             Arc::clone(&self.stats),
+            Arc::clone(&self.last_timestamp_by_stream),
         )
     }
 }
@@ -656,7 +778,7 @@ mod tests {
     fn sort_dedup_already_sorted_no_op() {
         let mut entries: Vec<LokiEntry> =
             vec![(100, "a".into()), (200, "b".into()), (300, "c".into())];
-        sort_and_dedup_timestamps(&mut entries);
+        sort_and_dedup_timestamps(&mut entries, None);
         assert_eq!(entries[0].0, 100);
         assert_eq!(entries[1].0, 200);
         assert_eq!(entries[2].0, 300);
@@ -666,7 +788,7 @@ mod tests {
     fn sort_dedup_unsorted_input() {
         let mut entries: Vec<LokiEntry> =
             vec![(300, "c".into()), (100, "a".into()), (200, "b".into())];
-        sort_and_dedup_timestamps(&mut entries);
+        sort_and_dedup_timestamps(&mut entries, None);
         assert_eq!(entries[0].0, 100);
         assert_eq!(entries[1].0, 200);
         assert_eq!(entries[2].0, 300);
@@ -676,7 +798,7 @@ mod tests {
     fn sort_dedup_duplicates_incremented() {
         let mut entries: Vec<LokiEntry> =
             vec![(100, "a".into()), (100, "b".into()), (100, "c".into())];
-        sort_and_dedup_timestamps(&mut entries);
+        sort_and_dedup_timestamps(&mut entries, None);
         assert_eq!(entries[0].0, 100);
         assert_eq!(entries[1].0, 101);
         assert_eq!(entries[2].0, 102);
@@ -690,7 +812,7 @@ mod tests {
             (6, "c".into()),
             (6, "d".into()),
         ];
-        sort_and_dedup_timestamps(&mut entries);
+        sort_and_dedup_timestamps(&mut entries, None);
         for i in 1..entries.len() {
             assert!(
                 entries[i].0 > entries[i - 1].0,
@@ -703,14 +825,14 @@ mod tests {
     #[test]
     fn sort_dedup_single_entry_unchanged() {
         let mut entries = vec![(42u64, "only".to_string())];
-        sort_and_dedup_timestamps(&mut entries);
+        sort_and_dedup_timestamps(&mut entries, None);
         assert_eq!(entries[0].0, 42);
     }
 
     #[test]
     fn sort_dedup_empty_no_panic() {
         let mut entries: Vec<LokiEntry> = vec![];
-        sort_and_dedup_timestamps(&mut entries);
+        sort_and_dedup_timestamps(&mut entries, None);
         assert!(entries.is_empty());
     }
 
@@ -722,7 +844,7 @@ mod tests {
             (u64::MAX, "also at max".into()),
             (u64::MAX, "third at max".into()),
         ];
-        sort_and_dedup_timestamps(&mut entries);
+        sort_and_dedup_timestamps(&mut entries, None);
         // First entry stays; remaining entries cannot be assigned a valid timestamp.
         assert_eq!(
             entries.len(),
@@ -730,6 +852,56 @@ mod tests {
             "entries beyond u64::MAX must be truncated"
         );
         assert_eq!(entries[0].0, u64::MAX);
+    }
+
+    #[test]
+    fn sort_dedup_respects_previous_batch_last_timestamp() {
+        let mut first_batch: Vec<LokiEntry> = vec![(100, "a".into()), (100, "b".into())];
+        sort_and_dedup_timestamps(&mut first_batch, None);
+        assert_eq!(first_batch[0].0, 100);
+        assert_eq!(first_batch[1].0, 101);
+
+        let mut second_batch: Vec<LokiEntry> = vec![(100, "c".into()), (101, "d".into())];
+        sort_and_dedup_timestamps(&mut second_batch, Some(101));
+        assert_eq!(second_batch[0].0, 102);
+        assert_eq!(second_batch[1].0, 103);
+    }
+
+    #[test]
+    fn factory_created_sinks_share_timestamp_reservations() {
+        let factory = LokiSinkFactory::new(
+            "loki".to_string(),
+            "http://127.0.0.1:3100".to_string(),
+            None,
+            vec![("app".to_string(), "logfwd".to_string())],
+            vec![],
+            vec![],
+            Arc::new(ComponentStats::new()),
+        )
+        .expect("factory");
+        let sink1 = factory.create_sink();
+        let sink2 = factory.create_sink();
+        let labels: StreamLabels = vec![("app".to_string(), "logfwd".to_string())];
+
+        let mut first_stream_map = StreamMap::new();
+        first_stream_map.insert(
+            labels.clone(),
+            vec![(100, "{\"message\":\"a\"}".to_string())],
+        );
+        let first_payloads = sink1
+            .prepare_and_reserve_payloads(&mut first_stream_map)
+            .expect("first payloads");
+        assert_eq!(first_payloads[0].last_timestamp_ns, 100);
+
+        let mut second_stream_map = StreamMap::new();
+        second_stream_map.insert(labels, vec![(50, "{\"message\":\"b\"}".to_string())]);
+        let second_payloads = sink2
+            .prepare_and_reserve_payloads(&mut second_stream_map)
+            .expect("second payloads");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&second_payloads[0].payload).expect("payload json");
+        assert_eq!(parsed["streams"][0]["values"][0][0], "101");
+        assert_eq!(second_payloads[0].last_timestamp_ns, 101);
     }
 
     #[test]
@@ -748,15 +920,65 @@ mod tests {
             vec![(1, "{\"message\":\"ok\"}".to_string())],
         );
 
-        let (payload, retained) = LokiSink::serialize_loki_json(&mut stream_map);
+        let payloads =
+            LokiSink::prepare_payloads(&mut stream_map, &HashMap::new(), LOKI_MAX_PAYLOAD_BYTES);
+        let retained: u64 = payloads.iter().map(|p| p.row_count).sum();
+        let payload = &payloads[0].payload;
         let parsed: serde_json::Value =
-            serde_json::from_str(&payload).expect("payload must be valid JSON");
+            serde_json::from_str(payload).expect("payload must be valid JSON");
         let stream = &parsed["streams"][0]["stream"];
 
         assert_eq!(retained, 1);
         for (key, value) in labels {
             assert_eq!(stream[&key], value);
         }
+    }
+
+    #[test]
+    fn prepare_payloads_splits_large_single_stream_payload() {
+        let labels: StreamLabels = vec![("app".to_string(), "logfwd".to_string())];
+        let mut stream_map = StreamMap::new();
+        stream_map.insert(
+            labels,
+            vec![
+                (1, "{\"message\":\"aaaaaaaaaaaaaaaaaaaaaaaa\"}".to_string()),
+                (2, "{\"message\":\"bbbbbbbbbbbbbbbbbbbbbbbb\"}".to_string()),
+                (3, "{\"message\":\"cccccccccccccccccccccccc\"}".to_string()),
+            ],
+        );
+
+        let payloads = LokiSink::prepare_payloads(&mut stream_map, &HashMap::new(), 120);
+        assert!(
+            payloads.len() > 1,
+            "payload should be split when max byte budget is small"
+        );
+        assert_eq!(payloads.iter().map(|p| p.row_count).sum::<u64>(), 3);
+        for payload in &payloads {
+            let parsed: serde_json::Value =
+                serde_json::from_str(&payload.payload).expect("chunk must be valid JSON");
+            assert_eq!(
+                parsed["streams"].as_array().map_or(0, std::vec::Vec::len),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn prepare_payloads_handles_multi_stream_batches() {
+        let mut stream_map = StreamMap::new();
+        stream_map.insert(
+            vec![("app".to_string(), "a".to_string())],
+            vec![(10, "{\"message\":\"one\"}".to_string())],
+        );
+        stream_map.insert(
+            vec![("app".to_string(), "b".to_string())],
+            vec![(11, "{\"message\":\"two\"}".to_string())],
+        );
+
+        let payloads = LokiSink::prepare_payloads(&mut stream_map, &HashMap::new(), 1_024);
+        assert_eq!(payloads.len(), 2);
+        let row_total: u64 = payloads.iter().map(|p| p.row_count).sum();
+        assert_eq!(row_total, 2);
     }
 
     #[test]
@@ -1146,7 +1368,10 @@ mod tests {
         };
 
         let mut stream_map = sink.build_stream_map(&batch, &metadata).unwrap();
-        let (payload, retained) = LokiSink::serialize_loki_json(&mut stream_map);
+        let payloads =
+            LokiSink::prepare_payloads(&mut stream_map, &HashMap::new(), LOKI_MAX_PAYLOAD_BYTES);
+        let retained: u64 = payloads.iter().map(|p| p.row_count).sum();
+        let payload = &payloads[0].payload;
         assert_eq!(retained, 1);
         assert!(payload.contains("\"service_name\":\"frontend\""));
         assert!(!payload.contains("\"service.name\":\"frontend\""));
@@ -1687,7 +1912,7 @@ mod proptest_loki {
                 .enumerate()
                 .map(|(i, ts)| (ts, format!("line {i}")))
                 .collect();
-            sort_and_dedup_timestamps(&mut entries);
+            sort_and_dedup_timestamps(&mut entries, None);
             for i in 1..entries.len() {
                 prop_assert!(
                     entries[i].0 > entries[i - 1].0,
@@ -1709,7 +1934,7 @@ mod proptest_loki {
                 .enumerate()
                 .map(|(i, ts)| (ts, format!("line {i}")))
                 .collect();
-            sort_and_dedup_timestamps(&mut entries);
+            sort_and_dedup_timestamps(&mut entries, None);
             prop_assert_eq!(entries.len(), original_len);
         }
 
@@ -1725,7 +1950,7 @@ mod proptest_loki {
                 .map(|i| (base_ts, format!("line {i}")))
                 .collect();
 
-            sort_and_dedup_timestamps(&mut entries);
+            sort_and_dedup_timestamps(&mut entries, None);
 
             // All entries must have been preserved (no overflow possible since
             // base_ts + count - 1 <= u64::MAX - 10000 + 99 < u64::MAX).

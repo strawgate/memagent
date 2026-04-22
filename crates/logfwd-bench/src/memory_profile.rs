@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Sustained-load memory profiler for the logfwd pipeline.
 //!
 //! Runs scanner → SQL transform → null sink in a tight loop for a configurable
@@ -19,7 +20,6 @@
 //!   --batch     batch size in lines (default: 10000)
 
 #![allow(deprecated)] // Benchmarks use sync OutputSink; migration tracked separately.
-
 use stats_alloc::{INSTRUMENTED_SYSTEM, Region, StatsAlloc};
 use std::alloc::System;
 use std::fmt::Write as _;
@@ -202,7 +202,7 @@ fn main() {
     }
 
     let warmup_rss = rss_mb();
-    eprintln!("  Warmup RSS:  {:.1} MB\n", warmup_rss);
+    eprintln!("  Warmup RSS:  {warmup_rss:.1} MB\n");
 
     // -----------------------------------------------------------------------
     // Sustained load loop with sampling
@@ -409,20 +409,11 @@ fn render_report(run: &ProfileRun<'_>) -> String {
     // Growth detection: linear regression on RSS samples
     let (slope_mb_per_min, r_squared) = linear_regression(samples);
     let growth_verdict = if r_squared > 0.7 && slope_mb_per_min > 0.5 {
-        format!(
-            "⚠ GROWING: {:.2} MB/min (R²={:.2}) — possible leak",
-            slope_mb_per_min, r_squared
-        )
+        format!("⚠ GROWING: {slope_mb_per_min:.2} MB/min (R²={r_squared:.2}) — possible leak")
     } else if slope_mb_per_min.abs() < 0.1 {
-        format!(
-            "✓ STABLE: {:.3} MB/min (R²={:.2})",
-            slope_mb_per_min, r_squared
-        )
+        format!("✓ STABLE: {slope_mb_per_min:.3} MB/min (R²={r_squared:.2})")
     } else {
-        format!(
-            "~ MINOR DRIFT: {:.2} MB/min (R²={:.2})",
-            slope_mb_per_min, r_squared
-        )
+        format!("~ MINOR DRIFT: {slope_mb_per_min:.2} MB/min (R²={r_squared:.2})")
     };
 
     // --- Allocation analysis ---
@@ -468,12 +459,12 @@ fn render_report(run: &ProfileRun<'_>) -> String {
     let _ = writeln!(out, "## Sustained Memory Profile Results\n");
     let _ = writeln!(out, "| Parameter | Value |");
     let _ = writeln!(out, "|-----------|-------|");
-    let _ = writeln!(out, "| Schema | {} |", schema_name);
-    let _ = writeln!(out, "| SQL | `{}` |", sql);
-    let _ = writeln!(out, "| Batch size | {} lines |", batch_lines);
-    let _ = writeln!(out, "| Duration | {:.1}s |", elapsed_secs);
-    let _ = writeln!(out, "| Total rows | {} |", total_rows);
-    let _ = writeln!(out, "| Total batches | {} |", total_batches);
+    let _ = writeln!(out, "| Schema | {schema_name} |");
+    let _ = writeln!(out, "| SQL | `{sql}` |");
+    let _ = writeln!(out, "| Batch size | {batch_lines} lines |");
+    let _ = writeln!(out, "| Duration | {elapsed_secs:.1}s |");
+    let _ = writeln!(out, "| Total rows | {total_rows} |");
+    let _ = writeln!(out, "| Total batches | {total_batches} |");
     let _ = writeln!(
         out,
         "| Total input | {:.1} MB |",
@@ -484,19 +475,19 @@ fn render_report(run: &ProfileRun<'_>) -> String {
     let _ = writeln!(out, "### Throughput\n");
     let _ = writeln!(out, "| Metric | Value |");
     let _ = writeln!(out, "|--------|-------|");
-    let _ = writeln!(out, "| Lines/sec | {:.0} |", lines_per_sec);
-    let _ = writeln!(out, "| MB/sec (input) | {:.1} |", mb_per_sec);
-    let _ = writeln!(out, "| Batches/sec | {:.1} |", batches_per_sec);
+    let _ = writeln!(out, "| Lines/sec | {lines_per_sec:.0} |");
+    let _ = writeln!(out, "| MB/sec (input) | {mb_per_sec:.1} |");
+    let _ = writeln!(out, "| Batches/sec | {batches_per_sec:.1} |");
     let _ = writeln!(out);
 
     let _ = writeln!(out, "### Memory (RSS)\n");
     let _ = writeln!(out, "| Metric | Value |");
     let _ = writeln!(out, "|--------|-------|");
-    let _ = writeln!(out, "| Peak RSS | {:.1} MB |", peak_rss);
-    let _ = writeln!(out, "| Min RSS | {:.1} MB |", min_rss);
-    let _ = writeln!(out, "| Steady-state RSS | {:.1} MB |", steady_rss);
+    let _ = writeln!(out, "| Peak RSS | {peak_rss:.1} MB |");
+    let _ = writeln!(out, "| Min RSS | {min_rss:.1} MB |");
+    let _ = writeln!(out, "| Steady-state RSS | {steady_rss:.1} MB |");
     let _ = writeln!(out, "| RSS range | {:.1} MB |", peak_rss - min_rss);
-    let _ = writeln!(out, "| Growth rate | {} |", growth_verdict);
+    let _ = writeln!(out, "| Growth rate | {growth_verdict} |");
     let _ = writeln!(out);
 
     let _ = writeln!(out, "### Allocations\n");
@@ -517,14 +508,13 @@ fn render_report(run: &ProfileRun<'_>) -> String {
         "| Net retained | {:.1} MB |",
         net_retained as f64 / 1_048_576.0
     );
-    let _ = writeln!(out, "| Alloc rate | {:.1} MB/sec |", alloc_rate_mb_per_sec);
+    let _ = writeln!(out, "| Alloc rate | {alloc_rate_mb_per_sec:.1} MB/sec |");
     let _ = writeln!(
         out,
-        "| Alloc count rate | {:.0} allocs/sec |",
-        alloc_rate_per_sec
+        "| Alloc count rate | {alloc_rate_per_sec:.0} allocs/sec |"
     );
-    let _ = writeln!(out, "| Bytes/row | {:.0} |", bytes_per_row);
-    let _ = writeln!(out, "| Allocs/row | {:.1} |", allocs_per_row);
+    let _ = writeln!(out, "| Bytes/row | {bytes_per_row:.0} |");
+    let _ = writeln!(out, "| Allocs/row | {allocs_per_row:.1} |");
     let _ = writeln!(out);
 
     // --- RSS timeline ---
@@ -628,7 +618,7 @@ fn render_report(run: &ProfileRun<'_>) -> String {
             0.0
         }
     );
-    let _ = writeln!(out, "| Allocated bytes/row | {:.0} |", bytes_per_row);
+    let _ = writeln!(out, "| Allocated bytes/row | {bytes_per_row:.0} |");
     let _ = writeln!(
         out,
         "| Amplification factor | {:.1}x |",
@@ -638,11 +628,10 @@ fn render_report(run: &ProfileRun<'_>) -> String {
             0.0
         }
     );
-    let _ = writeln!(out, "| Allocations/row | {:.1} |", allocs_per_row);
+    let _ = writeln!(out, "| Allocations/row | {allocs_per_row:.1} |");
     let _ = writeln!(
         out,
-        "| RSS per batch ({} rows) | {:.1} MB |",
-        batch_lines, steady_rss
+        "| RSS per batch ({batch_lines} rows) | {steady_rss:.1} MB |"
     );
 
     out

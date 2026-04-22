@@ -1,10 +1,10 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! End-to-end Elasticsearch output throughput bench.
 //!
 //! Tests the full pipeline with configurable workers, batch size, and compression.
 //! Credentials are read from environment variables:
 //!
 //!   ES_URL        — base URL (e.g. <https://my-cluster.es.us-east-1.aws.elastic.cloud>)
-//!   ES_ENDPOINT   — alias for ES_URL (legacy)
 //!   ES_API_KEY    — Elasticsearch API key (without the "ApiKey " prefix)
 //!   ES_INDEX      — target index base name (default: logfwd-bench)
 //!
@@ -15,7 +15,6 @@
 //!   `./es-throughput 60 16 5000 1 4 buffered`   # 16 workers, gzip, 5k batch, 4 indices
 //!   `./es-throughput 30 4 5000 0 1 streaming`   # 4 workers, streamed request body
 //!   `./es-throughput 30 1 1000 0`               # baseline (single worker, buffered, no compress)
-
 use std::fmt::Write as FmtWrite;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,9 +31,7 @@ use logfwd_types::diagnostics::ComponentStats;
 use pprof::ProfilerGuardBuilder;
 
 fn es_endpoint() -> String {
-    std::env::var("ES_URL")
-        .or_else(|_| std::env::var("ES_ENDPOINT"))
-        .expect("ES_URL or ES_ENDPOINT required")
+    std::env::var("ES_URL").expect("ES_URL env var required")
 }
 
 fn es_api_key() -> String {
@@ -49,6 +46,7 @@ fn request_mode_name(mode: ElasticsearchRequestMode) -> &'static str {
     match mode {
         ElasticsearchRequestMode::Buffered => "buffered",
         ElasticsearchRequestMode::Streaming => "streaming",
+        _ => "unknown",
     }
 }
 

@@ -1,7 +1,7 @@
 use crate::types::{
-    Config, ConfigError, EnrichmentConfig, Format, GeneratorAttributeValueConfig,
-    GeneratorProfileConfig, InputType, InputTypeConfig, JournaldBackendConfig, OutputType,
-    PIPELINE_WORKERS_MAX,
+    CompressionFormat, Config, ConfigError, ElasticsearchRequestMode, EnrichmentConfig, Format,
+    GeneratorAttributeValueConfig, GeneratorProfileConfig, InputType, InputTypeConfig,
+    JournaldBackendConfig, OutputConfigV2, OutputType, PIPELINE_WORKERS_MAX,
 };
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -10,41 +10,321 @@ use url::Url;
 
 const MAX_READ_BUF_SIZE: usize = 4_194_304;
 
+fn validation_error(message: impl Into<String>) -> ConfigError {
+    ConfigError::Validation(message.into())
+}
+
+fn validation_message(error: ConfigError) -> String {
+    match error {
+        ConfigError::Validation(message) => message,
+        ConfigError::Io(error) => error.to_string(),
+        ConfigError::Yaml(error) => error.to_string(),
+    }
+}
+
+fn output_label(output: &OutputConfigV2, index: usize) -> String {
+    output
+        .name()
+        .map_or_else(|| format!("#{index}"), String::from)
+}
+
+fn output_path_for_feedback_loop(output: &OutputConfigV2) -> Option<&str> {
+    match output {
+        OutputConfigV2::File(config) => config.path.as_deref(),
+        OutputConfigV2::Parquet(config) => config.path.as_deref(),
+        _ => None,
+    }
+}
+
+fn validate_url_output_endpoint(
+    pipeline_name: &str,
+    label: &str,
+    output_type: OutputType,
+    endpoint: Option<&str>,
+) -> Result<(), ConfigError> {
+    let Some(endpoint) = endpoint else {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' output '{label}': {output_type} output requires 'endpoint'",
+        )));
+    };
+
+    if let Err(err) = validate_endpoint_url(endpoint) {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' output '{label}': {}",
+            validation_message(err)
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_socket_output_endpoint(
+    pipeline_name: &str,
+    label: &str,
+    output_type: OutputType,
+    endpoint: Option<&str>,
+) -> Result<(), ConfigError> {
+    let Some(endpoint) = endpoint else {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' output '{label}': {output_type} output requires 'endpoint'",
+        )));
+    };
+
+    if let Err(err) = validate_host_port(endpoint) {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' output '{label}': {}",
+            validation_message(err)
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_elasticsearch_index(
+    pipeline_name: &str,
+    label: &str,
+    index: Option<&str>,
+) -> Result<(), ConfigError> {
+    if let Some(index) = index
+        && index.trim().is_empty()
+    {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' output '{label}': elasticsearch 'index' must not be empty"
+        )));
+    }
+    if let Some(index) = index
+        && let Some(bad) = es_illegal_index_char(index)
+    {
+        let reason = if matches!(bad, '-' | '_' | '+') && index.starts_with(bad) {
+            format!("has illegal prefix '{bad}'")
+        } else {
+            format!("contains illegal character '{bad}'")
+        };
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' output '{label}': elasticsearch index '{index}' {reason}"
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_loki_labels(
+    pipeline_name: &str,
+    label: &str,
+    static_labels: Option<&HashMap<String, String>>,
+    label_columns: Option<&[String]>,
+) -> Result<(), ConfigError> {
+    if let Some(labels) = static_labels {
+        for (key, value) in labels {
+            if key.trim().is_empty() || value.trim().is_empty() {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{pipeline_name}' output '{label}': 'static_labels' keys and values must not be empty"
+                )));
+            }
+        }
+    }
+
+    if let (Some(static_labels), Some(label_columns)) = (static_labels, label_columns)
+        && let Some(conflict) = label_columns
+            .iter()
+            .map(String::as_str)
+            .find(|column| static_labels.contains_key(*column))
+    {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' output '{label}': loki label '{conflict}' is defined in both 'label_columns' and 'static_labels'"
+        )));
+    }
+
+    Ok(())
+}
+
+fn validate_output_config(
+    pipeline_name: &str,
+    label: &str,
+    output: &OutputConfigV2,
+) -> Result<(), ConfigError> {
+    let output_type = output.output_type();
+
+    match output {
+        OutputConfigV2::Otlp(config) => {
+            validate_url_output_endpoint(
+                pipeline_name,
+                label,
+                OutputType::Otlp,
+                config.endpoint.as_deref(),
+            )?;
+
+            if let (Some(initial), Some(max)) =
+                (config.retry_initial_backoff_ms, config.retry_max_backoff_ms)
+                && initial > max
+            {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{pipeline_name}' output '{label}': 'retry_initial_backoff_ms' must be <= 'retry_max_backoff_ms'"
+                )));
+            }
+        }
+        OutputConfigV2::Elasticsearch(config) => {
+            validate_url_output_endpoint(
+                pipeline_name,
+                label,
+                OutputType::Elasticsearch,
+                config.endpoint.as_deref(),
+            )?;
+            validate_elasticsearch_index(pipeline_name, label, config.index.as_deref())?;
+
+            if matches!(
+                config.request_mode,
+                Some(ElasticsearchRequestMode::Streaming)
+            ) && matches!(config.compression, Some(CompressionFormat::Gzip))
+            {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{pipeline_name}' output '{label}': elasticsearch request_mode 'streaming' does not support gzip compression yet"
+                )));
+            }
+
+            if let Some(compression) = config.compression
+                && !matches!(
+                    compression,
+                    CompressionFormat::Gzip | CompressionFormat::None
+                )
+            {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{pipeline_name}' output '{label}': elasticsearch compression must be 'gzip' or 'none', got '{compression}'"
+                )));
+            }
+        }
+        OutputConfigV2::Loki(config) => {
+            validate_url_output_endpoint(
+                pipeline_name,
+                label,
+                OutputType::Loki,
+                config.endpoint.as_deref(),
+            )?;
+            validate_loki_labels(
+                pipeline_name,
+                label,
+                config.static_labels.as_ref(),
+                config.label_columns.as_deref(),
+            )?;
+        }
+        OutputConfigV2::Stdout(config) => {
+            if let Some(format) = &config.format
+                && !matches!(format, Format::Json | Format::Text | Format::Console)
+            {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{pipeline_name}' output '{label}': stdout output only supports format json, text, or console"
+                )));
+            }
+        }
+        OutputConfigV2::File(config) => {
+            match config.path.as_deref() {
+                None => {
+                    return Err(ConfigError::Validation(format!(
+                        "pipeline '{pipeline_name}' output '{label}': file output requires 'path'",
+                    )));
+                }
+                Some(path) if path.trim().is_empty() => {
+                    return Err(ConfigError::Validation(format!(
+                        "pipeline '{pipeline_name}' output '{label}': file output 'path' must not be empty"
+                    )));
+                }
+                Some(_) => {}
+            }
+            if let Some(format) = &config.format
+                && !matches!(format, Format::Json | Format::Text)
+            {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{pipeline_name}' output '{label}': file output only supports format json or text"
+                )));
+            }
+        }
+        OutputConfigV2::Null(_) => {}
+        OutputConfigV2::Tcp(config) => {
+            validate_socket_output_endpoint(
+                pipeline_name,
+                label,
+                OutputType::Tcp,
+                config.endpoint.as_deref(),
+            )?;
+        }
+        OutputConfigV2::Udp(config) => {
+            validate_socket_output_endpoint(
+                pipeline_name,
+                label,
+                OutputType::Udp,
+                config.endpoint.as_deref(),
+            )?;
+        }
+        OutputConfigV2::ArrowIpc(config) => {
+            validate_url_output_endpoint(
+                pipeline_name,
+                label,
+                OutputType::ArrowIpc,
+                config.endpoint.as_deref(),
+            )?;
+
+            if let Some(compression) = config.compression
+                && !matches!(
+                    compression,
+                    CompressionFormat::Zstd | CompressionFormat::None
+                )
+            {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{pipeline_name}' output '{label}': arrow_ipc output only supports 'zstd' or 'none' compression, not '{compression}'"
+                )));
+            }
+        }
+        OutputConfigV2::Http(_) | OutputConfigV2::Parquet(_) => {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' output '{label}': {output_type} output type is not yet implemented",
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 impl Config {
     /// Validate the loaded configuration using a base path for relative paths.
     pub fn validate_with_base_path(&self, base_path: Option<&Path>) -> Result<(), ConfigError> {
         if let Some(ep) = &self.server.traces_endpoint
-            && let Err(msg) = validate_endpoint_url(ep)
+            && let Err(err) = validate_endpoint_url(ep)
         {
             return Err(ConfigError::Validation(format!(
-                "server.traces_endpoint: {msg}"
+                "server.traces_endpoint: {}",
+                validation_message(err)
             )));
         }
 
         // Validate server.metrics_endpoint at config time (#1892).
         if let Some(ep) = &self.server.metrics_endpoint
-            && let Err(msg) = validate_endpoint_url(ep)
+            && let Err(err) = validate_endpoint_url(ep)
         {
             return Err(ConfigError::Validation(format!(
-                "server.metrics_endpoint: {msg}"
+                "server.metrics_endpoint: {}",
+                validation_message(err)
             )));
         }
 
         // Validate server.diagnostics bind address at config time so that
         // `validate` catches typos before the server tries to bind at runtime.
         if let Some(addr) = &self.server.diagnostics
-            && let Err(msg) = validate_bind_addr(addr)
+            && let Err(err) = validate_bind_addr(addr)
         {
             return Err(ConfigError::Validation(format!(
-                "server.diagnostics: {msg}"
+                "server.diagnostics: {}",
+                validation_message(err)
             )));
         }
 
         // Validate server.log_level is a recognised level (#481).
         if let Some(level) = &self.server.log_level
-            && let Err(msg) = validate_log_level(level)
+            && let Err(err) = validate_log_level(level)
         {
-            return Err(ConfigError::Validation(format!("server.log_level: {msg}")));
+            return Err(ConfigError::Validation(format!(
+                "server.log_level: {}",
+                validation_message(err)
+            )));
         }
 
         // Validate storage.data_dir is either absent/non-existent or an existing directory.
@@ -79,16 +359,6 @@ impl Config {
         for name in pipeline_names {
             let pipe = &self.pipelines[name];
             let result = (|| -> Result<(), ConfigError> {
-                if pipe.batch_timeout_ms == Some(0) {
-                    return Err(ConfigError::Validation(format!(
-                        "pipeline '{name}': batch_timeout_ms must be greater than 0"
-                    )));
-                }
-                if pipe.poll_interval_ms == Some(0) {
-                    return Err(ConfigError::Validation(format!(
-                        "pipeline '{name}': poll_interval_ms must be greater than 0"
-                    )));
-                }
                 if let Some(workers) = pipe.workers
                     && !(1..=PIPELINE_WORKERS_MAX).contains(&workers)
                 {
@@ -132,7 +402,7 @@ impl Config {
 
                 let mut seen_output_names: HashSet<&str> = HashSet::new();
                 for (i, output) in pipe.outputs.iter().enumerate() {
-                    if let Some(output_name) = output.name.as_deref()
+                    if let Some(output_name) = output.name()
                         && !seen_output_names.insert(output_name)
                     {
                         return Err(ConfigError::Validation(format!(
@@ -152,11 +422,6 @@ impl Config {
                             if f.path.trim().is_empty() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': file input 'path' must not be empty"
-                                )));
-                            }
-                            if f.poll_interval_ms == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': 'poll_interval_ms' must be at least 1"
                                 )));
                             }
                             if f.read_buf_size == Some(0) {
@@ -183,9 +448,10 @@ impl Config {
                             }
                         }
                         InputTypeConfig::Udp(u) => {
-                            if let Err(msg) = validate_bind_addr(&u.listen) {
+                            if let Err(err) = validate_bind_addr(&u.listen) {
                                 return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': {msg}"
+                                    "pipeline '{name}' input '{label}': {}",
+                                    validation_message(err)
                                 )));
                             }
                             if u.max_message_size_bytes == Some(0) {
@@ -208,33 +474,58 @@ impl Config {
                             )?;
                         }
                         InputTypeConfig::Tcp(t) => {
-                            if let Err(msg) = validate_bind_addr(&t.listen) {
+                            if let Err(err) = validate_bind_addr(&t.listen) {
                                 return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': {msg}"
+                                    "pipeline '{name}' input '{label}': {}",
+                                    validation_message(err)
                                 )));
                             }
-                            if t.tls.is_some() {
-                                // TCP TLS is not yet implemented at runtime.
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': TLS is not yet supported for TCP inputs (runtime TLS termination is not implemented)"
-                                )));
+                            if let Some(tls) = &t.tls {
+                                let cert_file = tls
+                                    .cert_file
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|v| !v.is_empty());
+                                let key_file = tls
+                                    .key_file
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|v| !v.is_empty());
+                                let client_ca_file = match tls.client_ca_file.as_deref() {
+                                    Some(path) => {
+                                        let path = path.trim();
+                                        if path.is_empty() {
+                                            return Err(ConfigError::Validation(format!(
+                                                "pipeline '{name}' input '{label}': tcp tls client_ca_file must not be empty"
+                                            )));
+                                        }
+                                        Some(path)
+                                    }
+                                    None => None,
+                                };
+
+                                if tls.require_client_auth && client_ca_file.is_none() {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': tcp tls require_client_auth requires tls.client_ca_file"
+                                    )));
+                                }
+                                if client_ca_file.is_some() && !tls.require_client_auth {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': tcp tls client_ca_file requires tls.require_client_auth: true"
+                                    )));
+                                }
+
+                                if cert_file.is_none() || key_file.is_none() {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': tcp tls requires both tls.cert_file and tls.key_file"
+                                    )));
+                                }
                             }
                             if t.max_connections == Some(0) {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': max_connections cannot be 0"
                                 )));
                             }
-                            if t.connection_timeout_ms == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': connection_timeout_ms cannot be 0"
-                                )));
-                            }
-                            if t.read_timeout_ms == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': read_timeout_ms cannot be 0"
-                                )));
-                            }
-
                             track_listen_addr_uniqueness(
                                 &mut seen_listen_addrs,
                                 "tcp",
@@ -244,22 +535,11 @@ impl Config {
                             )?;
                         }
                         InputTypeConfig::Otlp(o) => {
-                            if let Err(msg) = validate_bind_addr(&o.listen) {
+                            if let Err(err) = validate_bind_addr(&o.listen) {
                                 return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': {msg}"
+                                    "pipeline '{name}' input '{label}': {}",
+                                    validation_message(err)
                                 )));
-                            }
-                            if let Some(prefix) = o.resource_prefix.as_deref() {
-                                if prefix.trim().is_empty() {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': 'resource_prefix' must not be empty for otlp inputs"
-                                    )));
-                                }
-                                if prefix != "resource.attributes." {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': unsupported otlp resource_prefix '{prefix}' (currently only 'resource.attributes.' is supported)"
-                                    )));
-                                }
                             }
                             if o.max_recv_message_size_bytes == Some(0) {
                                 return Err(ConfigError::Validation(format!(
@@ -276,9 +556,10 @@ impl Config {
                             )?;
                         }
                         InputTypeConfig::Http(h) => {
-                            if let Err(msg) = validate_bind_addr(&h.listen) {
+                            if let Err(err) = validate_bind_addr(&h.listen) {
                                 return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': {msg}"
+                                    "pipeline '{name}' input '{label}': {}",
+                                    validation_message(err)
                                 )));
                             }
                             if let Some(http) = &h.http {
@@ -320,6 +601,15 @@ impl Config {
                                 &label,
                                 &h.listen,
                             )?;
+                        }
+                        InputTypeConfig::Stdin(_) => {
+                            if let Some(fmt) = &input.format
+                                && !fmt.is_stdin_compatible()
+                            {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': stdin input only supports format auto, cri, json, or raw (got {fmt})"
+                                )));
+                            }
                         }
                         InputTypeConfig::Generator(g) => {
                             if g.generator.as_ref().and_then(|cfg| cfg.batch_size) == Some(0) {
@@ -416,10 +706,11 @@ impl Config {
                                     }
                                     if let Some(start) = &ts.start
                                         && !start.eq_ignore_ascii_case("now")
-                                        && let Err(e) = validate_iso8601_timestamp(start)
+                                        && let Err(err) = validate_iso8601_timestamp(start)
                                     {
                                         return Err(ConfigError::Validation(format!(
-                                            "pipeline '{name}' input '{label}': generator.timestamp.start: {e}"
+                                            "pipeline '{name}' input '{label}': generator.timestamp.start: {}",
+                                            validation_message(err)
                                         )));
                                     }
                                 }
@@ -433,20 +724,6 @@ impl Config {
                             if input.format.is_some() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': sensor inputs do not support 'format' (Arrow-native input)"
-                                )));
-                            }
-                            if s.sensor.as_ref().and_then(|cfg| cfg.poll_interval_ms) == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': sensor.poll_interval_ms must be at least 1"
-                                )));
-                            }
-                            if s.sensor
-                                .as_ref()
-                                .and_then(|cfg| cfg.control_reload_interval_ms)
-                                == Some(0)
-                            {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': sensor.control_reload_interval_ms must be at least 1"
                                 )));
                             }
                             if s.sensor
@@ -484,6 +761,15 @@ impl Config {
                                     }
                                 }
                             }
+                            if let Some(sensor) = s.sensor.as_ref() {
+                                validate_sensor_event_type_filters(
+                                    &input_type,
+                                    name,
+                                    &label,
+                                    sensor.include_event_types.as_deref(),
+                                    sensor.exclude_event_types.as_deref(),
+                                )?;
+                            }
                             // NOTE: ebpf_binary_path for linux_ebpf_sensor is validated
                             // at runtime when the sensor loads, not here — the path may
                             // be auto-discovered or provided via environment variable.
@@ -515,16 +801,12 @@ impl Config {
                                     "pipeline '{name}' input '{label}': sensor.ring_buffer_size_kb must be at least 1"
                                 )));
                             }
-                            if s.sensor.as_ref().and_then(|cfg| cfg.poll_interval_ms) == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': sensor.poll_interval_ms must be at least 1"
-                                )));
-                            }
                         }
                         InputTypeConfig::ArrowIpc(a) => {
-                            if let Err(msg) = validate_bind_addr(&a.listen) {
+                            if let Err(err) = validate_bind_addr(&a.listen) {
                                 return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': {msg}"
+                                    "pipeline '{name}' input '{label}': {}",
+                                    validation_message(err)
                                 )));
                             }
                             if input.format.is_some() {
@@ -647,13 +929,6 @@ impl Config {
                                     )));
                                 }
                             }
-                            if let Some(interval) = s3_cfg.poll_interval_ms
-                                && interval == 0
-                            {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': s3.poll_interval_ms must be at least 1"
-                                )));
-                            }
                             if let Some(ref comp) = s3_cfg.compression {
                                 let valid = [
                                     "auto", "gzip", "gz", "zstd", "zst", "snappy", "sz", "none",
@@ -715,382 +990,8 @@ impl Config {
                 }
 
                 for (i, output) in pipe.outputs.iter().enumerate() {
-                    let label = output
-                        .name
-                        .as_deref()
-                        .map_or_else(|| format!("#{i}"), String::from);
-
-                    // Reject placeholder output types that are not yet implemented.
-                    if matches!(output.output_type, OutputType::Parquet | OutputType::Http) {
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': {} output type is not yet implemented",
-                            output.output_type,
-                        )));
-                    }
-
-                    match output.output_type {
-                        OutputType::Otlp
-                        | OutputType::Elasticsearch
-                        | OutputType::Loki
-                        | OutputType::ArrowIpc => {
-                            if output.endpoint.is_none() {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': {} output requires 'endpoint'",
-                                    output.output_type,
-                                )));
-                            }
-                            if let Some(ep) = &output.endpoint
-                                && let Err(msg) = validate_endpoint_url(ep)
-                            {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': {msg}",
-                                )));
-                            }
-                            if output.output_type == OutputType::Elasticsearch {
-                                if let Some(idx) = &output.index
-                                    && idx.trim().is_empty()
-                                {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' output '{label}': elasticsearch 'index' must not be empty"
-                                    )));
-                                }
-                                if let Some(idx) = &output.index
-                                    && let Some(bad) = es_illegal_index_char(idx)
-                                {
-                                    let reason =
-                                        if matches!(bad, '-' | '_' | '+') && idx.starts_with(bad) {
-                                            format!("has illegal prefix '{bad}'")
-                                        } else {
-                                            format!("contains illegal character '{bad}'")
-                                        };
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' output '{label}': elasticsearch index '{idx}' {reason}"
-                                    )));
-                                }
-                                if let Some(mode) = output.request_mode.as_deref()
-                                    && !matches!(mode, "buffered" | "streaming")
-                                {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' output '{label}': elasticsearch request_mode must be 'buffered' or 'streaming'"
-                                    )));
-                                }
-                                if output.request_mode.as_deref() == Some("streaming")
-                                    && output.compression.as_deref() == Some("gzip")
-                                {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' output '{label}': elasticsearch request_mode 'streaming' does not support gzip compression yet"
-                                    )));
-                                }
-                            } else if output.request_mode.is_some() {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': request_mode is only supported for elasticsearch outputs"
-                                )));
-                            }
-                        }
-                        OutputType::File => {
-                            match &output.path {
-                                None => {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' output '{label}': {} output requires 'path'",
-                                        output.output_type,
-                                    )));
-                                }
-                                Some(p) if p.trim().is_empty() => {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' output '{label}': file output 'path' must not be empty"
-                                    )));
-                                }
-                                _ => {}
-                            }
-                            if let Some(fmt) = &output.format
-                                && !matches!(fmt, Format::Json | Format::Text)
-                            {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': file output only supports format json or text"
-                                )));
-                            }
-                        }
-                        OutputType::Stdout => {
-                            if let Some(fmt) = &output.format
-                                && !matches!(fmt, Format::Json | Format::Text | Format::Console)
-                            {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': stdout output only supports format json, text, or console"
-                                )));
-                            }
-                        }
-                        OutputType::Null => {}
-                        OutputType::Tcp | OutputType::Udp => {
-                            if output.endpoint.is_none() {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': {} output requires 'endpoint'",
-                                    output.output_type,
-                                )));
-                            }
-                            if let Some(ep) = &output.endpoint
-                                && let Err(msg) = validate_host_port(ep)
-                            {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': {msg}",
-                                )));
-                            }
-                            if output.format.is_some() {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': {} output does not support 'format'; remove the field",
-                                    output.output_type,
-                                )));
-                            }
-                        }
-                        // Http and Parquet are not yet implemented — already
-                        // rejected by the check above; these arms are unreachable
-                        // but required for exhaustiveness.
-                        OutputType::Http | OutputType::Parquet => {}
-                    }
-
-                    // Reject fields that don't apply to this output type.
-                    if output.output_type != OutputType::Elasticsearch && output.index.is_some() {
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': 'index' is only supported for elasticsearch outputs"
-                        )));
-                    }
-                    if output.output_type == OutputType::Loki && output.compression.is_some() {
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': 'compression' is not supported for loki outputs"
-                        )));
-                    }
-                    if output.output_type == OutputType::ArrowIpc
-                        && let Some(c) = output.compression.as_deref()
-                        && !matches!(c, "zstd" | "none")
-                    {
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': arrow_ipc output only supports 'zstd' or 'none' compression, not '{c}'"
-                        )));
-                    }
-
-                    if !matches!(
-                        output.output_type,
-                        OutputType::Otlp | OutputType::Elasticsearch | OutputType::Loki
-                    ) && output.tls.is_some()
-                    {
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': 'tls' is only supported for otlp, elasticsearch, and loki outputs"
-                        )));
-                    }
-                    if output.output_type != OutputType::Otlp {
-                        if output.headers.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'headers' is only supported for otlp outputs"
-                            )));
-                        }
-                        if output.retry_attempts.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'retry_attempts' is only supported for otlp outputs"
-                            )));
-                        }
-                        if output.retry_initial_backoff_ms.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'retry_initial_backoff_ms' is only supported for otlp outputs"
-                            )));
-                        }
-                        if output.retry_max_backoff_ms.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'retry_max_backoff_ms' is only supported for otlp outputs"
-                            )));
-                        }
-                        if !matches!(
-                            output.output_type,
-                            OutputType::Elasticsearch | OutputType::Loki
-                        ) && output.request_timeout_ms.is_some()
-                        {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'request_timeout_ms' is only supported for otlp, elasticsearch, and loki outputs"
-                            )));
-                        }
-                        if output.batch_timeout_ms.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'batch_timeout_ms' is only supported for otlp outputs"
-                            )));
-                        }
-                    }
-
-                    // Validate OTLP-specific field values when set.
-                    if matches!(
-                        output.output_type,
-                        OutputType::Otlp | OutputType::Elasticsearch | OutputType::Loki
-                    ) && output.request_timeout_ms == Some(0)
-                    {
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': 'request_timeout_ms' must be at least 1"
-                        )));
-                    }
-
-                    if output.output_type == OutputType::Otlp {
-                        if output.batch_timeout_ms == Some(0) {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'batch_timeout_ms' must be at least 1"
-                            )));
-                        }
-                        if output.retry_initial_backoff_ms == Some(0) {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'retry_initial_backoff_ms' must be at least 1"
-                            )));
-                        }
-                        if output.retry_max_backoff_ms == Some(0) {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'retry_max_backoff_ms' must be at least 1"
-                            )));
-                        }
-                        if let (Some(initial), Some(max)) =
-                            (output.retry_initial_backoff_ms, output.retry_max_backoff_ms)
-                            && initial > max
-                        {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'retry_initial_backoff_ms' must be <= 'retry_max_backoff_ms'"
-                            )));
-                        }
-                    }
-
-                    if output.output_type != OutputType::Otlp && output.protocol.is_some() {
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': 'protocol' is only supported for otlp outputs"
-                        )));
-                    }
-                    // Validate OTLP protocol value (#1876).
-                    if output.output_type == OutputType::Otlp
-                        && let Some(p) = output.protocol.as_deref()
-                        && !matches!(p, "http" | "grpc")
-                    {
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': otlp protocol must be 'http' or 'grpc', got '{p}'"
-                        )));
-                    }
-                    // Validate compression values per output type (#1876).
-                    if let Some(c) = output.compression.as_deref() {
-                        match output.output_type {
-                            OutputType::Otlp if !matches!(c, "zstd" | "gzip" | "none") => {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': otlp compression must be 'zstd', 'gzip', or 'none', got '{c}'"
-                                )));
-                            }
-                            OutputType::Elasticsearch if !matches!(c, "gzip" | "none") => {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': elasticsearch compression must be 'gzip' or 'none', got '{c}'"
-                                )));
-                            }
-                            // ArrowIpc allows zstd/none and is validated above.
-                            // Other types either reject compression entirely or accept any.
-                            _ => {}
-                        }
-                    }
-                    if output.output_type != OutputType::Loki {
-                        if output.tenant_id.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'tenant_id' is only supported for loki outputs"
-                            )));
-                        }
-                        if output.static_labels.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'static_labels' is only supported for loki outputs"
-                            )));
-                        }
-                        if output.label_columns.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'label_columns' is only supported for loki outputs"
-                            )));
-                        }
-                    }
-
-                    if let Some(labels) = &output.static_labels {
-                        for (k, v) in labels {
-                            if k.trim().is_empty() || v.trim().is_empty() {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' output '{label}': 'static_labels' keys and values must not be empty"
-                                )));
-                            }
-                        }
-                    }
-
-                    if output.output_type == OutputType::Loki
-                        && let (Some(static_labels), Some(label_columns)) =
-                            (&output.static_labels, &output.label_columns)
-                        && let Some(conflict) = label_columns
-                            .iter()
-                            .map(String::as_str)
-                            .find(|col| static_labels.contains_key(*col))
-                    {
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': loki label '{conflict}' is defined in both 'label_columns' and 'static_labels'"
-                        )));
-                    }
-
-                    if !matches!(output.output_type, OutputType::File | OutputType::Parquet)
-                        && output.path.is_some()
-                    {
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': 'path' is only supported for file/parquet outputs"
-                        )));
-                    }
-                    // auth is only valid for HTTP-based outputs
-                    if !matches!(
-                        output.output_type,
-                        OutputType::Otlp
-                            | OutputType::Http
-                            | OutputType::Elasticsearch
-                            | OutputType::Loki
-                            | OutputType::ArrowIpc
-                    ) && output.auth.is_some()
-                    {
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': 'auth' is only supported for HTTP-based outputs"
-                        )));
-                    }
-                    // compression: only valid for outputs that support it
-                    if matches!(
-                        output.output_type,
-                        OutputType::Stdout
-                            | OutputType::Null
-                            | OutputType::Tcp
-                            | OutputType::Udp
-                            | OutputType::File
-                    ) && output.compression.is_some()
-                    {
-                        return Err(ConfigError::Validation(format!(
-                            "pipeline '{name}' output '{label}': 'compression' is not supported for this output type"
-                        )));
-                    }
-
-                    if output.output_type != OutputType::ArrowIpc {
-                        if output.host.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'host' is only supported for arrow_ipc outputs"
-                            )));
-                        }
-                        if output.port.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'port' is only supported for arrow_ipc outputs"
-                            )));
-                        }
-                        if output.write_legacy_ipc_format.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'write_legacy_ipc_format' is only supported for arrow_ipc outputs"
-                            )));
-                        }
-                        if output.buffer_size_bytes.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'buffer_size_bytes' is only supported for arrow_ipc outputs"
-                            )));
-                        }
-                        if output.batch_size.is_some() && output.output_type != OutputType::Otlp {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'batch_size' is only supported for otlp and arrow_ipc outputs"
-                            )));
-                        }
-                        if output.write_schema_on_connect.is_some() {
-                            return Err(ConfigError::Validation(format!(
-                                "pipeline '{name}' output '{label}': 'write_schema_on_connect' is only supported for arrow_ipc outputs"
-                            )));
-                        }
-                    }
+                    let label = output_label(output, i);
+                    validate_output_config(name, &label, output)?;
                 }
 
                 // Validate enrichment entries (#550).
@@ -1100,11 +1001,6 @@ impl Config {
                             if geo_cfg.path.trim().is_empty() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' enrichment #{j}: geo_database 'path' must not be empty"
-                                )));
-                            }
-                            if geo_cfg.refresh_interval == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
                                 )));
                             }
                             // Only check existence for absolute paths; relative paths
@@ -1140,11 +1036,6 @@ impl Config {
                                     "pipeline '{name}' enrichment #{j}: csv 'path' must not be empty"
                                 )));
                             }
-                            if cfg.refresh_interval == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
-                                )));
-                            }
                             let p = Path::new(&cfg.path);
                             if p.is_absolute() && !p.exists() {
                                 return Err(ConfigError::Validation(format!(
@@ -1162,11 +1053,6 @@ impl Config {
                             if cfg.path.trim().is_empty() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' enrichment #{j}: jsonl 'path' must not be empty"
-                                )));
-                            }
-                            if cfg.refresh_interval == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
                                 )));
                             }
                             let p = Path::new(&cfg.path);
@@ -1212,11 +1098,6 @@ impl Config {
                                     "pipeline '{name}' enrichment #{j}: kv_file 'path' must not be empty"
                                 )));
                             }
-                            if cfg.refresh_interval == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' enrichment #{j}: refresh_interval must be > 0"
-                                )));
-                            }
                             let p = Path::new(&cfg.path);
                             if p.is_absolute() && !p.exists() {
                                 return Err(ConfigError::Validation(format!(
@@ -1253,15 +1134,9 @@ impl Config {
                 }
 
                 for (j, output) in pipe.outputs.iter().enumerate() {
-                    let out_label = output
-                        .name
-                        .as_deref()
-                        .map_or_else(|| format!("#{j}"), String::from);
+                    let out_label = output_label(output, j);
 
-                    if !matches!(output.output_type, OutputType::File | OutputType::Parquet) {
-                        continue;
-                    }
-                    let Some(out_path) = output.path.as_deref() else {
+                    let Some(out_path) = output_path_for_feedback_loop(output) else {
                         continue;
                     };
                     let out_pb = path_for_config_compare(out_path, base_path);
@@ -1300,6 +1175,8 @@ impl Config {
                             )));
                         }
                     }
+
+                    validate_file_output_path_writable(name, &out_label, out_path, base_path)?;
                 }
 
                 Ok(())
@@ -1349,6 +1226,62 @@ fn normalize_path_key_for_compare(path: &Path) -> std::path::PathBuf {
     {
         normalized
     }
+}
+
+fn validate_file_output_path_writable(
+    pipeline_name: &str,
+    output_label: &str,
+    output_path: &str,
+    base_path: Option<&Path>,
+) -> Result<(), ConfigError> {
+    let resolved = path_for_config_compare(output_path, base_path);
+    let parent = match resolved.parent() {
+        Some(parent) if parent.as_os_str().is_empty() => Path::new("."),
+        Some(parent) => parent,
+        None => Path::new("."),
+    };
+
+    let parent_meta = parent.metadata().map_err(|e| {
+        ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' output '{output_label}': file output parent directory '{}' is not usable: {e}",
+            parent.display()
+        ))
+    })?;
+    if !parent_meta.is_dir() {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' output '{output_label}': file output parent '{}' is not a directory",
+            parent.display()
+        )));
+    }
+    if !resolved.exists() && parent_meta.permissions().readonly() {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' output '{output_label}': file output parent '{}' is read-only",
+            parent.display()
+        )));
+    }
+
+    if resolved.exists() {
+        let md = resolved.metadata().map_err(|e| {
+            ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' output '{output_label}': failed to inspect file output path '{}': {e}",
+                resolved.display()
+            ))
+        })?;
+        if md.is_dir() {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' output '{output_label}': file output path '{}' is a directory",
+                resolved.display()
+            )));
+        }
+        if md.permissions().readonly() {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' output '{output_label}': file output path '{}' is read-only",
+                resolved.display()
+            )));
+        }
+    }
+
+    Ok(())
 }
 
 fn path_for_config_compare(path: &str, base_path: Option<&Path>) -> std::path::PathBuf {
@@ -1419,9 +1352,10 @@ fn track_listen_addr_uniqueness(
     input_label: &str,
     listen: &str,
 ) -> Result<(), ConfigError> {
-    let Some(listen_key) = canonical_listen_addr_key(transport, listen).map_err(|msg| {
+    let Some(listen_key) = canonical_listen_addr_key(transport, listen).map_err(|err| {
         ConfigError::Validation(format!(
-            "pipeline '{pipeline_name}' input '{input_label}': {msg}"
+            "pipeline '{pipeline_name}' input '{input_label}': {}",
+            validation_message(err)
         ))
     })?
     else {
@@ -1437,23 +1371,27 @@ fn track_listen_addr_uniqueness(
     Ok(())
 }
 
-fn canonical_listen_addr_key(transport: &str, listen: &str) -> Result<Option<String>, String> {
+fn canonical_listen_addr_key(transport: &str, listen: &str) -> Result<Option<String>, ConfigError> {
     let (host, port_str) = if listen.starts_with('[') {
         let close_bracket = listen
             .find(']')
-            .ok_or_else(|| format!("'{listen}' has mismatched brackets"))?;
+            .ok_or_else(|| validation_error(format!("'{listen}' has mismatched brackets")))?;
         if !listen[close_bracket..].starts_with("]:") {
-            return Err(format!("'{listen}' is missing a port after IPv6 brackets"));
+            return Err(validation_error(format!(
+                "'{listen}' is missing a port after IPv6 brackets"
+            )));
         }
         (&listen[..=close_bracket], &listen[close_bracket + 2..])
     } else {
-        listen
-            .rsplit_once(':')
-            .ok_or_else(|| format!("'{listen}' is missing a port (expected format host:port)"))?
+        listen.rsplit_once(':').ok_or_else(|| {
+            validation_error(format!(
+                "'{listen}' is missing a port (expected format host:port)"
+            ))
+        })?
     };
     let port = port_str
         .parse::<u16>()
-        .map_err(|_| format!("'{listen}' has an invalid port '{port_str}'"))?;
+        .map_err(|_e| validation_error(format!("'{listen}' has an invalid port '{port_str}'")))?;
     if port == 0 {
         return Ok(None);
     }
@@ -1535,8 +1473,90 @@ fn is_sensor_family_supported(input_type: &InputType, name: &str) -> bool {
     sensor_supported_families(input_type).contains(&name)
 }
 
+const PLATFORM_SENSOR_EVENT_TYPES: &[&str] = &[
+    "exec",
+    "exit",
+    "tcp_connect",
+    "tcp_accept",
+    "file_open",
+    "file_delete",
+    "file_rename",
+    "setuid",
+    "setgid",
+    "module_load",
+    "ptrace",
+    "memfd_create",
+    "dns_query",
+];
+
+const PLATFORM_SENSOR_EVENT_TYPES_CSV: &str = "exec,exit,tcp_connect,tcp_accept,file_open,file_delete,file_rename,setuid,setgid,module_load,ptrace,memfd_create,dns_query";
+
+fn validate_sensor_event_type_filters(
+    input_type: &InputType,
+    pipeline_name: &str,
+    input_label: &str,
+    include_event_types: Option<&[String]>,
+    exclude_event_types: Option<&[String]>,
+) -> Result<(), ConfigError> {
+    if include_event_types.is_none() && exclude_event_types.is_none() {
+        return Ok(());
+    }
+
+    if *input_type != InputType::LinuxEbpfSensor {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' input '{input_label}': sensor.include_event_types and sensor.exclude_event_types are only supported for linux_ebpf_sensor inputs"
+        )));
+    }
+
+    validate_sensor_event_type_list(
+        pipeline_name,
+        input_label,
+        "include_event_types",
+        include_event_types,
+    )?;
+    validate_sensor_event_type_list(
+        pipeline_name,
+        input_label,
+        "exclude_event_types",
+        exclude_event_types,
+    )?;
+    Ok(())
+}
+
+fn validate_sensor_event_type_list(
+    pipeline_name: &str,
+    input_label: &str,
+    field: &str,
+    event_types: Option<&[String]>,
+) -> Result<(), ConfigError> {
+    let Some(event_types) = event_types else {
+        return Ok(());
+    };
+
+    for event_type in event_types {
+        let normalized = event_type.trim();
+        if normalized.is_empty() {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' input '{input_label}': sensor.{field} entries must not be empty"
+            )));
+        }
+        if event_type != normalized {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' input '{input_label}': sensor.{field} entry '{event_type}' has leading or trailing whitespace"
+            )));
+        }
+        if !PLATFORM_SENSOR_EVENT_TYPES.contains(&normalized) {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' input '{input_label}': unknown sensor event type '{normalized}' for linux_ebpf_sensor input (supported: {PLATFORM_SENSOR_EVENT_TYPES_CSV})"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Validate that a bind address is a parseable `host:port` socket address.
-fn validate_bind_addr(addr: &str) -> Result<(), String> {
+fn validate_bind_addr(addr: &str) -> Result<(), ConfigError> {
     validate_host_port(addr)
 }
 
@@ -1545,9 +1565,11 @@ fn validate_bind_addr(addr: &str) -> Result<(), String> {
 /// Accepts IP addresses (v4 and v6) as well as hostnames, consistent with the
 /// runtime `TcpListener::bind` behaviour.  Use this function anywhere an
 /// address is validated so that CLI and config validation remain in sync.
-pub fn validate_host_port(addr: &str) -> Result<(), String> {
+pub fn validate_host_port(addr: &str) -> Result<(), ConfigError> {
     if addr.starts_with("http://") || addr.starts_with("https://") {
-        return Err(format!("'{addr}' is a URL, expected host:port"));
+        return Err(validation_error(format!(
+            "'{addr}' is a URL, expected host:port"
+        )));
     }
 
     let (host, port_str) = if addr.starts_with('[') {
@@ -1555,67 +1577,78 @@ pub fn validate_host_port(addr: &str) -> Result<(), String> {
         // "[::1]]:4317" are rejected rather than treating "[::1]]" as the host.
         let close_bracket = addr
             .find(']')
-            .ok_or_else(|| format!("'{addr}' has mismatched brackets"))?;
+            .ok_or_else(|| validation_error(format!("'{addr}' has mismatched brackets")))?;
         let inner = &addr[1..close_bracket];
         if inner.is_empty() {
-            return Err(format!(
+            return Err(validation_error(format!(
                 "'{addr}' has an empty IPv6 address inside brackets"
-            ));
+            )));
         }
-        inner
-            .parse::<std::net::Ipv6Addr>()
-            .map_err(|_| format!("'{addr}' contains a non-IPv6 value inside brackets"))?;
+        inner.parse::<std::net::Ipv6Addr>().map_err(|_e| {
+            validation_error(format!(
+                "'{addr}' contains a non-IPv6 value inside brackets"
+            ))
+        })?;
         if !addr[close_bracket..].starts_with("]:") {
-            return Err(format!("'{addr}' is missing a port after IPv6 brackets"));
+            return Err(validation_error(format!(
+                "'{addr}' is missing a port after IPv6 brackets"
+            )));
         }
         let port_str = &addr[close_bracket + 2..];
         (&addr[..=close_bracket], port_str)
     } else {
-        addr.rsplit_once(':')
-            .ok_or_else(|| format!("'{addr}' is missing a port (expected format host:port)"))?
+        addr.rsplit_once(':').ok_or_else(|| {
+            validation_error(format!(
+                "'{addr}' is missing a port (expected format host:port)"
+            ))
+        })?
     };
 
     if host.is_empty() {
-        return Err(format!("'{addr}' has an empty host"));
+        return Err(validation_error(format!("'{addr}' has an empty host")));
     }
 
     // Reject path-like hosts (e.g. "host/path:80") — these are likely
     // malformed URLs rather than intentional host:port values. (#1461)
     if host.contains('/') {
-        return Err(format!(
+        return Err(validation_error(format!(
             "'{addr}' host contains a '/' (expected host:port, not a URL path)"
-        ));
+        )));
     }
 
     // Reject unmatched closing bracket outside of IPv6 brackets (e.g. "host]:80").
     if !addr.starts_with('[') && host.contains(']') {
-        return Err(format!("'{addr}' has an unmatched ']' in the host"));
+        return Err(validation_error(format!(
+            "'{addr}' has an unmatched ']' in the host"
+        )));
     }
     if !addr.starts_with('[') && host.contains('[') {
-        return Err(format!("'{addr}' has an unmatched '[' in the host"));
+        return Err(validation_error(format!(
+            "'{addr}' has an unmatched '[' in the host"
+        )));
     }
 
     if !addr.starts_with('[') && host.contains(':') {
-        return Err(format!(
+        return Err(validation_error(format!(
             "'{addr}' has multiple colons without IPv6 brackets"
-        ));
+        )));
     }
 
     port_str
         .parse::<u16>()
-        .map_err(|_| format!("'{addr}' has an invalid port '{port_str}'"))?;
+        .map_err(|_e| validation_error(format!("'{addr}' has an invalid port '{port_str}'")))?;
     Ok(())
 }
 
 /// Validate that a log level string is a recognised tracing level.
 ///
 /// Accepted values (case-insensitive): `trace`, `debug`, `info`, `warn`, `error`.
-fn validate_log_level(level: &str) -> Result<(), String> {
+fn validate_log_level(level: &str) -> Result<(), ConfigError> {
     match level.to_ascii_lowercase().as_str() {
         "trace" | "debug" | "info" | "warn" | "error" => Ok(()),
-        _ => Err(format!(
+        _ => Err(validation_error(format!(
             "'{level}' is not a recognised log level; expected one of: trace, debug, info, warn, error"
-        )),
+        ))),
     }
 }
 
@@ -1627,7 +1660,7 @@ fn validate_log_level(level: &str) -> Result<(), String> {
 /// Note: `logfwd-io::generator::parse_iso8601_to_epoch_ms` performs the same
 /// validation plus epoch conversion.  We duplicate the range checks here because
 /// `logfwd-config` cannot depend on `logfwd-io` (wrong crate-dependency direction).
-fn validate_iso8601_timestamp(s: &str) -> Result<(), String> {
+fn validate_iso8601_timestamp(s: &str) -> Result<(), ConfigError> {
     let b = s.as_bytes();
     if b.len() != 20
         || b[4] != b'-'
@@ -1637,16 +1670,16 @@ fn validate_iso8601_timestamp(s: &str) -> Result<(), String> {
         || b[16] != b':'
         || b[19] != b'Z'
     {
-        return Err(format!(
+        return Err(validation_error(format!(
             "must be \"now\" or YYYY-MM-DDTHH:MM:SSZ format, got {s:?}"
-        ));
+        )));
     }
-    let digits = |off: usize, n: usize| -> Result<u32, String> {
+    let digits = |off: usize, n: usize| -> Result<u32, ConfigError> {
         let mut v = 0u32;
         for i in 0..n {
             let c = b[off + i];
             if !c.is_ascii_digit() {
-                return Err(format!("non-digit character in {s:?}"));
+                return Err(validation_error(format!("non-digit character in {s:?}")));
             }
             v = v * 10 + (c - b'0') as u32;
         }
@@ -1660,10 +1693,14 @@ fn validate_iso8601_timestamp(s: &str) -> Result<(), String> {
     let sec = digits(17, 2)?;
 
     if !(1..=12).contains(&month) {
-        return Err(format!("month {month} out of range 1-12 in {s:?}"));
+        return Err(validation_error(format!(
+            "month {month} out of range 1-12 in {s:?}"
+        )));
     }
     if hour > 23 || min > 59 || sec > 59 {
-        return Err(format!("time component out of range in {s:?}"));
+        return Err(validation_error(format!(
+            "time component out of range in {s:?}"
+        )));
     }
     let max_day = match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -1678,9 +1715,9 @@ fn validate_iso8601_timestamp(s: &str) -> Result<(), String> {
         _ => unreachable!(),
     };
     if day < 1 || day > max_day {
-        return Err(format!(
+        return Err(validation_error(format!(
             "day {day} out of range for {year:04}-{month:02} (max {max_day}) in {s:?}"
-        ));
+        )));
     }
     Ok(())
 }
@@ -1688,6 +1725,10 @@ fn validate_iso8601_timestamp(s: &str) -> Result<(), String> {
 #[cfg(test)]
 mod validate_host_port_tests {
     use super::*;
+
+    fn host_port_error(addr: &str) -> String {
+        validate_host_port(addr).unwrap_err().to_string()
+    }
 
     #[test]
     fn validate_host_port_works() {
@@ -1697,73 +1738,25 @@ mod validate_host_port_tests {
         assert!(validate_host_port("[::1]:4317").is_ok());
         assert!(validate_host_port("[2001:db8::1]:80").is_ok());
 
-        assert!(
-            validate_host_port(":4317")
-                .unwrap_err()
-                .contains("empty host")
-        );
-        assert!(
-            validate_host_port("http://localhost:4317")
-                .unwrap_err()
-                .contains("URL")
-        );
-        assert!(
-            validate_host_port("https://localhost:4317")
-                .unwrap_err()
-                .contains("URL")
-        );
-        assert!(
-            validate_host_port("foo:bar:4317")
-                .unwrap_err()
-                .contains("multiple colons")
-        );
-        assert!(
-            validate_host_port("localhost")
-                .unwrap_err()
-                .contains("missing a port")
-        );
-        assert!(
-            validate_host_port("localhost:")
-                .unwrap_err()
-                .contains("invalid port")
-        );
-        assert!(
-            validate_host_port("localhost:999999")
-                .unwrap_err()
-                .contains("invalid port")
-        );
-        assert!(
-            validate_host_port("[::1]")
-                .unwrap_err()
-                .contains("missing a port")
-        );
-        assert!(
-            validate_host_port("[::1]:")
-                .unwrap_err()
-                .contains("invalid port")
-        );
+        assert!(host_port_error(":4317").contains("empty host"));
+        assert!(host_port_error("http://localhost:4317").contains("URL"));
+        assert!(host_port_error("https://localhost:4317").contains("URL"));
+        assert!(host_port_error("foo:bar:4317").contains("multiple colons"));
+        assert!(host_port_error("localhost").contains("missing a port"));
+        assert!(host_port_error("localhost:").contains("invalid port"));
+        assert!(host_port_error("localhost:999999").contains("invalid port"));
+        assert!(host_port_error("[::1]").contains("missing a port"));
+        assert!(host_port_error("[::1]:").contains("invalid port"));
         // Empty IPv6 brackets — []:8080 has no host
-        assert!(validate_host_port("[]:8080").unwrap_err().contains("empty"));
+        assert!(host_port_error("[]:8080").contains("empty"));
         // Double closing bracket — [::1]]:4317 is malformed
-        assert!(
-            validate_host_port("[::1]]:4317")
-                .unwrap_err()
-                .contains("missing a port")
-        );
+        assert!(host_port_error("[::1]]:4317").contains("missing a port"));
         // Path-like host rejected (#1461)
-        assert!(
-            validate_host_port("foo/bar:4317")
-                .unwrap_err()
-                .contains("/")
-        );
+        assert!(host_port_error("foo/bar:4317").contains('/'));
         // Unmatched closing bracket rejected (#1461)
-        assert!(validate_host_port("foo]:4317").unwrap_err().contains("]"));
+        assert!(host_port_error("foo]:4317").contains(']'));
         // Unmatched opening bracket rejected (#2060)
-        assert!(
-            validate_host_port("foo[bar:4317")
-                .unwrap_err()
-                .contains("[")
-        );
+        assert!(host_port_error("foo[bar:4317").contains('['));
     }
 
     #[test]
@@ -1813,16 +1806,16 @@ fn redact_url(endpoint: &str) -> String {
 }
 
 /// Validate that an endpoint URL has a recognised scheme and a non-empty host.
-fn validate_endpoint_url(endpoint: &str) -> Result<(), String> {
+fn validate_endpoint_url(endpoint: &str) -> Result<(), ConfigError> {
     let safe = redact_url(endpoint);
 
-    let parsed =
-        Url::parse(endpoint).map_err(|_| format!("endpoint '{safe}' is not a valid URL"))?;
+    let parsed = Url::parse(endpoint)
+        .map_err(|_e| validation_error(format!("endpoint '{safe}' is not a valid URL")))?;
 
     if !parsed.username().is_empty() || parsed.password().is_some() {
-        return Err(format!(
+        return Err(validation_error(format!(
             "endpoint '{safe}' must not include credentials in the URL; use output.auth instead"
-        ));
+        )));
     }
 
     let rest = if endpoint
@@ -1836,18 +1829,22 @@ fn validate_endpoint_url(endpoint: &str) -> Result<(), String> {
     {
         &endpoint[7..]
     } else {
-        return Err(format!(
+        return Err(validation_error(format!(
             "endpoint '{safe}' has no recognised scheme; expected 'http://' or 'https://'"
-        ));
+        )));
     };
 
     // Reject malformed authority forms like `http:///bulk` or `https://?x=1`.
     if rest.is_empty() || rest.starts_with('/') || rest.starts_with('?') || rest.starts_with('#') {
-        return Err(format!("endpoint '{safe}' has no host after the scheme"));
+        return Err(validation_error(format!(
+            "endpoint '{safe}' has no host after the scheme"
+        )));
     }
 
     if parsed.host_str().is_none_or(str::is_empty) {
-        return Err(format!("endpoint '{safe}' has no host after the scheme"));
+        return Err(validation_error(format!(
+            "endpoint '{safe}' has no host after the scheme"
+        )));
     }
 
     Ok(())
@@ -1995,7 +1992,9 @@ mod validate_endpoint_url_tests {
 
     #[test]
     fn endpoint_url_redacts_userinfo_for_malformed_urls() {
-        let err = validate_endpoint_url("https://user:secret@/bulk").expect_err("must fail");
+        let err = validate_endpoint_url("https://user:secret@/bulk")
+            .expect_err("must fail")
+            .to_string();
         assert!(
             err.contains("***redacted***") && !err.contains("secret"),
             "malformed endpoint errors must redact userinfo: {err}"
@@ -2010,7 +2009,7 @@ mod feedback_loop_tests {
 
     #[test]
     fn file_output_same_as_input_rejected() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   looping:
     inputs:
@@ -2020,7 +2019,7 @@ pipelines:
       - type: file
         path: /tmp/logfwd-feedback-test.log
         format: json
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -2031,7 +2030,7 @@ pipelines:
 
     #[test]
     fn file_output_different_from_input_allowed() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   ok:
     inputs:
@@ -2041,13 +2040,13 @@ pipelines:
       - type: file
         path: /tmp/logfwd-output.log
         format: json
-"#;
+";
         Config::load_str(yaml).expect("different input/output paths should be allowed");
     }
 
     #[test]
     fn file_output_same_as_input_rejected_after_lexical_normalization() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   looping:
     inputs:
@@ -2057,7 +2056,7 @@ pipelines:
       - type: file
         path: tmp/./app.log
         format: json
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -2248,7 +2247,7 @@ pipelines:
           response_code: 204
           response_body: '{"ok":true}'
     outputs:
-      - type: null
+      - type: "null"
 "#;
         let err = Config::load_str(yaml).expect_err("204 + response_body must fail validation");
         assert!(
@@ -2270,7 +2269,7 @@ pipelines:
         http:
           max_drained_bytes_per_poll: 0
     outputs:
-      - type: null
+      - type: "null"
 "#;
         let err = Config::load_str(yaml).expect_err("zero drain cap must fail validation");
         assert!(
@@ -2381,7 +2380,7 @@ mod validate_otlp_protocol_compression_tests {
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("protocol") && msg.contains("websocket"),
+            msg.contains("websocket") && msg.contains("http") && msg.contains("grpc"),
             "expected protocol rejection for 'websocket': {msg}"
         );
     }
@@ -2404,7 +2403,7 @@ mod validate_otlp_protocol_compression_tests {
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
-            msg.contains("compression") && msg.contains("lz4"),
+            msg.contains("lz4") && msg.contains("zstd") && msg.contains("gzip"),
             "expected compression rejection for 'lz4': {msg}"
         );
     }
@@ -2505,7 +2504,7 @@ mod validate_otlp_options_tests {
 
     #[test]
     fn otlp_accepts_new_options() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2524,13 +2523,13 @@ pipelines:
           X-Custom: value
         tls:
           insecure_skip_verify: true
-"#;
+";
         Config::load_str(yaml).expect("otlp options should be accepted");
     }
 
     #[test]
     fn non_otlp_rejects_new_options() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2539,14 +2538,17 @@ pipelines:
     outputs:
       - type: stdout
         retry_attempts: 3
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err().to_string();
-        assert!(err.contains("'retry_attempts' is only supported for otlp outputs"));
+        assert!(
+            err.contains("unknown field") && err.contains("retry_attempts"),
+            "stdout output should reject retry_attempts at parse time: {err}"
+        );
     }
 
     #[test]
     fn elasticsearch_accepts_tls_and_request_timeout_ms() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2558,13 +2560,13 @@ pipelines:
         request_timeout_ms: 5000
         tls:
           insecure_skip_verify: true
-"#;
+";
         Config::load_str(yaml).expect("elasticsearch should accept tls and request_timeout_ms");
     }
 
     #[test]
     fn loki_accepts_tls_and_request_timeout_ms() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2576,13 +2578,13 @@ pipelines:
         request_timeout_ms: 5000
         tls:
           insecure_skip_verify: true
-"#;
+";
         Config::load_str(yaml).expect("loki should accept tls and request_timeout_ms");
     }
 
     #[test]
     fn elasticsearch_rejects_zero_request_timeout_ms() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2592,17 +2594,14 @@ pipelines:
       - type: elasticsearch
         endpoint: https://localhost:9200
         request_timeout_ms: 0
-"#;
-        let err = Config::load_str(yaml).unwrap_err().to_string();
-        assert!(
-            err.contains("request_timeout_ms") && err.contains("at least 1"),
-            "expected zero timeout rejection, got: {err}"
-        );
+";
+        // Now rejected at parse time via PositiveMillis.
+        let _ = Config::load_str(yaml).expect_err("zero request_timeout_ms should be rejected");
     }
 
     #[test]
     fn otlp_rejects_zero_request_timeout_ms() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2612,17 +2611,14 @@ pipelines:
       - type: otlp
         endpoint: http://localhost:4317
         request_timeout_ms: 0
-"#;
-        let err = Config::load_str(yaml).unwrap_err().to_string();
-        assert!(
-            err.contains("request_timeout_ms") && err.contains("at least 1"),
-            "expected zero timeout rejection, got: {err}"
-        );
+";
+        // Now rejected at parse time via PositiveMillis.
+        let _ = Config::load_str(yaml).expect_err("zero request_timeout_ms should be rejected");
     }
 
     #[test]
     fn otlp_rejects_zero_batch_timeout_ms() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2632,17 +2628,14 @@ pipelines:
       - type: otlp
         endpoint: http://localhost:4317
         batch_timeout_ms: 0
-"#;
-        let err = Config::load_str(yaml).unwrap_err().to_string();
-        assert!(
-            err.contains("batch_timeout_ms") && err.contains("at least 1"),
-            "expected zero batch_timeout_ms rejection, got: {err}"
-        );
+";
+        // Now rejected at parse time via PositiveMillis.
+        let _ = Config::load_str(yaml).expect_err("zero batch_timeout_ms should be rejected");
     }
 
     #[test]
     fn otlp_rejects_initial_backoff_exceeding_max() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2653,7 +2646,7 @@ pipelines:
         endpoint: http://localhost:4317
         retry_initial_backoff_ms: 5000
         retry_max_backoff_ms: 1000
-"#;
+";
         let err = Config::load_str(yaml).unwrap_err().to_string();
         assert!(
             err.contains("retry_initial_backoff_ms") && err.contains("retry_max_backoff_ms"),
@@ -2663,7 +2656,7 @@ pipelines:
 
     #[test]
     fn arrow_ipc_accepts_batch_size() {
-        let yaml = r#"
+        let yaml = r"
 pipelines:
   test:
     inputs:
@@ -2673,7 +2666,129 @@ pipelines:
       - type: arrow_ipc
         endpoint: http://localhost:9000
         batch_size: 512
-"#;
+";
         Config::load_str(yaml).expect("arrow_ipc should accept batch_size");
+    }
+
+    #[test]
+    fn tcp_tls_accepts_cert_and_key() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 127.0.0.1:5514
+        tls:
+          cert_file: /tmp/server.crt
+          key_file: /tmp/server.key
+    outputs:
+      - type: "null"
+"#;
+        Config::load_str(yaml).expect("tcp tls cert+key should validate");
+    }
+
+    #[test]
+    fn tcp_tls_rejects_partial_cert_key_pair() {
+        let partial = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 127.0.0.1:5514
+        tls:
+          cert_file: /tmp/server.crt
+    outputs:
+      - type: "null"
+"#;
+        let err = Config::load_str(partial).unwrap_err().to_string();
+        assert!(
+            err.contains("tls.cert_file") && err.contains("tls.key_file"),
+            "expected cert/key pairing validation error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn tcp_mtls_requires_client_ca() {
+        let mtls = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 127.0.0.1:5514
+        tls:
+          cert_file: /tmp/server.crt
+          key_file: /tmp/server.key
+          require_client_auth: true
+    outputs:
+      - type: "null"
+"#;
+        let err = Config::load_str(mtls).unwrap_err().to_string();
+        assert!(
+            err.contains("require_client_auth requires tls.client_ca_file"),
+            "expected missing client CA rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn tcp_mtls_accepts_client_ca_when_auth_required() {
+        let mtls = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 127.0.0.1:5514
+        tls:
+          cert_file: /tmp/server.crt
+          key_file: /tmp/server.key
+          client_ca_file: /tmp/ca.crt
+          require_client_auth: true
+    outputs:
+      - type: "null"
+"#;
+        Config::load_str(mtls).expect("mTLS with client CA should validate");
+    }
+
+    #[test]
+    fn tcp_client_ca_requires_auth_required() {
+        let mtls = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 127.0.0.1:5514
+        tls:
+          cert_file: /tmp/server.crt
+          key_file: /tmp/server.key
+          client_ca_file: /tmp/ca.crt
+    outputs:
+      - type: "null"
+"#;
+        let err = Config::load_str(mtls).unwrap_err().to_string();
+        assert!(
+            err.contains("client_ca_file requires tls.require_client_auth: true"),
+            "expected client CA without mTLS rejection, got: {err}"
+        );
+    }
+
+    #[test]
+    fn tcp_client_ca_rejects_blank_path() {
+        let mtls = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 127.0.0.1:5514
+        tls:
+          cert_file: /tmp/server.crt
+          key_file: /tmp/server.key
+          client_ca_file: "   "
+    outputs:
+      - type: "null"
+"#;
+        let err = Config::load_str(mtls).unwrap_err().to_string();
+        assert!(
+            err.contains("client_ca_file must not be empty"),
+            "expected blank client CA rejection, got: {err}"
+        );
     }
 }

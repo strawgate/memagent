@@ -149,6 +149,14 @@ impl CriReassembler {
         !self.pending.is_empty()
     }
 
+    /// Returns true if the reassembler has any buffered state.
+    ///
+    /// This includes assembled CRI `P`/`F` message bytes and raw CRI line
+    /// fragments buffered across chunk boundaries.
+    pub fn has_buffered_state(&self) -> bool {
+        self.has_pending() || self.has_line_fragment()
+    }
+
     /// Returns the configured maximum message size.
     pub fn max_message_size(&self) -> usize {
         self.max_message_size
@@ -289,6 +297,27 @@ mod tests {
     }
 
     #[test]
+    fn has_buffered_state_tracks_pending_and_line_fragments() {
+        let mut agg = CriReassembler::new(32);
+        assert!(!agg.has_buffered_state());
+
+        assert!(matches!(
+            agg.feed(b"partial", false),
+            AggregateResult::Pending
+        ));
+        assert!(agg.has_buffered_state());
+
+        agg.reset();
+        assert!(!agg.has_buffered_state());
+
+        agg.push_line_fragment(b"2024-01-15T10:30:00Z stdout F hel");
+        assert!(agg.has_buffered_state());
+
+        agg.reset();
+        assert!(!agg.has_buffered_state());
+    }
+
+    #[test]
     fn multiple_sequences() {
         let mut agg = CriReassembler::new(1024);
 
@@ -412,8 +441,11 @@ mod proptests {
             match agg.feed(&f_chunk, true) {
                 AggregateResult::Complete(out) | AggregateResult::Truncated(out) => {
                     prop_assert_eq!(out.len(), expected_len);
-                    for i in 0..out.len() {
-                        prop_assert_eq!(out[i], f_chunk[i], "byte {} mismatch after reset", i);
+                    // Guard: zip truncates to the shorter slice, so assert out
+                    // is no longer than f_chunk to ensure every byte is checked.
+                    prop_assert!(out.len() <= f_chunk.len(), "output longer than input");
+                    for (i, (&actual, &expected)) in out.iter().zip(f_chunk.iter()).enumerate() {
+                        prop_assert_eq!(actual, expected, "byte {} mismatch after reset", i);
                     }
                 }
                 AggregateResult::Pending => prop_assert!(false, "F should produce Complete"),
@@ -526,9 +558,11 @@ mod verification {
         let msg1: [u8; 4] = kani::any();
         let _ = agg.feed(&msg1, false);
         assert!(agg.has_pending());
+        assert!(agg.has_buffered_state());
 
         agg.reset();
         assert!(!agg.has_pending());
+        assert!(!agg.has_buffered_state());
         assert!(!agg.truncated, "reset must clear truncated flag");
 
         // After reset, a new F line works as zero-copy
@@ -539,6 +573,28 @@ mod verification {
             }
             AggregateResult::Pending => panic!("F line should produce Complete"),
         }
+    }
+
+    /// Prove buffered-state reporting covers both pending P/F bytes and raw
+    /// line fragments.
+    #[kani::proof]
+    fn verify_reassembler_buffered_state_tracks_all_internal_buffers() {
+        let mut agg = CriReassembler::new(64);
+        assert!(!agg.has_buffered_state());
+
+        let msg: [u8; 4] = kani::any();
+        let _ = agg.feed(&msg, false);
+        assert!(agg.has_buffered_state());
+
+        agg.reset();
+        assert!(!agg.has_buffered_state());
+
+        let fragment: [u8; 4] = kani::any();
+        agg.push_line_fragment(&fragment);
+        assert!(agg.has_buffered_state());
+
+        agg.reset();
+        assert!(!agg.has_buffered_state());
     }
 
     /// max_message_size=0 never panics — output is always empty.

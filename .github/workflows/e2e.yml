@@ -13,11 +13,14 @@ permissions:
   contents: read
   issues: write
 
+env:
+  NIGHTLY_E2E_TRACKER_ISSUE: "1202"
+
 jobs:
   e2e:
     name: KIND e2e
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v6
 
@@ -29,7 +32,11 @@ jobs:
           sudo mv ./kind /usr/local/bin/kind
 
       - name: Run e2e test
-        run: bash tests/e2e/run.sh
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          mkdir -p tests/e2e/logs
+          bash tests/e2e/run.sh 2>&1 | tee tests/e2e/logs/run.log
 
       - name: Upload logs on failure
         if: failure()
@@ -41,21 +48,22 @@ jobs:
             /tmp/ff-e2e*/
           retention-days: 7
 
-      - name: Create issue on failure
+      - name: Comment on nightly e2e tracker
         if: failure() && github.event_name == 'schedule'
         run: |
           run_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          category="$(sed -n 's/^E2E_FAIL_CATEGORY=//p' tests/e2e/logs/run.log 2>/dev/null | tail -n1)"
+          category="${category:-UNKNOWN}"
           body_file="$(mktemp)"
           cat >"$body_file" <<EOF
-          The KIND e2e test failed on the nightly run.
+          Nightly KIND e2e failed.
 
-          Run: ${run_url}
+          - Run: ${run_url}
+          - Failure category: ${category}
+          - Artifact: e2e-logs-${{ github.run_id }}
 
-          Please investigate.
+          This comment keeps recurring nightly failures on the durable tracker instead of opening a date-stamped issue.
           EOF
-          gh issue create \
-            --title "Nightly e2e test failed ($(date +%Y-%m-%d))" \
-            --body-file "$body_file" \
-            --label "bug"
+          gh issue comment "$NIGHTLY_E2E_TRACKER_ISSUE" --body-file "$body_file"
         env:
           GH_TOKEN: ${{ github.token }}

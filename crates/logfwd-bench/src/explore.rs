@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Exploratory benchmark: scanner + SQL transform across many dimensions.
 //! Run with: cargo run -p logfwd-bench --release --bin explore
 
@@ -17,7 +18,9 @@ fn main() {
     }
     let quick = args.iter().any(|a| a == "--quick");
 
-    println!("dataset,lines,fields,query,scan_ms,transform_ms,total_ms,lines_per_sec,scan_lines_per_sec");
+    println!(
+        "dataset,lines,fields,query,scan_ms,transform_ms,total_ms,lines_per_sec,scan_lines_per_sec"
+    );
 
     let sizes: Vec<usize> = if quick {
         vec![10_000, 100_000]
@@ -64,26 +67,110 @@ fn main() {
     // === Dimension 4: Projection pushdown on wide data ===
     eprintln!("\n=== Dimension 4: Projection Pushdown (wide 20-field, 100K) ===");
     bench("wide", 100_000, 20, "SELECT * FROM logs", &data_wide);
-    bench("wide", 100_000, 20, "SELECT timestamp_str, level_str FROM logs", &data_wide);
-    bench("wide", 100_000, 20, "SELECT timestamp_str, level_str, message_str, duration_ms_int FROM logs", &data_wide);
-    bench("wide", 100_000, 20, "SELECT * FROM logs WHERE level_str = 'ERROR'", &data_wide);
-    bench("wide", 100_000, 20, "SELECT level_str FROM logs WHERE status_code_int > 400", &data_wide);
+    bench(
+        "wide",
+        100_000,
+        20,
+        "SELECT timestamp_str, level_str FROM logs",
+        &data_wide,
+    );
+    bench(
+        "wide",
+        100_000,
+        20,
+        "SELECT timestamp_str, level_str, message_str, duration_ms_int FROM logs",
+        &data_wide,
+    );
+    bench(
+        "wide",
+        100_000,
+        20,
+        "SELECT * FROM logs WHERE level_str = 'ERROR'",
+        &data_wide,
+    );
+    bench(
+        "wide",
+        100_000,
+        20,
+        "SELECT level_str FROM logs WHERE status_code_int > 400",
+        &data_wide,
+    );
 
     // === Dimension 5: Aggregations ===
     eprintln!("\n=== Dimension 5: Aggregations (100K) ===");
-    bench("simple", 100_000, 6, "SELECT COUNT(*) FROM logs", &data_100k);
-    bench("simple", 100_000, 6, "SELECT level_str, COUNT(*) FROM logs GROUP BY level_str", &data_100k);
-    bench("simple", 100_000, 6, "SELECT level_str, AVG(duration_ms_int), MIN(duration_ms_int), MAX(duration_ms_int) FROM logs GROUP BY level_str", &data_100k);
-    bench("wide", 100_000, 20, "SELECT region_str, namespace_str, COUNT(*) FROM logs GROUP BY region_str, namespace_str", &data_wide);
-    bench("wide", 100_000, 20, "SELECT method_str, AVG(duration_ms_int), COUNT(*) FROM logs GROUP BY method_str", &data_wide);
+    bench(
+        "simple",
+        100_000,
+        6,
+        "SELECT COUNT(*) FROM logs",
+        &data_100k,
+    );
+    bench(
+        "simple",
+        100_000,
+        6,
+        "SELECT level_str, COUNT(*) FROM logs GROUP BY level_str",
+        &data_100k,
+    );
+    bench(
+        "simple",
+        100_000,
+        6,
+        "SELECT level_str, AVG(duration_ms_int), MIN(duration_ms_int), MAX(duration_ms_int) FROM logs GROUP BY level_str",
+        &data_100k,
+    );
+    bench(
+        "wide",
+        100_000,
+        20,
+        "SELECT region_str, namespace_str, COUNT(*) FROM logs GROUP BY region_str, namespace_str",
+        &data_wide,
+    );
+    bench(
+        "wide",
+        100_000,
+        20,
+        "SELECT method_str, AVG(duration_ms_int), COUNT(*) FROM logs GROUP BY method_str",
+        &data_wide,
+    );
 
     // === Dimension 6: String operations ===
     eprintln!("\n=== Dimension 6: String Operations (100K) ===");
-    bench("simple", 100_000, 6, "SELECT *, UPPER(level_str) as level_upper FROM logs", &data_100k);
-    bench("simple", 100_000, 6, "SELECT *, LENGTH(message_str) as msg_len FROM logs", &data_100k);
-    bench("simple", 100_000, 6, "SELECT *, CONCAT(level_str, ':', service_str) as tag FROM logs", &data_100k);
-    bench("simple", 100_000, 6, "SELECT * FROM logs WHERE message_str LIKE '%orders%'", &data_100k);
-    bench("simple", 100_000, 6, "SELECT * FROM logs WHERE LOWER(level_str) = 'error'", &data_100k);
+    bench(
+        "simple",
+        100_000,
+        6,
+        "SELECT *, UPPER(level_str) as level_upper FROM logs",
+        &data_100k,
+    );
+    bench(
+        "simple",
+        100_000,
+        6,
+        "SELECT *, LENGTH(message_str) as msg_len FROM logs",
+        &data_100k,
+    );
+    bench(
+        "simple",
+        100_000,
+        6,
+        "SELECT *, CONCAT(level_str, ':', service_str) as tag FROM logs",
+        &data_100k,
+    );
+    bench(
+        "simple",
+        100_000,
+        6,
+        "SELECT * FROM logs WHERE message_str LIKE '%orders%'",
+        &data_100k,
+    );
+    bench(
+        "simple",
+        100_000,
+        6,
+        "SELECT * FROM logs WHERE LOWER(level_str) = 'error'",
+        &data_100k,
+    );
 
     // === Dimension 7: Scan-only (no transform overhead) ===
     eprintln!("\n=== Dimension 7: Scan-Only (no SQL) ===");
@@ -104,15 +191,56 @@ fn main() {
     for (path, expected_lines) in &nginx_paths {
         if let Ok(data) = std::fs::read(path) {
             let lines = memchr::memchr_iter(b'\n', &data).count();
-            bench_scan_only(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, &data);
-            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT * FROM logs", &data);
-            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT time_str, remote_ip_str, request_str, response_int FROM logs", &data);
-            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT * FROM logs WHERE response_int >= 400", &data);
-            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT remote_ip_str, COUNT(*) as cnt FROM logs GROUP BY remote_ip_str ORDER BY cnt DESC LIMIT 10", &data);
-            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT response_int, COUNT(*) FROM logs GROUP BY response_int", &data);
-            bench(&format!("nginx({})", fmt_count(*expected_lines)), lines, 8, "SELECT * FROM logs WHERE request_str LIKE '%product_1%'", &data);
+            bench_scan_only(
+                &format!("nginx({})", fmt_count(*expected_lines)),
+                lines,
+                8,
+                &data,
+            );
+            bench(
+                &format!("nginx({})", fmt_count(*expected_lines)),
+                lines,
+                8,
+                "SELECT * FROM logs",
+                &data,
+            );
+            bench(
+                &format!("nginx({})", fmt_count(*expected_lines)),
+                lines,
+                8,
+                "SELECT time_str, remote_ip_str, request_str, response_int FROM logs",
+                &data,
+            );
+            bench(
+                &format!("nginx({})", fmt_count(*expected_lines)),
+                lines,
+                8,
+                "SELECT * FROM logs WHERE response_int >= 400",
+                &data,
+            );
+            bench(
+                &format!("nginx({})", fmt_count(*expected_lines)),
+                lines,
+                8,
+                "SELECT remote_ip_str, COUNT(*) as cnt FROM logs GROUP BY remote_ip_str ORDER BY cnt DESC LIMIT 10",
+                &data,
+            );
+            bench(
+                &format!("nginx({})", fmt_count(*expected_lines)),
+                lines,
+                8,
+                "SELECT response_int, COUNT(*) FROM logs GROUP BY response_int",
+                &data,
+            );
+            bench(
+                &format!("nginx({})", fmt_count(*expected_lines)),
+                lines,
+                8,
+                "SELECT * FROM logs WHERE request_str LIKE '%product_1%'",
+                &data,
+            );
         } else {
-            eprintln!("  Skipping {} (not found). Run: curl -o {} <url>", path, path);
+            eprintln!("  Skipping {path} (not found). Run: curl -o {path} <url>");
         }
     }
 
@@ -122,17 +250,33 @@ fn main() {
         let data_1m = generate_simple(1_000_000);
         bench_scan_only("simple", 1_000_000, 6, &data_1m);
         bench("simple", 1_000_000, 6, "SELECT * FROM logs", &data_1m);
-        bench("simple", 1_000_000, 6, "SELECT * FROM logs WHERE level_str = 'ERROR'", &data_1m);
-        bench("simple", 1_000_000, 6, "SELECT level_str, COUNT(*) FROM logs GROUP BY level_str", &data_1m);
+        bench(
+            "simple",
+            1_000_000,
+            6,
+            "SELECT * FROM logs WHERE level_str = 'ERROR'",
+            &data_1m,
+        );
+        bench(
+            "simple",
+            1_000_000,
+            6,
+            "SELECT level_str, COUNT(*) FROM logs GROUP BY level_str",
+            &data_1m,
+        );
     }
 
     eprintln!("\nDone.");
 }
 
 fn fmt_count(n: usize) -> String {
-    if n >= 1_000_000 { format!("{}M", n / 1_000_000) }
-    else if n >= 1_000 { format!("{}K", n / 1_000) }
-    else { format!("{}", n) }
+    if n >= 1_000_000 {
+        format!("{}M", n / 1_000_000)
+    } else if n >= 1_000 {
+        format!("{}K", n / 1_000)
+    } else {
+        format!("{n}")
+    }
 }
 
 fn bench(dataset: &str, lines: usize, fields: usize, sql: &str, data: &[u8]) {
@@ -141,7 +285,8 @@ fn bench(dataset: &str, lines: usize, fields: usize, sql: &str, data: &[u8]) {
     let mut scanner = Scanner::new(config);
 
     let t0 = Instant::now();
-    let batch = scanner.scan(bytes::Bytes::from(data.to_vec()))
+    let batch = scanner
+        .scan(bytes::Bytes::from(data.to_vec()))
         .expect("scan failed");
     let scan_ms = t0.elapsed().as_millis() as u64;
 
@@ -150,11 +295,21 @@ fn bench(dataset: &str, lines: usize, fields: usize, sql: &str, data: &[u8]) {
     let transform_ms = t1.elapsed().as_millis() as u64;
 
     let total_ms = scan_ms + transform_ms;
-    let lps = if total_ms > 0 { lines as u64 * 1000 / total_ms } else { 0 };
-    let scan_lps = if scan_ms > 0 { lines as u64 * 1000 / scan_ms } else { 0 };
+    let lps = if total_ms > 0 {
+        lines as u64 * 1000 / total_ms
+    } else {
+        0
+    };
+    let scan_lps = if scan_ms > 0 {
+        lines as u64 * 1000 / scan_ms
+    } else {
+        0
+    };
 
     let short_sql: String = sql.chars().take(60).collect();
-    println!("{dataset},{lines},{fields},{short_sql},{scan_ms},{transform_ms},{total_ms},{lps},{scan_lps}");
+    println!(
+        "{dataset},{lines},{fields},{short_sql},{scan_ms},{transform_ms},{total_ms},{lps},{scan_lps}"
+    );
     eprintln!(
         "  {:<12} {:>7} lines  {:>2}f  scan={:>5}ms  xform={:>5}ms  total={:>5}ms  {:>8} lines/sec  {}",
         dataset, lines, fields, scan_ms, transform_ms, total_ms, lps, &short_sql
@@ -166,15 +321,25 @@ fn bench_scan_only(dataset: &str, lines: usize, fields: usize, data: &[u8]) {
     let mut scanner = Scanner::new(config);
 
     let t0 = Instant::now();
-    let batch = scanner.scan(bytes::Bytes::from(data.to_vec()))
+    let batch = scanner
+        .scan(bytes::Bytes::from(data.to_vec()))
         .expect("scan failed");
     let scan_ms = t0.elapsed().as_millis() as u64;
-    let lps = if scan_ms > 0 { lines as u64 * 1000 / scan_ms } else { 0 };
+    let lps = if scan_ms > 0 {
+        lines as u64 * 1000 / scan_ms
+    } else {
+        0
+    };
 
     println!("{dataset},{lines},{fields},SCAN_ONLY,{scan_ms},0,{scan_ms},{lps},{lps}");
     eprintln!(
         "  {:<12} {:>7} lines  {:>2}f  scan={:>5}ms  {:>8} lines/sec  ({} rows)",
-        dataset, lines, fields, scan_ms, lps, batch.num_rows()
+        dataset,
+        lines,
+        fields,
+        scan_ms,
+        lps,
+        batch.num_rows()
     );
 }
 
@@ -183,7 +348,13 @@ fn bench_scan_only(dataset: &str, lines: usize, fields: usize, data: &[u8]) {
 fn generate_simple(n: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(n * 180);
     let levels = ["INFO", "DEBUG", "WARN", "ERROR"];
-    let paths = ["/api/v1/users", "/api/v1/orders", "/api/v2/products", "/health", "/api/v1/auth"];
+    let paths = [
+        "/api/v1/users",
+        "/api/v1/orders",
+        "/api/v2/products",
+        "/health",
+        "/api/v1/auth",
+    ];
     for i in 0..n {
         write!(
             buf,
@@ -215,7 +386,7 @@ fn generate_wide(n: usize) -> Vec<u8> {
             [200, 201, 400, 404, 500][i % 5], regions[i % 4],
             i % 1000, (i as u64).wrapping_mul(0x517cc1b727220a95),
             100 + (i * 37) % 10000, 10 + (i * 11) % 1000,
-            if i % 20 == 0 { 1 } else { 0 },
+            i32::from(i % 20 == 0),
             if i % 3 == 0 { "true" } else { "false" },
             (i * 7) % 200, i % 4, 1 + i % 5, i % 10,
         ).unwrap();
@@ -228,7 +399,14 @@ fn generate_narrow(n: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(n * 60);
     let levels = ["INFO", "DEBUG", "WARN", "ERROR"];
     for i in 0..n {
-        write!(buf, r#"{{"ts":"{}","lvl":"{}","msg":"event {}"}}"#, i, levels[i % 4], i).unwrap();
+        write!(
+            buf,
+            r#"{{"ts":"{}","lvl":"{}","msg":"event {}"}}"#,
+            i,
+            levels[i % 4],
+            i
+        )
+        .unwrap();
         buf.push(b'\n');
     }
     buf

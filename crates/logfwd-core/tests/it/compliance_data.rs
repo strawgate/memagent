@@ -167,18 +167,17 @@ fn get_struct_bool(batch: &RecordBatch, field: &str, row: usize) -> Option<bool>
 
 /// Assert that the named child field of a conflict StructArray column is null at `row`.
 fn assert_struct_child_null(batch: &RecordBatch, field: &str, child: &str, row: usize) {
-    if let Some(col) = batch.column_by_name(field) {
-        if let Some(sa) = col.as_any().downcast_ref::<StructArray>() {
-            if let Some(child_idx) = sa.fields().iter().position(|f| f.name() == child) {
-                let child_col = sa.column(child_idx);
-                assert!(
-                    child_col.is_null(row),
-                    "{field}.{child}[{row}] expected null, got non-null"
-                );
-            }
-            // Child not present is also acceptable.
-        }
+    if let Some(col) = batch.column_by_name(field)
+        && let Some(sa) = col.as_any().downcast_ref::<StructArray>()
+        && let Some(child_idx) = sa.fields().iter().position(|f| f.name() == child)
+    {
+        let child_col = sa.column(child_idx);
+        assert!(
+            child_col.is_null(row),
+            "{field}.{child}[{row}] expected null, got non-null"
+        );
     }
+    // Child not present is also acceptable.
     // Column not existing is also acceptable.
 }
 
@@ -509,6 +508,20 @@ fn compliance_whitespace_variations() {
 }
 
 #[test]
+fn compliance_tab_and_cr_json_boundaries() {
+    let input = b"\t{\t\"a\"\t:\t\"b\"\r,\t\"c\"\t:\t1\r}\r\n";
+
+    assert_both_scanners(input, |batch| {
+        // JSON whitespace includes tab and CR. The scanner should skip them
+        // around object/key/value boundaries while still normalizing CRLF
+        // line endings.
+        assert_eq!(batch.num_rows(), 1);
+        assert_eq!(get_str(batch, "a", 0), Some("b".to_string()));
+        assert_eq!(get_int(batch, "c", 0), Some(1));
+    });
+}
+
+#[test]
 fn compliance_non_object_lines() {
     // Valid JSON but not objects — scanner emits a row but all columns are null.
     let input = b"\"just a string\"\n42\n[1,2,3]\ntrue\nnull\n{\"valid\":\"object\"}\n";
@@ -526,7 +539,7 @@ fn compliance_non_object_lines() {
 #[test]
 fn compliance_trailing_no_newline() {
     // Per the scanner code, lines without trailing newline ARE processed
-    // (scan_into uses eol=len when no \n is found and processes if pos < eol).
+    // (scan_streaming includes the final non-empty range when no \n is found).
     let input = b"{\"a\":\"complete\"}\n{\"b\":\"no newline at end\"}";
     assert_both_scanners(input, |batch| {
         assert_eq!(batch.num_rows(), 2);

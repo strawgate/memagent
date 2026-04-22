@@ -15,6 +15,7 @@
 // Kani-provable specification.
 
 // ---------------------------------------------------------------------------
+#[cfg(test)]
 use alloc::vec::Vec;
 // Escape detection (simdjson prefix_xor algorithm)
 // ---------------------------------------------------------------------------
@@ -214,198 +215,6 @@ impl StreamingClassifier {
 impl Default for StreamingClassifier {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// StructuralIndex — whole-buffer classification (replaces ChunkIndex)
-// ---------------------------------------------------------------------------
-
-/// Pre-computed structural classification for a buffer.
-///
-/// Detects 10 structural characters in one SIMD pass but only stores
-/// `real_quotes` and `in_string` — the two bitmasks the scanner needs
-/// for random-access `scan_string`/`skip_nested`. All other bitmasks
-/// (newlines, spaces, commas, etc.) are consumed during construction
-/// and don't need to persist. This keeps memory at ~2 × (buf_len/64)
-/// u64s instead of 10×.
-pub struct StructuralIndex {
-    real_quotes: Vec<u64>,
-    in_string: Vec<u64>,
-    buf_len: usize,
-}
-
-impl StructuralIndex {
-    /// Classify an entire buffer in one SIMD pass.
-    ///
-    /// Returns `(index, line_ranges)`:
-    /// - `index`: stored quote/in_string bitmasks for scanner random access
-    /// - `line_ranges`: newline-delimited line boundaries extracted during the pass
-    pub fn new(buf: &[u8]) -> (Self, Vec<(usize, usize)>) {
-        let len = buf.len();
-        let num_blocks = len.div_ceil(64);
-        let mut real_quotes = Vec::with_capacity(num_blocks);
-        let mut in_string_vec = Vec::with_capacity(num_blocks);
-        let mut line_ranges = Vec::new();
-        let mut line_start = 0;
-
-        let mut classifier = StreamingClassifier::new();
-
-        for block_idx in 0..num_blocks {
-            let offset = block_idx * 64;
-            let remaining = len - offset;
-            let block_len = remaining.min(64);
-
-            let block: [u8; 64] = if remaining >= 64 {
-                buf[offset..offset + 64]
-                    .try_into()
-                    .expect("offset aligned to 64-byte block")
-            } else {
-                let mut padded = [b' '; 64];
-                padded[..remaining].copy_from_slice(&buf[offset..]);
-                padded
-            };
-
-            let raw = find_structural_chars(&block);
-            let processed = classifier.process_block(&raw, block_len);
-
-            real_quotes.push(processed.real_quotes);
-            in_string_vec.push(processed.in_string);
-
-            let mut nl = processed.newline;
-            while nl != 0 {
-                let bit_pos = nl.trailing_zeros() as usize;
-                let abs_pos = offset + bit_pos;
-                if abs_pos > line_start {
-                    line_ranges.push((line_start, abs_pos));
-                }
-                line_start = abs_pos + 1;
-                nl &= nl - 1;
-            }
-        }
-
-        if line_start < len {
-            line_ranges.push((line_start, len));
-        }
-
-        (
-            Self {
-                real_quotes,
-                in_string: in_string_vec,
-                buf_len: len,
-            },
-            line_ranges,
-        )
-    }
-
-    /// Find the next unescaped quote at or after `pos`.
-    #[inline(always)]
-    pub fn next_quote(&self, pos: usize) -> Option<usize> {
-        if pos >= self.buf_len {
-            return None;
-        }
-        let block = pos >> 6;
-        let bit = pos & 63;
-        let mask = self.real_quotes[block] >> bit;
-        if mask != 0 {
-            return Some(pos + mask.trailing_zeros() as usize);
-        }
-        for b in (block + 1)..self.real_quotes.len() {
-            let bits = self.real_quotes[b];
-            if bits != 0 {
-                return Some((b << 6) + bits.trailing_zeros() as usize);
-            }
-        }
-        None
-    }
-
-    /// Check if a position is inside a JSON string.
-    #[inline(always)]
-    pub fn is_in_string(&self, pos: usize) -> bool {
-        if pos >= self.buf_len {
-            return false;
-        }
-        let block = pos >> 6;
-        let bit = pos & 63;
-        (self.in_string[block] >> bit) & 1 == 1
-    }
-
-    /// Scan a JSON string starting at `pos` (pointing to opening `"`),
-    /// bounded by `end`. Returns None if the closing quote is not found
-    /// before `end`, preventing cross-line reads on malformed input (#368).
-    #[inline(always)]
-    pub fn scan_string<'a>(
-        &self,
-        buf: &'a [u8],
-        pos: usize,
-        end: usize,
-    ) -> Option<(&'a [u8], usize)> {
-        debug_assert!(pos < buf.len() && buf[pos] == b'"');
-        let start = pos + 1;
-        if let Some(close) = self.next_quote(start) {
-            if close < end {
-                Some((&buf[start..close], close + 1))
-            } else {
-                None // closing quote is beyond the line boundary
-            }
-        } else {
-            None
-        }
-    }
-
-    /// Skip a nested JSON object/array starting at `pos`, bounded by `end`.
-    /// Tracks delimiter kind — `{` must close with `}`, `[` with `]`.
-    /// Returns `end` on mismatch instead of desynchronizing (#369).
-    ///
-    /// Contract: result is always <= end (prevents reading past line boundary).
-    #[inline]
-    #[cfg_attr(kani, kani::requires(pos <= end && end <= buf.len()))]
-    #[cfg_attr(kani, kani::ensures(|result: &usize| *result <= end))]
-    pub fn skip_nested(&self, buf: &[u8], mut pos: usize, end: usize) -> usize {
-        // Small stack for delimiter tracking. Max nesting 32 levels — deeper
-        // nesting in a single NDJSON line is pathological.
-        let mut opener_stack = [0u8; 32];
-        let mut depth: usize = 0;
-
-        while pos < end {
-            let b = buf[pos];
-            match b {
-                b'{' | b'[' if !self.is_in_string(pos) => {
-                    if depth < 32 {
-                        opener_stack[depth] = b;
-                    }
-                    depth += 1;
-                    pos += 1;
-                }
-                b'}' | b']' if !self.is_in_string(pos) => {
-                    if depth == 0 {
-                        return pos;
-                    }
-                    depth -= 1;
-                    // Check delimiter match
-                    if depth < 32 {
-                        let expected_close = if opener_stack[depth] == b'{' {
-                            b'}'
-                        } else {
-                            b']'
-                        };
-                        if b != expected_close {
-                            return pos; // mismatch — fail-closed to avoid emitting truncated values
-                        }
-                    }
-                    pos += 1;
-                    if depth == 0 {
-                        return pos;
-                    }
-                }
-                b'"' if !self.is_in_string(pos) => match self.scan_string(buf, pos, end) {
-                    Some((_, after)) => pos = after,
-                    None => return end,
-                },
-                _ => pos += 1,
-            }
-        }
-        pos
     }
 }
 
@@ -883,88 +692,6 @@ mod tests {
         // Only first 10 bits should survive
         assert_eq!(processed.newline, (1u64 << 10) - 1);
     }
-
-    #[test]
-    fn test_skip_nested_bug_repro() {
-        let mut buf = alloc::string::String::new();
-        for _ in 0..33 {
-            buf.push('{');
-        }
-        for _ in 0..33 {
-            buf.push('}');
-        }
-        let buf = buf.as_bytes();
-        let (idx, _) = StructuralIndex::new(buf);
-        let result = idx.skip_nested(buf, 0, buf.len());
-        assert_eq!(result, buf.len());
-    }
-
-    #[test]
-    fn test_skip_valid_json() {
-        let mut buf = alloc::string::String::new();
-        for _ in 0..100 {
-            buf.push('{');
-        }
-        for _ in 0..100 {
-            buf.push('}');
-        }
-        buf.push_str("after");
-        let buf = buf.as_bytes();
-        let (idx, _) = StructuralIndex::new(buf);
-        let pos = idx.skip_nested(buf, 0, buf.len());
-        assert_eq!(pos, 200);
-    }
-
-    #[test]
-    fn test_depths() {
-        for depth in 30..40 {
-            let mut buf = alloc::string::String::new();
-            for _ in 0..depth {
-                buf.push('{');
-            }
-            for _ in 0..depth {
-                buf.push('}');
-            }
-            buf.push_str("after");
-            let buf = buf.as_bytes();
-            let (idx, _) = StructuralIndex::new(buf);
-            let pos = idx.skip_nested(buf, 0, buf.len());
-            assert_eq!(pos, depth * 2, "Failed at depth {}", depth);
-        }
-    }
-
-    #[test]
-    fn test_skip_nested_balanced_at_depth_32() {
-        let mut buf = alloc::string::String::new();
-        for _ in 0..32 {
-            buf.push('{');
-        }
-        for _ in 0..32 {
-            buf.push('}');
-        }
-        buf.push_str("after");
-        let buf = buf.as_bytes();
-        let (idx, _) = StructuralIndex::new(buf);
-        let result = idx.skip_nested(buf, 0, buf.len());
-        assert_eq!(result, 64);
-    }
-
-    #[test]
-    fn test_skip_nested_bug_repro_2() {
-        let mut buf = alloc::string::String::new();
-        buf.push('{');
-        for _ in 0..33 {
-            buf.push('[');
-        }
-        for _ in 0..33 {
-            buf.push(']');
-        }
-        buf.push('}');
-        let buf = buf.as_bytes();
-        let (idx, _) = StructuralIndex::new(buf);
-        let result = idx.skip_nested(buf, 0, buf.len());
-        assert_eq!(result, buf.len());
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1059,7 +786,7 @@ mod verification {
     /// arbitrary position implies correctness at all.
     #[kani::proof]
     #[kani::unwind(65)]
-    #[kani::solver(kissat)]
+    #[kani::solver(cadical)]
     fn verify_find_char_mask_correct() {
         let block: [u8; 64] = kani::any();
         let needle: u8 = kani::any();
@@ -1076,7 +803,7 @@ mod verification {
     /// use identical match-arm logic.
     #[kani::proof]
     #[kani::unwind(65)]
-    #[kani::solver(kissat)]
+    #[kani::solver(cadical)]
     fn verify_structural_scalar_consistent() {
         let block: [u8; 64] = kani::any();
         let raw = find_structural_chars_scalar(&block);
@@ -1085,90 +812,12 @@ mod verification {
         assert_eq!(raw.quote, find_char_mask(&block, b'"'));
     }
 
-    /// Crash-freedom: process_block never panics for any combination
-    /// of 10 arbitrary u64 bitmasks and any block_len 0..=64.
-    #[kani::solver(kissat)]
-    #[kani::proof]
-    #[kani::unwind(65)] // compute_real_quotes: while b != 0, up to 64 iters
-    fn verify_process_block_no_panic() {
-        let raw = RawBlockMasks {
-            newline: kani::any(),
-            space: kani::any(),
-            quote: kani::any(),
-            backslash: kani::any(),
-            comma: kani::any(),
-            colon: kani::any(),
-            open_brace: kani::any(),
-            close_brace: kani::any(),
-            open_bracket: kani::any(),
-            close_bracket: kani::any(),
-        };
-        let block_len: usize = kani::any_where(|&l: &usize| l <= 64);
-
-        let mut classifier = StreamingClassifier::new();
-        let _ = classifier.process_block(&raw, block_len);
-    }
-
-    /// Tail masking: no bits set beyond block_len in any output field.
-    #[kani::solver(kissat)]
-    #[kani::proof]
-    #[kani::unwind(65)] // compute_real_quotes: while b != 0, up to 64 iters
-    fn verify_process_block_tail_mask() {
-        let raw = RawBlockMasks {
-            newline: kani::any(),
-            space: kani::any(),
-            quote: kani::any(),
-            backslash: kani::any(),
-            comma: kani::any(),
-            colon: kani::any(),
-            open_brace: kani::any(),
-            close_brace: kani::any(),
-            open_bracket: kani::any(),
-            close_bracket: kani::any(),
-        };
-        let block_len: usize = kani::any_where(|&l: &usize| l < 64);
-
-        let mut classifier = StreamingClassifier::new();
-        let p = classifier.process_block(&raw, block_len);
-
-        // No bits set beyond block_len
-        let tail_mask = !((1u64 << block_len) - 1);
-        assert_eq!(p.newline & tail_mask, 0);
-        assert_eq!(p.real_quotes & tail_mask, 0);
-        assert_eq!(p.comma & tail_mask, 0);
-    }
-
-    /// String exclusion: structural characters (space, comma, colon,
-    /// braces) never overlap with in_string mask. Only covers the
-    /// no-backslash case — with escapes, the exclusion is verified
-    /// by the compositional proof below.
-    #[kani::solver(kissat)]
-    #[kani::proof]
-    #[kani::unwind(65)] // compute_real_quotes: while b != 0, up to 64 iters
-    fn verify_in_string_exclusion() {
-        let raw = RawBlockMasks {
-            newline: 0, // no newlines for simplicity
-            space: kani::any(),
-            quote: kani::any(),
-            backslash: 0, // no escapes for simplicity
-            comma: kani::any(),
-            colon: kani::any(),
-            open_brace: kani::any(),
-            close_brace: kani::any(),
-            open_bracket: kani::any(),
-            close_bracket: kani::any(),
-        };
-
-        let mut classifier = StreamingClassifier::new();
-        let p = classifier.process_block(&raw, 64);
-
-        // Structural chars must not overlap with in_string
-        assert_eq!(p.space & p.in_string, 0);
-        assert_eq!(p.comma & p.in_string, 0);
-        assert_eq!(p.colon & p.in_string, 0);
-        assert_eq!(p.open_brace & p.in_string, 0);
-        assert_eq!(p.close_brace & p.in_string, 0);
-    }
+    // Proofs #5 (verify_process_block_no_panic), #6 (verify_process_block_tail_mask),
+    // and #7 (verify_in_string_exclusion) have been retired — their properties are
+    // fully subsumed by verify_process_block_compositional below, which uses
+    // stub_verified(compute_real_quotes) and checks all 10 output fields for
+    // crash-freedom, tail masking, and string exclusion. See kani::cover!()
+    // statements in that proof for traceability.
 
     /// Verify compute_real_quotes contract: result is submask of quote_bits.
     #[kani::proof_for_contract(compute_real_quotes)]
@@ -1182,10 +831,11 @@ mod verification {
     /// Compositional proof: process_block using proven compute_real_quotes.
     /// Kani trusts the compute_real_quotes contract (submask property)
     /// and verifies process_block's composition logic:
+    /// - Crash-freedom: never panics for any inputs (subsumes retired #5)
     /// - real_quotes is a submask of raw quotes (from contract)
     /// - in_string is derived correctly via prefix_xor
-    /// - structural chars are masked by !in_string
-    /// - tail mask clears bits beyond block_len
+    /// - structural chars are masked by !in_string (subsumes retired #7)
+    /// - tail mask clears bits beyond block_len (subsumes retired #6)
     #[kani::proof]
     #[kani::stub_verified(compute_real_quotes)]
     fn verify_process_block_compositional() {
@@ -1236,204 +886,42 @@ mod verification {
             assert_eq!(p.open_bracket & tail, 0);
             assert_eq!(p.close_bracket & tail, 0);
         }
-    }
 
-    /// Correctness: next_quote returns the first real quote at or after
-    /// pos. If None, no real quotes exist at or after pos.
-    /// Adapted from agent audit (feat/kani-audit-and-verification).
-    #[kani::proof]
-    #[kani::unwind(65)]
-    #[kani::solver(kissat)] // bitmask + two while-i<64 loops: kissat outperforms cadical
-    fn verify_next_quote_correct() {
-        let buf: [u8; 64] = kani::any();
-        let (idx, _) = StructuralIndex::new(&buf);
-        let pos: usize = kani::any_where(|&p: &usize| p < 64);
+        // Coverage for retired proof properties:
+        // #5 (crash-freedom): reaching this point proves no panic
+        kani::cover!(block_len == 0, "crash-free at block_len=0 (retired #5)");
+        kani::cover!(block_len == 64, "crash-free at block_len=64 (retired #5)");
+        // #6 (tail masking): covered by the tail assertions above
+        kani::cover!(block_len < 64, "tail masking active (retired #6)");
+        // #7 (string exclusion): covered by the in_string assertions above
+        kani::cover!(
+            p.in_string != 0,
+            "string exclusion with non-zero in_string (retired #7)"
+        );
+        kani::cover!(
+            p.comma != 0 && p.in_string != 0,
+            "comma and in_string both non-zero (retired #7)"
+        );
 
-        let result = idx.next_quote(pos);
-
-        if let Some(q) = result {
-            assert!(q >= pos && q < 64);
-            // It's a real quote
-            assert!((idx.real_quotes[q >> 6] >> (q & 63)) & 1 == 1);
-            // No real quote between pos and q
-            let mut i = pos;
-            while i < q {
-                assert!((idx.real_quotes[i >> 6] >> (i & 63)) & 1 == 0);
-                i += 1;
-            }
-        } else {
-            // No real quotes at or after pos
-            let mut i = pos;
-            while i < 64 {
-                assert!((idx.real_quotes[i >> 6] >> (i & 63)) & 1 == 0);
-                i += 1;
-            }
-        }
-    }
-
-    /// Correctness: is_in_string is true iff an odd number of real
-    /// quotes precede this position AND the position itself is not a quote.
-    /// Adapted from agent audit (feat/kani-audit-and-verification).
-    #[kani::proof]
-    #[kani::unwind(65)]
-    #[kani::solver(kissat)] // bitmask + while-i<pos loop: kissat outperforms cadical
-    fn verify_is_in_string_correct() {
-        let buf: [u8; 64] = kani::any();
-        let (idx, _) = StructuralIndex::new(&buf);
-        let pos: usize = kani::any_where(|&p: &usize| p < 64);
-
-        let in_string = idx.is_in_string(pos);
-
-        let mut quote_count: u32 = 0;
-        let mut i = 0;
-        while i < pos {
-            if (idx.real_quotes[i >> 6] >> (i & 63)) & 1 == 1 {
-                quote_count += 1;
-            }
-            i += 1;
-        }
-
-        let is_quote = (idx.real_quotes[pos >> 6] >> (pos & 63)) & 1 == 1;
-        let expected = (quote_count % 2 == 1) && !is_quote;
-        assert_eq!(in_string, expected);
-    }
-
-    /// scan_string: if next_quote finds a close within [pos+1, end),
-    /// scan_string returns Some with correct content slice and after-position.
-    /// If no quote or quote >= end, returns None.
-    /// Uses 16-byte input to keep proof tractable.
-    #[kani::proof]
-    #[kani::unwind(18)]
-    fn verify_scan_string_bounds() {
-        let buf: [u8; 16] = kani::any();
-        let pos: usize = kani::any_where(|&p: &usize| p < 16);
-        let end: usize = kani::any_where(|&e: &usize| e <= 16);
-        kani::assume(pos < end);
-        kani::assume(buf[pos] == b'"');
-
-        let (idx, _) = StructuralIndex::new(&buf);
-        let result = idx.scan_string(&buf, pos, end);
-
-        match result {
-            Some((content, after)) => {
-                // after is the position past the closing quote
-                assert!(after > pos + 1 && after <= end);
-                // content starts at pos+1 and ends before the close quote
-                assert_eq!(content.len(), after - pos - 2);
-            }
-            None => {
-                // Either no quote found after pos, or the quote is >= end
-            }
-        }
-    }
-
-    /// skip_nested: result is always in [pos, end].
-    /// Proves the skip_nested contract on 16-byte inputs.
-    #[kani::proof_for_contract(StructuralIndex::skip_nested)]
-    #[kani::unwind(18)]
-    fn verify_skip_nested_bounds() {
-        let buf: [u8; 16] = kani::any();
-        let pos: usize = kani::any();
-        let end: usize = kani::any();
-        kani::assume(pos <= end && end <= 16);
-
-        let (idx, _) = StructuralIndex::new(&buf);
-        let result = idx.skip_nested(&buf, pos, end);
-
-        assert!(result >= pos && result <= end);
-    }
-
-    /// Prove StructuralIndex::new() produces valid line ranges.
-    ///
-    /// Properties verified on 8-byte input:
-    /// 1. Each range (start, end) satisfies start < end <= buf.len()
-    /// 2. Ranges are ordered and contiguous (no gaps between ranges
-    ///    except for the newline byte that separates them)
-    /// 3. No newlines appear inside any range's content
-    /// 4. Every non-newline byte belongs to exactly one range
-    /// 5. Bytes before the first range and after the last range are all newlines
-    #[kani::proof]
-    #[kani::unwind(66)]
-    #[kani::solver(kissat)]
-    fn verify_line_ranges_valid() {
-        let buf: [u8; 8] = kani::any();
-        let (_, line_ranges) = StructuralIndex::new(&buf);
-
-        // Count actual newlines in the buffer
-        let mut newline_count: usize = 0;
-        let mut i = 0;
-        while i < 8 {
-            if buf[i] == b'\n' {
-                newline_count += 1;
-            }
-            i += 1;
-        }
-
-        // line_ranges length is bounded: at most newline_count + 1
-        // (each newline splits into at most one more range)
-        assert!(line_ranges.len() <= newline_count + 1);
-
-        // Property 5a: bytes before the first range are all newlines
-        if !line_ranges.is_empty() {
-            let (first_start, _) = line_ranges[0];
-            let mut pre = 0;
-            while pre < first_start {
-                assert!(buf[pre] == b'\n', "non-newline before first range");
-                pre += 1;
-            }
-        }
-
-        // Verify each range
-        let mut range_idx = 0;
-        while range_idx < line_ranges.len() {
-            let (start, end) = line_ranges[range_idx];
-
-            // Property 1: valid bounds
-            assert!(start < end, "empty range");
-            assert!(end <= 8, "range past buffer");
-
-            // Property 3: no newlines inside the range
-            let mut j = start;
-            while j < end {
-                assert!(buf[j] != b'\n', "newline inside range");
-                j += 1;
-            }
-
-            // Property 2: ranges are separated only by newline bytes.
-            if range_idx + 1 < line_ranges.len() {
-                let (next_start, _) = line_ranges[range_idx + 1];
-                assert!(next_start > end, "overlapping ranges");
-                let mut gap = end;
-                while gap < next_start {
-                    assert!(buf[gap] == b'\n', "non-newline gap between ranges");
-                    gap += 1;
-                }
-            }
-            range_idx += 1;
-        }
-
-        // Property 5b: bytes after the last range are all newlines
-        if !line_ranges.is_empty() {
-            let (_, last_end) = line_ranges[line_ranges.len() - 1];
-            let mut post = last_end;
-            while post < 8 {
-                assert!(buf[post] == b'\n', "non-newline after last range");
-                post += 1;
-            }
-        }
-
-        // Property 4 (completeness): if no ranges, all bytes must be newlines
-        if line_ranges.is_empty() {
-            let mut all_nl = 0;
-            while all_nl < 8 {
-                assert!(buf[all_nl] == b'\n', "non-newline byte with no ranges");
-                all_nl += 1;
-            }
-        }
-
-        // Guard against vacuous proof
-        kani::cover!(line_ranges.len() > 1, "multiple line ranges");
-        kani::cover!(line_ranges.is_empty(), "no ranges (all newlines)");
-        kani::cover!(newline_count == 0, "no newlines in buffer");
+        // In-string masking: verify that raw structural bits inside strings
+        // were actually filtered out (not just that in_string is non-zero).
+        // These cover guards prove masking is effective by witnessing cases
+        // where the raw input had structural chars at in-string positions.
+        kani::cover!(
+            raw.comma & p.in_string != 0 && p.comma & p.in_string == 0,
+            "raw commas inside strings were masked out"
+        );
+        kani::cover!(
+            raw.colon & p.in_string != 0 && p.colon & p.in_string == 0,
+            "raw colons inside strings were masked out"
+        );
+        kani::cover!(
+            raw.open_brace & p.in_string != 0 && p.open_brace & p.in_string == 0,
+            "raw open braces inside strings were masked out"
+        );
+        kani::cover!(
+            raw.close_brace & p.in_string != 0 && p.close_brace & p.in_string == 0,
+            "raw close braces inside strings were masked out"
+        );
     }
 }

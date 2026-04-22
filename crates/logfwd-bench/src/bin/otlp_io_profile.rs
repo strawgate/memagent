@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::fs::File;
 use std::hint::black_box;
 use std::path::PathBuf;
@@ -496,20 +498,16 @@ fn build_fixture(profile: OtlpFixtureProfile) -> FixtureData {
     let detached_projected_fallback = logfwd_arrow::materialize::detach(&projected_fallback);
     assert_batch_matches(&batch, &detached_projected_fallback, profile.name);
     assert_encode_paths_match(&projected_fallback, profile.name);
-    if !profile.has_complex_any {
-        let projected =
-            decode_protobuf_to_batch_projected_detached_experimental(&otlp_data.payload)
-                .expect("projected fixture decodes");
-        assert_batch_matches(&batch, &projected, profile.name);
-        assert_encode_paths_match(&projected, profile.name);
-        let view = decode_protobuf_bytes_to_batch_projected_only_experimental(
-            otlp_data.payload_bytes.clone(),
-        )
-        .expect("view fixture decodes");
-        let detached_view = logfwd_arrow::materialize::detach(&view);
-        assert_batch_matches(&batch, &detached_view, profile.name);
-        assert_encode_paths_match(&view, profile.name);
-    }
+    let projected = decode_protobuf_to_batch_projected_detached_experimental(&otlp_data.payload)
+        .expect("projected fixture decodes");
+    assert_batch_matches(&batch, &projected, profile.name);
+    assert_encode_paths_match(&projected, profile.name);
+    let view =
+        decode_protobuf_bytes_to_batch_projected_only_experimental(otlp_data.payload_bytes.clone())
+            .expect("view fixture decodes");
+    let detached_view = logfwd_arrow::materialize::detach(&view);
+    assert_batch_matches(&batch, &detached_view, profile.name);
+    assert_encode_paths_match(&view, profile.name);
 
     let zstd_payload =
         zstd::encode_all(otlp_data.payload.as_slice(), 1).expect("fixture zstd compresses");

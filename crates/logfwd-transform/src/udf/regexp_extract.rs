@@ -117,7 +117,7 @@ impl RegexpExtractUdf {
 
     fn get_or_compile_regex(&self, pattern: &str) -> DfResult<Arc<Regex>> {
         {
-            let mut cache = self.regex_cache.lock().map_err(|_| {
+            let mut cache = self.regex_cache.lock().map_err(|_e| {
                 datafusion::error::DataFusionError::Execution(
                     "regexp_extract() internal cache lock poisoned".to_string(),
                 )
@@ -129,12 +129,11 @@ impl RegexpExtractUdf {
 
         let compiled = Arc::new(Regex::new(pattern).map_err(|e| {
             datafusion::error::DataFusionError::Execution(format!(
-                "regexp_extract: invalid pattern '{}': {}",
-                pattern, e
+                "regexp_extract: invalid pattern '{pattern}': {e}"
             ))
         })?);
 
-        let mut cache = self.regex_cache.lock().map_err(|_| {
+        let mut cache = self.regex_cache.lock().map_err(|_e| {
             datafusion::error::DataFusionError::Execution(
                 "regexp_extract() internal cache lock poisoned".to_string(),
             )

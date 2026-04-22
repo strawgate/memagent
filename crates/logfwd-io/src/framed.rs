@@ -9,14 +9,15 @@
 //! interleaved data from multiple files (or TCP connections) never
 //! cross-contaminates partial lines or CRI P/F aggregation state.
 
+use bytes::Bytes;
+
 use crate::filter_hints::FilterHints;
 use crate::format::FormatDecoder;
-use crate::input::{InputCadence, InputEvent, InputSource};
+use crate::input::{CriMetadata, InputCadence, InputEvent, InputSource};
 #[cfg(test)]
 use crate::poll_cadence::PollCadenceSignal;
 use crate::tail::ByteOffset;
 use logfwd_core::checkpoint_tracker::CheckpointTracker;
-use logfwd_core::cri::json_escape_bytes;
 use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 use logfwd_types::pipeline::SourceId;
 use std::collections::HashMap;
@@ -26,6 +27,9 @@ use std::sync::Arc;
 /// Maximum remainder buffer size before discarding (prevents OOM on
 /// input without newlines). Applied per source.
 const MAX_REMAINDER_BYTES: usize = 2 * 1024 * 1024;
+
+const INITIAL_CRI_METADATA_SPANS: usize = 16;
+const INITIAL_CRI_TIMESTAMP_BYTES: usize = 1024;
 
 /// Per-source state for framing and checkpoint tracking.
 ///
@@ -47,6 +51,12 @@ struct SourceState {
     overflow_tainted: bool,
 }
 
+impl SourceState {
+    fn is_reclaimable(&self) -> bool {
+        self.remainder.is_empty() && !self.overflow_tainted && !self.format.has_pending_state()
+    }
+}
+
 /// Wraps a raw [`InputSource`] with newline framing and format processing.
 ///
 /// The inner source provides raw bytes (from file, TCP, UDP, etc.). This
@@ -65,10 +75,12 @@ pub struct FramedInput {
     /// Per-source state: remainder, format processor, checkpoint tracker.
     sources: HashMap<Option<SourceId>, SourceState>,
     out_buf: Vec<u8>,
+    cri_metadata_buf: CriMetadata,
     /// Spare buffer swapped in when out_buf is emitted, preserving capacity
     /// across polls without allocating.
     spare_buf: Vec<u8>,
     stats: Arc<ComponentStats>,
+    last_raw_had_payload: bool,
 }
 
 impl FramedInput {
@@ -77,27 +89,41 @@ impl FramedInput {
         format: FormatDecoder,
         stats: Arc<ComponentStats>,
     ) -> Self {
+        let cri_metadata_buf = if format.emits_cri_metadata() {
+            CriMetadata::with_capacity(INITIAL_CRI_METADATA_SPANS, INITIAL_CRI_TIMESTAMP_BYTES)
+        } else {
+            CriMetadata::default()
+        };
         Self {
             inner,
             format_template: format,
             sources: HashMap::new(),
             out_buf: Vec::with_capacity(64 * 1024),
+            cri_metadata_buf,
             spare_buf: Vec::with_capacity(64 * 1024),
             stats,
+            last_raw_had_payload: false,
         }
     }
-}
 
-impl InputSource for FramedInput {
-    fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
-        let raw_events = self.inner.poll()?;
+    fn cri_metadata_for_emitted_data(&mut self) -> Option<CriMetadata> {
+        if self.cri_metadata_buf.is_empty() {
+            return None;
+        }
+        let replacement = self.cri_metadata_buf.empty_with_preserved_capacity();
+        let metadata = std::mem::replace(&mut self.cri_metadata_buf, replacement);
+        Some(metadata)
+    }
+
+    fn process_raw_events(&mut self, raw_events: Vec<InputEvent>) -> Vec<InputEvent> {
+        self.last_raw_had_payload = raw_events
+            .iter()
+            .any(|event| matches!(event, InputEvent::Data { .. } | InputEvent::Batch { .. }));
         if raw_events.is_empty() {
-            return Ok(vec![]);
+            return vec![];
         }
 
         let mut result_events: Vec<InputEvent> = Vec::new();
-        let inject_source_path = self.format_template.supports_source_path_injection();
-        let mut source_path_by_id: Option<HashMap<SourceId, std::path::PathBuf>> = None;
 
         for event in raw_events {
             match event {
@@ -105,6 +131,7 @@ impl InputSource for FramedInput {
                     bytes,
                     source_id,
                     accounted_bytes,
+                    ..
                 } => {
                     self.stats.inc_bytes(accounted_bytes);
 
@@ -220,6 +247,7 @@ impl InputSource for FramedInput {
 
                     // Process complete lines through per-source format handler.
                     self.out_buf.clear();
+                    self.cri_metadata_buf.clear();
                     let state = self.sources.get_mut(&key).expect("just inserted");
                     let mut process_start = 0usize;
                     if tainted_on_entry {
@@ -232,23 +260,12 @@ impl InputSource for FramedInput {
                         }
                     }
                     if process_start < chunk.len() {
-                        state
-                            .format
-                            .process_lines(&chunk[process_start..], &mut self.out_buf);
+                        state.format.process_lines_with_metadata(
+                            &chunk[process_start..],
+                            &mut self.out_buf,
+                            Some(&mut self.cri_metadata_buf),
+                        );
                     }
-                    if inject_source_path
-                        && let Some(source_path) =
-                            source_path_for(key, &mut source_path_by_id, self.inner.as_ref())
-                    {
-                        let mut with_source = std::mem::take(&mut self.spare_buf);
-                        with_source.clear();
-                        inject_source_path_metadata(&self.out_buf, source_path, &mut with_source);
-                        // Reclaim out_buf's capacity as spare_buf before replacing it,
-                        // preserving the buffer-bouncing optimization (no allocation per poll).
-                        self.out_buf.clear();
-                        self.spare_buf = std::mem::replace(&mut self.out_buf, with_source);
-                    }
-
                     let line_count = memchr::memchr_iter(b'\n', &chunk[process_start..]).count();
                     self.stats.inc_lines(line_count as u64);
 
@@ -257,12 +274,24 @@ impl InputSource for FramedInput {
                         // for next iteration. No allocation — the 64KB bounces
                         // between the two buffers.
                         let data = std::mem::take(&mut self.out_buf);
+                        let cri_metadata = self.cri_metadata_for_emitted_data();
                         std::mem::swap(&mut self.out_buf, &mut self.spare_buf);
                         result_events.push(InputEvent::Data {
-                            bytes: data,
+                            bytes: Bytes::from(data),
                             source_id,
                             accounted_bytes: 0,
+                            cri_metadata,
                         });
+                    }
+
+                    if key.is_some()
+                        && self.inner.should_reclaim_completed_source_state()
+                        && self
+                            .sources
+                            .get(&key)
+                            .is_some_and(SourceState::is_reclaimable)
+                    {
+                        self.sources.remove(&key);
                     }
                 }
                 InputEvent::Batch {
@@ -324,32 +353,17 @@ impl InputSource for FramedInput {
                             }
 
                             self.out_buf.clear();
+                            self.cri_metadata_buf.clear();
                             let state = self.sources.get_mut(&key).expect("just checked existence");
                             if process_start < remainder.len() {
-                                state
-                                    .format
-                                    .process_lines(&remainder[process_start..], &mut self.out_buf);
+                                state.format.process_lines_with_metadata(
+                                    &remainder[process_start..],
+                                    &mut self.out_buf,
+                                    Some(&mut self.cri_metadata_buf),
+                                );
                             }
                             let emitted_line_count =
                                 memchr::memchr_iter(b'\n', &remainder[process_start..]).count();
-                            if inject_source_path
-                                && let Some(source_path) = source_path_for(
-                                    key,
-                                    &mut source_path_by_id,
-                                    self.inner.as_ref(),
-                                )
-                            {
-                                let mut with_source = std::mem::take(&mut self.spare_buf);
-                                with_source.clear();
-                                inject_source_path_metadata(
-                                    &self.out_buf,
-                                    source_path,
-                                    &mut with_source,
-                                );
-                                self.out_buf.clear();
-                                self.spare_buf = std::mem::replace(&mut self.out_buf, with_source);
-                            }
-
                             self.stats.inc_lines(emitted_line_count as u64);
 
                             // Remainder was flushed — update tracker so
@@ -360,29 +374,45 @@ impl InputSource for FramedInput {
 
                             if !self.out_buf.is_empty() {
                                 let data = std::mem::take(&mut self.out_buf);
+                                let cri_metadata = self.cri_metadata_for_emitted_data();
                                 std::mem::swap(&mut self.out_buf, &mut self.spare_buf);
                                 result_events.push(InputEvent::Data {
-                                    bytes: data,
+                                    bytes: Bytes::from(data),
                                     source_id: key,
                                     accounted_bytes: 0,
+                                    cri_metadata,
                                 });
                             }
                         }
-                        // Reclaim per-source state after EOF. For S3/TCP
-                        // sources EOF is terminal — the SourceId is never
-                        // reused. For file-tail, EOF fires on idle; if the
-                        // file grows again, a fresh SourceState is created on
-                        // the next Data event. The remainder was already
-                        // flushed above, so checkpoint_data() correctly falls
-                        // back to the raw file offset (no remainder to
-                        // subtract).
-                        self.sources.remove(&key);
+                        // Reclaim only completed EOF state. CRI P/F assembly
+                        // can hold pending data even when the line remainder
+                        // is empty, and file-tail EOF can be an idle signal
+                        // rather than a terminal source event.
+                        if self
+                            .sources
+                            .get(&key)
+                            .is_some_and(SourceState::is_reclaimable)
+                        {
+                            self.sources.remove(&key);
+                        }
                     }
                 }
             }
         }
 
-        Ok(result_events)
+        result_events
+    }
+}
+
+impl InputSource for FramedInput {
+    fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
+        let raw_events = self.inner.poll()?;
+        Ok(self.process_raw_events(raw_events))
+    }
+
+    fn poll_shutdown(&mut self) -> io::Result<Vec<InputEvent>> {
+        let raw_events = self.inner.poll_shutdown()?;
+        Ok(self.process_raw_events(raw_events))
     }
 
     fn name(&self) -> &str {
@@ -393,12 +423,18 @@ impl InputSource for FramedInput {
         self.inner.health()
     }
 
+    fn is_finished(&self) -> bool {
+        self.inner.is_finished()
+    }
+
     fn apply_hints(&mut self, hints: &FilterHints) {
         self.inner.apply_hints(hints);
     }
 
     fn get_cadence(&self) -> InputCadence {
-        self.inner.get_cadence()
+        let mut cadence = self.inner.get_cadence();
+        cadence.signal.had_data |= self.last_raw_had_payload;
+        cadence
     }
 
     /// Return checkpoint offsets from the Kani-proven CheckpointTracker.
@@ -433,55 +469,12 @@ impl InputSource for FramedInput {
         self.inner.source_paths()
     }
 
+    fn should_reclaim_completed_source_state(&self) -> bool {
+        self.inner.should_reclaim_completed_source_state()
+    }
+
     fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) {
         self.inner.set_offset_by_source(source_id, offset);
-    }
-}
-
-fn source_path_for<'a>(
-    source_id: Option<SourceId>,
-    source_path_by_id: &'a mut Option<HashMap<SourceId, std::path::PathBuf>>,
-    inner: &dyn InputSource,
-) -> Option<&'a std::path::PathBuf> {
-    let sid = source_id?;
-    if source_path_by_id.is_none() {
-        *source_path_by_id = Some(inner.source_paths().into_iter().collect());
-    }
-    source_path_by_id.as_ref()?.get(&sid)
-}
-
-fn inject_source_path_metadata(chunk: &[u8], source_path: &std::path::Path, out: &mut Vec<u8>) {
-    let source_path_bytes = source_path.to_string_lossy();
-    let source_path_bytes = source_path_bytes.as_bytes();
-    let mut pos = 0;
-    while pos < chunk.len() {
-        let eol = memchr::memchr(b'\n', &chunk[pos..]).map_or(chunk.len(), |o| pos + o);
-        let line = &chunk[pos..eol];
-        let first_nonws = line
-            .iter()
-            .position(|&b| !matches!(b, b' ' | b'\t' | b'\r'));
-        if let Some(obj_start) = first_nonws.filter(|&idx| line[idx] == b'{') {
-            let after_open = &line[obj_start + 1..];
-            // Detect empty object: only whitespace between `{` and `}`.
-            let is_empty_obj = after_open
-                .iter()
-                .position(|&b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n'))
-                .is_some_and(|i| after_open[i] == b'}');
-            out.extend_from_slice(&line[..obj_start]);
-            out.extend_from_slice(b"{\"_source_path\":\"");
-            json_escape_bytes(source_path_bytes, out);
-            out.push(b'"');
-            if !is_empty_obj {
-                out.push(b',');
-            }
-            out.extend_from_slice(after_open);
-        } else {
-            out.extend_from_slice(line);
-        }
-        if eol < chunk.len() {
-            out.push(b'\n');
-        }
-        pos = eol + 1;
     }
 }
 
@@ -497,6 +490,7 @@ mod tests {
     struct MockSource {
         name: String,
         events: VecDeque<Vec<InputEvent>>,
+        shutdown_events: VecDeque<Vec<InputEvent>>,
         offsets: Vec<(SourceId, ByteOffset)>,
         source_paths: Vec<(SourceId, std::path::PathBuf)>,
         health: ComponentHealth,
@@ -509,6 +503,7 @@ mod tests {
             Self {
                 name: "mock".to_string(),
                 events: batches.into(),
+                shutdown_events: VecDeque::new(),
                 offsets: vec![],
                 source_paths: vec![],
                 health: ComponentHealth::Healthy,
@@ -523,9 +518,10 @@ mod tests {
                     .into_iter()
                     .map(|c| {
                         vec![InputEvent::Data {
-                            bytes: c.to_vec(),
+                            bytes: Bytes::from(c.to_vec()),
                             source_id: None,
                             accounted_bytes: c.len() as u64,
+                            cri_metadata: None,
                         }]
                     })
                     .collect(),
@@ -542,9 +538,10 @@ mod tests {
                     .into_iter()
                     .map(|c| {
                         vec![InputEvent::Data {
-                            bytes: c.to_vec(),
+                            bytes: Bytes::from(c.to_vec()),
                             source_id: Some(sid),
                             accounted_bytes: c.len() as u64,
+                            cri_metadata: None,
                         }]
                     })
                     .collect(),
@@ -553,6 +550,11 @@ mod tests {
 
         fn with_offsets(mut self, offsets: Vec<(SourceId, ByteOffset)>) -> Self {
             self.offsets = offsets;
+            self
+        }
+
+        fn with_shutdown_events(mut self, events: Vec<Vec<InputEvent>>) -> Self {
+            self.shutdown_events = events.into();
             self
         }
 
@@ -576,6 +578,10 @@ mod tests {
     impl InputSource for MockSource {
         fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
             Ok(self.events.pop_front().unwrap_or_default())
+        }
+
+        fn poll_shutdown(&mut self) -> io::Result<Vec<InputEvent>> {
+            Ok(self.shutdown_events.pop_front().unwrap_or_default())
         }
 
         fn name(&self) -> &str {
@@ -683,6 +689,28 @@ mod tests {
     }
 
     #[test]
+    fn framed_input_reports_raw_shutdown_payload_when_output_is_empty() {
+        let stats = make_stats();
+        let source = MockSource::new(vec![]).with_shutdown_events(vec![vec![InputEvent::Data {
+            bytes: Bytes::from_static(b"partial"),
+            source_id: Some(SourceId(1)),
+            accounted_bytes: 7,
+            cri_metadata: None,
+        }]]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
+            stats,
+        );
+
+        let events = framed
+            .poll_shutdown()
+            .expect("shutdown poll should succeed");
+        assert!(events.is_empty());
+        assert!(framed.get_cadence().signal.had_data);
+    }
+
+    #[test]
     fn remainder_across_polls() {
         let stats = make_stats();
         let source = MockSource::from_chunks(vec![b"hello\nwor", b"ld\n"]);
@@ -748,9 +776,10 @@ mod tests {
     fn data_events_use_accounted_bytes_for_stats() {
         let stats = make_stats();
         let source = MockSource::new(vec![vec![InputEvent::Data {
-            bytes: b"line\n".to_vec(),
+            bytes: Bytes::from_static(b"line\n"),
             source_id: None,
             accounted_bytes: 99,
+            cri_metadata: None,
         }]]);
         let mut framed = FramedInput::new(
             Box::new(source),
@@ -875,14 +904,16 @@ mod tests {
         let total = first + second_bytes.len() as u64;
         let source = MockSource::new(vec![
             vec![InputEvent::Data {
-                bytes: big,
+                bytes: Bytes::from(big),
                 source_id: Some(sid),
                 accounted_bytes: 0,
+                cri_metadata: None,
             }],
             vec![InputEvent::Data {
-                bytes: second_bytes.to_vec(),
+                bytes: Bytes::from(second_bytes.to_vec()),
                 source_id: Some(sid),
                 accounted_bytes: 0,
+                cri_metadata: None,
             }],
         ])
         .with_offsets(vec![(sid, ByteOffset(total))]);
@@ -1001,15 +1032,17 @@ mod tests {
         let stats = make_stats();
         let source = MockSource::new(vec![
             vec![InputEvent::Data {
-                bytes: b"partial".to_vec(),
+                bytes: Bytes::from_static(b"partial"),
                 source_id: None,
                 accounted_bytes: 7,
+                cri_metadata: None,
             }],
             vec![InputEvent::Rotated { source_id: None }],
             vec![InputEvent::Data {
-                bytes: b"fresh\n".to_vec(),
+                bytes: Bytes::from_static(b"fresh\n"),
                 source_id: None,
                 accounted_bytes: 6,
+                cri_metadata: None,
             }],
         ]);
         let mut framed = FramedInput::new(
@@ -1046,10 +1079,34 @@ mod tests {
         );
 
         let events = framed.poll().unwrap();
-        assert_eq!(
-            collect_data(events),
-            b"{\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"msg\":\"hello\"}\n"
+        assert_eq!(collect_data(events), b"{\"msg\":\"hello\"}\n");
+    }
+
+    #[test]
+    fn cri_format_emits_metadata_sidecar() {
+        let stats = make_stats();
+        let input = b"2024-01-15T10:30:00Z stdout F {\"msg\":\"hello\"}\n";
+        let source = MockSource::from_chunks(vec![input.as_slice()]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::cri(2 * 1024 * 1024, Arc::clone(&stats)),
+            stats,
         );
+
+        let events = framed.poll().unwrap();
+        let InputEvent::Data {
+            bytes,
+            cri_metadata: Some(metadata),
+            ..
+        } = &events[0]
+        else {
+            panic!("expected data event with CRI metadata");
+        };
+        assert_eq!(bytes.as_ref(), b"{\"msg\":\"hello\"}\n");
+        assert_eq!(metadata.rows, 1);
+        let values = metadata.spans[0].values.as_ref().expect("metadata values");
+        assert_eq!(metadata.timestamp(values), b"2024-01-15T10:30:00Z");
+        assert_eq!(values.stream.as_str(), "stdout");
     }
 
     #[test]
@@ -1096,9 +1153,10 @@ mod tests {
         let stats = make_stats();
         let source = MockSource::new(vec![
             vec![InputEvent::Data {
-                bytes: b"no-newline".to_vec(),
+                bytes: Bytes::from_static(b"no-newline"),
                 source_id: None,
                 accounted_bytes: 10,
+                cri_metadata: None,
             }],
             vec![InputEvent::EndOfFile { source_id: None }],
         ]);
@@ -1117,6 +1175,32 @@ mod tests {
         assert_eq!(collect_data(events2), b"no-newline\n");
     }
 
+    /// Runtime shutdown is a terminal lifecycle event: when the wrapped source
+    /// emits EOF from `poll_shutdown`, `FramedInput` must flush bytes that were
+    /// already held in its per-source remainder buffer.
+    #[test]
+    fn poll_shutdown_flushes_existing_remainder() {
+        let stats = make_stats();
+        let source = MockSource::new(vec![vec![InputEvent::Data {
+            bytes: Bytes::from_static(b"no-newline"),
+            source_id: None,
+            accounted_bytes: 10,
+            cri_metadata: None,
+        }]])
+        .with_shutdown_events(vec![vec![InputEvent::EndOfFile { source_id: None }]]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(stats.clone()),
+            stats,
+        );
+
+        let events1 = framed.poll().unwrap();
+        assert!(collect_data(events1).is_empty());
+
+        let events2 = framed.poll_shutdown().unwrap();
+        assert_eq!(collect_data(events2), b"no-newline\n");
+    }
+
     /// Multiple records in a file where only the last one lacks a newline:
     /// all records must be emitted.
     #[test]
@@ -1124,9 +1208,10 @@ mod tests {
         let stats = make_stats();
         let source = MockSource::new(vec![
             vec![InputEvent::Data {
-                bytes: b"complete\npartial".to_vec(),
+                bytes: Bytes::from_static(b"complete\npartial"),
                 source_id: None,
                 accounted_bytes: 16,
+                cri_metadata: None,
             }],
             vec![InputEvent::EndOfFile { source_id: None }],
         ]);
@@ -1151,9 +1236,10 @@ mod tests {
         let stats = make_stats();
         let source = MockSource::new(vec![
             vec![InputEvent::Data {
-                bytes: b"line\n".to_vec(),
+                bytes: Bytes::from_static(b"line\n"),
                 source_id: None,
                 accounted_bytes: 5,
+                cri_metadata: None,
             }],
             vec![InputEvent::EndOfFile { source_id: None }],
         ]);
@@ -1177,9 +1263,10 @@ mod tests {
         let chunk = b"partial-line";
         let source = MockSource::new(vec![
             vec![InputEvent::Data {
-                bytes: chunk.to_vec(),
+                bytes: Bytes::from(chunk.to_vec()),
                 source_id: Some(sid),
                 accounted_bytes: chunk.len() as u64,
+                cri_metadata: None,
             }],
             vec![InputEvent::EndOfFile {
                 source_id: Some(sid),
@@ -1215,14 +1302,16 @@ mod tests {
         let source = MockSource::new(vec![
             vec![
                 InputEvent::Data {
-                    bytes: b"alpha".to_vec(),
+                    bytes: Bytes::from_static(b"alpha"),
                     source_id: Some(sid_a),
                     accounted_bytes: 5,
+                    cri_metadata: None,
                 },
                 InputEvent::Data {
-                    bytes: b"beta".to_vec(),
+                    bytes: Bytes::from_static(b"beta"),
                     source_id: Some(sid_b),
                     accounted_bytes: 4,
+                    cri_metadata: None,
                 },
             ],
             vec![InputEvent::EndOfFile {
@@ -1263,27 +1352,31 @@ mod tests {
             // Poll 1: partial lines from both sources in one batch
             vec![
                 InputEvent::Data {
-                    bytes: b"hello-from-A".to_vec(),
+                    bytes: Bytes::from_static(b"hello-from-A"),
                     source_id: Some(sid_a),
                     accounted_bytes: 12,
+                    cri_metadata: None,
                 },
                 InputEvent::Data {
-                    bytes: b"hello-from-B".to_vec(),
+                    bytes: Bytes::from_static(b"hello-from-B"),
                     source_id: Some(sid_b),
                     accounted_bytes: 12,
+                    cri_metadata: None,
                 },
             ],
             // Poll 2: complete the lines from each source
             vec![
                 InputEvent::Data {
-                    bytes: b"-done\n".to_vec(),
+                    bytes: Bytes::from_static(b"-done\n"),
                     source_id: Some(sid_a),
                     accounted_bytes: 6,
+                    cri_metadata: None,
                 },
                 InputEvent::Data {
-                    bytes: b"-done\n".to_vec(),
+                    bytes: Bytes::from_static(b"-done\n"),
                     source_id: Some(sid_b),
                     accounted_bytes: 6,
+                    cri_metadata: None,
                 },
             ],
         ]);
@@ -1329,23 +1422,26 @@ mod tests {
             // Partial lines from two sources
             vec![
                 InputEvent::Data {
-                    bytes: b"partial-A".to_vec(),
+                    bytes: Bytes::from_static(b"partial-A"),
                     source_id: Some(sid_a),
                     accounted_bytes: 9,
+                    cri_metadata: None,
                 },
                 InputEvent::Data {
-                    bytes: b"partial-B".to_vec(),
+                    bytes: Bytes::from_static(b"partial-B"),
                     source_id: Some(sid_b),
                     accounted_bytes: 9,
+                    cri_metadata: None,
                 },
             ],
             // Truncation
             vec![InputEvent::Truncated { source_id: None }],
             // Fresh data from source A
             vec![InputEvent::Data {
-                bytes: b"fresh-A\n".to_vec(),
+                bytes: Bytes::from_static(b"fresh-A\n"),
                 source_id: Some(sid_a),
                 accounted_bytes: 8,
+                cri_metadata: None,
             }],
         ]);
 
@@ -1374,9 +1470,10 @@ mod tests {
 
         // The inner source reports offset 1000 for our source.
         let source = MockSource::new(vec![vec![InputEvent::Data {
-            bytes: b"hello\nwor".to_vec(),
+            bytes: Bytes::from_static(b"hello\nwor"),
             source_id: Some(sid),
             accounted_bytes: 9,
+            cri_metadata: None,
         }]])
         .with_offsets(vec![(sid, ByteOffset(1000))]);
 
@@ -1403,9 +1500,10 @@ mod tests {
         let sid = SourceId(42);
 
         let source = MockSource::new(vec![vec![InputEvent::Data {
-            bytes: b"complete\n".to_vec(),
+            bytes: Bytes::from_static(b"complete\n"),
             source_id: Some(sid),
             accounted_bytes: 9,
+            cri_metadata: None,
         }]])
         .with_offsets(vec![(sid, ByteOffset(500))]);
 
@@ -1440,21 +1538,24 @@ mod tests {
         let source = MockSource::new(vec![
             // Source A: CRI partial line
             vec![InputEvent::Data {
-                bytes: b"2024-01-15T10:30:00Z stdout P hello \n".to_vec(),
+                bytes: Bytes::from_static(b"2024-01-15T10:30:00Z stdout P hello \n"),
                 source_id: Some(sid_a),
                 accounted_bytes: 38,
+                cri_metadata: None,
             }],
             // Source B: CRI full line (must NOT merge with A's partial)
             vec![InputEvent::Data {
-                bytes: b"2024-01-15T10:30:01Z stderr F {\"msg\":\"world\"}\n".to_vec(),
+                bytes: Bytes::from_static(b"2024-01-15T10:30:01Z stderr F {\"msg\":\"world\"}\n"),
                 source_id: Some(sid_b),
                 accounted_bytes: 50,
+                cri_metadata: None,
             }],
             // Source A: CRI full line (completes A's partial)
             vec![InputEvent::Data {
-                bytes: b"2024-01-15T10:30:02Z stdout F from-A\n".to_vec(),
+                bytes: Bytes::from_static(b"2024-01-15T10:30:02Z stdout F from-A\n"),
                 source_id: Some(sid_a),
                 accounted_bytes: 39,
+                cri_metadata: None,
             }],
         ]);
 
@@ -1471,10 +1572,7 @@ mod tests {
         // Poll 2: B's full line — emitted as standalone
         let events2 = framed.poll().unwrap();
         let data2 = collect_data(events2);
-        assert!(
-            data2.starts_with(b"{\"_timestamp\":\"2024-01-15T10:30:01Z\""),
-            "B's line should be emitted independently"
-        );
+        assert_eq!(data2, b"{\"msg\":\"world\"}\n");
         assert!(
             !data2.windows(5).any(|w| w == b"hello"),
             "B's output must NOT contain A's partial"
@@ -1498,15 +1596,17 @@ mod tests {
         let source = MockSource::new(vec![
             // First read: 9 bytes, newline at position 5
             vec![InputEvent::Data {
-                bytes: b"hello\nwor".to_vec(),
+                bytes: Bytes::from_static(b"hello\nwor"),
                 source_id: Some(sid),
                 accounted_bytes: 9,
+                cri_metadata: None,
             }],
             // Second read: 3 bytes, newline at position 1 (the 'd\n')
             vec![InputEvent::Data {
-                bytes: b"ld\n".to_vec(),
+                bytes: Bytes::from_static(b"ld\n"),
                 source_id: Some(sid),
                 accounted_bytes: 3,
+                cri_metadata: None,
             }],
         ])
         .with_offsets(vec![(sid, ByteOffset(12))]);
@@ -1524,22 +1624,26 @@ mod tests {
 
         // After second poll: remainder is empty (all consumed)
         let _ = framed.poll().unwrap();
-        let state = framed.sources.get(&Some(sid)).unwrap();
-        assert_eq!(state.tracker.remainder_len(), 0);
+        assert!(
+            !framed.sources.contains_key(&Some(sid)),
+            "complete source state should be reclaimed once no remainder is buffered"
+        );
 
-        // Checkpoint should reflect: 12 - 0 = 12
+        // Checkpoint should fall back to the raw source offset when no
+        // remainder state remains: 12 - 0 = 12.
         let cp = framed.checkpoint_data();
         assert_eq!(cp[0].1, ByteOffset(12));
     }
 
     #[test]
-    fn file_json_injects_source_path_column() {
+    fn file_json_does_not_inject_source_path_column() {
         let stats = make_stats();
         let sid = SourceId(7);
         let source = MockSource::new(vec![vec![InputEvent::Data {
-            bytes: b"{\"msg\":\"hello\"}\n".to_vec(),
+            bytes: Bytes::from_static(b"{\"msg\":\"hello\"}\n"),
             source_id: Some(sid),
             accounted_bytes: 0,
+            cri_metadata: None,
         }]])
         .with_source_paths(vec![(sid, "/var/log/pods/ns_pod_uid/c/main.log".into())]);
 
@@ -1550,20 +1654,51 @@ mod tests {
         );
 
         let out = collect_data(framed.poll().unwrap());
-        assert_eq!(
-            out,
-            b"{\"_source_path\":\"/var/log/pods/ns_pod_uid/c/main.log\",\"msg\":\"hello\"}\n"
-        );
+        assert_eq!(out, b"{\"msg\":\"hello\"}\n");
     }
 
     #[test]
-    fn file_cri_injects_source_path_alongside_cri_metadata() {
+    fn file_json_preserves_source_id_without_rewriting_payload() {
+        let stats = make_stats();
+        let sid = SourceId(17);
+        let source = MockSource::new(vec![vec![InputEvent::Data {
+            bytes: Bytes::from_static(b"{\"msg\":\"hello\"}\n"),
+            source_id: Some(sid),
+            accounted_bytes: 0,
+            cri_metadata: None,
+        }]])
+        .with_source_paths(vec![(sid, "/var/log/pods/ns_pod_uid/c/main.log".into())]);
+
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough_json(Arc::clone(&stats)),
+            stats,
+        );
+
+        let events = framed.poll().unwrap();
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            InputEvent::Data {
+                bytes,
+                source_id: Some(actual_sid),
+                ..
+            } => {
+                assert_eq!(&bytes[..], b"{\"msg\":\"hello\"}\n");
+                assert_eq!(*actual_sid, sid);
+            }
+            _ => panic!("expected data event with preserved source_id"),
+        }
+    }
+
+    #[test]
+    fn file_cri_does_not_inject_source_path_alongside_cri_metadata() {
         let stats = make_stats();
         let sid = SourceId(8);
         let source = MockSource::new(vec![vec![InputEvent::Data {
-            bytes: b"2024-01-15T10:30:00Z stdout F {\"msg\":\"hello\"}\n".to_vec(),
+            bytes: Bytes::from_static(b"2024-01-15T10:30:00Z stdout F {\"msg\":\"hello\"}\n"),
             source_id: Some(sid),
             accounted_bytes: 0,
+            cri_metadata: None,
         }]])
         .with_source_paths(vec![(sid, "/var/log/pods/ns_pod_uid/c/0.log".into())]);
 
@@ -1574,20 +1709,18 @@ mod tests {
         );
 
         let out = collect_data(framed.poll().unwrap());
-        assert_eq!(
-            out,
-            b"{\"_source_path\":\"/var/log/pods/ns_pod_uid/c/0.log\",\"_timestamp\":\"2024-01-15T10:30:00Z\",\"_stream\":\"stdout\",\"msg\":\"hello\"}\n"
-        );
+        assert_eq!(out, b"{\"msg\":\"hello\"}\n");
     }
 
     #[test]
-    fn file_json_injects_source_path_after_leading_whitespace() {
+    fn file_json_preserves_leading_whitespace_without_source_path_rewrite() {
         let stats = make_stats();
         let sid = SourceId(9);
         let source = MockSource::new(vec![vec![InputEvent::Data {
-            bytes: b"  \t{\"msg\":\"hello\"}\n".to_vec(),
+            bytes: Bytes::from_static(b"  \t{\"msg\":\"hello\"}\n"),
             source_id: Some(sid),
             accounted_bytes: 0,
+            cri_metadata: None,
         }]])
         .with_source_paths(vec![(sid, "/var/log/pods/ns_pod_uid/c/1.log".into())]);
 
@@ -1598,22 +1731,18 @@ mod tests {
         );
 
         let out = collect_data(framed.poll().unwrap());
-        assert_eq!(
-            out,
-            b"  \t{\"_source_path\":\"/var/log/pods/ns_pod_uid/c/1.log\",\"msg\":\"hello\"}\n"
-        );
+        assert_eq!(out, b"  \t{\"msg\":\"hello\"}\n");
     }
 
     #[test]
-    fn file_json_injects_source_path_into_empty_object() {
-        // Regression test for issue #1607: inject_source_path_metadata produced
-        // {"_source_path":"...",} for empty objects — invalid JSON trailing comma.
+    fn file_json_empty_object_is_not_rewritten_for_source_path() {
         let stats = make_stats();
         let sid = SourceId(11);
         let source = MockSource::new(vec![vec![InputEvent::Data {
-            bytes: b"{}\n".to_vec(),
+            bytes: Bytes::from_static(b"{}\n"),
             source_id: Some(sid),
             accounted_bytes: 0,
+            cri_metadata: None,
         }]])
         .with_source_paths(vec![(sid, "/var/log/pods/ns_pod_uid/c/2.log".into())]);
 
@@ -1624,11 +1753,7 @@ mod tests {
         );
 
         let out = collect_data(framed.poll().unwrap());
-        // Must be valid JSON — no trailing comma before `}`.
-        assert_eq!(
-            out,
-            b"{\"_source_path\":\"/var/log/pods/ns_pod_uid/c/2.log\"}\n"
-        );
+        assert_eq!(out, b"{}\n");
     }
 
     #[test]
@@ -1636,9 +1761,10 @@ mod tests {
         let stats = make_stats();
         let sid = SourceId(10);
         let source = MockSource::new(vec![vec![InputEvent::Data {
-            bytes: b"{\"msg\":\"hello\"}\n".to_vec(),
+            bytes: Bytes::from_static(b"{\"msg\":\"hello\"}\n"),
             source_id: Some(sid),
             accounted_bytes: 0,
+            cri_metadata: None,
         }]])
         .with_source_paths(vec![(sid, "/var/log/pods/ns_pod_uid/c/raw.log".into())]);
 
@@ -1660,18 +1786,20 @@ mod tests {
         let sid = SourceId(42);
         let source = MockSource::new(vec![
             vec![InputEvent::Data {
-                bytes: b"hello\npartial".to_vec(),
+                bytes: Bytes::from_static(b"hello\npartial"),
                 source_id: Some(sid),
                 accounted_bytes: 13,
+                cri_metadata: None,
             }],
             vec![InputEvent::EndOfFile {
                 source_id: Some(sid),
             }],
             // New data for the same SourceId after EOF — must work.
             vec![InputEvent::Data {
-                bytes: b"world\n".to_vec(),
+                bytes: Bytes::from_static(b"world\n"),
                 source_id: Some(sid),
                 accounted_bytes: 6,
+                cri_metadata: None,
             }],
         ]);
         let mut framed = FramedInput::new(
@@ -1696,5 +1824,125 @@ mod tests {
         // Poll 3: new data for the same SourceId creates fresh state.
         let events3 = framed.poll().unwrap();
         assert_eq!(collect_data(events3), b"world\n");
+    }
+
+    #[test]
+    fn complete_source_state_is_reclaimed_without_eof() {
+        let stats = make_stats();
+        let sid = SourceId(42);
+        let source = MockSource::new(vec![vec![InputEvent::Data {
+            bytes: Bytes::from_static(b"{\"msg\":\"done\"}\n"),
+            source_id: Some(sid),
+            accounted_bytes: 15,
+            cri_metadata: None,
+        }]]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough_json(stats.clone()),
+            stats,
+        );
+
+        let events = framed.poll().unwrap();
+
+        assert_eq!(collect_data(events), b"{\"msg\":\"done\"}\n");
+        assert!(
+            framed.sources.is_empty(),
+            "complete source state should not accumulate for ephemeral sources"
+        );
+    }
+
+    #[test]
+    fn cri_partial_source_state_survives_until_full_record() {
+        let stats = make_stats();
+        let sid = SourceId(42);
+        let source = MockSource::new(vec![
+            vec![InputEvent::Data {
+                bytes: Bytes::from_static(
+                    b"2024-01-01T00:00:00.000000000Z stdout P {\"msg\":\"part",
+                ),
+                source_id: Some(sid),
+                accounted_bytes: 57,
+                cri_metadata: None,
+            }],
+            vec![InputEvent::Data {
+                bytes: Bytes::from_static(b"ial\"}\n2024-01-01T00:00:00.000000000Z stdout F \n"),
+                source_id: Some(sid),
+                accounted_bytes: 54,
+                cri_metadata: None,
+            }],
+        ]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::cri(1024, stats.clone()),
+            stats,
+        );
+
+        let first = framed.poll().unwrap();
+        assert!(first.is_empty());
+        assert!(
+            framed.sources.contains_key(&Some(sid)),
+            "CRI partial state must survive across polls"
+        );
+
+        let second = framed.poll().unwrap();
+        let output = collect_data(second);
+        assert!(
+            output.ends_with(b"\"msg\":\"partial\"}\n"),
+            "unexpected CRI output: {}",
+            String::from_utf8_lossy(&output)
+        );
+        assert!(
+            framed.sources.is_empty(),
+            "CRI source state should be reclaimed after the full record completes"
+        );
+    }
+
+    #[test]
+    fn eof_does_not_reclaim_pending_cri_fragment() {
+        let stats = make_stats();
+        let sid = SourceId(43);
+        let source = MockSource::new(vec![
+            vec![InputEvent::Data {
+                bytes: Bytes::from_static(
+                    b"2024-01-01T00:00:00.000000000Z stdout P {\"msg\":\"part\n",
+                ),
+                source_id: Some(sid),
+                accounted_bytes: 58,
+                cri_metadata: None,
+            }],
+            vec![InputEvent::EndOfFile {
+                source_id: Some(sid),
+            }],
+            vec![InputEvent::Data {
+                bytes: Bytes::from_static(b"2024-01-01T00:00:00.000000000Z stdout F ial\"}\n"),
+                source_id: Some(sid),
+                accounted_bytes: 53,
+                cri_metadata: None,
+            }],
+        ]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::cri(1024, stats.clone()),
+            stats,
+        );
+
+        assert!(framed.poll().unwrap().is_empty());
+        assert!(
+            framed.sources.contains_key(&Some(sid)),
+            "CRI P fragment should leave pending format state"
+        );
+
+        assert!(framed.poll().unwrap().is_empty());
+        assert!(
+            framed.sources.contains_key(&Some(sid)),
+            "EOF must not remove pending CRI state"
+        );
+
+        let output = collect_data(framed.poll().unwrap());
+        assert!(
+            output.ends_with(b"\"msg\":\"partial\"}\n"),
+            "unexpected CRI output after EOF: {}",
+            String::from_utf8_lossy(&output)
+        );
     }
 }

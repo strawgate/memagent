@@ -28,6 +28,24 @@ input:
 - `per_file_read_budget_bytes` (default: 262144): The maximum bytes to read from a single file during one polling iteration before yielding to other files.
 - `adaptive_fast_polls_max` (default: 8): Immediate repoll budget after a read-budget hit; set to `0` to disable adaptive fast repolls.
 
+## Stdin
+
+Read data from standard input, drain outputs, and exit when stdin closes.
+This input is intended for `ff send` and piped shell workflows.
+
+```yaml
+input:
+  type: stdin
+  format: auto     # auto | cri | json | raw
+```
+
+```bash
+cat app.log | ff send --config destination.yaml --format json
+kubectl logs pod/app | LOGFWD_CONFIG=destination.yaml ff --format cri
+```
+
+Use `file` input for daemon-style tailing. `stdin` is finite command input; it does not watch paths or discover rotated files.
+
 ## Generator
 
 Emit synthetic JSON log lines for benchmarking and pipeline testing. No external
@@ -183,6 +201,10 @@ input:
     require_client_auth: true
     client_ca_file: /etc/logfwd/tls/clients-ca.pem
 ```
+
+`client_ca_file` enables client certificate verification and is accepted only
+when `require_client_auth: true` is set. Supplying a client CA without requiring
+client authentication is rejected at startup.
 
 ## OTLP
 

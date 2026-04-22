@@ -27,13 +27,13 @@ just bench-competitive --lines 5000000 --docker --cpus 1 --memory 1g --markdown
 
 ```bash
 # Stage-by-stage profile
-cargo run -p logfwd-bench --release --bin e2e-profile
+cargo run -p logfwd-bench --release --features bench-tools --bin e2e_profile
 
 # Memory analysis
-cargo run -p logfwd-bench --release --bin sizes
+cargo run -p logfwd-bench --release --features bench-tools --bin sizes
 
 # Real RSS measurement
-cargo run -p logfwd-bench --release --bin rss
+cargo run -p logfwd-bench --release --features bench-tools --bin rss
 ```
 
 ## Nightly benchmarks

@@ -4,8 +4,13 @@ version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true
 publish = false
+# Keep tool/report binaries from being built implicitly during `cargo bench`.
+# Those binaries are opted into explicitly via `--features bench-tools`.
+autobins = false
 
 [features]
+# Enables helper/profiling binaries and their non-benchmark dependency graph.
+bench-tools = ["dep:parquet"]
 dhat-heap = ["dep:dhat"]
 otlp-profile-alloc = []
 
@@ -39,7 +44,7 @@ reqwest = { version = "0.12", default-features = false, features = [
 ] }
 serde = { workspace = true }
 serde_json = "1"
-stats_alloc = "0.1"
+stats_alloc = { workspace = true }
 tempfile = "3"
 tiny_http = "0.12"
 tokio = { version = "1", features = ["rt-multi-thread"] }
@@ -54,6 +59,7 @@ opentelemetry-proto = { version = "0.31", features = [
     "logs",
     "gen-tonic-messages",
 ] }
+parquet = { workspace = true, optional = true }
 prost = "0.14"
 sonic-rs = "0.5"
 zstd = "0.13"
@@ -110,17 +116,128 @@ harness = false
 name = "s3_input"
 harness = false
 
+[[bench]]
+name = "source_metadata"
+harness = false
+
+[[bin]]
+name = "logfwd-bench"
+path = "src/main.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
+name = "cloudtrail_profile"
+path = "src/bin/cloudtrail_profile.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
 [[bin]]
 name = "es-throughput"
 path = "src/es_throughput.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
 
 [[bin]]
-name = "memory-profile"
-path = "src/memory_profile.rs"
+name = "file_output_profile"
+path = "src/file_output_profile.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
+name = "framed_input_profile"
+path = "src/bin/framed_input_profile.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
+name = "generator_profile"
+path = "src/bin/generator_profile.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
+name = "http_receiver_apples"
+path = "src/bin/http_receiver_apples.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
 
 [[bin]]
 name = "library-eval"
 path = "src/library_eval.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
+name = "memory-profile"
+path = "src/memory_profile.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
+name = "otlp_e2e_profile"
+path = "src/bin/otlp_e2e_profile.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
+name = "otlp_encode_profile"
+path = "src/bin/otlp_encode_profile.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
+name = "otlp_io_profile"
+path = "src/bin/otlp_io_profile.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
+name = "source_metadata_profile"
+path = "src/bin/source_metadata_profile.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
+name = "e2e_profile"
+path = "src/e2e_profile.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
+name = "explore"
+path = "src/explore.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
+name = "rss"
+path = "src/rss.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
+name = "sizes"
+path = "src/sizes.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
 
 [lints]
 workspace = true

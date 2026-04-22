@@ -218,14 +218,12 @@ async fn sqs_post(
 
     let canonical_headers: String = cheaders.iter().fold(String::new(), |mut s, (k, v)| {
         use std::fmt::Write;
-        let _ = writeln!(s, "{}:{}", k, v);
+        let _ = writeln!(s, "{k}:{v}");
         s
     });
     let signed_headers: String = cheaders.keys().cloned().collect::<Vec<_>>().join(";");
-    let canonical_request = format!(
-        "POST\n{}\n\n{}\n{}\n{}",
-        path, canonical_headers, signed_headers, body_sha256
-    );
+    let canonical_request =
+        format!("POST\n{path}\n\n{canonical_headers}\n{signed_headers}\n{body_sha256}");
 
     let string_to_sign = format!(
         "AWS4-HMAC-SHA256\n{}\n{}\n{}",

@@ -95,6 +95,8 @@ unsafe fn recvmmsg_batch(
             iov_base: bufs[i].as_mut_ptr() as *mut _,
             iov_len: bufs[i].len(),
         };
+        // SAFETY: zero is a valid initial state for libc::mmsghdr; msg_iov and
+        // msg_iovlen are populated below before the syscall observes the header.
         msgvec[i] = unsafe { std::mem::zeroed() };
         msgvec[i].msg_hdr.msg_iov = &mut iovecs[i];
         msgvec[i].msg_hdr.msg_iovlen = 1;
@@ -137,7 +139,11 @@ fn run_receiver(port: u16, severity_threshold: u8, batch_size: usize) -> io::Res
 
     // Pre-allocate buffers
     let mut bufs: Vec<Vec<u8>> = (0..batch_size).map(|_| vec![0u8; 2048]).collect();
+    // SAFETY: zero is a valid initial state for libc::iovec; recvmmsg_batch
+    // overwrites each entry with a valid buffer pointer and length before use.
     let mut iovecs: Vec<libc::iovec> = vec![unsafe { std::mem::zeroed() }; batch_size];
+    // SAFETY: zero is a valid initial state for libc::mmsghdr; recvmmsg_batch
+    // overwrites the fields required by recvmmsg before each syscall.
     let mut msgvec: Vec<libc::mmsghdr> = vec![unsafe { std::mem::zeroed() }; batch_size];
 
     let mut total_packets: u64 = 0;
@@ -152,6 +158,8 @@ fn run_receiver(port: u16, severity_threshold: u8, batch_size: usize) -> io::Res
     let mut interval_matched: u64 = 0;
 
     loop {
+        // SAFETY: fd comes from the live UDP socket above, and bufs/iovecs/msgvec
+        // were allocated with equal batch_size lengths and are mutated only here.
         let n = unsafe { recvmmsg_batch(fd, &mut bufs, &mut iovecs, &mut msgvec)? };
 
         if n == 0 {
@@ -349,7 +357,11 @@ fn run_batch_receiver(port: u16, severity_threshold: u8, batch_size: usize) -> i
 
     // Contiguous buffer for all packets + per-packet length tracking
     let mut bufs: Vec<Vec<u8>> = (0..batch_size).map(|_| vec![0u8; 2048]).collect();
+    // SAFETY: zero is a valid initial state for libc::iovec; recvmmsg_batch
+    // overwrites each entry with a valid buffer pointer and length before use.
     let mut iovecs: Vec<libc::iovec> = vec![unsafe { std::mem::zeroed() }; batch_size];
+    // SAFETY: zero is a valid initial state for libc::mmsghdr; recvmmsg_batch
+    // overwrites the fields required by recvmmsg before each syscall.
     let mut msgvec: Vec<libc::mmsghdr> = vec![unsafe { std::mem::zeroed() }; batch_size];
 
     // Contiguous buffer for batch parsing
@@ -368,6 +380,8 @@ fn run_batch_receiver(port: u16, severity_threshold: u8, batch_size: usize) -> i
     let mut interval_matched: u64 = 0;
 
     loop {
+        // SAFETY: fd comes from the live UDP socket above, and bufs/iovecs/msgvec
+        // were allocated with equal batch_size lengths and are mutated only here.
         let n = unsafe { recvmmsg_batch(fd, &mut bufs, &mut iovecs, &mut msgvec)? };
 
         if n == 0 {

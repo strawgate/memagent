@@ -10,17 +10,21 @@ output guarantees, and known limitations.
 
 ### UTF-8
 
-The scanner assumes that **all input bytes are valid UTF-8**.
+The scanner assumes that **all input bytes are valid UTF-8** unless validation
+is explicitly enabled.
 
-- Field names and string values are converted to `&str` with
-  `from_utf8_unchecked` during `finish_batch()`.  Passing non-UTF-8 bytes is
-  **undefined behaviour**.
-- A `debug_assert!` at the `scan_into` entry point fires in debug builds if
-  the buffer is not valid UTF-8.
+- The Arrow builder path validates or lossy-converts most externally supplied
+  bytes: field names use `String::from_utf8_lossy`, scanned string values are
+  validated before Arrow append, and line capture falls back to lossy
+  conversion. Internal builder paths can still call `from_utf8_unchecked` from
+  `finish_batch()` for bytes that bypass scanner validation, so callers that
+  accept arbitrary raw bytes must not rely on invalid UTF-8 being harmless.
+- JSON object keys are unescaped before `wanted_fields` matching and field
+  resolution, so a key like `{"a\u002eb": ...}` is surfaced as field `a.b`.
 - For production validation set `ScanConfig::validate_utf8 = true`.  This
-  performs a safe `from_utf8` check before scanning and panics with a
-  descriptive message on failure.  It has a small throughput cost and is
-  disabled by default.
+  performs a safe `from_utf8` check before scanning and returns a descriptive
+  scanner error on failure. It has a small throughput cost and is disabled by
+  default.
 - The fuzz target (`crates/logfwd-core/fuzz/fuzz_targets/scanner.rs`) guards
   against UTF-8 violations for arbitrary byte sequences.
 - Upstream components (CRI parser, file tailer) do not currently validate
@@ -34,8 +38,8 @@ The scanner expects **newline-delimited JSON** (`\n`-separated lines):
 - Each non-empty line must be a JSON object (`{…}`).
 - Non-object lines (JSON arrays, bare scalars, blank lines) are **silently
   skipped**: a row is still emitted with all columns null.
-- Partial lines (no trailing `\n`) at the end of the buffer are not processed.
-  Reassembly of partial lines is the responsibility of the format layer
+- A final non-empty line without trailing `\n` is processed. Reassembly of
+  truly incomplete lines across reads is the responsibility of the format layer
   (`JsonParser`, `CriParser`).
 
 ### Size limits
@@ -138,6 +142,13 @@ downstream (see issue #410).
 
 The `body` line-capture column is **not** decoded — it stores the original raw
 line verbatim.
+
+### Escaped-key normalization
+
+JSON Unicode escapes in object keys (e.g., `\u002e`) are decoded before field
+name matching.  A wanted field `a.b` matches both `"a.b"` and `"a\u002eb"` in
+source JSON.  This normalization applies to all standard JSON escape sequences
+(`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`, `\uXXXX`).
 
 ### Batch reuse
 

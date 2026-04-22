@@ -86,7 +86,7 @@ impl Scanner {
         }
     }
 
-    /// Create a scanner that injects constant `_resource_*` columns per row.
+    /// Create a scanner that injects constant resource attribute columns per row.
     pub fn with_resource_attrs(config: ScanConfig, resource_attrs: Vec<(String, String)>) -> Self {
         Scanner {
             builder: StreamingBuilder::new(config.line_field_name.clone()),
@@ -140,7 +140,6 @@ mod tests {
     use arrow::array::{Array, BooleanArray, Int64Array, StringArray};
     use bytes::Bytes;
     use logfwd_core::scan_config::{FieldSpec, ScanConfig};
-    use logfwd_types::field_names;
 
     fn default_scanner(_rows: usize) -> Scanner {
         Scanner::new(ScanConfig::default())
@@ -174,14 +173,14 @@ mod tests {
                 .value(1),
             404
         );
-        // Legacy single-underscore suffixed columns must NOT be emitted.
+        // Single-type fields use bare names; type suffixes are only for conflicts.
         assert!(
             batch.column_by_name("host_str").is_none(),
-            "single-type string fields must not emit legacy suffixed columns"
+            "single-type string fields must not emit suffixed columns"
         );
         assert!(
             batch.column_by_name("status_int").is_none(),
-            "single-type int fields must not emit legacy suffixed columns"
+            "single-type int fields must not emit suffixed columns"
         );
     }
     #[test]
@@ -388,18 +387,14 @@ mod tests {
         assert_eq!(ns.value(0), "prod");
         assert_eq!(ns.value(1), "prod");
 
-        // Verify that the original dotted key is stored in field metadata.
-        let schema = batch.schema();
-        let svc_field = schema
-            .field_with_name("resource.attributes.service.name")
-            .expect("field exists");
-        assert_eq!(
-            svc_field
+        // The canonical column name preserves the dotted resource key directly.
+        assert!(
+            batch
+                .schema()
+                .field_with_name("resource.attributes.service.name")
+                .expect("field exists")
                 .metadata()
-                .get(field_names::METADATA_RESOURCE_KEY)
-                .map(String::as_str),
-            Some("service.name"),
-            "field metadata must preserve original dotted key"
+                .is_empty()
         );
     }
 
@@ -422,25 +417,23 @@ mod tests {
             ))
             .unwrap();
         // Single-type bool field: bare name
-        assert_eq!(
+        assert!(
             batch
                 .column_by_name("a")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<BooleanArray>()
                 .unwrap()
-                .value(0),
-            true
+                .value(0)
         );
-        assert_eq!(
-            batch
+        assert!(
+            !batch
                 .column_by_name("b")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<BooleanArray>()
                 .unwrap()
-                .value(0),
-            false
+                .value(0)
         );
     }
     #[test]
@@ -520,15 +513,14 @@ mod tests {
                 .to_vec(),
             ))
             .unwrap();
-        assert_eq!(
+        assert!(
             batch
                 .column_by_name("ok")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<BooleanArray>()
                 .unwrap()
-                .value(0),
-            true
+                .value(0)
         );
     }
     #[test]

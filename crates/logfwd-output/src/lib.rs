@@ -19,6 +19,7 @@ pub(crate) mod http_classify;
 mod conflict_columns;
 mod elasticsearch;
 mod factory;
+mod internal_columns;
 mod metadata;
 mod row_json;
 
@@ -30,6 +31,7 @@ pub use error::OutputError;
 pub use factory::build_sink_factory;
 pub use file_sink::{FileSink, FileSinkFactory};
 pub use json_lines::{JsonLinesSink, JsonLinesSinkFactory};
+pub use logfwd_config::OtlpProtocol;
 pub use loki::{LokiSink, LokiSinkFactory};
 pub use metadata::{BatchMetadata, Compression};
 pub use null::{NullSink, NullSinkFactory};
@@ -39,7 +41,7 @@ pub use otap_sink::{
     decode_batch_status_generated_fast, encode_batch_arrow_records,
     encode_batch_arrow_records_generated_fast,
 };
-pub use otlp_sink::{OtlpProtocol, OtlpSink, OtlpSinkFactory};
+pub use otlp_sink::{OtlpSink, OtlpSinkFactory};
 pub use sink::{
     AsyncFanoutFactory, AsyncFanoutSink, OnceAsyncFactory, SendResult, Sink, SinkFactory,
 };
@@ -47,14 +49,16 @@ pub use stdout::{StdoutFormat, StdoutSink, StdoutSinkFactory};
 pub use tcp_sink::{TcpSink, TcpSinkFactory};
 pub use udp_sink::{UdpSink, UdpSinkFactory};
 
-pub use conflict_columns::{ColInfo, ColVariant, build_col_infos};
+pub use conflict_columns::{
+    ColInfo, ColVariant, ResolvedCol, TypedArrayRef, build_col_infos, resolve_col_infos,
+};
 pub(crate) use conflict_columns::{get_array, is_null};
 #[cfg(any(test, kani))]
 #[allow(unused_imports)]
 pub(crate) use conflict_columns::{is_conflict_struct, json_priority, str_priority, variant_dt};
 pub(crate) use metadata::build_auth_headers;
-pub use row_json::write_row_json;
 pub(crate) use row_json::{coalesce_as_str, write_json_value};
+pub use row_json::{write_row_json, write_row_json_resolved};
 
 // ---------------------------------------------------------------------------
 // HTTP retry helper

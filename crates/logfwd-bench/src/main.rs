@@ -1,6 +1,7 @@
 //! Reads criterion JSON results from target/criterion/ and emits a markdown table.
 //!
 //! Usage: cargo run -p logfwd-bench [criterion_dir]
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //!   Default criterion_dir: target/criterion
 
 use std::collections::BTreeMap;
@@ -49,7 +50,7 @@ fn format_time(ns: f64) -> String {
     } else if ns >= 1_000.0 {
         format!("{:.1} us", ns / 1_000.0)
     } else {
-        format!("{:.0} ns", ns)
+        format!("{ns:.0} ns")
     }
 }
 
@@ -69,7 +70,7 @@ fn format_rate(ns: f64, count: u64) -> String {
     } else if rate >= 1_000.0 {
         format!("{:.0}K lines/s", rate / 1_000.0)
     } else {
-        format!("{:.0} lines/s", rate)
+        format!("{rate:.0} lines/s")
     }
 }
 
@@ -172,9 +173,8 @@ fn collect_results(dir: &PathBuf, groups: &mut BTreeMap<String, Vec<BenchResult>
 
 /// Recursively find all `new/benchmark.json` files under a directory.
 fn find_bench_files(dir: &PathBuf, results: &mut Vec<PathBuf>) {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
     };
     for entry in entries.flatten() {
         let path = entry.path();

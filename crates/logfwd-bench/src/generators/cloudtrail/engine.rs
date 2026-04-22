@@ -606,9 +606,9 @@ impl CloudTrailState {
         let mut assumed_role_principal_ids = Vec::with_capacity(principal_count);
         let mut federated_principal_ids = Vec::with_capacity(principal_count);
         for idx in 0..principal_count {
-            principals.push(format!("user-{:03}", idx));
-            roles.push(format!("cloudtrail-role-{:03}", idx));
-            sessions.push(format!("session-{:03}", idx));
+            principals.push(format!("user-{idx:03}"));
+            roles.push(format!("cloudtrail-role-{idx:03}"));
+            sessions.push(format!("session-{idx:03}"));
             iam_user_principal_ids.push(format!("AIDA{:08X}", 0x1000_0000 + idx as u32));
             assumed_role_principal_ids.push(format!(
                 "AROA{:08X}:{}",

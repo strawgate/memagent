@@ -16,15 +16,21 @@ members = [
     "crates/logfwd-bench",
     "crates/logfwd-competitive-bench",
     "crates/logfwd-test-utils",
+    "crates/logfwd-lint-attrs",
     "crates/logfwd-ebpf-proto",
     "crates/logfwd-ebpf-proto/sensor-ebpf",
     "crates/logfwd-ebpf-proto/sensor-ebpf/sensor-ebpf-common",
     "crates/logfwd-config-wasm",
+    "xtask",
 ]
 # sensor-ebpf-kern requires nightly + bpfel-unknown-none target (eBPF bytecode).
 # It is intentionally excluded from the workspace.
 exclude = [
     "crates/logfwd-ebpf-proto/sensor-ebpf/sensor-ebpf-kern",
+    # logfwd-lints pins a specific rustc nightly and links against
+    # rustc-private crates. It is invoked via `cargo dylint`, not the
+    # regular workspace build.
+    "crates/logfwd-lints",
 ]
 # default-members: crates that compile without datafusion (~30s vs ~3min).
 # Bare `cargo check/clippy` uses these. Use `--workspace` or `-p logfwd`
@@ -35,6 +41,7 @@ default-members = [
     "crates/logfwd-types",
     "crates/logfwd-diagnostics",
     "crates/logfwd-core",
+    "crates/logfwd-lint-attrs",
     "crates/logfwd-arrow",
     "crates/logfwd-io",
     "crates/logfwd-output",
@@ -55,7 +62,9 @@ chrono = { version = "0.4.44", default-features = false }
 clap = "4.5"
 clap_complete = "4.5"
 clap_complete_nushell = "4.6"
+config = { version = "0.15.22", default-features = false }
 arrow-json = "58"
+parquet = { version = "58", features = ["zstd"] }
 datafusion = { version = "53", default-features = false, features = [
     "sql",
     "string_expressions",
@@ -76,7 +85,6 @@ opentelemetry-otlp = { version = "0.31", default-features = false, features = [
 ] }
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
-serde_path_to_error = "0.1"
 sonic-rs = "0.5"
 tokio = { version = "1" }
 tracing = "0.1"
@@ -85,6 +93,7 @@ tracing-opentelemetry = "0.32"
 turmoil = "0.7"
 walkdir = "2"
 smallvec = { version = "1", features = ["union"] }
+stats_alloc = "0.1"
 thiserror = { version = "2", default-features = false }
 url = "2"
 anyhow = "1"
@@ -101,6 +110,12 @@ csv = "1"
 flate2 = "1"
 wasm-bindgen = "0.2"
 js-sys = "0.3"
+varsubst = { version = "0.0.1", default-features = false }
+xxhash-rust = { version = "0.8.15", features = ["xxh32", "xxh64"] }
+rustls = { version = "0.23", default-features = false, features = [
+    "aws_lc_rs",
+] }
+rcgen = "0.14"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -116,14 +131,13 @@ cast_precision_loss = "allow"
 cast_lossless = "allow"
 inline_always = "allow"
 needless_pass_by_value = "allow"
-return_self_not_must_use = "allow"
+return_self_not_must_use = "warn"
 struct_excessive_bools = "allow"
 wildcard_imports = "allow"
 unnested_or_patterns = "allow"
 unreadable_literal = "allow"
 single_match_else = "allow"
 manual_let_else = "allow"
-uninlined_format_args = "allow"
 too_many_lines = "allow"
 match_same_arms = "allow"
 similar_names = "allow"
@@ -135,11 +149,40 @@ assigning_clones = "allow"
 redundant_clone = "warn"
 cloned_instead_of_copied = "warn"
 needless_pass_by_ref_mut = "warn"
-undocumented_unsafe_blocks = "warn"
+undocumented_unsafe_blocks = "deny"
+dbg_macro = "deny"
+large_enum_variant = "warn"
+print_stdout = "warn"
+print_stderr = "warn"
+let_underscore_future = "deny"
+await_holding_lock = "warn"
+await_holding_refcell_ref = "warn"
+large_futures = "warn"
+# ----- easy-win additions -----
+# Tier 1: modernization, auto-fixable.
+uninlined_format_args = "warn"
+redundant_else = "warn"
+semicolon_if_nothing_returned = "warn"
+# Tier 2: catches real bugs with low fallout.
+map_err_ignore = "warn"
+implicit_clone = "warn"
+needless_for_each = "warn"
+or_fun_call = "warn"
+checked_conversions = "warn"
+# Tier 3: restriction-group correctness lints (opt-in, not in pedantic).
+unimplemented = "warn"
+todo = "warn"
+rc_mutex = "deny"
+lossy_float_literal = "warn"
+float_cmp_const = "warn"
+fn_to_numeric_cast_any = "warn"
+verbose_file_reads = "warn"
+unnecessary_self_imports = "warn"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(kani)',
+    'cfg(fuzzing)',
     'cfg(feature, values("turmoil", "internal-failpoints", "otlp-research", "otlp-profile-alloc"))',
 ] }
 unused_qualifications = "warn"

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -10,7 +11,7 @@ use logfwd_config::{
 use logfwd_diagnostics::diagnostics::ComponentStats;
 use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
-use logfwd_io::input::{FileInput, InputSource};
+use logfwd_io::input::{FileInput, InputSource, StdinInput};
 use logfwd_io::tail::TailConfig;
 
 use super::InputState;
@@ -43,8 +44,7 @@ fn make_format(
         Format::Raw => FormatDecoder::passthrough(Arc::clone(stats)),
         unsupported => {
             return Err(format!(
-                "input '{name}': format {:?} is not supported for {:?} inputs",
-                unsupported, input_type
+                "input '{name}': format {unsupported:?} is not supported for {input_type:?} inputs"
             ));
         }
     };
@@ -57,14 +57,22 @@ fn validate_input_format(name: &str, input_type: InputType, format: &Format) -> 
             if !matches!(format, Format::Json) =>
         {
             return Err(format!(
-                "input '{name}': format {:?} is not supported for {:?} inputs (expected json)",
-                format, input_type
+                "input '{name}': format {format:?} is not supported for {input_type:?} inputs (expected json)"
             ));
         }
         InputType::Http if !matches!(format, Format::Json | Format::Raw) => {
             return Err(format!(
-                "input '{name}': format {:?} is not supported for {:?} inputs (expected json or raw)",
-                format, input_type
+                "input '{name}': format {format:?} is not supported for {input_type:?} inputs (expected json or raw)"
+            ));
+        }
+        InputType::Stdin
+            if !matches!(
+                format,
+                Format::Cri | Format::Auto | Format::Json | Format::Raw
+            ) =>
+        {
+            return Err(format!(
+                "input '{name}': format {format:?} is not supported for {input_type:?} inputs (expected cri, auto, json, or raw)"
             ));
         }
         _ => {}
@@ -143,7 +151,10 @@ pub(super) fn build_input_state(
             let format = cfg.format.clone().unwrap_or(Format::Auto);
             let mut tail_config = TailConfig {
                 start_from_end: false,
-                poll_interval_ms: f.poll_interval_ms.unwrap_or(DEFAULT_FILE_POLL_INTERVAL_MS),
+                poll_interval_ms: f.poll_interval_ms.map_or(
+                    DEFAULT_FILE_POLL_INTERVAL_MS,
+                    logfwd_config::PositiveMillis::get,
+                ),
                 read_buf_size: f.read_buf_size.unwrap_or(DEFAULT_READ_BUF_SIZE),
                 per_file_read_budget_bytes: f
                     .per_file_read_budget_bytes
@@ -251,7 +262,7 @@ pub(super) fn build_input_state(
                                 Some(s) if s.eq_ignore_ascii_case("now") => {
                                     std::time::SystemTime::now()
                                         .duration_since(std::time::UNIX_EPOCH)
-                                        .map_err(|_| {
+                                        .map_err(|_e| {
                                             format!("input '{name}': system clock is before Unix epoch, cannot resolve timestamp.start=\"now\"")
                                         })?
                                         .as_millis() as i64
@@ -274,10 +285,6 @@ pub(super) fn build_input_state(
         }
         InputTypeConfig::Otlp(o) => {
             let addr = require_non_empty(name, "otlp", "listen", Some(&o.listen))?;
-            let resource_prefix = o
-                .resource_prefix
-                .as_deref()
-                .unwrap_or(logfwd_types::field_names::DEFAULT_RESOURCE_PREFIX);
             let protobuf_decode_mode =
                 resolve_otlp_protobuf_decode_mode(name, o.protobuf_decode_mode)?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
@@ -287,21 +294,18 @@ pub(super) fn build_input_state(
                 name,
                 addr,
                 Some(Arc::clone(&stats)),
-                resource_prefix,
                 protobuf_decode_mode,
                 o.max_recv_message_size_bytes,
             )
             .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             #[cfg(not(feature = "otlp-research"))]
-            let source =
-                logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats_resource_prefix_and_max_size(
-                    name,
-                    addr,
-                    Arc::clone(&stats),
-                    resource_prefix,
-                    o.max_recv_message_size_bytes,
-                )
-                .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
+            let source = logfwd_io::otlp_receiver::OtlpReceiverInput::new_with_stats_and_max_size(
+                name,
+                addr,
+                Arc::clone(&stats),
+                o.max_recv_message_size_bytes,
+            )
+            .map_err(|e| format!("input '{name}': failed to start OTLP receiver: {e}"))?;
             #[cfg(not(feature = "otlp-research"))]
             let _ = protobuf_decode_mode;
             (Box::new(source), format, 4 * 1024 * 1024)
@@ -373,6 +377,12 @@ pub(super) fn build_input_state(
                 .map_err(|e| format!("input '{name}': failed to start HTTP input: {e}"))?;
             (Box::new(source), format, 4 * 1024 * 1024)
         }
+        InputTypeConfig::Stdin(_) => {
+            let format = cfg.format.clone().unwrap_or(Format::Auto);
+            validate_input_format(name, InputType::Stdin, &format)?;
+            let source = StdinInput::new(name);
+            (Box::new(source), format, 4 * 1024 * 1024)
+        }
         InputTypeConfig::Udp(u) => {
             let addr = require_non_empty(name, "udp", "listen", Some(&u.listen))?;
             if matches!(cfg.format, Some(Format::Cri | Format::Auto)) {
@@ -410,10 +420,42 @@ pub(super) fn build_input_state(
                 options.max_connections = v;
             }
             if let Some(v) = t.connection_timeout_ms {
-                options.connection_timeout_ms = v;
+                options.connection_timeout_ms = v.get();
             }
             if let Some(v) = t.read_timeout_ms {
-                options.read_timeout_ms = Some(v);
+                options.read_timeout_ms = Some(v.get());
+            }
+            if let Some(tls) = &t.tls {
+                let has_client_ca = tls
+                    .client_ca_file
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|v| !v.is_empty());
+                if tls.require_client_auth && !has_client_ca {
+                    return Err(format!(
+                        "input '{name}': tcp.tls.require_client_auth requires non-empty 'tcp.tls.client_ca_file'"
+                    ));
+                }
+                if has_client_ca && !tls.require_client_auth {
+                    return Err(format!(
+                        "input '{name}': tcp.tls.client_ca_file requires 'tcp.tls.require_client_auth: true'"
+                    ));
+                }
+                let cert_file =
+                    require_non_empty(name, "tcp", "tcp.tls.cert_file", tls.cert_file.as_ref())?;
+                let key_file =
+                    require_non_empty(name, "tcp", "tcp.tls.key_file", tls.key_file.as_ref())?;
+                options.tls = Some(logfwd_io::tcp_input::TcpInputTlsOptions {
+                    cert_file: cert_file.to_string(),
+                    key_file: key_file.to_string(),
+                    client_ca_file: tls
+                        .client_ca_file
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|v| !v.is_empty())
+                        .map(str::to_string),
+                    require_client_auth: tls.require_client_auth,
+                });
             }
             let source = logfwd_io::tcp_input::TcpInput::with_options(
                 name,
@@ -493,7 +535,11 @@ pub(super) fn build_input_state(
                         .as_ref()
                         .and_then(|c| c.exclude_event_types.clone()),
                     ring_buffer_size_kb: s.sensor.as_ref().and_then(|c| c.ring_buffer_size_kb),
-                    poll_interval_ms: s.sensor.as_ref().and_then(|c| c.poll_interval_ms),
+                    poll_interval_ms: s
+                        .sensor
+                        .as_ref()
+                        .and_then(|c| c.poll_interval_ms)
+                        .map(logfwd_config::PositiveMillis::get),
                 };
 
                 let source = PlatformSensorInput::new(name, sensor_cfg).map_err(|e| {
@@ -502,6 +548,9 @@ pub(super) fn build_input_state(
                 return Ok(InputState {
                     source: Box::new(source),
                     buf: BytesMut::with_capacity(64 * 1024),
+                    row_origins: Vec::new(),
+                    source_paths: HashMap::new(),
+                    cri_metadata: logfwd_io::input::CriMetadata::default(),
                     stats,
                 });
             }
@@ -531,6 +580,9 @@ pub(super) fn build_input_state(
             return Ok(InputState {
                 source: Box::new(source),
                 buf: BytesMut::with_capacity(64 * 1024),
+                row_origins: Vec::new(),
+                source_paths: HashMap::new(),
+                cri_metadata: logfwd_io::input::CriMetadata::default(),
                 stats,
             });
         }
@@ -561,6 +613,9 @@ pub(super) fn build_input_state(
             return Ok(InputState {
                 source: Box::new(source),
                 buf: BytesMut::with_capacity(64 * 1024),
+                row_origins: Vec::new(),
+                source_paths: HashMap::new(),
+                cri_metadata: logfwd_io::input::CriMetadata::default(),
                 stats,
             });
         }
@@ -613,7 +668,10 @@ pub(super) fn build_input_state(
                     s3_cfg.max_concurrent_objects,
                     s3_cfg.visibility_timeout_secs,
                     compression_override,
-                    s3_cfg.poll_interval_ms,
+                    s3_cfg
+                        .poll_interval_ms
+                        .map(logfwd_config::PositiveMillis::get),
+                    super::source_metadata_style_needs_source_paths(cfg.source_metadata),
                 )
                 .map_err(|e| format!("input '{name}': {e}"))?;
 
@@ -625,6 +683,9 @@ pub(super) fn build_input_state(
                 return Ok(InputState {
                     source: Box::new(framed),
                     buf: BytesMut::with_capacity(4 * 1024 * 1024),
+                    row_origins: Vec::new(),
+                    source_paths: HashMap::new(),
+                    cri_metadata: logfwd_io::input::CriMetadata::default(),
                     stats,
                 });
             }
@@ -674,6 +735,9 @@ pub(super) fn build_input_state(
     Ok(InputState {
         source: Box::new(framed),
         buf: BytesMut::with_capacity(buf_cap),
+        row_origins: Vec::new(),
+        source_paths: HashMap::new(),
+        cri_metadata: logfwd_io::input::CriMetadata::default(),
         stats,
     })
 }
@@ -681,18 +745,18 @@ pub(super) fn build_input_state(
 fn build_host_metrics_config(
     cfg: Option<&HostMetricsInputConfig>,
 ) -> logfwd_io::host_metrics::HostMetricsConfig {
-    let poll_interval_ms = cfg
-        .and_then(|c| c.poll_interval_ms)
-        .unwrap_or(DEFAULT_SENSOR_POLL_INTERVAL_MS);
-    let control_reload_interval_ms = cfg
-        .and_then(|c| c.control_reload_interval_ms)
-        .unwrap_or(DEFAULT_SENSOR_CONTROL_RELOAD_INTERVAL_MS);
+    let poll_interval_ms = cfg.and_then(|c| c.poll_interval_ms).map_or(
+        DEFAULT_SENSOR_POLL_INTERVAL_MS,
+        logfwd_config::PositiveMillis::get,
+    );
+    let control_reload_interval_ms = cfg.and_then(|c| c.control_reload_interval_ms).map_or(
+        DEFAULT_SENSOR_CONTROL_RELOAD_INTERVAL_MS,
+        logfwd_config::PositiveMillis::get,
+    );
     logfwd_io::host_metrics::HostMetricsConfig {
-        poll_interval: std::time::Duration::from_millis(poll_interval_ms.max(1)),
+        poll_interval: std::time::Duration::from_millis(poll_interval_ms),
         control_path: cfg.and_then(|c| c.control_path.clone()).map(PathBuf::from),
-        control_reload_interval: std::time::Duration::from_millis(
-            control_reload_interval_ms.max(1),
-        ),
+        control_reload_interval: std::time::Duration::from_millis(control_reload_interval_ms),
         enabled_families: cfg.and_then(|c| c.enabled_families.clone()),
         emit_signal_rows: cfg.and_then(|c| c.emit_signal_rows).unwrap_or(true),
         max_rows_per_poll: cfg
@@ -709,7 +773,8 @@ fn build_host_metrics_config(
 /// Returns whether OTLP input should use structured ingress mode.
 ///
 /// Structured ingress preserves typed OTLP fields but bypasses the scanner.
-/// If scanner line capture is required, use legacy scanner ingress.
+/// If scanner line capture is required, route OTLP payloads through scanner
+/// ingress so the configured line field is populated.
 #[cfg(test)]
 pub(super) fn otlp_uses_structured_ingress(
     scan_config: &logfwd_core::scan_config::ScanConfig,
@@ -719,11 +784,36 @@ pub(super) fn otlp_uses_structured_ingress(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use logfwd_config::SourceMetadataStyle;
 
     #[test]
     fn http_input_accepts_json_and_raw_formats() {
         assert!(validate_input_format("http", InputType::Http, &Format::Json).is_ok());
         assert!(validate_input_format("http", InputType::Http, &Format::Raw).is_ok());
+    }
+
+    #[test]
+    fn stdin_input_accepts_line_or_raw_formats() {
+        for format in [Format::Auto, Format::Cri, Format::Json, Format::Raw] {
+            assert!(validate_input_format("stdin", InputType::Stdin, &format).is_ok());
+        }
+    }
+
+    #[test]
+    fn stdin_input_rejects_structured_formats() {
+        for format in [
+            Format::Logfmt,
+            Format::Syslog,
+            Format::Text,
+            Format::Console,
+        ] {
+            let err = validate_input_format("stdin", InputType::Stdin, &format)
+                .expect_err("stdin input must reject unsupported format");
+            assert!(
+                err.contains("expected cri, auto, json, or raw"),
+                "unexpected error: {err}"
+            );
+        }
     }
 
     #[test]
@@ -802,6 +892,7 @@ mod tests {
             name: Some("sensor".to_string()),
             format: Some(Format::Raw),
             sql: None,
+            source_metadata: SourceMetadataStyle::None,
             type_config: input_type_config,
         };
         let err = match build_input_state("sensor", &cfg, stats) {
@@ -827,6 +918,7 @@ mod tests {
             name: Some("test_in".into()),
             format: None,
             sql: None,
+            source_metadata: SourceMetadataStyle::None,
             type_config: InputTypeConfig::File(logfwd_config::FileTypeConfig {
                 path: "/tmp/test.log".into(),
                 poll_interval_ms: None,
@@ -856,9 +948,10 @@ mod tests {
             name: Some("test_in".into()),
             format: None,
             sql: None,
+            source_metadata: SourceMetadataStyle::None,
             type_config: InputTypeConfig::File(logfwd_config::FileTypeConfig {
                 path: "/tmp/test.log".into(),
-                poll_interval_ms: Some(123),
+                poll_interval_ms: logfwd_config::PositiveMillis::new(123),
                 read_buf_size: Some(456),
                 per_file_read_budget_bytes: Some(789),
                 adaptive_fast_polls_max: Some(11),
@@ -912,6 +1005,7 @@ mod tests {
                     name: Some("in".to_string()),
                     format: Some(format),
                     sql: None,
+                    source_metadata: SourceMetadataStyle::None,
                     type_config: type_config_fn("127.0.0.1:0"),
                 };
                 let stats = pm.add_input("in", "test");
@@ -959,6 +1053,7 @@ mod tests {
             name: Some("file-in".to_string()),
             format: Some(Format::Json),
             sql: None,
+            source_metadata: SourceMetadataStyle::None,
             type_config: InputTypeConfig::File(logfwd_config::FileTypeConfig {
                 path: "   ".to_string(),
                 poll_interval_ms: None,
@@ -981,7 +1076,6 @@ mod tests {
                 InputType::Otlp,
                 InputTypeConfig::Otlp(logfwd_config::OtlpTypeConfig {
                     listen: "   ".to_string(),
-                    resource_prefix: None,
                     protobuf_decode_mode: None,
                     max_recv_message_size_bytes: None,
                     tls: None,
@@ -1029,6 +1123,7 @@ mod tests {
                 name: Some("net-in".to_string()),
                 format: Some(Format::Json),
                 sql: None,
+                source_metadata: SourceMetadataStyle::None,
                 type_config,
             };
             let stats = pm.add_input("net-in", "net");
@@ -1054,6 +1149,7 @@ mod tests {
             name: Some("http-in".to_string()),
             format: Some(Format::Json),
             sql: None,
+            source_metadata: SourceMetadataStyle::None,
             type_config: InputTypeConfig::Http(logfwd_config::HttpTypeConfig {
                 listen: "127.0.0.1:0".to_string(),
                 http: Some(logfwd_config::HttpInputConfig {
@@ -1071,6 +1167,78 @@ mod tests {
             "unexpected error: {err}"
         );
     }
+
+    #[test]
+    fn build_input_state_tcp_tls_reports_field_context_for_missing_files() {
+        use logfwd_diagnostics::diagnostics::PipelineMetrics;
+
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("p", "SELECT 1", &meter);
+        let stats = pm.add_input("tcp-in", "tcp");
+        let cfg = InputConfig {
+            name: Some("tcp-in".to_string()),
+            format: Some(Format::Json),
+            sql: None,
+            source_metadata: SourceMetadataStyle::None,
+            type_config: InputTypeConfig::Tcp(logfwd_config::TcpTypeConfig {
+                listen: "127.0.0.1:0".to_string(),
+                tls: Some(logfwd_config::TlsServerConfig {
+                    cert_file: Some("/definitely/missing/server.crt".to_string()),
+                    key_file: Some("/definitely/missing/server.key".to_string()),
+                    client_ca_file: None,
+                    require_client_auth: false,
+                }),
+                max_connections: None,
+                connection_timeout_ms: None,
+                read_timeout_ms: None,
+            }),
+        };
+
+        let err = match build_input_state("tcp-in", &cfg, stats) {
+            Ok(_) => panic!("missing tls files should fail startup"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("tcp.tls.cert_file") || err.contains("tcp.tls.key_file"),
+            "expected tcp tls field context in startup error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_input_state_tcp_mtls_requires_client_ca_file() {
+        use logfwd_diagnostics::diagnostics::PipelineMetrics;
+
+        let meter = logfwd_test_utils::test_meter();
+        let mut pm = PipelineMetrics::new("p", "SELECT 1", &meter);
+        let stats = pm.add_input("tcp-in", "tcp");
+        let cfg = InputConfig {
+            name: Some("tcp-in".to_string()),
+            format: Some(Format::Json),
+            sql: None,
+            source_metadata: SourceMetadataStyle::None,
+            type_config: InputTypeConfig::Tcp(logfwd_config::TcpTypeConfig {
+                listen: "127.0.0.1:0".to_string(),
+                tls: Some(logfwd_config::TlsServerConfig {
+                    cert_file: Some("/tmp/server.crt".to_string()),
+                    key_file: Some("/tmp/server.key".to_string()),
+                    client_ca_file: None,
+                    require_client_auth: true,
+                }),
+                max_connections: None,
+                connection_timeout_ms: None,
+                read_timeout_ms: None,
+            }),
+        };
+
+        let err = match build_input_state("tcp-in", &cfg, stats) {
+            Ok(_) => panic!("mTLS without client_ca_file should fail startup"),
+            Err(err) => err,
+        };
+        assert!(
+            err.contains("tcp.tls.require_client_auth") && err.contains("tcp.tls.client_ca_file"),
+            "expected mTLS client CA field context in startup error: {err}"
+        );
+    }
     #[test]
     fn otlp_structured_ingress_tracks_line_capture_flag() {
         let mut scan = logfwd_core::scan_config::ScanConfig::default();
@@ -1082,7 +1250,7 @@ mod tests {
         scan.line_field_name = Some(logfwd_types::field_names::BODY.to_string());
         assert!(
             !otlp_uses_structured_ingress(&scan),
-            "line capture enabled should force legacy scanner ingress"
+            "line capture enabled should force scanner ingress"
         );
     }
 }

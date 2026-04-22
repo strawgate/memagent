@@ -142,7 +142,7 @@ import { angleAt, EXIT_GATE_S, pointAt } from './highway-graph.mjs';
 
     if (frame.autoMode) {
       slider.value = String(frame.greenPct);
-      if (sliderDetail) sliderDetail.textContent = 'Auto · Green ' + frame.greenPct + '%';
+      if (sliderDetail) sliderDetail.textContent = 'Auto \u00B7 Green ' + frame.greenPct + '%';
     }
 
     if (sTput) sTput.textContent = frame.stats.throughput + '/min';
@@ -172,7 +172,7 @@ import { angleAt, EXIT_GATE_S, pointAt } from './highway-graph.mjs';
   function onSliderInput() {
     const v = parseInt(slider.value, 10);
     engine.setGreenPct(v);
-    if (sliderDetail) sliderDetail.textContent = 'Green ' + v + '% · Red ' + (100 - v) + '%';
+    if (sliderDetail) sliderDetail.textContent = 'Green ' + v + '% \u00B7 Red ' + (100 - v) + '%';
   }
 
   function exitAuto() {

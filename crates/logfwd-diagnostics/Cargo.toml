@@ -9,9 +9,9 @@ publish = false
 doctest = false
 
 [dependencies]
-logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 axum = { workspace = true, features = ["http1", "json", "tokio", "ws"] }
 libc = { workspace = true }
+logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 serde = { workspace = true }

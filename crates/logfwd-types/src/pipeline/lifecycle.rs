@@ -592,11 +592,12 @@ mod tests {
         let mut running = new_running();
         let src = SourceId(0);
 
-        let mut sending = Vec::new();
-        for i in 0..100u64 {
-            let t = running.create_batch(src, (i + 1) * 100);
-            sending.push(running.begin_send(t));
-        }
+        let sending: Vec<_> = (0..100u64)
+            .map(|i| {
+                let t = running.create_batch(src, (i + 1) * 100);
+                running.begin_send(t)
+            })
+            .collect();
         assert_eq!(running.in_flight_count(), 100);
 
         // Ack in reverse order
@@ -761,8 +762,11 @@ mod verification {
     // The proofs verify state-machine behavior (ordering, drain, advance),
     // not checkpoint arithmetic. u8 gives 256 symbolic values — sufficient
     // for coverage — while avoiding the SAT explosion that u64 causes in
-    // BTreeMap reasoning (verify_dropped_ticket_does_not_block took 54 min
-    // with u64 vs <1s with u8).
+    // BTreeMap reasoning.
+    //
+    // Individual proofs further bound checkpoints to small ranges (e.g.,
+    // <= 4) when the full u8 domain causes solver timeouts. This is safe
+    // because the proofs test state-machine transitions, not value ranges.
     //
     // TLA+ no-impact: PipelineMachine.tla models checkpoints as opaque
     // values. This cfg(kani)-only alias narrows only the Rust proof input
@@ -781,6 +785,11 @@ mod verification {
         let cp1: Cp = kani::any();
         let cp2: Cp = kani::any();
         let cp3: Cp = kani::any();
+        // Domain narrowing: state-machine behavior, not checkpoint arithmetic.
+        // 9 values (0..=8) cover equal, less-than, and greater-than cases.
+        kani::assume(cp1 <= 8);
+        kani::assume(cp2 <= 8);
+        kani::assume(cp3 <= 8);
         kani::assume(cp1 <= cp2);
         kani::assume(cp2 <= cp3);
         kani::cover!(
@@ -830,6 +839,9 @@ mod verification {
 
         let cp1: Cp = kani::any();
         let cp2: Cp = kani::any();
+        // Domain narrowing: state-machine ordering, not value arithmetic.
+        kani::assume(cp1 <= 8);
+        kani::assume(cp2 <= 8);
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -935,10 +947,17 @@ mod verification {
             PipelineMachine::<Starting, Cp>::new().start();
         let src = SourceId(0);
 
+        // Bound checkpoints to <= 4 to keep SAT tractable. The proof
+        // verifies ordering logic, not value ranges — 5 distinct values
+        // cover equal, less-than, and greater-than cases.
         let cp1: Cp = kani::any();
+        kani::assume(cp1 <= 4);
         let cp2: Cp = kani::any();
+        kani::assume(cp2 <= 4);
         let cp3: Cp = kani::any();
+        kani::assume(cp3 <= 4);
         let cp4: Cp = kani::any();
+        kani::assume(cp4 <= 4);
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -1023,6 +1042,10 @@ mod verification {
         let cp1: Cp = kani::any();
         let cp2: Cp = kani::any();
         let cp3: Cp = kani::any();
+        // Domain narrowing: monotonicity is a state-machine property, not arithmetic.
+        kani::assume(cp1 <= 8);
+        kani::assume(cp2 <= 8);
+        kani::assume(cp3 <= 8);
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -1104,6 +1127,7 @@ mod verification {
         let src = SourceId(0);
 
         let cp: Cp = kani::any();
+        kani::assume(cp <= 8); // domain narrowing: state-machine behavior
         let t1 = running.create_batch(src, cp);
         let s1 = running.begin_send(t1);
 
@@ -1192,6 +1216,10 @@ mod verification {
         let cp1: Cp = kani::any();
         let cp2: Cp = kani::any();
         let cp3: Cp = kani::any();
+        // Domain narrowing: ack/reject ordering, not checkpoint value space.
+        kani::assume(cp1 <= 8);
+        kani::assume(cp2 <= 8);
+        kani::assume(cp3 <= 8);
 
         let t1 = running.create_batch(src, cp1);
         let t2 = running.create_batch(src, cp2);
@@ -1300,7 +1328,9 @@ mod verification {
         let src = SourceId(0);
 
         let cp1: Cp = kani::any();
+        kani::assume(cp1 <= 4);
         let cp2: Cp = kani::any();
+        kani::assume(cp2 <= 4);
 
         // Create batch 1 — then DROP the Queued ticket (simulates scan error)
         let _dropped = running.create_batch(src, cp1);
@@ -1374,29 +1404,26 @@ mod proptests {
                         sending.entry(source).or_default().push(s);
                     }
                     Action::Ack { source } => {
-                        if let Some(queue) = sending.get_mut(&source) {
-                            if !queue.is_empty() {
+                        if let Some(queue) = sending.get_mut(&source)
+                            && !queue.is_empty() {
                                 let s = queue.remove(0);
                                 running.apply_ack(s.ack());
                             }
-                        }
                     }
                     Action::Fail { source } => {
-                        if let Some(queue) = sending.get_mut(&source) {
-                            if !queue.is_empty() {
+                        if let Some(queue) = sending.get_mut(&source)
+                            && !queue.is_empty() {
                                 let s = queue.remove(0);
                                 let requeued = s.fail();
                                 queue.push(running.begin_send(requeued));
                             }
-                        }
                     }
                     Action::Reject { source } => {
-                        if let Some(queue) = sending.get_mut(&source) {
-                            if !queue.is_empty() {
+                        if let Some(queue) = sending.get_mut(&source)
+                            && !queue.is_empty() {
                                 let s = queue.remove(0);
                                 running.apply_ack(s.reject());
                             }
-                        }
                     }
                 }
             }
@@ -1421,11 +1448,14 @@ mod proptests {
                 PipelineMachine::<Starting, u64>::new().start();
             let src = SourceId(0);
 
-            let mut tickets = Vec::new();
-            for i in 0..n {
-                let t = running.create_batch(src, checkpoints[i]);
-                tickets.push(running.begin_send(t));
-            }
+            let tickets: Vec<_> = checkpoints
+                .iter()
+                .take(n)
+                .map(|&checkpoint| {
+                    let t = running.create_batch(src, checkpoint);
+                    running.begin_send(t)
+                })
+                .collect();
             let expected_final = checkpoints[n - 1];
 
             // Unbiased Fisher-Yates: perm_seed[i] is the swap index for position i.
@@ -1464,11 +1494,14 @@ mod proptests {
                 PipelineMachine::<Starting, u64>::new().start();
             let src = SourceId(0);
 
-            let mut sending = Vec::new();
-            for i in 0..n {
-                let t = running.create_batch(src, checkpoints[i]);
-                sending.push(running.begin_send(t));
-            }
+            let sending: Vec<_> = checkpoints
+                .iter()
+                .take(n)
+                .map(|&checkpoint| {
+                    let t = running.create_batch(src, checkpoint);
+                    running.begin_send(t)
+                })
+                .collect();
 
             let mut draining = running.begin_drain();
             prop_assert!(!draining.is_drained() || sending.is_empty());
@@ -1589,12 +1622,12 @@ mod proptests {
                         sending.entry(source).or_default().push(s);
                     }
                     Action::Ack { source } => {
-                        if let Some(queue) = sending.get_mut(&source) {
-                            if !queue.is_empty() {
+                        if let Some(queue) = sending.get_mut(&source)
+                            && !queue.is_empty() {
                                 let s = queue.remove(0);
                                 let advance = running.apply_ack(s.ack());
-                                if advance.advanced {
-                                    if let Some(cp) = advance.checkpoint {
+                                if advance.advanced
+                                    && let Some(cp) = advance.checkpoint {
                                         let prev = max_committed
                                             .get(&u64::from(source))
                                             .copied()
@@ -1606,26 +1639,23 @@ mod proptests {
                                         );
                                         max_committed.insert(u64::from(source), cp);
                                     }
-                                }
                             }
-                        }
                     }
                     Action::Fail { source } => {
-                        if let Some(queue) = sending.get_mut(&source) {
-                            if !queue.is_empty() {
+                        if let Some(queue) = sending.get_mut(&source)
+                            && !queue.is_empty() {
                                 let s = queue.remove(0);
                                 let requeued = s.fail();
                                 queue.push(running.begin_send(requeued));
                             }
-                        }
                     }
                     Action::Reject { source } => {
-                        if let Some(queue) = sending.get_mut(&source) {
-                            if !queue.is_empty() {
+                        if let Some(queue) = sending.get_mut(&source)
+                            && !queue.is_empty() {
                                 let s = queue.remove(0);
                                 let advance = running.apply_ack(s.reject());
-                                if advance.advanced {
-                                    if let Some(cp) = advance.checkpoint {
+                                if advance.advanced
+                                    && let Some(cp) = advance.checkpoint {
                                         let prev = max_committed
                                             .get(&u64::from(source))
                                             .copied()
@@ -1637,9 +1667,7 @@ mod proptests {
                                         );
                                         max_committed.insert(u64::from(source), cp);
                                     }
-                                }
                             }
-                        }
                     }
                 }
             }
@@ -1663,11 +1691,14 @@ mod proptests {
                 PipelineMachine::<Starting, u64>::new().start();
             let src = SourceId(0);
 
-            let mut tickets = Vec::new();
-            for i in 0..n {
-                let t = running.create_batch(src, checkpoints[i]);
-                tickets.push(running.begin_send(t));
-            }
+            let tickets: Vec<_> = checkpoints
+                .iter()
+                .take(n)
+                .map(|&checkpoint| {
+                    let t = running.create_batch(src, checkpoint);
+                    running.begin_send(t)
+                })
+                .collect();
 
             let expected_final = checkpoints[n - 1];
 

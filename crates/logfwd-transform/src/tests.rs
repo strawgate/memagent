@@ -4,8 +4,11 @@ use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 
 use super::*;
-use arrow::array::{Array, ArrayRef, Float64Array, Int64Array, StringArray, StringViewArray};
+use arrow::array::{
+    Array, ArrayRef, Float64Array, Int64Array, StringArray, StringViewArray, UInt64Array,
+};
 use arrow::datatypes::{Field, Schema};
+use logfwd_types::field_names;
 
 /// Helper: build a simple test RecordBatch with bare-name columns matching
 /// what the Phase-10 scanner emits for single-type fields.
@@ -34,6 +37,43 @@ fn make_test_batch() -> RecordBatch {
         Some("503"),
     ]));
     RecordBatch::try_new(schema, vec![level, msg, status]).unwrap()
+}
+
+fn make_source_metadata_batch() -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("level", DataType::Utf8, true),
+        Field::new("msg", DataType::Utf8, true),
+        Field::new(field_names::SOURCE_ID, DataType::UInt64, true),
+        Field::new("file.path", DataType::Utf8, true),
+    ]));
+    let level: ArrayRef = Arc::new(StringArray::from(vec![Some("INFO"), Some("ERROR")]));
+    let msg: ArrayRef = Arc::new(StringArray::from(vec![Some("started"), Some("failed")]));
+    let source_id: ArrayRef = Arc::new(UInt64Array::from(vec![Some(1), Some(2)]));
+    let source_path: ArrayRef = Arc::new(StringArray::from(vec![
+        Some("/var/log/pods/a.log"),
+        Some("/var/log/pods/b.log"),
+    ]));
+    RecordBatch::try_new(schema, vec![level, msg, source_id, source_path]).unwrap()
+}
+
+fn assert_u64_column_value(batch: &RecordBatch, name: &str, row: usize, expected: u64) {
+    let values = batch
+        .column_by_name(name)
+        .unwrap()
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap();
+    assert_eq!(values.value(row), expected);
+}
+
+fn assert_utf8_column_value(batch: &RecordBatch, name: &str, row: usize, expected: &str) {
+    let values = batch
+        .column_by_name(name)
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(values.value(row), expected);
 }
 
 #[test]
@@ -77,6 +117,42 @@ fn test_filter() {
         .unwrap();
     assert_eq!(msg.value(0), "disk full");
     assert_eq!(msg.value(1), "oom killed");
+}
+
+#[test]
+fn wildcard_filter_preserves_sql_visible_internal_metadata() {
+    let batch = make_source_metadata_batch();
+    let mut transform = SqlTransform::new("SELECT * FROM logs WHERE __source_id = 2").unwrap();
+    let result = transform.execute_blocking(batch).unwrap();
+
+    assert_eq!(result.num_rows(), 1);
+    assert_u64_column_value(&result, field_names::SOURCE_ID, 0, 2);
+    assert_utf8_column_value(&result, "level", 0, "ERROR");
+    assert_utf8_column_value(&result, "msg", 0, "failed");
+}
+
+#[test]
+fn explicit_projection_keeps_source_metadata() {
+    let batch = make_source_metadata_batch();
+    let mut transform =
+        SqlTransform::new("SELECT __source_id FROM logs WHERE level = 'ERROR'").unwrap();
+    let result = transform.execute_blocking(batch).unwrap();
+
+    assert_eq!(result.num_rows(), 1);
+    assert_u64_column_value(&result, field_names::SOURCE_ID, 0, 2);
+}
+
+#[test]
+fn aliased_projection_keeps_source_metadata_value_without_reserved_name() {
+    let batch = make_source_metadata_batch();
+    let mut transform =
+        SqlTransform::new("SELECT *, __source_id AS source_id FROM logs WHERE level = 'ERROR'")
+            .unwrap();
+    let result = transform.execute_blocking(batch).unwrap();
+
+    assert_eq!(result.num_rows(), 1);
+    assert_u64_column_value(&result, field_names::SOURCE_ID, 0, 2);
+    assert_u64_column_value(&result, "source_id", 0, 2);
 }
 
 #[test]
@@ -192,7 +268,7 @@ fn test_hash_udf() {
         .column_by_name("h")
         .unwrap()
         .as_any()
-        .downcast_ref::<arrow::array::UInt64Array>()
+        .downcast_ref::<UInt64Array>()
         .unwrap();
 
     assert!(!col.is_null(0));
@@ -1559,13 +1635,6 @@ fn test_query_analyzer_match_recognize_column_refs() {
     }
 }
 
-/// Regression for #1684: `SELECT _raw, level FROM logs WHERE level = 'ERROR'`
-/// must produce `scan_config.keep_raw = true`.
-///
-/// Before the fix, `keep_raw` was unconditionally `false` for non-SELECT-*
-/// queries. The scanner therefore never called `append_raw`, `_raw` was absent
-/// from the batch schema, and DataFusion raised "column _raw not found" on the
-/// first batch, dropping all data.
 #[test]
 fn test_scan_config_selective_query_does_not_set_line_field() {
     let a = QueryAnalyzer::new("SELECT body, level FROM logs WHERE level = 'ERROR'").unwrap();

@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc bca25b3b331849ec69060e5db565b9fbb19a9c705a78d8939768383d8e69be91 # shrinks to (initial_state, transitions, seen_counter) = (RefState { next_line_id: 0, written_line_ids: {}, has_content: false }, [AppendLines(4), AppendLines(2), Poll, AppendLines(4), AppendLines(4), AppendLines(5)], None)
+cc 826e8948efc984b154ca16359c3ee172eee5c760440be40585305cf2e6e649df # shrinks to (initial_state, transitions, seen_counter) = (RefState { next_line_id: 0, written_line_ids: {}, has_content: false }, [AppendLines(1), CrashAndRestart, FileCopyTruncate, AppendLines(2)], None)

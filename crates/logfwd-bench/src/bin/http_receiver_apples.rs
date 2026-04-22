@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Apples-to-apples HTTP receiver benchmark for OTLP-like ingestion.
 //!
 //! Compares three transport stacks under the same workload and decode path:
@@ -14,7 +15,6 @@
 //! Optional env vars:
 //!   LOGFWD_HTTP_BENCH_DURATION_SECS=6
 //!   LOGFWD_HTTP_BENCH_CONCURRENCY=8,32
-
 use std::convert::Infallible;
 use std::io::Read as _;
 use std::net::SocketAddr;
@@ -410,14 +410,11 @@ fn start_tiny_http_server() -> std::io::Result<TinyServer> {
                         if v.is_empty() { None } else { Some(v) }
                     });
 
-                let logs = match decode_and_count(body, content_encoding.as_deref()) {
-                    Ok(n) => n,
-                    Err(_) => {
-                        let _ = request.respond(
-                            tiny_http::Response::from_string("decode error").with_status_code(400),
-                        );
-                        continue;
-                    }
+                let Ok(logs) = decode_and_count(body, content_encoding.as_deref()) else {
+                    let _ = request.respond(
+                        tiny_http::Response::from_string("decode error").with_status_code(400),
+                    );
+                    continue;
                 };
 
                 match tx_req.try_send(logs) {
@@ -495,9 +492,8 @@ async fn axum_handler(
         .and_then(|v| v.to_str().ok())
         .map(str::to_ascii_lowercase);
 
-    let logs = match decode_and_count(body.to_vec(), content_encoding.as_deref()) {
-        Ok(n) => n,
-        Err(_) => return StatusCode::BAD_REQUEST,
+    let Ok(logs) = decode_and_count(body.to_vec(), content_encoding.as_deref()) else {
+        return StatusCode::BAD_REQUEST;
     };
 
     match state.tx.try_send(logs) {
@@ -525,9 +521,8 @@ async fn start_hyper_server() -> std::io::Result<HyperServer> {
                     }
                 }
                 accepted = listener.accept() => {
-                    let (stream, _) = match accepted {
-                        Ok(v) => v,
-                        Err(_) => continue,
+                    let Ok((stream, _)) = accepted else {
+                        continue;
                     };
                     let io = TokioIo::new(stream);
                     let state = state.clone();
@@ -590,9 +585,8 @@ async fn hyper_handler(
         return Ok(hyper_response(StatusCode::PAYLOAD_TOO_LARGE));
     }
 
-    let logs = match decode_and_count(body_bytes.to_vec(), content_encoding.as_deref()) {
-        Ok(n) => n,
-        Err(_) => return Ok(hyper_response(StatusCode::BAD_REQUEST)),
+    let Ok(logs) = decode_and_count(body_bytes.to_vec(), content_encoding.as_deref()) else {
+        return Ok(hyper_response(StatusCode::BAD_REQUEST));
     };
 
     let status = match state.tx.try_send(logs) {
@@ -728,19 +722,19 @@ fn make_scenarios() -> Vec<Scenario> {
 
     vec![
         Scenario {
-            name: format!("otlp.protobuf.identity.small({} logs)", small_logs),
+            name: format!("otlp.protobuf.identity.small({small_logs} logs)"),
             body: Bytes::from(small_payload),
             content_encoding: None,
             logs_per_request: small_logs as u64,
         },
         Scenario {
-            name: format!("otlp.protobuf.zstd.small({} logs)", small_logs),
+            name: format!("otlp.protobuf.zstd.small({small_logs} logs)"),
             body: Bytes::from(small_zstd),
             content_encoding: Some("zstd"),
             logs_per_request: small_logs as u64,
         },
         Scenario {
-            name: format!("otlp.protobuf.zstd.medium({} logs)", medium_logs),
+            name: format!("otlp.protobuf.zstd.medium({medium_logs} logs)"),
             body: Bytes::from(medium_zstd),
             content_encoding: Some("zstd"),
             logs_per_request: medium_logs as u64,

@@ -19,7 +19,7 @@ FastForward is a research and learning project exploring how far you can push a 
 
 The [documentation site](https://strawgate.github.io/fastforward/) has interactive guides that explain how each piece works — from SIMD parsing to backpressure to checkpoint ordering — with live simulations you can play with.
 
-> **Note:** The CLI is currently named `logfwd` and will be renamed to `ff` in a future release.
+> **Note:** The Cargo package is named `logfwd`; the installed CLI binary is `ff`.
 
 ## Try it
 
@@ -29,7 +29,7 @@ git clone https://github.com/strawgate/fastforward.git && cd fastforward
 cargo build --release -p logfwd
 
 # Generate some test data
-./target/release/logfwd generate-json 100000 logs.json
+./target/release/ff generate-json 100000 logs.json
 ```
 
 ```yaml
@@ -50,10 +50,23 @@ output:
 ```
 
 ```bash
-./target/release/logfwd run --config config.yaml
+./target/release/ff run --config config.yaml
 ```
 
 Only error records with slow durations make it through — everything else is filtered by the SQL transform.
+
+For one-off command-line sends, keep a destination-only config and pipe data into `ff`:
+
+```yaml
+# destination.yaml
+output:
+  type: otlp
+  endpoint: http://127.0.0.1:4318/v1/logs
+```
+
+```bash
+cat logs.json | ./target/release/ff send --config destination.yaml --format json --service checkout
+```
 
 ## What makes it interesting
 

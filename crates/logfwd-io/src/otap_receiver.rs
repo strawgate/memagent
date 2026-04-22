@@ -140,27 +140,18 @@ impl OtapReceiver {
         let handle = std::thread::Builder::new()
             .name("otap-receiver".into())
             .spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread()
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(_) => {
-                        store_health_event(&health_for_server, ReceiverHealthEvent::FatalFailure);
-                        return;
-                    }
+                else {
+                    store_health_event(&health_for_server, ReceiverHealthEvent::FatalFailure);
+                    return;
                 };
 
                 runtime.block_on(async move {
-                    let listener = match tokio::net::TcpListener::from_std(std_listener) {
-                        Ok(listener) => listener,
-                        Err(_) => {
-                            store_health_event(
-                                &health_for_server,
-                                ReceiverHealthEvent::FatalFailure,
-                            );
-                            return;
-                        }
+                    let Ok(listener) = tokio::net::TcpListener::from_std(std_listener) else {
+                        store_health_event(&health_for_server, ReceiverHealthEvent::FatalFailure);
+                        return;
                     };
 
                     let app = axum::Router::new()
@@ -211,7 +202,7 @@ impl OtapReceiver {
             return Err(io::Error::other("OTAP receiver: already closed"));
         };
         rx.recv()
-            .map_err(|_| io::Error::other("OTAP receiver: channel disconnected"))
+            .map_err(|_e| io::Error::other("OTAP receiver: channel disconnected"))
     }
 
     /// Receive with a timeout.
@@ -452,11 +443,17 @@ fn decode_batch_arrow_records(buf: &[u8]) -> Result<BatchArrowRecords, InputErro
     })
 }
 
+#[cfg(fuzzing)]
+pub fn fuzz_decode_batch_arrow_records(buf: &[u8]) -> Result<(i64, usize), InputError> {
+    let decoded = decode_batch_arrow_records(buf)?;
+    Ok((decoded.batch_id, decoded.payloads.len()))
+}
+
 fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<String>, StatusCode> {
     let Some(value) = headers.get(CONTENT_ENCODING) else {
         return Ok(None);
     };
-    let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
+    let parsed = value.to_str().map_err(|_e| StatusCode::BAD_REQUEST)?;
     let encoding = parsed.trim();
     if encoding.is_empty() {
         return Err(StatusCode::BAD_REQUEST);

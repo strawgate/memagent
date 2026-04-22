@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Library evaluation benchmarks for I/O component refactor (issue #1283).
 //!
 //! Compares:
@@ -7,7 +8,6 @@
 //! 4. `async-compression` write path — streaming compress throughput
 //!
 //! Run: `cargo run --release --bin library-eval -p logfwd-bench`
-
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -460,8 +460,7 @@ async fn main() {
     let json_payload: Vec<u8> = (0..1000)
         .flat_map(|i| {
             format!(
-                r#"{{"timestamp":"2026-04-05T22:00:00Z","level":"info","message":"benchmark log line {}","host":"bench"}}"#,
-                i
+                r#"{{"timestamp":"2026-04-05T22:00:00Z","level":"info","message":"benchmark log line {i}","host":"bench"}}"#
             )
             .into_bytes()
             .into_iter()

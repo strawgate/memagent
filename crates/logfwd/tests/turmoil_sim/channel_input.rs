@@ -3,6 +3,7 @@
 use std::collections::VecDeque;
 use std::io;
 
+use bytes::Bytes;
 use logfwd_io::input::{InputEvent, InputSource};
 use logfwd_io::tail::ByteOffset;
 use logfwd_types::diagnostics::ComponentHealth;
@@ -34,9 +35,10 @@ impl InputSource for ChannelInputSource {
                 let accounted_bytes = data.len() as u64;
                 self.offset += data.len() as u64;
                 Ok(vec![InputEvent::Data {
-                    bytes: data,
+                    bytes: Bytes::from(data),
                     source_id: Some(self.source_id),
                     accounted_bytes,
+                    cri_metadata: None,
                 }])
             }
             None => Ok(vec![]),

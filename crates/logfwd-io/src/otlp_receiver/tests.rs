@@ -1,5 +1,5 @@
 use super::*;
-use arrow::array::{Array, BooleanArray, Int64Array, StringArray, StringViewArray};
+use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, StringArray, StringViewArray};
 use arrow::datatypes::DataType;
 use logfwd_types::field_names;
 use opentelemetry_proto::tonic::{
@@ -845,6 +845,45 @@ fn invalid_json_flags_returns_error() {
 }
 
 #[test]
+fn negative_json_flags_returns_error() {
+    let result = decode_otlp_json(
+        br#"{
+            "resourceLogs": [{
+                "scopeLogs": [{
+                    "logRecords": [{
+                        "flags": -1
+                    }]
+                }]
+            }]
+        }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+    );
+
+    assert!(
+        result.is_err(),
+        "negative flags must fail because OTLP flags are uint32"
+    );
+}
+
+#[test]
+fn out_of_range_json_flags_returns_error() {
+    let result = decode_otlp_json(
+        br#"{
+            "resourceLogs": [{
+                "scopeLogs": [{
+                    "logRecords": [{
+                        "flags": 4294967296
+                    }]
+                }]
+            }]
+        }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+    );
+
+    assert!(result.is_err(), "flags above uint32::MAX must fail");
+}
+
+#[test]
 fn invalid_json_trace_id_returns_error() {
     let result = decode_otlp_json(
         br#"{
@@ -1042,6 +1081,70 @@ fn json_path_structured_values_match_protobuf_shape() {
 }
 
 #[test]
+fn json_resource_scalar_attributes_preserve_supported_types() {
+    let batch = decode_otlp_json(
+        br#"{
+            "resourceLogs": [{
+                "resource": {
+                    "attributes": [
+                        { "key": "sampled", "value": { "boolValue": true } },
+                        { "key": "retries", "value": { "intValue": "7" } },
+                        { "key": "ratio", "value": { "doubleValue": 1.25 } },
+                        { "key": "service", "value": { "stringValue": "checkout" } },
+                        { "key": "payload", "value": { "bytesValue": "AQIDBA==" } }
+                    ]
+                },
+                "scopeLogs": [{
+                    "logRecords": [{ "body": { "stringValue": "ok" } }]
+                }]
+            }]
+        }"#,
+        field_names::DEFAULT_RESOURCE_PREFIX,
+    )
+    .expect("resource scalar attributes should decode");
+
+    let sampled = batch
+        .column_by_name("resource.attributes.sampled")
+        .expect("resource bool column must exist");
+    assert_eq!(sampled.data_type(), &DataType::Boolean);
+    let sampled = sampled
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .expect("resource bool should be BooleanArray");
+    assert!(sampled.value(0));
+
+    let retries = batch
+        .column_by_name("resource.attributes.retries")
+        .expect("resource int column must exist");
+    assert_eq!(retries.data_type(), &DataType::Int64);
+    let retries = retries
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .expect("resource int should be Int64Array");
+    assert_eq!(retries.value(0), 7);
+
+    let ratio = batch
+        .column_by_name("resource.attributes.ratio")
+        .expect("resource float column must exist");
+    assert_eq!(ratio.data_type(), &DataType::Float64);
+    let ratio = ratio
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .expect("resource float should be Float64Array");
+    assert_eq!(ratio.value(0), 1.25);
+
+    let service = batch
+        .column_by_name("resource.attributes.service")
+        .expect("resource string column must exist");
+    assert_eq!(string_value_at(service.as_ref(), 0), "checkout");
+
+    let payload = batch
+        .column_by_name("resource.attributes.payload")
+        .expect("resource bytes column must exist");
+    assert_eq!(string_value_at(payload.as_ref(), 0), "01020304");
+}
+
+#[test]
 fn handles_invalid_protobuf() {
     let result = decode_otlp_protobuf(b"not valid protobuf", field_names::DEFAULT_RESOURCE_PREFIX);
     assert!(result.is_err());
@@ -1115,7 +1218,6 @@ fn experimental_projection_decode_mode_controls_http_protobuf_path() {
         "projected-only",
         "127.0.0.1:0",
         None,
-        field_names::DEFAULT_RESOURCE_PREFIX,
         OtlpProtobufDecodeMode::ProjectedOnly,
         None,
     )
@@ -1131,8 +1233,8 @@ fn experimental_projection_decode_mode_controls_http_protobuf_path() {
         Err(e) => panic!("unexpected transport error: {e}"),
     };
     assert_eq!(
-        projected_only_status, 400,
-        "ProjectedOnly must reject unsupported but valid OTLP shapes"
+        projected_only_status, 200,
+        "ProjectedOnly must accept complex AnyValue shapes after projection support was added"
     );
 
     let stats = Arc::new(ComponentStats::new());
@@ -1140,7 +1242,6 @@ fn experimental_projection_decode_mode_controls_http_protobuf_path() {
         "projected-fallback",
         "127.0.0.1:0",
         Some(Arc::clone(&stats)),
-        field_names::DEFAULT_RESOURCE_PREFIX,
         OtlpProtobufDecodeMode::ProjectedFallback,
         None,
     )
@@ -1174,10 +1275,10 @@ fn experimental_projection_decode_mode_controls_http_protobuf_path() {
     };
     assert_eq!(
         fallback_status, 200,
-        "ProjectedFallback must use prost for supported-by-prost complex values"
+        "ProjectedFallback must handle complex AnyValue shapes via projection"
     );
-    assert_eq!(stats.otlp_projected_success(), 1);
-    assert_eq!(stats.otlp_projected_fallback(), 1);
+    assert_eq!(stats.otlp_projected_success(), 2);
+    assert_eq!(stats.otlp_projected_fallback(), 0);
     assert_eq!(stats.otlp_projection_invalid(), 0);
 
     let malformed_status = match loopback_http_client()
@@ -1193,8 +1294,8 @@ fn experimental_projection_decode_mode_controls_http_protobuf_path() {
         malformed_status, 400,
         "ProjectedFallback must reject malformed protobuf instead of falling back"
     );
-    assert_eq!(stats.otlp_projected_success(), 1);
-    assert_eq!(stats.otlp_projected_fallback(), 1);
+    assert_eq!(stats.otlp_projected_success(), 2);
+    assert_eq!(stats.otlp_projected_fallback(), 0);
     assert_eq!(stats.otlp_projection_invalid(), 1);
     assert_eq!(stats.parse_errors(), 1);
 
@@ -1914,5 +2015,37 @@ fn batch_path_uses_observed_time_when_event_time_is_zero() {
         ts_arr.value(0),
         OBSERVED_NS as i64,
         "batch path must use observed_time_unix_nano when time_unix_nano is 0"
+    );
+}
+
+#[test]
+fn batch_path_errors_on_overflowed_observed_timestamp() {
+    let request = ExportLogsServiceRequest {
+        resource_logs: vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![LogRecord {
+                    time_unix_nano: 0,
+                    observed_time_unix_nano: u64::MAX,
+                    body: Some(AnyValue {
+                        value: Some(Value::StringValue("overflow".into())),
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+
+    let err = convert_request_to_batch(&request, field_names::DEFAULT_RESOURCE_PREFIX)
+        .expect_err("timestamp overflow must fail deterministically");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("observed_time_unix_nano"),
+        "overflow diagnostic should name offending field: {msg}"
+    );
+    assert!(
+        msg.contains("exceeds signed 64-bit nanosecond range"),
+        "overflow diagnostic should explain range failure: {msg}"
     );
 }

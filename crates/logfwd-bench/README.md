@@ -12,7 +12,7 @@ just bench
 just bench-framed-input -- --lines 200000 --iterations 5 --flamegraph /tmp/framed-input.svg
 
 # Run the CloudTrail realism profile (nested structure + cardinality + compression)
-cargo run -p logfwd-bench --release --bin cloudtrail_profile -- --lines 20000
+cargo run -p logfwd-bench --release --features bench-tools --bin cloudtrail_profile -- --lines 20000
 
 # Run the allocation-only FramedInput report (dhat-backed, slower)
 just bench-framed-input-alloc -- --lines 200000
@@ -33,6 +33,9 @@ just profile-otlp-io -- --case attrs-heavy --mode projected_view_decode --iterat
 # Profile OTLP decode/E2E allocation counts with stats_alloc instrumentation
 just profile-otlp-io-alloc -- --case attrs-heavy --iterations 100
 
+# Profile source metadata attachment CPU and allocation counts
+cargo run -p logfwd-bench --release --features bench-tools --bin source_metadata_profile -- --rows 50000 --sources 300 --iterations 200
+
 # Run all Criterion benchmarks (Tier 1 + 2, includes file_io, batch_formation)
 just bench-full
 
@@ -42,6 +45,7 @@ just bench-system
 # Run a single benchmark group
 cargo bench -p logfwd-bench --bench output_encode
 cargo bench -p logfwd-bench --bench otlp_io
+cargo bench -p logfwd-bench --bench source_metadata
 cargo bench -p logfwd-bench --bench full_chain
 cargo bench -p logfwd-bench --bench file_io
 cargo bench -p logfwd-bench --bench batch_formation
@@ -68,6 +72,7 @@ just bench-report
 | `pipeline.rs` | `scanner`, `cri`, `transform`, `compress`, `output`, `end_to_end`, `elasticsearch` | Original pipeline stage benchmarks |
 | `output_encode.rs` | `output_encode` | OTLP protobuf, JSON lines, JSON+zstd encoding cost (narrow vs wide, 1K/10K rows) |
 | `otlp_io.rs` | `otlp_input_parser_only`, `otlp_input_decode_materialize`, `otlp_input_decompress_decode`, `otlp_output_encode_only`, `otlp_output_compression`, `otlp_e2e_in_process`, `otlp_projected_fallback_mix` | OTLP fixture matrix with stage-separated decode, materialize, decompression, encode, compression, fallback mix, and in-process E2E measurements. |
+| `source_metadata.rs` | `source_metadata_attach`, `source_metadata_scan_sql`, `source_metadata_raw_rewrite_baseline`, `source_metadata_snapshot_filter` | Post-scan source metadata attachment strategies, source cardinality/interleaving, raw rewrite baseline, and source path snapshot filtering. |
 | `full_chain.rs` | `full_chain_json`, `full_chain_cri`, `full_chain_grok` | Composed pipeline chains — reveals hidden handoff overhead |
 | `file_io.rs` | `file_io_framing`, `file_io_cri` | Disk read + newline framing + CRI parse throughput |
 | `batch_formation.rs` | `batch_scan`, `batch_transform`, `batch_pipeline` | Batch size scaling (100–100K rows) — amortization curve |
@@ -127,11 +132,12 @@ allocation counting begins after warmup completes.
 | File | Binary | What it does |
 |------|--------|-------------|
 | `main.rs` | `logfwd-bench` | Reads Criterion JSON, emits markdown tables |
-| `e2e_profile.rs` | *(lib)* | Per-stage timing breakdown (scan → transform → encode → compress) |
+| `e2e_profile.rs` | `e2e_profile` | Per-stage timing breakdown (scan → transform → encode → compress) |
 | `bin/cloudtrail_profile.rs` | `cloudtrail_profile` | CloudTrail-like generator profile (NDJSON vs direct RecordBatch generation, cardinality, compression) |
 | `es_throughput.rs` | `es-throughput` | Elasticsearch output throughput with worker scaling |
 | `bin/framed_input_profile.rs` | `framed_input_profile` | FramedInput stage timings, RSS, optional flamegraph, optional dhat allocation report |
 | `bin/otlp_io_profile.rs` | `otlp_io_profile` | Focused OTLP decode and decode→encode CPU flamegraphs and allocation counts. Mode names match Criterion (`prost_reference_to_batch`, `production_current_to_batch`, `projected_detached_to_batch`, `projected_view_to_batch`, `projected_fallback_to_batch`, `zstd_*`, `projected_fallback_mix`, `e2e_*`). |
+| `bin/source_metadata_profile.rs` | `source_metadata_profile` | Source metadata column attachment timing and allocation counts for source id, Utf8View path, Utf8 path, and dictionary path variants. |
 | `explore.rs` | *(lib)* | Multi-dimensional exploratory benchmark (CSV output) |
 | `rss.rs` | *(lib)* | Resident set size at each pipeline stage |
 | `sizes.rs` | *(lib)* | Data size analysis: raw → Arrow → IPC → Parquet |

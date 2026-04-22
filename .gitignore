@@ -15,6 +15,7 @@ book/.astro/
 .DS_Store
 crates/logfwd-io/src/dashboard-dist/
 .playwright-mcp/
+.playwright-cli/
 *.env
 .env
 es-flamegraph.svg
@@ -30,4 +31,9 @@ error.log
 **/cloud-artifacts/
 .codex/
 scripts/__pycache__/
-.playwright-cli/
+
+# TLC model checker scratch artifacts (traces, states/)
+tla/*_TTrace_*.tla
+tla/*_TTrace_*.bin
+tla/states/
+states/

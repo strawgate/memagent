@@ -22,6 +22,7 @@ mod passthrough {
 
     use arrow::record_batch::RecordBatch;
     use logfwd_core::scan_config::ScanConfig;
+    use logfwd_types::source_metadata::SourceMetadataPlan;
 
     /// Error returned when passthrough transform construction or execution fails.
     #[derive(Debug, Clone)]
@@ -98,6 +99,29 @@ mod passthrough {
 
         pub fn validate_plan(&mut self) -> Result<(), TransformError> {
             Ok(())
+        }
+    }
+
+    impl QueryAnalyzer {
+        /// Return the metadata columns the passthrough transform needs.
+        ///
+        /// The passthrough transform accepts only `SELECT * FROM logs`, which
+        /// never widens results with source metadata.
+        pub fn source_metadata_plan(&self) -> SourceMetadataPlan {
+            SourceMetadataPlan::default()
+        }
+
+        /// Return metadata columns explicitly referenced by SQL.
+        ///
+        /// The passthrough analyzer has no SQL expression tree, so it reports
+        /// no explicit metadata references.
+        pub fn explicit_source_metadata_plan(&self) -> SourceMetadataPlan {
+            SourceMetadataPlan::default()
+        }
+
+        /// Return whether the transform needs source paths attached.
+        pub fn source_path_required(&self) -> bool {
+            self.source_metadata_plan().has_source_path()
         }
     }
 

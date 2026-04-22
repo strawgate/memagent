@@ -18,8 +18,8 @@ use super::sink::{SendResult, Sink, SinkFactory};
 use arrow::util::display::array_value_to_string;
 
 use super::{
-    BatchMetadata, ColVariant, build_col_infos, get_array, is_null, write_json_value,
-    write_row_json,
+    BatchMetadata, ColVariant, build_col_infos, get_array, is_null, resolve_col_infos,
+    write_json_value, write_row_json_resolved,
 };
 
 // ---------------------------------------------------------------------------
@@ -86,18 +86,22 @@ impl StdoutSink {
     /// `&mut Vec<u8>`, allowing the JSON path to write directly without an
     /// intermediate per-row scratch buffer.  Console format still uses
     /// `self.buf` to build each row before flushing it.
+    ///
+    /// Returns the number of newline-terminated lines written, so callers
+    /// (e.g. `FileSink`) can track line counts without a separate `memchr`
+    /// scan over the output buffer.
     pub fn write_batch_to(
         &mut self,
         batch: &RecordBatch,
         _metadata: &BatchMetadata,
         dest: &mut Vec<u8>,
-    ) -> io::Result<()> {
+    ) -> io::Result<usize> {
         let num_rows = batch.num_rows();
         if num_rows == 0 {
-            return Ok(());
+            return Ok(0);
         }
 
-        match self.format {
+        let lines = match self.format {
             StdoutFormat::Text => {
                 let msg_indices =
                     resolve_message_indices(batch.schema().fields(), &self.message_field);
@@ -116,11 +120,14 @@ impl StdoutSink {
                         );
                     }
                     let cols = build_col_infos(batch);
+                    let resolved = resolve_col_infos(batch, &cols);
                     for row in 0..num_rows {
-                        write_row_json(batch, row, &cols, dest)?;
+                        write_row_json_resolved(row, &resolved, dest)?;
                         dest.push(b'\n');
                     }
+                    num_rows
                 } else {
+                    let mut count = 0usize;
                     for row in 0..num_rows {
                         if let Some(col) = msg_indices
                             .iter()
@@ -131,23 +138,30 @@ impl StdoutSink {
                                 safe_array_value_to_string(col.as_ref(), row).as_bytes(),
                             );
                             dest.push(b'\n');
+                            count += 1;
                         }
                     }
+                    count
                 }
             }
             StdoutFormat::Json => {
                 let cols = build_col_infos(batch);
+                let resolved = resolve_col_infos(batch, &cols);
                 for row in 0..num_rows {
-                    // Write directly into dest — no intermediate scratch copy.
-                    write_row_json(batch, row, &cols, dest)?;
+                    write_row_json_resolved(row, &resolved, dest)?;
                     dest.push(b'\n');
                 }
+                num_rows
             }
             StdoutFormat::Console => {
+                let start_len = dest.len();
                 self.write_console(batch, dest)?;
+                // Console format: count lines in output (variable per row).
+                // Slice from start_len to count only newly-appended newlines.
+                memchr_iter(b'\n', &dest[start_len..]).count()
             }
-        }
-        Ok(())
+        };
+        Ok(lines)
     }
 
     /// Serialize a batch into `self.output_buf`.
@@ -158,7 +172,11 @@ impl StdoutSink {
     /// `self.buf` as per-row scratch space, so the output buffer is temporarily
     /// taken out to avoid aliasing borrows.  JSON and Text formats write
     /// directly into the destination buffer and do not use `self.buf`.
-    fn serialize_batch(&mut self, batch: &RecordBatch, metadata: &BatchMetadata) -> io::Result<()> {
+    fn serialize_batch(
+        &mut self,
+        batch: &RecordBatch,
+        metadata: &BatchMetadata,
+    ) -> io::Result<usize> {
         let mut output = std::mem::take(&mut self.output_buf);
         output.clear();
         let result = self.write_batch_to(batch, metadata, &mut output);
@@ -196,7 +214,7 @@ impl StdoutSink {
                 if !col.is_null(row) {
                     let ts = safe_col_to_string(col, row);
                     // Show just the time portion if it's a full ISO timestamp.
-                    let short = ts.find('T').map_or(ts.as_ref(), |i| &ts[i + 1..]);
+                    let short = ts.find('T').map_or_else(|| ts.as_ref(), |i| &ts[i + 1..]);
                     if self.color {
                         self.buf.extend_from_slice(b"\x1b[2m");
                     }
@@ -224,7 +242,7 @@ impl StdoutSink {
                         self.buf.extend_from_slice(color.as_bytes());
                     }
                     // Pad to 5 chars for alignment.
-                    write!(self.buf, "{:<5}", level)?;
+                    write!(self.buf, "{level:<5}")?;
                     if self.color {
                         self.buf.extend_from_slice(b"\x1b[0m");
                     }
@@ -499,9 +517,10 @@ impl Sink for StdoutSink {
         Box::pin(async move {
             // Serialize the entire batch into the reusable output buffer
             // synchronously (CPU work, no I/O — fine on an async task).
-            if let Err(e) = self.serialize_batch(batch, metadata) {
-                return SendResult::IoError(e);
-            }
+            let lines_written = match self.serialize_batch(batch, metadata) {
+                Ok(n) => n as u64,
+                Err(e) => return SendResult::IoError(e),
+            };
 
             let bytes_written = self.output_buf.len() as u64;
 
@@ -514,7 +533,6 @@ impl Sink for StdoutSink {
                 return map_stdout_io_error(e);
             }
 
-            let lines_written = memchr_iter(b'\n', &self.output_buf).count() as u64;
             self.stats.inc_lines(lines_written);
             self.stats.inc_bytes(bytes_written);
             SendResult::Ok

@@ -14,15 +14,16 @@ doctest = false
 _test-internals = []
 
 [dependencies]
-logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
-logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 arrow = { workspace = true }
 bytes = "1"
+logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
+logfwd-lint-attrs = { version = "0.1.0", path = "../logfwd-lint-attrs" }
+logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 
 [dev-dependencies]
 proptest = { workspace = true }
 serial_test = "3"
-stats_alloc = "0.1"
+stats_alloc = { workspace = true }
 
 [[bin]]
 name = "builder_profile"

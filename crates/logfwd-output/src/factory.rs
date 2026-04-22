@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use logfwd_config::{Format, OutputConfig, OutputType};
+use logfwd_config::{CompressionFormat, Format, OtlpProtocol, OutputConfigV2, TlsClientConfig};
 use logfwd_types::diagnostics::ComponentStats;
 
 use crate::arrow_ipc_sink::ArrowIpcSinkFactory;
@@ -14,7 +14,7 @@ use crate::json_lines::JsonLinesSinkFactory;
 use crate::loki::LokiSinkFactory;
 use crate::metadata::Compression;
 use crate::null::NullSinkFactory;
-use crate::otlp_sink::{OtlpProtocol, OtlpSinkFactory};
+use crate::otlp_sink::OtlpSinkFactory;
 use crate::sink::SinkFactory;
 use crate::stdout::{StdoutFormat, StdoutSinkFactory};
 use crate::tcp_sink::TcpSinkFactory;
@@ -22,15 +22,14 @@ use crate::udp_sink::UdpSinkFactory;
 
 fn build_http_client_builder(
     name: &str,
-    cfg: &OutputConfig,
+    tls: Option<&TlsClientConfig>,
+    request_timeout_ms: Option<logfwd_config::PositiveMillis>,
 ) -> Result<reqwest::ClientBuilder, OutputError> {
     let mut client_builder = reqwest::Client::builder()
-        .timeout(Duration::from_millis(
-            cfg.request_timeout_ms.unwrap_or(30_000),
-        ))
+        .timeout(request_timeout_ms.map_or(Duration::from_secs(30), Into::into))
         .pool_max_idle_per_host(64);
 
-    if let Some(tls) = &cfg.tls {
+    if let Some(tls) = tls {
         if tls.insecure_skip_verify {
             client_builder = client_builder.danger_accept_invalid_certs(true);
         }
@@ -82,20 +81,19 @@ fn read_tls_file(name: &str, field: &str, path: &str) -> Result<Vec<u8>, OutputE
     })
 }
 
-/// Build an `Arc<dyn SinkFactory>` from an output configuration.
+/// Build an `Arc<dyn SinkFactory>` from a typed output configuration.
 ///
 /// Returns a factory that creates a fresh sink per worker. Most sink types
 /// support multiple workers; the factory can be called repeatedly.
 pub fn build_sink_factory(
     name: &str,
-    cfg: &OutputConfig,
+    cfg: &OutputConfigV2,
     base_path: Option<&Path>,
     stats: Arc<ComponentStats>,
 ) -> Result<Arc<dyn SinkFactory>, OutputError> {
-    let auth_headers = build_auth_headers(cfg.auth.as_ref());
-
-    match cfg.output_type {
-        OutputType::Elasticsearch => {
+    match cfg {
+        OutputConfigV2::Elasticsearch(cfg) => {
+            let auth_headers = build_auth_headers(cfg.auth.as_ref());
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!(
                     "output '{name}': elasticsearch requires 'endpoint'"
@@ -104,21 +102,27 @@ pub fn build_sink_factory(
             let index = cfg
                 .index
                 .as_ref()
-                .or(cfg.path.as_ref())
                 .map_or("logs", String::as_str)
                 .to_string();
-            let compress = match cfg.compression.as_deref() {
-                Some("gzip") => true,
-                Some("none") | None => false,
+            let compress = match cfg.compression {
+                Some(CompressionFormat::Gzip) => true,
+                Some(CompressionFormat::None) | None => false,
                 Some(other) => {
                     return Err(OutputError::Construction(format!(
-                        "output '{name}': elasticsearch does not support '{other}' compression (use 'gzip' or omit)"
+                        "output '{name}': elasticsearch does not support '{other}' compression (use 'gzip', 'none', or omit)"
                     )));
                 }
             };
-            let request_mode = match cfg.request_mode.as_deref() {
-                Some("streaming") => ElasticsearchRequestMode::Streaming,
-                _ => ElasticsearchRequestMode::Buffered,
+            let request_mode = match cfg.request_mode {
+                Some(ElasticsearchRequestMode::Streaming) => ElasticsearchRequestMode::Streaming,
+                Some(ElasticsearchRequestMode::Buffered) | None => {
+                    ElasticsearchRequestMode::Buffered
+                }
+                Some(other) => {
+                    return Err(OutputError::Construction(format!(
+                        "output '{name}': unsupported elasticsearch request_mode '{other}' (use 'buffered', 'streaming', or omit)"
+                    )));
+                }
             };
             let factory = ElasticsearchSinkFactory::new_with_client(
                 name.to_string(),
@@ -127,7 +131,7 @@ pub fn build_sink_factory(
                 auth_headers,
                 compress,
                 request_mode,
-                build_http_client_builder(name, cfg)?,
+                build_http_client_builder(name, cfg.tls.as_ref(), cfg.request_timeout_ms)?,
                 stats,
             )
             .map_err(|e| {
@@ -135,7 +139,8 @@ pub fn build_sink_factory(
             })?;
             Ok(Arc::new(factory))
         }
-        OutputType::Loki => {
+        OutputConfigV2::Loki(cfg) => {
+            let auth_headers = build_auth_headers(cfg.auth.as_ref());
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!("output '{name}': loki requires 'endpoint'"))
             })?;
@@ -150,7 +155,7 @@ pub fn build_sink_factory(
                     .collect(),
                 cfg.label_columns.clone().unwrap_or_default(),
                 auth_headers,
-                build_http_client_builder(name, cfg)?,
+                build_http_client_builder(name, cfg.tls.as_ref(), cfg.request_timeout_ms)?,
                 stats,
             )
             .map_err(|e| {
@@ -158,19 +163,19 @@ pub fn build_sink_factory(
             })?;
             Ok(Arc::new(factory))
         }
-        OutputType::ArrowIpc => {
+        OutputConfigV2::ArrowIpc(cfg) => {
+            let auth_headers = build_auth_headers(cfg.auth.as_ref());
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!("output '{name}': arrow_ipc requires 'endpoint'"))
             })?;
-            let compression = match cfg.compression.as_deref() {
-                Some("zstd") => Compression::Zstd,
-                Some("none") => Compression::None,
+            let compression = match cfg.compression {
+                Some(CompressionFormat::Zstd) => Compression::Zstd,
+                Some(CompressionFormat::None) | None => Compression::None,
                 Some(other) => {
                     return Err(OutputError::Construction(format!(
                         "output '{name}': arrow_ipc does not support '{other}' compression (use 'zstd', 'none', or omit)"
                     )));
                 }
-                None => Compression::None,
             };
             let factory = ArrowIpcSinkFactory::new(
                 name.to_string(),
@@ -184,14 +189,15 @@ pub fn build_sink_factory(
             })?;
             Ok(Arc::new(factory))
         }
-        OutputType::Http => {
+        OutputConfigV2::Http(cfg) => {
+            let auth_headers = build_auth_headers(cfg.auth.as_ref());
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!("output '{name}': http requires 'endpoint'"))
             })?;
-            let compression = match cfg.compression.as_deref() {
-                Some("zstd") => Compression::Zstd,
-                Some("gzip") => Compression::Gzip,
-                Some("none") | None => Compression::None,
+            let compression = match cfg.compression {
+                Some(CompressionFormat::Zstd) => Compression::Zstd,
+                Some(CompressionFormat::Gzip) => Compression::Gzip,
+                Some(CompressionFormat::None) | None => Compression::None,
                 Some(other) => {
                     return Err(OutputError::Construction(format!(
                         "output '{name}': unknown HTTP compression '{other}' (expected 'zstd', 'gzip', or 'none')"
@@ -210,30 +216,31 @@ pub fn build_sink_factory(
             })?;
             Ok(Arc::new(factory))
         }
-        OutputType::Udp => {
+        OutputConfigV2::Udp(cfg) => {
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!("output '{name}': udp requires 'endpoint'"))
             })?;
             let factory = UdpSinkFactory::new(name.to_string(), endpoint.clone(), stats);
             Ok(Arc::new(factory))
         }
-        OutputType::Otlp => {
+        OutputConfigV2::Otlp(cfg) => {
+            let auth_headers = build_auth_headers(cfg.auth.as_ref());
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!("output '{name}': OTLP requires 'endpoint'"))
             })?;
-            let protocol = match cfg.protocol.as_deref() {
-                Some("grpc") => OtlpProtocol::Grpc,
-                Some("http") | None => OtlpProtocol::Http,
+            let protocol = match cfg.protocol {
+                Some(OtlpProtocol::Grpc) => OtlpProtocol::Grpc,
+                Some(OtlpProtocol::Http) | None => OtlpProtocol::Http,
                 Some(other) => {
                     return Err(OutputError::Construction(format!(
-                        "output '{name}': unknown OTLP protocol '{other}' (expected 'http' or 'grpc')"
+                        "output '{name}': unsupported OTLP protocol '{other}' (use 'http', 'grpc', or omit)"
                     )));
                 }
             };
-            let compression = match cfg.compression.as_deref() {
-                Some("zstd") => Compression::Zstd,
-                Some("gzip") => Compression::Gzip,
-                Some("none") | None => Compression::None,
+            let compression = match cfg.compression {
+                Some(CompressionFormat::Zstd) => Compression::Zstd,
+                Some(CompressionFormat::Gzip) => Compression::Gzip,
+                Some(CompressionFormat::None) | None => Compression::None,
                 Some(other) => {
                     return Err(OutputError::Construction(format!(
                         "output '{name}': unknown OTLP compression '{other}' (expected 'zstd', 'gzip', or 'none')"
@@ -241,7 +248,8 @@ pub fn build_sink_factory(
                 }
             };
 
-            let client_builder = build_http_client_builder(name, cfg)?;
+            let client_builder =
+                build_http_client_builder(name, cfg.tls.as_ref(), cfg.request_timeout_ms)?;
 
             let mut all_headers = auth_headers;
             if let Some(cfg_headers) = &cfg.headers {
@@ -283,7 +291,7 @@ pub fn build_sink_factory(
             })?;
             Ok(Arc::new(factory))
         }
-        OutputType::Stdout => {
+        OutputConfigV2::Stdout(cfg) => {
             let fmt = match cfg.format.as_ref() {
                 Some(Format::Json) => StdoutFormat::Json,
                 Some(Format::Console) => StdoutFormat::Console,
@@ -302,15 +310,10 @@ pub fn build_sink_factory(
                 stats,
             )))
         }
-        OutputType::File => {
+        OutputConfigV2::File(cfg) => {
             let path = cfg.path.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!("output '{name}': file requires 'path'"))
             })?;
-            if let Some(compression) = cfg.compression.as_deref() {
-                return Err(OutputError::Construction(format!(
-                    "output '{name}': file does not support '{compression}' compression"
-                )));
-            }
             let mut resolved_path = PathBuf::from(path);
             if resolved_path.is_relative()
                 && let Some(base) = base_path
@@ -337,7 +340,7 @@ pub fn build_sink_factory(
             })?;
             Ok(Arc::new(factory))
         }
-        OutputType::Tcp => {
+        OutputConfigV2::Tcp(cfg) => {
             let endpoint = cfg.endpoint.as_ref().ok_or_else(|| {
                 OutputError::Construction(format!("output '{name}': tcp requires 'endpoint'"))
             })?;
@@ -347,10 +350,12 @@ pub fn build_sink_factory(
                 stats,
             )))
         }
-        OutputType::Null => Ok(Arc::new(NullSinkFactory::new(name.to_string(), stats))),
+        OutputConfigV2::Null(_) => Ok(Arc::new(NullSinkFactory::new(name.to_string(), stats))),
+        OutputConfigV2::Parquet(_) => Err(OutputError::Construction(format!(
+            "output '{name}': type Parquet not yet supported"
+        ))),
         _ => Err(OutputError::Construction(format!(
-            "output '{name}': type {:?} not yet supported",
-            cfg.output_type
+            "output '{name}': unknown output type"
         ))),
     }
 }
@@ -362,17 +367,19 @@ mod tests {
     use std::fs;
     use std::sync::Arc;
 
-    use logfwd_config::{OutputConfig, OutputType};
+    use logfwd_config::{
+        ArrowIpcOutputConfig, CompressionFormat, ElasticsearchOutputConfig, LokiOutputConfig,
+        OutputConfigV2, PositiveMillis, StdoutOutputConfig, TlsClientConfig,
+    };
     use logfwd_types::diagnostics::ComponentStats;
 
     #[test]
-    fn build_sink_factory_arrow_ipc_accepts_none_compression() {
-        let cfg = OutputConfig {
-            output_type: OutputType::ArrowIpc,
+    fn arrow_ipc_accepts_none_compression() {
+        let cfg = OutputConfigV2::ArrowIpc(ArrowIpcOutputConfig {
             endpoint: Some("http://localhost:4318/v1/logs".to_string()),
-            compression: Some("none".to_string()),
+            compression: Some(CompressionFormat::None),
             ..Default::default()
-        };
+        });
 
         let result = build_sink_factory("arrow", &cfg, None, Arc::new(ComponentStats::new()));
         assert!(
@@ -382,17 +389,24 @@ mod tests {
     }
 
     #[test]
-    fn build_sink_factory_elasticsearch_accepts_tls_and_request_timeout() {
-        let cfg = OutputConfig {
-            output_type: OutputType::Elasticsearch,
+    fn stdout_builds_from_typed_variant() {
+        let cfg = OutputConfigV2::Stdout(StdoutOutputConfig::default());
+
+        let result = build_sink_factory("stdout", &cfg, None, Arc::new(ComponentStats::new()));
+        assert!(result.is_ok(), "typed stdout config should build a sink");
+    }
+
+    #[test]
+    fn elasticsearch_accepts_tls_and_request_timeout() {
+        let cfg = OutputConfigV2::Elasticsearch(ElasticsearchOutputConfig {
             endpoint: Some("https://localhost:9200".to_string()),
-            request_timeout_ms: Some(5_000),
-            tls: Some(logfwd_config::TlsClientConfig {
+            request_timeout_ms: PositiveMillis::new(5_000),
+            tls: Some(TlsClientConfig {
                 insecure_skip_verify: true,
                 ..Default::default()
             }),
             ..Default::default()
-        };
+        });
 
         let result = build_sink_factory("es", &cfg, None, Arc::new(ComponentStats::new()));
         assert!(
@@ -402,18 +416,17 @@ mod tests {
     }
 
     #[test]
-    fn build_sink_factory_loki_accepts_tls_and_request_timeout() {
-        let cfg = OutputConfig {
-            output_type: OutputType::Loki,
+    fn loki_accepts_tls_and_request_timeout() {
+        let cfg = OutputConfigV2::Loki(LokiOutputConfig {
             endpoint: Some("https://localhost:3100".to_string()),
-            request_timeout_ms: Some(5_000),
-            tls: Some(logfwd_config::TlsClientConfig {
+            request_timeout_ms: PositiveMillis::new(5_000),
+            tls: Some(TlsClientConfig {
                 insecure_skip_verify: true,
                 ..Default::default()
             }),
             static_labels: Some(HashMap::from([("app".to_string(), "logfwd".to_string())])),
             ..Default::default()
-        };
+        });
 
         let result = build_sink_factory("loki", &cfg, None, Arc::new(ComponentStats::new()));
         assert!(
@@ -423,16 +436,15 @@ mod tests {
     }
 
     #[test]
-    fn build_sink_factory_elasticsearch_rejects_unreadable_tls_ca_file() {
-        let cfg = OutputConfig {
-            output_type: OutputType::Elasticsearch,
+    fn elasticsearch_rejects_unreadable_tls_ca_file() {
+        let cfg = OutputConfigV2::Elasticsearch(ElasticsearchOutputConfig {
             endpoint: Some("https://localhost:9200".to_string()),
-            tls: Some(logfwd_config::TlsClientConfig {
+            tls: Some(TlsClientConfig {
                 ca_file: Some("/path/that/does/not/exist/ca.pem".to_string()),
                 ..Default::default()
             }),
             ..Default::default()
-        };
+        });
 
         let result = build_sink_factory("es", &cfg, None, Arc::new(ComponentStats::new()));
         let err = match result {
@@ -443,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn build_sink_factory_loki_rejects_malformed_tls_ca_file() {
+    fn loki_rejects_malformed_tls_ca_file() {
         let path = std::env::temp_dir().join(format!(
             "logfwd-output-invalid-ca-{}.pem",
             std::process::id()
@@ -454,16 +466,15 @@ mod tests {
         )
         .expect("write invalid ca file");
         let path = path.to_string_lossy().into_owned();
-        let cfg = OutputConfig {
-            output_type: OutputType::Loki,
+        let cfg = OutputConfigV2::Loki(LokiOutputConfig {
             endpoint: Some("https://localhost:3100".to_string()),
-            tls: Some(logfwd_config::TlsClientConfig {
+            tls: Some(TlsClientConfig {
                 ca_file: Some(path.clone()),
                 ..Default::default()
             }),
             static_labels: Some(HashMap::from([("app".to_string(), "logfwd".to_string())])),
             ..Default::default()
-        };
+        });
 
         let result = build_sink_factory("loki", &cfg, None, Arc::new(ComponentStats::new()));
         let _ = fs::remove_file(path);
@@ -471,23 +482,26 @@ mod tests {
             Ok(_) => panic!("malformed tls ca_file should reject sink construction"),
             Err(err) => err,
         };
+        // The malformed body gets past Certificate::from_pem and fails deeper
+        // inside reqwest's builder. Assert on the crate's own wrapper ("loki
+        // factory:") instead of the reqwest-specific "builder error" text so
+        // the test is stable across reqwest/rustls updates.
         assert!(
-            err.to_string().contains("builder error"),
+            err.to_string().contains("loki factory"),
             "unexpected error: {err}"
         );
     }
 
     #[test]
-    fn build_sink_factory_rejects_tls_cert_without_key() {
-        let cfg = OutputConfig {
-            output_type: OutputType::Elasticsearch,
+    fn elasticsearch_rejects_tls_cert_without_key() {
+        let cfg = OutputConfigV2::Elasticsearch(ElasticsearchOutputConfig {
             endpoint: Some("https://localhost:9200".to_string()),
-            tls: Some(logfwd_config::TlsClientConfig {
+            tls: Some(TlsClientConfig {
                 cert_file: Some("/tmp/client.pem".to_string()),
                 ..Default::default()
             }),
             ..Default::default()
-        };
+        });
 
         let result = build_sink_factory("es", &cfg, None, Arc::new(ComponentStats::new()));
         let err = match result {
@@ -498,17 +512,16 @@ mod tests {
     }
 
     #[test]
-    fn build_sink_factory_rejects_tls_key_without_cert() {
-        let cfg = OutputConfig {
-            output_type: OutputType::Loki,
+    fn loki_rejects_tls_key_without_cert() {
+        let cfg = OutputConfigV2::Loki(LokiOutputConfig {
             endpoint: Some("https://localhost:3100".to_string()),
-            tls: Some(logfwd_config::TlsClientConfig {
+            tls: Some(TlsClientConfig {
                 key_file: Some("/tmp/client.key".to_string()),
                 ..Default::default()
             }),
             static_labels: Some(HashMap::from([("app".to_string(), "logfwd".to_string())])),
             ..Default::default()
-        };
+        });
 
         let result = build_sink_factory("loki", &cfg, None, Arc::new(ComponentStats::new()));
         let err = match result {

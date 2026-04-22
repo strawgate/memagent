@@ -15,7 +15,7 @@ use std::io;
 use std::io::Read as _;
 use std::sync::mpsc;
 use std::sync::{
-    Arc,
+    Arc, Mutex, MutexGuard,
     atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
@@ -63,6 +63,8 @@ impl Default for ArrowIpcReceiverOptions {
 pub struct ArrowIpcReceiver {
     name: String,
     rx: Option<mpsc::Receiver<DecodedBatch>>,
+    in_flight_batches: Arc<std::sync::atomic::AtomicUsize>,
+    slot_accounting: Arc<Mutex<()>>,
     /// The address the HTTP server is bound to.
     addr: std::net::SocketAddr,
     background_task: BackgroundHttpTask,
@@ -73,6 +75,9 @@ pub struct ArrowIpcReceiver {
 #[derive(Clone)]
 struct ArrowIpcServerState {
     tx: mpsc::SyncSender<DecodedBatch>,
+    in_flight_batches: Arc<std::sync::atomic::AtomicUsize>,
+    slot_accounting: Arc<Mutex<()>>,
+    channel_capacity: usize,
     shutdown: Arc<AtomicBool>,
     health: Arc<AtomicU8>,
     stats: Option<Arc<ComponentStats>>,
@@ -136,6 +141,12 @@ impl ArrowIpcReceiver {
         capacity: usize,
         stats: Option<Arc<ComponentStats>>,
     ) -> io::Result<Self> {
+        if capacity == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Arrow IPC receiver channel capacity must be greater than zero",
+            ));
+        }
         let std_listener = std::net::TcpListener::bind(addr)
             .map_err(|e| io::Error::other(format!("Arrow IPC receiver bind {addr}: {e}")))?;
         let bound_addr = std_listener.local_addr()?;
@@ -146,10 +157,15 @@ impl ArrowIpcReceiver {
         })?;
 
         let (tx, rx) = mpsc::sync_channel(capacity);
+        let in_flight_batches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let slot_accounting = Arc::new(Mutex::new(()));
         let shutdown = Arc::new(AtomicBool::new(false));
         let health = Arc::new(AtomicU8::new(ComponentHealth::Healthy.as_repr()));
         let state = Arc::new(ArrowIpcServerState {
             tx,
+            in_flight_batches: Arc::clone(&in_flight_batches),
+            slot_accounting: Arc::clone(&slot_accounting),
+            channel_capacity: capacity,
             shutdown: Arc::clone(&shutdown),
             health: Arc::clone(&health),
             stats,
@@ -165,27 +181,18 @@ impl ArrowIpcReceiver {
         let handle = std::thread::Builder::new()
             .name("arrow-ipc-receiver".into())
             .spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread()
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(_) => {
-                        store_health_event(&health_for_server, ReceiverHealthEvent::FatalFailure);
-                        return;
-                    }
+                else {
+                    store_health_event(&health_for_server, ReceiverHealthEvent::FatalFailure);
+                    return;
                 };
 
                 runtime.block_on(async move {
-                    let listener = match tokio::net::TcpListener::from_std(std_listener) {
-                        Ok(listener) => listener,
-                        Err(_) => {
-                            store_health_event(
-                                &health_for_server,
-                                ReceiverHealthEvent::FatalFailure,
-                            );
-                            return;
-                        }
+                    let Ok(listener) = tokio::net::TcpListener::from_std(std_listener) else {
+                        store_health_event(&health_for_server, ReceiverHealthEvent::FatalFailure);
+                        return;
                     };
 
                     let app = axum::Router::new()
@@ -206,6 +213,8 @@ impl ArrowIpcReceiver {
         Ok(Self {
             name: name.into(),
             rx: Some(rx),
+            in_flight_batches,
+            slot_accounting,
             addr: bound_addr,
             background_task: BackgroundHttpTask::new_axum(shutdown_tx, handle),
             shutdown,
@@ -224,8 +233,12 @@ impl ArrowIpcReceiver {
             return Vec::new();
         };
         let mut batches = Vec::new();
-        while let Ok(decoded) = rx.try_recv() {
-            batches.push(decoded.batch);
+        loop {
+            match try_recv_accounted(rx, &self.in_flight_batches, &self.slot_accounting) {
+                Ok(Some(decoded)) => batches.push(decoded.batch),
+                Ok(None) | Err(mpsc::TryRecvError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty) => unreachable!(),
+            }
         }
         batches
     }
@@ -235,26 +248,58 @@ impl ArrowIpcReceiver {
         let Some(rx) = self.rx.as_ref() else {
             return Err(io::Error::other("Arrow IPC receiver: already closed"));
         };
-        rx.recv()
-            .map(|decoded| decoded.batch)
-            .map_err(|_| io::Error::other("Arrow IPC receiver: channel disconnected"))
+        loop {
+            match try_recv_accounted(rx, &self.in_flight_batches, &self.slot_accounting) {
+                Ok(Some(decoded)) => return Ok(decoded.batch),
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(1)),
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(io::Error::other("Arrow IPC receiver: channel disconnected"));
+                }
+                Err(mpsc::TryRecvError::Empty) => unreachable!(),
+            }
+        }
     }
 
-    /// Receive with a timeout.
+    /// Receive the next RecordBatch with a timeout.
+    ///
+    /// Unlike `std::sync::mpsc::Receiver::recv_timeout`, this method polls the
+    /// channel in sleep chunks of up to roughly 1ms, so callers should not rely
+    /// on sub-millisecond or exact timeout precision. Returns
+    /// `io::ErrorKind::TimedOut` when no batch arrives before the timeout, and
+    /// `io::Error::other` when the receiver is closed or disconnected.
     pub fn recv_timeout(&self, timeout: std::time::Duration) -> io::Result<RecordBatch> {
         let Some(rx) = self.rx.as_ref() else {
             return Err(io::Error::other("Arrow IPC receiver: already closed"));
         };
-        rx.recv_timeout(timeout)
-            .map_err(|e| match e {
-                mpsc::RecvTimeoutError::Timeout => {
-                    io::Error::new(io::ErrorKind::TimedOut, "Arrow IPC receiver: timed out")
+        let start = std::time::Instant::now();
+        let mut is_first_poll = true;
+        loop {
+            if !is_first_poll && start.elapsed() >= timeout {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "Arrow IPC receiver: timed out",
+                ));
+            }
+            is_first_poll = false;
+            match try_recv_accounted(rx, &self.in_flight_batches, &self.slot_accounting) {
+                Ok(Some(decoded)) => return Ok(decoded.batch),
+                Ok(None) => {
+                    let elapsed = start.elapsed();
+                    if elapsed >= timeout {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "Arrow IPC receiver: timed out",
+                        ));
+                    }
+                    let remaining = timeout.saturating_sub(elapsed);
+                    std::thread::sleep(remaining.min(std::time::Duration::from_millis(1)));
                 }
-                mpsc::RecvTimeoutError::Disconnected => {
-                    io::Error::other("Arrow IPC receiver: channel disconnected")
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    return Err(io::Error::other("Arrow IPC receiver: channel disconnected"));
                 }
-            })
-            .map(|decoded| decoded.batch)
+                Err(mpsc::TryRecvError::Empty) => unreachable!(),
+            }
+        }
     }
 
     /// Return the name of this receiver.
@@ -287,7 +332,7 @@ fn record_parse_error(stats: Option<&Arc<ComponentStats>>) {
 
 /// Decompress zstd body with size limit.
 fn decompress_zstd(body: &[u8], max_message_size_bytes: usize) -> Result<Vec<u8>, InputError> {
-    let decoder = zstd::Decoder::new(body).map_err(|_| {
+    let decoder = zstd::Decoder::new(body).map_err(|_e| {
         InputError::Receiver("zstd decompression failed: invalid header".to_string())
     })?;
     let mut decompressed = Vec::with_capacity(body.len().min(max_message_size_bytes));
@@ -340,6 +385,11 @@ fn decode_ipc_stream(body: &[u8]) -> Result<Vec<RecordBatch>, InputError> {
         .map_err(|e| InputError::Receiver(format!("failed to read Arrow IPC batch: {e}")))
 }
 
+#[cfg(fuzzing)]
+pub fn fuzz_decode_arrow_ipc_stream(body: &[u8]) -> Result<usize, InputError> {
+    decode_ipc_stream(body).map(|batches| batches.len())
+}
+
 fn store_health_event(health: &AtomicU8, event: ReceiverHealthEvent) {
     let mut current = health.load(Ordering::Relaxed);
     loop {
@@ -348,6 +398,55 @@ fn store_health_event(health: &AtomicU8, event: ReceiverHealthEvent) {
         match health.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
             Ok(_) => break,
             Err(observed) => current = observed,
+        }
+    }
+}
+
+// Serializes non-blocking dequeue accounting with reservation so a freed slot
+// and its counter decrement become visible to POST handlers together.
+fn lock_slot_accounting(slot_accounting: &Mutex<()>) -> MutexGuard<'_, ()> {
+    slot_accounting
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn try_recv_accounted(
+    rx: &mpsc::Receiver<DecodedBatch>,
+    in_flight_batches: &std::sync::atomic::AtomicUsize,
+    slot_accounting: &Mutex<()>,
+) -> Result<Option<DecodedBatch>, mpsc::TryRecvError> {
+    let _guard = lock_slot_accounting(slot_accounting);
+    match rx.try_recv() {
+        Ok(decoded) => {
+            in_flight_batches.fetch_sub(1, Ordering::Relaxed);
+            Ok(Some(decoded))
+        }
+        Err(mpsc::TryRecvError::Empty) => Ok(None),
+        Err(mpsc::TryRecvError::Disconnected) => Err(mpsc::TryRecvError::Disconnected),
+    }
+}
+
+fn try_reserve_channel_slots(state: &ArrowIpcServerState, needed: usize) -> bool {
+    if needed == 0 {
+        return true;
+    }
+    let _guard = lock_slot_accounting(&state.slot_accounting);
+    let mut observed = state.in_flight_batches.load(Ordering::Relaxed);
+    loop {
+        let Some(next) = observed.checked_add(needed) else {
+            return false;
+        };
+        if next > state.channel_capacity {
+            return false;
+        }
+        match state.in_flight_batches.compare_exchange_weak(
+            observed,
+            next,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return true,
+            Err(actual) => observed = actual,
         }
     }
 }
@@ -369,6 +468,14 @@ async fn handle_arrow_ipc_request(
     let _guard = ConnectionGuard {
         active_connections: Arc::clone(&state.active_connections),
     };
+    if state.shutdown.load(Ordering::Relaxed) {
+        record_error(state.stats.as_ref());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "service unavailable: pipeline disconnected",
+        )
+            .into_response();
+    }
 
     let content_length = parse_content_length(&headers);
     if content_length.is_some_and(|body_len| body_len > state.max_message_size_bytes as u64) {
@@ -464,11 +571,32 @@ async fn handle_arrow_ipc_request(
         }
     };
 
+    let total_batch_count = batches.iter().filter(|batch| batch.num_rows() > 0).count() as u64;
+    if state.shutdown.load(Ordering::Relaxed) {
+        record_error(state.stats.as_ref());
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "service unavailable: pipeline disconnected",
+        )
+            .into_response();
+    }
+    if !try_reserve_channel_slots(&state, total_batch_count as usize) {
+        record_error(state.stats.as_ref());
+        store_health_event(&state.health, ReceiverHealthEvent::Backpressure);
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            format!(
+                "too many requests: pipeline backpressure (accepted_batches=0, rejected_batches={total_batch_count})"
+            ),
+        )
+            .into_response();
+    }
+
     let mut send_error: Option<StatusCode> = None;
     let mut sent_rows = false;
-    let total_batch_count = batches.iter().filter(|batch| batch.num_rows() > 0).count() as u64;
     let per_batch_accounted_bytes = raw_body_len.checked_div(total_batch_count).unwrap_or(0);
     let mut emitted_count = 0_u64;
+    let mut accepted_batches = 0_u64;
     for batch in batches {
         if batch.num_rows() == 0 {
             continue;
@@ -487,10 +615,12 @@ async fn handle_arrow_ipc_request(
             accounted_bytes,
         };
         match state.tx.try_send(payload) {
-            Ok(()) => {}
+            Ok(()) => {
+                accepted_batches = accepted_batches.saturating_add(1);
+            }
             Err(mpsc::TrySendError::Full(_)) => {
                 record_error(state.stats.as_ref());
-                send_error = Some(StatusCode::TOO_MANY_REQUESTS);
+                send_error = Some(StatusCode::INTERNAL_SERVER_ERROR);
                 break;
             }
             Err(mpsc::TrySendError::Disconnected(_)) => {
@@ -500,16 +630,14 @@ async fn handle_arrow_ipc_request(
             }
         }
     }
+    if send_error.is_some() {
+        let rejected_batches = total_batch_count.saturating_sub(accepted_batches);
+        state
+            .in_flight_batches
+            .fetch_sub(rejected_batches as usize, Ordering::Relaxed);
+    }
 
     match send_error {
-        Some(StatusCode::TOO_MANY_REQUESTS) => {
-            store_health_event(&state.health, ReceiverHealthEvent::Backpressure);
-            (
-                StatusCode::TOO_MANY_REQUESTS,
-                "too many requests: pipeline backpressure",
-            )
-                .into_response()
-        }
         Some(StatusCode::SERVICE_UNAVAILABLE) => {
             if !state.shutdown.load(Ordering::Relaxed) {
                 store_health_event(&state.health, ReceiverHealthEvent::FatalFailure);
@@ -517,6 +645,14 @@ async fn handle_arrow_ipc_request(
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "service unavailable: pipeline disconnected",
+            )
+                .into_response()
+        }
+        Some(StatusCode::INTERNAL_SERVER_ERROR) => {
+            store_health_event(&state.health, ReceiverHealthEvent::FatalFailure);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error: Arrow IPC channel reservation invariant violated",
             )
                 .into_response()
         }
@@ -545,7 +681,7 @@ fn parse_content_encoding(headers: &HeaderMap) -> Result<Option<ContentEncodingF
     let Some(value) = headers.get(CONTENT_ENCODING) else {
         return Ok(None);
     };
-    let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
+    let parsed = value.to_str().map_err(|_e| StatusCode::BAD_REQUEST)?;
     let mut flags = ContentEncodingFlags::default();
     let mut has_token = false;
     for token in parsed.split(',').map(str::trim) {
@@ -574,7 +710,7 @@ fn parse_content_type(headers: &HeaderMap) -> Result<Option<&str>, StatusCode> {
     let Some(value) = headers.get(CONTENT_TYPE) else {
         return Ok(None);
     };
-    let parsed = value.to_str().map_err(|_| StatusCode::BAD_REQUEST)?;
+    let parsed = value.to_str().map_err(|_e| StatusCode::BAD_REQUEST)?;
     let media_type = parsed.split(';').next().unwrap_or(parsed).trim();
     if media_type.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
@@ -605,12 +741,16 @@ impl InputSource for ArrowIpcReceiver {
             return Ok(vec![]);
         };
         let mut events = Vec::new();
-        while let Ok(decoded) = rx.try_recv() {
-            events.push(InputEvent::Batch {
-                batch: decoded.batch,
-                source_id: None,
-                accounted_bytes: decoded.accounted_bytes,
-            });
+        loop {
+            match try_recv_accounted(rx, &self.in_flight_batches, &self.slot_accounting) {
+                Ok(Some(decoded)) => events.push(InputEvent::Batch {
+                    batch: decoded.batch,
+                    source_id: None,
+                    accounted_bytes: decoded.accounted_bytes,
+                }),
+                Ok(None) | Err(mpsc::TryRecvError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty) => unreachable!(),
+            }
         }
         Ok(events)
     }
@@ -655,7 +795,7 @@ mod tests {
         let result = tiny_http::Server::http(&new_addr);
         assert!(result.is_ok(), "Failed to bind to port {} after drop", port);
     }
-    use arrow::array::{Int64Array, StringArray};
+    use arrow::array::{Array, Int64Array, StringArray};
     use arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
     use std::time::Instant;
@@ -664,6 +804,15 @@ mod tests {
         ureq::Agent::config_builder()
             .proxy(None)
             .timeout_global(Some(std::time::Duration::from_secs(5)))
+            .build()
+            .into()
+    }
+
+    fn loopback_http_client_with_status_body() -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .proxy(None)
+            .timeout_global(Some(std::time::Duration::from_secs(5)))
+            .http_status_as_error(false)
             .build()
             .into()
     }
@@ -713,6 +862,18 @@ mod tests {
         let code = Int64Array::from(vec![Some(10), Some(20), Some(30)]);
         RecordBatch::try_new(schema, vec![Arc::new(msg), Arc::new(code)])
             .expect("test batch B creation should succeed")
+    }
+
+    fn assert_batch_messages(batch: &RecordBatch, expected: &[&str]) {
+        let msg_col = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("column 0 should be StringArray");
+        assert_eq!(msg_col.len(), expected.len());
+        for (idx, value) in expected.iter().enumerate() {
+            assert_eq!(msg_col.value(idx), *value);
+        }
     }
 
     fn serialize_batch(batch: &RecordBatch) -> Vec<u8> {
@@ -766,6 +927,22 @@ mod tests {
             status, 413,
             "expected PAYLOAD_TOO_LARGE due to custom max_message_size_bytes"
         );
+    }
+
+    #[test]
+    fn receiver_rejects_zero_channel_capacity() {
+        let result = ArrowIpcReceiver::new_with_capacity(
+            "test-zero-capacity",
+            "127.0.0.1:0",
+            ArrowIpcReceiverOptions::default(),
+            0,
+        );
+        let err = match result {
+            Ok(_) => panic!("zero channel capacity should be rejected"),
+            Err(err) => err,
+        };
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("greater than zero"));
     }
 
     #[test]
@@ -1041,7 +1218,8 @@ mod tests {
         assert_eq!(response.status().as_u16(), 200);
         assert_eq!(receiver.health(), ComponentHealth::Healthy);
 
-        let result = ureq::post(&url)
+        let result = loopback_http_client()
+            .post(&url)
             .header("Content-Type", "application/vnd.apache.arrow.stream")
             .send(&ipc_bytes);
         let status = match result {
@@ -1065,143 +1243,129 @@ mod tests {
     }
 
     #[test]
-    fn receiver_returns_429_on_backpressure_to_force_retry() {
-        // When the channel fills up mid-request (partial accept), we return 429 so the
-        // client retries the full request. This avoids silent data loss from unretried
-        // remainder batches that were never accepted.
+    fn receiver_rejects_multi_batch_request_before_enqueue_when_full() {
+        // Regression for #1046/#1704:
+        // when remaining channel capacity cannot fit a multi-batch request,
+        // the receiver must reject before enqueuing any request batch.
         let receiver = ArrowIpcReceiver::new_with_capacity(
             "test-partial",
             "127.0.0.1:0",
             ArrowIpcReceiverOptions::default(),
-            1,
+            2,
         )
         .expect("bind should succeed");
         let addr = receiver.local_addr();
         let url = format!("http://{addr}/v1/arrow");
 
-        // Use two distinct batches so we can verify which one was accepted.
-        // batch_a has 2 rows ("alpha","beta"), batch_b has 3 rows ("gamma","delta","epsilon").
-        let batch_a = make_test_batch();
-        let batch_b = make_test_batch_b();
-        let batches = vec![batch_a, batch_b];
+        let prefilled_batch = make_test_batch_b();
+        let prefilled_ipc_bytes = serialize_batch(&prefilled_batch);
+        let response = loopback_http_client()
+            .post(&url)
+            .header("Content-Type", "application/vnd.apache.arrow.stream")
+            .send(&prefilled_ipc_bytes)
+            .expect("prefill POST should succeed");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let batches = vec![make_test_batch(), make_test_batch()];
         let ipc_bytes = serialize_batches(&batches);
 
-        let result = ureq::post(&url)
+        let response = loopback_http_client_with_status_body()
+            .post(&url)
             .header("Content-Type", "application/vnd.apache.arrow.stream")
-            .send(&ipc_bytes);
-        let status = match result {
-            Ok(resp) => resp.status().as_u16(),
-            Err(ureq::Error::StatusCode(code)) => code,
-            Err(e) => panic!("unexpected error: {e}"),
-        };
+            .send(&ipc_bytes)
+            .expect("backpressure POST should return a response");
+        let status = response.status().as_u16();
+        let body = response
+            .into_body()
+            .read_to_string()
+            .expect("backpressure response body should be readable");
         assert_eq!(
             status, 429,
-            "POST should return 429 when channel fills up to force client retry"
+            "POST should return 429 when channel has insufficient capacity"
+        );
+        assert!(
+            body.contains("accepted_batches=0"),
+            "429 body should report zero accepted batches: {body}"
         );
 
         let received = receiver.try_recv_all();
         assert_eq!(
             received.len(),
             1,
-            "exactly one batch should have been accepted before backpressure"
+            "rejected request must leave the existing queued batch unchanged"
         );
-        // The accepted batch must be the first (prefix) batch — batch_a with 2 rows.
-        assert_eq!(
-            received[0].num_rows(),
-            2,
-            "the prefix batch (batch_a) should be the one accepted"
-        );
-        let msg_col = received[0]
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("column 0 should be StringArray");
-        assert_eq!(msg_col.value(0), "alpha");
-        assert_eq!(msg_col.value(1), "beta");
+        assert_batch_messages(&received[0], &["gamma", "delta", "epsilon"]);
         assert_eq!(receiver.health(), ComponentHealth::Degraded);
     }
 
     #[test]
-    fn partial_accept_then_retry_can_duplicate_prefix_batches() {
-        // This regression makes duplicate-risk semantics explicit:
-        // 1) first POST partially succeeds then returns 429
-        // 2) retry of the same payload also partially accepts then returns 429
-        // 3) downstream sees duplicated prefix rows from both partial accepts
+    fn rejected_retry_does_not_duplicate_batches() {
+        // Duplicate-risk regression for #1046/#1704:
+        // 1) the channel is partially full
+        // 2) first POST is rejected with 429 before enqueue
+        // 3) retry of identical payload is also rejected
+        // 4) downstream sees only the prefilled batch, with no duplicated prefix
         let receiver = ArrowIpcReceiver::new_with_capacity(
             "test-dup-risk",
             "127.0.0.1:0",
             ArrowIpcReceiverOptions::default(),
-            1,
+            2,
         )
         .expect("bind should succeed");
         let addr = receiver.local_addr();
         let url = format!("http://{addr}/v1/arrow");
 
-        // Use two distinct batches so we can verify which one was re-delivered.
-        // batch_a has 2 rows ("alpha","beta"), batch_b has 3 rows ("gamma","delta","epsilon").
-        let batch_a = make_test_batch();
-        let batch_b = make_test_batch_b();
-        let batches = vec![batch_a, batch_b];
+        let prefilled_batch = make_test_batch_b();
+        let prefilled_ipc_bytes = serialize_batch(&prefilled_batch);
+        let response = loopback_http_client()
+            .post(&url)
+            .header("Content-Type", "application/vnd.apache.arrow.stream")
+            .send(&prefilled_ipc_bytes)
+            .expect("prefill POST should succeed");
+        assert_eq!(response.status().as_u16(), 200);
+
+        let batches = vec![make_test_batch(), make_test_batch()];
         let ipc_bytes = serialize_batches(&batches);
 
-        let first_status = match ureq::post(&url)
+        let first_response = loopback_http_client_with_status_body()
+            .post(&url)
             .header("Content-Type", "application/vnd.apache.arrow.stream")
             .send(&ipc_bytes)
-        {
-            Ok(resp) => resp.status().as_u16(),
-            Err(ureq::Error::StatusCode(code)) => code,
-            Err(e) => panic!("unexpected error: {e}"),
-        };
+            .expect("first rejected POST should return a response");
+        let first_status = first_response.status().as_u16();
+        let first_body = first_response
+            .into_body()
+            .read_to_string()
+            .expect("first rejection body should be readable");
         assert_eq!(first_status, 429);
-
-        let accepted_prefix = receiver.try_recv_all();
-        assert_eq!(
-            accepted_prefix.len(),
-            1,
-            "first request should have partially accepted one prefix batch before 429"
+        assert!(
+            first_body.contains("accepted_batches=0"),
+            "first 429 body should report zero accepted batches: {first_body}"
         );
-        // Verify the accepted prefix is batch_a (2 rows, "alpha"/"beta").
-        assert_eq!(accepted_prefix[0].num_rows(), 2);
-        let msg_col = accepted_prefix[0]
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("column 0 should be StringArray");
-        assert_eq!(msg_col.value(0), "alpha");
-        assert_eq!(msg_col.value(1), "beta");
 
-        let retry_status = match ureq::post(&url)
+        let retry_response = loopback_http_client_with_status_body()
+            .post(&url)
             .header("Content-Type", "application/vnd.apache.arrow.stream")
             .send(&ipc_bytes)
-        {
-            Ok(resp) => resp.status().as_u16(),
-            Err(ureq::Error::StatusCode(code)) => code,
-            Err(e) => panic!("unexpected error: {e}"),
-        };
-        assert_eq!(
-            retry_status, 429,
-            "retry also partially accepts then returns 429"
+            .expect("retry rejection should return a response");
+        let retry_status = retry_response.status().as_u16();
+        let retry_body = retry_response
+            .into_body()
+            .read_to_string()
+            .expect("retry rejection body should be readable");
+        assert_eq!(retry_status, 429, "retry should also be rejected with 429");
+        assert!(
+            retry_body.contains("accepted_batches=0"),
+            "retry 429 body should report zero accepted batches: {retry_body}"
         );
 
-        let duplicate_prefix = receiver.try_recv_all();
+        let queued_batches = receiver.try_recv_all();
         assert_eq!(
-            duplicate_prefix.len(),
+            queued_batches.len(),
             1,
-            "retry should re-deliver the same first prefix batch"
+            "retry must not duplicate an accepted prefix from either rejected request"
         );
-        // Verify the duplicate is specifically batch_a again, not batch_b.
-        assert_eq!(
-            duplicate_prefix[0].num_rows(),
-            2,
-            "duplicate prefix batch should be batch_a (2 rows), not batch_b (3 rows)"
-        );
-        let dup_msg_col = duplicate_prefix[0]
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .expect("column 0 should be StringArray");
-        assert_eq!(dup_msg_col.value(0), "alpha");
-        assert_eq!(dup_msg_col.value(1), "beta");
+        assert_batch_messages(&queued_batches[0], &["gamma", "delta", "epsilon"]);
     }
 
     #[test]

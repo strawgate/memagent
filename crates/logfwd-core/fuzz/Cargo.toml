@@ -8,14 +8,14 @@ edition = "2021"
 cargo-fuzz = true
 
 [dependencies]
-libfuzzer-sys = "0.4"
-logfwd-core = { path = ".." }
-logfwd-arrow = { path = "../../logfwd-arrow" }
-logfwd-transform = { path = "../../logfwd-transform" }
-logfwd-output = { path = "../../logfwd-output" }
-logfwd-types = { path = "../../logfwd-types" }
 arrow = { version = "54", default-features = false }
 bytes = "1"
+libfuzzer-sys = "0.4"
+logfwd-arrow = { path = "../../logfwd-arrow" }
+logfwd-core = { path = ".." }
+logfwd-output = { path = "../../logfwd-output" }
+logfwd-transform = { path = "../../logfwd-transform" }
+logfwd-types = { path = "../../logfwd-types" }
 reqwest = { version = "0.12", default-features = false }
 
 [workspace]
@@ -41,8 +41,8 @@ path = "fuzz_targets/scanner_consistency.rs"
 doc = false
 
 [[bin]]
-name = "fuzz_structural_index"
-path = "fuzz_targets/structural_index.rs"
+name = "fuzz_structural_streaming"
+path = "fuzz_targets/structural_streaming.rs"
 doc = false
 
 [[bin]]

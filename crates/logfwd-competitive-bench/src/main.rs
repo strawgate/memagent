@@ -20,6 +20,7 @@
 //!   --memory N           Memory limit per container (default: 1g, Docker mode only)
 //!   --profile DIR        Write CPU flamegraph + memory profile to DIR
 //!   --dhat-binary PATH   logfwd binary built with --features dhat-heap
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 mod agents;
 mod blackhole;
@@ -404,11 +405,11 @@ fn main() {
 
 /// Run the low-and-slow rate-ingest benchmark (non-competitive, ff only).
 fn run_rate_bench_main(args: &Args) {
-    // Locate ff binary via LOGFWD env var or PATH.
+    // Locate ff binary via FF env var (or legacy LOGFWD) or PATH.
     let logfwd_binary = find_logfwd_binary().unwrap_or_else(|| {
         eprintln!(
             "ERROR: ff binary not found. \
-             Set the LOGFWD env var or ensure ff is on PATH."
+             Set the FF env var (or legacy LOGFWD) or ensure ff is on PATH."
         );
         process::exit(1);
     });
@@ -469,12 +470,15 @@ fn run_rate_bench_main(args: &Args) {
     }
 }
 
-/// Locate the logfwd binary.  Checks `LOGFWD` env var first, then `PATH`.
+/// Locate the ff binary.  Checks `FF` env var first, then `LOGFWD` (legacy),
+/// then `PATH`.
 fn find_logfwd_binary() -> Option<PathBuf> {
-    if let Ok(val) = std::env::var("LOGFWD") {
-        let p = PathBuf::from(&val);
-        if p.exists() {
-            return Some(p);
+    for var in ["FF", "LOGFWD"] {
+        if let Ok(val) = std::env::var(var) {
+            let p = PathBuf::from(&val);
+            if p.exists() {
+                return Some(p);
+            }
         }
     }
     if let Ok(output) = process::Command::new("which").arg("ff").output()
@@ -571,12 +575,19 @@ fn resolve_binary(
     bin_dir: &std::path::Path,
     no_download: bool,
 ) -> Option<PathBuf> {
-    // Check env override.
+    // Check env override.  For `ff`, also check legacy `LOGFWD`.
     let env_var = agent.name().to_uppercase().replace('-', "_");
-    if let Ok(val) = std::env::var(&env_var) {
-        let p = PathBuf::from(&val);
-        if p.exists() {
-            return Some(p);
+    let env_vars: Vec<&str> = if env_var == "FF" {
+        vec!["FF", "LOGFWD"]
+    } else {
+        vec![&env_var]
+    };
+    for var in env_vars {
+        if let Ok(val) = std::env::var(var) {
+            let p = PathBuf::from(&val);
+            if p.exists() {
+                return Some(p);
+            }
         }
     }
 
@@ -624,7 +635,7 @@ fn fmt_rate(lines: usize, ms: u64) -> String {
     } else if lps >= 1_000.0 {
         format!("{:.0}K lines/sec", lps / 1_000.0)
     } else {
-        format!("{:.0} lines/sec", lps)
+        format!("{lps:.0} lines/sec")
     }
 }
 
@@ -842,15 +853,16 @@ fn print_table(results: &[BenchResult], lines: usize, file_size: u64) {
     let mb = file_size as f64 / 1_048_576.0;
 
     // Collect unique scenarios from results.
-    let scenarios: Vec<Scenario> = {
-        let mut seen = Vec::new();
-        for r in results {
-            if !seen.contains(&r.scenario) {
-                seen.push(r.scenario);
-            }
-        }
-        seen
-    };
+    let scenarios: Vec<Scenario> =
+        results
+            .iter()
+            .map(|r| r.scenario)
+            .fold(Vec::new(), |mut seen, scenario| {
+                if !seen.contains(&scenario) {
+                    seen.push(scenario);
+                }
+                seen
+            });
 
     for scenario in &scenarios {
         let scenario_results: Vec<&BenchResult> =

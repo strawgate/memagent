@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: logfwd-config
+  name: ff-config
   namespace: collectors
 data:
   pipeline.yaml: |

@@ -1,0 +1,123 @@
+name: Project Health
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # daily at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: strawgate/o11ykit/octo11y/actions/repo-stats@main-dist
+        id: stats
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          scenario: project-health
+          metrics: >-
+            stars, forks, open-issues, open-prs, contributors, releases,
+            watchers, workflow-success-pct,
+            weekly-commits, weekly-additions, weekly-deletions,
+            avg-issue-close-days, median-issue-close-days,
+            avg-pr-merge-hours, median-pr-merge-hours,
+            languages
+
+      - uses: strawgate/o11ykit/octo11y/actions/monitor@main-dist
+        id: monitor
+
+      - name: Count lines of code
+        shell: bash
+        run: |
+          cargo install --locked tokei --version 14.0.0 --root /tmp/tokei
+          JSON=$(/tmp/tokei/bin/tokei --output json)
+          echo "TOTAL_LOC=$(echo "$JSON" | jq '.Total.code')" >> "$GITHUB_ENV"
+          echo "RUST_LOC=$(echo "$JSON" | jq '.Rust.code // 0')" >> "$GITHUB_ENV"
+
+      - uses: strawgate/o11ykit/octo11y/actions/emit-metric@main-dist
+        with:
+          otlp-http-endpoint: ${{ steps.monitor.outputs.otlp-http-endpoint }}
+          name: total_lines_of_code
+          value: ${{ env.TOTAL_LOC }}
+          unit: lines
+          scenario: project-health
+          direction: bigger_is_better
+
+      - uses: strawgate/o11ykit/octo11y/actions/emit-metric@main-dist
+        with:
+          otlp-http-endpoint: ${{ steps.monitor.outputs.otlp-http-endpoint }}
+          name: rust_lines_of_code
+          value: ${{ env.RUST_LOC }}
+          unit: lines
+          scenario: project-health
+          direction: bigger_is_better
+
+      - name: Count Rust crates
+        shell: bash
+        run: |
+          CRATE_COUNT=$(cargo metadata --no-deps --format-version 1 | jq '.packages | length')
+          echo "CRATE_COUNT=$CRATE_COUNT" >> "$GITHUB_ENV"
+
+      - uses: strawgate/o11ykit/octo11y/actions/emit-metric@main-dist
+        with:
+          otlp-http-endpoint: ${{ steps.monitor.outputs.otlp-http-endpoint }}
+          name: rust_crate_count
+          value: ${{ env.CRATE_COUNT }}
+          unit: crates
+          scenario: project-health
+          direction: bigger_is_better
+
+      - name: Measure CI build time
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          AVG_SECS=$(gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?per_page=20" \
+            --jq '
+              [.workflow_runs[]
+                | select(.conclusion == "success" and .run_started_at != null and .updated_at != null)
+                | ((.updated_at | fromdateiso8601) - (.run_started_at | fromdateiso8601))
+              ]
+              | .[:10]
+              | if length > 0 then (add / length | round) else 0 end
+            ')
+          echo "CI_BUILD_SECS=${AVG_SECS}" >> "$GITHUB_ENV"
+
+      - uses: strawgate/o11ykit/octo11y/actions/emit-metric@main-dist
+        with:
+          otlp-http-endpoint: ${{ steps.monitor.outputs.otlp-http-endpoint }}
+          name: ci_build_duration_seconds
+          value: ${{ env.CI_BUILD_SECS }}
+          unit: s
+          scenario: project-health
+          direction: smaller_is_better
+
+      - name: Count dependencies
+        shell: bash
+        run: |
+          echo "DEP_COUNT=$(grep -c '^\[\[package\]\]' Cargo.lock)" >> "$GITHUB_ENV"
+
+      - uses: strawgate/o11ykit/octo11y/actions/emit-metric@main-dist
+        with:
+          otlp-http-endpoint: ${{ steps.monitor.outputs.otlp-http-endpoint }}
+          name: cargo_dependency_count
+          value: ${{ env.DEP_COUNT }}
+          unit: packages
+          scenario: project-health
+          direction: smaller_is_better
+
+      - uses: strawgate/o11ykit/octo11y/actions/stash@main-dist
+        with:
+          results: ${{ steps.stats.outputs.results-file }}
+          format: otlp
+          metrics-dir: ${{ steps.monitor.outputs.metrics-dir }}
+
+      - uses: strawgate/o11ykit/octo11y/actions/aggregate@main-dist

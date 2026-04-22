@@ -15,7 +15,8 @@ use logfwd_core::scan_config::ScanConfig;
 use logfwd_types::field_names;
 
 use crate::cast_udf::{FloatCastUdf, IntCastUdf};
-use crate::{QueryAnalyzer, TransformError, conflict_schema, enrichment, udf};
+use crate::{QueryAnalyzer, TransformError, enrichment, udf};
+use logfwd_arrow::conflict_schema;
 
 /// Manages a DataFusion context, compiles and caches plans, executes SQL
 /// transforms against Arrow RecordBatches.
@@ -180,14 +181,15 @@ impl SqlTransform {
             .map_err(|e| TransformError::Sql(format!("Failed to collect results: {e}")))?;
 
         // Concat all result batches into one.
-        match batches.len() {
+        let result = match batches.len() {
             0 => Ok(RecordBatch::new_empty(output_schema)),
             1 => Ok(batches.into_iter().next().expect("verified len==1")),
             _ => {
                 let schema = batches[0].schema();
                 concat_batches(&schema, &batches).map_err(TransformError::Arrow)
             }
-        }
+        }?;
+        Ok(result)
     }
 
     /// Lazily create the SessionContext with UDFs registered.

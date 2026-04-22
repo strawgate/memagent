@@ -22,6 +22,11 @@ struct StoredBitmasks<'a> {
     close_bracket: &'a [u64],
 }
 
+struct DecodeScratch {
+    key: alloc::vec::Vec<u8>,
+    value: alloc::vec::Vec<u8>,
+}
+
 /// Scan an NDJSON buffer using streaming structural iteration.
 ///
 /// Zero heap allocation for bitmask storage. Line boundaries and
@@ -50,7 +55,7 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
     let num_blocks = len.div_ceil(64);
 
     // Stored per-block: only what scan_line needs for random-access lookups.
-    // 5 u64s per block (40 bytes) vs old StructuralIndex's 2 u64s (16 bytes).
+    // 5 u64s per block (40 bytes) for fields that need random-access lookups.
     let mut real_quotes = alloc::vec::Vec::with_capacity(num_blocks);
     let mut open_brace = alloc::vec::Vec::with_capacity(num_blocks);
     let mut close_brace = alloc::vec::Vec::with_capacity(num_blocks);
@@ -124,9 +129,12 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
         close_bracket: &close_bracket,
     };
 
-    // Scratch buffer for decoding JSON escape sequences in string values.
-    // Allocated once, reused across lines via clear() — no per-line allocation.
-    let mut scratch = alloc::vec::Vec::new();
+    // Scratch buffers for decoding JSON escape sequences. Allocated once and
+    // reused across lines via clear() so escaped strings avoid per-line allocs.
+    let mut scratch = DecodeScratch {
+        key: alloc::vec::Vec::new(),
+        value: alloc::vec::Vec::new(),
+    };
 
     // Phase 2: Scan each line using stored bitmasks for quote/nested lookups.
     for (start, end) in line_ranges {
@@ -142,7 +150,7 @@ fn scan_line<B: ScanBuilder>(
     blocks: &StoredBitmasks<'_>,
     config: &ScanConfig,
     builder: &mut B,
-    scratch: &mut alloc::vec::Vec<u8>,
+    scratch: &mut DecodeScratch,
 ) {
     builder.begin_row();
     if config.captures_line() {
@@ -173,7 +181,13 @@ fn scan_line<B: ScanBuilder>(
             Some(p) => p,
             None => break,
         };
-        let key = &buf[key_start..key_end];
+        let raw_key = &buf[key_start..key_end];
+        let key = if memchr::memchr(b'\\', raw_key).is_some() {
+            decode_json_escapes(raw_key, &mut scratch.key);
+            scratch.key.as_slice()
+        } else {
+            raw_key
+        };
         pos = key_end + 1;
 
         // Expect colon
@@ -202,8 +216,8 @@ fn scan_line<B: ScanBuilder>(
                     let idx = builder.resolve_field(key);
                     let raw = &buf[val_start..val_end];
                     if memchr::memchr(b'\\', raw).is_some() {
-                        decode_json_escapes(raw, scratch);
-                        builder.append_decoded_str_by_idx(idx, scratch);
+                        decode_json_escapes(raw, &mut scratch.value);
+                        builder.append_decoded_str_by_idx(idx, &scratch.value);
                     } else {
                         builder.append_str_by_idx(idx, raw);
                     }
@@ -589,11 +603,21 @@ fn parse_hex4(bytes: &[u8]) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scan_config::ScanConfig;
+    use crate::scan_config::{FieldSpec, ScanConfig};
     use alloc::string::String;
-    use alloc::vec::Vec;
+    use alloc::{vec, vec::Vec};
     use proptest::prelude::*;
     use proptest::test_runner::Config as ProptestConfig;
+
+    /// Maximum padding bytes to prepend when probing SIMD block boundaries
+    /// in proptests.  Under Miri each extra byte costs ~10–100x native, and
+    /// the invariants under test are memory-agnostic, so we use a narrower
+    /// range there. Native proptest still sweeps 0..90 to exercise edges of
+    /// multiple 64-byte blocks.
+    #[cfg(miri)]
+    const MAX_PADDING: usize = 10;
+    #[cfg(not(miri))]
+    const MAX_PADDING: usize = 90;
 
     /// Minimal ScanBuilder for testing — captures fields as strings.
     struct TestBuilder {
@@ -677,6 +701,59 @@ mod tests {
         let row = &builder.rows[0];
         assert!(row.iter().any(|(k, v)| k == "name" && v == "alice"));
         assert!(row.iter().any(|(k, v)| k == "age" && v == "int:30"));
+    }
+
+    #[test]
+    fn escaped_key_is_decoded_before_field_filtering() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(br#"{"pad":""#);
+        buf.extend(core::iter::repeat_n(b'x', 51));
+        buf.extend_from_slice(br#"","a"#);
+        assert_eq!(buf.len() % 64, 63);
+        buf.extend_from_slice(br#"\u002eb":"hit","other":"skip"}"#);
+        let config = ScanConfig {
+            wanted_fields: vec![FieldSpec {
+                name: "a.b".to_string(),
+                aliases: vec![],
+            }],
+            extract_all: false,
+            line_field_name: None,
+            validate_utf8: false,
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(&buf, &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        assert!(row.iter().any(|(k, v)| k == "a.b" && v == "hit"));
+        assert!(!row.iter().any(|(k, v)| k == "other" && v == "skip"));
+    }
+
+    #[test]
+    fn escaped_key_decode_across_simd_boundary() {
+        // Pad so the \u002e escape straddles the 64-byte SIMD block boundary.
+        // With 58 spaces: {"a starts at offset 58, so \ is at 61 and `e` at 66,
+        // meaning the escape spans both block 0 (bytes 0..63) and block 1 (64..).
+        let padding = " ".repeat(58);
+        let input = alloc::format!("{}{{\"a\\u002eb\":1}}\n", padding);
+        let config = ScanConfig {
+            wanted_fields: vec![FieldSpec {
+                name: "a.b".to_string(),
+                aliases: vec![],
+            }],
+            extract_all: false,
+            line_field_name: None,
+            validate_utf8: false,
+        };
+        let mut builder = TestBuilder::new();
+        scan_streaming(input.as_bytes(), &config, &mut builder);
+
+        assert_eq!(builder.rows.len(), 1);
+        let row = &builder.rows[0];
+        assert!(
+            row.iter().any(|(k, v)| k == "a.b" && v == "int:1"),
+            "escaped key \\u002e must decode to '.' across SIMD boundary"
+        );
     }
 
     #[test]
@@ -878,43 +955,43 @@ mod tests {
         let mut out = Vec::new();
 
         // Simple escapes
-        decode_json_escapes(br#"hello"#, &mut out);
+        decode_json_escapes(br"hello", &mut out);
         assert_eq!(&out, b"hello");
 
         decode_json_escapes(br#"say \"hi\""#, &mut out);
         assert_eq!(&out, b"say \"hi\"");
 
-        decode_json_escapes(br#"a\\b"#, &mut out);
+        decode_json_escapes(br"a\\b", &mut out);
         assert_eq!(&out, b"a\\b");
 
-        decode_json_escapes(br#"a\/b"#, &mut out);
+        decode_json_escapes(br"a\/b", &mut out);
         assert_eq!(&out, b"a/b");
 
-        decode_json_escapes(br#"a\nb\tc"#, &mut out);
+        decode_json_escapes(br"a\nb\tc", &mut out);
         assert_eq!(&out, b"a\nb\tc");
 
-        decode_json_escapes(br#"\b\f"#, &mut out);
+        decode_json_escapes(br"\b\f", &mut out);
         assert_eq!(&out, &[0x08, 0x0C]);
 
         // Unicode escape
-        decode_json_escapes(br#"\u0041"#, &mut out);
+        decode_json_escapes(br"\u0041", &mut out);
         assert_eq!(&out, b"A");
 
         // Multi-byte unicode
-        decode_json_escapes(br#"\u00e9"#, &mut out);
+        decode_json_escapes(br"\u00e9", &mut out);
         assert_eq!(&out, "é".as_bytes());
 
         // Surrogate pair
-        decode_json_escapes(br#"\uD83D\uDE00"#, &mut out);
+        decode_json_escapes(br"\uD83D\uDE00", &mut out);
         assert_eq!(&out, "😀".as_bytes());
 
         // Truncated escape at end — pass through
-        decode_json_escapes(br#"abc\"#, &mut out);
-        assert_eq!(&out, br#"abc\"#);
+        decode_json_escapes(br"abc\", &mut out);
+        assert_eq!(&out, br"abc\");
 
         // Unknown escape letter — pass through backslash
-        decode_json_escapes(br#"\x"#, &mut out);
-        assert_eq!(&out, br#"\x"#);
+        decode_json_escapes(br"\x", &mut out);
+        assert_eq!(&out, br"\x");
     }
 
     #[test]
@@ -1014,9 +1091,9 @@ mod tests {
         for _ in 0..35 {
             buf_str.push_str("{\"x\":");
         }
-        buf_str.push_str("1");
+        buf_str.push('1');
         for _ in 0..35 {
-            buf_str.push_str("}");
+            buf_str.push('}');
         }
         buf_str.push_str(",\"b\":2}");
 
@@ -1082,9 +1159,9 @@ mod tests {
         for _ in 0..32 {
             buf_str.push_str("{\"x\":");
         }
-        buf_str.push_str("1");
+        buf_str.push('1');
         for _ in 0..32 {
-            buf_str.push_str("}");
+            buf_str.push('}');
         }
         buf_str.push_str(",\"b\":2}");
 
@@ -1112,7 +1189,7 @@ mod tests {
         #[test]
         fn crlf_and_lf_produce_identical_rows(
             val in "[a-z0-9]{1,20}",
-            padding in 0usize..90,
+            padding in 0usize..MAX_PADDING,
         ) {
             let spaces = " ".repeat(padding);
             let lf_line = alloc::format!("{{\"k\":\"{val}\"}}\n");
@@ -1182,11 +1259,11 @@ mod tests {
         #[test]
         fn skip_bare_value_close_bracket_proptest(
             num in 0u32..1_000_000,
-            padding in 0usize..90,
+            padding in 0usize..MAX_PADDING,
         ) {
             // Direct: "42]extra" — must stop exactly at position of ']'
             let value_str = alloc::format!("{num}");
-            let mut direct_buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+            let mut direct_buf: Vec<u8> = Vec::new();
             direct_buf.extend_from_slice(value_str.as_bytes());
             direct_buf.push(b']');
             direct_buf.extend_from_slice(b"extra");
@@ -1221,7 +1298,7 @@ mod tests {
         ///    original (unescaped) ASCII character
         #[test]
         fn escape_sequences_survive_simd_boundaries(
-            padding in 0usize..90,
+            padding in 0usize..MAX_PADDING,
         ) {
             // Test the 8 standard RFC 8259 single-char escapes that round-trip
             // to a known single byte.
@@ -1516,6 +1593,7 @@ mod verification {
     /// If result < end, the byte at result is NOT whitespace.
     #[kani::proof]
     #[kani::unwind(17)]
+    #[kani::solver(cadical)]
     fn verify_skip_whitespace() {
         let buf: [u8; 16] = kani::any();
         let start: usize = kani::any();
@@ -1540,6 +1618,7 @@ mod verification {
     /// All bytes before result are NOT delimiters.
     #[kani::proof]
     #[kani::unwind(17)]
+    #[kani::solver(cadical)]
     fn verify_skip_bare_value() {
         let buf: [u8; 16] = kani::any();
         let start: usize = kani::any();
@@ -1577,6 +1656,7 @@ mod verification {
     /// is_json_delimiter covers all JSON value delimiters exhaustively.
     /// Checks every byte value: only the 7 expected delimiters return true.
     #[kani::proof]
+    #[kani::solver(cadical)]
     fn verify_is_json_delimiter_exhaustive() {
         let b: u8 = kani::any();
         let result = is_json_delimiter(b);
@@ -1598,7 +1678,7 @@ mod verification {
     /// focuses on local crash-freedom and bounds without exploding the search.
     #[kani::proof]
     #[kani::unwind(10)]
-    #[kani::solver(kissat)]
+    #[kani::solver(cadical)]
     fn verify_skip_nested_bounds() {
         let buf: [u8; 8] = kani::any();
         let pos: usize = kani::any();

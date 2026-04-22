@@ -12,6 +12,7 @@
 //! user-defined schemas).
 //!
 //! Sinks MUST check the canonical name first, then fall through to variants.
+// xtask-verify: allow(pub_module_needs_tests) reason: constant definitions validated by sink/receiver integration tests
 
 // ---------------------------------------------------------------------------
 // Timestamp
@@ -31,6 +32,17 @@ pub const TIMESTAMP_AT: &str = "@timestamp";
 
 /// Alternative timestamp column used by some pipelines.
 pub const TIMESTAMP_UNDERSCORE: &str = "_timestamp";
+
+/// CRI stream column (`stdout` / `stderr`) attached by the input pipeline.
+///
+/// # Examples
+///
+/// ```
+/// use logfwd_types::field_names;
+///
+/// assert_eq!(field_names::CRI_STREAM, "_stream");
+/// ```
+pub const CRI_STREAM: &str = "_stream";
 
 // ---------------------------------------------------------------------------
 // Severity / Level
@@ -130,23 +142,20 @@ pub const DEFAULT_RESOURCE_PREFIX: &str = "resource.attributes.";
 pub const LEGACY_RESOURCE_PREFIX: &str = "_resource_";
 
 // ---------------------------------------------------------------------------
-// Internal columns
+// Source metadata columns
 // ---------------------------------------------------------------------------
 
-/// Internal raw-line column — excluded from OTLP attributes and star-schema.
-pub const RAW: &str = "_raw";
+/// FastForward row-level source identity assigned by the input layer.
+pub const SOURCE_ID: &str = "__source_id";
 
-// ---------------------------------------------------------------------------
-// Arrow field / schema metadata keys
-// ---------------------------------------------------------------------------
+/// ECS/Beats-style source file path column.
+pub const ECS_FILE_PATH: &str = "file.path";
 
-/// Arrow field metadata key: stores the original resource attribute key
-/// when using the legacy `_resource_*` prefix, enabling round-trip conversion.
-pub const METADATA_RESOURCE_KEY: &str = "logfwd.resource_key";
+/// OpenTelemetry log semantic convention source file path column.
+pub const OTEL_LOG_FILE_PATH: &str = "log.file.path";
 
-/// Arrow schema metadata key: overrides the default resource prefix
-/// detection on a per-batch basis.
-pub const METADATA_RESOURCE_PREFIX: &str = "logfwd.resource_prefix";
+/// Vector legacy file-source path column.
+pub const VECTOR_FILE: &str = "file";
 
 // ---------------------------------------------------------------------------
 // Type-conflict struct children (Arrow schema)
@@ -170,4 +179,13 @@ pub const CONFLICT_CHILDREN: &[&str] = &["int", "float", "str", "bool"];
 /// ```
 pub fn matches_any(name: &str, canonical: &str, variants: &[&str]) -> bool {
     name == canonical || variants.contains(&name)
+}
+
+/// Return true when `name` is owned by FastForward internals.
+///
+/// This intentionally matches only known internal columns. User payloads can
+/// legitimately contain double-underscore fields such as GraphQL `__typename`,
+/// and output filtering must not drop them by prefix.
+pub fn is_internal_column(name: &str) -> bool {
+    matches!(name, SOURCE_ID)
 }

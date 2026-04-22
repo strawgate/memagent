@@ -1,8 +1,8 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Measure data sizes across the pipeline: raw JSON → Arrow RecordBatch → IPC → Parquet
 //! Run with: cargo run -p logfwd-bench --release --bin sizes
 
 use std::io::Write;
-use std::time::Instant;
 
 use arrow::ipc::writer::{FileWriter, IpcWriteOptions};
 use arrow::record_batch::RecordBatch;
@@ -29,8 +29,16 @@ fn main() {
 
     println!(
         "{:<15} {:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8}",
-        "dataset", "lines", "raw_json", "arrow_mem", "ipc_raw", "ipc_zstd", "parquet",
-        "json:arr", "json:ipc", "json:pqt"
+        "dataset",
+        "lines",
+        "raw_json",
+        "arrow_mem",
+        "ipc_raw",
+        "ipc_zstd",
+        "parquet",
+        "json:arr",
+        "json:ipc",
+        "json:pqt"
     );
     println!("{}", "-".repeat(130));
 
@@ -72,7 +80,7 @@ fn main() {
     }
 
     deep_memory_analysis();
-    deep_memory_analysis_v2();
+    analyze_buffer_layout();
 }
 
 fn measure(name: &str, _fields: usize, lines: usize, data: &[u8]) {
@@ -95,7 +103,7 @@ fn measure(name: &str, _fields: usize, lines: usize, data: &[u8]) {
 
     println!(
         "{:<15} {:>8} {:>10} {:>10} {:>10} {:>10} {:>10} {:>8.2}x {:>8.2}x {:>8.2}x",
-        format!("{}-{}",name, fmt_count(lines)),
+        format!("{}-{}", name, fmt_count(lines)),
         lines,
         fmt_bytes(raw_size),
         fmt_bytes(arrow_mem),
@@ -113,24 +121,39 @@ fn memory_analysis(data: &[u8], lines: usize) {
     println!("  Raw JSON input:        {}", fmt_bytes(raw_size));
 
     // Scanner input buffer (bytes::Bytes clone)
-    println!("  Scanner input buffer:  {} (Bytes ref-counted, same allocation)", fmt_bytes(raw_size));
+    println!(
+        "  Scanner input buffer:  {} (Bytes ref-counted, same allocation)",
+        fmt_bytes(raw_size)
+    );
 
     // Arrow RecordBatch
     let batch = scan(data, "SELECT * FROM logs");
     let arrow_mem = batch_memory_size(&batch);
-    println!("  Arrow RecordBatch:     {} ({} columns × {} rows)", fmt_bytes(arrow_mem), batch.num_columns(), batch.num_rows());
+    println!(
+        "  Arrow RecordBatch:     {} ({} columns × {} rows)",
+        fmt_bytes(arrow_mem),
+        batch.num_columns(),
+        batch.num_rows()
+    );
 
     // After transform (passthrough = same size)
-    println!("  After SQL transform:   {} (passthrough, same batch)", fmt_bytes(arrow_mem));
+    println!(
+        "  After SQL transform:   {} (passthrough, same batch)",
+        fmt_bytes(arrow_mem)
+    );
 
     // Per-column breakdown
     println!("\n  Per-column breakdown:");
-    println!("  {:<35} {:<15} {:>10} {:>10}", "Column", "DataType", "Memory", "Per row");
+    println!(
+        "  {:<35} {:<15} {:>10} {:>10}",
+        "Column", "DataType", "Memory", "Per row"
+    );
     println!("  {}", "-".repeat(75));
     for (i, field) in batch.schema().fields().iter().enumerate() {
         let col = batch.column(i);
         let mem = col.get_array_memory_size();
-        println!("  {:<35} {:<15} {:>10} {:>8} B",
+        println!(
+            "  {:<35} {:<15} {:>10} {:>8} B",
             field.name(),
             format!("{:?}", field.data_type()),
             fmt_bytes(mem),
@@ -146,11 +169,17 @@ fn memory_analysis(data: &[u8], lines: usize) {
     let peak = raw_size + arrow_mem + ipc.len();
     println!("\n  Peak memory (all held): {}", fmt_bytes(peak));
     println!("  Per line:               {} bytes", peak / lines);
-    println!("  Amplification vs raw:   {:.2}x", peak as f64 / raw_size as f64);
+    println!(
+        "  Amplification vs raw:   {:.2}x",
+        peak as f64 / raw_size as f64
+    );
 
     // With streaming (drop input after scan)
     let streaming_peak = arrow_mem + ipc.len();
-    println!("\n  Streaming peak (drop input after scan): {}", fmt_bytes(streaming_peak));
+    println!(
+        "\n  Streaming peak (drop input after scan): {}",
+        fmt_bytes(streaming_peak)
+    );
     println!("  Streaming per line:     {} bytes", streaming_peak / lines);
 }
 
@@ -158,7 +187,9 @@ fn scan(data: &[u8], sql: &str) -> RecordBatch {
     let mut transform = SqlTransform::new(sql).expect("bad SQL");
     let config = transform.scan_config();
     let mut scanner = Scanner::new(config);
-    let batch = scanner.scan(bytes::Bytes::from(data.to_vec())).expect("scan failed");
+    let batch = scanner
+        .scan(bytes::Bytes::from(data.to_vec()))
+        .expect("scan failed");
     // Run through transform for accurate schema
     transform.execute_blocking(batch).unwrap_or_else(|_| {
         // If transform fails, return the raw scan
@@ -210,7 +241,11 @@ fn write_parquet(batch: &RecordBatch) -> usize {
             if *field.data_type() == DataType::Utf8View {
                 let col = batch.column(i);
                 let utf8_col = arrow::compute::cast(col, &DataType::Utf8).unwrap();
-                fields.push(arrow::datatypes::Field::new(field.name(), DataType::Utf8, field.is_nullable()));
+                fields.push(arrow::datatypes::Field::new(
+                    field.name(),
+                    DataType::Utf8,
+                    field.is_nullable(),
+                ));
                 columns.push(utf8_col);
             } else {
                 fields.push((**field).clone());
@@ -225,9 +260,12 @@ fn write_parquet(batch: &RecordBatch) -> usize {
 
     let mut buf = Vec::new();
     let props = parquet::file::properties::WriterProperties::builder()
-        .set_compression(parquet::basic::Compression::ZSTD(parquet::basic::ZstdLevel::try_new(1).unwrap()))
+        .set_compression(parquet::basic::Compression::ZSTD(
+            parquet::basic::ZstdLevel::try_new(1).unwrap(),
+        ))
         .build();
-    let mut writer = parquet::arrow::ArrowWriter::try_new(&mut buf, batch.schema(), Some(props)).unwrap();
+    let mut writer =
+        parquet::arrow::ArrowWriter::try_new(&mut buf, batch.schema(), Some(props)).unwrap();
     writer.write(&batch).unwrap();
     writer.close().unwrap();
     buf.len()
@@ -238,7 +276,13 @@ fn write_parquet(batch: &RecordBatch) -> usize {
 fn generate_simple(n: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(n * 180);
     let levels = ["INFO", "DEBUG", "WARN", "ERROR"];
-    let paths = ["/api/v1/users", "/api/v1/orders", "/api/v2/products", "/health", "/api/v1/auth"];
+    let paths = [
+        "/api/v1/users",
+        "/api/v1/orders",
+        "/api/v2/products",
+        "/health",
+        "/api/v1/auth",
+    ];
     for i in 0..n {
         write!(
             buf,
@@ -266,7 +310,7 @@ fn generate_wide(n: usize) -> Vec<u8> {
             [200, 201, 400, 404, 500][i % 5], regions[i % 4],
             i % 1000, (i as u64).wrapping_mul(0x517cc1b727220a95),
             100 + (i * 37) % 10000, 10 + (i * 11) % 1000,
-            if i % 20 == 0 { 1 } else { 0 },
+            i32::from(i % 20 == 0),
             if i % 3 == 0 { "true" } else { "false" },
             (i * 7) % 200, i % 4, 1 + i % 5, i % 10,
         ).unwrap();
@@ -279,48 +323,74 @@ fn generate_narrow(n: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(n * 60);
     let levels = ["INFO", "DEBUG", "WARN", "ERROR"];
     for i in 0..n {
-        write!(buf, r#"{{"ts":"{}","lvl":"{}","msg":"event {}"}}"#, i, levels[i % 4], i).unwrap();
+        write!(
+            buf,
+            r#"{{"ts":"{}","lvl":"{}","msg":"event {}"}}"#,
+            i,
+            levels[i % 4],
+            i
+        )
+        .unwrap();
         buf.push(b'\n');
     }
     buf
 }
 
 fn fmt_bytes(n: usize) -> String {
-    if n >= 1_073_741_824 { format!("{:.1}GB", n as f64 / 1_073_741_824.0) }
-    else if n >= 1_048_576 { format!("{:.1}MB", n as f64 / 1_048_576.0) }
-    else if n >= 1024 { format!("{:.1}KB", n as f64 / 1024.0) }
-    else { format!("{}B", n) }
+    if n >= 1_073_741_824 {
+        format!("{:.1}GB", n as f64 / 1_073_741_824.0)
+    } else if n >= 1_048_576 {
+        format!("{:.1}MB", n as f64 / 1_048_576.0)
+    } else if n >= 1024 {
+        format!("{:.1}KB", n as f64 / 1024.0)
+    } else {
+        format!("{n}B")
+    }
 }
 
 fn fmt_count(n: usize) -> String {
-    if n >= 1_000_000 { format!("{}M", n / 1_000_000) }
-    else if n >= 1_000 { format!("{}K", n / 1_000) }
-    else { format!("{}", n) }
+    if n >= 1_000_000 {
+        format!("{}M", n / 1_000_000)
+    } else if n >= 1_000 {
+        format!("{}K", n / 1_000)
+    } else {
+        format!("{n}")
+    }
 }
 
 // Additional analysis: actual memory vs reported
 fn deep_memory_analysis() {
     use arrow::array::Array;
-    
+
     let data = generate_simple(100_000);
     let raw_size = data.len();
     println!("\n=== Deep Memory Analysis (100K simple lines) ===\n");
-    println!("  Raw JSON: {} ({} bytes/line)", fmt_bytes(raw_size), raw_size / 100_000);
+    println!(
+        "  Raw JSON: {} ({} bytes/line)",
+        fmt_bytes(raw_size),
+        raw_size / 100_000
+    );
 
     let mut scanner = Scanner::new(ScanConfig::default());
-    let batch = scanner.scan(bytes::Bytes::from(data.to_vec())).unwrap();
+    let batch = scanner.scan(bytes::Bytes::from(data)).unwrap();
 
-    println!("  Reported total: {}", fmt_bytes(batch.get_array_memory_size()));
-    println!("  Rows: {}, Columns: {}\n", batch.num_rows(), batch.num_columns());
+    println!(
+        "  Reported total: {}",
+        fmt_bytes(batch.get_array_memory_size())
+    );
+    println!(
+        "  Rows: {}, Columns: {}\n",
+        batch.num_rows(),
+        batch.num_columns()
+    );
 
     let mut total_buffers = 0usize;
-    let mut total_views = 0usize;
     let mut buffer_addrs: Vec<(usize, usize)> = Vec::new(); // (ptr, len)
 
     for (i, field) in batch.schema().fields().iter().enumerate() {
         let col = batch.column(i);
         let arr_data = col.to_data();
-        
+
         let mut col_buffer_total = 0;
         let mut col_buffer_count = 0;
         for buf in arr_data.buffers() {
@@ -330,7 +400,7 @@ fn deep_memory_analysis() {
             col_buffer_count += 1;
             buffer_addrs.push((ptr, len));
         }
-        
+
         // Check child data too
         for child in arr_data.child_data() {
             for buf in child.buffers() {
@@ -341,63 +411,85 @@ fn deep_memory_analysis() {
                 buffer_addrs.push((ptr, len));
             }
         }
-        
-        let null_size = arr_data.nulls().map(|n| n.buffer().len()).unwrap_or(0);
+
+        let null_size = arr_data.nulls().map_or(0, |n| n.buffer().len());
         let reported = col.get_array_memory_size();
-        
-        println!("  {:<30} {:>3} bufs  {:>10} buf bytes  {:>10} null bytes  {:>10} reported",
-            field.name(), col_buffer_count, fmt_bytes(col_buffer_total), fmt_bytes(null_size), fmt_bytes(reported));
-        
+
+        println!(
+            "  {:<30} {:>3} bufs  {:>10} buf bytes  {:>10} null bytes  {:>10} reported",
+            field.name(),
+            col_buffer_count,
+            fmt_bytes(col_buffer_total),
+            fmt_bytes(null_size),
+            fmt_bytes(reported)
+        );
+
         total_buffers += col_buffer_total;
-        total_views += col_buffer_count;
+        let _ = col_buffer_count;
     }
 
     // Deduplicate buffers by pointer address
-    buffer_addrs.sort();
+    buffer_addrs.sort_unstable();
     buffer_addrs.dedup();
-    let unique_buffer_bytes: usize = buffer_addrs.iter().map(|(_, len)| len).sum();
-    let total_buffer_bytes: usize = buffer_addrs.iter().map(|(_, len)| len).sum();
+    let _unique_buffer_bytes: usize = buffer_addrs.iter().map(|(_, len)| len).sum();
+    let _total_buffer_bytes: usize = buffer_addrs.iter().map(|(_, len)| len).sum();
 
     // Check for shared buffers
     let mut seen_ptrs: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut shared_count = 0;
     let mut unique_bytes = 0usize;
     for &(ptr, len) in &buffer_addrs {
-        if !seen_ptrs.insert(ptr) {
-            shared_count += 1;
-        } else {
+        if seen_ptrs.insert(ptr) {
             unique_bytes += len;
+        } else {
+            shared_count += 1;
         }
     }
 
     println!("\n  Total buffers referenced: {}", buffer_addrs.len());
     println!("  Unique buffer pointers:   {}", seen_ptrs.len());
-    println!("  Shared (same ptr):        {}", shared_count);
+    println!("  Shared (same ptr):        {shared_count}");
     println!("  Sum of all buffer bytes:  {}", fmt_bytes(total_buffers));
     println!("  Unique buffer bytes:      {}", fmt_bytes(unique_bytes));
-    println!("  Reported by Arrow:        {}", fmt_bytes(batch.get_array_memory_size()));
-    println!("\n  ACTUAL memory:            {} ({:.2}x vs raw JSON)", 
-        fmt_bytes(unique_bytes), unique_bytes as f64 / raw_size as f64);
+    println!(
+        "  Reported by Arrow:        {}",
+        fmt_bytes(batch.get_array_memory_size())
+    );
+    println!(
+        "\n  ACTUAL memory:            {} ({:.2}x vs raw JSON)",
+        fmt_bytes(unique_bytes),
+        unique_bytes as f64 / raw_size as f64
+    );
 }
 
-fn deep_memory_analysis_v2() {
+// Per-column buffer layout report: lists each column's Arrow buffer
+// pointers/lengths and flags any overlapping memory ranges.
+fn analyze_buffer_layout() {
     use arrow::array::Array;
-    
+
     let data = generate_simple(10_000);
     let raw_size = data.len();
-    println!("\n=== Deep Memory V2 (10K lines, {} raw) ===\n", fmt_bytes(raw_size));
+    println!(
+        "\n=== Buffer layout (10K lines, {} raw) ===\n",
+        fmt_bytes(raw_size)
+    );
 
     let mut scanner = Scanner::new(ScanConfig::default());
-    let batch = scanner.scan(bytes::Bytes::from(data.to_vec())).unwrap();
+    let batch = scanner.scan(bytes::Bytes::from(data)).unwrap();
 
     for (i, field) in batch.schema().fields().iter().enumerate() {
         let col = batch.column(i);
         let arr_data = col.to_data();
-        
+
         println!("  {}: {:?}", field.name(), field.data_type());
         for (j, buf) in arr_data.buffers().iter().enumerate() {
-            println!("    buffer[{}]: ptr=0x{:x} len={} ({})", 
-                j, buf.as_ptr() as usize, buf.len(), fmt_bytes(buf.len()));
+            println!(
+                "    buffer[{}]: ptr=0x{:x} len={} ({})",
+                j,
+                buf.as_ptr() as usize,
+                buf.len(),
+                fmt_bytes(buf.len())
+            );
         }
         if let Some(nulls) = arr_data.nulls() {
             println!("    nulls: {} bytes", nulls.buffer().len());
@@ -405,31 +497,35 @@ fn deep_memory_analysis_v2() {
         println!("    reported: {}", fmt_bytes(col.get_array_memory_size()));
         println!();
     }
-    
+
     // Check if any buffers share the same allocation
     let mut all_ptrs: Vec<(usize, usize, String)> = Vec::new();
     for (i, field) in batch.schema().fields().iter().enumerate() {
         let col = batch.column(i);
         let arr_data = col.to_data();
         for (j, buf) in arr_data.buffers().iter().enumerate() {
-            all_ptrs.push((buf.as_ptr() as usize, buf.len(), format!("{}[{}]", field.name(), j)));
+            all_ptrs.push((
+                buf.as_ptr() as usize,
+                buf.len(),
+                format!("{}[{}]", field.name(), j),
+            ));
         }
     }
     all_ptrs.sort_by_key(|x| x.0);
-    
+
     println!("  All buffer pointers (sorted):");
     for (ptr, len, name) in &all_ptrs {
         println!("    0x{:012x}  {:>10}  {}", ptr, fmt_bytes(*len), name);
     }
-    
+
     // Check for overlapping ranges
     println!("\n  Overlap check:");
     for i in 0..all_ptrs.len() {
-        for j in (i+1)..all_ptrs.len() {
+        for j in (i + 1)..all_ptrs.len() {
             let (p1, l1, n1) = &all_ptrs[i];
             let (p2, _l2, n2) = &all_ptrs[j];
             if p1 + l1 > *p2 {
-                println!("    OVERLAP: {} and {} share memory", n1, n2);
+                println!("    OVERLAP: {n1} and {n2} share memory");
             }
         }
     }

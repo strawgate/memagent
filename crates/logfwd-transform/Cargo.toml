@@ -9,15 +9,15 @@ publish = false
 doctest = false
 
 [dependencies]
-logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
-logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
-logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
 arrow = { workspace = true }
 bytes = "1"
 csv = "1"
 datafusion = { workspace = true }
 gethostname = "1"
 grok = { version = "2.4", default-features = false, features = ["fancy-regex"] }
+logfwd-arrow = { version = "0.1.0", path = "../logfwd-arrow" }
+logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
+logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 maxminddb = "0.27"
 regex = "1"
 serde_json = "1"

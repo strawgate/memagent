@@ -36,27 +36,17 @@ jobs:
     name: Detect changed paths
     runs-on: ubuntu-latest
     outputs:
-      core: ${{ steps.filter.outputs.core }}
-      core_no_std: ${{ steps.filter.outputs.core_no_std }}
       kani_required: ${{ steps.filter.outputs.kani_required }}
       tla: ${{ steps.filter.outputs.tla }}
       frontend: ${{ steps.filter.outputs.frontend }}
       miri: ${{ steps.filter.outputs.miri }}
       rust: ${{ steps.filter.outputs.rust }}
-      loom: ${{ steps.filter.outputs.loom }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@f3ceefdc7ef57bc2d8560787d4b6c33e44044cec
         id: filter
         with:
           filters: |
-            core:
-              - 'crates/logfwd-core/**'
-            core_no_std:
-              - 'crates/logfwd-core/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - '.github/workflows/ci.yml'
             kani_required:
               - 'crates/logfwd-core/**'
               - 'crates/logfwd-arrow/**'
@@ -77,7 +67,10 @@ jobs:
               - 'crates/logfwd-runtime/src/pipeline/**'
               - 'crates/logfwd-io/src/tail/**'
               - 'crates/logfwd-runtime/src/worker_pool/**'
+              - 'crates/logfwd-output/src/sink.rs'
+              - 'crates/logfwd-output/src/sink/**'
               - 'scripts/verify_tla_coverage.py'
+              - '.github/actions/run-tlc/**'
               - '.github/workflows/ci.yml'
             frontend:
               - 'dashboard/**'
@@ -94,12 +87,6 @@ jobs:
               - 'Cargo.lock'
               - '.cargo/**'
               - 'rust-toolchain.toml'
-              - '.github/workflows/ci.yml'
-            loom:
-              - 'crates/logfwd-runtime/**'
-              - 'crates/logfwd-types/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
               - '.github/workflows/ci.yml'
 
   # -------------------------------------------------------------------------
@@ -169,6 +156,9 @@ jobs:
       - uses: ./.github/actions/build-dashboard
 
       - uses: ./.github/actions/setup-rust
+
+      - name: Xtask structural verification
+        run: cargo xtask verify
 
       - name: Format check
         run: cargo fmt --check
@@ -322,7 +312,7 @@ jobs:
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
-      (github.event.pull_request.draft == false && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.core_no_std == 'true'))
+      (github.event.pull_request.draft == false && needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -347,11 +337,23 @@ jobs:
         run: cargo build -p logfwd-core --target thumbv6m-none-eabi
 
   # -------------------------------------------------------------------------
-  # Kani formal verification — split into three parallel shards.
-  #   kani-core:      logfwd-core (97 proofs, heaviest — structural/otlp unwinds)
-  #   kani-arrow:     logfwd-arrow (27 proofs, needs --lib flag)
-  #   kani-periphery: remaining 6 crates (107 proofs, lightweight)
-  # Each shard uses kissat solver and --jobs 2 for intra-crate parallelism.
+  # Kani formal verification — split into four parallel shards by layer so
+  # the slowest one finishes in roughly 10 minutes on a 4-vCPU runner.
+  # Observed wall-clock medians on main (per-job, --jobs 3):
+  #   kani-core:           ~15 min  (logfwd-core,                ~103 proofs)
+  #   kani-arrow:          ~19 min  (logfwd-arrow,                ~27 proofs;
+  #                                  SIMD/columnar accumulator proofs are
+  #                                  individually expensive — ~42s/proof)
+  #   kani-runtime-types:  ~?? min  (logfwd-runtime + logfwd-types,
+  #                                  ~55 orchestration-layer proofs)
+  #   kani-io-output:      ~?? min  (logfwd-io + logfwd-output +
+  #                                  logfwd-diagnostics + logfwd binary,
+  #                                  ~52 I/O-layer proofs)
+  # The previous monolithic kani-periphery shard (six crates, 107 proofs)
+  # was the long pole at ~21 minutes; splitting it by layer should bring
+  # both halves below 10 min on warm cache.  Each shard uses kissat and
+  # --jobs 3 — ubuntu-latest has 4 vCPUs; jobs=3 leaves headroom for
+  # solver memory spikes while still putting all cores to work.
   # -------------------------------------------------------------------------
   kani-core:
     name: Kani proofs (core)
@@ -362,12 +364,14 @@ jobs:
       (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v6
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
           key: kani-core
 
       - name: Run Kani verification (logfwd-core)
@@ -375,7 +379,7 @@ jobs:
         with:
           args: >-
             --solver kissat
-            --jobs 2
+            --jobs 3
             --output-format terse
             -Z function-contracts
             -Z mem-predicates
@@ -391,22 +395,27 @@ jobs:
       (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    env:
+      RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v6
 
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.event_name == 'push' || !github.event.pull_request.draft }}
           key: kani-arrow
 
       - name: Run Kani verification (logfwd-arrow --lib)
         # logfwd-arrow has a binary with required-features that cargo-kani
         # cannot skip, so verify only the library target.
+        # --jobs 4: arrow proofs are the heaviest per-proof (up to ~90s each
+        # on the make_string_view/scatter families) so saturating all 4
+        # vCPUs here gives more wall-clock return than on the other shards.
         uses: model-checking/kani-github-action@v1
         with:
           args: >-
             --solver kissat
-            --jobs 2
+            --jobs 4
             --output-format terse
             -Z function-contracts
             -Z mem-predicates
@@ -414,37 +423,70 @@ jobs:
             -p logfwd-arrow
             --lib
 
-  kani-periphery:
-    name: Kani proofs (periphery)
+  # Orchestration layer: the typestate spec lives in logfwd-types and is
+  # consumed by logfwd-runtime — they form a natural pair to verify together.
+  kani-runtime-types:
+    name: Kani proofs (runtime + types)
     needs: [changes, lint]
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
       (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
 
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          key: kani-periphery
+          key: kani-runtime-types
 
-      - name: Run Kani verification (periphery crates)
+      - name: Run Kani verification (logfwd-runtime + logfwd-types)
         uses: model-checking/kani-github-action@v1
         with:
           args: >-
             --solver kissat
-            --jobs 2
+            --jobs 3
             --output-format terse
             -Z function-contracts
             -Z mem-predicates
             -Z stubbing
             -p logfwd-types
+            -p logfwd-runtime
+
+  # I/O layer: file tailing, network receivers, output sinks, diagnostics
+  # transport, and the binary entrypoint.  Distinct from orchestration and
+  # from the Arrow/SIMD column path.
+  kani-io-output:
+    name: Kani proofs (io + output)
+    needs: [changes, lint]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: kani-io-output
+
+      - name: Run Kani verification (logfwd-io + logfwd-output + logfwd-diagnostics + logfwd)
+        uses: model-checking/kani-github-action@v1
+        with:
+          args: >-
+            --solver kissat
+            --jobs 3
+            --output-format terse
+            -Z function-contracts
+            -Z mem-predicates
+            -Z stubbing
             -p logfwd-io
             -p logfwd-output
-            -p logfwd-runtime
             -p logfwd-diagnostics
             -p logfwd
 
@@ -465,10 +507,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: ./.github/actions/setup-rust
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri, rust-src
+
+      # Cache target/ and the cargo registry keyed on a miri-specific key so
+      # the cold ~3–5 min rebuild only lands on the first run per rust-toolchain
+      # bump. The key intentionally differs from setup-rust's stable cache so
+      # Miri artefacts (different codegen flags) don't pollute the stable build.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: miri-core-nightly
 
       - name: Set up Miri
         run: cargo +nightly miri setup
@@ -492,10 +542,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: ./.github/actions/setup-rust
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri, rust-src
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: miri-types-nightly
 
       - name: Set up Miri
         run: cargo +nightly miri setup
@@ -508,79 +562,192 @@ jobs:
           PROPTEST_CASES: "1"
 
   # -------------------------------------------------------------------------
-  # Deterministic simulation & concurrency model checks
+  # Deterministic simulation & concurrency model checks.  Turmoil and Loom
+  # both need a full from-scratch Rust build with different features, so they
+  # each get their own runner — this keeps each under ~10 minutes and lets
+  # them finish in parallel instead of stacking on one box.  --test-threads=1
+  # matches the nightly seed-sweep configuration for reproducibility.
   # -------------------------------------------------------------------------
-  simulation:
-    name: Simulation (Turmoil + Loom)
+  simulation-turmoil:
+    name: Simulation (Turmoil)
     needs: [changes]
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
-      (github.event.pull_request.draft == false && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.loom == 'true'))
+      (github.event.pull_request.draft == false && needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
-
       - uses: ./.github/actions/setup-rust
+      # --no-default-features drops the SQL stack (logfwd-transform + datafusion
+      # ~5–8 min of compile on a 4-vCPU runner) which the turmoil tests do not
+      # exercise. Verified locally: 64/64 tests pass without those features.
       - name: Turmoil simulation tests
-        run: cargo test -p logfwd --features turmoil --test turmoil_sim
+        run: >-
+          cargo test
+          -p logfwd
+          --no-default-features
+          --features turmoil
+          --test turmoil_sim
+          --
+          --test-threads=1
+
+  simulation-loom:
+    name: Simulation (Loom)
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.rust == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-rust
       - name: Loom seam test
         run: cargo test -p logfwd-runtime --lib --features loom-tests worker_pool::pool::tests::loom_worker_removal_vs_late_event_model_never_resurrects_slot -- --exact
 
   # -------------------------------------------------------------------------
-  # TLC: TLA+ model checking — all specs, coverage, and thorough in one job
+  # TLC: TLA+ model checking.  Two jobs share a composite action (setup-java,
+  # cached tla2tools.jar, UseParallelGC + workers=auto) and bin-pack the ten
+  # small-constants runs so each runner finishes in roughly 10 minutes.
+  #
+  # The thorough PipelineMachine model lives in the nightly workflow now
+  # (nightly-testing.yml) — PR CI only exercises the safety, liveness, and
+  # coverage configs, which is where regressions actually surface.
   # -------------------------------------------------------------------------
-  tlc:
-    name: "TLA+ model checking"
+  tlc-safety:
+    name: "TLA+ model checking (safety)"
     needs: [changes, lint]
     if: |
       github.event_name == 'push' ||
       contains(github.event.pull_request.labels.*.name, 'ci:full') ||
       (github.event.pull_request.draft == false && needs.changes.outputs.tla == 'true')
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-
-      - name: Set up Java
-        uses: actions/setup-java@v5
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      - name: Download tla2tools.jar
-        run: |
-          mkdir -p /tmp/tla
-          curl -sL https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar -o /tmp/tla/tla2tools.jar
-
-      # --- Safety & liveness ---
       - name: "TLC: PipelineMachine — safety"
-        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg -workers auto
-      - name: "TLC: PipelineMachine — liveness"
-        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.liveness.cfg -workers auto
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCPipelineMachine.tla
+          config: tla/PipelineMachine.cfg
       - name: "TLC: ShutdownProtocol — safety"
-        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.cfg -workers auto
-      - name: "TLC: ShutdownProtocol — liveness"
-        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.liveness.cfg -workers auto
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCShutdownProtocol.tla
+          config: tla/ShutdownProtocol.cfg
       - name: "TLC: PipelineBatch — safety"
-        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.cfg -workers auto
-      - name: "TLC: PipelineBatch — liveness"
-        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg -workers auto
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCPipelineBatch.tla
+          config: tla/PipelineBatch.cfg
       - name: "TLC: TailLifecycle — safety"
-        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCTailLifecycle.tla -config tla/TailLifecycle.cfg -workers auto
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCTailLifecycle.tla
+          config: tla/TailLifecycle.cfg
+      - name: "TLC: DeliveryRetry — safety"
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCDeliveryRetry.tla
+          config: tla/DeliveryRetry.cfg
+      - name: "TLC: DeliveryRetry — liveness"
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCDeliveryRetry.tla
+          config: tla/DeliveryRetry.liveness.cfg
+      - name: "TLC: WorkerPoolDispatch — safety"
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCWorkerPoolDispatch.tla
+          config: tla/WorkerPoolDispatch.cfg
+      - name: "TLC: WorkerPoolDispatch — liveness"
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCWorkerPoolDispatch.tla
+          config: tla/WorkerPoolDispatch.liveness.cfg
+      - name: "TLC: FanoutSink — safety"
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCFanoutSink.tla
+          config: tla/FanoutSink.cfg
+      - name: "TLC: FanoutSink — liveness"
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCFanoutSink.tla
+          config: tla/FanoutSink.liveness.cfg
 
-      # --- Coverage (vacuity guards) ---
+  tlc-liveness-coverage:
+    name: "TLA+ model checking (liveness + coverage)"
+    needs: [changes, lint]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.tla == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: "TLC: PipelineMachine — liveness"
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCPipelineMachine.tla
+          config: tla/PipelineMachine.liveness.cfg
+      - name: "TLC: ShutdownProtocol — liveness"
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCShutdownProtocol.tla
+          config: tla/ShutdownProtocol.liveness.cfg
+      - name: "TLC: PipelineBatch — liveness"
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCPipelineBatch.tla
+          config: tla/PipelineBatch.liveness.cfg
       - name: "TLC coverage: PipelineMachine"
-        run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCPipelineMachine.tla --config tla/PipelineMachine.coverage.cfg
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCPipelineMachine.tla
+          config: tla/PipelineMachine.coverage.cfg
+          mode: coverage
       - name: "TLC coverage: ShutdownProtocol"
-        run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCShutdownProtocol.tla --config tla/ShutdownProtocol.coverage.cfg
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCShutdownProtocol.tla
+          config: tla/ShutdownProtocol.coverage.cfg
+          mode: coverage
       - name: "TLC coverage: PipelineBatch"
-        run: python3 scripts/verify_tla_coverage.py --jar /tmp/tla/tla2tools.jar --tla-file tla/MCPipelineBatch.tla --config tla/PipelineBatch.coverage.cfg
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCPipelineBatch.tla
+          config: tla/PipelineBatch.coverage.cfg
+          mode: coverage
+      - name: "TLC coverage: DeliveryRetry"
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCDeliveryRetry.tla
+          config: tla/DeliveryRetry.coverage.cfg
+          mode: coverage
+      - name: "TLC coverage: WorkerPoolDispatch"
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCWorkerPoolDispatch.tla
+          config: tla/WorkerPoolDispatch.coverage.cfg
+          mode: coverage
+      - name: "TLC coverage: FanoutSink"
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCFanoutSink.tla
+          config: tla/FanoutSink.coverage.cfg
+          mode: coverage
 
       # --- Thorough ---
       - name: "TLC: PipelineMachine — thorough"
-        run: java -cp /tmp/tla/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.thorough.cfg -workers auto
+        uses: ./.github/actions/run-tlc
+        with:
+          tla-file: tla/MCPipelineMachine.tla
+          config: tla/PipelineMachine.thorough.cfg
 
   # -------------------------------------------------------------------------
   # Coverage — workspace code coverage via llvm-cov.
@@ -652,11 +819,14 @@ jobs:
       - cross-check
       - kani-core
       - kani-arrow
-      - kani-periphery
+      - kani-runtime-types
+      - kani-io-output
       - miri-core
       - miri-types
-      - simulation
-      - tlc
+      - simulation-turmoil
+      - simulation-loom
+      - tlc-safety
+      - tlc-liveness-coverage
     runs-on: ubuntu-latest
     steps:
       - run: |

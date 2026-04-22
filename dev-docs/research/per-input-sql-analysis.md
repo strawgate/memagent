@@ -79,7 +79,7 @@ Per-input SQL produces independent streams that are never merged. Steps run per-
 ```rust
 pub struct Scanner {
     builder: StreamingBuilder,  // Holds field index, per-field column state
-    config: ScanConfig,         // wanted_fields, extract_all, keep_raw
+    config: ScanConfig,         // wanted_fields, extract_all, line_field_name
 }
 ```
 

@@ -21,6 +21,7 @@ jobs:
   dismiss-resolved-reviews:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - name: Dismiss stale change requests whose review threads are all resolved
         uses: actions/github-script@v9

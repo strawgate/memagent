@@ -134,6 +134,13 @@ test:
 test-all:
     LOGFWD_DISABLE_DEFAULT_CHECKPOINTS=1 cargo nextest run --workspace --profile ci
 
+# Run semantic lints via dylint (hot_path_no_alloc, and any future
+# semantic lints defined in crates/logfwd-lints/).
+# Requires: cargo install --locked cargo-dylint dylint-link
+#           rustup toolchain install nightly-2025-09-18 --component llvm-tools-preview --component rustc-dev
+dylint:
+    cargo dylint --path crates/logfwd-lints -- --workspace
+
 # Run required Kani formal verification proofs for production crates
 # Requires: cargo install --locked kani-verifier && cargo kani setup
 kani:
@@ -183,6 +190,10 @@ proptest-regressions:
 # Validate CI/just verification trigger contracts stay in sync.
 verification-trigger-contract:
     python3 scripts/verify_verification_trigger_contract.py
+
+# Run structural verification checks.
+verify:
+    cargo xtask verify
 
 # Run all lightweight verification guardrails enforced in CI.
 verification-guardrail: kani-boundary tlc-matrix-contract proptest-regressions verification-trigger-contract
@@ -234,10 +245,10 @@ tlc-tail:
     just tlc MCTailLifecycle.tla TailLifecycle.cfg
 
 # Lint — fast (default-members, skips datafusion)
-lint: fmt-check otlp-codegen-check workspace-inheritance-guard clippy toml-check
+lint: fmt-check otlp-codegen-check workspace-inheritance-guard public-api-error-guard production-panic-guard clippy toml-check
 
 # Lint — full workspace (CI uses this)
-lint-all: fmt-check verification-guardrail otlp-codegen-check workspace-inheritance-guard clippy-all toml-check deny
+lint-all: fmt-check verification-guardrail otlp-codegen-check workspace-inheritance-guard public-api-error-guard production-panic-guard clippy-all toml-check deny
 
 # Quick CI — fast lint + test (default-members, no datafusion)
 ci: lint test
@@ -252,13 +263,22 @@ ci-all: lint-all test-all tlc-tail
 toml-check:
     taplo check
 
-# Check generated OTLP fast-row encoder drift.
+# Check generated OTLP code drift.
 otlp-codegen-check:
     python3 scripts/generate_otlp_fast_encoder.py --check
+    python3 scripts/generate_otlp_projection.py --check
 
 # Guardrail: inherited dependencies must not override default-features locally.
 workspace-inheritance-guard:
     python3 scripts/check_workspace_inherited_default_features.py
+
+# Guardrail: no Box<dyn Error> in public library signatures.
+public-api-error-guard:
+    python3 scripts/check_no_box_dyn_error.py
+
+# Guardrail: no panic!/todo!/unimplemented! in production runtime/output paths.
+production-panic-guard:
+    python3 scripts/check_no_panic_in_production.py
 
 # Format TOML files
 toml-fmt:
@@ -286,6 +306,23 @@ test-extended:
 test-linearizability:
     cargo test -p logfwd --features turmoil --test turmoil_sim linearizability::porcupine_checker_accepts_runtime_history
 
+# ---------------------------------------------------------------------------
+# Mutation testing (cargo-mutants)
+# ---------------------------------------------------------------------------
+
+# Run mutation testing on a single crate (default: logfwd-core).
+# Requires: cargo install cargo-mutants cargo-nextest
+# Config:   .cargo/mutants.toml (exclusions, timeout, nextest)
+mutants crate="logfwd-core":
+    cargo mutants -p {{crate}}
+
+# Run mutation testing only on code changed vs origin/main (fast, CI-friendly).
+mutants-diff crate="logfwd-core":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    git rev-parse --verify origin/main >/dev/null
+    git diff origin/main...HEAD | cargo mutants -p {{crate}} --in-diff -
+
 # Build release binary (full package, includes DataFusion SQL)
 build:
     cargo build --release -p logfwd
@@ -304,8 +341,8 @@ build-dev-lite:
 _bench-run name config seconds="10" diag="http://127.0.0.1:9090":
     #!/usr/bin/env bash
     set -euo pipefail
-    LOGFWD=./target/release/ff
-    $LOGFWD run --config {{config}} &
+    FF=./target/release/ff
+    $FF run --config {{config}} &
     PID=$!
     sleep {{seconds}}
     STATS=$(curl -s {{diag}}/admin/v1/stats 2>/dev/null || echo '{}')
@@ -323,8 +360,8 @@ _bench-run name config seconds="10" diag="http://127.0.0.1:9090":
 _bench-pair name rx_config tx_config seconds="10":
     #!/usr/bin/env bash
     set -euo pipefail
-    LOGFWD=./target/release/ff
-    $LOGFWD run --config {{rx_config}} &
+    FF=./target/release/ff
+    $FF run --config {{rx_config}} &
     RX=$!;
 
     # Poll /ready until the diagnostics HTTP server is up (503 → 200).
@@ -349,7 +386,7 @@ _bench-pair name rx_config tx_config seconds="10":
     # Give run_async() time to bind receiver sockets after /ready returns.
     sleep 1
 
-    $LOGFWD run --config {{tx_config}} &
+    $FF run --config {{tx_config}} &
     TX=$!; sleep {{seconds}}
     STATS=$(curl -s http://127.0.0.1:9091/admin/v1/stats 2>/dev/null || echo '{}')
     kill $TX $RX 2>/dev/null; wait $TX $RX 2>/dev/null || true
@@ -452,7 +489,7 @@ bench-e2e seconds="10":
 
 [private]
 bench-pipelines seconds="10":
-    @echo "logfwd pipeline benchmarks ({{seconds}}s each)"
+    @echo "ff pipeline benchmarks ({{seconds}}s each)"
     @echo "================================================"
     cargo build --release -p logfwd
     just bench-self {{seconds}}
@@ -518,7 +555,7 @@ bench-docker:
 profile-otlp-local lines="500000" seconds="6":
     #!/usr/bin/env bash
     set -euo pipefail
-    ROOT=$(mktemp -d /tmp/logfwd-pprof.XXXXXX)
+    ROOT=$(mktemp -d /tmp/ff-pprof.XXXXXX)
     PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
 
     echo "==> Build cpu-profiling binary"
@@ -578,35 +615,56 @@ bench-otlp-io *ARGS:
 bench-otlp-io-fast *ARGS:
     cargo bench -p logfwd-bench --bench otlp_io -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
 
+# Run source metadata attachment benchmarks.
+bench-source-metadata *ARGS:
+    cargo bench -p logfwd-bench --bench source_metadata -- {{ARGS}}
+
+# Run source metadata attachment benchmarks with fast local iteration settings.
+bench-source-metadata-fast *ARGS:
+    cargo bench -p logfwd-bench --bench source_metadata -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
+
 # Profile OTLP decode/encode CPU with the normal allocator (flamegraph, per-mode timings).
 profile-otlp-io *ARGS:
-    cargo run -p logfwd-bench --release --bin otlp_io_profile -- {{ARGS}}
+    cargo run -p logfwd-bench --release --features bench-tools --bin otlp_io_profile -- {{ARGS}}
 
 # Profile OTLP decode/encode allocation counts with stats_alloc instrumentation.
 profile-otlp-io-alloc *ARGS:
-    cargo run -p logfwd-bench --release --features otlp-profile-alloc --bin otlp_io_profile -- {{ARGS}}
+    cargo run -p logfwd-bench --release --features bench-tools,otlp-profile-alloc --bin otlp_io_profile -- {{ARGS}}
 
 # Generate microbenchmark report (markdown)
 bench-report:
-    cargo run -p logfwd-bench
+    cargo run -p logfwd-bench --features bench-tools
 
 # Profile FramedInput / format processing overhead and print a markdown report.
 bench-framed-input *ARGS:
-    cargo run -p logfwd-bench --release --bin framed_input_profile -- {{ARGS}}
+    cargo run -p logfwd-bench --release --features bench-tools --bin framed_input_profile -- {{ARGS}}
 
 # Allocation-focused FramedInput profiling (dhat-backed, slower; no throughput numbers).
 bench-framed-input-alloc *ARGS:
-    cargo run -p logfwd-bench --release --features dhat-heap --bin framed_input_profile -- --alloc-only {{ARGS}}
+    cargo run -p logfwd-bench --release --features bench-tools,dhat-heap --bin framed_input_profile -- --alloc-only {{ARGS}}
 
-# Run low-and-slow rate-ingest benchmark (logfwd only, measures memory and CPU at each eps)
+# Run low-and-slow rate-ingest benchmark (ff only, measures memory and CPU at each eps)
 bench-rate *ARGS:
     cargo build --release -p logfwd
-    LOGFWD=./target/release/ff cargo run -p logfwd-competitive-bench --release -- --rate-bench {{ARGS}}
+    FF=./target/release/ff cargo run -p logfwd-competitive-bench --release -- --rate-bench {{ARGS}}
 
 # Run sustained-load memory profiler (generator → SQL → null, default 5 minutes).
 # Use --quick (30s) for CI or --medium (120s) for quick checks.
 bench-memory *ARGS:
-    cargo run -p logfwd-bench --release --bin memory-profile -- {{ARGS}}
+    cargo run -p logfwd-bench --release --features bench-tools --bin memory-profile -- {{ARGS}}
+
+# Profile file output (JSON lines serialization + file I/O) CPU, memory, or per-stage breakdown.
+# Modes: breakdown (default), cpu (flamegraph), alloc (allocation counts).
+# Examples:
+#   just profile-file-output                              # breakdown, narrow schema
+#   just profile-file-output --schema wide                # breakdown, wide schema
+#   just profile-file-output --mode cpu --schema wide     # CPU flamegraph, wide
+profile-file-output *ARGS:
+    cargo run -p logfwd-bench --release --features bench-tools --bin file_output_profile -- {{ARGS}}
+
+# Profile file output allocation counts (requires stats_alloc instrumented allocator).
+profile-file-output-alloc *ARGS:
+    cargo run -p logfwd-bench --release --features bench-tools,otlp-profile-alloc --bin file_output_profile -- --mode alloc {{ARGS}}
 
 # Start a local OTLP blackhole receiver using main CLI devour wrapper.
 bench-devour-otlp listen="127.0.0.1:4318":

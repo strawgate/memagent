@@ -1,3 +1,5 @@
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -331,10 +333,7 @@ fn poll_until_batch(
         backoff = (backoff * 2).min(max_backoff);
     }
 
-    panic!(
-        "timed out waiting for {expected_rows} rows; only got {} batch rows",
-        total_batch_rows
-    );
+    panic!("timed out waiting for {expected_rows} rows; only got {total_batch_rows} batch rows");
 }
 
 fn read_concurrency_list() -> Vec<usize> {

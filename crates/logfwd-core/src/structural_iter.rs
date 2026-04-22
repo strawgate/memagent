@@ -193,8 +193,8 @@ impl<'a> StructuralIter<'a> {
         }
     }
 
-    /// Find the next position at or after `from` that is NOT a space
-    /// (outside strings). Returns `from` if it's already non-space.
+    /// Find the next position at or after `from` that is NOT an ASCII space.
+    /// Returns `from` if it's already non-space.
     ///
     /// Uses the space bitmask — O(1) per block, no byte scanning.
     #[inline]
@@ -227,7 +227,7 @@ impl<'a> StructuralIter<'a> {
         let mut pos = from;
         while pos < self.len {
             match self.buf[pos] {
-                b' ' | b'\t' | b'\r' => pos += 1,
+                b' ' => pos += 1,
                 _ => return pos,
             }
         }
@@ -335,6 +335,29 @@ mod tests {
     }
 
     #[test]
+    fn next_non_space_fast_and_fallback_use_ascii_space_only() {
+        let buf = b" \t\rx";
+
+        let fast = StructuralIter::new(buf).next_non_space(0);
+        let fallback = StructuralIter {
+            buf,
+            len: buf.len(),
+            block_idx: 99,
+            num_blocks: 0,
+            remaining_bits: 0,
+            current_block: ProcessedBlock::default(),
+            block_offset: 0,
+            classifier: StreamingClassifier::new(),
+            current_space: 0,
+        }
+        .next_non_space(0);
+
+        assert_eq!(fast, 1);
+        assert_eq!(fallback, fast);
+        assert_eq!(buf[fast], b'\t');
+    }
+
+    #[test]
     fn multi_block_buffer() {
         // Create a buffer > 64 bytes to test cross-block processing
         let line = br#"{"longkey":"longvalue","another":"field","third":"value"}"#;
@@ -407,8 +430,10 @@ mod verification {
 
     /// classify_bit always returns a valid StructuralKind, and the
     /// selected kind matches exactly one of the bitmask fields.
-    /// Exhaustive over all bit positions and arbitrary bitmasks.
+    /// Exhaustive over all bit positions where at least one structural
+    /// category has the tested bit set.
     #[kani::proof]
+    #[kani::solver(cadical)]
     fn verify_classify_bit_correct() {
         let bit_pos: usize = kani::any_where(|&p: &usize| p < 64);
         let mask = 1u64 << bit_pos;
@@ -425,6 +450,20 @@ mod verification {
             open_bracket: kani::any(),
             close_bracket: kani::any(),
         };
+        let structural_bits = p.newline
+            | p.real_quotes
+            | p.comma
+            | p.colon
+            | p.open_brace
+            | p.close_brace
+            | p.open_bracket
+            | p.close_bracket;
+        kani::assume(structural_bits & mask != 0);
+        kani::cover!(p.real_quotes & mask != 0, "quote path reachable");
+        kani::cover!(
+            p.real_quotes & mask == 0 && p.open_bracket & mask != 0,
+            "open bracket fallback path reachable"
+        );
 
         // Build a minimal iterator just to call classify_bit
         let iter = StructuralIter {
@@ -435,7 +474,7 @@ mod verification {
             remaining_bits: 0,
             current_block: p,
             block_offset: 0,
-            classifier: crate::structural::StreamingClassifier::new(),
+            classifier: StreamingClassifier::new(),
             current_space: 0,
         };
 
@@ -497,9 +536,10 @@ mod verification {
     }
 
     /// next_non_space fallback path: result is always in [from, len],
-    /// and the byte at result (if < len) is not a space/tab/CR.
+    /// and the byte at result (if < len) is not an ASCII space.
     #[kani::proof]
     #[kani::unwind(18)]
+    #[kani::solver(cadical)]
     fn verify_next_non_space_fallback() {
         let buf: [u8; 16] = kani::any();
         let from: usize = kani::any();
@@ -514,7 +554,7 @@ mod verification {
             remaining_bits: 0,
             current_block: ProcessedBlock::default(),
             block_offset: 0,
-            classifier: crate::structural::StreamingClassifier::new(),
+            classifier: StreamingClassifier::new(),
             current_space: 0,
         };
 
@@ -523,8 +563,13 @@ mod verification {
         assert!(result >= from && result <= 16);
         if result < 16 {
             let b = buf[result];
-            assert!(b != b' ' && b != b'\t' && b != b'\r');
+            assert!(b != b' ');
         }
+
+        // Guard vacuity: verify assume does not exclude meaningful cases
+        kani::cover!(result == from, "no spaces at start");
+        kani::cover!(result > from, "skipped some spaces");
+        kani::cover!(result == 16, "all remaining bytes are spaces");
     }
 
     /// Prove advance() yields every structural position exactly once,

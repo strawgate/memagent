@@ -436,7 +436,7 @@ pub(super) fn collect_new_spans(
                 attrs.push(("output_start_unix_ns", b.output_start_unix_ns.to_string()));
             }
             spans.push(SpanRecord {
-                trace_id: format!("{:016x}{:016x}", pipeline_hash, id),
+                trace_id: format!("{pipeline_hash:016x}{id:016x}"),
                 span_id: format!("{:016x}", id ^ pipeline_hash),
                 parent_id: "0000000000000000".to_string(),
                 name: "batch".to_string(),
@@ -496,23 +496,24 @@ pub(super) fn metrics_to_otlp_json(points: &[MetricPoint]) -> String {
         match &pt.value {
             MetricValue::Gauge(v) => {
                 out.push_str(r#","gauge":{"dataPoints":[{"timeUnixNano":""#);
-                let _ = write!(out, "{}", now);
+                let _ = write!(out, "{now}");
                 out.push_str(r#"","asDouble":"#);
                 if !v.is_finite() {
                     let _ = write!(out, "null");
                 } else if v.fract() == 0.0 && *v >= i64::MIN as f64 && *v <= i64::MAX as f64 {
-                    let _ = write!(out, "{}", *v as i64);
+                    let vi = *v as i64;
+                    let _ = write!(out, "{vi}");
                 } else {
-                    let _ = write!(out, "{}", v);
+                    let _ = write!(out, "{v}");
                 }
                 write_attributes(&mut out, &pt.attributes);
                 out.push_str("}]}");
             }
             MetricValue::Sum(v) => {
                 out.push_str(r#","sum":{"dataPoints":[{"timeUnixNano":""#);
-                let _ = write!(out, "{}", now);
+                let _ = write!(out, "{now}");
                 out.push_str(r#"","asInt":""#);
-                let _ = write!(out, "{}", v);
+                let _ = write!(out, "{v}");
                 out.push('"');
                 write_attributes(&mut out, &pt.attributes);
                 out.push_str(r#"}],"aggregationTemporality":2,"isMonotonic":true}"#);
@@ -575,7 +576,7 @@ pub(super) fn spans_to_otlp_json(spans: &[SpanRecord]) -> String {
             "error" => 2,
             _ => 0,
         };
-        let _ = write!(out, r#","status":{{"code":{}}}}}"#, status_code);
+        let _ = write!(out, r#","status":{{"code":{status_code}}}}}"#);
     }
 
     out.push_str("]}]}]}");

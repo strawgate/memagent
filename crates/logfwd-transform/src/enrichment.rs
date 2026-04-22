@@ -2167,6 +2167,11 @@ mod tests {
             .unwrap();
         assert_eq!(cluster.value(0), "prod");
 
+        // SAFETY: `remove_var` is unsafe because it mutates process-global
+        // state and is unsound under concurrent access. This is safe here
+        // because `cargo nextest` runs each test in its own process, and
+        // these variables use a unique `LOGFWD_TEST_` prefix not read by
+        // any other test.
         unsafe {
             std::env::remove_var("LOGFWD_TEST_CLUSTER");
             std::env::remove_var("LOGFWD_TEST_REGION");
@@ -2192,6 +2197,7 @@ mod tests {
         }
         let result = EnvTable::from_prefix("dup_test", "LOGFWD_DUPTEST_");
         // Clean up before asserting.
+        // SAFETY: this removes only the unique test variables set above.
         unsafe {
             std::env::remove_var("LOGFWD_DUPTEST_FOO");
             std::env::remove_var("LOGFWD_DUPTEST_foo");
@@ -2468,7 +2474,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_cgroup_docker_format() {
+    fn parse_cgroup_v1_docker_path() {
         let content =
             "12:memory:/docker/abc123def456abc123def456abc123def456abc123def456abc123def456abc1\n";
         let result = parse_cgroup_for_container(content);
@@ -2479,7 +2485,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_cgroup_docker_scope_v2() {
+    fn parse_cgroup_v2_docker_systemd_scope() {
         let id_hex = "a1b2c3d4".repeat(8); // 64 hex chars
         let content = format!("0::/system.slice/docker-{id_hex}.scope\n");
         let result = parse_cgroup_for_container(&content);

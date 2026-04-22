@@ -43,6 +43,7 @@ logfwd-transform = { version = "0.1.0", path = "../logfwd-transform", optional =
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true }
+serde_yaml_ng = { workspace = true }
 tokio = { version = "1", features = [
     "rt-multi-thread",
     "macros",
@@ -62,7 +63,7 @@ bytes = { workspace = true }
 futures-util = { workspace = true }
 logfwd-test-utils = { version = "0.1.0", path = "../logfwd-test-utils" }
 serde_json = "1"
-stats_alloc = "0.1"
+stats_alloc = { workspace = true }
 tempfile = "3"
 turmoil = { workspace = true, features = ["unstable-barriers"] }
 

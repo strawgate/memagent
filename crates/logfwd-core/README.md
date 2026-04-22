@@ -15,11 +15,12 @@ Proven pure-logic kernel. Scanner, parsers, pipeline state machine, OTLP encodin
 
 ## Key modules
 
-- `scanner.rs` — JSON field extraction via ScanBuilder trait callbacks
+- `json_scanner.rs` — streaming JSON field extraction via ScanBuilder callbacks
+- `scanner.rs` — scanner-to-builder protocol (`ScanBuilder`, `BuilderState`)
 - `structural.rs` — SIMD structural character detection (quote, backslash, bitmasks)
 - `cri.rs` — CRI log format parser + reassembler
 - `framer.rs` — NewlineFramer (Kani-proven, fixed-size, no heap)
-- `aggregator.rs` — CriReassembler (zero-copy F path, Kani-proven)
+- `reassembler.rs` — CriReassembler (zero-copy F path, Kani-proven)
 - `pipeline/` — BatchTicket, PipelineMachine (typestate, Kani-proven)
 - `otlp.rs` — OTLP protobuf encoding
 

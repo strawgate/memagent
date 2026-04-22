@@ -1,0 +1,17 @@
+[package]
+name = "logfwd-lint-attrs"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Attribute macros that mark functions for semantic lints (e.g., #[hot_path])."
+
+[lib]
+proc-macro = true
+
+[dependencies]
+quote = "1"
+syn = { version = "2", features = ["full", "parsing"] }
+
+[lints]
+workspace = true

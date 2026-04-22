@@ -7,6 +7,7 @@
 
 use std::time::Duration;
 
+use bytes::Bytes;
 use logfwd_io::input::{InputEvent, InputSource};
 use logfwd_io::s3_input::{S3Input, S3InputSettings};
 
@@ -28,6 +29,7 @@ fn make_s3_input(endpoint: &str, bucket: &str, prefix: &str) -> S3Input {
         visibility_timeout_secs: 300,
         compression_override: None,
         poll_interval_ms: 100,
+        should_expose_source_paths: false,
     };
     S3Input::new("s3-test", settings).expect("S3Input::new")
 }
@@ -336,7 +338,7 @@ fn eof_markers_do_not_emit_zero_byte_data_events() {
         }
 
         assert!(eof_count > 0, "expected at least one EndOfFile event");
-        let total: usize = data_events.iter().map(Vec::len).sum();
+        let total: usize = data_events.iter().map(Bytes::len).sum();
         assert_eq!(total, data_len);
     });
 }

@@ -1,9 +1,21 @@
 version = 1
 
 [[seams]]
-path = "crates/logfwd-arrow/src/streaming_builder.rs"
+path = "crates/logfwd-arrow/src/streaming_builder/verification.rs"
 status = "required"
 reason = "Pure StructArray conflict-column assembly invariants are already Kani-proved here."
+issue = 1314
+
+[[seams]]
+path = "crates/logfwd-arrow/src/streaming_builder/mod.rs"
+status = "recommended"
+reason = "Contains cfg(kani) type aliases supporting proofs in verification.rs; no proof harnesses here."
+issue = 1314
+
+[[seams]]
+path = "crates/logfwd-output/src/elasticsearch/mod.rs"
+status = "recommended"
+reason = "Module shell declares cfg(kani) submodule; proofs live in kani_proofs.rs."
 issue = 1314
 
 [[seams]]
@@ -39,7 +51,7 @@ issue = 1437
 [[seams]]
 path = "crates/logfwd-io/src/format.rs"
 status = "required"
-reason = "Local CRI metadata injection and mode dispatch helpers are already Kani-targeted."
+reason = "Local CRI message extraction, sidecar metadata, and mode dispatch helpers are already Kani-targeted."
 issue = 1314
 
 [[seams]]
@@ -47,6 +59,12 @@ path = "crates/logfwd-diagnostics/src/stderr_capture.rs"
 status = "required"
 reason = "Pure escaping helpers are already Kani-targeted here."
 issue = 1314
+
+[[seams]]
+path = "crates/logfwd-lint-attrs/src/lib.rs"
+status = "recommended"
+reason = "Proc-macro support crate emits cfg(kani) proof-linkage assertions but does not itself host bounded runtime proof harnesses."
+issue = 2457
 
 [[seams]]
 path = "crates/logfwd-io/src/receiver_health.rs"
@@ -91,6 +109,11 @@ reason = "Module shell gates tail-specific verification under #[cfg(kani)] and s
 issue = 1314
 
 [[seams]]
+path = "crates/logfwd-io/src/input.rs"
+status = "recommended"
+reason = "CRI metadata sidecar row-alignment helpers are bounded local state transitions inside the input abstraction."
+
+[[seams]]
 path = "crates/logfwd-io/src/tcp_input.rs"
 status = "recommended"
 reason = "Per-client bounded-read stop policy is extracted as a local pure seam inside the TCP shell."
@@ -103,10 +126,17 @@ reason = "Per-poll UDP bounded-drain stop policy is an isolated pure seam in an 
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-output/src/elasticsearch.rs"
+path = "crates/logfwd-io/src/s3_input/mod.rs"
+status = "exempt"
+reason = "S3 input is an async/network orchestration shell; source metadata snapshot behavior is stateful IO glue covered by unit and integration tests rather than a bounded pure Kani seam."
+issue = 1314
+
+[[seams]]
+path = "crates/logfwd-output/src/elasticsearch/kani_proofs.rs"
 status = "required"
 reason = "Local response classification helpers already carry Kani proofs."
 issue = 1314
+
 
 [[seams]]
 path = "crates/logfwd-output/src/lib.rs"
@@ -197,3 +227,8 @@ path = "crates/logfwd-arrow/src/columnar/row_protocol.rs"
 status = "required"
 reason = "RowLifecycle state machine transitions are bounded pure seams with symbolic action sequence proofs."
 issue = 2072
+
+[[seams]]
+path = "crates/logfwd-arrow/src/columnar/builder.rs"
+status = "recommended"
+reason = "Generated-string offset accounting and lowercase hex emission are bounded pure seams inside the broader builder shell."

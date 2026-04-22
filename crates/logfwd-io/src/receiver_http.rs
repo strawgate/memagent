@@ -24,7 +24,7 @@ pub(crate) fn parse_content_type(headers: &HeaderMap) -> Result<Option<String>, 
     };
     let raw = value
         .to_str()
-        .map_err(|_| StatusCode::UNSUPPORTED_MEDIA_TYPE)?;
+        .map_err(|_e| StatusCode::UNSUPPORTED_MEDIA_TYPE)?;
     let media_type = raw.split(';').next().unwrap_or_default().trim();
     if media_type.is_empty() {
         return Err(StatusCode::UNSUPPORTED_MEDIA_TYPE);
@@ -49,7 +49,7 @@ pub(crate) async fn read_limited_body(
     );
 
     while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|_| StatusCode::BAD_REQUEST)?;
+        let frame = frame.map_err(|_e| StatusCode::BAD_REQUEST)?;
         let Ok(chunk) = frame.into_data() else {
             continue;
         };

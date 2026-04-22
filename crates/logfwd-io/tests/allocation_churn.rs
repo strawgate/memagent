@@ -8,6 +8,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 
 use serial_test::serial;
 
+use bytes::Bytes;
 use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{InputEvent, InputSource};
@@ -26,9 +27,10 @@ impl MockSource {
         let events: VecDeque<Vec<InputEvent>> = (0..count)
             .map(|_| {
                 vec![InputEvent::Data {
-                    bytes: chunk.to_vec(),
+                    bytes: Bytes::from(chunk.to_vec()),
                     source_id: None,
                     accounted_bytes: chunk.len() as u64,
+                    cri_metadata: None,
                 }]
             })
             .collect();

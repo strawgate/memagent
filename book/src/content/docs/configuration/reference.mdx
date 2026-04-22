@@ -6,6 +6,7 @@ description: "Complete YAML reference for all FastForward settings"
 import { Tabs, TabItem } from '@astrojs/starlight/components';
 
 FastForward commands that operate on pipeline config (for example `run`, `validate`, `dry-run`, and `effective-config`) accept a YAML file via `--config <config.yaml>`.
+`ff send` accepts a destination-only config with top-level `output`, injects stdin as the input, drains the output, and exits.
 
 ## Overview
 
@@ -99,6 +100,7 @@ YAML sequence for multiple inputs.
 | `type` | string | Yes | Input type. See [Input types](#input-types). |
 | `name` | string | No | Friendly name shown in diagnostics. |
 | `format` | string | No | Log format. See [Formats](#formats). Defaults to `auto`. |
+| `source_metadata` | string | No | Source metadata style. Defaults to `none`. Use `fastforward` for internal `__source_id`, `ecs`/`beats` for public ECS columns such as `file.path`, `otel` for public OpenTelemetry columns such as `log.file.path`, or `vector` for public Vector-style columns such as `file`. Public source path styles require inputs that expose source path snapshots. File inputs expose filesystem paths; S3 inputs expose object keys. |
 
 ### `file` input
 
@@ -118,6 +120,58 @@ input:
   path: /var/log/pods/**/*.log
   format: cri
 ```
+
+### `s3` input
+
+Read objects from AWS S3 or an S3-compatible endpoint. The S3 input can poll
+`ListObjectsV2` by prefix, or process object notifications from SQS when
+`sqs_queue_url` is set. S3 support is behind the `s3` feature.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `s3.bucket` | string | Yes | Bucket name. |
+| `s3.region` | string | No | AWS region. Defaults to `us-east-1`. |
+| `s3.endpoint` | string | No | S3-compatible endpoint URL, for example `http://localhost:9000`. Path-style addressing is used when set. |
+| `s3.prefix` | string | No | Only process object keys with this prefix. |
+| `s3.sqs_queue_url` | string | No | SQS queue URL for event-driven object discovery. Omit to poll the bucket prefix. |
+| `s3.start_after` | string | No | Initial `ListObjectsV2` `StartAfter` key for prefix polling. |
+| `s3.access_key_id` | string | No | AWS access key ID. Falls back to `AWS_ACCESS_KEY_ID`. |
+| `s3.secret_access_key` | string | No | AWS secret access key. Falls back to `AWS_SECRET_ACCESS_KEY`. |
+| `s3.session_token` | string | No | AWS session token. Falls back to `AWS_SESSION_TOKEN`. |
+| `s3.part_size_bytes` | integer | No | Range-GET part size. Defaults to 1048576. |
+| `s3.max_concurrent_fetches` | integer | No | Maximum concurrent range GETs per object. Defaults to 16. |
+| `s3.max_concurrent_objects` | integer | No | Maximum objects fetched at once. Defaults to 4. |
+| `s3.visibility_timeout_secs` | integer | No | SQS visibility timeout. Defaults to 300 and must be at least 30. |
+| `s3.compression` | string | No | Compression override: `auto`, `gzip`, `zstd`, `snappy`, or `none`. Defaults to `auto`. |
+| `s3.poll_interval_ms` | integer | No | Prefix polling interval in milliseconds. Defaults to 5000. |
+
+When `source_metadata` is `ecs`, `beats`, `otel`, or `vector`, S3 exposes the
+object key as the source path value for each row. `fastforward` only attaches
+the internal `__source_id`, and `none` attaches no source metadata.
+
+```yaml
+input:
+  type: s3
+  format: json
+  source_metadata: ecs
+  s3:
+    bucket: app-logs
+    region: us-east-1
+    prefix: prod/
+```
+
+### `stdin` input
+
+Read data from standard input. This input has no input-specific fields.
+It is primarily used by `ff send` for command-line piping.
+
+```yaml
+input:
+  type: stdin
+  format: auto
+```
+
+Supported formats: `auto`, `cri`, `json`, and `raw`.
 
 ### `generator` input
 
@@ -158,6 +212,7 @@ Accept log lines on a TCP socket.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:5140`. |
+| `tls` | object | No | Optional server TLS options (`cert_file`, `key_file`, `client_ca_file`, `require_client_auth`). `client_ca_file` is valid only when `require_client_auth: true`. |
 
 ```yaml
 input:
@@ -173,14 +228,12 @@ Receive OTLP log records from another agent or SDK.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `listen` | string | Yes | `host:port`, e.g. `0.0.0.0:4318`. |
-| `resource_prefix` | string | No | Prefix used when flattening OTLP resource attributes. Defaults to `resource.attributes.`. Currently only `resource.attributes.` is supported. |
 | `protobuf_decode_mode` | string | No | Experimental protobuf decoder: `prost` (default), `projected_fallback`, or `projected_only`. Projected modes require a build with the `otlp-research` feature. |
 
 ```yaml
 input:
   type: otlp
   listen: 0.0.0.0:4318
-  resource_prefix: resource.attributes.
   protobuf_decode_mode: prost
 ```
 
@@ -334,6 +387,8 @@ Behavior:
 | Value | Status | Description |
 |-------|--------|-------------|
 | `file` | Implemented | Tail files matching a glob pattern. |
+| `s3` | Implemented | Read objects from AWS S3 or an S3-compatible endpoint. |
+| `stdin` | Implemented | Read piped stdin until EOF, then drain outputs and exit. |
 | `generator` | Implemented | Emit synthetic JSON-like records from an in-process source. |
 | `udp` | Implemented | Receive log lines over UDP. |
 | `tcp` | Implemented | Accept log lines over TCP. |
@@ -382,8 +437,8 @@ Send log records as OTLP protobuf to an OpenTelemetry collector.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `endpoint` | string | Yes | — | Full collector URL, e.g. `http://otel-collector:4317` (gRPC) or `http://otel-collector:4318/v1/logs` (HTTP). |
-| `protocol` | string | No | `http` | `http` or `grpc`. |
-| `compression` | string | No | none | `zstd`, `gzip`, or `none` for the request body. |
+| `protocol` | enum | No | `http` | `http` or `grpc`. Invalid values are rejected while parsing config. |
+| `compression` | enum | No | none | `zstd`, `gzip`, or `none` for the request body. Invalid values are rejected while parsing config. |
 
 ```yaml
 output:
@@ -402,7 +457,7 @@ lands.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Full URL, e.g. `http://ingest.example.com/logs`. |
-| `compression` | string | No | Reserved for future use. |
+| `compression` | enum | No | Reserved for future use. Recognized values are `zstd`, `gzip`, and `none`; the HTTP output itself is still not yet supported. |
 
 ```yaml
 output:
@@ -432,8 +487,8 @@ Ship to Elasticsearch via the Bulk API.
 |-------|------|----------|---------|-------------|
 | `endpoint` | string | Yes | — | Elasticsearch base URL. |
 | `index` | string | No | `logs` | Target index name. Must not be empty, and must not contain Elasticsearch-reserved characters or prefixes. |
-| `compression` | string | No | `none` | `gzip` or `none`. |
-| `request_mode` | string | No | `buffered` | `buffered` or `streaming`. `streaming` currently requires `compression: none`. |
+| `compression` | enum | No | `none` | `gzip` or `none`. `zstd` is rejected for Elasticsearch by validation. |
+| `request_mode` | enum | No | `buffered` | `buffered` or `streaming`. Invalid values are rejected while parsing config; `streaming` currently requires `compression: none`. |
 | `request_timeout_ms` | integer | No | `30000` | HTTP request timeout in milliseconds. Must be >= 1 when set. |
 | `tls` | object | No | — | Optional TLS client options (`ca_file`, `cert_file`, `key_file`, `insecure_skip_verify`) for HTTPS endpoints. |
 | `auth` | object | No | — | Optional bearer token or custom headers for HTTP auth. |
@@ -494,7 +549,7 @@ Write records to a file.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `path` | string | Yes | Destination file path. |
+| `path` | string | Yes | Destination file path. Parent directory must already exist and be writable. |
 | `format` | string | No | `json` for NDJSON output, or `text` to write raw lines. |
 
 ```yaml
@@ -531,6 +586,18 @@ Write records to Parquet files.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `path` | string | Yes | Destination file path. |
+
+### `null` output
+
+Drop records intentionally for tests and benchmark baselines. The type value must
+be quoted as a YAML string; unquoted `type: null` is YAML's null value and is
+rejected. Null outputs do not accept sink-specific fields such as `endpoint`,
+`format`, `auth`, `tls`, retry, or batch controls.
+
+```yaml
+output:
+  type: "null"
+```
 
 ---
 
@@ -594,14 +661,28 @@ When a field contains mixed types across rows, the scanner emits a single
 type (e.g., a `status` Struct with `int` and `str` children). Legacy
 single-underscore suffixed columns (`status_int`, `level_str`) are not emitted.
 
-Special columns added by the scanner / input format layer:
+Special columns attached by the runtime after scan, plus format-derived columns:
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `body` | string | Original input line (when input line capture is enabled, e.g. `line_field: body`, or when a non-JSON CRI line is wrapped for scanner safety). |
-| `_source_path` | string | Absolute path of the source file (file-backed inputs only). Used as a join key for `k8s_path` enrichment. |
+| `__source_id` | uint64 | FastForward internal row-level source identity when `source_metadata: fastforward` is set. SQL can reference it, but user-facing sinks drop this internal column unless SQL aliases it to a public name. |
+| `file.path` | string | ECS/Beats-style source file path when `source_metadata: ecs` or `source_metadata: beats` is set. Quote it in SQL as `"file.path"`. |
+| `log.file.path` | string | OpenTelemetry-style source file path when `source_metadata: otel` is set. Quote it in SQL as `"log.file.path"`. |
+| `file` | string | Vector-style source file path when `source_metadata: vector` is set. |
 | `_timestamp` | string | Timestamp from the CRI header as an RFC 3339 string (CRI inputs only). |
 | `_stream` | string | CRI stream name (`stdout` / `stderr`). |
+
+Source metadata is never written into raw input bytes. It is carried beside
+scanner-ready chunks and, when `source_metadata` is not `none`, materialized as
+table columns before SQL runs. SQL does no hidden pruning or widening: `SELECT *`
+returns the columns that exist in the table. User-facing sinks drop known
+FastForward internal columns such as `__source_id` by default; alias an
+internal column to a public name when it should be emitted. User payload fields
+that happen to start with `__` are not treated as internal. Public source path
+styles currently require inputs that expose source path snapshots. File inputs
+use filesystem paths; S3 inputs use object keys. Use `fastforward` for source
+identity on inputs that do not expose public source descriptors.
 
 ### Built-in UDFs
 
@@ -766,8 +847,10 @@ FROM logs l CROSS JOIN k8s_cluster_info k
 
 Parses Kubernetes pod log paths (e.g.
 `/var/log/pods/<namespace>_<pod>_<uid>/<container>/`) to extract metadata.
-The source-path metadata is automatically injected into the `logs` table as
-`_source_path` for file-backed inputs.
+Queries that join a source path to this table should set `source_metadata: ecs`
+or another public path style on the file input and quote dotted column names in
+SQL, for example `"file.path"`. Source paths are never written into raw log
+bytes.
 
 Columns exposed by the enrichment table (named `k8s_pods` by default; set `table_name: k8s` in config to use the `k8s` alias shown in the examples below):
 
@@ -983,7 +1066,11 @@ storage:
 
 ## Environment variable substitution
 
-Any value in the config file can reference an environment variable with `${VAR}`:
+Any value in the config file can reference an environment variable with `${VAR}`.
+Variable names must start with an ASCII letter or `_`, and then contain only
+ASCII letters, digits, or `_`. `$VAR` stays literal, and default expressions
+such as `${VAR:fallback}` are rejected because `:` is not valid in variable
+names.
 
 ```yaml
 output:
@@ -995,9 +1082,13 @@ server:
 ```
 
 If the variable is not set, config loading fails fast with a validation error.
+An unterminated reference such as `${VAR` is preserved literally so existing
+config text is not rewritten accidentally; completed placeholders before that
+literal tail are still expanded.
 
-Exact unquoted placeholders use YAML scalar typing after expansion. This lets numeric
-and boolean fields read values directly from the environment:
+Environment variables are expanded as string data. The typed config schema then
+parses those strings into the field type, so numeric and boolean fields can read
+values directly from the environment without treating the env value as YAML:
 
 ```yaml
 pipelines:
@@ -1005,13 +1096,13 @@ pipelines:
     workers: ${LOGFWD_WORKERS}
 ```
 
-Quote a placeholder, or tag it with `!!str`, when the expanded value should remain
-a string even if it looks like a YAML number, boolean, or null:
+String fields remain strings even when the expanded value looks like a YAML
+number, boolean, or null:
 
 ```yaml
 input:
   type: file
-  path: "${LOG_PATH}"
+  path: ${LOG_PATH}
 ```
 
 Placeholders embedded inside longer strings always remain strings:

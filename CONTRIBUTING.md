@@ -58,6 +58,54 @@ just bench
 5. **CI must pass.** All checks green before requesting review.
 6. **Address all review feedback.** Don't leave threads unresolved.
 
+### Public API changes
+
+If your PR adds or changes any `pub` item in a crate with a stable
+surface (`logfwd-core`, `logfwd-types`, `logfwd-config`, `logfwd-io`
+traits like `InputSource`), verify:
+
+- [ ] `///` doc comment on every new `pub` item, with a working example
+      for types and key functions (doc-tests run in CI).
+- [ ] Accepts the most general useful type (`&str`, `&[T]`,
+      `impl IntoIterator<Item = T>`, `impl AsRef<Path>`) where the
+      callee does not need ownership. Returns concrete types.
+- [ ] New public error types are `thiserror` enums with matchable
+      variants. `Box<dyn Error>` is not acceptable in a public
+      signature.
+- [ ] New public enums carry `#[non_exhaustive]` unless the closed set
+      is genuinely stable.
+- [ ] Derived standard traits (`Debug`, `Clone`, `PartialEq`, `Eq`,
+      `Hash`, `Default`) where semantically valid.
+- [ ] Builder pattern used when a new type has >3 configuration knobs.
+
+See `dev-docs/CODE_STYLE.md` → *Public API Shape*.
+
+### Performance changes
+
+If your PR claims a performance improvement or touches the hot path:
+
+- [ ] `criterion` baseline on `main` recorded before the change.
+- [ ] `criterion` numbers after the change, with percent delta, in the
+      PR body.
+- [ ] Tier 1 `just bench` run to check for regressions in other paths.
+- [ ] Flamegraph or allocation profile referenced if the change is
+      non-obvious.
+
+See `DEVELOPING.md` → *Performance change workflow*.
+
+### Unsafe / SIMD changes
+
+If your PR touches `unsafe` or SIMD code in `logfwd-arrow`:
+
+- [ ] Every new `unsafe` block carries a `// SAFETY:` comment naming
+      the upheld invariants (`clippy::undocumented_unsafe_blocks = deny`).
+- [ ] proptest SIMD-equivalence coverage extended to cover the new path.
+      This is the primary correctness guard for `logfwd-arrow` SIMD —
+      Miri does not cover it (`just miri` only runs on `logfwd-core` and
+      `logfwd-types`).
+- [ ] For `unsafe` in `logfwd-core` or `logfwd-types`, run `just miri`
+      locally before pushing.
+
 ## Code Style
 
 See `dev-docs/CODE_STYLE.md` for style preferences enforced during review.

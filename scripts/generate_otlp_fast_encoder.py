@@ -1,34 +1,122 @@
 #!/usr/bin/env python3
-"""Generate the v1 OTLP fast-row encoder from a small checked-in spec.
+"""Generate the v1 OTLP fast-row encoder from vendored OTLP protos.
 
 This generator is intentionally narrow. It emits only the row-level OTLP
-projection code and relies on handwritten/shared envelope + wire helpers.
+projection code and relies on handwritten/shared envelope + wire helpers. The
+OTLP field metadata is read from the checked-in OpenTelemetry proto files; the
+only repo-local policy here is how Arrow input columns map onto LogRecord roles.
 """
 
 from __future__ import annotations
 
 import argparse
 import difflib
-import json
 import sys
 from pathlib import Path
 
+from otlp_proto import parse_proto_fields, vendored_proto_root
+
 
 REPO = Path(__file__).resolve().parents[1]
-SPEC = REPO / "crates" / "logfwd-output" / "codegen" / "otlp_log_record_fast_v1.schema.json"
 OUT = REPO / "crates" / "logfwd-output" / "src" / "generated" / "otlp_log_record_fast_v1.rs"
+PROTO_BASE = REPO / "crates" / "logfwd-io" / "codegen" / "opentelemetry-proto"
+PROTO_ROOT = vendored_proto_root(PROTO_BASE)
+PROTO_VERSION = PROTO_ROOT.name
+PROTO_FILES = [
+    PROTO_ROOT / "opentelemetry" / "proto" / "logs" / "v1" / "logs.proto",
+    PROTO_ROOT / "opentelemetry" / "proto" / "resource" / "v1" / "resource.proto",
+    PROTO_ROOT / "opentelemetry" / "proto" / "common" / "v1" / "common.proto",
+]
 
+ROLE_ALIASES = [
+    {"name": "timestamp", "fields": ["time_unix_nano"], "sources": ["timestamp", "time"]},
+    {
+        "name": "severity",
+        "fields": ["severity_number", "severity_text"],
+        "sources": ["level", "severity_text"],
+    },
+    {"name": "body", "fields": ["body"], "sources": ["body", "message"]},
+    {"name": "trace_id", "fields": ["trace_id"], "sources": ["trace_id"]},
+    {"name": "span_id", "fields": ["span_id"], "sources": ["span_id"]},
+    {"name": "flags", "fields": ["flags"], "sources": ["flags", "trace_flags"]},
+    {"name": "attributes", "fields": ["attributes"], "sources": ["*"]},
+]
+
+LOG_RECORD_FIELD_EXPECTATIONS = {
+    "time_unix_nano": {"proto_type": "fixed64", "wire": "fixed64", "repeated": False},
+    "observed_time_unix_nano": {"proto_type": "fixed64", "wire": "fixed64", "repeated": False},
+    "severity_number": {"proto_type": "SeverityNumber", "wire": "varint", "repeated": False},
+    "severity_text": {"proto_type": "string", "wire": "len", "repeated": False},
+    "body": {"proto_type": "AnyValue", "wire": "len", "repeated": False},
+    "attributes": {"proto_type": "KeyValue", "wire": "len", "repeated": True},
+    "flags": {"proto_type": "fixed32", "wire": "fixed32", "repeated": False},
+    "trace_id": {"proto_type": "bytes", "wire": "len", "repeated": False},
+    "span_id": {"proto_type": "bytes", "wire": "len", "repeated": False},
+}
 
 def load_spec() -> dict:
-    return json.loads(SPEC.read_text())
+    messages = parse_proto_fields(PROTO_FILES)
+    log_record_fields = messages.get("LogRecord")
+    any_value_fields = messages.get("AnyValue")
+    if log_record_fields is None:
+        raise ValueError("LogRecord missing from vendored OTLP proto files")
+    if any_value_fields is None:
+        raise ValueError("AnyValue missing from vendored OTLP proto files")
+
+    for field_name, expectations in LOG_RECORD_FIELD_EXPECTATIONS.items():
+        field = log_record_fields.get(field_name)
+        if field is None:
+            raise ValueError(f"LogRecord.{field_name} missing from vendored OTLP proto files")
+        for key, expected in expectations.items():
+            actual = field[key]
+            if actual != expected:
+                raise ValueError(
+                    f"LogRecord.{field_name} {key} changed: "
+                    f"expected={expected} proto={actual}"
+                )
+
+    for role in ROLE_ALIASES:
+        for field_name in role["fields"]:
+            if field_name not in log_record_fields:
+                raise ValueError(f"LogRecord.{field_name} missing from vendored OTLP proto files")
+
+    supported_any_values = {
+        "string_value": "string",
+        "bool_value": "bool",
+        "int_value": "int64",
+        "double_value": "double",
+        "bytes_value": "bytes",
+    }
+    for field_name, proto_type in supported_any_values.items():
+        field = any_value_fields.get(field_name)
+        if field is None:
+            raise ValueError(f"AnyValue.{field_name} missing from vendored OTLP proto files")
+        if field["proto_type"] != proto_type:
+            raise ValueError(
+                f"AnyValue.{field_name} type changed: expected={proto_type} "
+                f"proto={field['proto_type']}"
+            )
+
+    return {
+        "name": "otlp_log_record_fast",
+        "version": 1,
+        "proto_version": PROTO_VERSION,
+        "roles": ROLE_ALIASES,
+        "log_record_fields": log_record_fields,
+    }
 
 
 def render(spec: dict) -> str:
     roles = spec["roles"]
-    order = ", ".join(f'"{role["name"]}"' for role in roles)
+    role_order = ", ".join(f'"{role["name"]}"' for role in roles)
+    proto_fields = ", ".join(
+        f'{field["name"]}={field["number"]}:{field["wire"]}'
+        for field in sorted(spec["log_record_fields"].values(), key=lambda field: field["number"])
+    )
     return f"""// @generated by scripts/generate_otlp_fast_encoder.py; DO NOT EDIT.
-// spec: {spec["name"]} v{spec["version"]}
-// column order: {order}
+// spec: {spec["name"]} v{spec["version"]}; opentelemetry-proto {spec["proto_version"]}
+// role order: {role_order}
+// LogRecord proto fields: {proto_fields}
 
 use arrow::array::Array;
 use super::{{BatchColumns, BatchMetadata, encode_col_attr, encode_fixed32, encode_tag,
@@ -75,7 +163,7 @@ pub(super) fn encode_row_as_log_record_fast_v1(
         if arr.is_null(row) {{
             severity_num as u64
         }} else {{
-            u64::try_from(arr.value(row)).unwrap_or(severity_num as u64)
+            u64::try_from(arr.value(row)).unwrap_or(0)
         }}
     }} else {{
         severity_num as u64
@@ -111,11 +199,8 @@ pub(super) fn encode_row_as_log_record_fast_v1(
     }}
 
     if let Some((_, arr)) = columns.flags_col
-        && !arr.is_null(row) {{
-            let raw = arr.value(row);
-            if let Ok(flags) = u32::try_from(raw) {{
-                encode_fixed32(buf, otlp::LOG_RECORD_FLAGS, flags);
-            }}
+        && let Some(flags) = arr.value_u32(row) {{
+            encode_fixed32(buf, otlp::LOG_RECORD_FLAGS, flags);
         }}
 
     if let Some((_, arr)) = columns.trace_id_col.as_ref()

@@ -137,8 +137,8 @@ struct Sut {
     remainder: Vec<u8>,
     /// All line IDs the SUT has emitted.
     emitted_ids: Vec<u64>,
-    /// Epoch boundaries: indices into `emitted_ids` where a crash+restart
-    /// occurred. Used to verify monotonicity within each epoch.
+    /// Epoch boundaries: indices into `emitted_ids` where crash/restart,
+    /// rotation, or truncation can reset observed ordering.
     epoch_boundaries: Vec<usize>,
     /// Counter matching RefState::next_line_id.
     next_line_id: u64,
@@ -157,6 +157,13 @@ fn parse_line(line: &str) -> Option<u64> {
 }
 
 impl Sut {
+    fn mark_epoch_boundary(&mut self) {
+        let boundary = self.emitted_ids.len();
+        if self.epoch_boundaries.last().copied() != Some(boundary) {
+            self.epoch_boundaries.push(boundary);
+        }
+    }
+
     fn do_poll(&mut self) {
         let tailer = self.tailer.as_mut().expect("tailer not running");
 
@@ -189,8 +196,11 @@ impl Sut {
                         self.remainder = buf;
                     }
                 }
-                TailEvent::Rotated { .. } => {}
+                TailEvent::Rotated { .. } => {
+                    self.mark_epoch_boundary();
+                }
                 TailEvent::Truncated { .. } => {
+                    self.mark_epoch_boundary();
                     self.remainder.clear();
                 }
                 TailEvent::EndOfFile { .. } => {}
@@ -217,7 +227,7 @@ impl Sut {
     }
 
     fn do_crash_and_restart(&mut self) {
-        self.epoch_boundaries.push(self.emitted_ids.len());
+        self.mark_epoch_boundary();
         drop(self.tailer.take());
         drop(self.checkpoint_store.take());
         self.remainder.clear();
@@ -387,9 +397,10 @@ impl StateMachineTest for TailCheckpointTest {
 
         // PROPERTY 3 (post-hoc): Monotonic ordering within each epoch.
         //
-        // Between crash+restart boundaries, line IDs must be monotonically
+        // Between lifecycle boundaries, line IDs must be monotonically
         // non-decreasing (the tailer reads sequentially). After restart,
-        // IDs may go backwards (re-reading from checkpoint).
+        // rotation, or truncation, IDs may go backwards because data can be
+        // re-read from a checkpoint or a new file generation.
         {
             let mut boundaries = sut.epoch_boundaries.clone();
             boundaries.insert(0, 0);

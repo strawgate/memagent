@@ -27,7 +27,7 @@ pub mod otlp;
 pub mod reassembler;
 /// Scanner configuration and field selection.
 pub mod scan_config;
-/// JSON-to-columnar scan loop.
+/// Scanner-to-builder protocol boundary.
 pub mod scanner;
 /// Streaming SIMD structural character detection.
 pub mod structural;

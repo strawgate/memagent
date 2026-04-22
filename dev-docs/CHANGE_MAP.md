@@ -12,6 +12,29 @@ When you add, rename, or remove config fields:
 - Related task pages that show examples (`book/src/content/docs/getting-started/`, `book/src/content/docs/deployment/`).
 - Validation and negative tests for invalid configs.
 
+### Output schema is V2-only
+
+Output YAML deserializes straight into `OutputConfigV2` — the typed
+`#[serde(tag = "type", rename_all = "snake_case")]` enum in
+`crates/logfwd-config/src/types.rs`. The flat `OutputConfig` struct and
+its `From<OutputConfigV2> for OutputConfig` / `From<&OutputConfig> for OutputConfigV2` bridges were removed; nothing
+else in the workspace carries a second shape. If your PR introduces a
+new output type, add it as one more variant:
+
+- Define the variant struct (`FooOutputConfig`) alongside the existing
+  typed configs with `#[serde(deny_unknown_fields)]`.
+- Add the variant to `OutputConfigV2` and extend the `name()`,
+  `endpoint()`, and `output_type()` match arms.
+- Add the sink construction arm in `logfwd-output::factory::build_sink_factory`.
+- Do **not** reintroduce a shared flat struct — a knob that only applies
+  to one output belongs on that variant. `deny_unknown_fields` then
+  rejects the knob on every other variant for free.
+- Cross-output validation messages ("X is only supported for Y outputs")
+  from the old `validate.rs` pass are unreachable from YAML now —
+  `deny_unknown_fields` catches them at parse time with
+  `unknown field ...`. Don't add new cross-output validators unless a
+  non-YAML caller can construct the invalid shape.
+
 ## Pipeline behavior changes
 
 When scan, transform, batching, or output semantics change:

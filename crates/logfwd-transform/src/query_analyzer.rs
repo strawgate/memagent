@@ -9,8 +9,47 @@ use datafusion::sql::sqlparser::dialect::GenericDialect;
 use datafusion::sql::sqlparser::parser::Parser;
 
 use logfwd_core::scan_config::ScanConfig;
+use logfwd_types::field_names;
+use logfwd_types::source_metadata::{SourceMetadataPlan, SourcePathColumn};
 
 use crate::TransformError;
+
+#[derive(Default)]
+struct SourceMetadataUsage {
+    referenced_columns: HashSet<String>,
+}
+
+#[derive(Default)]
+struct SourceMetadataScope {
+    logs_aliases: HashSet<String>,
+    outer_logs_aliases: HashSet<String>,
+    cte_names: HashSet<String>,
+    logs_backed_cte_names: HashSet<String>,
+    visible_relations: usize,
+    logs_relations: usize,
+}
+
+impl SourceMetadataScope {
+    fn with_outer(outer_scope: &Self) -> Self {
+        let mut outer_logs_aliases = outer_scope.outer_logs_aliases.clone();
+        outer_logs_aliases.extend(outer_scope.logs_aliases.iter().cloned());
+        Self {
+            outer_logs_aliases,
+            ..Self::default()
+        }
+    }
+
+    fn matches_logs_qualifier(&self, qualifier: &str) -> bool {
+        self.logs_aliases
+            .iter()
+            .chain(self.outer_logs_aliases.iter())
+            .any(|alias| alias.eq_ignore_ascii_case(qualifier))
+    }
+
+    fn bare_identifiers_resolve_to_logs(&self) -> bool {
+        self.logs_relations == 1 && self.visible_relations == 1
+    }
+}
 
 /// Parses SQL at startup, extracts column references and determines scan config.
 pub struct QueryAnalyzer {
@@ -22,6 +61,8 @@ pub struct QueryAnalyzer {
     pub uses_select_star: bool,
     /// Fields listed in a `SELECT * EXCEPT (...)` clause.
     pub except_fields: Vec<String>,
+    /// Source metadata references scoped to the `logs` relation.
+    source_metadata_usage: SourceMetadataUsage,
     /// The WHERE clause AST, if present. Used for predicate pushdown extraction.
     where_clause: Option<SqlExpr>,
 }
@@ -43,6 +84,7 @@ impl QueryAnalyzer {
         let mut referenced_columns = HashSet::new();
         let mut uses_select_star = false;
         let mut except_fields = Vec::new();
+        let mut source_metadata_usage = SourceMetadataUsage::default();
         let mut where_clause = None;
 
         if let Statement::Query(query) = stmt {
@@ -53,6 +95,7 @@ impl QueryAnalyzer {
                 &mut except_fields,
                 &mut where_clause,
             );
+            collect_logs_source_metadata_from_query(query, &mut source_metadata_usage);
         } else {
             return Err(TransformError::Sql(
                 "Only SELECT statements are supported".to_string(),
@@ -64,6 +107,7 @@ impl QueryAnalyzer {
             referenced_columns,
             uses_select_star,
             except_fields,
+            source_metadata_usage,
             where_clause,
         })
     }
@@ -104,6 +148,29 @@ impl QueryAnalyzer {
                 validate_utf8: false,
             }
         }
+    }
+
+    /// Source metadata columns that must be attached post-scan before SQL.
+    ///
+    /// Explicit references need their columns for projection/filter/join
+    /// evaluation. Wildcard projections remain narrow and never attach source
+    /// metadata by themselves.
+    pub fn source_metadata_plan(&self) -> SourceMetadataPlan {
+        self.explicit_source_metadata_plan()
+    }
+
+    /// Source metadata columns explicitly referenced by SQL expressions.
+    ///
+    /// This excludes wildcard projection and wildcard EXCEPT lists so callers
+    /// can reject source metadata dependencies only when SQL actually consumes
+    /// those metadata values.
+    pub fn explicit_source_metadata_plan(&self) -> SourceMetadataPlan {
+        source_metadata_plan_for_names(&self.source_metadata_usage.referenced_columns)
+    }
+
+    /// Whether the input layer must expose a source path column for this query.
+    pub fn source_path_required(&self) -> bool {
+        self.source_metadata_plan().has_source_path()
     }
 
     /// Extract filter hints from the SQL for predicate pushdown.
@@ -1008,6 +1075,848 @@ fn collect_columns_from_subquery(
     );
 }
 
+fn collect_logs_source_metadata_from_query(query: &sqlast::Query, usage: &mut SourceMetadataUsage) {
+    collect_logs_source_metadata_from_query_scoped(
+        query,
+        usage,
+        &HashSet::new(),
+        &HashSet::new(),
+        &SourceMetadataScope::default(),
+    );
+}
+
+fn collect_logs_source_metadata_from_query_scoped(
+    query: &sqlast::Query,
+    usage: &mut SourceMetadataUsage,
+    inherited_cte_names: &HashSet<String>,
+    inherited_logs_backed_cte_names: &HashSet<String>,
+    outer_scope: &SourceMetadataScope,
+) {
+    let cte_names = cte_names_for_query(query);
+    let mut accumulated_cte_names = inherited_cte_names.clone();
+    let mut accumulated_logs_backed_cte_names = inherited_logs_backed_cte_names.clone();
+    if let Some(ref with) = query.with {
+        for cte in &with.cte_tables {
+            collect_logs_source_metadata_from_query_scoped(
+                &cte.query,
+                usage,
+                &accumulated_cte_names,
+                &accumulated_logs_backed_cte_names,
+                outer_scope,
+            );
+            if query_exposes_logs_relation(
+                &cte.query,
+                &accumulated_cte_names,
+                &accumulated_logs_backed_cte_names,
+            ) {
+                accumulated_logs_backed_cte_names.insert(cte.alias.name.value.clone());
+            }
+            accumulated_cte_names.insert(cte.alias.name.value.clone());
+        }
+    }
+    let active_cte_names = combined_cte_names(inherited_cte_names, &cte_names);
+    let active_logs_backed_cte_names = accumulated_logs_backed_cte_names;
+
+    collect_logs_source_metadata_from_set_expr(
+        query.body.as_ref(),
+        usage,
+        &active_cte_names,
+        &active_logs_backed_cte_names,
+        outer_scope,
+    );
+
+    if let Some(ref order_by) = query.order_by
+        && let sqlast::OrderByKind::Expressions(exprs) = &order_by.kind
+    {
+        let scope = source_metadata_scope_for_set_expr(
+            query.body.as_ref(),
+            usage,
+            &active_cte_names,
+            &active_logs_backed_cte_names,
+            outer_scope,
+        );
+        for ob in exprs {
+            collect_logs_source_metadata_from_expr(&ob.expr, &scope, usage);
+        }
+    }
+}
+
+fn collect_logs_source_metadata_from_set_expr(
+    set_expr: &SetExpr,
+    usage: &mut SourceMetadataUsage,
+    cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
+    outer_scope: &SourceMetadataScope,
+) {
+    match set_expr {
+        SetExpr::Select(select) => {
+            collect_logs_source_metadata_from_select(
+                select,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                outer_scope,
+            );
+        }
+        SetExpr::SetOperation { left, right, .. } => {
+            collect_logs_source_metadata_from_set_expr(
+                left,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                outer_scope,
+            );
+            collect_logs_source_metadata_from_set_expr(
+                right,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                outer_scope,
+            );
+        }
+        SetExpr::Query(query) => {
+            collect_logs_source_metadata_from_query_scoped(
+                query,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                outer_scope,
+            );
+        }
+        _ => {}
+    }
+}
+
+fn source_metadata_scope_for_set_expr(
+    set_expr: &SetExpr,
+    usage: &mut SourceMetadataUsage,
+    cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
+    outer_scope: &SourceMetadataScope,
+) -> SourceMetadataScope {
+    match set_expr {
+        SetExpr::Select(select) => source_metadata_scope_for_select(
+            select,
+            usage,
+            cte_names,
+            logs_backed_cte_names,
+            outer_scope,
+        ),
+        SetExpr::Query(query) => {
+            collect_logs_source_metadata_from_query_scoped(
+                query,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                outer_scope,
+            );
+            SourceMetadataScope::default()
+        }
+        SetExpr::SetOperation { left, right, .. } => {
+            collect_logs_source_metadata_from_set_expr(
+                left,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                outer_scope,
+            );
+            collect_logs_source_metadata_from_set_expr(
+                right,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                outer_scope,
+            );
+            SourceMetadataScope::default()
+        }
+        _ => SourceMetadataScope::default(),
+    }
+}
+
+fn collect_logs_source_metadata_from_select(
+    select: &sqlast::Select,
+    usage: &mut SourceMetadataUsage,
+    cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
+    outer_scope: &SourceMetadataScope,
+) {
+    let scope = source_metadata_scope_for_select(
+        select,
+        usage,
+        cte_names,
+        logs_backed_cte_names,
+        outer_scope,
+    );
+
+    for item in &select.projection {
+        match item {
+            SelectItem::Wildcard(_) => {}
+            SelectItem::QualifiedWildcard(kind, _) => match kind {
+                sqlast::SelectItemQualifiedWildcardKind::ObjectName(_) => {}
+                sqlast::SelectItemQualifiedWildcardKind::Expr(expr) => {
+                    collect_logs_source_metadata_from_expr(expr, &scope, usage);
+                }
+            },
+            SelectItem::UnnamedExpr(expr) => {
+                collect_logs_source_metadata_from_expr(expr, &scope, usage);
+            }
+            SelectItem::ExprWithAlias { expr, .. } => {
+                collect_logs_source_metadata_from_expr(expr, &scope, usage);
+            }
+        }
+    }
+
+    if let Some(ref selection) = select.selection {
+        collect_logs_source_metadata_from_expr(selection, &scope, usage);
+    }
+
+    if let sqlast::GroupByExpr::Expressions(exprs, _) = &select.group_by {
+        for expr in exprs {
+            collect_logs_source_metadata_from_expr(expr, &scope, usage);
+        }
+    }
+
+    if let Some(ref having) = select.having {
+        collect_logs_source_metadata_from_expr(having, &scope, usage);
+    }
+
+    for table_with_joins in &select.from {
+        collect_logs_source_metadata_from_table_with_joins(
+            table_with_joins,
+            &scope,
+            usage,
+            cte_names,
+            logs_backed_cte_names,
+        );
+    }
+
+    for sqlast::NamedWindowDefinition(_, named_expr) in &select.named_window {
+        if let sqlast::NamedWindowExpr::WindowSpec(spec) = named_expr {
+            for expr in &spec.partition_by {
+                collect_logs_source_metadata_from_expr(expr, &scope, usage);
+            }
+            for order_expr in &spec.order_by {
+                collect_logs_source_metadata_from_expr(&order_expr.expr, &scope, usage);
+            }
+        }
+    }
+}
+
+fn source_metadata_scope_for_select(
+    select: &sqlast::Select,
+    usage: &mut SourceMetadataUsage,
+    cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
+    outer_scope: &SourceMetadataScope,
+) -> SourceMetadataScope {
+    let mut scope = SourceMetadataScope::with_outer(outer_scope);
+    scope.cte_names = cte_names.clone();
+    scope.logs_backed_cte_names = logs_backed_cte_names.clone();
+    for table_with_joins in &select.from {
+        collect_logs_aliases_from_table_with_joins(
+            table_with_joins,
+            usage,
+            &mut scope,
+            cte_names,
+            logs_backed_cte_names,
+        );
+    }
+    scope
+}
+
+fn collect_logs_aliases_from_table_with_joins(
+    table_with_joins: &sqlast::TableWithJoins,
+    usage: &mut SourceMetadataUsage,
+    scope: &mut SourceMetadataScope,
+    cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
+) {
+    collect_logs_aliases_from_table_factor(
+        &table_with_joins.relation,
+        usage,
+        scope,
+        cte_names,
+        logs_backed_cte_names,
+    );
+    for join in &table_with_joins.joins {
+        collect_logs_aliases_from_table_factor(
+            &join.relation,
+            usage,
+            scope,
+            cte_names,
+            logs_backed_cte_names,
+        );
+    }
+}
+
+fn collect_logs_aliases_from_table_factor(
+    factor: &sqlast::TableFactor,
+    usage: &mut SourceMetadataUsage,
+    scope: &mut SourceMetadataScope,
+    cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
+) {
+    match factor {
+        sqlast::TableFactor::Table { name, alias, .. } => {
+            scope.visible_relations = scope.visible_relations.saturating_add(1);
+            if table_name_exposes_logs_relation(name, cte_names, logs_backed_cte_names) {
+                scope.logs_relations = scope.logs_relations.saturating_add(1);
+                if let Some(relation_name) = object_name_last_ident(name) {
+                    scope.logs_aliases.insert(relation_name.to_string());
+                }
+                if let Some(alias) = alias {
+                    scope.logs_aliases.insert(alias.name.value.clone());
+                }
+            }
+        }
+        sqlast::TableFactor::Derived {
+            subquery, alias, ..
+        } => {
+            scope.visible_relations = scope.visible_relations.saturating_add(1);
+            collect_logs_source_metadata_from_query_scoped(
+                subquery,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                scope,
+            );
+            if query_exposes_logs_relation(subquery, cte_names, logs_backed_cte_names) {
+                scope.logs_relations = scope.logs_relations.saturating_add(1);
+                if let Some(alias) = alias {
+                    scope.logs_aliases.insert(alias.name.value.clone());
+                }
+            }
+        }
+        sqlast::TableFactor::NestedJoin {
+            table_with_joins, ..
+        } => {
+            collect_logs_aliases_from_table_with_joins(
+                table_with_joins,
+                usage,
+                scope,
+                cte_names,
+                logs_backed_cte_names,
+            );
+        }
+        sqlast::TableFactor::Pivot { table, .. }
+        | sqlast::TableFactor::Unpivot { table, .. }
+        | sqlast::TableFactor::MatchRecognize { table, .. } => {
+            collect_logs_aliases_from_table_factor(
+                table,
+                usage,
+                scope,
+                cte_names,
+                logs_backed_cte_names,
+            );
+        }
+        _ => {
+            scope.visible_relations = scope.visible_relations.saturating_add(1);
+        }
+    }
+}
+
+fn query_exposes_logs_relation(
+    query: &sqlast::Query,
+    inherited_cte_names: &HashSet<String>,
+    inherited_logs_backed_cte_names: &HashSet<String>,
+) -> bool {
+    let cte_names = cte_names_for_query(query);
+    let mut accumulated_cte_names = inherited_cte_names.clone();
+    let mut accumulated_logs_backed_cte_names = inherited_logs_backed_cte_names.clone();
+    if let Some(ref with) = query.with {
+        for cte in &with.cte_tables {
+            if query_exposes_logs_relation(
+                &cte.query,
+                &accumulated_cte_names,
+                &accumulated_logs_backed_cte_names,
+            ) {
+                accumulated_logs_backed_cte_names.insert(cte.alias.name.value.clone());
+            }
+            accumulated_cte_names.insert(cte.alias.name.value.clone());
+        }
+    }
+    let active_cte_names = combined_cte_names(inherited_cte_names, &cte_names);
+    set_expr_exposes_logs_relation(
+        query.body.as_ref(),
+        &active_cte_names,
+        &accumulated_logs_backed_cte_names,
+    )
+}
+
+fn set_expr_exposes_logs_relation(
+    set_expr: &SetExpr,
+    cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
+) -> bool {
+    match set_expr {
+        SetExpr::Select(select) => select.from.iter().any(|table_with_joins| {
+            table_with_joins_exposes_logs_relation(
+                table_with_joins,
+                cte_names,
+                logs_backed_cte_names,
+            )
+        }),
+        SetExpr::Query(query) => {
+            query_exposes_logs_relation(query, cte_names, logs_backed_cte_names)
+        }
+        SetExpr::SetOperation { left, right, .. } => {
+            set_expr_exposes_logs_relation(left, cte_names, logs_backed_cte_names)
+                || set_expr_exposes_logs_relation(right, cte_names, logs_backed_cte_names)
+        }
+        _ => false,
+    }
+}
+
+fn table_with_joins_exposes_logs_relation(
+    table_with_joins: &sqlast::TableWithJoins,
+    cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
+) -> bool {
+    table_factor_exposes_logs_relation(&table_with_joins.relation, cte_names, logs_backed_cte_names)
+        || table_with_joins.joins.iter().any(|join| {
+            table_factor_exposes_logs_relation(&join.relation, cte_names, logs_backed_cte_names)
+        })
+}
+
+fn table_factor_exposes_logs_relation(
+    factor: &sqlast::TableFactor,
+    cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
+) -> bool {
+    match factor {
+        sqlast::TableFactor::Table { name, .. } => {
+            table_name_exposes_logs_relation(name, cte_names, logs_backed_cte_names)
+        }
+        sqlast::TableFactor::Derived { subquery, .. } => {
+            query_exposes_logs_relation(subquery, cte_names, logs_backed_cte_names)
+        }
+        sqlast::TableFactor::NestedJoin {
+            table_with_joins, ..
+        } => table_with_joins_exposes_logs_relation(
+            table_with_joins,
+            cte_names,
+            logs_backed_cte_names,
+        ),
+        sqlast::TableFactor::Pivot { table, .. }
+        | sqlast::TableFactor::Unpivot { table, .. }
+        | sqlast::TableFactor::MatchRecognize { table, .. } => {
+            table_factor_exposes_logs_relation(table, cte_names, logs_backed_cte_names)
+        }
+        _ => false,
+    }
+}
+
+fn collect_logs_source_metadata_from_table_with_joins(
+    table_with_joins: &sqlast::TableWithJoins,
+    scope: &SourceMetadataScope,
+    usage: &mut SourceMetadataUsage,
+    cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
+) {
+    collect_logs_source_metadata_from_table_factor(
+        &table_with_joins.relation,
+        scope,
+        usage,
+        cte_names,
+        logs_backed_cte_names,
+    );
+    let mut accumulated_has_logs = table_factor_exposes_logs_relation(
+        &table_with_joins.relation,
+        cte_names,
+        logs_backed_cte_names,
+    );
+    for join in &table_with_joins.joins {
+        collect_logs_source_metadata_from_table_factor(
+            &join.relation,
+            scope,
+            usage,
+            cte_names,
+            logs_backed_cte_names,
+        );
+        let right_has_logs =
+            table_factor_exposes_logs_relation(&join.relation, cte_names, logs_backed_cte_names);
+        if let sqlast::JoinOperator::AsOf {
+            match_condition, ..
+        } = &join.join_operator
+        {
+            collect_logs_source_metadata_from_expr(match_condition, scope, usage);
+        }
+        if let Some(constraint) = extract_join_constraint(&join.join_operator) {
+            collect_logs_source_metadata_from_join_constraint(
+                constraint,
+                scope,
+                usage,
+                accumulated_has_logs || right_has_logs,
+            );
+        }
+        accumulated_has_logs |= right_has_logs;
+    }
+}
+
+fn collect_logs_source_metadata_from_table_factor(
+    factor: &sqlast::TableFactor,
+    scope: &SourceMetadataScope,
+    usage: &mut SourceMetadataUsage,
+    cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
+) {
+    match factor {
+        sqlast::TableFactor::Derived { subquery, .. } => {
+            collect_logs_source_metadata_from_query_scoped(
+                subquery,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+                scope,
+            );
+        }
+        sqlast::TableFactor::NestedJoin {
+            table_with_joins, ..
+        } => {
+            collect_logs_source_metadata_from_table_with_joins(
+                table_with_joins,
+                scope,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+            );
+        }
+        sqlast::TableFactor::Pivot {
+            table,
+            value_source,
+            ..
+        } => {
+            collect_logs_source_metadata_from_table_factor(
+                table,
+                scope,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+            );
+            if let sqlast::PivotValueSource::Subquery(query) = value_source {
+                collect_logs_source_metadata_from_query_scoped(
+                    query,
+                    usage,
+                    cte_names,
+                    logs_backed_cte_names,
+                    scope,
+                );
+            }
+        }
+        sqlast::TableFactor::Unpivot { table, .. }
+        | sqlast::TableFactor::MatchRecognize { table, .. } => {
+            collect_logs_source_metadata_from_table_factor(
+                table,
+                scope,
+                usage,
+                cte_names,
+                logs_backed_cte_names,
+            );
+        }
+        _ => {}
+    }
+}
+
+fn collect_logs_source_metadata_from_join_constraint(
+    constraint: &sqlast::JoinConstraint,
+    scope: &SourceMetadataScope,
+    usage: &mut SourceMetadataUsage,
+    is_logs_join: bool,
+) {
+    match constraint {
+        sqlast::JoinConstraint::On(expr) => {
+            collect_logs_source_metadata_from_expr(expr, scope, usage);
+        }
+        sqlast::JoinConstraint::Using(cols) => {
+            if is_logs_join {
+                for obj_name in cols {
+                    if let Some(part) = obj_name.0.last()
+                        && let Some(ident) = part.as_ident()
+                    {
+                        collect_source_metadata_name(&ident.value, usage);
+                    }
+                }
+            }
+        }
+        sqlast::JoinConstraint::Natural | sqlast::JoinConstraint::None => {}
+    }
+}
+
+fn collect_logs_source_metadata_from_expr(
+    expr: &SqlExpr,
+    scope: &SourceMetadataScope,
+    usage: &mut SourceMetadataUsage,
+) {
+    match expr {
+        SqlExpr::Identifier(ident) if scope.bare_identifiers_resolve_to_logs() => {
+            collect_source_metadata_name(&ident.value, usage);
+        }
+        SqlExpr::Identifier(_) => {}
+        SqlExpr::CompoundIdentifier(parts) => {
+            if let Some(last) = parts.last() {
+                let qualifier_matches = parts
+                    .iter()
+                    .rev()
+                    .skip(1)
+                    .any(|part| scope.matches_logs_qualifier(&part.value));
+                if qualifier_matches {
+                    collect_source_metadata_name(&last.value, usage);
+                }
+            }
+        }
+        SqlExpr::BinaryOp { left, right, .. }
+        | SqlExpr::IsDistinctFrom(left, right)
+        | SqlExpr::IsNotDistinctFrom(left, right) => {
+            collect_logs_source_metadata_from_expr(left, scope, usage);
+            collect_logs_source_metadata_from_expr(right, scope, usage);
+        }
+        SqlExpr::UnaryOp { expr, .. }
+        | SqlExpr::Nested(expr)
+        | SqlExpr::IsNull(expr)
+        | SqlExpr::IsNotNull(expr)
+        | SqlExpr::IsTrue(expr)
+        | SqlExpr::IsNotTrue(expr)
+        | SqlExpr::IsFalse(expr)
+        | SqlExpr::IsNotFalse(expr)
+        | SqlExpr::IsUnknown(expr)
+        | SqlExpr::IsNotUnknown(expr)
+        | SqlExpr::Cast { expr, .. }
+        | SqlExpr::Extract { expr, .. }
+        | SqlExpr::Ceil { expr, .. }
+        | SqlExpr::Floor { expr, .. }
+        | SqlExpr::Convert { expr, .. }
+        | SqlExpr::Collate { expr, .. } => {
+            collect_logs_source_metadata_from_expr(expr, scope, usage);
+        }
+        SqlExpr::Function(func) => {
+            if let sqlast::FunctionArguments::List(arg_list) = &func.args {
+                for arg in &arg_list.args {
+                    collect_logs_source_metadata_from_function_arg(arg, scope, usage);
+                }
+            } else if let sqlast::FunctionArguments::Subquery(subquery) = &func.args {
+                collect_logs_source_metadata_from_query_scoped(
+                    subquery,
+                    usage,
+                    &scope.cte_names,
+                    &scope.logs_backed_cte_names,
+                    scope,
+                );
+            }
+            if let Some(sqlast::WindowType::WindowSpec(spec)) = &func.over {
+                for expr in &spec.partition_by {
+                    collect_logs_source_metadata_from_expr(expr, scope, usage);
+                }
+                for order_expr in &spec.order_by {
+                    collect_logs_source_metadata_from_expr(&order_expr.expr, scope, usage);
+                }
+            }
+        }
+        SqlExpr::SimilarTo { expr, pattern, .. }
+        | SqlExpr::Like { expr, pattern, .. }
+        | SqlExpr::ILike { expr, pattern, .. } => {
+            collect_logs_source_metadata_from_expr(expr, scope, usage);
+            collect_logs_source_metadata_from_expr(pattern, scope, usage);
+        }
+        SqlExpr::Between {
+            expr, low, high, ..
+        } => {
+            collect_logs_source_metadata_from_expr(expr, scope, usage);
+            collect_logs_source_metadata_from_expr(low, scope, usage);
+            collect_logs_source_metadata_from_expr(high, scope, usage);
+        }
+        SqlExpr::InList { expr, list, .. } => {
+            collect_logs_source_metadata_from_expr(expr, scope, usage);
+            for item in list {
+                collect_logs_source_metadata_from_expr(item, scope, usage);
+            }
+        }
+        SqlExpr::Case {
+            operand,
+            conditions,
+            else_result,
+            ..
+        } => {
+            if let Some(operand) = operand {
+                collect_logs_source_metadata_from_expr(operand, scope, usage);
+            }
+            for when in conditions {
+                collect_logs_source_metadata_from_expr(&when.condition, scope, usage);
+                collect_logs_source_metadata_from_expr(&when.result, scope, usage);
+            }
+            if let Some(expr) = else_result {
+                collect_logs_source_metadata_from_expr(expr, scope, usage);
+            }
+        }
+        SqlExpr::Trim {
+            expr, trim_what, ..
+        } => {
+            collect_logs_source_metadata_from_expr(expr, scope, usage);
+            if let Some(trim_what) = trim_what {
+                collect_logs_source_metadata_from_expr(trim_what, scope, usage);
+            }
+        }
+        SqlExpr::Substring {
+            expr,
+            substring_from,
+            substring_for,
+            ..
+        } => {
+            collect_logs_source_metadata_from_expr(expr, scope, usage);
+            if let Some(expr) = substring_from {
+                collect_logs_source_metadata_from_expr(expr, scope, usage);
+            }
+            if let Some(expr) = substring_for {
+                collect_logs_source_metadata_from_expr(expr, scope, usage);
+            }
+        }
+        SqlExpr::Overlay {
+            expr,
+            overlay_what,
+            overlay_from,
+            overlay_for,
+        } => {
+            collect_logs_source_metadata_from_expr(expr, scope, usage);
+            collect_logs_source_metadata_from_expr(overlay_what, scope, usage);
+            collect_logs_source_metadata_from_expr(overlay_from, scope, usage);
+            if let Some(expr) = overlay_for {
+                collect_logs_source_metadata_from_expr(expr, scope, usage);
+            }
+        }
+        SqlExpr::AtTimeZone {
+            timestamp,
+            time_zone,
+        } => {
+            collect_logs_source_metadata_from_expr(timestamp, scope, usage);
+            collect_logs_source_metadata_from_expr(time_zone, scope, usage);
+        }
+        SqlExpr::Position { expr, r#in } => {
+            collect_logs_source_metadata_from_expr(expr, scope, usage);
+            collect_logs_source_metadata_from_expr(r#in, scope, usage);
+        }
+        SqlExpr::InSubquery { expr, subquery, .. } => {
+            collect_logs_source_metadata_from_expr(expr, scope, usage);
+            collect_logs_source_metadata_from_query_scoped(
+                subquery,
+                usage,
+                &scope.cte_names,
+                &scope.logs_backed_cte_names,
+                scope,
+            );
+        }
+        SqlExpr::InUnnest {
+            expr, array_expr, ..
+        } => {
+            collect_logs_source_metadata_from_expr(expr, scope, usage);
+            collect_logs_source_metadata_from_expr(array_expr, scope, usage);
+        }
+        SqlExpr::Exists { subquery, .. } | SqlExpr::Subquery(subquery) => {
+            collect_logs_source_metadata_from_query_scoped(
+                subquery,
+                usage,
+                &scope.cte_names,
+                &scope.logs_backed_cte_names,
+                scope,
+            );
+        }
+        _ => {}
+    }
+}
+
+fn collect_logs_source_metadata_from_function_arg(
+    arg: &sqlast::FunctionArg,
+    scope: &SourceMetadataScope,
+    usage: &mut SourceMetadataUsage,
+) {
+    match arg {
+        sqlast::FunctionArg::Unnamed(sqlast::FunctionArgExpr::Expr(expr))
+        | sqlast::FunctionArg::Named {
+            arg: sqlast::FunctionArgExpr::Expr(expr),
+            ..
+        } => collect_logs_source_metadata_from_expr(expr, scope, usage),
+        sqlast::FunctionArg::ExprNamed { name, arg, .. } => {
+            collect_logs_source_metadata_from_expr(name, scope, usage);
+            if let sqlast::FunctionArgExpr::Expr(expr) = arg {
+                collect_logs_source_metadata_from_expr(expr, scope, usage);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_source_metadata_name(name: &str, usage: &mut SourceMetadataUsage) {
+    if is_source_metadata_name(name) {
+        usage.referenced_columns.insert(name.to_string());
+    }
+}
+
+fn is_source_metadata_name(name: &str) -> bool {
+    name.eq_ignore_ascii_case(field_names::SOURCE_ID)
+}
+
+fn source_metadata_plan_for_names(names: &HashSet<String>) -> SourceMetadataPlan {
+    let references = |target: &str| names.iter().any(|name| name.eq_ignore_ascii_case(target));
+
+    SourceMetadataPlan {
+        has_source_id: references(field_names::SOURCE_ID),
+        source_path: SourcePathColumn::default(),
+    }
+}
+
+fn table_name_exposes_logs_relation(
+    name: &sqlast::ObjectName,
+    cte_names: &HashSet<String>,
+    logs_backed_cte_names: &HashSet<String>,
+) -> bool {
+    object_name_matches_cte_name(name, logs_backed_cte_names)
+        || (object_name_last_eq(name, "logs") && !object_name_is_shadowed_cte(name, cte_names))
+}
+
+fn object_name_matches_cte_name(name: &sqlast::ObjectName, cte_names: &HashSet<String>) -> bool {
+    name.0.len() == 1
+        && object_name_last_ident(name).is_some_and(|ident| {
+            cte_names
+                .iter()
+                .any(|cte_name| cte_name.eq_ignore_ascii_case(ident))
+        })
+}
+
+fn object_name_last_ident(name: &sqlast::ObjectName) -> Option<&str> {
+    name.0
+        .last()
+        .and_then(|part| part.as_ident())
+        .map(|ident| ident.value.as_str())
+}
+
+fn object_name_last_eq(name: &sqlast::ObjectName, expected: &str) -> bool {
+    object_name_last_ident(name).is_some_and(|ident| ident.eq_ignore_ascii_case(expected))
+}
+
+fn object_name_is_shadowed_cte(name: &sqlast::ObjectName, cte_names: &HashSet<String>) -> bool {
+    object_name_matches_cte_name(name, cte_names)
+}
+
+fn cte_names_for_query(query: &sqlast::Query) -> HashSet<String> {
+    query
+        .with
+        .as_ref()
+        .map(|with| {
+            with.cte_tables
+                .iter()
+                .map(|cte| cte.alias.name.value.clone())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn combined_cte_names(
+    inherited_cte_names: &HashSet<String>,
+    local_cte_names: &HashSet<String>,
+) -> HashSet<String> {
+    let mut combined = inherited_cte_names.clone();
+    combined.extend(local_cte_names.iter().cloned());
+    combined
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1114,6 +2023,104 @@ mod tests {
         assert!(
             analyzer.uses_select_star,
             "SELECT * in scalar subquery must mark extract_all"
+        );
+    }
+
+    #[test]
+    fn source_path_not_required_for_unrelated_projection() {
+        let analyzer = QueryAnalyzer::new("SELECT level FROM logs WHERE status = '500'").unwrap();
+        assert!(!analyzer.source_path_required());
+        assert_eq!(
+            analyzer.source_metadata_plan(),
+            SourceMetadataPlan::default()
+        );
+    }
+
+    #[test]
+    fn source_id_required_for_explicit_projection() {
+        let analyzer = QueryAnalyzer::new("SELECT __source_id FROM logs").unwrap();
+        let plan = analyzer.source_metadata_plan();
+        assert!(plan.has_source_id);
+        assert!(!plan.has_source_path());
+    }
+
+    #[test]
+    fn explicit_source_metadata_plan_excludes_wildcard_projection() {
+        let analyzer = QueryAnalyzer::new("SELECT * FROM logs").unwrap();
+        assert_eq!(
+            analyzer.explicit_source_metadata_plan(),
+            SourceMetadataPlan::default()
+        );
+    }
+
+    #[test]
+    fn explicit_source_metadata_plan_includes_join_reference() {
+        let analyzer = QueryAnalyzer::new(
+            "SELECT l.msg FROM logs l \
+             LEFT JOIN sources s ON l.__source_id = s.source_id",
+        )
+        .unwrap();
+        assert!(analyzer.explicit_source_metadata_plan().has_source_id);
+    }
+
+    #[test]
+    fn source_metadata_plan_ignores_public_style_columns() {
+        let analyzer = QueryAnalyzer::new(r#"SELECT "file.path" FROM logs"#).unwrap();
+        assert_eq!(
+            analyzer.source_metadata_plan(),
+            SourceMetadataPlan::default()
+        );
+    }
+
+    #[test]
+    fn explicit_source_metadata_plan_uses_logs_alias_only() {
+        let analyzer = QueryAnalyzer::new(
+            "SELECT l.msg FROM logs l \
+             LEFT JOIN sources s ON s.other_id = k.__source_id",
+        )
+        .unwrap();
+        assert_eq!(
+            analyzer.explicit_source_metadata_plan(),
+            SourceMetadataPlan::default()
+        );
+
+        let analyzer = QueryAnalyzer::new(
+            "SELECT l.msg FROM logs l \
+             LEFT JOIN sources s ON l.__source_id = s.source_id",
+        )
+        .unwrap();
+        assert!(analyzer.explicit_source_metadata_plan().has_source_id);
+    }
+
+    #[test]
+    fn explicit_source_metadata_plan_ignores_cte_shadowing_logs() {
+        let analyzer = QueryAnalyzer::new(
+            "WITH logs AS (SELECT 1 AS __source_id) SELECT __source_id FROM logs",
+        )
+        .unwrap();
+        assert_eq!(
+            analyzer.explicit_source_metadata_plan(),
+            SourceMetadataPlan::default()
+        );
+        assert_eq!(
+            analyzer.source_metadata_plan(),
+            SourceMetadataPlan::default()
+        );
+    }
+
+    #[test]
+    fn explicit_source_metadata_plan_tracks_logs_backed_cte_alias() {
+        let analyzer =
+            QueryAnalyzer::new("WITH c AS (SELECT * FROM logs) SELECT c.__source_id FROM c")
+                .unwrap();
+        assert!(analyzer.explicit_source_metadata_plan().has_source_id);
+
+        let analyzer =
+            QueryAnalyzer::new("WITH c AS (SELECT * FROM alerts) SELECT c.__source_id FROM c")
+                .unwrap();
+        assert_eq!(
+            analyzer.explicit_source_metadata_plan(),
+            SourceMetadataPlan::default()
         );
     }
 }

@@ -69,6 +69,7 @@ input:
   type: file
   path: /var/log/pods/**/*.log
   format: cri
+  source_metadata: ecs
 
 transform: |
   SELECT
@@ -78,7 +79,7 @@ transform: |
     message,
     status,
     duration_ms,
-    regexp_extract(_source_path, '/([^/]+)/[^/]+\\.log$', 1) AS pod_name
+    regexp_extract("file.path", '/([^/]+)/[^/]+\\.log$', 1) AS pod_name
   FROM logs
   WHERE level IN ('ERROR', 'WARN')
     AND status >= 400
@@ -151,6 +152,7 @@ input:
   type: file
   path: /var/log/pods/**/*.log
   format: cri
+  source_metadata: ecs
 
 transform: |
   SELECT
@@ -158,7 +160,7 @@ transform: |
     _stream,
     level,
     message,
-    _source_path AS source_file
+    "file.path" AS source_file
   FROM logs
 
 output:

@@ -3,6 +3,7 @@
 //! Provides reusable proptest strategies for JSON generation, test sink
 //! implementations, and common helpers used across multiple test suites.
 
+pub mod arrow;
 pub mod json;
 pub mod sinks;
 

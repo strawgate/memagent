@@ -7,6 +7,8 @@ use std::collections::HashMap;
 use std::io;
 use std::io::Write;
 
+use bytes::Bytes;
+
 use crate::input::{InputEvent, InputSource};
 use logfwd_types::diagnostics::ComponentHealth;
 
@@ -768,9 +770,10 @@ impl InputSource for GeneratorInput {
             std::mem::swap(&mut self.buf, &mut out);
             let accounted_bytes = out.len() as u64;
             out_events.push(InputEvent::Data {
-                bytes: out,
+                bytes: Bytes::from(out),
                 source_id: None,
                 accounted_bytes,
+                cri_metadata: None,
             });
             remaining = remaining.saturating_sub(chunk as u64);
             if self.done {
@@ -1141,7 +1144,7 @@ mod tests {
             };
             let mut scanner = Scanner::new(config);
             let json_batch = scanner
-                .scan_detached(bytes::Bytes::from(json_buf))
+                .scan_detached(Bytes::from(json_buf))
                 .expect("valid JSON");
 
             assert_batches_identical(&arrow_batch, &json_batch, label);
@@ -1217,7 +1220,7 @@ mod tests {
                 batch_size,
                 total_events: total,
                 events_per_sec: 0, // unlimited
-                timestamp: ts_config.clone(),
+                timestamp: ts_config,
                 profile: GeneratorProfile::Logs,
                 complexity: GeneratorComplexity::Simple,
                 message_template: None,
@@ -1247,7 +1250,7 @@ mod tests {
             };
             let mut scanner = Scanner::new(scan_config);
             let json_batch = scanner
-                .scan_detached(bytes::Bytes::from(all_json))
+                .scan_detached(Bytes::from(all_json))
                 .expect("valid JSON");
 
             // Generate Arrow-direct batch for the same events
@@ -1709,7 +1712,7 @@ mod tests {
             match &events[0] {
                 InputEvent::Data { bytes, .. } => {
                     assert!(!bytes.is_empty(), "generator produced empty data (offset={offset})");
-                    let text = String::from_utf8(bytes.clone()).unwrap();
+                    let text = String::from_utf8(bytes.to_vec()).unwrap();
                     let line_count = text.trim().lines().count();
                     assert!(line_count >= 1, "expected at least 1 JSON line, got 0 (offset={offset})");
                     for (i, line) in text.trim().lines().enumerate() {
@@ -1742,7 +1745,7 @@ mod tests {
             match &events[0] {
                 InputEvent::Data { bytes, .. } => {
                     assert!(!bytes.is_empty(), "generator produced empty data (offset={offset})");
-                    let text = String::from_utf8(bytes.clone()).unwrap();
+                    let text = String::from_utf8(bytes.to_vec()).unwrap();
                     let line_count = text.trim().lines().count();
                     assert!(line_count >= 1, "expected at least 1 JSON line, got 0 (offset={offset})");
                     for (i, line) in text.trim().lines().enumerate() {
@@ -1783,7 +1786,7 @@ mod tests {
                 let InputEvent::Data { bytes, .. } = &events[0] else {
                     panic!("expected Data event");
                 };
-                let text = String::from_utf8(bytes.clone()).unwrap();
+                let text = String::from_utf8(bytes.to_vec()).unwrap();
                 for (i, line) in text.trim().lines().enumerate() {
                     let parsed: serde_json::Value = serde_json::from_str(line).unwrap_or_else(
                         |e| {
@@ -2295,7 +2298,7 @@ mod tests {
             let events = generator.poll().unwrap();
             prop_assert_eq!(events.len(), 1);
             let InputEvent::Data { bytes, .. } = &events[0] else { panic!("expected Data"); };
-            let text = String::from_utf8(bytes.clone()).unwrap();
+            let text = String::from_utf8(bytes.to_vec()).unwrap();
             for (i, line) in text.trim().lines().enumerate() {
                 prop_assert!(
                     serde_json::from_str::<serde_json::Value>(line).is_ok(),
@@ -2347,14 +2350,14 @@ mod tests {
                     counter,
                     &ts_config,
                     GeneratorComplexity::Simple,
-                    message_template.map(|s| s.as_bytes()),
+                    message_template.map(str::as_bytes),
                 )
                 .expect("valid counter");
                 write_log_fields_json(&mut json_buf, &fields);
                 json_buf.push(b'\n');
             }
             let batch = scanner
-                .scan_detached(bytes::Bytes::from(json_buf))
+                .scan_detached(Bytes::from(json_buf))
                 .expect("valid JSON");
             std::hint::black_box(&batch);
         }

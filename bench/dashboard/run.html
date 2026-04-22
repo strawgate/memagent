@@ -23,6 +23,13 @@
     </div>
   </header>
 
+  <nav class="nav-pills">
+    <a href="index.html">Overview</a>
+    <a href="competitive.html">Competitive</a>
+    <a href="development.html">Development</a>
+    <a href="project-health.html">Project Health</a>
+  </nav>
+
   <div id="loading" class="loading">Loading run data...</div>
   <div id="content" style="display:none">
     <div class="run-header">
@@ -81,7 +88,7 @@ function getScenarioTitle(sn) {
 }
 
 const AGENT_COLORS = {
-  'logfwd': '#2563eb', 'vector': '#7c3aed', 'fluent-bit': '#059669',
+  'ff': '#2563eb', 'logfwd': '#2563eb', 'vector': '#7c3aed', 'fluent-bit': '#059669',
   'filebeat': '#d97706', 'otelcol': '#dc2626', 'vlagent': '#64748b'
 };
 

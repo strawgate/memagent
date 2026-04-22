@@ -16,6 +16,7 @@
 // Ring buffer events are 8-byte aligned by the kernel, so casting from *const u8
 // to a repr(C) struct pointer is safe despite clippy's alignment warning.
 #![allow(clippy::cast_ptr_alignment)]
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use aya::Ebpf;
 use aya::maps::RingBuf;
@@ -33,6 +34,12 @@ struct PodEbpfConfig(EbpfConfig);
 
 // SAFETY: EbpfConfig is repr(C), Copy, and contains only primitive types (u32).
 unsafe impl aya::Pod for PodEbpfConfig {}
+
+/// Tracefs paths to probe for the sched_process_exit format file.
+const SCHED_PROCESS_EXIT_FORMAT_PATHS: &[&str] = &[
+    "/sys/kernel/tracing/events/sched/sched_process_exit/format",
+    "/sys/kernel/debug/tracing/events/sched/sched_process_exit/format",
+];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
@@ -84,11 +91,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ebpf_bytes = std::fs::read(ebpf_path)?;
     let mut ebpf = Ebpf::load(&ebpf_bytes)?;
 
-    // Configure exit_code offset from kernel BTF BEFORE attaching programs,
-    // so events emitted during startup have valid config.
-    match configure_exit_code(&mut ebpf) {
-        Ok(offset) => eprintln!("  configured exit_code offset: {offset}"),
-        Err(e) => eprintln!("  exit_code offset unavailable (sentinel mode): {e}"),
+    // Configure runtime offsets before attaching programs, so startup events
+    // have the best available semantics.
+    match configure_runtime_config(&mut ebpf) {
+        Ok(config) => {
+            if let Some(offset) = config.exit_code_offset {
+                eprintln!("  configured exit_code offset: {offset}");
+            } else {
+                eprintln!("  WARNING: exit_code offset unavailable; using sentinel mode");
+            }
+            if let Some(offset) = config.group_dead_offset {
+                eprintln!("  configured sched_process_exit.group_dead offset: {offset}");
+            } else {
+                eprintln!(
+                    "  WARNING: sched_process_exit.group_dead missing; using pid==tgid fallback semantics"
+                );
+            }
+        }
+        Err(e) => eprintln!("  runtime config unavailable (degraded mode): {e}"),
     }
 
     // Attach tracepoints.
@@ -155,6 +175,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut stdout = std::io::stdout().lock();
     let start = Instant::now();
     let deadline = Duration::from_secs(duration_secs);
+    let monotonic_to_wall_offset_ns =
+        monotonic_now_ns().map(|mono_now_ns| wall_clock_ns().saturating_sub(mono_now_ns));
 
     let mut counts = EventCounts::default();
 
@@ -176,7 +198,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 continue;
             }
 
-            let now_wall = wall_clock_ns();
+            let event_wall = match monotonic_to_wall_offset_ns {
+                Some(offset_ns) => event_wall_clock_ns(header.timestamp_ns, offset_ns),
+                None => wall_clock_ns(),
+            };
             let comm = comm_str(&header.comm);
             let comm_esc = if json_mode {
                 json_escape(comm)
@@ -195,7 +220,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"exec","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","filename":"{}"}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -222,7 +247,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"exit","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","exit_code":{}}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -253,7 +278,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"file_open","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","flags":{},"filename":"{}"}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -282,7 +307,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"file_delete","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","flags":{},"pathname":"{}"}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -312,7 +337,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"file_rename","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","oldname":"{}","newname":"{}"}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -340,7 +365,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"setuid","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","target_uid":{}}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -367,7 +392,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"setgid","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","target_gid":{}}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -395,7 +420,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"module_load","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","taints":{},"module":"{}"}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -424,7 +449,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"ptrace","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","request":{},"request_name":"{}","target_pid":{}}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -454,7 +479,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"memfd_create","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","flags":{},"name":"{}"}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -478,13 +503,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // SAFETY: length checked >= size_of::<TcpConnectEvent>(); ring buffer is 8-byte aligned.
                     let ev = unsafe { &*(ptr.cast::<TcpConnectEvent>()) };
                     counts.tcp_connect += 1;
-                    let src = Ipv4Addr::from(ev.saddr.to_ne_bytes());
-                    let dst = Ipv4Addr::from(ev.daddr.to_ne_bytes());
+                    let src = format_addr(ev.saddr);
+                    let dst = format_addr(ev.daddr);
                     if json_mode {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"tcp_connect","tgid":{},"comm":"{}","src":"{}:{}","dst":"{}:{}"}}"#,
-                            now_wall, header.tgid, comm_esc, src, ev.sport, dst, ev.dport
+                            event_wall, header.tgid, comm_esc, src, ev.sport, dst, ev.dport
                         )?;
                     } else {
                         writeln!(
@@ -500,13 +525,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // SAFETY: length checked >= size_of::<TcpAcceptEvent>(); ring buffer is 8-byte aligned.
                     let ev = unsafe { &*(ptr.cast::<TcpAcceptEvent>()) };
                     counts.tcp_accept += 1;
-                    let src = Ipv4Addr::from(ev.saddr.to_ne_bytes());
-                    let dst = Ipv4Addr::from(ev.daddr.to_ne_bytes());
+                    let src = format_addr(ev.saddr);
+                    let dst = format_addr(ev.daddr);
                     if json_mode {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"tcp_accept","tgid":{},"comm":"{}","src":"{}:{}","dst":"{}:{}"}}"#,
-                            now_wall, header.tgid, comm_esc, src, ev.sport, dst, ev.dport
+                            event_wall, header.tgid, comm_esc, src, ev.sport, dst, ev.dport
                         )?;
                     } else {
                         writeln!(
@@ -530,7 +555,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Some(qt) => format!("{qt}"),
                         None => "?".to_string(),
                     };
-                    let dst = Ipv4Addr::from(ev.dst_addr.to_ne_bytes());
+                    let dst = format_addr(ev.dst_addr);
                     if json_mode {
                         // Emit null JSON values for undecoded fields.
                         let qname_json = match qname_opt.as_deref() {
@@ -544,7 +569,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         writeln!(
                             stdout,
                             r#"{{"ts":{},"kind":"dns_query","tgid":{},"pid":{},"uid":{},"gid":{},"cgroup":{},"comm":"{}","qname":{},"qtype":{},"tx_id":{},"dst":"{}:{}"}}"#,
-                            now_wall,
+                            event_wall,
                             header.tgid,
                             header.pid,
                             header.uid,
@@ -603,6 +628,30 @@ fn wall_clock_ns() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos() as u64
+}
+
+fn event_wall_clock_ns(mono_event_ns: u64, mono_to_wall_offset_ns: u64) -> u64 {
+    mono_event_ns.saturating_add(mono_to_wall_offset_ns)
+}
+
+fn monotonic_now_ns() -> Option<u64> {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid, writable pointer to a stack-allocated timespec.
+    let ret = unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut ts) };
+    if ret == 0 {
+        let secs = u64::try_from(ts.tv_sec).ok()?;
+        let nanos = u64::try_from(ts.tv_nsec).ok()?;
+        Some(secs.saturating_mul(1_000_000_000).saturating_add(nanos))
+    } else {
+        None
+    }
+}
+
+fn format_addr(addr: u32) -> Ipv4Addr {
+    Ipv4Addr::from(addr.to_ne_bytes())
 }
 
 fn comm_str(comm: &[u8; COMM_SIZE]) -> &str {
@@ -699,8 +748,37 @@ impl EventCounts {
     }
 }
 
-/// Try to discover the exit_code offset from kernel BTF and write it to the CONFIG map.
-fn configure_exit_code(ebpf: &mut Ebpf) -> Result<u32, Box<dyn std::error::Error>> {
+struct RuntimeConfig {
+    exit_code_offset: Option<u32>,
+    group_dead_offset: Option<u32>,
+}
+
+/// Discover runtime offsets and write them to the CONFIG map.
+fn configure_runtime_config(ebpf: &mut Ebpf) -> Result<RuntimeConfig, Box<dyn std::error::Error>> {
+    let exit_code_offset = find_exit_code_offset().ok();
+    let group_dead_offset = find_sched_process_exit_group_dead_offset().ok().flatten();
+
+    let config_map = ebpf
+        .map_mut("CONFIG")
+        .ok_or("CONFIG map not found in eBPF binary")?;
+    let mut array: aya::maps::Array<_, PodEbpfConfig> =
+        config_map.try_into().map_err(|e| format!("{e}"))?;
+
+    let cfg = PodEbpfConfig(EbpfConfig {
+        task_exit_code_offset: exit_code_offset.unwrap_or(0),
+        sched_process_exit_group_dead_offset: group_dead_offset.unwrap_or(0),
+        sched_process_exit_has_group_dead: u32::from(group_dead_offset.is_some()),
+        pad: 0,
+    });
+    array.set(0, cfg, 0).map_err(|e| format!("{e}"))?;
+
+    Ok(RuntimeConfig {
+        exit_code_offset,
+        group_dead_offset,
+    })
+}
+
+fn find_exit_code_offset() -> Result<u32, Box<dyn std::error::Error>> {
     let output = std::process::Command::new("pahole")
         .args(["-C", "task_struct", "/sys/kernel/btf/vmlinux"])
         .output()?;
@@ -710,7 +788,6 @@ fn configure_exit_code(ebpf: &mut Ebpf) -> Result<u32, Box<dyn std::error::Error
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut offset: Option<u32> = None;
     for line in stdout.lines() {
         let trimmed = line.trim();
         if trimmed.contains("exit_code")
@@ -723,24 +800,83 @@ fn configure_exit_code(ebpf: &mut Ebpf) -> Result<u32, Box<dyn std::error::Error
             && off > 0
             && off < 16384
         {
-            offset = Some(off);
-            break;
+            return Ok(off);
         }
     }
 
-    let off = offset.ok_or("exit_code field not found in pahole output")?;
+    Err("exit_code field not found in pahole output".into())
+}
 
-    let config_map = ebpf
-        .map_mut("CONFIG")
-        .ok_or("CONFIG map not found in eBPF binary")?;
-    let mut array: aya::maps::Array<_, PodEbpfConfig> =
-        config_map.try_into().map_err(|e| format!("{e}"))?;
+fn find_sched_process_exit_group_dead_offset() -> Result<Option<u32>, Box<dyn std::error::Error>> {
+    let format_text = read_tracepoint_format()?;
+    let Some(field) = parse_tracepoint_field(&format_text, "group_dead") else {
+        return Ok(None);
+    };
+    if field.size == 0 || field.size > 4 {
+        eprintln!(
+            "  WARNING: sched_process_exit.group_dead has unexpected size {}; disabling",
+            field.size
+        );
+        return Ok(None);
+    }
+    if field.size != 1 {
+        eprintln!(
+            "  NOTE: sched_process_exit.group_dead size is {} (not 1); reading as u8 from first byte",
+            field.size
+        );
+    }
+    Ok(Some(field.offset))
+}
 
-    let cfg = PodEbpfConfig(EbpfConfig {
-        task_exit_code_offset: off,
-        pad: 0,
-    });
-    array.set(0, cfg, 0).map_err(|e| format!("{e}"))?;
+fn read_tracepoint_format() -> Result<String, Box<dyn std::error::Error>> {
+    for path in SCHED_PROCESS_EXIT_FORMAT_PATHS {
+        match std::fs::read_to_string(path) {
+            Ok(text) => return Ok(text),
+            Err(e) => eprintln!("  tracefs path {path} unavailable: {e}"),
+        }
+    }
+    Err("failed to read sched_process_exit tracepoint format from any tracefs path".into())
+}
 
-    Ok(off)
+struct TracepointField {
+    offset: u32,
+    size: u32,
+}
+
+fn parse_tracepoint_field(format_text: &str, field_name: &str) -> Option<TracepointField> {
+    for line in format_text.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("field:") || !trimmed.contains("offset:") {
+            continue;
+        }
+        let Some(field_decl) = trimmed
+            .strip_prefix("field:")
+            .and_then(|field| field.split(';').next())
+            .map(str::trim)
+        else {
+            continue;
+        };
+        let Some(field_name_with_suffix) = field_decl.split_whitespace().last() else {
+            continue;
+        };
+        let actual_name = field_name_with_suffix.split('[').next().unwrap_or_default();
+        if actual_name != field_name {
+            continue;
+        }
+        let offset = trimmed
+            .split("offset:")
+            .nth(1)
+            .and_then(|o| o.split(';').next())
+            .map(str::trim)
+            .and_then(|s| s.parse::<u32>().ok())?;
+        let size = trimmed
+            .split("size:")
+            .nth(1)
+            .and_then(|s| s.split(';').next())
+            .map(str::trim)
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
+        return Some(TracepointField { offset, size });
+    }
+    None
 }

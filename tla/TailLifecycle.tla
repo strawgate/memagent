@@ -7,6 +7,7 @@ EXTENDS Naturals
 CONSTANTS
     Threshold,       \* EOF idle-poll threshold (expected: 2)
     MaxIdle,         \* finite bound for model checking
+    MaxOffset,       \* finite offset/file-size bound for shutdown EOF checks
     MaxErrors,       \* finite bound for model checking
     InitialBackoff,  \* expected: 100
     MaxBackoff       \* expected: 5000
@@ -14,11 +15,13 @@ CONSTANTS
 VARIABLES
     eofEmitted,
     idlePolls,
+    fileOffset,
+    fileSize,
     consecutiveErrors,
     backoffMs,
     lastAction
 
-vars == <<eofEmitted, idlePolls, consecutiveErrors, backoffMs, lastAction>>
+vars == <<eofEmitted, idlePolls, fileOffset, fileSize, consecutiveErrors, backoffMs, lastAction>>
 
 Min(a, b) ==
     IF a < b THEN a ELSE b
@@ -42,6 +45,8 @@ BackoffDelay(errors) ==
 Init ==
     /\ eofEmitted = FALSE
     /\ idlePolls = 0
+    /\ fileOffset = 0
+    /\ fileSize = 0
     /\ consecutiveErrors = 0
     /\ backoffMs = 0
     /\ lastAction = "Init"
@@ -49,7 +54,7 @@ Init ==
 DataStep ==
     /\ eofEmitted' = FALSE
     /\ idlePolls' = 0
-    /\ UNCHANGED <<consecutiveErrors, backoffMs>>
+    /\ UNCHANGED <<fileOffset, fileSize, consecutiveErrors, backoffMs>>
     /\ lastAction' = "Data"
 
 NoDataEmit ==
@@ -58,7 +63,7 @@ NoDataEmit ==
     /\ nextIdle >= Threshold
     /\ eofEmitted' = TRUE
     /\ idlePolls' = nextIdle
-    /\ UNCHANGED <<consecutiveErrors, backoffMs>>
+    /\ UNCHANGED <<fileOffset, fileSize, consecutiveErrors, backoffMs>>
     /\ lastAction' = "NoDataEmit"
 
 NoDataNoEmit ==
@@ -66,27 +71,49 @@ NoDataNoEmit ==
     /\ eofEmitted \/ nextIdle < Threshold
     /\ eofEmitted' = eofEmitted
     /\ idlePolls' = nextIdle
-    /\ UNCHANGED <<consecutiveErrors, backoffMs>>
+    /\ UNCHANGED <<fileOffset, fileSize, consecutiveErrors, backoffMs>>
     /\ lastAction' = "NoDataNoEmit"
+
+ShutdownEmit ==
+    \E nextOffset \in 0..MaxOffset, nextSize \in 0..MaxOffset:
+        /\ ~eofEmitted
+        /\ nextOffset >= nextSize
+        /\ fileOffset' = nextOffset
+        /\ fileSize' = nextSize
+        /\ eofEmitted' = TRUE
+        /\ UNCHANGED <<idlePolls, consecutiveErrors, backoffMs>>
+        /\ lastAction' = "ShutdownEmit"
+
+ShutdownNoEmit ==
+    \E nextOffset \in 0..MaxOffset, nextSize \in 0..MaxOffset:
+        /\ nextOffset < nextSize
+        /\ ~eofEmitted
+        /\ fileOffset' = nextOffset
+        /\ fileSize' = nextSize
+        /\ eofEmitted' = eofEmitted
+        /\ UNCHANGED <<idlePolls, consecutiveErrors, backoffMs>>
+        /\ lastAction' = "ShutdownNoEmit"
 
 ErrorStep ==
     LET nextErrors == IncErrors(consecutiveErrors) IN
     /\ consecutiveErrors' = nextErrors
     /\ backoffMs' = BackoffDelay(nextErrors)
-    /\ UNCHANGED <<eofEmitted, idlePolls>>
+    /\ UNCHANGED <<eofEmitted, idlePolls, fileOffset, fileSize>>
     /\ lastAction' = "Error"
 
 CleanStep ==
     /\ consecutiveErrors > 0
     /\ consecutiveErrors' = 0
     /\ backoffMs' = 0
-    /\ UNCHANGED <<eofEmitted, idlePolls>>
+    /\ UNCHANGED <<eofEmitted, idlePolls, fileOffset, fileSize>>
     /\ lastAction' = "Clean"
 
 Next ==
     \/ DataStep
     \/ NoDataEmit
     \/ NoDataNoEmit
+    \/ ShutdownEmit
+    \/ ShutdownNoEmit
     \/ ErrorStep
     \/ CleanStep
 
@@ -95,9 +122,11 @@ Spec == Init /\ [][Next]_vars
 TypeOK ==
     /\ eofEmitted \in BOOLEAN
     /\ idlePolls \in 0..MaxIdle
+    /\ fileOffset \in 0..MaxOffset
+    /\ fileSize \in 0..MaxOffset
     /\ consecutiveErrors \in 0..MaxErrors
     /\ backoffMs \in 0..MaxBackoff
-    /\ lastAction \in {"Init", "Data", "NoDataEmit", "NoDataNoEmit", "Error", "Clean"}
+    /\ lastAction \in {"Init", "Data", "NoDataEmit", "NoDataNoEmit", "ShutdownEmit", "ShutdownNoEmit", "Error", "Clean"}
 
 EofEmissionRequiresThreshold ==
     lastAction = "NoDataEmit" =>
@@ -108,6 +137,16 @@ DataResetsEofState ==
     lastAction = "Data" =>
     /\ ~eofEmitted
     /\ idlePolls = 0
+
+ShutdownEofRequiresCaughtUp ==
+    lastAction = "ShutdownEmit" =>
+    /\ eofEmitted
+    /\ fileOffset >= fileSize
+
+ShutdownBehindSuppressesEof ==
+    lastAction = "ShutdownNoEmit" =>
+    /\ fileOffset < fileSize
+    /\ ~eofEmitted
 
 BackoffZeroIffNoErrors ==
     (consecutiveErrors = 0) <=> (backoffMs = 0)

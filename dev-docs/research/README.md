@@ -5,9 +5,12 @@ Point-in-time investigations that informed architecture decisions.
 ## Rules
 
 - Research docs are not canonical behavior docs.
-- Every research note file (excluding `README.md`) must start with:
+- Every research note file (excluding `README.md`) must start with a Markdown
+  title, followed by lifecycle metadata near the top:
 
 ```markdown
+# Research Note Title
+
 > **Status:** Active | Completed | Historical
 > **Date:** YYYY-MM-DD
 > **Context:** one-line purpose
@@ -21,11 +24,14 @@ Point-in-time investigations that informed architecture decisions.
 
 - [checkpoint-snapshot-design.md](checkpoint-snapshot-design.md)
 - [columnar-batch-builder.md](columnar-batch-builder.md)
+- [config-library-poc-2026-04-19.md](config-library-poc-2026-04-19.md)
 - [crate-restructure-plan.md](crate-restructure-plan.md)
 - [elasticsearch-retry-contract-2026-04-18.md](elasticsearch-retry-contract-2026-04-18.md)
 - [file-tailing-audit.md](file-tailing-audit.md)
 - [linearizability-porcupine-plan.md](linearizability-porcupine-plan.md)
 - [per-input-sql-analysis.md](per-input-sql-analysis.md)
+- [source-metadata-zero-copy-plan-2026-04-19.md](source-metadata-zero-copy-plan-2026-04-19.md)
+- [source-metadata-attachment-perf-2026-04-19.md](source-metadata-attachment-perf-2026-04-19.md)
 - [tla-gap-analysis.md](tla-gap-analysis.md)
 - [turmoil-concurrency-bugs-report-2026-04.md](turmoil-concurrency-bugs-report-2026-04.md)
 - [type-suffix-redesign.md](type-suffix-redesign.md)

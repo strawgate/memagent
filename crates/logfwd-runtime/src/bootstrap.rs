@@ -1,3 +1,7 @@
+//! CLI bootstrap: user-facing stderr output (banners, version info, SIGHUP
+//! warnings) is intentional and intentionally not routed through `tracing`.
+#![allow(clippy::print_stdout, clippy::print_stderr)]
+
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -418,6 +422,7 @@ fn input_label(i: &logfwd_config::InputConfig) -> String {
         InputTypeConfig::Udp(u) => format!("udp   {}", u.listen),
         InputTypeConfig::Otlp(o) => format!("otlp  {}", o.listen),
         InputTypeConfig::Http(h) => format!("http  {}", h.listen),
+        InputTypeConfig::Stdin(_) => "stdin".to_string(),
         InputTypeConfig::ArrowIpc(a) => format!("arrow_ipc  {}", a.listen),
         InputTypeConfig::Generator(_) => "generator".to_string(),
         InputTypeConfig::LinuxEbpfSensor(_) => "linux_ebpf_sensor".to_string(),
@@ -429,22 +434,42 @@ fn input_label(i: &logfwd_config::InputConfig) -> String {
     }
 }
 
-fn output_label(o: &logfwd_config::OutputConfig) -> String {
-    use logfwd_config::OutputType;
-    match o.output_type {
-        OutputType::Otlp => format!("otlp  {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::Http => format!("http  {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::Elasticsearch => {
-            format!("elasticsearch  {}", o.endpoint.as_deref().unwrap_or(""))
+fn output_label(o: &logfwd_config::OutputConfigV2) -> String {
+    use logfwd_config::OutputConfigV2;
+    match o {
+        OutputConfigV2::Otlp(config) => {
+            format!("otlp  {}", config.endpoint.as_deref().unwrap_or(""))
         }
-        OutputType::Loki => format!("loki  {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::Tcp => format!("tcp   {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::Udp => format!("udp   {}", o.endpoint.as_deref().unwrap_or("")),
-        OutputType::File => format!("file  {}", o.path.as_deref().unwrap_or("")),
-        OutputType::Parquet => format!("parquet  {}", o.path.as_deref().unwrap_or("")),
-        OutputType::Stdout => "stdout".to_string(),
-        OutputType::Null => "null".to_string(),
-        _ => "unknown".to_string(),
+        OutputConfigV2::Http(config) => {
+            format!("http  {}", config.endpoint.as_deref().unwrap_or(""))
+        }
+        OutputConfigV2::Elasticsearch(config) => {
+            format!(
+                "elasticsearch  {}",
+                config.endpoint.as_deref().unwrap_or("")
+            )
+        }
+        OutputConfigV2::Loki(config) => {
+            format!("loki  {}", config.endpoint.as_deref().unwrap_or(""))
+        }
+        OutputConfigV2::Tcp(config) => {
+            format!("tcp   {}", config.endpoint.as_deref().unwrap_or(""))
+        }
+        OutputConfigV2::Udp(config) => {
+            format!("udp   {}", config.endpoint.as_deref().unwrap_or(""))
+        }
+        OutputConfigV2::File(config) => {
+            format!("file  {}", config.path.as_deref().unwrap_or(""))
+        }
+        OutputConfigV2::Parquet(config) => {
+            format!("parquet  {}", config.path.as_deref().unwrap_or(""))
+        }
+        OutputConfigV2::Stdout(_) => "stdout".to_string(),
+        OutputConfigV2::Null(_) => "null".to_string(),
+        OutputConfigV2::ArrowIpc(config) => {
+            format!("arrow_ipc  {}", config.endpoint.as_deref().unwrap_or(""))
+        }
+        _ => o.output_type().to_string(),
     }
 }
 
@@ -563,7 +588,10 @@ fn build_meter_provider(
     use opentelemetry_sdk::metrics::SdkMeterProvider;
 
     if let Some(ref endpoint) = config.server.metrics_endpoint {
-        let interval_secs = config.server.metrics_interval_secs.unwrap_or(60);
+        let interval_secs = config
+            .server
+            .metrics_interval_secs
+            .map_or(60, logfwd_config::PositiveSecs::get);
 
         let otlp_exporter = opentelemetry_otlp::MetricExporter::builder()
             .with_http()

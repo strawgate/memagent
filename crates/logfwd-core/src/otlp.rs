@@ -116,9 +116,11 @@ pub const KEY_VALUE_VALUE: u32 = 2;
 // --- Protobuf wire format helpers ---
 
 use alloc::vec::Vec;
+use logfwd_lint_attrs::{allow_unproven, trust_boundary, verified};
 
 /// Encode a varint into buf at offset, return new offset.
 #[inline(always)]
+#[verified(kani = "verify_varint_len_matches_encode")]
 pub fn encode_varint(buf: &mut Vec<u8>, mut value: u64) {
     loop {
         if value < 0x80 {
@@ -133,6 +135,7 @@ pub fn encode_varint(buf: &mut Vec<u8>, mut value: u64) {
 /// Compute encoded varint length without writing.
 #[inline(always)]
 #[allow(clippy::match_overlapping_arm)]
+#[verified(kani = "verify_varint_len_matches_encode")]
 pub const fn varint_len(value: u64) -> usize {
     match value {
         0..=0x7F => 1,
@@ -150,12 +153,14 @@ pub const fn varint_len(value: u64) -> usize {
 
 /// Write a protobuf tag (field_number + wire_type).
 #[inline(always)]
+#[verified(kani = "verify_encode_tag")]
 pub fn encode_tag(buf: &mut Vec<u8>, field_number: u32, wire_type: u8) {
     encode_varint(buf, ((field_number as u64) << 3) | wire_type as u64);
 }
 
 /// Write a fixed64 field (tag + 8 bytes little-endian).
 #[inline(always)]
+#[verified(kani = "verify_encode_fixed64")]
 pub fn encode_fixed64(buf: &mut Vec<u8>, field_number: u32, value: u64) {
     encode_tag(buf, field_number, 1); // wire type 1 = 64-bit
     buf.extend_from_slice(&value.to_le_bytes());
@@ -163,6 +168,7 @@ pub fn encode_fixed64(buf: &mut Vec<u8>, field_number: u32, value: u64) {
 
 /// Write a varint field (tag + varint value).
 #[inline(always)]
+#[verified(kani = "verify_encode_varint_field")]
 pub fn encode_varint_field(buf: &mut Vec<u8>, field_number: u32, value: u64) {
     encode_tag(buf, field_number, 0); // wire type 0 = varint
     encode_varint(buf, value);
@@ -170,6 +176,7 @@ pub fn encode_varint_field(buf: &mut Vec<u8>, field_number: u32, value: u64) {
 
 /// Write a length-delimited field (tag + length + bytes).
 #[inline(always)]
+#[verified(kani = "verify_encode_bytes_field_content")]
 pub fn encode_bytes_field(buf: &mut Vec<u8>, field_number: u32, data: &[u8]) {
     encode_tag(buf, field_number, 2); // wire type 2 = length-delimited
     encode_varint(buf, data.len() as u64);
@@ -178,6 +185,7 @@ pub fn encode_bytes_field(buf: &mut Vec<u8>, field_number: u32, data: &[u8]) {
 
 /// Compute the encoded size of a length-delimited field (without writing).
 #[inline(always)]
+#[verified(kani = "verify_bytes_field_size")]
 pub const fn bytes_field_size(field_number: u32, data_len: usize) -> usize {
     let tag_size = varint_len(((field_number as u64) << 3) | 2);
     let len_size = varint_len(data_len as u64);
@@ -187,6 +195,7 @@ pub const fn bytes_field_size(field_number: u32, data_len: usize) -> usize {
 /// Write a fixed32 field (tag + 4 bytes little-endian).
 /// Used for LogRecord field 8 (`flags`), wire type 5.
 #[inline(always)]
+#[allow_unproven]
 pub fn encode_fixed32(buf: &mut Vec<u8>, field_number: u32, value: u32) {
     encode_tag(buf, field_number, 5); // wire type 5 = 32-bit fixed
     buf.extend_from_slice(&value.to_le_bytes());
@@ -198,6 +207,8 @@ pub fn encode_fixed32(buf: &mut Vec<u8>, field_number: u32, value: u32) {
 ///
 /// Returns `(value, new_pos)` or an error string if the input is truncated
 /// or the varint exceeds 10 bytes.
+#[allow_unproven]
+#[trust_boundary]
 pub fn decode_varint(buf: &[u8], pos: usize) -> Result<(u64, usize), &'static str> {
     let mut value: u64 = 0;
     let mut shift: u32 = 0;
@@ -220,6 +231,8 @@ pub fn decode_varint(buf: &[u8], pos: usize) -> Result<(u64, usize), &'static st
 }
 
 /// Decode a protobuf tag into `(field_number, wire_type, new_pos)`.
+#[allow_unproven]
+#[trust_boundary]
 pub fn decode_tag(buf: &[u8], pos: usize) -> Result<(u32, u8, usize), &'static str> {
     let (tag, new_pos) = decode_varint(buf, pos)?;
     let field_number = (tag >> 3) as u32;
@@ -229,6 +242,8 @@ pub fn decode_tag(buf: &[u8], pos: usize) -> Result<(u32, u8, usize), &'static s
 
 /// Skip a protobuf field value based on its wire type. Returns the new
 /// position after the field value.
+#[allow_unproven]
+#[trust_boundary]
 pub fn skip_field(buf: &[u8], wire_type: u8, pos: usize) -> Result<usize, &'static str> {
     match wire_type {
         0 => {
@@ -246,7 +261,7 @@ pub fn skip_field(buf: &[u8], wire_type: u8, pos: usize) -> Result<usize, &'stat
         2 => {
             // Length-delimited.
             let (len, new_pos) = decode_varint(buf, pos)?;
-            let len_usize = usize::try_from(len).map_err(|_| "skip: length overflow")?;
+            let len_usize = usize::try_from(len).map_err(|_e| "skip: length overflow")?;
             let end = new_pos
                 .checked_add(len_usize)
                 .ok_or("skip: length-delimited overflow")?;
@@ -274,6 +289,7 @@ pub fn skip_field(buf: &[u8], wire_type: u8, pos: usize) -> Result<usize, &'stat
 ///
 /// Designed for zero-allocation decoding of `trace_id` (32 hex chars → 16 bytes)
 /// and `span_id` (16 hex chars → 8 bytes) on the hot encoding path.
+#[verified(kani = "verify_hex_decode_roundtrip")]
 pub fn hex_decode(hex_bytes: &[u8], out: &mut [u8]) -> bool {
     if hex_bytes.len() != out.len() * 2 {
         return false;
@@ -345,6 +361,7 @@ pub enum Severity {
 
 /// Fast severity lookup from first byte + length. No string comparison needed.
 #[inline(always)]
+#[verified(kani = "verify_parse_severity_no_false_positives")]
 pub fn parse_severity(text: &[u8]) -> (Severity, &[u8]) {
     // Exact case-insensitive match against the 6 standard severity strings
     // plus common aliases used by syslog and application logs.
@@ -373,12 +390,14 @@ pub fn parse_severity(text: &[u8]) -> (Severity, &[u8]) {
 /// Case-insensitive variable-length comparison for ASCII letters.
 /// Used by Kani proofs to verify parse_severity only matches standard levels.
 #[cfg(kani)]
+#[allow_unproven]
 fn eq_ignore_case_match(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x | 0x20 == y | 0x20)
 }
 
 /// Case-insensitive 3-byte comparison.
 #[inline(always)]
+#[allow_unproven]
 fn eq_ignore_case_3(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20 && a[1] | 0x20 == b[1] | 0x20 && a[2] | 0x20 == b[2] | 0x20
 }
@@ -388,6 +407,7 @@ fn eq_ignore_case_3(a: &[u8], b: &[u8]) -> bool {
 /// collisions for non-letters (e.g., `@` |0x20 = `` ` ``). Safe here because
 /// the comparison targets ("INFO", "WARN") are all ASCII letters.
 #[inline(always)]
+#[verified(kani = "verify_eq_ignore_case_4_no_false_positives_info")]
 fn eq_ignore_case_4(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20
         && a[1] | 0x20 == b[1] | 0x20
@@ -397,6 +417,7 @@ fn eq_ignore_case_4(a: &[u8], b: &[u8]) -> bool {
 
 /// Case-insensitive 5-byte comparison.
 #[inline(always)]
+#[verified(kani = "verify_eq_ignore_case_5_no_false_positives_error")]
 fn eq_ignore_case_5(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20
         && a[1] | 0x20 == b[1] | 0x20
@@ -407,6 +428,7 @@ fn eq_ignore_case_5(a: &[u8], b: &[u8]) -> bool {
 
 /// Case-insensitive 6-byte comparison.
 #[inline(always)]
+#[allow_unproven]
 fn eq_ignore_case_6(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20
         && a[1] | 0x20 == b[1] | 0x20
@@ -418,6 +440,7 @@ fn eq_ignore_case_6(a: &[u8], b: &[u8]) -> bool {
 
 /// Case-insensitive 7-byte comparison.
 #[inline(always)]
+#[allow_unproven]
 fn eq_ignore_case_7(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20
         && a[1] | 0x20 == b[1] | 0x20
@@ -430,6 +453,7 @@ fn eq_ignore_case_7(a: &[u8], b: &[u8]) -> bool {
 
 /// Case-insensitive 8-byte comparison.
 #[inline(always)]
+#[allow_unproven]
 fn eq_ignore_case_8(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20
         && a[1] | 0x20 == b[1] | 0x20
@@ -460,6 +484,7 @@ fn eq_ignore_case_8(a: &[u8], b: &[u8]) -> bool {
 ///
 /// Fractional seconds beyond 9 digits (nanosecond precision) are
 /// truncated — this is intentional as OTLP uses nanoseconds.
+#[verified(kani = "verify_parse_timestamp_compositional")]
 pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
     if ts.len() < 19 {
         return None;
@@ -579,6 +604,7 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
 #[allow(dead_code)]
 #[inline(always)]
 #[cfg_attr(kani, kani::ensures(|result: &u16| *result <= 9999))]
+#[verified(kani = "verify_parse_4digits_contract")]
 fn parse_4digits(s: &[u8], off: usize) -> u16 {
     if off + 4 > s.len() {
         return 0;
@@ -595,6 +621,7 @@ fn parse_4digits(s: &[u8], off: usize) -> u16 {
 #[allow(dead_code)]
 #[inline(always)]
 #[cfg_attr(kani, kani::ensures(|result: &u8| *result <= 99))]
+#[verified(kani = "verify_parse_2digits_contract")]
 fn parse_2digits(s: &[u8], off: usize) -> u8 {
     if off + 2 > s.len() {
         return 0;
@@ -611,6 +638,7 @@ fn parse_2digits(s: &[u8], off: usize) -> u8 {
 /// avoids the double-check that `parse_4digits` + external `is_ascii_digit`
 /// calls would perform.
 #[inline(always)]
+#[allow_unproven]
 fn parse_4digits_checked(s: &[u8], off: usize) -> Option<u16> {
     let (a, b, c, d) = (
         s[off].wrapping_sub(b'0'),
@@ -628,6 +656,7 @@ fn parse_4digits_checked(s: &[u8], off: usize) -> Option<u16> {
 /// not a digit. Single-pass: one `wrapping_sub` + compare per digit instead of
 /// a `is_ascii_digit` check followed by a separate subtraction.
 #[inline(always)]
+#[allow_unproven]
 fn parse_2digits_checked(s: &[u8], off: usize) -> Option<u8> {
     let a = s[off].wrapping_sub(b'0');
     let b = s[off + 1].wrapping_sub(b'0');
@@ -639,12 +668,14 @@ fn parse_2digits_checked(s: &[u8], off: usize) -> Option<u8> {
 
 /// Returns `true` if `year` is a leap year (Gregorian calendar).
 #[inline(always)]
+#[allow_unproven]
 fn is_leap_year(year: i64) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
 /// Returns the number of days in the given month (1-12) for the given year.
 #[inline(always)]
+#[allow_unproven]
 fn days_in_month(year: i64, month: u32) -> u32 {
     match month {
         1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
@@ -673,6 +704,7 @@ fn days_in_month(year: i64, month: u32) -> u32 {
     // Required so `stub_verified(days_from_civil)` keeps nanos arithmetic within u64.
     && *result <= 213_400
 ))]
+#[verified(kani = "verify_days_from_civil_contract")]
 pub fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
     let y = if month <= 2 { year - 1 } else { year };
     let m = if month <= 2 {
@@ -1180,6 +1212,14 @@ mod verification {
     use super::*;
     use alloc::{vec, vec::Vec};
 
+    // NOTE: encode_varint and encode_tag take `&mut Vec<u8>` and return `()`.
+    // In our current Kani version/configuration used in CI, the contract system
+    // (requires/ensures/modifies) requires the modified type to implement
+    // `kani::Arbitrary` for stub_verified, but `Vec<u8>` does not in that setup.
+    // Function contracts for these wire format helpers are therefore deferred for
+    // now, and the correctness of these functions is instead proven
+    // exhaustively by the verify_varint_* and verify_encode_tag proofs below.
+
     /// Prove varint_len matches encode_varint output length for ALL u64 values.
     ///
     /// This is the foundational wire format proof — if these disagree,
@@ -1187,7 +1227,7 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(12)] // varint loop: max 10 iterations + overhead
     #[kani::solver(kissat)]
-    fn verify_varint_len_matches_encode() {
+    pub(super) fn verify_varint_len_matches_encode() {
         let value: u64 = kani::any();
         let mut buf = Vec::with_capacity(10); // varint max 10 bytes — no realloc paths
         encode_varint(&mut buf, value);
@@ -1258,7 +1298,7 @@ mod verification {
     #[kani::proof]
     #[kani::unwind(12)]
     #[kani::solver(kissat)] // arithmetic-heavy varint bit ops: kissat outperforms cadical
-    fn verify_encode_tag() {
+    pub(super) fn verify_encode_tag() {
         let field_number: u32 = kani::any();
         let wire_type: u8 = kani::any();
         kani::assume(field_number > 0);
@@ -1290,9 +1330,13 @@ mod verification {
         kani::cover!(field_number == 0x1FFFFFFF && wire_type == 5);
     }
 
-    /// Prove days_from_civil never panics and produces reasonable values
     /// Oracle proof: days_from_civil matches a naive year/month
-    /// iteration for all valid dates in [1970, 2100].
+    /// iteration for bounded date components with year in [1970, 2100].
+    ///
+    /// Note: this proof range includes potentially non-calendar-valid
+    /// day-of-month combinations (e.g. Feb 31); it does not claim to
+    /// admit only valid civil dates. The oracle and the implementation
+    /// agree on all such inputs regardless.
     ///
     /// Uses a completely different algorithm (cumulative day counting)
     /// from the Hinnant formula. Kani can't use chrono, so this naive
@@ -1353,7 +1397,7 @@ mod verification {
     /// tag-length and length-varint boundary classes that determine the size.
     #[kani::proof]
     #[kani::solver(kissat)]
-    fn verify_bytes_field_size() {
+    pub(super) fn verify_bytes_field_size() {
         // Fixed array sliced to data_len — no dynamic allocation, no realloc paths.
         // Output buf pre-sized to tag varint (10) + length varint (10) + data (256) = 276 max.
         let data = [0u8; 256];
@@ -1459,7 +1503,7 @@ mod verification {
     /// No false positives.
     #[kani::proof]
     #[kani::unwind(9)] // eq_ignore_case_match: Zip over ≤8-byte targets + 1 terminator
-    fn verify_parse_severity_no_false_positives() {
+    pub(super) fn verify_parse_severity_no_false_positives() {
         let bytes: [u8; 8] = kani::any();
         let len: usize = kani::any_where(|&l: &usize| l <= 8);
         let text = &bytes[..len];
@@ -1530,7 +1574,7 @@ mod verification {
     /// Prove encode_fixed64 produces exactly tag + 8 LE bytes.
     #[kani::proof]
     #[kani::unwind(12)]
-    fn verify_encode_fixed64() {
+    pub(super) fn verify_encode_fixed64() {
         let field_number: u32 = kani::any();
         let value: u64 = kani::any();
         kani::assume(field_number > 0 && field_number <= 1000);
@@ -1571,7 +1615,7 @@ mod verification {
     #[kani::solver(kissat)]
     #[kani::proof]
     #[kani::unwind(12)]
-    fn verify_encode_varint_field() {
+    pub(super) fn verify_encode_varint_field() {
         let field_number: u32 = kani::any();
         let value: u64 = kani::any();
         kani::assume(field_number > 0 && field_number <= 1000);
@@ -1585,7 +1629,13 @@ mod verification {
     }
 
     /// Prove parse_timestamp_nanos never panics for any 32-byte input.
+    ///
+    /// Uses stub_verified for proven sub-functions to avoid re-verifying
+    /// digit parsing and calendar arithmetic inline.
     #[kani::proof]
+    #[kani::stub_verified(parse_4digits)]
+    #[kani::stub_verified(parse_2digits)]
+    #[kani::stub_verified(days_from_civil)]
     #[kani::unwind(14)] // fractional while loop: up to 12 iters (len=32, frac_start=20) + 2 margin
     #[kani::solver(kissat)]
     fn verify_parse_timestamp_no_panic() {
@@ -1615,7 +1665,7 @@ mod verification {
     #[kani::solver(kissat)]
     #[kani::proof]
     #[kani::unwind(12)]
-    fn verify_encode_bytes_field_content() {
+    pub(super) fn verify_encode_bytes_field_content() {
         let field_number: u32 = kani::any();
         kani::assume(field_number > 0 && field_number <= 100);
         let data_len: usize = kani::any_where(|&l: &usize| l <= 8);
@@ -1639,7 +1689,7 @@ mod verification {
     /// Verify parse_4digits contract: output ≤ 9999.
     #[kani::proof_for_contract(parse_4digits)]
     #[kani::unwind(5)]
-    fn verify_parse_4digits_contract() {
+    pub(super) fn verify_parse_4digits_contract() {
         let s: [u8; 8] = kani::any();
         let off: usize = kani::any_where(|&o: &usize| o <= 4);
         parse_4digits(&s, off);
@@ -1648,7 +1698,7 @@ mod verification {
     /// Verify parse_2digits contract: output ≤ 99.
     #[kani::proof_for_contract(parse_2digits)]
     #[kani::unwind(3)]
-    fn verify_parse_2digits_contract() {
+    pub(super) fn verify_parse_2digits_contract() {
         let s: [u8; 8] = kani::any();
         let off: usize = kani::any_where(|&o: &usize| o <= 6);
         parse_2digits(&s, off);
@@ -1658,7 +1708,7 @@ mod verification {
     /// year ∈ [1, 2553], month ∈ [1, 12], day ∈ [1, 31].
     /// Covers both pre-1970 (result < 0) and post-1970 (result ∈ [-366, 213_400]).
     #[kani::proof_for_contract(days_from_civil)]
-    fn verify_days_from_civil_contract() {
+    pub(super) fn verify_days_from_civil_contract() {
         let year: i64 = kani::any();
         let month: u32 = kani::any();
         let day: u32 = kani::any();
@@ -1677,7 +1727,7 @@ mod verification {
     #[kani::stub_verified(days_from_civil)]
     #[kani::solver(kissat)]
     #[kani::unwind(12)]
-    fn verify_parse_timestamp_compositional() {
+    pub(super) fn verify_parse_timestamp_compositional() {
         let ts: [u8; 24] = kani::any();
         let len: usize = kani::any_where(|&l: &usize| l >= 19 && l <= 24);
         let result = parse_timestamp_nanos(&ts[..len]);
@@ -1722,7 +1772,7 @@ mod verification {
     /// as a structural consistency check between eq_ignore_case_4 and the oracle.
     #[kani::proof]
     #[kani::unwind(5)] // eq_ignore_case_match: Zip over 4-byte slice + 1 terminator
-    fn verify_eq_ignore_case_4_no_false_positives_info() {
+    pub(super) fn verify_eq_ignore_case_4_no_false_positives_info() {
         let input: [u8; 4] = kani::any();
         let target = b"INFO";
         if eq_ignore_case_4(&input, target) {
@@ -1738,7 +1788,7 @@ mod verification {
     /// that parse_severity only matches valid severity level strings.
     #[kani::proof]
     #[kani::unwind(6)] // eq_ignore_case_match: Zip over 5-byte slice + 1 terminator
-    fn verify_eq_ignore_case_5_no_false_positives_error() {
+    pub(super) fn verify_eq_ignore_case_5_no_false_positives_error() {
         let input: [u8; 5] = kani::any();
         let target = b"ERROR";
         if eq_ignore_case_5(&input, target) {
@@ -1750,7 +1800,7 @@ mod verification {
     /// decoding yields the original bytes.
     #[kani::proof]
     #[kani::unwind(17)] // 16 bytes + 1
-    fn verify_hex_decode_roundtrip() {
+    pub(super) fn verify_hex_decode_roundtrip() {
         let original: [u8; 16] = kani::any();
         // Hex-encode
         let mut hex = [0u8; 32];
@@ -1889,5 +1939,137 @@ mod verification {
 
         kani::cover!(WIRE_TYPE_VARINT == 0, "varint is 0");
         kani::cover!(WIRE_TYPE_FIXED32 == 5, "fixed32 is 5");
+    }
+
+    // -----------------------------------------------------------------------
+    // Manual encode_varint stub for compositional proofs
+    //
+    // encode_varint takes `&mut Vec<u8>` which doesn't implement
+    // `kani::Arbitrary`, so standard `#[kani::ensures]` contracts can't be
+    // used with `stub_verified`. Instead we use a manual `#[kani::stub]`
+    // that models encode_varint's proven behavior: appends 1-10 bytes.
+    // The ground-truth correctness is already established by the
+    // verify_varint_* proofs above; these compositional variants focus on
+    // the *caller's* logic with encode_varint abstracted away.
+    // -----------------------------------------------------------------------
+
+    /// Manual stub modelling `encode_varint`'s proven output contract:
+    /// appends between 1 and 10 arbitrary bytes to `buf`.
+    fn encode_varint_stub(buf: &mut Vec<u8>, _value: u64) {
+        let len: usize = kani::any();
+        kani::assume(len >= 1 && len <= 10);
+        let mut i = 0;
+        while i < len {
+            buf.push(kani::any());
+            i += 1;
+        }
+    }
+
+    /// Compositional proof: encode_tag with encode_varint stubbed out.
+    ///
+    /// encode_tag computes `(field_number << 3) | wire_type` and passes it
+    /// to encode_varint. With the stub, we verify the caller logic produces
+    /// a buffer of 1-10 bytes (the tag varint) for any valid inputs.
+    #[kani::proof]
+    #[kani::stub(encode_varint, encode_varint_stub)]
+    #[kani::unwind(12)]
+    fn verify_encode_tag_compositional() {
+        let field_number: u32 = kani::any();
+        let wire_type: u8 = kani::any();
+        kani::assume(field_number > 0);
+        kani::assume(field_number <= 0x1FFFFFFF);
+        kani::assume(wire_type <= 5);
+
+        let mut buf = Vec::new();
+        encode_tag(&mut buf, field_number, wire_type);
+
+        // encode_tag calls encode_varint once, so output is 1-10 bytes
+        assert!(buf.len() >= 1 && buf.len() <= 10);
+
+        kani::cover!(buf.len() == 1, "single-byte tag");
+        kani::cover!(buf.len() > 1, "multi-byte tag");
+    }
+
+    /// Compositional proof: encode_fixed64 with encode_varint stubbed out.
+    ///
+    /// encode_fixed64 calls encode_tag (which calls encode_varint) then
+    /// appends 8 LE bytes. With the stub, we verify the total output is
+    /// tag (1-10 bytes) + 8 fixed bytes = 9-18 bytes.
+    #[kani::proof]
+    #[kani::stub(encode_varint, encode_varint_stub)]
+    #[kani::unwind(12)]
+    fn verify_encode_fixed64_compositional() {
+        let field_number: u32 = kani::any();
+        let value: u64 = kani::any();
+        kani::assume(field_number > 0 && field_number <= 1000);
+
+        let mut buf = Vec::new();
+        encode_fixed64(&mut buf, field_number, value);
+
+        // Tag (1-10 bytes via stub) + 8 fixed bytes
+        assert!(buf.len() >= 9 && buf.len() <= 18);
+
+        // Last 8 bytes are the value in little-endian
+        let tail = &buf[buf.len() - 8..];
+        let decoded = u64::from_le_bytes(tail.try_into().unwrap());
+        assert!(decoded == value, "fixed64 value mismatch");
+
+        kani::cover!(buf.len() == 9, "single-byte tag + 8 value bytes");
+    }
+
+    /// Compositional proof: encode_varint_field with encode_varint stubbed.
+    ///
+    /// encode_varint_field calls encode_tag (1 encode_varint for the tag)
+    /// then encode_varint again for the value. With the stub, each call
+    /// appends 1-10 bytes, so total is 2-20 bytes.
+    #[kani::proof]
+    #[kani::stub(encode_varint, encode_varint_stub)]
+    #[kani::unwind(12)]
+    fn verify_encode_varint_field_compositional() {
+        let field_number: u32 = kani::any();
+        let value: u64 = kani::any();
+        kani::assume(field_number > 0 && field_number <= 1000);
+
+        let mut buf = Vec::new();
+        encode_varint_field(&mut buf, field_number, value);
+
+        // Two encode_varint calls: tag (1-10) + value (1-10)
+        assert!(buf.len() >= 2 && buf.len() <= 20);
+
+        kani::cover!(buf.len() == 2, "minimal encoding");
+        kani::cover!(buf.len() > 10, "large encoding");
+    }
+
+    /// Compositional proof: encode_bytes_field with encode_varint stubbed.
+    ///
+    /// encode_bytes_field calls encode_tag (1 encode_varint for the tag),
+    /// then encode_varint for the length, then extends with the data slice.
+    /// With the stub, tag and length each append 1-10 bytes, plus data_len
+    /// bytes of payload.
+    #[kani::proof]
+    #[kani::stub(encode_varint, encode_varint_stub)]
+    #[kani::unwind(12)]
+    fn verify_encode_bytes_field_content_compositional() {
+        let field_number: u32 = kani::any();
+        kani::assume(field_number > 0 && field_number <= 100);
+        let data_len: usize = kani::any_where(|&l: &usize| l <= 8);
+        let data: [u8; 8] = kani::any();
+
+        let mut buf = Vec::new();
+        encode_bytes_field(&mut buf, field_number, &data[..data_len]);
+
+        // Tag (1-10) + length varint (1-10) + data (0-8) = 2-28 bytes
+        assert!(buf.len() >= 2 + data_len && buf.len() <= 20 + data_len);
+
+        // Last data_len bytes must be the exact input data
+        let payload = &buf[buf.len() - data_len..];
+        let mut i = 0;
+        while i < data_len {
+            assert!(payload[i] == data[i], "data mismatch at byte");
+            i += 1;
+        }
+
+        kani::cover!(data_len == 0, "empty payload");
+        kani::cover!(data_len > 0, "non-empty payload");
     }
 }

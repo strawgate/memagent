@@ -111,6 +111,7 @@ impl IoAction {
     /// Used by fanout to aggregate results from multiple sinks.
     /// On a severity tie, the action with the larger `Retry-After` hint wins
     /// so callers respect the most conservative delay.
+    #[must_use]
     pub fn worse(self, other: Self) -> Self {
         match other.severity().cmp(&self.severity()) {
             core::cmp::Ordering::Greater => other,

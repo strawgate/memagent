@@ -1,4 +1,5 @@
 #![allow(deprecated)]
+#![allow(clippy::print_stdout, clippy::print_stderr)]
 
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
@@ -25,6 +26,7 @@ use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{InputEvent, InputSource};
 use logfwd_output::{BatchMetadata, Compression};
 use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
+use logfwd_types::pipeline::SourceId;
 use pprof::ProfilerGuardBuilder;
 
 const DEFAULT_LINES: usize = 200_000;
@@ -39,6 +41,7 @@ fn main() {
         Scenario::passthrough_remainder_heavy(cli.lines),
         Scenario::passthrough_narrow_raw(cli.lines),
         Scenario::passthrough_json(cli.lines),
+        Scenario::passthrough_json_source_sidecar(cli.lines),
         Scenario::cri_full(cli.lines / 2),
     ];
 
@@ -67,7 +70,7 @@ fn main() {
         "- Flamegraph: {}",
         cli.flamegraph
             .as_ref()
-            .map_or("not requested".to_string(), |p| p.display().to_string())
+            .map_or_else(|| "not requested".to_string(), |p| p.display().to_string())
     );
     println!();
     println!("## Baseline stage timings\n");
@@ -112,13 +115,13 @@ fn main() {
     println!();
     println!("## Copy sites observed\n");
     println!(
-        "- `crates/logfwd-io/src/framed.rs:113-115` — `remainder` + `extend_from_slice(&bytes)` copies every new chunk into a fresh/retaken `Vec<u8>`, even when the remainder is empty."
+        "- `crates/logfwd-io/src/framed.rs` — `remainder` + `extend_from_slice(&bytes)` copies every new chunk into a fresh/retaken `Vec<u8>`, even when the remainder is empty."
     );
     println!(
-        "- `crates/logfwd-io/src/format.rs:101-107` — passthrough and passthrough-json extend `out` from `chunk`, creating a second full-buffer copy."
+        "- `crates/logfwd-io/src/format.rs` — passthrough and passthrough-json extend `out` from `chunk`, creating a second full-buffer copy."
     );
     println!(
-        "- `crates/logfwd/src/pipeline.rs:1068-1070` — `InputState.buf.extend_from_slice(&bytes)` copies FramedInput output into the async `BytesMut` batch buffer."
+        "- `crates/logfwd-runtime/src/pipeline/input_pipeline.rs` — `InputState.buf.extend_from_slice(&bytes)` copies FramedInput output into the async `BytesMut` batch buffer."
     );
     println!();
     println!("## Recommendations\n");
@@ -132,7 +135,10 @@ fn main() {
         "3. Keep read chunks line-aligned or larger when possible; remainder-heavy chunking is materially more expensive than the no-remainder path."
     );
     println!(
-        "4. Defer deeper CRI tuning until after the owned-input fast path lands; in the current baseline, CRI spends most of its extra time in parsing/metadata injection rather than HashMap bookkeeping."
+        "4. Keep source metadata out of FramedInput entirely; attach it after scan from row-origin sidecars so source bytes are never rewritten."
+    );
+    println!(
+        "5. Keep CRI metadata in sidecars and packed `StringView` blocks; the next broad copy wins are still the owned-input fast path and runtime buffer handoff."
     );
 }
 
@@ -245,6 +251,7 @@ struct Scenario {
     input_bytes: usize,
     lines: usize,
     workload: &'static str,
+    source_path: Option<&'static str>,
 }
 
 impl Scenario {
@@ -258,6 +265,7 @@ impl Scenario {
             lines: memchr::memchr_iter(b'\n', &data).count(),
             chunks,
             workload: "aligned 64KiB chunks",
+            source_path: None,
         }
     }
 
@@ -271,6 +279,7 @@ impl Scenario {
             lines: memchr::memchr_iter(b'\n', &data).count(),
             chunks,
             workload: "97-byte split-heavy chunks",
+            source_path: None,
         }
     }
 
@@ -284,6 +293,21 @@ impl Scenario {
             lines: memchr::memchr_iter(b'\n', &data).count(),
             chunks,
             workload: "aligned 64KiB chunks",
+            source_path: None,
+        }
+    }
+
+    fn passthrough_json_source_sidecar(lines: usize) -> Self {
+        let data = generators::gen_narrow(lines, 9);
+        let chunks = chunk_on_line_boundaries(&data, DEFAULT_CHUNK_BYTES);
+        Self {
+            name: "passthrough_json_source_sidecar",
+            format: ScenarioFormat::PassthroughJson,
+            input_bytes: data.len(),
+            lines: memchr::memchr_iter(b'\n', &data).count(),
+            chunks,
+            workload: "aligned 64KiB chunks + source identity sidecar",
+            source_path: Some("/var/log/pods/ns_pod_uid/c/main.log"),
         }
     }
 
@@ -297,6 +321,7 @@ impl Scenario {
             lines: memchr::memchr_iter(b'\n', &data).count(),
             chunks,
             workload: "aligned 64KiB chunks",
+            source_path: None,
         }
     }
 
@@ -310,28 +335,35 @@ impl Scenario {
             lines: memchr::memchr_iter(b'\n', &data).count(),
             chunks,
             workload: "aligned 64KiB chunks",
+            source_path: None,
         }
     }
 }
 
 struct MockSource {
     events: VecDeque<Vec<InputEvent>>,
+    source_path: Option<PathBuf>,
 }
 
 impl MockSource {
-    fn new(chunks: &[Vec<u8>]) -> Self {
+    fn new(chunks: &[Vec<u8>], source_path: Option<&'static str>) -> Self {
+        let source_id = source_path.map(|_| SourceId(1));
         let mut events: VecDeque<Vec<InputEvent>> = chunks
             .iter()
             .map(|chunk| {
                 vec![InputEvent::Data {
-                    bytes: chunk.clone(),
-                    source_id: None,
+                    bytes: Bytes::from(chunk.clone()),
+                    source_id,
                     accounted_bytes: chunk.len() as u64,
+                    cri_metadata: None,
                 }]
             })
             .collect();
-        events.push_back(vec![InputEvent::EndOfFile { source_id: None }]);
-        Self { events }
+        events.push_back(vec![InputEvent::EndOfFile { source_id }]);
+        Self {
+            events,
+            source_path: source_path.map(PathBuf::from),
+        }
     }
 }
 
@@ -342,6 +374,13 @@ impl InputSource for MockSource {
 
     fn name(&self) -> &'static str {
         "mock"
+    }
+
+    fn source_paths(&self) -> Vec<(SourceId, PathBuf)> {
+        self.source_path
+            .clone()
+            .map(|path| vec![(SourceId(1), path)])
+            .unwrap_or_default()
     }
 
     fn health(&self) -> ComponentHealth {
@@ -403,7 +442,7 @@ fn run_pipeline_once(scenario: &Scenario) -> StageSample {
     let rss = RssSampler::start();
 
     let stats = Arc::new(ComponentStats::new());
-    let source = Box::new(MockSource::new(&scenario.chunks));
+    let source = Box::new(MockSource::new(&scenario.chunks, scenario.source_path));
     let format = scenario.format.decoder(Arc::clone(&stats));
     let mut framed = FramedInput::new(source, format, Arc::clone(&stats));
 
