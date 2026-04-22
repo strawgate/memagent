@@ -431,6 +431,8 @@ fn status_payload(state: &DiagnosticsState) -> StatusSnapshotResponse {
                     rotations: Some(stats.rotations()),
                     parse_errors: Some(stats.parse_errors()),
                     transport,
+                    send_ns_total: None,
+                    send_count: None,
                 }
             })
             .collect();
@@ -467,6 +469,8 @@ fn status_payload(state: &DiagnosticsState) -> StatusSnapshotResponse {
                 rotations: None,
                 parse_errors: None,
                 transport: None,
+                send_ns_total: Some(stats.send_ns_total()),
+                send_count: Some(stats.send_count()),
             })
             .collect();
 

@@ -2,7 +2,7 @@ use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use arrow::record_batch::RecordBatch;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
@@ -103,7 +103,11 @@ impl JsonLinesSink {
         }
         req = req.header("Content-Type", "application/x-ndjson");
 
-        let response = req.body(payload).send().await.map_err(io::Error::other)?;
+        let start = Instant::now();
+        let response_res = req.body(payload).send().await;
+        self.stats.inc_send(start.elapsed().as_nanos() as u64);
+
+        let response = response_res.map_err(io::Error::other)?;
         if response.status().is_success() {
             return Ok(SendResult::Ok);
         }

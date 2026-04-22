@@ -7,6 +7,8 @@ export interface ComponentData {
   bytes_total: number;
   errors: number;
   parse_errors?: number;
+  send_ns_total?: number;
+  send_count?: number;
 }
 
 export interface TransformData {

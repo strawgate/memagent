@@ -956,10 +956,7 @@ mod tests {
         for payload in &payloads {
             let parsed: serde_json::Value =
                 serde_json::from_str(&payload.payload).expect("chunk must be valid JSON");
-            assert_eq!(
-                parsed["streams"].as_array().map_or(0, std::vec::Vec::len),
-                1
-            );
+            assert_eq!(parsed["streams"].as_array().map_or(0, Vec::len), 1);
         }
     }
 
