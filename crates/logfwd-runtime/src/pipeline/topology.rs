@@ -20,11 +20,7 @@ pub struct CompiledTopology {
 pub fn compile_topology(spec: &PipelineSpec) -> Result<CompiledTopology, String> {
     let input_count = spec.config.inputs.len();
     let output_count = spec.config.outputs.len();
-    let transform_count = if spec.config.transform.is_some() {
-        1
-    } else {
-        0
-    };
+    let transform_count = usize::from(spec.config.transform.is_some());
 
     Ok(CompiledTopology {
         name: spec.name.to_string(),
