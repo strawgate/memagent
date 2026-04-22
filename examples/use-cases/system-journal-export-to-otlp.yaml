@@ -1,4 +1,4 @@
-# logfwd example
+# FastForward example
 # Use case: System journal export logs to OTLP
 # Replace paths/endpoints with values for your environment.
 

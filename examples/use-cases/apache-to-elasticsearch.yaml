@@ -1,4 +1,4 @@
-# logfwd example
+# FastForward example
 # Use case: Apache logs to Elasticsearch
 # Replace paths/endpoints with values for your environment.
 
