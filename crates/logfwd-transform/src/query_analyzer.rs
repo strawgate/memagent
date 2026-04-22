@@ -119,12 +119,15 @@ impl QueryAnalyzer {
     /// there are no `__int`/`__str`/`__float` suffixed names in SQL.
     /// `strip_type_suffix` is a no-op and is kept only for call-site symmetry.
     pub fn scan_config(&self) -> ScanConfig {
+        let row_predicate = self.extract_scan_predicate();
+
         if self.uses_select_star {
             ScanConfig {
                 wanted_fields: vec![],
                 extract_all: true,
                 line_field_name: None,
                 validate_utf8: false,
+                row_predicate,
             }
         } else {
             use logfwd_core::scan_config::FieldSpec;
@@ -146,8 +149,19 @@ impl QueryAnalyzer {
                 extract_all: false,
                 line_field_name: None,
                 validate_utf8: false,
+                row_predicate,
             }
         }
+    }
+
+    /// Extract a `ScanPredicate` from the WHERE clause, if present.
+    ///
+    /// Only simple predicates are extracted (equality, comparison, IS NULL,
+    /// AND chains). Complex expressions (OR at top level, functions, LIKE,
+    /// subqueries) are left to DataFusion as residual filters.
+    fn extract_scan_predicate(&self) -> Option<logfwd_core::scan_predicate::ScanPredicate> {
+        let where_expr = self.where_clause.as_ref()?;
+        extract_scan_predicate_from_expr(where_expr)
     }
 
     /// Source metadata columns that must be attached post-scan before SQL.
@@ -489,6 +503,157 @@ fn expr_as_u8_literal(expr: &SqlExpr) -> Option<u8> {
     match expr {
         SqlExpr::Value(v) => match &v.value {
             sqlast::Value::Number(s, _) => s.parse::<u8>().ok(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ScanPredicate extraction from SQL WHERE AST
+// ---------------------------------------------------------------------------
+
+use logfwd_core::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+
+/// Convert a SQL WHERE expression into a `ScanPredicate`.
+///
+/// Returns `None` for expressions that cannot be pushed down (OR at top
+/// level, function calls, LIKE, subqueries, etc.). AND chains are
+/// recursively decomposed — only the pushable conjuncts are included.
+fn extract_scan_predicate_from_expr(expr: &SqlExpr) -> Option<ScanPredicate> {
+    match expr {
+        // AND: recurse into both sides, collect pushable conjuncts.
+        SqlExpr::BinaryOp {
+            left,
+            op: sqlast::BinaryOperator::And,
+            right,
+        } => {
+            let mut conjuncts = Vec::new();
+            if let Some(p) = extract_scan_predicate_from_expr(left) {
+                conjuncts.push(p);
+            }
+            if let Some(p) = extract_scan_predicate_from_expr(right) {
+                conjuncts.push(p);
+            }
+            match conjuncts.len() {
+                0 => None,
+                1 => Some(conjuncts.remove(0)),
+                _ => Some(ScanPredicate::And(conjuncts)),
+            }
+        }
+
+        // column op literal
+        SqlExpr::BinaryOp { left, op, right } => {
+            // Try column on left, literal on right.
+            if let (Some(col), Some(val)) = (expr_as_column(left), expr_as_scalar_value(right)) {
+                if let Some(cmp_op) = sql_op_to_cmp_op(op) {
+                    return Some(ScanPredicate::Compare {
+                        field: col.to_ascii_lowercase(),
+                        op: cmp_op,
+                        value: val,
+                    });
+                }
+            }
+            // Try literal on left, column on right (reversed operand order).
+            if let (Some(val), Some(col)) = (expr_as_scalar_value(left), expr_as_column(right)) {
+                if let Some(cmp_op) = sql_op_to_cmp_op_reversed(op) {
+                    return Some(ScanPredicate::Compare {
+                        field: col.to_ascii_lowercase(),
+                        op: cmp_op,
+                        value: val,
+                    });
+                }
+            }
+            None
+        }
+
+        // IS NULL / IS NOT NULL
+        SqlExpr::IsNull(inner) => {
+            let col = expr_as_column(inner)?;
+            Some(ScanPredicate::IsNull {
+                field: col.to_ascii_lowercase(),
+                negated: false,
+            })
+        }
+        SqlExpr::IsNotNull(inner) => {
+            let col = expr_as_column(inner)?;
+            Some(ScanPredicate::IsNull {
+                field: col.to_ascii_lowercase(),
+                negated: true,
+            })
+        }
+
+        // Parenthesized expression
+        SqlExpr::Nested(inner) => extract_scan_predicate_from_expr(inner),
+
+        // Anything else (OR, LIKE, IN, functions, subqueries) — not pushable.
+        _ => None,
+    }
+}
+
+/// Convert a SQL binary operator to a `CmpOp`.
+fn sql_op_to_cmp_op(op: &sqlast::BinaryOperator) -> Option<CmpOp> {
+    match op {
+        sqlast::BinaryOperator::Eq => Some(CmpOp::Eq),
+        sqlast::BinaryOperator::NotEq => Some(CmpOp::Ne),
+        sqlast::BinaryOperator::Lt => Some(CmpOp::Lt),
+        sqlast::BinaryOperator::LtEq => Some(CmpOp::Le),
+        sqlast::BinaryOperator::Gt => Some(CmpOp::Gt),
+        sqlast::BinaryOperator::GtEq => Some(CmpOp::Ge),
+        _ => None,
+    }
+}
+
+/// Convert a SQL binary operator to a `CmpOp` for reversed operand order.
+/// `literal < column` → column > literal, etc.
+fn sql_op_to_cmp_op_reversed(op: &sqlast::BinaryOperator) -> Option<CmpOp> {
+    match op {
+        sqlast::BinaryOperator::Eq => Some(CmpOp::Eq),
+        sqlast::BinaryOperator::NotEq => Some(CmpOp::Ne),
+        sqlast::BinaryOperator::Lt => Some(CmpOp::Gt),
+        sqlast::BinaryOperator::LtEq => Some(CmpOp::Ge),
+        sqlast::BinaryOperator::Gt => Some(CmpOp::Lt),
+        sqlast::BinaryOperator::GtEq => Some(CmpOp::Le),
+        _ => None,
+    }
+}
+
+/// Extract a `ScalarValue` from a SQL literal expression.
+fn expr_as_scalar_value(expr: &SqlExpr) -> Option<ScalarValue> {
+    match expr {
+        SqlExpr::Value(v) => match &v.value {
+            sqlast::Value::SingleQuotedString(s) => Some(ScalarValue::Str(s.clone())),
+            sqlast::Value::Number(s, _) => {
+                // Try integer first, then float.
+                if let Ok(n) = s.parse::<i64>() {
+                    Some(ScalarValue::Int(n))
+                } else if let Ok(f) = s.parse::<f64>() {
+                    Some(ScalarValue::Float(f))
+                } else {
+                    None
+                }
+            }
+            sqlast::Value::Boolean(b) => Some(ScalarValue::Bool(*b)),
+            sqlast::Value::Null => Some(ScalarValue::Null),
+            _ => None,
+        },
+        // Handle negative numbers: UnaryOp { Minus, Number }
+        SqlExpr::UnaryOp {
+            op: sqlast::UnaryOperator::Minus,
+            expr: inner,
+        } => match inner.as_ref() {
+            SqlExpr::Value(v) => match &v.value {
+                sqlast::Value::Number(s, _) => {
+                    if let Ok(n) = s.parse::<i64>() {
+                        Some(ScalarValue::Int(-n))
+                    } else if let Ok(f) = s.parse::<f64>() {
+                        Some(ScalarValue::Float(-f))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            },
             _ => None,
         },
         _ => None,
@@ -2122,5 +2287,133 @@ mod tests {
             analyzer.explicit_source_metadata_plan(),
             SourceMetadataPlan::default()
         );
+    }
+
+    // -------------------------------------------------------------------
+    // ScanPredicate extraction tests
+    // -------------------------------------------------------------------
+
+    fn predicate_for(sql: &str) -> Option<ScanPredicate> {
+        QueryAnalyzer::new(sql).unwrap().extract_scan_predicate()
+    }
+
+    #[test]
+    fn extract_eq_string_predicate() {
+        let pred = predicate_for("SELECT * FROM logs WHERE level = 'error'");
+        assert!(pred.is_some());
+        match pred.unwrap() {
+            ScanPredicate::Compare { field, op, value } => {
+                assert_eq!(field, "level");
+                assert_eq!(op, CmpOp::Eq);
+                assert_eq!(value, ScalarValue::Str("error".to_string()));
+            }
+            other => panic!("expected Compare, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_gt_int_predicate() {
+        let pred = predicate_for("SELECT * FROM logs WHERE status >= 500");
+        assert!(pred.is_some());
+        match pred.unwrap() {
+            ScanPredicate::Compare { field, op, value } => {
+                assert_eq!(field, "status");
+                assert_eq!(op, CmpOp::Ge);
+                assert_eq!(value, ScalarValue::Int(500));
+            }
+            other => panic!("expected Compare, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_and_chain() {
+        let pred = predicate_for("SELECT * FROM logs WHERE level = 'error' AND status >= 500");
+        assert!(pred.is_some());
+        match pred.unwrap() {
+            ScanPredicate::And(preds) => {
+                assert_eq!(preds.len(), 2);
+            }
+            other => panic!("expected And, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_is_null() {
+        let pred = predicate_for("SELECT * FROM logs WHERE trace_id IS NULL");
+        assert!(pred.is_some());
+        match pred.unwrap() {
+            ScanPredicate::IsNull { field, negated } => {
+                assert_eq!(field, "trace_id");
+                assert!(!negated);
+            }
+            other => panic!("expected IsNull, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_is_not_null() {
+        let pred = predicate_for("SELECT * FROM logs WHERE trace_id IS NOT NULL");
+        assert!(pred.is_some());
+        match pred.unwrap() {
+            ScanPredicate::IsNull { field, negated } => {
+                assert_eq!(field, "trace_id");
+                assert!(negated);
+            }
+            other => panic!("expected IsNull(negated), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_reversed_operand_order() {
+        let pred = predicate_for("SELECT * FROM logs WHERE 500 <= status");
+        assert!(pred.is_some());
+        match pred.unwrap() {
+            ScanPredicate::Compare { field, op, value } => {
+                assert_eq!(field, "status");
+                assert_eq!(op, CmpOp::Ge);
+                assert_eq!(value, ScalarValue::Int(500));
+            }
+            other => panic!("expected Compare, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_predicate_without_where() {
+        let pred = predicate_for("SELECT * FROM logs");
+        assert!(pred.is_none());
+    }
+
+    #[test]
+    fn unpushable_or_returns_none() {
+        let pred = predicate_for("SELECT * FROM logs WHERE level = 'error' OR level = 'fatal'");
+        // OR at top level is not pushable.
+        assert!(pred.is_none());
+    }
+
+    #[test]
+    fn and_with_unpushable_conjunct_pushes_partial() {
+        let pred = predicate_for("SELECT * FROM logs WHERE level = 'error' AND msg LIKE '%fail%'");
+        // LIKE is not pushable, but level = 'error' is.
+        assert!(pred.is_some());
+        match pred.unwrap() {
+            ScanPredicate::Compare { field, .. } => {
+                assert_eq!(field, "level");
+            }
+            other => panic!("expected Compare (partial push), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn negative_number_literal() {
+        let pred = predicate_for("SELECT * FROM logs WHERE temp > -10");
+        assert!(pred.is_some());
+        match pred.unwrap() {
+            ScanPredicate::Compare { field, op, value } => {
+                assert_eq!(field, "temp");
+                assert_eq!(op, CmpOp::Gt);
+                assert_eq!(value, ScalarValue::Int(-10));
+            }
+            other => panic!("expected Compare, got {other:?}"),
+        }
     }
 }
