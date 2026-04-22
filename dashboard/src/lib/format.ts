@@ -29,10 +29,10 @@ export function fmtBytesCompact(b: number): string {
 }
 
 export function fmtNs(ns: number | null | undefined): string {
-  if (ns == null) return "-";
+  if (ns == null || !Number.isFinite(ns)) return "-";
   if (ns >= 1_000_000) return `${(ns / 1_000_000).toFixed(1)}ms`;
   if (ns >= 1_000) return `${(ns / 1_000).toFixed(0)}µs`;
-  return `${ns}ns`;
+  return `${Math.round(ns)}ns`;
 }
 
 export function fmtDuration(s: number | null | undefined): string {

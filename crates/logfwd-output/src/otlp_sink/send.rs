@@ -122,8 +122,9 @@ impl OtlpSink {
         }
 
         let compressed_len = payload.len();
+        let body = payload.to_vec();
         let start = Instant::now();
-        match req.body(payload.to_vec()).send().await {
+        match req.body(body).send().await {
             Ok(response) => {
                 self.stats.inc_send(start.elapsed().as_nanos() as u64);
                 let status = response.status();
@@ -163,7 +164,7 @@ impl OtlpSink {
             }
             Err(e) => {
                 self.stats.inc_send(start.elapsed().as_nanos() as u64);
-                Err(io::Error::other(e.to_string()))
+                Err(io::Error::other(e))
             }
         }
     }
