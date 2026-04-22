@@ -398,7 +398,7 @@ impl LokiSink {
 
             // --- Log line ---
             let mut log_line = Vec::new();
-            write_row_json(batch, row, &cols, &mut log_line)?;
+            write_row_json(batch, row, &cols, &mut log_line, false)?;
             let log_str = String::from_utf8(log_line)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 

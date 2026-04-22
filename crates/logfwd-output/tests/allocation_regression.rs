@@ -78,21 +78,21 @@ fn write_row_json_stable_across_batches() {
     // internal bookkeeping allocations past the second pass.
     for _ in 0..5 {
         for row in 0..batch.num_rows() {
-            let _ = write_row_json(&batch, row, &cols, &mut buf);
+            let _ = write_row_json(&batch, row, &cols, &mut buf, false);
         }
         buf.clear();
     }
 
     let reg1 = Region::new(GLOBAL);
     for row in 0..batch.num_rows() {
-        let _ = write_row_json(&batch, row, &cols, &mut buf);
+        let _ = write_row_json(&batch, row, &cols, &mut buf, false);
     }
     let stats1 = reg1.change();
     buf.clear();
 
     let reg2 = Region::new(GLOBAL);
     for row in 0..batch.num_rows() {
-        let _ = write_row_json(&batch, row, &cols, &mut buf);
+        let _ = write_row_json(&batch, row, &cols, &mut buf, false);
     }
     let stats2 = reg2.change();
 

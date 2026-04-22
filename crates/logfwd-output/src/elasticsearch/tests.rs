@@ -97,7 +97,7 @@ fn serialize_batch_simple_for_test(
         out.extend_from_slice(action_line.as_bytes());
 
         let doc_start = out.len();
-        write_row_json(batch, row, &cols, &mut out)?;
+        write_row_json(batch, row, &cols, &mut out, false)?;
         out.push(b'\n');
 
         if !has_timestamp_col {
