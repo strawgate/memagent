@@ -335,11 +335,12 @@ Use `validate` to parse and validate the config without starting the pipeline:
 ff validate --config config.yaml
 ```
 
-Use `dry-run` to build all pipeline objects without starting them (catches errors
-such as SQL syntax issues):
+Use `dry-run` for the same read-only preflight check when you want an explicit
+"build it, don't start it" command name:
 
 ```bash
 ff dry-run --config config.yaml
 ```
 
-Both commands exit 0 on success and print an error to stderr on failure.
+Both commands are safe preflight checks. They exit 0 on success and print an
+error to stderr on failure.

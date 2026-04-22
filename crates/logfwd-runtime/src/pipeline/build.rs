@@ -45,6 +45,11 @@ fn input_type_exposes_public_source_paths(type_config: &InputTypeConfig) -> bool
     )
 }
 
+fn input_type_uses_checkpoints(type_config: &InputTypeConfig) -> bool {
+    // Keep this list tied to InputSource::checkpoint_data() implementations.
+    matches!(type_config, InputTypeConfig::File(_))
+}
+
 impl Pipeline {
     /// Construct a pipeline from parsed YAML config.
     pub fn from_config(
@@ -438,7 +443,12 @@ impl Pipeline {
         // first-run persistence works without out-of-band directory creation.
         let should_open_checkpoint_store =
             should_open_checkpoint_store(&checkpoint_dir, data_dir.is_some());
-        let checkpoint_store = if should_open_checkpoint_store {
+        let checkpoint_store = if should_open_checkpoint_store
+            && config
+                .inputs
+                .iter()
+                .any(|input_cfg| input_type_uses_checkpoints(&input_cfg.type_config))
+        {
             match FileCheckpointStore::open(&checkpoint_dir) {
                 Ok(s) => Some(Box::new(s) as Box<dyn CheckpointStore>),
                 Err(e) => {
@@ -793,6 +803,36 @@ mod tests {
         assert!(
             data_dir.join("p").is_dir(),
             "checkpoint store should be rooted under the explicit data dir"
+        );
+    }
+
+    #[test]
+    fn from_config_skips_checkpoint_store_for_non_checkpointing_inputs() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().join("state");
+        let cfg = logfwd_config::Config::load_str(
+            "input:\n  type: stdin\n  format: json\noutput:\n  type: stdout\n",
+        )
+        .expect("stdin config should parse")
+        .pipelines["default"]
+            .clone();
+
+        let pipeline = Pipeline::from_config_with_data_dir(
+            "stdin_only",
+            &cfg,
+            &logfwd_test_utils::test_meter(),
+            None,
+            Some(&data_dir),
+        )
+        .expect("stdin-only pipeline should build");
+
+        assert!(
+            pipeline.checkpoint_store.is_none(),
+            "stdin-only pipeline should not open a checkpoint store"
+        );
+        assert!(
+            !data_dir.join("stdin_only").exists(),
+            "stdin-only pipeline should not create checkpoint directories"
         );
     }
 

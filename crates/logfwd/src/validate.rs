@@ -3,68 +3,18 @@
 
 use std::sync::Arc;
 
-use opentelemetry::metrics::MeterProvider;
-
 use crate::cli::{CliError, bold, green, red, reset};
 
 // ---------------------------------------------------------------------------
 // Public validation entry points
 // ---------------------------------------------------------------------------
 
-/// Validate config by building all pipelines. Used by `validate` and `dry-run`.
+/// Validate config without constructing runtime sinks or checkpoint state.
+///
+/// This path still catches config, SQL-planning, and enrichment-loading errors,
+/// but it avoids side effects such as creating output files or touching the
+/// checkpoint directory.
 fn validate_pipelines_inner<FReady, FError>(
-    config: &logfwd_config::Config,
-    base_path: Option<&std::path::Path>,
-    mut on_ready: FReady,
-    mut on_error: FError,
-) -> Result<(), CliError>
-where
-    FReady: FnMut(&str),
-    FError: FnMut(String),
-{
-    use logfwd::pipeline::Pipeline;
-
-    // Build a no-op meter for validation (no OTel export needed).
-    let meter_provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder().build();
-    let meter = meter_provider.meter("logfwd");
-
-    let mut errors = 0;
-    for (name, pipe_cfg) in &config.pipelines {
-        if let Err(err) = validate_pipeline_read_only(pipe_cfg, base_path) {
-            on_error(format!("pipeline '{name}': {err}"));
-            errors += 1;
-            continue;
-        }
-
-        match Pipeline::from_config(name, pipe_cfg, &meter, base_path) {
-            Ok(mut pipeline) => {
-                // Execute a probe batch through the SQL plan to catch planning
-                // errors (duplicate aliases, bad window specs) that only
-                // surface on the first real batch at runtime.
-                if let Err(e) = pipeline.validate_sql_plan() {
-                    on_error(format!("pipeline '{name}' SQL plan: {e}"));
-                    errors += 1;
-                    continue;
-                }
-                on_ready(name);
-            }
-            Err(e) => {
-                on_error(format!("pipeline '{name}': {e}"));
-                errors += 1;
-            }
-        }
-    }
-
-    if errors > 0 {
-        return Err(CliError::Config(format!(
-            "{errors} error(s) during validation"
-        )));
-    }
-
-    Ok(())
-}
-
-pub(crate) fn validate_pipelines_read_only<FReady, FError>(
     config: &logfwd_config::Config,
     base_path: Option<&std::path::Path>,
     mut on_ready: FReady,
@@ -92,6 +42,19 @@ where
     }
 
     Ok(())
+}
+
+pub(crate) fn validate_pipelines_read_only<FReady, FError>(
+    config: &logfwd_config::Config,
+    base_path: Option<&std::path::Path>,
+    on_ready: FReady,
+    on_error: FError,
+) -> Result<(), CliError>
+where
+    FReady: FnMut(&str),
+    FError: FnMut(String),
+{
+    validate_pipelines_inner(config, base_path, on_ready, on_error)
 }
 
 pub(crate) fn validate_pipelines(

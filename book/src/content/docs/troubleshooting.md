@@ -31,7 +31,7 @@ kubectl -n collectors logs -f daemonset/logfwd
 | No logs arrive at destination | `curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].inputs'` | `lines_total` increasing | Fix file path/mount permissions |
 | Logs read, but nothing forwarded | `curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].transform'` | `lines_in > 0` and `lines_out > 0` | Transform filter dropping all rows |
 | Frequent OTLP send errors | Check runtime logs for `error sending` | No repeated connection/auth errors | Fix endpoint/protocol/connectivity |
-| Startup/config errors | `ff validate --config config.yaml` | Output contains `config ok:` | Fix required fields / YAML syntax |
+| Startup/config errors | `ff validate --config config.yaml` | Output contains `config ok:` | Fix YAML, path, output, or SQL errors |
 | Throughput unexpectedly low | `curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].stage_seconds'` | `output` not dominating total | Network/collector bottleneck |
 
 ## Scenario 1: No logs arrive at destination
@@ -157,6 +157,8 @@ Validation passes, then `dry-run` succeeds:
 ```bash
 ff dry-run --config config.yaml
 ```
+
+Both commands are read-only checks, so they are safe to use before deploys and in CI.
 
 ## Scenario 5: Throughput drops or latency spikes
 

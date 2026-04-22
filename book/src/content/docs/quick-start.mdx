@@ -85,10 +85,13 @@ ff run --config config.yaml
 You'll see colored output for every log line:
 
 ```
-ff v0.x.x (abc1234 2026-04-01, release)
+logfwd v0.x.x
 
-  ready: default
-ff running (1 pipeline(s))
+  ✓  default
+     in   file  logs.json
+     out  stdout
+
+ready · 1 pipeline (started in 38ms)
 
 10:30:00.000Z  INFO   request handled GET /api/v1/users/10000  duration_ms=1 request_id=... service=myapp status=200
 10:30:00.000Z  ERROR  request handled GET /health/10021  duration_ms=40 request_id=... service=myapp status=503
@@ -98,7 +101,7 @@ ff running (1 pipeline(s))
 FastForward read the file, parsed each JSON line, and printed the results in a readable console format. All 10,000 lines should stream through quickly on a typical development machine.
 
 :::note
-FastForward exits when it reaches the end of a finite file. In production you'd point it at a log file being actively appended to, and it tails continuously.
+File inputs keep tailing after they reach the current end of the file. For a finite one-shot workflow, pipe data into `ff send` instead.
 :::
 
 ### Send piped data
@@ -220,7 +223,7 @@ ff validate --config config.yaml
 ff dry-run --config config.yaml
 ```
 
-`validate` catches YAML and required-field errors. `dry-run` goes one step further and checks that the pipeline and SQL can be built successfully.
+Both commands are read-only preflight checks: they parse the config, resolve paths and environment variables, and verify that inputs, outputs, and SQL can be built without starting ingestion. Use `validate` as the normal pre-deploy check; `dry-run` is the same safe build check with a more explicit command name.
 
 ---
 
