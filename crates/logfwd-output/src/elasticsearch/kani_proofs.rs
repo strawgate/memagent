@@ -1,7 +1,7 @@
 //! Kani formal verification proofs for the Elasticsearch timestamp utilities.
 #![cfg(kani)]
 
-use crate::elasticsearch::timestamp::{is_leap_year, write_ts_suffix};
+use super::timestamp::{is_leap_year, write_ts_suffix};
 
 /// Prove is_leap_year satisfies all four cases of the Gregorian calendar rule
 /// exhaustively for every possible u32 year value.
@@ -36,6 +36,7 @@ fn verify_is_leap_year_gregorian_rules() {
 /// Prove write_ts_suffix produces valid ASCII for any representative
 /// timestamp in the first 16 years of the epoch (bounded for solver speed).
 #[kani::proof]
+#[kani::unwind(48)]
 fn verify_write_ts_suffix_ascii() {
     // Restrict to first ~16 years (0..504921600) to keep the solver tractable.
     let secs: u64 = kani::any();
