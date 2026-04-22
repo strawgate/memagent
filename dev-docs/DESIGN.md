@@ -136,7 +136,7 @@ work for file inputs.
 
 **Cost:** `C: Clone` bound on methods; generic propagates to `AckReceipt<C>`,
 `CheckpointAdvance<C>`.  
-**Research:** `dev-docs/research/offset-checkpoint-research.md`. **Related:** #270.
+**Research:** `dev-docs/research/checkpoint-snapshot-design.md`. **Related:** #270.
 
 ### Kani checkpoint proof domain
 
@@ -320,3 +320,17 @@ mismatch with current config → error with remediation ("clear buffer or revert
 requires global coordination across sources, which conflicts with our per-source independent
 checkpoint architecture. The user-placed checkpoint step gives control without barrier
 complexity. If we add cross-source JOINs later, we can layer barriers on top.
+
+### Pipeline Topology Compiler (#1363)
+
+The pipeline topology compiler transforms a parsed configuration into a typed, verified execution DAG without starting any long-running workers.
+
+**Phase 1: Dry-run scaffold**
+- Introduce `PipelineSpec` and `CompiledTopology` models.
+- Provide `compile_topology(config)` that builds the static DAG.
+- Integrate into `ff dry-run` to execute this compiler, ensuring SQL plans and I/O shapes are correct statically.
+
+**Future Phases (Not in Phase 1):**
+- Translating the compiled topology into runtime Tokio tasks.
+- Cross-pipeline routing.
+- Advanced processor chain registry.

@@ -101,6 +101,7 @@ fn parse_raw(raw_array: &StringArray, field_name: &str) -> Result<RecordBatch, D
         extract_all: false,
         line_field_name: None,
         validate_utf8: false,
+        row_predicate: None,
     };
 
     let mut scanner = Scanner::new(config);

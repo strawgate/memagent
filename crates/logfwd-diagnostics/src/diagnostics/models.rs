@@ -140,6 +140,12 @@ pub struct ComponentStatus {
     pub parse_errors: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transport: Option<TransportStatus>,
+    /// Cumulative nanoseconds spent in HTTP/gRPC send calls (network round-trip only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_ns_total: Option<u64>,
+    /// Number of completed send operations (HTTP/gRPC round-trips).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub send_count: Option<u64>,
 }
 
 /// Transport-specific status details for a component.
@@ -199,6 +205,8 @@ pub struct BatchStatus {
     pub last_batch_time_ns: String,
     pub batch_latency_avg_ns: u64,
     pub inflight: u64,
+    pub channel_depth: u64,
+    pub channel_capacity: u64,
     pub rows_total: u64,
 }
 

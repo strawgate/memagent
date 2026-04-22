@@ -71,7 +71,7 @@ impl Sink for TurmoilTcpSink {
             let mut buf = Vec::new();
             for row in 0..batch.num_rows() {
                 buf.clear();
-                if let Err(e) = write_row_json(batch, row, &cols, &mut buf) {
+                if let Err(e) = write_row_json(batch, row, &cols, &mut buf, false) {
                     return SendResult::IoError(io::Error::other(e.to_string()));
                 }
                 buf.push(b'\n');

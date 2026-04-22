@@ -416,8 +416,8 @@ pub(super) fn build_input_state(
                 ));
             }
             let mut options = logfwd_io::tcp_input::TcpInputOptions::default();
-            if let Some(v) = t.max_connections {
-                options.max_connections = v;
+            if let Some(v) = t.max_clients {
+                options.max_clients = v;
             }
             if let Some(v) = t.connection_timeout_ms {
                 options.connection_timeout_ms = v.get();
@@ -993,7 +993,7 @@ mod tests {
                     InputTypeConfig::Tcp(logfwd_config::TcpTypeConfig {
                         listen: listen.to_string(),
                         tls: None,
-                        max_connections: None,
+                        max_clients: None,
                         connection_timeout_ms: None,
                         read_timeout_ms: None,
                     })
@@ -1111,7 +1111,7 @@ mod tests {
                 InputTypeConfig::Tcp(logfwd_config::TcpTypeConfig {
                     listen: "   ".to_string(),
                     tls: None,
-                    max_connections: None,
+                    max_clients: None,
                     connection_timeout_ms: None,
                     read_timeout_ms: None,
                 }),
@@ -1188,7 +1188,7 @@ mod tests {
                     client_ca_file: None,
                     require_client_auth: false,
                 }),
-                max_connections: None,
+                max_clients: None,
                 connection_timeout_ms: None,
                 read_timeout_ms: None,
             }),
@@ -1224,7 +1224,7 @@ mod tests {
                     client_ca_file: None,
                     require_client_auth: true,
                 }),
-                max_connections: None,
+                max_clients: None,
                 connection_timeout_ms: None,
                 read_timeout_ms: None,
             }),

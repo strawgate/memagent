@@ -238,7 +238,7 @@ Component labels use `component:` prefix (e.g., `component:processor/scanner`). 
 - **Find what SQL UDFs exist:** `crates/logfwd-transform/src/udf/` for `json()`, `json_int()`, `json_float()`, `regexp_extract()`, `grok()`, `geo_lookup()`, `hash()` (internal), and `crates/logfwd-transform/src/cast_udf.rs` for `int()` / `float()` — all are custom `ScalarUDFImpl` implementations registered on the DataFusion context.
 - **Find config schema:** `book/src/content/docs/configuration/reference.mdx` — all YAML fields, input/output types.
 - **Find example configs:** `examples/use-cases/` — 20 common patterns.
-- **Review roadmap/priorities:** [GitHub issue #889](https://github.com/strawgate/fastforward/issues/889).
+- **Review active work/priorities:** open GitHub issues and PRs (`gh issue list --state open`, `gh pr list --state open`).
 - **Find library-specific patterns:** `dev-docs/references/` — Arrow, DataFusion, Tokio, OTLP, Kani.
 - **Find verification status:** `dev-docs/VERIFICATION.md` — per-module proof status.
 - **Find what breaks together:** `dev-docs/CHANGE_MAP.md` — co-change requirements.

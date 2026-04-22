@@ -41,6 +41,13 @@ pub struct ComponentStats {
     pub udp_drops: AtomicU64,
     /// UDP: actual kernel receive buffer size.
     pub udp_recv_buf: AtomicUsize,
+    /// Cumulative wall-clock nanoseconds spent in HTTP/gRPC send calls
+    /// (network round-trip only, excludes serialization).
+    #[cfg(not(kani))]
+    pub send_ns_total: AtomicU64,
+    /// Number of completed send operations (HTTP/gRPC round-trips).
+    #[cfg(not(kani))]
+    pub send_count: AtomicU64,
     // OTel counters (for OTLP push)
     otel_lines: Counter<u64>,
     otel_bytes: Counter<u64>,
@@ -50,6 +57,8 @@ pub struct ComponentStats {
     otel_otlp_projected_success: Counter<u64>,
     otel_otlp_projected_fallback: Counter<u64>,
     otel_otlp_projection_invalid: Counter<u64>,
+    otel_send_ns: Counter<u64>,
+    otel_send_count: Counter<u64>,
     otel_attrs: Vec<KeyValue>,
 }
 
@@ -76,6 +85,10 @@ impl ComponentStats {
             tcp_active: AtomicUsize::new(0),
             udp_drops: AtomicU64::new(0),
             udp_recv_buf: AtomicUsize::new(0),
+            #[cfg(not(kani))]
+            send_ns_total: AtomicU64::new(0),
+            #[cfg(not(kani))]
+            send_count: AtomicU64::new(0),
             otel_lines: meter.u64_counter(format!("{prefix}_lines")).build(),
             otel_bytes: meter.u64_counter(format!("{prefix}_bytes")).build(),
             otel_errors: meter.u64_counter(format!("{prefix}_errors")).build(),
@@ -90,6 +103,8 @@ impl ComponentStats {
             otel_otlp_projection_invalid: meter
                 .u64_counter(format!("{prefix}_otlp_projection_invalid"))
                 .build(),
+            otel_send_ns: meter.u64_counter(format!("{prefix}_send_ns")).build(),
+            otel_send_count: meter.u64_counter(format!("{prefix}_send_count")).build(),
             otel_attrs: attrs,
         }
     }
@@ -160,6 +175,18 @@ impl ComponentStats {
         self.otel_otlp_projection_invalid.add(1, &self.otel_attrs);
     }
 
+    /// Record a send operation and its duration in nanoseconds (atomic + OTel).
+    #[cfg(not(kani))]
+    pub fn inc_send(&self, ns: u64) {
+        self.send_ns_total.fetch_add(ns, Ordering::Relaxed);
+        self.send_count.fetch_add(1, Ordering::Relaxed);
+        self.otel_send_ns.add(ns, &self.otel_attrs);
+        self.otel_send_count.add(1, &self.otel_attrs);
+    }
+
+    #[cfg(kani)]
+    pub fn inc_send(&self, _ns: u64) {}
+
     /// Current line count (relaxed load).
     pub fn lines(&self) -> u64 {
         self.lines_total.load(Ordering::Relaxed)
@@ -198,6 +225,28 @@ impl ComponentStats {
     /// Current OTLP malformed projection rejection count.
     pub fn otlp_projection_invalid(&self) -> u64 {
         self.otlp_projection_invalid_total.load(Ordering::Relaxed)
+    }
+
+    /// Current send duration total in nanoseconds.
+    #[cfg(not(kani))]
+    pub fn send_ns_total(&self) -> u64 {
+        self.send_ns_total.load(Ordering::Relaxed)
+    }
+
+    #[cfg(kani)]
+    pub fn send_ns_total(&self) -> u64 {
+        0
+    }
+
+    /// Current send operation count.
+    #[cfg(not(kani))]
+    pub fn send_count(&self) -> u64 {
+        self.send_count.load(Ordering::Relaxed)
+    }
+
+    #[cfg(kani)]
+    pub fn send_count(&self) -> u64 {
+        0
     }
 
     /// Update the component's coarse health snapshot.

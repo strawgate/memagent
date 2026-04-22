@@ -258,6 +258,7 @@ mod tests {
             extract_all: false,
             line_field_name: None,
             validate_utf8: false,
+            row_predicate: None,
         };
         let batch = Scanner::new(config)
             .scan_detached(Bytes::from(
@@ -282,6 +283,7 @@ mod tests {
             extract_all: false,
             line_field_name: None,
             validate_utf8: false,
+            row_predicate: None,
         };
         let batch = Scanner::new(config)
             .scan_detached(Bytes::from(
@@ -309,6 +311,7 @@ mod tests {
             extract_all: true,
             line_field_name: Some("body".to_string()),
             validate_utf8: false,
+            row_predicate: None,
         };
         let batch = Scanner::new(config)
             .scan_detached(Bytes::from(b"{\"msg\":\"hi\"}\n".to_vec()))
@@ -586,6 +589,7 @@ mod tests {
             extract_all: true,
             line_field_name: Some("body".to_string()),
             validate_utf8: false,
+            row_predicate: None,
         };
         let batch = Scanner::new(config)
             .scan(Bytes::from_static(b"{\"msg\":\"hi\"}\n"))
@@ -607,6 +611,7 @@ mod tests {
     fn test_validate_utf8_accepts_valid_input() {
         let config = ScanConfig {
             validate_utf8: true,
+            row_predicate: None,
             ..ScanConfig::default()
         };
         let batch = Scanner::new(config)
@@ -619,6 +624,7 @@ mod tests {
     fn test_validate_utf8_returns_error_on_invalid_input() {
         let config = ScanConfig {
             validate_utf8: true,
+            row_predicate: None,
             ..ScanConfig::default()
         };
         // 0xFF is not valid UTF-8
@@ -631,6 +637,7 @@ mod tests {
     fn test_streaming_validate_utf8_accepts_valid_input() {
         let config = ScanConfig {
             validate_utf8: true,
+            row_predicate: None,
             ..ScanConfig::default()
         };
         let batch = Scanner::new(config)
@@ -643,6 +650,7 @@ mod tests {
     fn test_streaming_validate_utf8_returns_error_on_invalid_input() {
         let config = ScanConfig {
             validate_utf8: true,
+            row_predicate: None,
             ..ScanConfig::default()
         };
         let result = Scanner::new(config).scan(Bytes::from_static(b"{\"msg\":\"\xFF\"}\n"));

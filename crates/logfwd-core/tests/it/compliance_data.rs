@@ -607,6 +607,7 @@ fn compliance_raw_format() {
         extract_all: true,
         line_field_name: Some("body".to_string()),
         validate_utf8: false,
+        row_predicate: None,
     };
     let mut scanner = Scanner::new(config);
     let batch = scanner

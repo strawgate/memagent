@@ -3,6 +3,7 @@
 // Defines ScanConfig and FieldSpec, used by the Scanner and the SQL
 // transform layer.
 
+use crate::scan_predicate::ScanPredicate;
 use alloc::{string::String, vec, vec::Vec};
 /// Specification for a single field to extract.
 pub struct FieldSpec {
@@ -28,6 +29,13 @@ pub struct ScanConfig {
     /// builder paths can reach `finish_batch()` UTF-8 assumptions. Disabled by
     /// default for maximum throughput; enable when input provenance is untrusted.
     pub validate_utf8: bool,
+    /// Optional row-level predicate evaluated during scanning.
+    ///
+    /// When set, the scanner extracts predicate fields, evaluates the predicate,
+    /// and skips rows that don't match (no `begin_row`/`end_row` calls).
+    /// This is advisory — the SQL transform still applies all predicates for
+    /// correctness.
+    pub row_predicate: Option<ScanPredicate>,
 }
 
 impl Default for ScanConfig {
@@ -37,6 +45,7 @@ impl Default for ScanConfig {
             extract_all: true,
             line_field_name: None,
             validate_utf8: false,
+            row_predicate: None,
         }
     }
 }
@@ -159,6 +168,7 @@ mod tests {
             extract_all: false,
             line_field_name: None,
             validate_utf8: false,
+            row_predicate: None,
         };
 
         // Exact match still works.

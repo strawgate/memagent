@@ -154,8 +154,7 @@ impl UdpSink {
         for row in 0..batch.num_rows() {
             // Serialize row into scratch buffer.
             self.row_buf.clear();
-            write_row_json(batch, row, &cols, &mut self.row_buf)?;
-            self.row_buf.push(b'\n');
+            write_row_json(batch, row, &cols, &mut self.row_buf, true)?;
 
             let row_len = self.row_buf.len();
             total_bytes += row_len as u64;

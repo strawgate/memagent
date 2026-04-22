@@ -26,15 +26,6 @@ node runs one FastForward pod that reads container logs from `/var/log` on the h
 
 A ready-to-use manifest is provided at `deploy/daemonset.yml`.
 
-:::note[CRI field requirement]
-In the file-input example below, `_stream` is only present when the input is
-parsed as CRI (`format: cri`). The `_timestamp` column is present here because
-CRI parsing attaches it as sidecar metadata for this example, but `_timestamp`
-may also be provided by other inputs or formats. If you switch to a different
-input format and these columns are not available, remove them or update the
-query accordingly.
-:::
-
 ### Minimal DaemonSet
 
 ```yaml
@@ -62,11 +53,7 @@ data:
       format: cri
 
     transform: |
-      SELECT
-        level,
-        message,
-        _timestamp,
-        _stream
+      SELECT *
       FROM logs
       WHERE level != 'DEBUG'
 
@@ -101,7 +88,7 @@ spec:
         - operator: Exists  # run on all nodes including control-plane
       containers:
         - name: logfwd
-          image: ghcr.io/strawgate/memagent:latest
+          image: ghcr.io/strawgate/fastforward:latest
           imagePullPolicy: IfNotPresent
           args:
             - run
@@ -332,14 +319,14 @@ being OOM-killed.
 Use `validate` to parse and validate the config without starting the pipeline:
 
 ```bash
-logfwd validate --config config.yaml
+ff validate --config config.yaml
 ```
 
 Use `dry-run` to build all pipeline objects without starting them (catches errors
 such as SQL syntax issues):
 
 ```bash
-logfwd dry-run --config config.yaml
+ff dry-run --config config.yaml
 ```
 
 Both commands exit 0 on success and print an error to stderr on failure.

@@ -34,6 +34,10 @@ concurrency:
   group: pages-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Disable sccache in CI — config.toml enables it for local dev builds.
+  RUSTC_WRAPPER: ""
+
 jobs:
   build:
     runs-on: ubuntu-latest

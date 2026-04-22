@@ -28,6 +28,13 @@ export function fmtBytesCompact(b: number): string {
   return `${Math.round(b)}B`;
 }
 
+export function fmtNs(ns: number | null | undefined): string {
+  if (ns == null || !Number.isFinite(ns)) return "-";
+  if (ns >= 1_000_000) return `${(ns / 1_000_000).toFixed(1)}ms`;
+  if (ns >= 1_000) return `${(ns / 1_000).toFixed(0)}µs`;
+  return `${Math.round(ns)}ns`;
+}
+
 export function fmtDuration(s: number | null | undefined): string {
   if (s == null) return "";
   if (s >= 86400) return `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`;

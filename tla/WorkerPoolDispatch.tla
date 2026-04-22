@@ -156,7 +156,7 @@ SubmitAfterDrain(item) ==
     /\ item \notin rejected
     /\ rejected' = rejected \cup {item}
     /\ UNCHANGED <<poolState, workers, workerState, workerHealth,
-                   pending, inFlight, assignment, cancelled, forcedAbort>>
+                   pending, inFlight, delivered, assignment, cancelled, forcedAbort>>
 
 \* Dispatch: send the first pending item to an idle worker.
 \* Models MRU dispatch: pick any idle worker (ordering is abstracted).
@@ -198,11 +198,7 @@ WorkerComplete(w, item) ==
     /\ item \in inFlight
     /\ assignment[item] = w
     /\ workerState' = [workerState EXCEPT ![w] = "Idle"]
-    \* Successful delivery recovers Degraded → Healthy, but Failed is
-    \* terminal — matches reduce_output_health(Failed, DeliverySucceeded).
-    /\ workerHealth' = [workerHealth EXCEPT ![w] =
-                         IF workerHealth[w] = "Failed" THEN "Failed"
-                         ELSE "Healthy"]
+    /\ workerHealth' = [workerHealth EXCEPT ![w] = (IF workerHealth[w] = "Failed" THEN "Failed" ELSE "Healthy")]
     /\ inFlight'    = inFlight \ {item}
     /\ delivered'   = delivered \cup {item}
     /\ UNCHANGED <<poolState, workers, pending, rejected,
@@ -393,16 +389,12 @@ NoSubmitAfterDrain ==
  * Temporal safety properties (action-level)
  * ----------------------------------------------------------------------- *)
 
-\* FailureIsSticky as a per-lifecycle action property: while a worker is
-\* in the active set, its Failed health never reverts to a non-terminal
-\* state.  Once removed (WorkerFail / IdleTimeout), SpawnAndDispatch may
-\* recycle the ID with fresh "Healthy" health — this is correct because
-\* the Rust pool uses monotonic IDs (never reused), while the TLA+ model
-\* reuses IDs from the bounded WorkerIds set as a finite-state abstraction.
+\* FailureIsSticky as a temporal property: once Failed, stays Failed
+\* UNLESS the worker is re-spawned (added back to the workers set).
 FailureIsStickyTemporal ==
     \A w \in WorkerIds :
-        [][workerHealth[w] = "Failed" /\ w \in workers =>
-           workerHealth'[w] = "Failed" \/ w \notin workers']_vars
+        [][workerHealth[w] = "Failed" =>
+           (workerHealth'[w] = "Failed" \/ (w \notin workers /\ w \in workers'))]_vars
 
 \* ForceAbort accounts for all unfinished work.
 ForceAbortAccountsForAll ==

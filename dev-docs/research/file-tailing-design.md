@@ -1,8 +1,8 @@
-# File Tailing Audit
+# File Tailing Design Notes
 
 > **Status:** Active
 > **Date:** 2026-04-02
-> **Context:** End-to-end audit of the file tailing path with recommendations from production collector research.
+> **Context:** file tailing design notes and recommendations informed by collector research and repo-local correctness gaps.
 
 ## Data Flow Diagram
 

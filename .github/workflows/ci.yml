@@ -27,6 +27,8 @@ env:
   LOGFWD_DISABLE_DEFAULT_CHECKPOINTS: "1"
   TOKIO_WORKER_THREADS: "4"
   RAYON_NUM_THREADS: "4"
+  # Disable sccache in CI — config.toml enables it for local dev builds.
+  RUSTC_WRAPPER: ""
 
 jobs:
   # -------------------------------------------------------------------------
@@ -337,6 +339,35 @@ jobs:
         run: cargo build -p logfwd-core --target thumbv6m-none-eabi
 
   # -------------------------------------------------------------------------
+  # Feature-flag verification — cargo-hack checks each feature compiles
+  # independently (catches missing feature gates, broken optional deps).
+  # Only `check`, not `build` — fast (~2 min).
+  # -------------------------------------------------------------------------
+  feature-check:
+    name: Feature flag check
+    needs: [changes]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.rust == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/build-dashboard
+
+      - uses: ./.github/actions/setup-rust
+      - uses: taiki-e/install-action@e445549abfcabe1b4106a8da1be899f392a60abc # cargo-hack
+
+      - name: Check each feature compiles independently
+        run: >-
+          cargo hack check --each-feature --no-dev-deps
+          -p logfwd
+          -p logfwd-runtime
+          -p logfwd-io
+          -p logfwd-config
+
+  # -------------------------------------------------------------------------
   # Kani formal verification — split into four parallel shards by layer so
   # the slowest one finishes in roughly 10 minutes on a 4-vCPU runner.
   # Observed wall-clock medians on main (per-job, --jobs 3):
@@ -364,8 +395,6 @@ jobs:
       (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    env:
-      RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v6
 
@@ -395,8 +424,6 @@ jobs:
       (github.event.pull_request.draft == false && needs.changes.outputs.kani_required == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 90
-    env:
-      RUSTC_WRAPPER: ""
     steps:
       - uses: actions/checkout@v6
 
@@ -817,6 +844,7 @@ jobs:
       - test-macos
       - test-network
       - cross-check
+      - feature-check
       - kani-core
       - kani-arrow
       - kani-runtime-types

@@ -4,6 +4,9 @@
 
 logfwd uses five complementary verification techniques. Choose based on what you need to prove.
 
+For verification inventory, manifests, guardrails, and organization guidance,
+start with [`dev-docs/verification/README.md`](verification/README.md).
+
 ## Tool selection
 
 | Technique | Layer | Best for | Limitation |

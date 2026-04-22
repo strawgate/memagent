@@ -8,6 +8,17 @@ runs:
       with:
         components: clippy, rustfmt
 
+    - name: Install mold linker
+      if: runner.os == 'Linux'
+      uses: rui314/setup-mold@9c9c13bf4c3f1adef0cc596abc155580bcb04444 # v1
+
+    - name: Configure mold as linker
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang' >> "$GITHUB_ENV"
+        echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=mold' >> "$GITHUB_ENV"
+
     - uses: Swatinem/rust-cache@v2
       with:
         save-if: ${{ github.ref == 'refs/heads/main' }}

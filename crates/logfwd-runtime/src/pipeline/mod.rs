@@ -18,6 +18,7 @@ mod processor_stage;
 mod run;
 mod source_metadata;
 mod submit;
+pub mod topology;
 
 #[cfg(test)]
 mod pipeline_format_tests;

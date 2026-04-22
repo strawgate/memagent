@@ -1,5 +1,5 @@
 import { useRef, useState } from "preact/hooks";
-import { fmt, fmtBytes } from "../lib/format";
+import { fmt, fmtBytes, fmtNs } from "../lib/format";
 import { RateTracker } from "../lib/rates";
 import type { ComponentData, PipelineData, TraceRecord } from "../types";
 import { BottleneckBadge } from "./BottleneckBadge";
@@ -139,6 +139,12 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
                 <span>errors</span>
                 <b style={out.errors > 0 ? "color:var(--err)" : ""}>{out.errors}</b>
               </span>
+              {out.send_ns_total != null && out.send_count != null && out.send_count > 0 && (
+                <span class="pn-row">
+                  <span>latency</span>
+                  <b>{fmtNs(out.send_ns_total / Math.max(1, out.send_count))}</b>
+                </span>
+              )}
             </button>
           </>
         ))}
@@ -268,6 +274,12 @@ export function PipelineView({ pipeline: p, traces, pollMs, setPollMs }: Props) 
                     {out.errors}
                   </div>
                 </div>
+                {out.send_ns_total != null && out.send_count != null && out.send_count > 0 && (
+                  <div class="insp-kv">
+                    <div class="ik-l">Latency</div>
+                    <div class="ik-v">{fmtNs(out.send_ns_total / Math.max(1, out.send_count))}</div>
+                  </div>
+                )}
               </div>
             </div>
           );

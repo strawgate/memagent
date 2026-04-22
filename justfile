@@ -244,6 +244,11 @@ tlc model config:
 tlc-tail:
     just tlc MCTailLifecycle.tla TailLifecycle.cfg
 
+# Verify each feature flag compiles independently (cargo-hack).
+# Requires: cargo install cargo-hack
+hack-check:
+    cargo hack check --each-feature --no-dev-deps -p logfwd -p logfwd-runtime -p logfwd-io -p logfwd-config
+
 # Lint — fast (default-members, skips datafusion)
 lint: fmt-check otlp-codegen-check workspace-inheritance-guard public-api-error-guard production-panic-guard clippy toml-check
 

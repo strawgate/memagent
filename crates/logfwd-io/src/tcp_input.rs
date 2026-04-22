@@ -32,9 +32,6 @@ fn pem_error_kind(e: &rustls::pki_types::pem::Error) -> io::ErrorKind {
     }
 }
 
-/// Maximum number of concurrent TCP client connections.
-const MAX_CLIENTS: usize = 1024;
-
 /// Per-poll read buffer size (64 KiB). Shared across all connections within a
 /// single `poll` call; data is copied into per-client buffers immediately, so
 /// one moderate buffer is sufficient.
@@ -285,8 +282,8 @@ fn extract_complete_records(client: &mut Client, out: &mut Vec<u8>) {
 /// can track per-connection state (e.g., partial-line remainders).
 #[derive(Debug, Clone)]
 pub struct TcpInputOptions {
-    /// Maximum number of concurrent connections. Defaults to `MAX_CLIENTS` (1024).
-    pub max_connections: usize,
+    /// Maximum number of concurrent connections. Defaults to 1024.
+    pub max_clients: usize,
     /// Connection idle timeout in milliseconds. Defaults to 60000 (60s).
     pub connection_timeout_ms: u64,
     /// Connection read timeout in milliseconds (disconnects if a read yields incomplete data and the next read takes too long). Defaults to no timeout.
@@ -298,7 +295,7 @@ pub struct TcpInputOptions {
 impl Default for TcpInputOptions {
     fn default() -> Self {
         Self {
-            max_connections: MAX_CLIENTS,
+            max_clients: 1024,
             connection_timeout_ms: DEFAULT_IDLE_TIMEOUT.as_millis() as u64,
             read_timeout_ms: None,
             tls: None,
@@ -334,9 +331,11 @@ pub struct TcpInput {
     buf: Vec<u8>,
     idle_timeout: Duration,
     read_timeout: Option<Duration>,
-    max_connections: usize,
+    max_clients: usize,
     /// Total connections accepted since creation (never decreases).
     connections_accepted: u64,
+    /// Rate-limit state for max_clients warnings.
+    last_max_clients_warning: Option<Instant>,
     /// Monotonic counter for generating per-connection `SourceId` values.
     next_connection_seq: u64,
     /// Coarse control-plane health derived from the most recent poll cycle.
@@ -504,8 +503,9 @@ impl TcpInput {
             buf: vec![0u8; READ_BUF_SIZE],
             idle_timeout: Duration::from_millis(options.connection_timeout_ms),
             read_timeout: options.read_timeout_ms.map(Duration::from_millis),
-            max_connections: options.max_connections,
+            max_clients: options.max_clients,
             connections_accepted: 0,
+            last_max_clients_warning: None,
             next_connection_seq: 0,
             health: ComponentHealth::Healthy,
             stats,
@@ -560,7 +560,7 @@ impl InputSource for TcpInput {
 
         // Accept new connections up to the limit.
         loop {
-            if self.clients.len() >= self.max_connections {
+            if self.clients.len() >= self.max_clients {
                 // Drain (and drop) any pending connections beyond the limit so
                 // the kernel accept queue does not fill up and stall.
                 match self.listener.accept() {
@@ -570,6 +570,17 @@ impl InputSource for TcpInput {
                             self.connections_accepted,
                             std::sync::atomic::Ordering::Relaxed,
                         );
+                        if self
+                            .last_max_clients_warning
+                            .is_none_or(|t| t.elapsed() > Duration::from_secs(60))
+                        {
+                            tracing::warn!(
+                                "TCP input '{}' reached max_clients limit ({}), dropping incoming connections",
+                                self.name,
+                                self.max_clients
+                            );
+                            self.last_max_clients_warning = Some(Instant::now());
+                        }
                         under_pressure = true;
                         continue; // dropped immediately
                     }
@@ -1703,7 +1714,7 @@ mod tests {
     #[test]
     fn test_tcp_custom_options() {
         let mut options = TcpInputOptions::default();
-        options.max_connections = 2;
+        options.max_clients = 2;
         options.connection_timeout_ms = 1000;
         options.read_timeout_ms = Some(500);
 
@@ -1715,9 +1726,54 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(input.max_connections, 2);
+        assert_eq!(input.max_clients, 2);
         assert_eq!(input.idle_timeout.as_millis(), 1000);
         assert_eq!(input.read_timeout.unwrap().as_millis(), 500);
+    }
+
+    #[test]
+    fn test_tcp_max_clients_drops_and_warns() {
+        let mut options = TcpInputOptions::default();
+        options.max_clients = 2;
+
+        let mut input = TcpInput::with_options(
+            "test_max_conns",
+            "127.0.0.1:0",
+            options,
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
+
+        let addr = input.local_addr().unwrap();
+
+        let _client1 = StdTcpStream::connect(addr).unwrap();
+        let _client2 = StdTcpStream::connect(addr).unwrap();
+        let _client3 = StdTcpStream::connect(addr).unwrap();
+        let _client4 = StdTcpStream::connect(addr).unwrap();
+
+        // Wait a bit to ensure connections hit the kernel accept queue
+        std::thread::sleep(Duration::from_millis(50));
+
+        // The first poll should accept 2 connections, log a warning, and drop the other 2.
+        let _events = input.poll().unwrap();
+
+        assert_eq!(
+            input.clients.len(),
+            2,
+            "Should only accept max_clients clients"
+        );
+        assert!(
+            input.last_max_clients_warning.is_some(),
+            "Should have logged a warning"
+        );
+        assert_eq!(
+            input.connections_accepted, 4,
+            "Should have accepted and immediately dropped the excess connections"
+        );
+
+        // Let's also check a second poll does not blow up
+        let _events2 = input.poll().unwrap();
+        assert_eq!(input.clients.len(), 2, "Still 2 clients");
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { fmtNs } from "../lib/format";
 import type { TraceRecord } from "../types";
 
 // ─── colors ──────────────────────────────────────────────────────────────────
@@ -14,12 +15,6 @@ const C = {
 };
 
 // ─── formatters ──────────────────────────────────────────────────────────────
-
-function fmtNs(ns: number): string {
-  if (ns >= 1_000_000) return `${(ns / 1_000_000).toFixed(1)}ms`;
-  if (ns >= 1_000) return `${(ns / 1_000).toFixed(0)}µs`;
-  return `${ns}ns`;
-}
 
 function fmtRows(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;

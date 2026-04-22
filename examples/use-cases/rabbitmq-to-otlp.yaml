@@ -1,4 +1,4 @@
-# logfwd example
+# FastForward example
 # Use case: RabbitMQ logs to OTLP
 # Replace paths/endpoints with values for your environment.
 

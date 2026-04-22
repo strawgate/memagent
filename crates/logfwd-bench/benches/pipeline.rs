@@ -61,6 +61,7 @@ fn bench_scanner(c: &mut Criterion) {
                 extract_all: false,
                 line_field_name: None,
                 validate_utf8: false,
+                row_predicate: None,
             };
             let mut scanner = Scanner::new(config);
             b.iter(|| {
@@ -71,6 +72,100 @@ fn bench_scanner(c: &mut Criterion) {
                 )
             });
         });
+
+        // Predicate pushdown: level = 'error' (filters ~80-90% of rows).
+        group.bench_with_input(
+            BenchmarkId::new("scan_predicate_level_eq_error", n),
+            &data,
+            |b, data| {
+                use logfwd_core::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+                let data_bytes = bytes::Bytes::from(data.clone());
+                let config = ScanConfig {
+                    wanted_fields: vec![],
+                    extract_all: true,
+                    line_field_name: None,
+                    validate_utf8: false,
+                    row_predicate: Some(ScanPredicate::Compare {
+                        field: "level".into(),
+                        op: CmpOp::Eq,
+                        value: ScalarValue::Str("error".into()),
+                    }),
+                };
+                let mut scanner = Scanner::new(config);
+                b.iter(|| {
+                    std::hint::black_box(
+                        scanner
+                            .scan_detached(data_bytes.clone())
+                            .expect("bench: scan should not fail"),
+                    )
+                });
+            },
+        );
+
+        // Predicate pushdown: status >= 500 (filters ~60-70% of rows).
+        group.bench_with_input(
+            BenchmarkId::new("scan_predicate_status_ge_500", n),
+            &data,
+            |b, data| {
+                use logfwd_core::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+                let data_bytes = bytes::Bytes::from(data.clone());
+                let config = ScanConfig {
+                    wanted_fields: vec![],
+                    extract_all: true,
+                    line_field_name: None,
+                    validate_utf8: false,
+                    row_predicate: Some(ScanPredicate::Compare {
+                        field: "status".into(),
+                        op: CmpOp::Ge,
+                        value: ScalarValue::Int(500),
+                    }),
+                };
+                let mut scanner = Scanner::new(config);
+                b.iter(|| {
+                    std::hint::black_box(
+                        scanner
+                            .scan_detached(data_bytes.clone())
+                            .expect("bench: scan should not fail"),
+                    )
+                });
+            },
+        );
+
+        // Predicate pushdown: AND chain (level = 'error' AND status >= 500).
+        group.bench_with_input(
+            BenchmarkId::new("scan_predicate_and_chain", n),
+            &data,
+            |b, data| {
+                use logfwd_core::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+                let data_bytes = bytes::Bytes::from(data.clone());
+                let config = ScanConfig {
+                    wanted_fields: vec![],
+                    extract_all: true,
+                    line_field_name: None,
+                    validate_utf8: false,
+                    row_predicate: Some(ScanPredicate::And(vec![
+                        ScanPredicate::Compare {
+                            field: "level".into(),
+                            op: CmpOp::Eq,
+                            value: ScalarValue::Str("error".into()),
+                        },
+                        ScanPredicate::Compare {
+                            field: "status".into(),
+                            op: CmpOp::Ge,
+                            value: ScalarValue::Int(500),
+                        },
+                    ])),
+                };
+                let mut scanner = Scanner::new(config);
+                b.iter(|| {
+                    std::hint::black_box(
+                        scanner
+                            .scan_detached(data_bytes.clone())
+                            .expect("bench: scan should not fail"),
+                    )
+                });
+            },
+        );
     }
 
     group.finish();

@@ -398,7 +398,7 @@ impl LokiSink {
 
             // --- Log line ---
             let mut log_line = Vec::new();
-            write_row_json(batch, row, &cols, &mut log_line)?;
+            write_row_json(batch, row, &cols, &mut log_line, false)?;
             let log_str = String::from_utf8(log_line)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
@@ -956,10 +956,7 @@ mod tests {
         for payload in &payloads {
             let parsed: serde_json::Value =
                 serde_json::from_str(&payload.payload).expect("chunk must be valid JSON");
-            assert_eq!(
-                parsed["streams"].as_array().map_or(0, std::vec::Vec::len),
-                1
-            );
+            assert_eq!(parsed["streams"].as_array().map_or(0, Vec::len), 1);
         }
     }
 
