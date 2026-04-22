@@ -542,6 +542,17 @@ fn extract_scan_predicate_from_expr(expr: &SqlExpr) -> Option<ScanPredicate> {
             }
         }
 
+        // OR: only push if all branches are Eq on the same column (→ InList).
+        SqlExpr::BinaryOp {
+            left,
+            op: sqlast::BinaryOperator::Or,
+            right,
+        } => {
+            let left_pred = extract_scan_predicate_from_expr(left)?;
+            let right_pred = extract_scan_predicate_from_expr(right)?;
+            try_merge_or_to_in_list(left_pred, right_pred)
+        }
+
         // column op literal
         SqlExpr::BinaryOp { left, op, right } => {
             // Try column on left, literal on right.
@@ -583,12 +594,123 @@ fn extract_scan_predicate_from_expr(expr: &SqlExpr) -> Option<ScanPredicate> {
             })
         }
 
+        // IN list: column IN (v1, v2, ...)
+        SqlExpr::InList {
+            expr,
+            list,
+            negated,
+        } => {
+            let col = expr_as_column(expr)?;
+            let values: Vec<ScalarValue> = list.iter().filter_map(expr_as_scalar_value).collect();
+            // Only push if all list elements are literal scalars.
+            if values.len() != list.len() || values.is_empty() {
+                return None;
+            }
+            Some(ScanPredicate::InList {
+                field: col.to_ascii_lowercase(),
+                values,
+                negated: *negated,
+            })
+        }
+
+        // LIKE: only push prefix ('foo%') and contains ('%foo%') patterns.
+        SqlExpr::Like {
+            expr,
+            pattern,
+            negated,
+            ..
+        } if !negated => {
+            let col = expr_as_column(expr)?;
+            let pat = expr_as_string_literal(pattern)?;
+            if let Some(prefix) = pat.strip_suffix('%') {
+                if !prefix.contains('%') && !prefix.contains('_') {
+                    // 'prefix%' → StartsWith
+                    return Some(ScanPredicate::StartsWith {
+                        field: col.to_ascii_lowercase(),
+                        prefix: prefix.to_string(),
+                    });
+                }
+            }
+            if let Some(inner) = pat.strip_prefix('%').and_then(|s| s.strip_suffix('%')) {
+                if !inner.contains('%') && !inner.contains('_') {
+                    // '%substring%' → Contains
+                    return Some(ScanPredicate::Contains {
+                        field: col.to_ascii_lowercase(),
+                        substring: inner.to_string(),
+                    });
+                }
+            }
+            None
+        }
+
         // Parenthesized expression
         SqlExpr::Nested(inner) => extract_scan_predicate_from_expr(inner),
 
-        // Anything else (OR, LIKE, IN, functions, subqueries) — not pushable.
+        // Anything else — not pushable.
         _ => None,
     }
+}
+
+/// Try to merge two OR'd predicates into an InList when both are
+/// Eq comparisons on the same field.
+fn try_merge_or_to_in_list(left: ScanPredicate, right: ScanPredicate) -> Option<ScanPredicate> {
+    // Flatten: collect all Eq values for a single field from both sides.
+    let mut field_name = None;
+    let mut values = Vec::new();
+
+    fn collect_eq_values(
+        pred: &ScanPredicate,
+        field_name: &mut Option<String>,
+        values: &mut Vec<ScalarValue>,
+    ) -> bool {
+        match pred {
+            ScanPredicate::Compare {
+                field, op, value, ..
+            } if *op == CmpOp::Eq => {
+                if let Some(existing) = field_name.as_ref() {
+                    if !existing.eq_ignore_ascii_case(field) {
+                        return false; // Different field — can't merge.
+                    }
+                } else {
+                    *field_name = Some(field.clone());
+                }
+                values.push(value.clone());
+                true
+            }
+            ScanPredicate::InList {
+                field: f,
+                values: vs,
+                negated: false,
+            } => {
+                if let Some(existing) = field_name.as_ref() {
+                    if !existing.eq_ignore_ascii_case(f) {
+                        return false;
+                    }
+                } else {
+                    *field_name = Some(f.clone());
+                }
+                values.extend(vs.iter().cloned());
+                true
+            }
+            ScanPredicate::Or(preds) => preds
+                .iter()
+                .all(|p| collect_eq_values(p, field_name, values)),
+            _ => false,
+        }
+    }
+
+    if !collect_eq_values(&left, &mut field_name, &mut values) {
+        return None;
+    }
+    if !collect_eq_values(&right, &mut field_name, &mut values) {
+        return None;
+    }
+
+    Some(ScanPredicate::InList {
+        field: field_name?,
+        values,
+        negated: false,
+    })
 }
 
 /// Convert a SQL binary operator to a `CmpOp`.
@@ -654,6 +776,17 @@ fn expr_as_scalar_value(expr: &SqlExpr) -> Option<ScalarValue> {
                 }
                 _ => None,
             },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Extract a plain string literal from a SQL expression.
+fn expr_as_string_literal(expr: &SqlExpr) -> Option<String> {
+    match expr {
+        SqlExpr::Value(v) => match &v.value {
+            sqlast::Value::SingleQuotedString(s) => Some(s.clone()),
             _ => None,
         },
         _ => None,
@@ -2384,9 +2517,9 @@ mod tests {
     }
 
     #[test]
-    fn unpushable_or_returns_none() {
-        let pred = predicate_for("SELECT * FROM logs WHERE level = 'error' OR level = 'fatal'");
-        // OR at top level is not pushable.
+    fn unpushable_or_different_ops_returns_none() {
+        // OR with non-Eq comparisons can't merge to InList.
+        let pred = predicate_for("SELECT * FROM logs WHERE status > 500 OR status < 200");
         assert!(pred.is_none());
     }
 
@@ -2400,6 +2533,114 @@ mod tests {
                 assert_eq!(field, "level");
             }
             other => panic!("expected Compare (partial push), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_in_list() {
+        let pred = predicate_for("SELECT * FROM logs WHERE level IN ('error', 'fatal', 'warn')");
+        assert!(pred.is_some());
+        match pred.unwrap() {
+            ScanPredicate::InList {
+                field,
+                values,
+                negated,
+            } => {
+                assert_eq!(field, "level");
+                assert_eq!(values.len(), 3);
+                assert!(!negated);
+            }
+            other => panic!("expected InList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_not_in_list() {
+        let pred = predicate_for("SELECT * FROM logs WHERE level NOT IN ('debug', 'trace')");
+        assert!(pred.is_some());
+        match pred.unwrap() {
+            ScanPredicate::InList {
+                field,
+                values,
+                negated,
+            } => {
+                assert_eq!(field, "level");
+                assert_eq!(values.len(), 2);
+                assert!(negated);
+            }
+            other => panic!("expected InList(negated), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_or_same_field_eq_becomes_in_list() {
+        let pred = predicate_for("SELECT * FROM logs WHERE level = 'error' OR level = 'fatal'");
+        assert!(pred.is_some());
+        match pred.unwrap() {
+            ScanPredicate::InList {
+                field,
+                values,
+                negated,
+            } => {
+                assert_eq!(field, "level");
+                assert_eq!(values.len(), 2);
+                assert!(!negated);
+            }
+            other => panic!("expected InList from OR merge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_or_different_fields_not_pushed() {
+        let pred = predicate_for("SELECT * FROM logs WHERE level = 'error' OR status = 500");
+        // Different fields in OR — can't merge to InList.
+        assert!(pred.is_none());
+    }
+
+    #[test]
+    fn extract_like_prefix() {
+        let pred = predicate_for("SELECT * FROM logs WHERE msg LIKE 'ERROR%'");
+        assert!(pred.is_some());
+        match pred.unwrap() {
+            ScanPredicate::StartsWith { field, prefix } => {
+                assert_eq!(field, "msg");
+                assert_eq!(prefix, "ERROR");
+            }
+            other => panic!("expected StartsWith, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_like_contains() {
+        let pred = predicate_for("SELECT * FROM logs WHERE msg LIKE '%timeout%'");
+        assert!(pred.is_some());
+        match pred.unwrap() {
+            ScanPredicate::Contains { field, substring } => {
+                assert_eq!(field, "msg");
+                assert_eq!(substring, "timeout");
+            }
+            other => panic!("expected Contains, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn extract_like_complex_not_pushed() {
+        let pred = predicate_for("SELECT * FROM logs WHERE msg LIKE '%error%timeout%'");
+        // Multiple wildcards — not pushable.
+        assert!(pred.is_none());
+    }
+
+    #[test]
+    fn extract_not_equal() {
+        let pred = predicate_for("SELECT * FROM logs WHERE level <> 'debug'");
+        assert!(pred.is_some());
+        match pred.unwrap() {
+            ScanPredicate::Compare { field, op, value } => {
+                assert_eq!(field, "level");
+                assert_eq!(op, CmpOp::Ne);
+                assert_eq!(value, ScalarValue::Str("debug".to_string()));
+            }
+            other => panic!("expected Compare(Ne), got {other:?}"),
         }
     }
 

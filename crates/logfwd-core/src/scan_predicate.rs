@@ -56,12 +56,35 @@ pub enum ScanPredicate {
         /// Literal value to compare against.
         value: ScalarValue,
     },
+    /// `field IN (v1, v2, ...)` / `field NOT IN (v1, v2, ...)`.
+    InList {
+        /// Field name.
+        field: String,
+        /// Values to check membership against.
+        values: Vec<ScalarValue>,
+        /// When true, checks NOT IN instead of IN.
+        negated: bool,
+    },
     /// `field IS NULL` / `field IS NOT NULL`.
     IsNull {
         /// Field name.
         field: String,
         /// When true, checks IS NOT NULL instead of IS NULL.
         negated: bool,
+    },
+    /// `field LIKE 'prefix%'` — string prefix match.
+    StartsWith {
+        /// Field name.
+        field: String,
+        /// Prefix to match (without the trailing `%`).
+        prefix: String,
+    },
+    /// `field LIKE '%substring%'` — string contains match.
+    Contains {
+        /// Field name.
+        field: String,
+        /// Substring to search for.
+        substring: String,
     },
     /// Conjunction: all sub-predicates must be true.
     And(Vec<ScanPredicate>),
@@ -96,9 +119,11 @@ impl ScanPredicate {
     /// (case-insensitive ASCII comparison).
     pub fn references_field(&self, key: &[u8]) -> bool {
         match self {
-            ScanPredicate::Compare { field, .. } | ScanPredicate::IsNull { field, .. } => {
-                key.eq_ignore_ascii_case(field.as_bytes())
-            }
+            ScanPredicate::Compare { field, .. }
+            | ScanPredicate::InList { field, .. }
+            | ScanPredicate::IsNull { field, .. }
+            | ScanPredicate::StartsWith { field, .. }
+            | ScanPredicate::Contains { field, .. } => key.eq_ignore_ascii_case(field.as_bytes()),
             ScanPredicate::And(preds) | ScanPredicate::Or(preds) => {
                 preds.iter().any(|p| p.references_field(key))
             }
@@ -119,10 +144,42 @@ impl ScanPredicate {
                 let extracted = lookup(field.as_str());
                 compare_values(&extracted, *op, value)
             }
+            ScanPredicate::InList {
+                field,
+                values,
+                negated,
+            } => {
+                let extracted = lookup(field.as_str());
+                if matches!(extracted, ExtractedValue::Null | ExtractedValue::Missing) {
+                    return false; // NULL IN (...) is false per SQL semantics.
+                }
+                let found = values
+                    .iter()
+                    .any(|v| compare_values(&extracted, CmpOp::Eq, v));
+                if *negated { !found } else { found }
+            }
             ScanPredicate::IsNull { field, negated } => {
                 let extracted = lookup(field.as_str());
                 let is_null = matches!(extracted, ExtractedValue::Null | ExtractedValue::Missing);
                 if *negated { !is_null } else { is_null }
+            }
+            ScanPredicate::StartsWith { field, prefix } => {
+                let extracted = lookup(field.as_str());
+                match extracted {
+                    ExtractedValue::Str(bytes) => bytes
+                        .get(..prefix.len())
+                        .is_some_and(|slice| slice == prefix.as_bytes()),
+                    _ => false,
+                }
+            }
+            ScanPredicate::Contains { field, substring } => {
+                let extracted = lookup(field.as_str());
+                match extracted {
+                    ExtractedValue::Str(bytes) => {
+                        memchr::memmem::find(bytes, substring.as_bytes()).is_some()
+                    }
+                    _ => false,
+                }
             }
             ScanPredicate::And(preds) => preds.iter().all(|p| p.evaluate(lookup)),
             ScanPredicate::Or(preds) => preds.iter().any(|p| p.evaluate(lookup)),
@@ -402,6 +459,151 @@ mod tests {
             }
         };
         assert!(pred.evaluate(&lookup));
+    }
+
+    #[test]
+    fn evaluate_in_list() {
+        let pred = ScanPredicate::InList {
+            field: "level".to_string(),
+            values: alloc::vec![
+                ScalarValue::Str("error".to_string()),
+                ScalarValue::Str("fatal".to_string()),
+            ],
+            negated: false,
+        };
+        let hit = |name: &str| -> ExtractedValue<'_> {
+            if name == "level" {
+                ExtractedValue::Str(b"fatal")
+            } else {
+                ExtractedValue::Missing
+            }
+        };
+        assert!(pred.evaluate(&hit));
+
+        let miss = |name: &str| -> ExtractedValue<'_> {
+            if name == "level" {
+                ExtractedValue::Str(b"info")
+            } else {
+                ExtractedValue::Missing
+            }
+        };
+        assert!(!pred.evaluate(&miss));
+    }
+
+    #[test]
+    fn evaluate_not_in_list() {
+        let pred = ScanPredicate::InList {
+            field: "level".to_string(),
+            values: alloc::vec![
+                ScalarValue::Str("debug".to_string()),
+                ScalarValue::Str("trace".to_string()),
+            ],
+            negated: true,
+        };
+        let lookup = |name: &str| -> ExtractedValue<'_> {
+            if name == "level" {
+                ExtractedValue::Str(b"error")
+            } else {
+                ExtractedValue::Missing
+            }
+        };
+        assert!(pred.evaluate(&lookup));
+    }
+
+    #[test]
+    fn evaluate_in_list_with_ints() {
+        let pred = ScanPredicate::InList {
+            field: "status".to_string(),
+            values: alloc::vec![
+                ScalarValue::Int(500),
+                ScalarValue::Int(502),
+                ScalarValue::Int(503),
+            ],
+            negated: false,
+        };
+        let hit = |name: &str| -> ExtractedValue<'_> {
+            if name == "status" {
+                ExtractedValue::Int(503)
+            } else {
+                ExtractedValue::Missing
+            }
+        };
+        assert!(pred.evaluate(&hit));
+
+        let miss = |name: &str| -> ExtractedValue<'_> {
+            if name == "status" {
+                ExtractedValue::Int(200)
+            } else {
+                ExtractedValue::Missing
+            }
+        };
+        assert!(!pred.evaluate(&miss));
+    }
+
+    #[test]
+    fn evaluate_starts_with() {
+        let pred = ScanPredicate::StartsWith {
+            field: "msg".to_string(),
+            prefix: "ERROR".to_string(),
+        };
+        let hit = |name: &str| -> ExtractedValue<'_> {
+            if name == "msg" {
+                ExtractedValue::Str(b"ERROR: connection refused")
+            } else {
+                ExtractedValue::Missing
+            }
+        };
+        assert!(pred.evaluate(&hit));
+
+        let miss = |name: &str| -> ExtractedValue<'_> {
+            if name == "msg" {
+                ExtractedValue::Str(b"INFO: request completed")
+            } else {
+                ExtractedValue::Missing
+            }
+        };
+        assert!(!pred.evaluate(&miss));
+    }
+
+    #[test]
+    fn evaluate_contains() {
+        let pred = ScanPredicate::Contains {
+            field: "msg".to_string(),
+            substring: "timeout".to_string(),
+        };
+        let hit = |name: &str| -> ExtractedValue<'_> {
+            if name == "msg" {
+                ExtractedValue::Str(b"connection timeout after 30s")
+            } else {
+                ExtractedValue::Missing
+            }
+        };
+        assert!(pred.evaluate(&hit));
+
+        let miss = |name: &str| -> ExtractedValue<'_> {
+            if name == "msg" {
+                ExtractedValue::Str(b"request completed successfully")
+            } else {
+                ExtractedValue::Missing
+            }
+        };
+        assert!(!pred.evaluate(&miss));
+    }
+
+    #[test]
+    fn evaluate_contains_on_non_string_is_false() {
+        let pred = ScanPredicate::Contains {
+            field: "status".to_string(),
+            substring: "500".to_string(),
+        };
+        let lookup = |name: &str| -> ExtractedValue<'_> {
+            if name == "status" {
+                ExtractedValue::Int(500)
+            } else {
+                ExtractedValue::Missing
+            }
+        };
+        assert!(!pred.evaluate(&lookup));
     }
 
     #[test]
