@@ -352,8 +352,8 @@ DispatchNeverDrops ==
            (item \notin SeqToSet(pending) /\ item \notin inFlight
             /\ item \notin delivered /\ item \notin rejected)
 
-\* FailureIsSticky: checked as a temporal property (FailureIsStickyTemporal)
-\* because a state-level invariant on current state would be tautological.
+\* FailureIsSticky: checked as a per-lifecycle action property
+\* (FailureIsStickyTemporal) — see the property definition for details.
 
 \* Stopped implies no in-flight items remain.
 StoppedImpliesNoInFlight ==

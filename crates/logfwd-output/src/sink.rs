@@ -973,4 +973,254 @@ mod tests {
         ));
         assert!(matches!(result, SendResult::IoError(_)));
     }
+
+    // ---------------------------------------------------------------
+    // Combined TLA+ state machine proptest — FanoutSink.tla::Next
+    //
+    // Generates random interleaved action sequences from the TLA+ Next
+    // relation and verifies safety invariants after each step.
+    // ---------------------------------------------------------------
+
+    mod tla_fanout {
+        use super::*;
+        use proptest::{prop_assert, proptest};
+
+        const MAX_CHILDREN: usize = 3;
+        const MAX_RETRIES: usize = 3;
+
+        #[derive(Clone, Debug)]
+        enum ChildBehavior {
+            WillOk,
+            WillReject,
+            WillTransient,
+        }
+
+        #[derive(Clone, Debug)]
+        struct FanoutTlaState {
+            batch_phase: &'static str,      // "Idle" | "Delivering" | "Finalized"
+            child_state: Vec<&'static str>, // "Pending" | "Ok" | "Rejected"
+            sink_behavior: Vec<ChildBehavior>,
+            retry_count: usize,
+            fanout_result: &'static str, // "None" | "Ok" | "Rejected" | "RetryNeeded"
+            num_children: usize,
+        }
+
+        impl FanoutTlaState {
+            fn init(num_children: usize) -> Self {
+                Self {
+                    batch_phase: "Idle",
+                    child_state: vec!["Pending"; num_children],
+                    sink_behavior: vec![ChildBehavior::WillOk; num_children],
+                    retry_count: 0,
+                    fanout_result: "None",
+                    num_children,
+                }
+            }
+
+            fn all_children_terminal(&self) -> bool {
+                self.child_state
+                    .iter()
+                    .all(|s| *s == "Ok" || *s == "Rejected")
+            }
+
+            fn any_child_pending(&self) -> bool {
+                self.child_state.iter().any(|s| *s == "Pending")
+            }
+
+            fn all_children_rejected(&self) -> bool {
+                self.child_state.iter().all(|s| *s == "Rejected")
+            }
+        }
+
+        fn apply_action(s: &mut FanoutTlaState, action: u8, child_idx: usize, new_behavior: u8) {
+            let child = child_idx % s.num_children;
+            match action % 8 {
+                0 => {
+                    // BeginBatch
+                    if s.batch_phase == "Idle" {
+                        s.batch_phase = "Delivering";
+                        s.child_state = vec!["Pending"; s.num_children];
+                        s.retry_count = 0;
+                        s.fanout_result = "None";
+                        // Randomize behaviors
+                        for b in &mut s.sink_behavior {
+                            *b = match new_behavior % 3 {
+                                0 => ChildBehavior::WillOk,
+                                1 => ChildBehavior::WillReject,
+                                _ => ChildBehavior::WillTransient,
+                            };
+                        }
+                    }
+                }
+                1 => {
+                    // SendToChild — using real Rust functions
+                    if s.batch_phase == "Delivering" && s.child_state[child] == "Pending" {
+                        let result = match &s.sink_behavior[child] {
+                            ChildBehavior::WillOk => SendResult::Ok,
+                            ChildBehavior::WillReject => SendResult::Rejected("test".to_string()),
+                            ChildBehavior::WillTransient => {
+                                SendResult::RetryAfter(Duration::from_millis(100))
+                            }
+                        };
+                        let mut any_pending = false;
+                        let mut last_io_error = None;
+                        let mut max_retry = None;
+                        if let Some(next) = merge_child_send_result(
+                            result,
+                            &mut any_pending,
+                            &mut last_io_error,
+                            &mut max_retry,
+                        ) {
+                            s.child_state[child] = match next {
+                                ChildState::Ok => "Ok",
+                                ChildState::Rejected(_) => "Rejected",
+                                ChildState::Pending => "Pending",
+                            };
+                        }
+                    }
+                }
+                2 => {
+                    // EnvironmentChangesBehavior
+                    if s.batch_phase == "Delivering" && s.child_state[child] == "Pending" {
+                        s.sink_behavior[child] = match new_behavior % 3 {
+                            0 => ChildBehavior::WillOk,
+                            1 => ChildBehavior::WillReject,
+                            _ => ChildBehavior::WillTransient,
+                        };
+                    }
+                }
+                3 => {
+                    // FinalizeTerminal — using real Rust function
+                    if s.batch_phase == "Delivering" && s.all_children_terminal() {
+                        let states: Vec<ChildState> = s
+                            .child_state
+                            .iter()
+                            .map(|cs| match *cs {
+                                "Ok" => ChildState::Ok,
+                                "Rejected" => ChildState::Rejected("test".into()),
+                                _ => ChildState::Pending,
+                            })
+                            .collect();
+                        let result = finalize_fanout_outcome(&states, false, None, None);
+                        s.fanout_result = match result {
+                            SendResult::Ok => "Ok",
+                            SendResult::Rejected(_) => "Rejected",
+                            _ => "RetryNeeded",
+                        };
+                        s.batch_phase = "Finalized";
+                    }
+                }
+                4 => {
+                    // FinalizeRetryNeeded
+                    if s.batch_phase == "Delivering"
+                        && s.any_child_pending()
+                        && s.retry_count < MAX_RETRIES
+                    {
+                        s.fanout_result = "RetryNeeded";
+                    }
+                }
+                5 => {
+                    // RetryBatch
+                    if s.batch_phase == "Delivering"
+                        && s.fanout_result == "RetryNeeded"
+                        && s.retry_count < MAX_RETRIES
+                    {
+                        s.retry_count += 1;
+                        s.fanout_result = "None";
+                    }
+                }
+                6 => {
+                    // ExhaustRetries
+                    if s.batch_phase == "Delivering"
+                        && s.any_child_pending()
+                        && s.retry_count >= MAX_RETRIES
+                    {
+                        s.fanout_result = "Rejected";
+                        s.batch_phase = "Finalized";
+                    }
+                }
+                7 => {
+                    // ResetForNextBatch
+                    if s.batch_phase == "Finalized" {
+                        s.batch_phase = "Idle";
+                        s.fanout_result = "None";
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        fn assert_invariants(
+            s: &FanoutTlaState,
+        ) -> Result<(), proptest::test_runner::TestCaseError> {
+            // PartialSuccessIsOk
+            if s.batch_phase == "Finalized"
+                && s.all_children_terminal()
+                && !s.all_children_rejected()
+            {
+                prop_assert!(
+                    s.fanout_result == "Ok",
+                    "PartialSuccessIsOk violated: result={} but not all rejected",
+                    s.fanout_result
+                );
+            }
+            // AllRejectedIsRejected
+            if s.batch_phase == "Finalized"
+                && s.all_children_terminal()
+                && s.all_children_rejected()
+            {
+                prop_assert!(
+                    s.fanout_result == "Rejected",
+                    "AllRejectedIsRejected violated: result={}",
+                    s.fanout_result
+                );
+            }
+            // BatchPhaseConsistency
+            if s.batch_phase == "Idle" {
+                prop_assert!(
+                    s.fanout_result == "None",
+                    "BatchPhaseConsistency: Idle but result={}",
+                    s.fanout_result
+                );
+            }
+            if s.fanout_result == "Ok" || s.fanout_result == "Rejected" {
+                prop_assert!(
+                    s.batch_phase == "Finalized",
+                    "BatchPhaseConsistency: result={} but phase={}",
+                    s.fanout_result,
+                    s.batch_phase
+                );
+            }
+            // RetryCountBound
+            prop_assert!(
+                s.retry_count <= MAX_RETRIES,
+                "RetryCountBound violated: {}",
+                s.retry_count
+            );
+            // OkChildNeverReverts (checked: Ok children stay Ok during Delivering)
+            // This is implicitly verified because SendToChild skips non-Pending children.
+            Ok(())
+        }
+
+        proptest! {
+            #![proptest_config(proptest::test_runner::Config {
+                cases: 2000,
+                ..Default::default()
+            })]
+            #[test]
+            fn fanout_tla_invariants_hold_across_random_action_sequences(
+                num_children in 1usize..=MAX_CHILDREN,
+                actions in proptest::collection::vec(
+                    (0u8..8, 0usize..MAX_CHILDREN, 0u8..3),
+                    0..80
+                )
+            ) {
+                let mut state = FanoutTlaState::init(num_children);
+                for (action, child_idx, behavior) in actions {
+                    apply_action(&mut state, action, child_idx, behavior);
+                    assert_invariants(&state)?;
+                }
+            }
+        }
+    }
 }

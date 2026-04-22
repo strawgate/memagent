@@ -339,7 +339,11 @@ fn request_cpu_worker_count() -> usize {
 }
 
 fn request_cpu_outstanding_limit(worker_count: usize) -> usize {
-    worker_count.max(1)
+    // Allow headroom above worker count for concurrent request bursts.
+    // A floor of 32 prevents spurious 429s on low-core machines (e.g.,
+    // macOS CI with 2-4 cores yields worker_count of 4-8, but tests and
+    // real clients can send 10+ concurrent requests).
+    (worker_count.saturating_mul(2)).max(32)
 }
 
 impl Drop for OtlpReceiverInput {
@@ -546,8 +550,12 @@ mod poll_tests {
 
     #[test]
     fn request_cpu_outstanding_limit_follows_worker_count_floor() {
-        assert_eq!(request_cpu_outstanding_limit(0), 1);
-        assert_eq!(request_cpu_outstanding_limit(3), 3);
+        // Floor of 32 prevents spurious 429s on low-core machines.
+        assert_eq!(request_cpu_outstanding_limit(0), 32);
+        assert_eq!(request_cpu_outstanding_limit(3), 32);
+        assert_eq!(request_cpu_outstanding_limit(16), 32);
+        // Scales above floor at high worker counts.
+        assert_eq!(request_cpu_outstanding_limit(20), 40);
     }
 
     #[test]

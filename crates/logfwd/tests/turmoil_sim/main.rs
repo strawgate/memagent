@@ -16,6 +16,7 @@ mod tcp_server;
 mod trace_bridge;
 mod trace_validation;
 mod turmoil_tcp_sink;
+mod validators;
 
 use std::time::Duration;
 use std::{env, sync::OnceLock};

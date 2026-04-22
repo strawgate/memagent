@@ -9,7 +9,9 @@ use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use logfwd_runtime::turmoil_barriers::{PipelinePhase, RuntimeBarrierEvent};
+use logfwd_runtime::turmoil_barriers::{
+    BatchTerminalState, PipelinePhase, RetryReason, RuntimeBarrierEvent,
+};
 use logfwd_runtime::worker_pool::DeliveryOutcome;
 use serde_json::{Value, json};
 
@@ -25,6 +27,7 @@ pub enum TraceEvent {
         checkpoint: u64,
     },
     SinkResult {
+        worker_id: usize,
         outcome: SinkOutcome,
         rows: u64,
     },
@@ -35,6 +38,58 @@ pub enum TraceEvent {
     CheckpointFlush {
         success: bool,
     },
+    /// Per-batch terminal state (acked, rejected, or abandoned).
+    BatchTerminal {
+        batch_id: u64,
+        source_id: u64,
+        terminal: BatchTerminal,
+    },
+    /// Batch was held (non-terminal failure, will retry or abandon).
+    BatchHold {
+        batch_id: u64,
+        source_id: u64,
+    },
+    /// Retry attempt inside the worker delivery loop.
+    RetryAttempt {
+        worker_id: usize,
+        batch_id: u64,
+        attempt: usize,
+        backoff_ms: u64,
+        reason: String,
+    },
+    /// Worker pool drain sequence started.
+    PoolDrainBegin,
+    /// Worker pool drain sequence completed.
+    PoolDrainComplete {
+        forced_abort: bool,
+    },
+}
+
+/// Terminal disposition of a batch as observed in the trace.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchTerminal {
+    Acked,
+    Rejected,
+    Abandoned,
+}
+
+impl BatchTerminal {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Acked => "acked",
+            Self::Rejected => "rejected",
+            Self::Abandoned => "abandoned",
+        }
+    }
+
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "acked" => Some(Self::Acked),
+            "rejected" => Some(Self::Rejected),
+            "abandoned" => Some(Self::Abandoned),
+            _ => None,
+        }
+    }
 }
 
 impl TraceEvent {
@@ -45,6 +100,11 @@ impl TraceEvent {
             Self::SinkResult { .. } => "sink_result",
             Self::CheckpointUpdate { .. } => "checkpoint_update",
             Self::CheckpointFlush { .. } => "checkpoint_flush",
+            Self::BatchTerminal { .. } => "batch_terminal",
+            Self::BatchHold { .. } => "batch_hold",
+            Self::RetryAttempt { .. } => "retry_attempt",
+            Self::PoolDrainBegin => "pool_drain_begin",
+            Self::PoolDrainComplete { .. } => "pool_drain_complete",
         }
     }
 
@@ -58,13 +118,50 @@ impl TraceEvent {
             } => {
                 format!("batch_begin batch={batch_id} source={source_id} checkpoint={checkpoint}")
             }
-            Self::SinkResult { outcome, rows } => {
-                format!("sink_result outcome={} rows={rows}", outcome.as_str())
+            Self::SinkResult {
+                worker_id,
+                outcome,
+                rows,
+            } => {
+                format!(
+                    "sink_result worker={worker_id} outcome={} rows={rows}",
+                    outcome.as_str()
+                )
             }
             Self::CheckpointUpdate { source_id, offset } => {
                 format!("checkpoint_update source_id={source_id} offset={offset}")
             }
             Self::CheckpointFlush { success } => format!("checkpoint_flush success={success}"),
+            Self::BatchTerminal {
+                batch_id,
+                source_id,
+                terminal,
+            } => {
+                format!(
+                    "batch_terminal batch={batch_id} source={source_id} terminal={}",
+                    terminal.as_str()
+                )
+            }
+            Self::BatchHold {
+                batch_id,
+                source_id,
+            } => format!("batch_hold batch={batch_id} source={source_id}"),
+            Self::RetryAttempt {
+                worker_id,
+                batch_id,
+                attempt,
+                backoff_ms,
+                reason,
+            } => {
+                format!(
+                    "retry_attempt worker={worker_id} batch={batch_id} attempt={attempt} \
+                     backoff_ms={backoff_ms} reason={reason}"
+                )
+            }
+            Self::PoolDrainBegin => "pool_drain_begin".to_string(),
+            Self::PoolDrainComplete { forced_abort } => {
+                format!("pool_drain_complete forced_abort={forced_abort}")
+            }
         }
     }
 }
@@ -82,7 +179,10 @@ pub fn trace_event_from_runtime_barrier(event: &RuntimeBarrierEvent) -> Vec<Trac
             vec![TraceEvent::Phase { phase }]
         }
         RuntimeBarrierEvent::BeforeWorkerAckSend {
-            outcome, num_rows, ..
+            worker_id,
+            outcome,
+            num_rows,
+            ..
         } => {
             let outcome = match outcome {
                 DeliveryOutcome::Delivered => SinkOutcome::Ok,
@@ -95,6 +195,7 @@ pub fn trace_event_from_runtime_barrier(event: &RuntimeBarrierEvent) -> Vec<Trac
                 | DeliveryOutcome::NoWorkersAvailable => SinkOutcome::IoError,
             };
             vec![TraceEvent::SinkResult {
+                worker_id: *worker_id,
                 outcome,
                 rows: *num_rows,
             }]
@@ -123,6 +224,51 @@ pub fn trace_event_from_runtime_barrier(event: &RuntimeBarrierEvent) -> Vec<Trac
                 checkpoint: *offset,
             })
             .collect(),
+        RuntimeBarrierEvent::BatchTerminalized {
+            batch_id,
+            terminal_state,
+        } => {
+            let terminal = match terminal_state {
+                BatchTerminalState::Acked => BatchTerminal::Acked,
+                BatchTerminalState::Rejected => BatchTerminal::Rejected,
+                BatchTerminalState::Abandoned => BatchTerminal::Abandoned,
+            };
+            vec![TraceEvent::BatchTerminal {
+                batch_id: *batch_id,
+                source_id: 0, // source correlation via batch_begin events
+                terminal,
+            }]
+        }
+        RuntimeBarrierEvent::BatchHeld { batch_id } => vec![TraceEvent::BatchHold {
+            batch_id: *batch_id,
+            source_id: 0, // source correlation via batch_begin events
+        }],
+        RuntimeBarrierEvent::RetryAttempt {
+            worker_id,
+            batch_id,
+            attempt,
+            backoff_ms,
+            reason,
+        } => {
+            let reason_str = match reason {
+                RetryReason::Timeout => "timeout",
+                RetryReason::RetryAfter => "retry_after",
+                RetryReason::IoError => "io_error",
+            };
+            vec![TraceEvent::RetryAttempt {
+                worker_id: *worker_id,
+                batch_id: *batch_id,
+                attempt: *attempt,
+                backoff_ms: *backoff_ms,
+                reason: reason_str.to_string(),
+            }]
+        }
+        RuntimeBarrierEvent::PoolDrainBegin => vec![TraceEvent::PoolDrainBegin],
+        RuntimeBarrierEvent::PoolDrainComplete { forced_abort } => {
+            vec![TraceEvent::PoolDrainComplete {
+                forced_abort: *forced_abort,
+            }]
+        }
         RuntimeBarrierEvent::BeforeCheckpointFlushAttempt { .. } => Vec::new(),
     }
 }
@@ -198,14 +344,46 @@ impl TraceEvent {
             } => {
                 json!({"event": "batch_begin", "batch_id": batch_id, "source_id": source_id, "checkpoint": checkpoint})
             }
-            TraceEvent::SinkResult { outcome, rows } => {
-                json!({"event": "sink_result", "outcome": outcome.as_str(), "rows": rows})
+            TraceEvent::SinkResult {
+                worker_id,
+                outcome,
+                rows,
+            } => {
+                json!({"event": "sink_result", "worker_id": worker_id, "outcome": outcome.as_str(), "rows": rows})
             }
             TraceEvent::CheckpointUpdate { source_id, offset } => {
                 json!({"event": "checkpoint_update", "source_id": source_id, "offset": offset})
             }
             TraceEvent::CheckpointFlush { success } => {
                 json!({"event": "checkpoint_flush", "success": success})
+            }
+            TraceEvent::BatchTerminal {
+                batch_id,
+                source_id,
+                terminal,
+            } => {
+                json!({"event": "batch_terminal", "batch_id": batch_id, "source_id": source_id, "terminal": terminal.as_str()})
+            }
+            TraceEvent::BatchHold {
+                batch_id,
+                source_id,
+            } => {
+                json!({"event": "batch_hold", "batch_id": batch_id, "source_id": source_id})
+            }
+            TraceEvent::RetryAttempt {
+                worker_id,
+                batch_id,
+                attempt,
+                backoff_ms,
+                reason,
+            } => {
+                json!({"event": "retry_attempt", "worker_id": worker_id, "batch_id": batch_id, "attempt": attempt, "backoff_ms": backoff_ms, "reason": reason})
+            }
+            TraceEvent::PoolDrainBegin => {
+                json!({"event": "pool_drain_begin"})
+            }
+            TraceEvent::PoolDrainComplete { forced_abort } => {
+                json!({"event": "pool_drain_complete", "forced_abort": forced_abort})
             }
         }
     }
@@ -235,7 +413,12 @@ impl TraceEvent {
                 let Some(rows) = v.get("rows").and_then(Value::as_u64) else {
                     return Err("sink_result missing u64 field: rows".to_string());
                 };
-                Ok(Self::SinkResult { outcome, rows })
+                let worker_id = v.get("worker_id").and_then(Value::as_u64).unwrap_or(0) as usize;
+                Ok(Self::SinkResult {
+                    worker_id,
+                    outcome,
+                    rows,
+                })
             }
             "batch_begin" => {
                 let Some(batch_id) = v.get("batch_id").and_then(Value::as_u64) else {
@@ -267,6 +450,66 @@ impl TraceEvent {
                     return Err("checkpoint_flush missing bool field: success".to_string());
                 };
                 Ok(Self::CheckpointFlush { success })
+            }
+            "batch_terminal" => {
+                let Some(batch_id) = v.get("batch_id").and_then(Value::as_u64) else {
+                    return Err("batch_terminal missing u64 field: batch_id".to_string());
+                };
+                let Some(source_id) = v.get("source_id").and_then(Value::as_u64) else {
+                    return Err("batch_terminal missing u64 field: source_id".to_string());
+                };
+                let Some(raw_terminal) = v.get("terminal").and_then(Value::as_str) else {
+                    return Err("batch_terminal missing string field: terminal".to_string());
+                };
+                let Some(terminal) = BatchTerminal::from_str(raw_terminal) else {
+                    return Err(format!("unknown batch terminal '{raw_terminal}'"));
+                };
+                Ok(Self::BatchTerminal {
+                    batch_id,
+                    source_id,
+                    terminal,
+                })
+            }
+            "batch_hold" => {
+                let Some(batch_id) = v.get("batch_id").and_then(Value::as_u64) else {
+                    return Err("batch_hold missing u64 field: batch_id".to_string());
+                };
+                let Some(source_id) = v.get("source_id").and_then(Value::as_u64) else {
+                    return Err("batch_hold missing u64 field: source_id".to_string());
+                };
+                Ok(Self::BatchHold {
+                    batch_id,
+                    source_id,
+                })
+            }
+            "retry_attempt" => {
+                let worker_id = v.get("worker_id").and_then(Value::as_u64).unwrap_or(0) as usize;
+                let Some(batch_id) = v.get("batch_id").and_then(Value::as_u64) else {
+                    return Err("retry_attempt missing u64 field: batch_id".to_string());
+                };
+                let Some(attempt) = v.get("attempt").and_then(Value::as_u64) else {
+                    return Err("retry_attempt missing u64 field: attempt".to_string());
+                };
+                let Some(backoff_ms) = v.get("backoff_ms").and_then(Value::as_u64) else {
+                    return Err("retry_attempt missing u64 field: backoff_ms".to_string());
+                };
+                let Some(reason) = v.get("reason").and_then(Value::as_str) else {
+                    return Err("retry_attempt missing string field: reason".to_string());
+                };
+                Ok(Self::RetryAttempt {
+                    worker_id,
+                    batch_id,
+                    attempt: attempt as usize,
+                    backoff_ms,
+                    reason: reason.to_string(),
+                })
+            }
+            "pool_drain_begin" => Ok(Self::PoolDrainBegin),
+            "pool_drain_complete" => {
+                let Some(forced_abort) = v.get("forced_abort").and_then(Value::as_bool) else {
+                    return Err("pool_drain_complete missing bool field: forced_abort".to_string());
+                };
+                Ok(Self::PoolDrainComplete { forced_abort })
             }
             other => Err(format!("unknown event kind '{other}'")),
         }
@@ -342,13 +585,40 @@ pub fn normalized_contract_trace(events: &[TraceEvent]) -> Vec<String> {
                 source_id,
                 checkpoint,
             } => format!("batch_begin:{batch_id}:{source_id}:{checkpoint}"),
-            TraceEvent::SinkResult { outcome, rows } => {
-                format!("sink:{}:{rows}", outcome.as_str())
+            TraceEvent::SinkResult {
+                worker_id,
+                outcome,
+                rows,
+            } => {
+                format!("sink:{worker_id}:{}:{rows}", outcome.as_str())
             }
             TraceEvent::CheckpointUpdate { source_id, offset } => {
                 format!("ckpt_update:{source_id}:{offset}")
             }
             TraceEvent::CheckpointFlush { success } => format!("ckpt_flush:{success}"),
+            TraceEvent::BatchTerminal {
+                batch_id,
+                source_id,
+                terminal,
+            } => format!(
+                "batch_terminal:{batch_id}:{source_id}:{}",
+                terminal.as_str()
+            ),
+            TraceEvent::BatchHold {
+                batch_id,
+                source_id,
+            } => format!("batch_hold:{batch_id}:{source_id}"),
+            TraceEvent::RetryAttempt {
+                worker_id,
+                attempt,
+                backoff_ms,
+                reason,
+                ..
+            } => format!("retry:{worker_id}:{attempt}:{backoff_ms}:{reason}"),
+            TraceEvent::PoolDrainBegin => "pool_drain_begin".to_string(),
+            TraceEvent::PoolDrainComplete { forced_abort } => {
+                format!("pool_drain_complete:{forced_abort}")
+            }
         })
         .collect()
 }
@@ -519,7 +789,12 @@ impl NormalizedTrace {
                         attributes.insert("source_id", source_id.to_string());
                         attributes.insert("checkpoint", checkpoint.to_string());
                     }
-                    TraceEvent::SinkResult { outcome, rows } => {
+                    TraceEvent::SinkResult {
+                        worker_id,
+                        outcome,
+                        rows,
+                    } => {
+                        attributes.insert("worker_id", worker_id.to_string());
                         attributes.insert("outcome", outcome.as_str().to_string());
                         attributes.insert("rows", rows.to_string());
                     }
@@ -529,6 +804,39 @@ impl NormalizedTrace {
                     }
                     TraceEvent::CheckpointFlush { success } => {
                         attributes.insert("success", success.to_string());
+                    }
+                    TraceEvent::BatchTerminal {
+                        batch_id,
+                        source_id,
+                        terminal,
+                    } => {
+                        attributes.insert("batch_id", batch_id.to_string());
+                        attributes.insert("source_id", source_id.to_string());
+                        attributes.insert("terminal", terminal.as_str().to_string());
+                    }
+                    TraceEvent::BatchHold {
+                        batch_id,
+                        source_id,
+                    } => {
+                        attributes.insert("batch_id", batch_id.to_string());
+                        attributes.insert("source_id", source_id.to_string());
+                    }
+                    TraceEvent::RetryAttempt {
+                        worker_id,
+                        batch_id,
+                        attempt,
+                        backoff_ms,
+                        reason,
+                    } => {
+                        attributes.insert("worker_id", worker_id.to_string());
+                        attributes.insert("batch_id", batch_id.to_string());
+                        attributes.insert("attempt", attempt.to_string());
+                        attributes.insert("backoff_ms", backoff_ms.to_string());
+                        attributes.insert("reason", reason.clone());
+                    }
+                    TraceEvent::PoolDrainBegin => {}
+                    TraceEvent::PoolDrainComplete { forced_abort } => {
+                        attributes.insert("forced_abort", forced_abort.to_string());
                     }
                 }
                 NormalizedTraceEvent {
@@ -722,6 +1030,14 @@ impl TransitionValidator {
                         ));
                     }
                 }
+                // Batch terminal/hold and pool drain events are valid in any non-stopped
+                // phase. Detailed validation is handled by pluggable EventValidator
+                // implementations (NoDoubleComplete, ForceAbortAccountsForAll, etc.).
+                TraceEvent::BatchTerminal { .. }
+                | TraceEvent::BatchHold { .. }
+                | TraceEvent::RetryAttempt { .. }
+                | TraceEvent::PoolDrainBegin
+                | TraceEvent::PoolDrainComplete { .. } => {}
             }
         }
 
@@ -762,6 +1078,7 @@ mod tests {
                 phase: TracePhase::Running,
             },
             TraceEvent::SinkResult {
+                worker_id: 0,
                 outcome: SinkOutcome::Ok,
                 rows: 2,
             },
