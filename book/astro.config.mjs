@@ -69,13 +69,6 @@ export default defineConfig({
           label: "Troubleshooting",
           slug: "troubleshooting",
         },
-        {
-          label: "Development",
-          items: [
-            { label: "Contributing", slug: "development/contributing" },
-            { label: "Benchmarking", slug: "development/benchmarking" },
-          ],
-        },
       ],
     }),
   ],

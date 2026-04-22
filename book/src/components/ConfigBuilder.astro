@@ -586,7 +586,7 @@ const wasmBase = import.meta.env.BASE_URL.replace(/\/$/, '') + '/wasm/logfwd-con
 <script type="module">
 (async () => {
   // Resolve WASM path from the data attribute set by Astro's frontmatter.
-  // This makes the path work both in dev (base='/') and on GitHub Pages (base='/memagent').
+  // This makes the path work both in dev (base='/') and on GitHub Pages (base='/fastforward').
   const wasmBase = document.getElementById('config-builder').dataset.wasmBase;
   const {
     default: init,

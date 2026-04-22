@@ -1,5 +1,9 @@
 # Zero-Copy Pipeline Design
 
+> **Status:** Active
+> **Date:** 2026-04-21
+> **Context:** retain the deep-dive research behind the zero-copy framing and buffer-lifecycle direction outside the canonical architecture layer.
+
 > **See `ARCHITECTURE.md` for the current high-level pipeline overview.**
 > This document is the deep-dive research behind the zero-copy design.
 

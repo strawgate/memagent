@@ -2,6 +2,9 @@
 
 Point-in-time investigations that informed architecture decisions.
 
+This index is curated. It is not intended to enumerate every audit, prompt,
+artifact, or generated file under `dev-docs/research/`.
+
 ## Rules
 
 - Research docs are not canonical behavior docs.
@@ -23,26 +26,20 @@ Point-in-time investigations that informed architecture decisions.
 ## Active Research
 
 - [checkpoint-snapshot-design.md](checkpoint-snapshot-design.md)
-- [columnar-batch-builder.md](columnar-batch-builder.md)
-- [config-library-poc-2026-04-19.md](config-library-poc-2026-04-19.md)
+- [config-library-poc.md](config-library-poc.md)
 - [crate-restructure-plan.md](crate-restructure-plan.md)
-- [elasticsearch-retry-contract-2026-04-18.md](elasticsearch-retry-contract-2026-04-18.md)
-- [file-tailing-audit.md](file-tailing-audit.md)
+- [elasticsearch-retry-contract.md](elasticsearch-retry-contract.md)
+- [file-tailing-design.md](file-tailing-design.md)
 - [linearizability-porcupine-plan.md](linearizability-porcupine-plan.md)
 - [per-input-sql-analysis.md](per-input-sql-analysis.md)
-- [source-metadata-zero-copy-plan-2026-04-19.md](source-metadata-zero-copy-plan-2026-04-19.md)
-- [source-metadata-attachment-perf-2026-04-19.md](source-metadata-attachment-perf-2026-04-19.md)
+- [predicate-pushdown-design.md](predicate-pushdown-design.md)
+- [source-metadata-attachment-plan.md](source-metadata-attachment-plan.md)
 - [tla-gap-analysis.md](tla-gap-analysis.md)
-- [turmoil-concurrency-bugs-report-2026-04.md](turmoil-concurrency-bugs-report-2026-04.md)
+- [turmoil-concurrency-analysis.md](turmoil-concurrency-analysis.md)
 - [type-suffix-redesign.md](type-suffix-redesign.md)
-- [verification-audit.md](verification-audit.md)
+- [verification-gap-analysis.md](verification-gap-analysis.md)
+- [zero-copy-pipeline-design.md](zero-copy-pipeline-design.md)
 
-## Completed Research
+## Durable Design Notes
 
-- [completed-rollup-2026-04.md](completed-rollup-2026-04.md)
 - [columnar-batch-builder.md](columnar-batch-builder.md)
-
-## Historical / Superseded
-
-- [offset-checkpoint-research.md](offset-checkpoint-research.md)
-- Additional removed artifacts are preserved in git history.

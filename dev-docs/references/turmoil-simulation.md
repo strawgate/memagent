@@ -48,4 +48,4 @@ cargo test -p logfwd --features turmoil --test turmoil_sim fault_scenario_sim::r
 ## Canonical Docs
 
 - `dev-docs/VERIFICATION.md` (tool-selection policy)
-- `dev-docs/research/turmoil-concurrency-bugs-report-2026-04.md` (active findings)
+- `dev-docs/research/turmoil-concurrency-analysis.md` (active findings)
