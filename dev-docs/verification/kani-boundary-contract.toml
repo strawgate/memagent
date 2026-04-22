@@ -45,7 +45,7 @@ issue = 1314
 [[seams]]
 path = "crates/logfwd-types/src/diagnostics.rs"
 status = "recommended"
-reason = "cfg(kani) stubs that disable OTel metric side effects during Kani runs; no proof harnesses here."
+reason = "Contains cfg(kani) stubs for atomic counter operations (inc_send, send_ns_total, send_count) that Kani cannot model; no proof harnesses, only Kani-compatible no-op implementations."
 issue = 2486
 
 [[seams]]

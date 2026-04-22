@@ -1,5 +1,9 @@
 # Predicate Pushdown Design
 
+> **Status:** Active
+> **Date:** 2026-04-21
+> **Context:** capture the transform-to-input/scanner pushdown design space and the current advisory `FilterHints` model.
+
 ## Overview
 
 The transform layer (DataFusion SQL) knows what the user wants. Inputs and

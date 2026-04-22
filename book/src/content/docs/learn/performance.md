@@ -65,4 +65,4 @@ Field pushdown recovers most of the throughput loss from wide data. If your SQL 
 | See how the scanner works | [Scanner Deep Dive](/learn/scanner/) (interactive) |
 | Configure SQL transforms | [SQL Transforms](/configuration/sql-transforms/) |
 | Deploy to production | [Kubernetes DaemonSet](/deployment/kubernetes/) |
-| Contribute optimizations | [Contributing](/development/contributing/) |
+| Contribute optimizations | [Contributing](https://github.com/strawgate/fastforward/blob/main/CONTRIBUTING.md) |

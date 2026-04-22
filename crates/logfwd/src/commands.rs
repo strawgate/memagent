@@ -343,7 +343,7 @@ fn cmd_init() -> Result<(), CliError> {
     let path = std::path::Path::new("logfwd.yaml");
 
     let template = r#"# ff configuration
-# Docs: https://github.com/strawgate/memagent
+# Docs: https://github.com/strawgate/fastforward
 
 # ── Quick start ─────────────────────────────────────────────
 # 1. Generate sample data:  ff generate-json 10000 sample.json
@@ -351,7 +351,7 @@ fn cmd_init() -> Result<(), CliError> {
 # 3. Run the pipeline:      ff run --config logfwd.yaml
 #
 # For production, change the input path and output to your real
-# source/destination — see the examples at https://github.com/strawgate/memagent/tree/main/examples/use-cases/
+# source/destination — see the examples at https://github.com/strawgate/fastforward/tree/main/examples/use-cases/
 # Or run `ff wizard` for an interactive setup.
 
 # Tail a JSON log file and stream new lines as they appear.
