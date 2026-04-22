@@ -136,7 +136,7 @@ work for file inputs.
 
 **Cost:** `C: Clone` bound on methods; generic propagates to `AckReceipt<C>`,
 `CheckpointAdvance<C>`.  
-**Research:** `dev-docs/research/offset-checkpoint-research.md`. **Related:** #270.
+**Research:** `dev-docs/research/checkpoint-snapshot-design.md`. **Related:** #270.
 
 ### Kani checkpoint proof domain
 

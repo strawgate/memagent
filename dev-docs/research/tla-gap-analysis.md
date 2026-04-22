@@ -566,7 +566,7 @@ There is no concept of bytes in the framer that cannot form a complete
 line.
 
 **Could it hide a bug?** Yes -- partial data loss on shutdown. However,
-this is documented as acceptable in the file-tailing-audit.md (option C:
+this is documented as acceptable in the file-tailing-design.md (option C:
 "Drop partial on shutdown, data loss is minimal -- one partial line per
 file at shutdown time").
 
@@ -668,7 +668,7 @@ shared `FramedInput`.
 is no multi-file model.
 
 **Could it hide a bug?** Yes -- this is the shared remainder bug
-(file-tailing-audit.md issue #797). Data from file A's partial line is
+(file-tailing-design.md issue #797). Data from file A's partial line is
 concatenated with data from file B, producing a corrupted line. The spec
 cannot find this because it only models one file.
 
@@ -686,7 +686,7 @@ VARIABLES
 ```
 
 **Priority**: HIGH -- the shared remainder bug is a known critical issue
-(file-tailing-audit.md priority 2). The spec should model multi-file to
+(file-tailing-design.md priority 2). The spec should model multi-file to
 verify the fix (per-source remainder) once implemented.
 
 ---

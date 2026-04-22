@@ -101,6 +101,24 @@ cargo test -p logfwd-core    # single crate (fastest iteration)
 just fuzz scanner 300        # fuzz a target for 300s (nightly)
 ```
 
+## Benchmark suites
+
+Use the smallest benchmark surface that answers the question:
+
+```bash
+just bench                         # Tier 1 Criterion suite
+just bench-competitive --lines 1000000 --scenarios passthrough,json_parse,filter
+just profile-otlp-local            # end-to-end CPU flamegraph on macOS
+just bench-framed-input -- --lines 200000 --iterations 5
+just bench-framed-input-alloc -- --lines 200000
+```
+
+- `just bench` is the default regression net for performance-sensitive PRs.
+- `just bench-competitive` is for product-level comparisons against other agents.
+- `profile-*` and `bench-framed-input*` are for hotspot analysis, not headline numbers.
+- Nightly benchmark reports land as GitHub issues with the `benchmark` label.
+  Use `gh issue list --label benchmark --state open` to inspect the current reports.
+
 > **Why two tiers?** The workspace `default-members` excludes `logfwd-transform`
 > (datafusion) and `logfwd` (binary). Bare `cargo check` / `just clippy` skip
 > them (~30s vs ~3min). Use `--workspace`, `-p logfwd`, or the `-all` just
@@ -299,8 +317,9 @@ artifact to back it.
    in the encoder. `just bench` covers the Tier 1 suite quickly;
    use it as a regression net before merge.
 7. **Update `dev-docs/` if the change alters a documented perf
-   characteristic.** Buffer lifecycle, hot-path rules, the ZERO_COPY_PIPELINE
-   notes. See `dev-docs/CHANGE_MAP.md` for co-change requirements.
+   characteristic.** Buffer lifecycle, hot-path rules, and any relevant
+   research/design notes under `dev-docs/research/`. See
+   `dev-docs/CHANGE_MAP.md` for co-change requirements.
 
 If the change touches `unsafe` SIMD in `logfwd-arrow`, verify it
 against the scalar fallback with proptest (`cargo test -p logfwd-arrow`
