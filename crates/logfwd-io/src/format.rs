@@ -137,7 +137,7 @@ impl FormatDecoder {
     /// (no rewriting, no CRI extraction). Passthrough formats are eligible
     /// for zero-copy fast paths in framing.
     #[must_use]
-    pub fn is_passthrough(&self) -> bool {
+    pub(crate) fn is_passthrough(&self) -> bool {
         matches!(
             self,
             Self::Passthrough { .. } | Self::PassthroughJson { .. }

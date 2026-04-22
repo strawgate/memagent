@@ -161,7 +161,7 @@ impl FramedInput {
                         match last_nl {
                             Some(pos) if pos + 1 == bytes.len() => {
                                 // Entire chunk is complete lines — zero-copy pass.
-                                state.tracker.apply_read(n_bytes, Some(n_bytes - 1));
+                                state.tracker.apply_read(n_bytes, Some(pos as u64));
                                 let line_count = memchr::memchr_iter(b'\n', &bytes).count();
                                 self.stats.inc_lines(line_count as u64);
                                 if let FormatDecoder::PassthroughJson { stats, .. } = &state.format
@@ -192,7 +192,7 @@ impl FramedInput {
                                 let tail = &bytes[pos + 1..];
                                 if tail.len() > MAX_REMAINDER_BYTES {
                                     tracing::warn!(
-                                        source_id = ?key,
+                                        source_key = ?key,
                                         tail_bytes = tail.len(),
                                         max_remainder_bytes = MAX_REMAINDER_BYTES,
                                         "framed.remainder_overflow — tail after newline \
@@ -226,7 +226,7 @@ impl FramedInput {
                                 state.tracker.apply_read(n_bytes, None);
                                 if bytes.len() > MAX_REMAINDER_BYTES {
                                     tracing::warn!(
-                                        source_id = ?key,
+                                        source_key = ?key,
                                         chunk_bytes = bytes.len(),
                                         max_remainder_bytes = MAX_REMAINDER_BYTES,
                                         "framed.remainder_overflow — partial line exceeds \
@@ -287,7 +287,7 @@ impl FramedInput {
                                     // eventually emit a complete line. Emit a warning
                                     // so the data loss is not silent.
                                     tracing::warn!(
-                                        source_id = ?key,
+                                        source_key = ?key,
                                         tail_bytes = tail.len(),
                                         max_remainder_bytes = MAX_REMAINDER_BYTES,
                                         "framed.remainder_overflow — partial line exceeds \
@@ -320,7 +320,7 @@ impl FramedInput {
                                 // Same overflow policy as the tail case: warn, reset
                                 // format state, and keep the most recent bytes.
                                 tracing::warn!(
-                                    source_id = ?key,
+                                    source_key = ?key,
                                     chunk_bytes = chunk.len(),
                                     max_remainder_bytes = MAX_REMAINDER_BYTES,
                                     "framed.remainder_overflow — partial line exceeds \

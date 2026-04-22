@@ -35,14 +35,25 @@ fn main() {
         let mut offset = 0;
         let mut rng = fastrand::Rng::with_seed(42);
         while offset < raw_bytes.len() {
-            let chunk_size = rng.usize(2048..8192).min(raw_bytes.len() - offset);
+            // Mix small (4-8KB) and large (256-512KB) chunks so Option C's
+            // direct-send fast path is exercised for ~20% of chunks.
+            let chunk_size = if rng.u8(..) < 50 {
+                rng.usize(batch_target..batch_target * 2)
+            } else {
+                rng.usize(2048..8192)
+            }
+            .min(raw_bytes.len() - offset);
             // Find last newline in this chunk range
             let end = offset + chunk_size;
             let slice = &raw_bytes[offset..end];
             let last_nl = memchr::memrchr(b'\n', slice);
             let actual_end = match last_nl {
                 Some(pos) => offset + pos + 1,
-                None => end, // no newline — take the whole chunk
+                // No newline found — scan forward to find the next one
+                None => match memchr::memchr(b'\n', &raw_bytes[end..]) {
+                    Some(fwd) => end + fwd + 1,
+                    None => raw_bytes.len(), // last chunk, take everything
+                },
             };
             v.push(raw_bytes.slice(offset..actual_end));
             offset = actual_end;
