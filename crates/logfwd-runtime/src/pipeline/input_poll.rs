@@ -117,6 +117,7 @@ async fn process_input_events(
                         if send_channel_msg(tx, msg).await.is_err() {
                             return false;
                         }
+                        metrics.inc_channel_depth();
                     }
                     *buffered_since = None;
                 }
@@ -128,6 +129,7 @@ async fn process_input_events(
                     if send_channel_msg(tx, msg).await.is_err() {
                         return false;
                     }
+                    metrics.inc_channel_depth();
                 }
             }
             InputEvent::Rotated { .. } => {
@@ -289,6 +291,7 @@ pub(super) async fn async_input_poll_loop(
                     if tx.send(msg).await.is_err() {
                         break;
                     }
+                    metrics.inc_channel_depth();
                 }
             }
             break;
@@ -303,6 +306,7 @@ pub(super) async fn async_input_poll_loop(
                 if tx.send(msg).await.is_err() {
                     break;
                 }
+                metrics.inc_channel_depth();
             }
             buffered_since = None;
         }
@@ -319,6 +323,8 @@ pub(super) async fn async_input_poll_loop(
                     error = %e,
                     "input.channel_closed_on_shutdown_drain"
                 );
+            } else {
+                metrics.inc_channel_depth();
             }
         }
     }

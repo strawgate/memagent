@@ -26,6 +26,8 @@ export interface BatchesData {
   last_batch_time_ns: number;
   batch_latency_avg_ns?: number;
   inflight?: number;
+  channel_depth?: number;
+  channel_capacity?: number;
   rows_total?: number;
 }
 
@@ -100,6 +102,8 @@ export interface StatsResponse {
   output_sec: number;
   backpressure_stalls: number;
   inflight_batches: number;
+  channel_depth?: number;
+  channel_capacity?: number;
   mem_resident?: number;
   mem_allocated?: number;
   mem_active?: number;

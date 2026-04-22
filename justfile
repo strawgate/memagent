@@ -341,8 +341,8 @@ build-dev-lite:
 _bench-run name config seconds="10" diag="http://127.0.0.1:9090":
     #!/usr/bin/env bash
     set -euo pipefail
-    LOGFWD=./target/release/ff
-    $LOGFWD run --config {{config}} &
+    FF=./target/release/ff
+    $FF run --config {{config}} &
     PID=$!
     sleep {{seconds}}
     STATS=$(curl -s {{diag}}/admin/v1/stats 2>/dev/null || echo '{}')
@@ -360,8 +360,8 @@ _bench-run name config seconds="10" diag="http://127.0.0.1:9090":
 _bench-pair name rx_config tx_config seconds="10":
     #!/usr/bin/env bash
     set -euo pipefail
-    LOGFWD=./target/release/ff
-    $LOGFWD run --config {{rx_config}} &
+    FF=./target/release/ff
+    $FF run --config {{rx_config}} &
     RX=$!;
 
     # Poll /ready until the diagnostics HTTP server is up (503 → 200).
@@ -386,7 +386,7 @@ _bench-pair name rx_config tx_config seconds="10":
     # Give run_async() time to bind receiver sockets after /ready returns.
     sleep 1
 
-    $LOGFWD run --config {{tx_config}} &
+    $FF run --config {{tx_config}} &
     TX=$!; sleep {{seconds}}
     STATS=$(curl -s http://127.0.0.1:9091/admin/v1/stats 2>/dev/null || echo '{}')
     kill $TX $RX 2>/dev/null; wait $TX $RX 2>/dev/null || true
@@ -489,7 +489,7 @@ bench-e2e seconds="10":
 
 [private]
 bench-pipelines seconds="10":
-    @echo "logfwd pipeline benchmarks ({{seconds}}s each)"
+    @echo "ff pipeline benchmarks ({{seconds}}s each)"
     @echo "================================================"
     cargo build --release -p logfwd
     just bench-self {{seconds}}
@@ -555,7 +555,7 @@ bench-docker:
 profile-otlp-local lines="500000" seconds="6":
     #!/usr/bin/env bash
     set -euo pipefail
-    ROOT=$(mktemp -d /tmp/logfwd-pprof.XXXXXX)
+    ROOT=$(mktemp -d /tmp/ff-pprof.XXXXXX)
     PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
 
     echo "==> Build cpu-profiling binary"
@@ -643,10 +643,10 @@ bench-framed-input *ARGS:
 bench-framed-input-alloc *ARGS:
     cargo run -p logfwd-bench --release --features bench-tools,dhat-heap --bin framed_input_profile -- --alloc-only {{ARGS}}
 
-# Run low-and-slow rate-ingest benchmark (logfwd only, measures memory and CPU at each eps)
+# Run low-and-slow rate-ingest benchmark (ff only, measures memory and CPU at each eps)
 bench-rate *ARGS:
     cargo build --release -p logfwd
-    LOGFWD=./target/release/ff cargo run -p logfwd-competitive-bench --release -- --rate-bench {{ARGS}}
+    FF=./target/release/ff cargo run -p logfwd-competitive-bench --release -- --rate-bench {{ARGS}}
 
 # Run sustained-load memory profiler (generator → SQL → null, default 5 minutes).
 # Use --quick (30s) for CI or --medium (120s) for quick checks.

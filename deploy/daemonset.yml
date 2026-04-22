@@ -29,12 +29,12 @@ spec:
         fsGroup: 65532
       containers:
         - name: ff
-          image: ghcr.io/strawgate/memagent:latest
+          image: ghcr.io/strawgate/fastforward:latest
           imagePullPolicy: IfNotPresent
           args:
             - "run"
             - "--config"
-            - "/etc/logfwd/pipeline.yaml"
+            - "/etc/ff/pipeline.yaml"
           securityContext:
             readOnlyRootFilesystem: true
             allowPrivilegeEscalation: false
@@ -84,7 +84,7 @@ spec:
               mountPath: /var/log
               readOnly: true
             - name: config
-              mountPath: /etc/logfwd
+              mountPath: /etc/ff
               readOnly: true
             - name: data
               mountPath: /var/lib/logfwd
@@ -94,7 +94,7 @@ spec:
             path: /var/log
         - name: config
           configMap:
-            name: logfwd-config
+            name: ff-config
         - name: data
           hostPath:
             path: /var/lib/logfwd

@@ -433,18 +433,16 @@ impl OtlpFieldHandles {
         &self,
         builder: &mut ColumnarBatchBuilder,
         value: &[u8],
-        scratch: &mut WireScratch,
     ) -> Result<(), ProjectionError> {
-        super::write_hex_field(builder, self.trace_id, value, &mut scratch.hex)
+        super::write_hex_field(builder, self.trace_id, value)
     }
 
     pub(super) fn write_span_id(
         &self,
         builder: &mut ColumnarBatchBuilder,
         value: &[u8],
-        scratch: &mut WireScratch,
     ) -> Result<(), ProjectionError> {
-        super::write_hex_field(builder, self.span_id, value, &mut scratch.hex)
+        super::write_hex_field(builder, self.span_id, value)
     }
 
     pub(super) fn write_flags(&self, builder: &mut ColumnarBatchBuilder, value: i64) {
@@ -880,7 +878,7 @@ pub(super) fn write_wire_any(
         WireAny::Bool(value) => builder.write_bool(handle, value),
         WireAny::Int(value) => builder.write_i64(handle, value),
         WireAny::Double(value) => builder.write_f64(handle, value),
-        WireAny::Bytes(value) => super::write_hex_field(builder, handle, value, &mut scratch.hex)?,
+        WireAny::Bytes(value) => super::write_hex_field(builder, handle, value)?,
         WireAny::ArrayRaw(value) => {
             super::write_wire_any_complex_json(builder, handle, WireAny::ArrayRaw(value), scratch)?;
         }
@@ -935,7 +933,7 @@ pub(super) fn write_wire_any_as_string(
                 .write_str_bytes(handle, &scratch.decimal)
                 .map_err(|e| ProjectionError::Batch(e.to_string()))?;
         }
-        WireAny::Bytes(value) => super::write_hex_field(builder, handle, value, &mut scratch.hex)?,
+        WireAny::Bytes(value) => super::write_hex_field(builder, handle, value)?,
         WireAny::ArrayRaw(value) => {
             super::write_wire_any_complex_json(builder, handle, WireAny::ArrayRaw(value), scratch)?;
         }
@@ -1655,10 +1653,10 @@ mod generated_tests {
             )
             .expect("body appender should write");
         handles
-            .write_trace_id(&mut builder, &[0xab, 0xcd], &mut scratch)
+            .write_trace_id(&mut builder, &[0xab, 0xcd])
             .expect("trace id appender should write");
         handles
-            .write_span_id(&mut builder, &[0x12, 0x34], &mut scratch)
+            .write_span_id(&mut builder, &[0x12, 0x34])
             .expect("span id appender should write");
         handles.write_flags(&mut builder, 1);
         handles

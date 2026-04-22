@@ -405,11 +405,11 @@ fn main() {
 
 /// Run the low-and-slow rate-ingest benchmark (non-competitive, ff only).
 fn run_rate_bench_main(args: &Args) {
-    // Locate ff binary via LOGFWD env var or PATH.
+    // Locate ff binary via FF env var (or legacy LOGFWD) or PATH.
     let logfwd_binary = find_logfwd_binary().unwrap_or_else(|| {
         eprintln!(
             "ERROR: ff binary not found. \
-             Set the LOGFWD env var or ensure ff is on PATH."
+             Set the FF env var (or legacy LOGFWD) or ensure ff is on PATH."
         );
         process::exit(1);
     });
@@ -470,12 +470,15 @@ fn run_rate_bench_main(args: &Args) {
     }
 }
 
-/// Locate the logfwd binary.  Checks `LOGFWD` env var first, then `PATH`.
+/// Locate the ff binary.  Checks `FF` env var first, then `LOGFWD` (legacy),
+/// then `PATH`.
 fn find_logfwd_binary() -> Option<PathBuf> {
-    if let Ok(val) = std::env::var("LOGFWD") {
-        let p = PathBuf::from(&val);
-        if p.exists() {
-            return Some(p);
+    for var in ["FF", "LOGFWD"] {
+        if let Ok(val) = std::env::var(var) {
+            let p = PathBuf::from(&val);
+            if p.exists() {
+                return Some(p);
+            }
         }
     }
     if let Ok(output) = process::Command::new("which").arg("ff").output()
@@ -572,12 +575,19 @@ fn resolve_binary(
     bin_dir: &std::path::Path,
     no_download: bool,
 ) -> Option<PathBuf> {
-    // Check env override.
+    // Check env override.  For `ff`, also check legacy `LOGFWD`.
     let env_var = agent.name().to_uppercase().replace('-', "_");
-    if let Ok(val) = std::env::var(&env_var) {
-        let p = PathBuf::from(&val);
-        if p.exists() {
-            return Some(p);
+    let env_vars: Vec<&str> = if env_var == "FF" {
+        vec!["FF", "LOGFWD"]
+    } else {
+        vec![&env_var]
+    };
+    for var in env_vars {
+        if let Ok(val) = std::env::var(var) {
+            let p = PathBuf::from(&val);
+            if p.exists() {
+                return Some(p);
+            }
         }
     }
 
