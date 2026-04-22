@@ -3,15 +3,15 @@ title: "SQL Transforms"
 description: "Filter, reshape, and enrich logs with DataFusion SQL"
 ---
 
-FastForward uses Apache DataFusion to run SQL queries on your log data. Every log
+FastForward runs SQL queries on your log data using Apache DataFusion. Every log
 line becomes a row in a virtual `logs` table.
 
 ## Column naming
 
-The JSON scanner creates columns using **bare field names** with native Arrow types:
-- `level` — Utf8View (string)
-- `status` — Int64 (integer)
-- `latency_ms` — Float64 (float)
+The JSON scanner creates columns using **bare field names** and natural SQL-friendly types:
+- `level` — string
+- `status` — integer
+- `latency_ms` — float
 
 Use bare names directly in SQL:
 
@@ -19,12 +19,10 @@ Use bare names directly in SQL:
 SELECT * FROM logs WHERE level = 'ERROR'
 ```
 
-When a field has mixed types across rows (e.g., `status` is sometimes an int,
-sometimes a string), the builder emits a `StructArray` conflict column
-(`status: Struct { int: Int64, str: Utf8View }`).
-Before SQL execution, conflict columns are normalized to flat `Utf8` columns
-via `COALESCE(CAST(int AS Utf8), CAST(float AS Utf8), str)`.
-Use `int(status)` or `float(status)` for numeric operations on these columns.
+When a field has mixed types across rows (for example, `status` is sometimes a
+number and sometimes a string), FastForward normalizes it to a text column so
+queries continue to work predictably. Use `int(status)` or `float(status)` when
+you need numeric operations on those mixed-type fields.
 
 ## Custom UDFs
 
@@ -171,6 +169,6 @@ transform: |
 | Topic | Where to go |
 |-------|-------------|
 | See all YAML options | [YAML Reference](/configuration/reference/) |
-| Understand the scanner | [Scanner Deep Dive](/how-it-works/scanner/) (interactive) |
+| Understand the scanner | [Scanner Deep Dive](/learn/scanner/) (interactive) |
 | Deploy to production | [Kubernetes DaemonSet](/deployment/kubernetes/) |
 | Debug transform issues | [Troubleshooting](/troubleshooting/) |

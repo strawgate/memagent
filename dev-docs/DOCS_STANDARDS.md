@@ -2,21 +2,23 @@
 
 Rules for keeping docs dense, current, and useful for both humans and agents.
 
-## Canonical Surfaces
+## Documentation Sets
 
-| Surface | Path | Audience | Canonical Use |
+FastForward uses three documentation sets:
+
+| Set | Primary paths | Audience | Canonical use |
 |---|---|---|---|
-| Root docs | `/*.md` | First-time contributors | project orientation and contribution entrypoints |
-| User book | `book/src/content/docs/` | Operators/users | install, config, deployment, troubleshooting, conceptual product docs |
-| Developer docs | `dev-docs/` | Engineers/agents | architecture, constraints, contracts, verification |
-| CI review guides | `dev-docs/review-guides/` | Reviewers | short pass/fail review checklists |
-| TLA specs | `tla/` | Formal/spec contributors | temporal properties and model configs |
+| Learn / Experience | `book/src/content/docs/learn/` | Users evaluating or understanding the system | interactive explainers, conceptual walkthroughs, system intuition |
+| User Documentation | `book/src/content/docs/` excluding `learn/` | Operators and end users | install, config, deployment, monitoring, troubleshooting |
+| Developer Docs | `dev-docs/`, root contributor docs, `tla/` | Engineers and agents | architecture, constraints, contracts, verification, contribution workflow |
 
 Do not duplicate canonical facts across surfaces.
+Only the first two sets are hosted in the public docs site. Developer Docs are repo-local.
 
 ## Mandatory Entry Points
 
 - Root entrypoint: `README.md`
+- Public docs landing page: `book/src/content/docs/index.mdx`
 - Developer entrypoint: `dev-docs/README.md`
 - Research index: `dev-docs/research/README.md` (curated, not exhaustive)
 - References index: `dev-docs/references/README.md`
@@ -106,8 +108,11 @@ One-off reports belong in `dev-docs/research/`.
 
 | Fact | Canonical doc |
 |---|---|
+| Learn / Experience navigation | `book/src/content/docs/learn/` + `book/astro.config.mjs` |
 | Config schema and options | `book/src/content/docs/configuration/reference.mdx` |
 | SQL transform behavior | `book/src/content/docs/configuration/sql-transforms.md` |
+| User install / first-run path | `book/src/content/docs/quick-start.mdx` |
+| User deployment / monitoring / troubleshooting | `book/src/content/docs/deployment/` + `book/src/content/docs/troubleshooting.md` |
 | Pipeline data flow and layer boundaries | `dev-docs/ARCHITECTURE.md` |
 | Crate constraints and boundaries | `dev-docs/CRATE_RULES.md` |
 | Verification requirements | `dev-docs/VERIFICATION.md` |

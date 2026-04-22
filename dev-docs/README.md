@@ -1,6 +1,12 @@
 # Developer Docs
 
-Contributor and agent entrypoint for repo-critical engineering context.
+One of the three FastForward documentation sets:
+
+- Learn / Experience: interactive system explainers in the public docs site
+- User Documentation: install, config, deployment, monitoring, troubleshooting
+- Developer Docs: repo-local engineering context for contributors and agents
+
+This page is the entrypoint for the Developer Docs set.
 
 ## Start Here (5 minutes)
 

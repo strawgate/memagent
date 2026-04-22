@@ -3,7 +3,7 @@ title: FastForward
 description: "a learning-oriented log forwarder built with Rust"
 template: splash
 hero:
-  tagline: "a learning-oriented log forwarder exploring modern Rust, SIMD parsing, Arrow columnar storage, and formal verification"
+  tagline: "hosted docs for learning the system and using the product"
   actions:
     - text: Quick Start
       link: quick-start/
@@ -21,7 +21,7 @@ export const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 
   <div class="home-col">
 
-    <h2 class="home-col-title">Use It</h2>
+    <h2 class="home-col-title">User Documentation</h2>
 
     <a class="home-link-card" href={`${base}/quick-start/`}>
       <span class="home-link-label">Quick Start</span>
@@ -56,7 +56,7 @@ export const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 
   <div class="home-col">
 
-    <h2 class="home-col-title">Understand It</h2>
+    <h2 class="home-col-title">Learn / Experience</h2>
 
     <a class="home-preview-card" href={`${base}/learn/tailing/`}>
       <div class="home-preview-img-wrap">
@@ -112,10 +112,18 @@ export const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 
 </div>
 
+:::note[Developer Docs]
+Developer Docs are repo-local and are not part of the hosted docs site.
+For architecture, verification, and contribution workflow, use
+[dev-docs/README.md](https://github.com/strawgate/fastforward/blob/main/dev-docs/README.md),
+[CONTRIBUTING.md](https://github.com/strawgate/fastforward/blob/main/CONTRIBUTING.md),
+and [DEVELOPING.md](https://github.com/strawgate/fastforward/blob/main/DEVELOPING.md).
+:::
+
 <style>{`
   .home-grid {
     display: grid;
-    grid-template-columns: 1fr 1.4fr;
+    grid-template-columns: 1fr 1.3fr;
     gap: 2.5rem;
     margin-top: 2.5rem;
     align-items: start;

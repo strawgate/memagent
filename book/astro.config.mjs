@@ -31,11 +31,7 @@ export default defineConfig({
       customCss: ["./src/styles/custom.css"],
       sidebar: [
         {
-          label: "Quick Start",
-          slug: "quick-start",
-        },
-        {
-          label: "Learn",
+          label: "Learn / Experience",
           items: [
             { label: "Overview", slug: "learn" },
             { label: "Inputs", slug: "learn/inputs" },
@@ -48,26 +44,19 @@ export default defineConfig({
           ],
         },
         {
-          label: "Configuration",
+          label: "User Documentation",
           items: [
+            { label: "Quick Start", slug: "quick-start" },
             { label: "Config Builder", slug: "configuration/config-builder" },
             { label: "SQL Transforms", slug: "configuration/sql-transforms" },
             { label: "Input Types", slug: "configuration/inputs" },
             { label: "Output Types", slug: "configuration/outputs" },
             { label: "YAML Reference", slug: "configuration/reference" },
-          ],
-        },
-        {
-          label: "Deployment",
-          items: [
             { label: "Kubernetes DaemonSet", slug: "deployment/kubernetes" },
             { label: "Docker", slug: "deployment/docker" },
             { label: "Monitoring & Diagnostics", slug: "deployment/monitoring" },
+            { label: "Troubleshooting", slug: "troubleshooting" },
           ],
-        },
-        {
-          label: "Troubleshooting",
-          slug: "troubleshooting",
         },
       ],
     }),

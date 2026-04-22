@@ -8,10 +8,11 @@ import DataFlowAnimation from '../../components/DataFlowAnimation.astro';
 
 <DataFlowAnimation />
 
-FastForward is a research project exploring how to build a fast log forwarder with Rust. This guide gets you from zero to a working pipeline in about 15 minutes.
+FastForward tails logs, filters them with SQL, and ships them to OTLP-compatible backends. This guide gets you from zero to a working pipeline in about 15 minutes.
 
 :::note
-The Cargo package is named `logfwd`; the installed CLI binary is `ff`. Docker images still reference `memagent` (the original image name).
+The Cargo package is named `logfwd`, and the installed CLI binary is `ff`.
+Docker images are currently published as `ghcr.io/strawgate/memagent`.
 :::
 
 ## Install
@@ -94,7 +95,7 @@ ff running (1 pipeline(s))
 ...
 ```
 
-FastForward parsed every JSON line, detected field types automatically, built Arrow RecordBatches, and printed them in a human-readable format. All 10,000 lines stream through in under a second.
+FastForward read the file, parsed each JSON line, and printed the results in a readable console format. All 10,000 lines should stream through quickly on a typical development machine.
 
 :::note
 FastForward exits when it reaches the end of a finite file. In production you'd point it at a log file being actively appended to, and it tails continuously.
@@ -127,7 +128,7 @@ cat logs.json | LOGFWD_CONFIG=destination.yaml ff --format json --service checko
 
 ## Stage 2: Filter with SQL
 
-Add a SQL transform to keep only what matters. Every batch of parsed records becomes a DataFusion SQL table named `logs`.
+Add a SQL transform to keep only what matters. FastForward exposes each batch as a SQL table named `logs`.
 
 ```bash
 ff generate-json 10000 logs.json    # regenerate — FastForward tracks file positions
@@ -156,7 +157,7 @@ ff run --config config.yaml
 
 Now you see only errors with slow durations. Only the columns from the `SELECT` appear — everything else was filtered before reaching the output. In production, this means you only ship the logs you care about.
 
-Full SQL works: `JOIN`, `GROUP BY`, `HAVING`, subqueries, window functions. Built-in UDFs: `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`, `geo_lookup()`. See [SQL Transforms](/configuration/sql-transforms/) for the complete reference.
+You can use standard SQL features such as `JOIN`, `GROUP BY`, `HAVING`, subqueries, and window functions. FastForward also includes helper functions such as `regexp_extract()`, `grok()`, `json()`, `json_int()`, `json_float()`, and `geo_lookup()`. See [SQL Transforms](/configuration/sql-transforms/) for the full reference.
 
 :::caution
 `ORDER BY` works within each batch but FastForward processes data in streaming batches, so ordering is per-batch, not global.
@@ -210,88 +211,16 @@ Works out of the box with [OpenTelemetry Collector](https://opentelemetry.io/doc
 
 ---
 
-## Stage 4: Production config
+## Before you move on
 
-This config tails Kubernetes pod logs in CRI format, filters by severity, and ships to OTLP with monitoring enabled.
-
-```yaml
-# pipeline.yaml
-input:
-  type: file
-  path: /var/log/pods/**/*.log
-  format: cri
-
-transform: |
-  SELECT * FROM logs WHERE level IN ('ERROR', 'WARN')
-
-output:
-  type: otlp
-  endpoint: https://otel-collector:4318/v1/logs
-  compression: zstd
-
-server:
-  diagnostics: 0.0.0.0:9090
-  log_level: info
-```
-
-What's different from the earlier stages:
-
-- **`format: cri`** — Kubernetes container runtime format. FastForward strips the CRI prefix and reassembles multi-line logs via the `P` partial flag.
-- **`path: /var/log/pods/**/*.log`** — Recursive glob. FastForward discovers new files automatically and handles rotation.
-- **`server.diagnostics`** — Exposes health checks, metrics, and pipeline status.
-
-### Validate before deploying
+Validate the config before deploying it anywhere more serious:
 
 ```bash
-ff validate --config pipeline.yaml
-ff dry-run --config pipeline.yaml
+ff validate --config config.yaml
+ff dry-run --config config.yaml
 ```
 
-`validate` catches YAML errors. `dry-run` goes further and compiles the SQL against the Arrow schema, catching column name typos and type mismatches.
-
-### Monitor the pipeline
-
-```bash
-curl -s http://localhost:9090/live          # liveness probe
-curl -s http://localhost:9090/ready         # readiness probe
-curl -s http://localhost:9090/admin/v1/status | jq .   # full status
-```
-
-See [Monitoring & Diagnostics](/deployment/monitoring/) for the complete endpoint reference and alerting guidance.
-
-### Multiple pipelines
-
-```yaml
-pipelines:
-  errors:
-    inputs:
-      - type: file
-        path: /var/log/pods/**/*.log
-        format: cri
-    transform: |
-      SELECT level, message, _timestamp, _stream
-      FROM logs WHERE level IN ('ERROR', 'WARN')
-    outputs:
-      - type: otlp
-        endpoint: https://otel-collector:4318/v1/logs
-        compression: zstd
-
-  all-logs:
-    inputs:
-      - type: file
-        path: /var/log/pods/**/*.log
-        format: cri
-    outputs:
-      - type: stdout
-        format: json
-
-server:
-  diagnostics: 0.0.0.0:9090
-```
-
-:::note
-The simple layout (`input`/`output` at top level) and advanced layout (`pipelines` map) cannot be mixed in the same config file.
-:::
+`validate` catches YAML and required-field errors. `dry-run` goes one step further and checks that the pipeline and SQL can be built successfully.
 
 ---
 
@@ -299,8 +228,9 @@ The simple layout (`input`/`output` at top level) and advanced layout (`pipeline
 
 | Topic | Where to go |
 |-------|-------------|
-| Understand the pipeline internals | [Pipeline Explorer](/learn/) (interactive) |
 | Learn the full SQL transform syntax | [SQL Transforms](/configuration/sql-transforms/) |
 | See all YAML config options | [YAML Reference](/configuration/reference/) |
-| Deploy to Kubernetes | [Kubernetes DaemonSet](/deployment/kubernetes/) |
-| Debug a problem | [Troubleshooting](/troubleshooting/) |
+| Deploy on one host | [Docker Deployment](/deployment/docker/) |
+| Deploy in a cluster | [Kubernetes DaemonSet](/deployment/kubernetes/) |
+| Monitor and troubleshoot | [Monitoring & Diagnostics](/deployment/monitoring/) and [Troubleshooting](/troubleshooting/) |
+| Understand how FastForward works | [Learn](/learn/) (interactive) |

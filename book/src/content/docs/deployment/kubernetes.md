@@ -296,8 +296,8 @@ of blocking OS threads — one per input plus shared coordinator threads.
 
 | Component | Typical size |
 |-----------|-------------|
-| Arrow RecordBatch (per batch, 8 KB read) | ~512 Ki |
-| DataFusion query plan | ~4 Mi |
+| Parsed batch working set | ~512 Ki |
+| SQL engine working set | ~4 Mi |
 | OTLP request buffer | ~2 Mi |
 | Enrichment tables | < 1 Mi |
 | Per-pipeline overhead | ~16 Mi |
@@ -332,14 +332,14 @@ being OOM-killed.
 Use `validate` to parse and validate the config without starting the pipeline:
 
 ```bash
-logfwd validate --config config.yaml
+ff validate --config config.yaml
 ```
 
 Use `dry-run` to build all pipeline objects without starting them (catches errors
 such as SQL syntax issues):
 
 ```bash
-logfwd dry-run --config config.yaml
+ff dry-run --config config.yaml
 ```
 
 Both commands exit 0 on success and print an error to stderr on failure.

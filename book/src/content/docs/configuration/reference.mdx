@@ -924,8 +924,8 @@ Useful for `/etc/os-release`, `.env` files, or ConfigMap-mounted metadata files.
 
 ### `csv` enrichment
 
-A multi-row lookup table loaded from a CSV file. All columns are UTF-8 strings
-and are materialized internally as Arrow `Utf8View` columns for SQL execution.
+A multi-row lookup table loaded from a CSV file. All columns are treated as
+strings for SQL joins and lookups.
 The first row must be column headers. Empty cells are empty strings; missing
 trailing cells are `NULL`.
 

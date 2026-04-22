@@ -24,7 +24,7 @@ Supported values, from most verbose to least:
 
 | Value | When to use |
 |-------|-------------|
-| `trace` | Deep debugging of I/O loops and buffer internals (very noisy) |
+| `trace` | Deep debugging of pipeline and I/O behavior (very noisy) |
 | `debug` | Investigating specific pipeline behavior or connection issues |
 | `info` | **Default.** Startup, shutdown, config reload, and periodic summary lines |
 | `warn` | Only warnings and errors (recommended for high-throughput production) |
@@ -110,10 +110,10 @@ Pipelines are returned as an array. Use `jq '.pipelines[0]'` to access the first
 
 | Field | Description |
 |-------|-------------|
-| `live` | `true` when the process is running and the control plane is healthy |
-| `ready` | `true` once all pipelines have completed initialization |
-| `uptime_secs` | Seconds since the process started |
-| `version` | FastForward binary version |
+| `live.status` | Liveness status for the process and control plane |
+| `ready.status` | Readiness status after pipeline initialization |
+| `system.uptime_seconds` | Seconds since the process started |
+| `system.version` | FastForward binary version |
 | `pipelines.<name>.input.lines_total` | Total lines read by this input since startup |
 | `pipelines.<name>.input.bytes_total` | Total bytes read by this input |
 | `pipelines.<name>.input.errors_total` | Cumulative read errors (file permission, connection reset, etc.) |
@@ -174,7 +174,7 @@ destination's health before adjusting FastForward configuration.
 
 ## OTLP metrics push
 
-In addition to the pull-based diagnostics API, FastForward can push its own internal
+In addition to the pull-based diagnostics API, FastForward can push its own
 metrics to an OpenTelemetry Collector over OTLP/HTTP.
 
 ```yaml
@@ -191,7 +191,7 @@ server:
 ### What gets pushed
 
 All of the counters and histograms listed in the Key metrics table above are
-exported as OTLP metrics, using the `logfwd_` prefix (metric prefix will change in a future release). Each metric includes
+exported as OTLP metrics using the `logfwd_` prefix. Each metric includes
 resource attributes identifying the host and FastForward instance. The payload uses
 OTLP protobuf encoding over HTTP.
 

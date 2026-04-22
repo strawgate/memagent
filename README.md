@@ -80,21 +80,27 @@ log files → SIMD parse → Arrow RecordBatch → DataFusion SQL → OTLP → y
 - **Formal verification** — the parsing core is verified with [Kani](https://github.com/model-checking/kani) (bounded model checking), state machines with TLA+, and SIMD conformance with proptest
 - **Single static binary** — ~15 MB, no JVM, no Python, no runtime dependencies
 
-## Documentation
+## Documentation Sets
 
-The docs are the best way to understand FastForward:
+FastForward uses three documentation sets:
 
-- **[Quick Start](https://strawgate.github.io/fastforward/quick-start/)** — install, run your first pipeline, ship logs
-- **[SQL Transforms](https://strawgate.github.io/fastforward/configuration/sql-transforms/)** — filter, reshape, extract, join
-- **[Configuration Reference](https://strawgate.github.io/fastforward/configuration/reference/)** — every YAML field, input/output type, UDF
-
-The "Understand It" section of the docs has interactive guides with live simulations:
-
-- **[Tailing](https://strawgate.github.io/fastforward/learn/tailing/)** — watch file rotation and truncation handling live
-- **[SIMD Scanner](https://strawgate.github.io/fastforward/learn/scanner/)** — step through JSON parsing, toggle field pushdown
-- **[Backpressure](https://strawgate.github.io/fastforward/learn/backpressure/)** — slow the output and watch pressure cascade back
-- **[Columnar Storage](https://strawgate.github.io/fastforward/learn/columnar/)** — row vs column layout, why Arrow makes SQL fast
-- **[Checkpoint Ordering](https://strawgate.github.io/fastforward/learn/checkpoints/)** — out-of-order ACKs and the committed watermark
+- **Learn / Experience** — interactive explainers and system walkthroughs:
+  [Learn](https://strawgate.github.io/fastforward/learn/),
+  [Tailing](https://strawgate.github.io/fastforward/learn/tailing/),
+  [Scanner](https://strawgate.github.io/fastforward/learn/scanner/),
+  [Backpressure](https://strawgate.github.io/fastforward/learn/backpressure/),
+  [Checkpoint Ordering](https://strawgate.github.io/fastforward/learn/checkpoints/)
+- **User Documentation** — install, configure, deploy, monitor, and troubleshoot:
+  [Quick Start](https://strawgate.github.io/fastforward/quick-start/),
+  [SQL Transforms](https://strawgate.github.io/fastforward/configuration/sql-transforms/),
+  [Configuration Reference](https://strawgate.github.io/fastforward/configuration/reference/),
+  [Docker Deployment](https://strawgate.github.io/fastforward/deployment/docker/),
+  [Kubernetes Deployment](https://strawgate.github.io/fastforward/deployment/kubernetes/),
+  [Troubleshooting](https://strawgate.github.io/fastforward/troubleshooting/)
+- **Developer Docs** — architecture, constraints, verification, and contribution workflow:
+  [dev-docs/README.md](dev-docs/README.md),
+  [CONTRIBUTING.md](CONTRIBUTING.md),
+  [DEVELOPING.md](DEVELOPING.md)
 
 ## Contributing
 
