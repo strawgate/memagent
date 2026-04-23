@@ -124,10 +124,10 @@ pub async fn run_pipelines(
     let use_color = options.use_color;
     tokio::spawn(async move {
         #[cfg(feature = "dhat-heap")]
-        let _profiler_to_drop = profiler;
+        let profiler_to_drop = profiler;
 
         #[cfg(feature = "cpu-profiling")]
-        let _pprof_to_drop = pprof_guard;
+        let pprof_to_drop = pprof_guard;
 
         #[cfg(unix)]
         {
@@ -153,7 +153,7 @@ pub async fn run_pipelines(
 
         #[cfg(feature = "cpu-profiling")]
         {
-            if let Ok(report) = _pprof_to_drop.report().build()
+            if let Ok(report) = pprof_to_drop.report().build()
                 && let Ok(file) = std::fs::File::create("flamegraph.svg")
             {
                 let _ = report.flamegraph(file);
@@ -161,7 +161,7 @@ pub async fn run_pipelines(
         }
 
         #[cfg(feature = "dhat-heap")]
-        drop(_profiler_to_drop);
+        drop(profiler_to_drop);
 
         shutdown_for_signal.cancel();
     });

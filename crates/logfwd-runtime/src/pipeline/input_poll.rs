@@ -283,16 +283,15 @@ pub(super) async fn async_input_poll_loop(
         }
 
         if input.source.is_finished() {
-            if !input.buf.is_empty() {
-                if let Some(msg) =
+            if !input.buf.is_empty()
+                && let Some(msg) =
                     scan_and_transform_for_send(&mut input, &mut transform, &metrics, input_index)
                         .await
-                {
-                    if tx.send(msg).await.is_err() {
-                        break;
-                    }
-                    metrics.inc_channel_depth();
+            {
+                if tx.send(msg).await.is_err() {
+                    break;
                 }
+                metrics.inc_channel_depth();
             }
             break;
         }
@@ -313,19 +312,18 @@ pub(super) async fn async_input_poll_loop(
     }
 
     // Drain remaining buffered data.
-    if !input.buf.is_empty() {
-        if let Some(msg) =
+    if !input.buf.is_empty()
+        && let Some(msg) =
             scan_and_transform_for_send(&mut input, &mut transform, &metrics, input_index).await
-        {
-            if let Err(e) = tx.send(msg).await {
-                tracing::warn!(
-                    input = input.source.name(),
-                    error = %e,
-                    "input.channel_closed_on_shutdown_drain"
-                );
-            } else {
-                metrics.inc_channel_depth();
-            }
+    {
+        if let Err(e) = tx.send(msg).await {
+            tracing::warn!(
+                input = input.source.name(),
+                error = %e,
+                "input.channel_closed_on_shutdown_drain"
+            );
+        } else {
+            metrics.inc_channel_depth();
         }
     }
     input.stats.set_health(reduce_component_health(

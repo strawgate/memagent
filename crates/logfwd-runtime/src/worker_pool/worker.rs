@@ -246,6 +246,7 @@ pub(super) async fn recv_with_idle_timeout(
 /// - `Rejected` — sink permanently rejected the data (4xx, schema error)
 /// - `PoolClosed` — shutdown cancellation was observed
 /// - `InternalFailure` — unknown `SendResult` variant
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn process_item(
     context: ProcessItemContext<'_>,
     batch: RecordBatch,
