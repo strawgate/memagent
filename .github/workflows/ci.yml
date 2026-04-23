@@ -50,6 +50,7 @@ jobs:
         with:
           filters: |
             kani_required:
+              - 'crates/logfwd-kani/**'
               - 'crates/logfwd-core/**'
               - 'crates/logfwd-arrow/**'
               - 'crates/logfwd-types/**'
@@ -413,6 +414,7 @@ jobs:
             -Z function-contracts
             -Z mem-predicates
             -Z stubbing
+            -p logfwd-kani
             -p logfwd-core
 
   kani-arrow:

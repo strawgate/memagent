@@ -9,6 +9,7 @@ publish = false
 doctest = false
 
 [dependencies]
+logfwd-kani = { version = "0.1.0", path = "../logfwd-kani" }
 logfwd-lint-attrs = { version = "0.1.0", path = "../logfwd-lint-attrs" }
 memchr = { version = "2", default-features = false }
 wide = { version = "1.3.0", default-features = false }

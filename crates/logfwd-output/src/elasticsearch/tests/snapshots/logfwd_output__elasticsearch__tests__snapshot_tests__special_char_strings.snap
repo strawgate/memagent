@@ -1,5 +1,6 @@
 ---
-source: crates/logfwd-output/src/elasticsearch.rs
+source: crates/logfwd-output/src/elasticsearch/tests/snapshots.rs
+assertion_line: 228
 expression: output
 ---
 {"index":{"_index":"test-index"}}

@@ -280,6 +280,26 @@ depend on computed state.
 
 ---
 
+## Advanced Patterns
+
+### Stub Verified (Compositional Proofs)
+To handle complex call graphs, we use `#[kani::proof_for_contract]` on leaf functions and
+`stub_verified` in callers. This bounds state-space explosion to N independent proofs.
+
+### Behavioral Mocks
+For logic that depends on OS types (like `std::fs::File`), we extract pure reducers or
+state transition functions. This allows us to prove the core logic using symbolic state
+(like `kani::vec::exact_vec` for memory buffers) without modeling the entire syscall layer.
+
+### Proven Statements (logfwd-kani)
+Shared fundamental logic (hex encoding, RFC 3339 parsing, numeric digits, byte search,
+protobuf sizing) is centralized in `logfwd-kani`. These functions are mathematically
+simple reference implementations ("oracles") used as comparison targets in proofs across
+the workspace. Production code stays in its original crate — oracles are only called from
+`#[cfg(kani)]` and `#[cfg(test)]` blocks.
+
+---
+
 ## proptest (Tier 3 — statistical)
 
 Use proptest for end-to-end integration, heap-intensive code, and async logic that Kani
@@ -360,7 +380,7 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `logfwd-io/otlp_receiver/convert.rs` | OTLP proto→JSON/Arrow conversion helpers extracted from the runtime shell | Kani recommended (1 proof: hex encoding) + unit tests + proptest oracle checks (writer helpers and request→NDJSON fast-vs-simple equivalence) + ignored release microbench guardrails |
 | `logfwd-io/otlp_receiver/projection.rs` | Experimental OTLP wire projection into Arrow (bypasses prost object graph) | 56 tests: prost-reference oracle parity (primitive, multi-resource/scope, randomized), malformed wire rejection (truncated varint/fixed64/fixed32/len, invalid UTF-8 in key/value/body, group mismatch, group depth, field zero, oversized field, wrong wire type), nested unknown-field interleavings, intentionally ignored metadata fields, high-cardinality dynamic attributes, unsupported-but-valid AnyValue fallback (array/kvlist in body/attrs, mixed primitive+unsupported), unsupported+malformed fallback rejection, ProjectedFallback mode parity. Proptest: 128-case arbitrary-byte ProjectedFallback-vs-prost classification, 64-case single-container randomized parity, and 32-case multi-container randomized parity. Projected decode remains non-default pending production-path benchmark gates. |
 | `logfwd-io/otlp_receiver.rs` | Receiver channel-drain boundedness, projected decoder pool sharding, HTTP decode backpressure, and decompression expansion limits | Unit tests (`drain_receiver_payloads` limit, queue carry-over, event order + `accounted_bytes` preservation, projected decoder shard/round-robin behavior, 429 on protobuf decode permit exhaustion, gzip/zstd expansion-limit rejection) |
-| `logfwd-io/tcp_input.rs` | TCP per-client bounded-read predicate (`should_stop_client_read`) and noisy-neighbor progress envelope | Kani (3 proofs: zero counters, independent caps, predicate equivalence) + unit tests + proptest predicate equivalence + noisy-vs-quiet bounded-progress regression |
+| `logfwd-io/tcp_input.rs` (wrapper over `tcp_input/*`) | TCP per-client bounded-read predicate (`should_stop_client_read`) and noisy-neighbor progress envelope | Kani (3 proofs: zero counters, independent caps, predicate equivalence) + unit tests + proptest predicate equivalence + noisy-vs-quiet bounded-progress regression |
 | `logfwd-io/udp_input.rs` | UDP bounded-drain predicate (`should_stop_udp_drain`), per-poll datagram work cap, and sender-scoped source identity | Kani (3 proofs: zero counters, independent caps, predicate equivalence) + unit tests + proptest predicate equivalence + bounded-drain/recovery regression + IPv4/IPv6 `SourceId` attribution tests |
 | `logfwd-io/s3_input/mod.rs` | S3 object fetch orchestration, per-object `SourceId`, EOF flushing, and optional object-key source metadata snapshots | Kani exempt: async/network shell with stateful channel orchestration. Unit tests cover source path enable/disable, active/current snapshot cleanup, and EOF-only snapshot preservation; S3 integration tests cover parallel fetch ordering, accounted bytes, and EOF marker behavior. |
 | `logfwd-output/elasticsearch.rs` | Elasticsearch bulk NDJSON serialization + timestamp suffix writer | Unit tests + proptest oracle checks (serialize_batch and timestamp suffix fast-vs-simple equivalence) + ignored release microbench guardrails |
