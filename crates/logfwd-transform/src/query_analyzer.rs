@@ -529,6 +529,7 @@ fn is_post_scan_metadata_column(name: &str) -> bool {
         || name.eq_ignore_ascii_case(field_names::OTEL_LOG_FILE_PATH)
         || name.eq_ignore_ascii_case(field_names::VECTOR_FILE)
         || name.eq_ignore_ascii_case(field_names::SOURCE_ID)
+        || name.eq_ignore_ascii_case(field_names::TIMESTAMP_AT)
         || name.eq_ignore_ascii_case(field_names::TIMESTAMP_UNDERSCORE)
         || name.eq_ignore_ascii_case(field_names::CRI_STREAM)
 }
@@ -2558,6 +2559,7 @@ mod tests {
         assert!(predicate_for(r#"SELECT * FROM logs WHERE "file.path" = '/tmp/x.log'"#).is_none());
         assert!(predicate_for("SELECT * FROM logs WHERE __source_id = 7").is_none());
         assert!(predicate_for("SELECT * FROM logs WHERE _stream = 'stdout'").is_none());
+        assert!(predicate_for(r#"SELECT * FROM logs WHERE "@timestamp" IS NOT NULL"#).is_none());
         assert!(predicate_for("SELECT * FROM logs WHERE _timestamp IS NOT NULL").is_none());
     }
 
@@ -2566,6 +2568,7 @@ mod tests {
         assert!(predicate_for(r#"SELECT * FROM logs WHERE "FILE.PATH" = '/tmp/x.log'"#).is_none());
         assert!(predicate_for("SELECT * FROM logs WHERE __SOURCE_ID = 7").is_none());
         assert!(predicate_for("SELECT * FROM logs WHERE _STREAM = 'stdout'").is_none());
+        assert!(predicate_for(r#"SELECT * FROM logs WHERE "@TIMESTAMP" IS NOT NULL"#).is_none());
         assert!(predicate_for("SELECT * FROM logs WHERE _TIMESTAMP IS NOT NULL").is_none());
     }
 
