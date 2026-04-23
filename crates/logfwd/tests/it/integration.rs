@@ -210,8 +210,8 @@ output:
         .unwrap_or(0);
 
     assert_eq!(
-        lines_in, 10,
-        "expected 10 rows into transform, got {lines_in}"
+        lines_in, 5,
+        "expected 5 rows into transform after scanner-side pushdown, got {lines_in}"
     );
     assert_eq!(
         lines_out, 5,
