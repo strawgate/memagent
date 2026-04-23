@@ -2910,6 +2910,7 @@ dependencies = [
  "arrow",
  "bytes",
  "logfwd-core",
+ "logfwd-kani",
  "logfwd-lint-attrs",
  "logfwd-types",
  "proptest",
@@ -3007,6 +3008,7 @@ dependencies = [
  "chrono",
  "criterion",
  "logfwd-arrow",
+ "logfwd-kani",
  "logfwd-lint-attrs",
  "logfwd-test-utils",
  "memchr",
@@ -3101,6 +3103,10 @@ dependencies = [
  "xxhash-rust",
  "zstd",
 ]
+
+[[package]]
+name = "logfwd-kani"
+version = "0.1.0"
 
 [[package]]
 name = "logfwd-lint-attrs"

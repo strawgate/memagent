@@ -238,3 +238,23 @@ issue = 2072
 path = "crates/logfwd-arrow/src/columnar/builder.rs"
 status = "recommended"
 reason = "Generated-string offset accounting and lowercase hex emission are bounded pure seams inside the broader builder shell."
+
+[[seams]]
+path = "crates/logfwd-kani/src/lib.rs"
+status = "recommended"
+reason = "Crate root module shell; declares oracle submodules. No proof harnesses here."
+
+[[seams]]
+path = "crates/logfwd-kani/src/hex.rs"
+status = "required"
+reason = "Centralized hex encode/decode oracle with roundtrip and valid-range proofs."
+
+[[seams]]
+path = "crates/logfwd-kani/src/numeric.rs"
+status = "required"
+reason = "Centralized integer parsing oracle with no-panic and sign-consistency proofs."
+
+[[seams]]
+path = "crates/logfwd-kani/src/datetime.rs"
+status = "required"
+reason = "JDN days-from-epoch oracle with epoch-zero and monotonicity proofs."

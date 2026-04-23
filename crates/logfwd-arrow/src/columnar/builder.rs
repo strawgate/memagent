@@ -1753,12 +1753,8 @@ mod verification {
     use super::*;
 
     fn hex_oracle(bytes: &[u8]) -> Vec<u8> {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        let mut out = Vec::with_capacity(bytes.len() * 2);
-        for &byte in bytes {
-            out.push(HEX[(byte >> 4) as usize]);
-            out.push(HEX[(byte & 0x0f) as usize]);
-        }
+        let mut out = vec![0u8; bytes.len() * 2];
+        assert!(logfwd_kani::hex::hex_encode_oracle(bytes, &mut out));
         out
     }
 
