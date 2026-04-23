@@ -120,6 +120,10 @@ harness = false
 name = "source_metadata"
 harness = false
 
+[[bench]]
+name = "generator_arrow_vs_json"
+harness = false
+
 [[bin]]
 name = "logfwd-bench"
 path = "src/main.rs"
