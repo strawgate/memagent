@@ -63,3 +63,54 @@ pub fn compile_topology(spec: &PipelineSpec<'_>) -> Result<CompiledTopology, Str
         output_count,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Parse a YAML config and extract the single pipeline.
+    fn load_pipeline(yaml: &str) -> logfwd_config::PipelineConfig {
+        let cfg = logfwd_config::Config::load_str(yaml).expect("valid yaml");
+        cfg.pipelines.into_values().next().expect("one pipeline")
+    }
+
+    #[test]
+    fn empty_name_is_rejected() {
+        let config = load_pipeline(
+            "pipelines:\n  app:\n    inputs:\n      - type: stdin\n    outputs:\n      type: stdout",
+        );
+        let spec = PipelineSpec {
+            name: "",
+            config: &config,
+        };
+        assert!(compile_topology(&spec).is_err());
+    }
+
+    #[test]
+    fn valid_pipeline_without_transform() {
+        let config = load_pipeline(
+            "pipelines:\n  app:\n    inputs:\n      - type: stdin\n    outputs:\n      type: stdout",
+        );
+        let spec = PipelineSpec {
+            name: "app",
+            config: &config,
+        };
+        let topo = compile_topology(&spec).unwrap();
+        assert_eq!(topo.input_count, 1);
+        assert_eq!(topo.transform_count, 0);
+        assert_eq!(topo.output_count, 1);
+    }
+
+    #[test]
+    fn valid_pipeline_with_transform() {
+        let config = load_pipeline(
+            "pipelines:\n  app:\n    inputs:\n      - type: stdin\n    transform: \"SELECT * FROM logs\"\n    outputs:\n      type: stdout",
+        );
+        let spec = PipelineSpec {
+            name: "app",
+            config: &config,
+        };
+        let topo = compile_topology(&spec).unwrap();
+        assert_eq!(topo.transform_count, 1);
+    }
+}

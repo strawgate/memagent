@@ -103,18 +103,60 @@ impl SqlTransform {
         let batch = conflict_schema::normalize_conflict_columns(batch);
 
         // Invalidate the cached SessionContext when the schema changes.
-        //
-        // DataFusion caches logical plans inside the SessionContext. If the
-        // batch schema changes between calls (new fields, type conflicts resolved
-        // differently), the cached plan refers to a stale schema and execution
-        // will fail or produce incorrect results. Forcing ctx = None causes
-        // ensure_context() to build a fresh SessionContext with no stale plans.
         let new_hash = hash_schema(batch.schema());
         if new_hash != self.schema_hash {
             self.ctx = None;
         }
         self.schema_hash = new_hash;
 
+        let schema = batch.schema();
+        self.execute_plan(schema, vec![vec![batch]]).await
+    }
+
+    /// Execute the SQL transform over multiple batches in a single query.
+    ///
+    /// All batches must share the same schema. They are registered as one
+    /// MemTable partition so DataFusion executes the SQL once over all rows.
+    /// For single-batch inputs, delegates to [`execute`](Self::execute).
+    pub async fn execute_multi_batch(
+        &mut self,
+        batches: Vec<RecordBatch>,
+    ) -> Result<RecordBatch, TransformError> {
+        if batches.is_empty() {
+            return Err(TransformError::Sql(
+                "execute_multi_batch called with empty batch list".to_string(),
+            ));
+        }
+        if batches.len() == 1 {
+            return self
+                .execute(batches.into_iter().next().expect("verified len==1"))
+                .await;
+        }
+
+        // Normalize all batches so schema fingerprinting is consistent.
+        let batches: Vec<RecordBatch> = batches
+            .into_iter()
+            .map(conflict_schema::normalize_conflict_columns)
+            .collect();
+
+        // All batches must share the same schema after normalization.
+        let schema = batches[0].schema();
+        let new_hash = hash_schema(Arc::clone(&schema));
+        if new_hash != self.schema_hash {
+            self.ctx = None;
+        }
+        self.schema_hash = new_hash;
+
+        self.execute_plan(schema, vec![batches]).await
+    }
+
+    /// Core SQL execution: registers the given partitions as the `logs`
+    /// MemTable, runs the user SQL, and returns the concatenated result.
+    async fn execute_plan(
+        &mut self,
+        schema: SchemaRef,
+        partitions: Vec<Vec<RecordBatch>>,
+    ) -> Result<RecordBatch, TransformError> {
         // Ensure the SessionContext exists (created once, reused across batches).
         self.ensure_context();
         let ctx = self.ctx.as_ref().ok_or_else(|| {
@@ -126,9 +168,7 @@ impl SqlTransform {
         // Swap the `logs` table: build new table first, then deregister + register.
         // Building the MemTable before deregistering ensures that on error we
         // don't leave the context without a `logs` table.
-        //
-        let schema = batch.schema();
-        let table = MemTable::try_new(schema, vec![vec![batch]])
+        let table = MemTable::try_new(schema, partitions)
             .map_err(|e| TransformError::Sql(format!("Failed to create MemTable: {e}")))?;
         let _ = ctx.deregister_table("logs");
         ctx.register_table("logs", Arc::new(table))
@@ -245,6 +285,31 @@ impl SqlTransform {
                         TransformError::Sql(format!("Failed to create tokio runtime: {e}"))
                     })?;
                 rt.block_on(self.execute(batch))
+            }
+        }
+    }
+
+    /// Synchronous wrapper around [`execute_multi_batch`](Self::execute_multi_batch).
+    ///
+    /// Executes the SQL transform over multiple batches in a single query,
+    /// reducing per-batch DataFusion overhead when the CPU worker drains
+    /// multiple ready chunks from the channel.
+    pub fn execute_multi_batch_blocking(
+        &mut self,
+        batches: Vec<RecordBatch>,
+    ) -> Result<RecordBatch, TransformError> {
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(|| handle.block_on(self.execute_multi_batch(batches)))
+            }
+            Ok(_) | Err(_) => {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| {
+                        TransformError::Sql(format!("Failed to create tokio runtime: {e}"))
+                    })?;
+                rt.block_on(self.execute_multi_batch(batches))
             }
         }
     }
