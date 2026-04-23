@@ -6,9 +6,9 @@ use super::super::source_metadata::*;
 use super::super::*;
 use arrow::array::{Array, StringArray, StringViewArray, UInt64Array};
 use arrow::datatypes::{DataType, Field, Schema};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use logfwd_arrow::Scanner;
-use logfwd_io::input::{CriMetadata, InputEvent};
+use logfwd_io::input::{BufferedInputEvent, CriMetadata, InputEvent};
 use logfwd_types::source_metadata::{SourceMetadataPlan, SourcePathColumn};
 use proptest::prelude::*;
 use std::collections::HashMap;
@@ -88,6 +88,17 @@ fn shutdown_repoll_continues_for_eof_only_output_after_source_payload() {
     }];
 
     assert!(should_repoll_shutdown(&events, false, true));
+}
+
+#[test]
+fn buffered_shutdown_repoll_continues_for_payload_without_finish() {
+    let events = vec![BufferedInputEvent::Data {
+        range: 0..2,
+        source_id: Some(SourceId(1)),
+        cri_metadata: None,
+    }];
+
+    assert!(should_repoll_shutdown_buffered(&events, false, false));
 }
 
 #[test]
@@ -533,6 +544,83 @@ impl InputSource for SplitLineSource {
     }
 }
 
+struct SharedBufferSource {
+    emitted: bool,
+    finished: bool,
+}
+
+impl InputSource for SharedBufferSource {
+    fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
+        panic!("poll() should not be used when poll_into() is available");
+    }
+
+    fn poll_into(&mut self, dst: &mut BytesMut) -> io::Result<Option<Vec<BufferedInputEvent>>> {
+        if self.emitted {
+            self.finished = true;
+            return Ok(Some(Vec::new()));
+        }
+        let start = dst.len();
+        dst.extend_from_slice(b"{\"msg\":\"shared\"}\n");
+        self.emitted = true;
+        self.finished = true;
+        Ok(Some(vec![BufferedInputEvent::Data {
+            range: start..dst.len(),
+            source_id: None,
+            cri_metadata: None,
+        }]))
+    }
+
+    fn name(&self) -> &str {
+        "shared-buffer"
+    }
+
+    fn health(&self) -> ComponentHealth {
+        ComponentHealth::Healthy
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+}
+
+struct LargeSharedBufferSource {
+    emitted: bool,
+    finished: bool,
+}
+
+impl InputSource for LargeSharedBufferSource {
+    fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
+        panic!("poll() should not be used when poll_into() is available");
+    }
+
+    fn poll_into(&mut self, dst: &mut BytesMut) -> io::Result<Option<Vec<BufferedInputEvent>>> {
+        if self.emitted {
+            return Ok(Some(Vec::new()));
+        }
+        let start = dst.len();
+        let chunk = vec![b'x'; 80 * 1024];
+        dst.extend_from_slice(&chunk);
+        self.emitted = true;
+        Ok(Some(vec![BufferedInputEvent::Data {
+            range: start..dst.len(),
+            source_id: None,
+            cri_metadata: None,
+        }]))
+    }
+
+    fn name(&self) -> &str {
+        "large-shared-buffer"
+    }
+
+    fn health(&self) -> ComponentHealth {
+        ComponentHealth::Healthy
+    }
+
+    fn is_finished(&self) -> bool {
+        self.finished
+    }
+}
+
 struct BatchSource {
     emitted: bool,
 }
@@ -940,6 +1028,144 @@ fn io_worker_shutdown_repolls_until_source_finishes() {
         chunk.source_paths.get(&SourceId(14)).map(String::as_str),
         Some("/var/log/shutdown.log")
     );
+}
+
+#[test]
+fn io_worker_extends_existing_buffer_via_poll_into_path() {
+    let (tx, mut rx) = mpsc::channel(IO_CPU_CHANNEL_CAPACITY);
+    let shutdown = CancellationToken::new();
+    let stats = Arc::new(ComponentStats::new_with_health(ComponentHealth::Starting));
+    let input = InputState {
+        source: Box::new(SharedBufferSource {
+            emitted: false,
+            finished: false,
+        }),
+        buf: BytesMut::from(&b"{\"msg\":\"seed\"}\n"[..]),
+        row_origins: Vec::new(),
+        source_paths: HashMap::new(),
+        cri_metadata: CriMetadata::default(),
+        stats,
+    };
+    let meter = opentelemetry::global::meter("io_worker_shared_buffer_path");
+    let metrics = Arc::new(PipelineMetrics::new("test", "SELECT * FROM logs", &meter));
+
+    let handle = std::thread::spawn(move || {
+        io_worker_loop(
+            input,
+            Arc::from("configured-input"),
+            tx,
+            metrics,
+            shutdown,
+            usize::MAX,
+            Duration::from_secs(60),
+            Duration::from_millis(1),
+            0,
+            SourceMetadataPlan::default(),
+        );
+    });
+
+    let item = rx.blocking_recv().expect("io worker item");
+    drop(rx);
+    handle.join().expect("io worker exits");
+
+    let IoWorkItem::Bytes(chunk) = item else {
+        panic!("expected byte chunk");
+    };
+    assert_eq!(
+        chunk.bytes.as_ref(),
+        b"{\"msg\":\"seed\"}\n{\"msg\":\"shared\"}\n"
+    );
+}
+
+#[test]
+fn io_worker_uses_poll_into_path_with_empty_buffer() {
+    let (tx, mut rx) = mpsc::channel(IO_CPU_CHANNEL_CAPACITY);
+    let shutdown = CancellationToken::new();
+    let stats = Arc::new(ComponentStats::new_with_health(ComponentHealth::Starting));
+    let input = InputState {
+        source: Box::new(SharedBufferSource {
+            emitted: false,
+            finished: false,
+        }),
+        buf: BytesMut::new(),
+        row_origins: Vec::new(),
+        source_paths: HashMap::new(),
+        cri_metadata: CriMetadata::default(),
+        stats,
+    };
+    let meter = opentelemetry::global::meter("io_worker_shared_buffer_empty_start");
+    let metrics = Arc::new(PipelineMetrics::new("test", "SELECT * FROM logs", &meter));
+
+    let handle = std::thread::spawn(move || {
+        io_worker_loop(
+            input,
+            Arc::from("configured-input"),
+            tx,
+            metrics,
+            shutdown,
+            usize::MAX,
+            Duration::from_secs(60),
+            Duration::from_millis(1),
+            0,
+            SourceMetadataPlan::default(),
+        );
+    });
+
+    let item = rx.blocking_recv().expect("io worker item");
+    drop(rx);
+    handle.join().expect("io worker exits");
+
+    let IoWorkItem::Bytes(chunk) = item else {
+        panic!("expected byte chunk");
+    };
+    assert_eq!(chunk.bytes.as_ref(), b"{\"msg\":\"shared\"}\n");
+}
+
+#[test]
+fn io_worker_flushes_large_shared_buffer_chunk_without_waiting_for_timeout() {
+    let (tx, mut rx) = mpsc::channel(IO_CPU_CHANNEL_CAPACITY);
+    let shutdown = CancellationToken::new();
+    let stats = Arc::new(ComponentStats::new_with_health(ComponentHealth::Starting));
+    let input = InputState {
+        source: Box::new(LargeSharedBufferSource {
+            emitted: false,
+            finished: false,
+        }),
+        buf: BytesMut::new(),
+        row_origins: Vec::new(),
+        source_paths: HashMap::new(),
+        cri_metadata: CriMetadata::default(),
+        stats,
+    };
+    let meter = opentelemetry::global::meter("io_worker_large_shared_buffer");
+    let metrics = Arc::new(PipelineMetrics::new("test", "SELECT * FROM logs", &meter));
+    let worker_shutdown = shutdown.clone();
+
+    let handle = std::thread::spawn(move || {
+        io_worker_loop(
+            input,
+            Arc::from("configured-input"),
+            tx,
+            metrics,
+            worker_shutdown,
+            usize::MAX,
+            Duration::from_secs(60),
+            Duration::from_millis(1),
+            0,
+            SourceMetadataPlan::default(),
+        );
+    });
+
+    let item = rx.blocking_recv().expect("io worker item");
+    shutdown.cancel();
+    drop(rx);
+    handle.join().expect("io worker exits");
+
+    let IoWorkItem::Bytes(chunk) = item else {
+        panic!("expected byte chunk");
+    };
+    assert_eq!(chunk.bytes.len(), 80 * 1024);
+    assert!(chunk.bytes.iter().all(|byte| *byte == b'x'));
 }
 
 #[test]

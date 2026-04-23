@@ -157,12 +157,16 @@ miri:
     RUSTC_WRAPPER="" cargo +nightly miri setup
     just miri-core
     just miri-types
+    just miri-io-buffered
 
 miri-core:
     RUSTC_WRAPPER="" MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-core --lib
 
 miri-types:
     RUSTC_WRAPPER="" MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-types --lib
+
+miri-io-buffered:
+    RUSTC_WRAPPER="" MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-io framed::tests::poll_into_miri_shared_buffer_alias_regression --lib
 
 # Run the required Kani crate set enforced by CI guardrails.
 kani-required:

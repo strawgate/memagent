@@ -2,28 +2,9 @@
 
 How data flows through logfwd, from bytes on disk to serialized output.
 
-## Ingest Glossary
+## Layers
 
-This document uses one architectural vocabulary for the pre-Arrow path:
-
-- **Source**: where data enters the system (`FileInput`, TCP, UDP, OTLP HTTP, Arrow IPC)
-- **Framing**: line boundaries and per-source remainder management
-- **Normalization**: CRI / auto / passthrough processing that produces scanner-ready NDJSON
-- **Batching**: when to flush scanner-ready bytes to the scanner
-- **Parsing**: NDJSON field extraction driven by structural classification
-- **Materialization**: Arrow `RecordBatch` assembly
-- **Enrichment**: source metadata and CRI sidecar attachment
-- **Transform**: SQL / DataFusion processing
-- **Sink**: OTLP, Elasticsearch, Loki, stdout, JSON lines, file
-
-The code still uses implementation-specific names such as `InputEvent`,
-`InputSource`, `FramedInput`, `io_worker`, and `cpu_worker`. Those names are
-about to be cleaned up, but the architectural model above is the stable way to
-talk about the ingest path.
-
-## Crate Layers
-
-```text
+```
 ┌─────────────────────────────────────────────────────────┐
 │  logfwd (binary)                                        │
 │  CLI entrypoints, config loading, signal handling       │
@@ -32,26 +13,31 @@ talk about the ingest path.
                           ▼
 ┌─────────────────────────────────────────────────────────┐
 │  logfwd-runtime                                          │
-│  Async orchestration, worker pool, batching, SQL, sink   │
+│  Async orchestration, worker pool, processor chain       │
+│                                                         │
+│  ┌──────────┐   ┌───────────┐   ┌───────────────────┐  │
+│  │  Input   │──▶│ Transform │──▶│     Output        │  │
+│  │ threads  │   │  (SQL)    │   │  (HTTP/stdout)    │  │
+│  └──────────┘   └───────────┘   └───────────────────┘  │
 └─────────────────────────────────────────────────────────┘
-                          │
-                          ▼
+       │              │                    │
+       ▼              ▼                    ▼
 ┌──────────────────────────────────────────────────┐
 │  logfwd-arrow                                    │
-│  Scanner wrapper, Arrow builders, RecordBatch    │
+│  ScanBuilder impls, SIMD backends, RecordBatch   │
 └──────────────────────────────────────────────────┘
-                          │
-                          ▼
+       │
+       ▼
 ┌──────────────────────────────────────────────────┐
 │  logfwd-core                                     │
 │  Pure logic, proven, no_std, forbid(unsafe)      │
 └──────────────────────────────────────────────────┘
 ```
 
-Dependencies flow downward. `logfwd-core` knows nothing about Arrow, I/O, or
-async. `logfwd-arrow` bridges core parsing to Arrow types. `logfwd-runtime`
-owns the long-lived runtime shell, and the binary crate stays focused on
-startup/CLI/bootstrap concerns.
+Dependencies flow downward. logfwd-core knows nothing about Arrow,
+IO, or async. logfwd-arrow bridges core's parsing to Arrow types.
+`logfwd-runtime` owns the long-lived async runtime, and the binary crate
+now stays focused on startup/CLI/bootstrap concerns.
 
 `logfwd-diagnostics` owns the diagnostics control-plane surface (diagnostics
 HTTP endpoints, readiness/status shaping, stderr/span buffering, and the
@@ -61,61 +47,58 @@ generated `dashboard.html` asset served by diagnostics).
 and profiling binaries used to measure scanner, pipeline, output, and source
 metadata behavior under representative cardinality and allocation pressure.
 
-## Data Flow
+## Ingest vocabulary
 
-There are two equally important ways to think about ingest:
+Use these terms consistently when discussing the raw-byte path:
 
-- **Semantic layers**: Source -> Framing -> Normalization -> Batching -> Parsing -> Materialization
-- **Ownership / control layers**: who owns mutable bytes, when batches flush, and which worker drives polling
+- **Source**: input-specific byte production and lifecycle (`FileInput`, TCP, UDP, OTLP receiver).
+- **Framing**: newline and per-source remainder handling in `FramedInput`.
+- **Normalization**: format-aware shaping that preserves scanner semantics (for example CRI sidecar metadata).
+- **Batching**: accumulation of scanner-ready bytes before scan in the runtime input path.
+- **Parsing**: `Scanner::scan(Bytes)` turning contiguous bytes into Arrow arrays.
+- **Materialization**: Arrow `RecordBatch` construction plus sidecar column attachment.
+- **Transform**: DataFusion SQL execution over the scanned batch.
+- **Sink**: output encoding and transport.
 
-Most prior confusion came from mixing those two views. `InputSource::poll()` is
-mostly a control-plane interface; `FramedInput` is a semantic layer; runtime
-batch accumulation is an ownership / flush-policy layer.
+Ownership boundaries cut across those semantic layers:
 
-### 1. Source: bytes enter the system
+- The source side owns mutable read buffers (`BytesMut`) while bytes are still being filled.
+- `InputEvent::Data` carries immutable `Bytes` once ownership crosses a component boundary.
+- The scanner contract remains a contiguous `Bytes` buffer even when bytes arrived in fragments upstream.
 
-```text
-Disk/TCP/UDP/HTTP → InputSource::poll() → InputEvent
+## Data flow
+
+### 1. Reading: bytes enter the system
+
+```
+Disk → FileReader (`BytesMut`) → InputEvent::Data { bytes: Bytes }
 ```
 
 **FileTailer** (`logfwd-io/src/tail.rs`) is composed of two internal layers:
 - **FileDiscovery**: path watching via notify (kqueue/inotify), glob evaluation,
   rotation detection, deleted-file cleanup, LRU eviction.
-- **FileReader**: open file descriptors, persistent read buffer, byte reading.
+- **FileReader**: open file descriptors, per-file `BytesMut` read buffers, byte reading.
 
 File-discovery reliability notes: `dev-docs/references/file-discovery.md`.
 
-Today the source boundary is already `bytes::Bytes`, not `Vec<u8>`.
-`InputEvent::Data` carries:
+> **Note:** the `Bytes` boundary is now inside `logfwd-io`, not only in
+> `logfwd-runtime`. The tailer owns mutable per-source `BytesMut` read buffers,
+> `InputEvent::Data` carries immutable `Bytes`, and `FramedInput` keeps only
+> small per-source `Vec<u8>` remainders where a line is incomplete or tainted.
 
-- `bytes: Bytes`
-- `source_id: Option<SourceId>`
-- `accounted_bytes: u64`
-- optional CRI sidecar metadata
+Each input source is polled on its own input-side worker thread. That thread
+owns the mutable accumulation buffer used before scan and sends immutable
+`Bytes` chunks to a per-input CPU worker over a bounded `tokio::sync::mpsc`
+channel.
 
-Structured receivers can skip the raw-byte path entirely and emit
-`InputEvent::Batch { batch: RecordBatch, ... }`.
+### 2. Framing: input bytes → complete lines
 
-Each input source runs on its own OS thread. Reads feed a bounded
-`tokio::sync::mpsc` channel to the async pipeline loop. The channel
-carries immutable ownership (`Bytes` or `RecordBatch`) cleanly across the
-thread boundary.
-
-### 2. Framing and Normalization: source bytes -> scanner-ready NDJSON
-
-```text
-InputEvent::Data { bytes: Bytes, ... } -> FramedInput::poll() -> scanner-ready bytes
+```
+Bytes → FramedInput::poll() → scanner-ready `InputEvent::Data { bytes: Bytes }`
 ```
 
 **FramedInput** (`logfwd-io/src/framed.rs`) combines format detection
-with per-source remainder tracking. Architecturally it owns:
-
-- newline framing
-- partial-line remainder state
-- CRI partial-record aggregation state
-- checkpoint frontier bookkeeping relative to complete newline boundaries
-
-It handles three formats:
+with per-source remainder tracking. It handles three formats:
 
 - **Json**: Lines are already JSON. Splits on `\n`, carries
   partial lines across reads via per-source remainder buffers.
@@ -126,8 +109,14 @@ It handles three formats:
 - **Text/Raw**: Passes lines through verbatim. Line capture into `body` is
   controlled by scanner `line_field_name`.
 
-`FramedInput` is the semantic owner for raw-byte inputs. The runtime should not
-grow a second framing path beside it.
+For passthrough formats, `FramedInput` already has a zero-copy fast path: if a
+chunk arrives with no carried remainder and no overflow-tainted state, complete
+lines can be forwarded directly as `Bytes` without an intermediate output copy.
+For the shared-buffer batching path, `FramedInput::poll_into()` can now also
+append scanner-ready output directly into the runtime-owned `BytesMut` batch
+buffer, including CRI/Auto normalization and CRI sidecar metadata collection.
+The remaining complexity in this area is about when the runtime chooses that
+path, not about changing the scanner contract away from contiguous `Bytes`.
 
 **NewlineFramer** (`logfwd-core/src/framer.rs`): fixed-size
 output (4096 lines, 64KB stack), no heap, Kani-proven. It returns byte
@@ -137,43 +126,18 @@ ranges into the input buffer — zero-copy.
 zero-copy for F-only lines (99% of traffic), copies only for P+F
 reassembly. Kani-proven.
 
-### 3. Batching: scanner-ready bytes -> contiguous scan input
+**Current scanner boundary:** the scanner still consumes one contiguous `Bytes`
+buffer per scan. Upstream work may reduce or relocate copies, but default scan
+entry remains `Scanner::scan(Bytes)`.
 
-The runtime batches scanner-ready bytes before scan. Today this is already a
-deferred-copy design:
+**Current transition state:** the shared-buffer `FramedInput` path exists, but
+`logfwd-runtime` still keeps the legacy `InputEvent::Data { bytes: Bytes }`
+route for fresh-buffer scans. The runtime currently switches to
+`FramedInput::poll_into()` once a batch already has buffered bytes, preserving
+the old single-chunk direct-flush behavior while removing the extra append on
+continuation polls (#2539).
 
-- one buffered scanner-ready `Bytes` chunk is kept without copying
-- if more chunks arrive, they are held as separate `Bytes`
-- concatenation happens once at flush time if the scanner needs a contiguous buffer
-
-This means pre-scan ownership can be conceptually fragmented even though the
-default scanner contract is contiguous.
-
-The current hot boundary is:
-
-```text
-FramedInput output -> pending_chunk | pending_chunks -> Scanner::scan(Bytes)
-```
-
-That distinction matters for future work:
-
-- fragmented accumulation before scan is acceptable
-- the default scan call still takes one contiguous `Bytes`
-- removing copies should happen by filling that contiguous buffer earlier, not
-  by making every layer pretend fragments are free
-
-**Target:** Replace the remaining copy-heavy raw-byte path with a layered
-shared-buffer model (#2424, #2426, #2539):
-
-```text
-Source bytes
-  → FramedInput shared-buffer append
-  → contiguous scanner batch
-  → streaming structural classifier
-  → Scanner
-```
-
-### 4. Parsing: structural classification + field extraction
+### 3. Structural classification: SIMD pre-pass
 
 ```text
 &[u8] → find_structural_chars(block) → StreamingClassifier → processed bitmasks
@@ -196,11 +160,11 @@ Platform-specific SIMD:
 - **x86_64**: AVX2 preferred (2 × 32-byte loads), SSE2 fallback
 - **other**: scalar loop (LLVM auto-vectorizes)
 
-The classifier detects `\n`, space, `"`, `\`, `,`, `:`, `{`, `}`, `[`, and
-`]` in one pass. This eliminates separate newline scanning and enables
-bitmask-based JSON field extraction.
+The classifier detects `\n`, space, `"`, `\`, `,`, `:`, `{`, `}`, `[`,
+and `]` in one pass. This eliminates separate newline scanning and
+enables bitmask-based JSON field extraction.
 
-### 5. Materialization: parsed fields -> Arrow RecordBatch
+### 4. Scanning: JSON → typed fields
 
 ```text
 &[u8] + streaming structural bitmasks → ScanBuilder callbacks → typed column values
@@ -235,6 +199,12 @@ field has a single type across all rows it gets a bare column name
 (`status` as `Int64`). When a field has mixed types, the builder emits
 a `StructArray` conflict column (`status: Struct { int, str }`).
 
+### 5. Building: typed fields → Arrow RecordBatch
+
+```
+ScanBuilder callbacks → StreamingBuilder → RecordBatch
+```
+
 **StreamingBuilder** (`logfwd-arrow/src/streaming_builder.rs`):
 Implements `ScanBuilder`. Stores `(offset, len)` views into the input
 `bytes::Bytes` buffer. Produces `StringViewArray` (zero-copy) via
@@ -247,14 +217,9 @@ Implements `ScanBuilder`. Stores `(offset, len)` views into the input
 - `Scanner::scan_detached(Bytes) → RecordBatch` — self-contained
   `StringArray`, buffer can be freed. For persistence/compression.
 
-The scanner boundary is intentionally contiguous. `Scanner::scan` takes a
-single `Bytes` because the current scanner + `StreamingBuilder` pair stores
-views into one backing buffer. Pre-scan accumulation may use one chunk or many
-chunks, but the default scanner contract is still one contiguous `Bytes`.
+### 6. Metadata attach and transform: RecordBatch → RecordBatch
 
-### 6. Enrichment and Transform: RecordBatch -> RecordBatch
-
-```text
+```
 RecordBatch → sidecar attach/replace → SqlTransform::execute_blocking() → RecordBatch
 ```
 
@@ -282,9 +247,9 @@ duplicate-header, and row-alignment semantics remain local to the transform
 crate; `logfwd-arrow` only owns the shared columnar builder and Arrow
 finalization mechanics.
 
-### 7. Sink: RecordBatch -> wire format
+### 7. Output: RecordBatch → wire format
 
-```text
+```
 RecordBatch → OutputSink::send_batch() → HTTP/stdout/file
 ```
 
@@ -304,7 +269,7 @@ RecordBatch → OutputSink::send_batch() → HTTP/stdout/file
 Each boundary is a trait that logfwd-core defines and other crates
 implement:
 
-```text
+```
 logfwd-core defines          logfwd-arrow implements
 ──────────────────────────    ──────────────────────────
 ScanBuilder                   StreamingBuilder
@@ -326,69 +291,66 @@ OutputSink / Sink traits       OtlpSink, ElasticsearchSink,
 `logfwd-diagnostics` provides the diagnostics server and telemetry-facing
 snapshot types consumed by runtime/bootstrap wiring.
 
-## Pipeline Loop
+## Pipeline loop
 
-The async runtime shell in
-`run_async()` (`crates/logfwd-runtime/src/pipeline/run.rs`) orchestrates the
-per-input workers, owns downstream delivery, and applies output acknowledgements
-to the checkpoint lifecycle machine.
+The runtime path is split into three stages:
 
-Production topology:
+```
+1. Input-side worker thread (`io_worker.rs`)
+   - polls `InputSource`
+   - receives `InputEvent`s from `FramedInput`
+   - accumulates scanner-ready bytes in `InputState.buf: BytesMut`
+   - direct-flushes large solitary chunks when possible
+   - emits `IoWorkItem::Bytes { bytes: Bytes, ... }`
 
-```text
-Per input:
-  InputSource / FramedInput
-    -> I/O worker OS thread
-    -> bounded(4) I/O -> CPU channel
-    -> CPU worker OS thread
-    -> ChannelMsg
-    -> async pipeline loop in run_async()
-    -> processor chain / output pool / ack handling
+2. Per-input CPU worker (`cpu_worker.rs`)
+   - calls `Scanner::scan(Bytes)`
+   - attaches source metadata and CRI sidecars
+   - runs the per-input SQL transform
+   - emits `ChannelMsg { batch, checkpoints, ... }`
+
+3. Async pipeline (`run_async()`)
+   - receives already scanned + transformed batches
+   - runs processor stages
+   - submits to the async output worker pool
+   - advances checkpoint lifecycle from output ACK/reject results
 ```
 
-In production, polling and pre-scan batching happen in the I/O worker, scan +
-SQL happen in the CPU worker, and `run_async()` receives already transformed
-`ChannelMsg` values from those CPU workers.
+This separation matters for batching work:
 
-`turmoil` is intentionally different: it uses `async_input_poll_loop` and keeps
-scan + transform inline in the async test path. The docs below describe the
-production worker topology unless explicitly noted otherwise.
+- **Current pre-scan batching seam** is in the input-side worker (`InputState.buf`).
+- **Scanner boundary** is in the CPU worker and remains contiguous `Bytes`.
+- **Pipeline async loop** no longer owns raw-byte accumulation.
 
-## Buffer Lifecycle
+## Buffer lifecycle
 
 Understanding who owns what and when copies happen:
 
-```text
-Current runtime shape (production, non-`turmoil`):
-  source reads / receives bytes                           [kernel/network -> userspace]
-  InputEvent::Data carries Bytes                          (ownership transfer)
-  FramedInput may copy for remainder prepend or format rewrite
-  runtime batches one Bytes or many Bytes                 (no eager copy on arrival)
-  flush: concatenate once if needed for scan boundary     [contiguous scan input]
-  Scanner receives one Bytes                              (zero-copy into builder views)
-  StreamingBuilder stores views -> RecordBatch            (zero-copy)
-  Enrichment attaches source / CRI sidecars as columns
-
-Current ownership boundaries:
-  source boundary: InputEvent::{Data(Bytes), Batch(RecordBatch), ...}
-  batching boundary: pending_chunk | pending_chunks in I/O worker state
-  scan boundary: one contiguous Bytes for Scanner::scan()
-
-Shared-buffer target:
-  source reads / receives bytes
-  FramedInput appends scanner-ready bytes into shared BytesMut
-  runtime flushes contiguous buffer directly
-  Scanner receives one Bytes
-  StreamingBuilder stores views -> RecordBatch
 ```
+Current on `main`:
+  tailer reads → per-file BytesMut                       [kernel → userspace]
+  tailer emits InputEvent::Data { bytes: Bytes }         (ownership transfer)
+  FramedInput passthrough fast path                      (zero-copy when no remainder/taint)
+  FramedInput shared-buffer path via poll_into()         (direct append for buffered continuation polls)
+  FramedInput legacy event path                          (still used for fresh-buffer scans)
+  io_worker: input.buf.extend_from_slice(&bytes)         [remaining pre-scan copy on legacy path]
+  io_worker flush: split().freeze() → Bytes              (zero-copy — refcount only)
+  cpu_worker: Scanner::scan(Bytes)                       (no re-copy before scan)
+  StreamingBuilder stores views → RecordBatch            (zero-copy)
+  sidecar attach/replace appends Arrow columns before SQL
+  Bytes dropped when RecordBatch is consumed
 
-The important architectural point is not "everything is always contiguous."
-It is:
+Current ownership boundary:
+  source/framing side: per-source BytesMut + small Vec remainders
+  runtime batching boundary: InputState.buf as contiguous BytesMut
+  scanner boundary: contiguous Bytes
 
-- mutable raw-byte ownership should be explicit
-- production pre-scan accumulation may be fragmented
-- the default scanner boundary is still contiguous
-- `FramedInput` remains the one framing contract for raw-byte sources
+Next target in this seam:
+  use the shared-buffer path for more of the runtime batching lifecycle, not only buffered continuation polls
+  remove more legacy `InputEvent::Data` reassembly from the pre-scan hot path
+  keep the scanner contract as `Scanner::scan(Bytes)`
+  benchmark the wider enablement before deleting the fallback route
+```
 
 ## Data-Oriented Design
 

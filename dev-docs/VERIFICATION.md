@@ -21,6 +21,8 @@ If the property is temporal ("eventually," "always," "never after X") → TLA+.
 If the function is pure, bounded, and critical → Kani.  
 If it's stateful, heap-heavy, or async → proptest.  
 For unsafe code, use Kani and proptest both.
+For allocator-backed shared-buffer paths that are too integration-heavy for
+Kani, add a narrow targeted Miri regression instead of a broad unsound proof.
 
 ---
 
@@ -169,6 +171,7 @@ cargo build -p logfwd-core \
   --target thumbv6m-none-eabi          # Verify no_std compliance
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-core --lib
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-types --lib
+MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-io framed::tests::poll_into_miri_shared_buffer_alias_regression --lib
 ```
 
 ### Non-core pure seam boundary contract
