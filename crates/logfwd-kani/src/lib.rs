@@ -27,4 +27,6 @@
 pub mod bytes;
 pub mod datetime;
 pub mod hex;
+pub mod iter;
 pub mod numeric;
+pub mod proto;

@@ -157,9 +157,10 @@ pub trait ScanBuilder {
 }
 ```
 
-This is the **key abstraction boundary**. The scanner lives in
-logfwd-core (proven, no_std). It doesn't know about Arrow: it calls trait
-methods from `logfwd-core/src/scanner.rs` that logfwd-arrow implements.
+This is the **key abstraction boundary**. The scanner lives in the system's pure
+logic kernel (`logfwd-core` and `logfwd-kani`, both proven, no_std). It doesn't
+know about Arrow: it calls trait methods from `logfwd-core/src/scanner.rs` that
+logfwd-arrow implements.
 
 **ScanConfig** controls which fields to extract (field pushdown from
 SQL analysis) and type detection. Fields are typed per-value: when a

@@ -258,3 +258,18 @@ reason = "Centralized integer parsing oracle with no-panic and sign-consistency 
 path = "crates/logfwd-kani/src/datetime.rs"
 status = "required"
 reason = "JDN days-from-epoch oracle with epoch-zero and monotonicity proofs."
+
+[[seams]]
+path = "crates/logfwd-kani/src/bytes.rs"
+status = "required"
+reason = "Byte comparison, quote-escape bitmask, prefix-xor, and ASCII printability oracles with contract proofs."
+
+[[seams]]
+path = "crates/logfwd-kani/src/proto.rs"
+status = "required"
+reason = "Protobuf varint length, tag size, and bytes-field total size oracles with bounded proofs."
+
+[[seams]]
+path = "crates/logfwd-kani/src/iter.rs"
+status = "required"
+reason = "Byte search and whitespace skip oracles with contract proofs for memchr-equivalent operations."

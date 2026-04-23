@@ -280,6 +280,26 @@ depend on computed state.
 
 ---
 
+## Advanced Patterns
+
+### Stub Verified (Compositional Proofs)
+To handle complex call graphs, we use `#[kani::proof_for_contract]` on leaf functions and
+`stub_verified` in callers. This bounds state-space explosion to N independent proofs.
+
+### Behavioral Mocks
+For logic that depends on OS types (like `std::fs::File`), we extract pure reducers or
+state transition functions. This allows us to prove the core logic using symbolic state
+(like `kani::vec::exact_vec` for memory buffers) without modeling the entire syscall layer.
+
+### Proven Statements (logfwd-kani)
+Shared fundamental logic (hex encoding, RFC 3339 parsing, numeric digits, byte search,
+protobuf sizing) is centralized in `logfwd-kani`. These functions are mathematically
+simple reference implementations ("oracles") used as comparison targets in proofs across
+the workspace. Production code stays in its original crate — oracles are only called from
+`#[cfg(kani)]` and `#[cfg(test)]` blocks.
+
+---
+
 ## proptest (Tier 3 — statistical)
 
 Use proptest for end-to-end integration, heap-intensive code, and async logic that Kani
