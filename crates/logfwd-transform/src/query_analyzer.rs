@@ -509,12 +509,22 @@ fn expr_as_column(expr: &SqlExpr) -> Option<String> {
 /// it correctly.
 fn expr_as_bare_column(expr: &SqlExpr) -> Option<String> {
     match expr {
-        SqlExpr::Identifier(ident) => Some(ident.value.clone()),
+        SqlExpr::Identifier(ident) => {
+            let name = ident.value.clone();
+            (!is_post_scan_metadata_column(&name)).then_some(name)
+        }
         // Qualified identifiers (table.column) are not pushed — they may
         // reference a joined relation rather than the scanned `logs` table.
         SqlExpr::CompoundIdentifier(_) => None,
         _ => None,
     }
+}
+
+fn is_post_scan_metadata_column(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "__source_id" | "file.path" | "_stream" | "_timestamp"
+    )
 }
 
 /// Extract a small integer literal from a SQL expression.
@@ -2535,6 +2545,22 @@ mod tests {
     fn no_predicate_without_where() {
         let pred = predicate_for("SELECT * FROM logs");
         assert!(pred.is_none());
+    }
+
+    #[test]
+    fn metadata_columns_are_not_pushed() {
+        assert!(predicate_for(r#"SELECT * FROM logs WHERE "file.path" = '/tmp/x.log'"#).is_none());
+        assert!(predicate_for("SELECT * FROM logs WHERE __source_id = 7").is_none());
+        assert!(predicate_for("SELECT * FROM logs WHERE _stream = 'stdout'").is_none());
+        assert!(predicate_for("SELECT * FROM logs WHERE _timestamp IS NOT NULL").is_none());
+    }
+
+    #[test]
+    fn metadata_columns_are_not_pushed_case_insensitively() {
+        assert!(predicate_for(r#"SELECT * FROM logs WHERE "FILE.PATH" = '/tmp/x.log'"#).is_none());
+        assert!(predicate_for("SELECT * FROM logs WHERE __SOURCE_ID = 7").is_none());
+        assert!(predicate_for("SELECT * FROM logs WHERE _STREAM = 'stdout'").is_none());
+        assert!(predicate_for("SELECT * FROM logs WHERE _TIMESTAMP IS NOT NULL").is_none());
     }
 
     #[test]
