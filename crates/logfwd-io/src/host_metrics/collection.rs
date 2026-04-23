@@ -244,7 +244,11 @@ impl HostMetricsCommon {
         out: &mut Vec<SensorRow>,
         limit: usize,
     ) -> usize {
-        let limit = limit.min(self.cfg.max_process_rows_per_poll);
+        let max_process_rows_per_poll = self
+            .cfg
+            .max_process_rows_per_poll
+            .map_or(DEFAULT_MAX_PROCESS_ROWS_PER_POLL, |n| n.get());
+        let limit = limit.min(max_process_rows_per_poll);
         if limit == 0 {
             return 0;
         }
@@ -305,11 +309,8 @@ impl HostMetricsCommon {
             row.process_run_time_secs = Some(process.run_time());
             row.process_open_files = process.open_files().map(|n| n as u64);
             row.process_thread_count = process.tasks().map(|t| t.len() as u64);
-            row.process_container_id = self
-                .process_container_ids
-                .entry(pid)
-                .or_insert_with(|| extract_container_id(pid))
-                .clone();
+            row.process_container_id =
+                cached_container_id(&mut self.process_container_ids, pid, process.start_time());
             out.push(row);
             emitted += 1;
         }
@@ -330,4 +331,33 @@ fn rotated_family_budget(
     let start_idx = poll_count % active_count;
     let extra = usize::from((family_idx + active_count - start_idx) % active_count < remainder);
     per_family_budget + extra
+}
+
+fn cached_container_id(
+    cache: &mut HashMap<u32, CachedContainerId>,
+    pid: u32,
+    process_start_time_unix_sec: u64,
+) -> Option<String> {
+    cached_container_id_with_lookup(cache, pid, process_start_time_unix_sec, extract_container_id)
+}
+
+fn cached_container_id_with_lookup(
+    cache: &mut HashMap<u32, CachedContainerId>,
+    pid: u32,
+    process_start_time_unix_sec: u64,
+    mut lookup: impl FnMut(u32) -> Option<String>,
+) -> Option<String> {
+    let entry = cache.entry(pid).or_insert_with(|| CachedContainerId {
+        process_start_time_unix_sec,
+        container_id: lookup(pid),
+    });
+
+    if entry.process_start_time_unix_sec != process_start_time_unix_sec {
+        *entry = CachedContainerId {
+            process_start_time_unix_sec,
+            container_id: lookup(pid),
+        };
+    }
+
+    entry.container_id.clone()
 }

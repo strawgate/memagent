@@ -289,7 +289,7 @@
                 enabled_families: Some(vec!["process".to_string()]),
                 emit_signal_rows: false,
                 max_rows_per_poll: usize::MAX,
-                max_process_rows_per_poll: 3,
+                max_process_rows_per_poll: Some(NonZeroUsize::new(3).expect("non-zero")),
                 ..HostMetricsConfig::default()
             },
         )
@@ -317,7 +317,7 @@
     }
 
     #[test]
-    fn zero_max_process_rows_per_poll_uses_runtime_default() {
+    fn omitted_max_process_rows_per_poll_uses_runtime_default() {
         let mut input = HostMetricsInput::new(
             "sensor",
             host_target(),
@@ -325,7 +325,7 @@
                 enabled_families: Some(vec!["process".to_string()]),
                 emit_signal_rows: false,
                 max_rows_per_poll: usize::MAX,
-                max_process_rows_per_poll: 0,
+                max_process_rows_per_poll: None,
                 ..HostMetricsConfig::default()
             },
         )
@@ -538,3 +538,37 @@
             "budget=1 with 3 families: each gets 1 row over 3 polls"
         );
     }
+
+    #[test]
+    fn cached_container_id_refreshes_when_pid_start_time_changes() {
+        let mut cache = HashMap::new();
+        let mut lookups = Vec::new();
+
+        let first = cached_container_id_with_lookup(&mut cache, 42, 10, |pid| {
+            lookups.push(pid);
+            Some("first".to_string())
+        });
+        let second = cached_container_id_with_lookup(&mut cache, 42, 10, |pid| {
+            lookups.push(pid);
+            Some("second".to_string())
+        });
+        let refreshed = cached_container_id_with_lookup(&mut cache, 42, 11, |pid| {
+            lookups.push(pid);
+            Some("refreshed".to_string())
+        });
+
+        assert_eq!(first.as_deref(), Some("first"));
+        assert_eq!(
+            second.as_deref(),
+            Some("first"),
+            "same PID/start time should reuse the cached container ID"
+        );
+        assert_eq!(
+            refreshed.as_deref(),
+            Some("refreshed"),
+            "PID reuse with a new start time must refresh the cached container ID"
+        );
+        assert_eq!(lookups, vec![42, 42]);
+    }
+    use std::collections::HashMap;
+    use std::num::NonZeroUsize;

@@ -79,6 +79,13 @@ struct ControlFileConfig {
     emit_signal_rows: Option<bool>,
 }
 
+fn next_control_generation(current_generation: u64, file_generation: Option<u64>) -> u64 {
+    // A missing generation means "advance from the currently active control
+    // state". This lets operators tweak control-file behavior without having to
+    // hand-manage a monotonically increasing counter on every edit.
+    file_generation.unwrap_or_else(|| current_generation.saturating_add(1))
+}
+
 impl HostMetricsState<InitState> {
     fn start(mut self) -> Result<InitStartOk, InitStartErr> {
         let now = Instant::now();
@@ -189,9 +196,8 @@ impl HostMetricsState<RunningState> {
                     return None;
                 }
 
-                next.generation = file_cfg
-                    .generation
-                    .unwrap_or_else(|| self.state.control.generation.saturating_add(1));
+                next.generation =
+                    next_control_generation(self.state.control.generation, file_cfg.generation);
                 self.state.control = next.clone();
                 self.state.health = ComponentHealth::Healthy;
 

@@ -223,6 +223,12 @@ pub(super) fn decode_log_record_fields<'a>(
                     "invalid wire type for LogRecord.body",
                 ));
             }
+            (7, WireField::Varint(_)) => {}
+            (7, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.dropped_attributes_count",
+                ));
+            }
             (9, WireField::Len(value)) => {
                 out.trace_id = (!value.is_empty()).then_some(value);
             }
@@ -253,6 +259,16 @@ pub(super) fn decode_log_record_fields<'a>(
             (6, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for LogRecord.attributes",
+                ));
+            }
+            (12, WireField::Len(value)) => {
+                if !value.is_empty() {
+                    super::require_utf8(value, "invalid UTF-8 LogRecord.event_name")?;
+                }
+            }
+            (12, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.event_name",
                 ));
             }
             _ => {}

@@ -5,7 +5,7 @@ impl HostMetricsInput {
     pub fn new(
         name: impl Into<String>,
         target: HostMetricsTarget,
-        mut cfg: HostMetricsConfig,
+        cfg: HostMetricsConfig,
     ) -> io::Result<Self> {
         let name = name.into();
         let host_platform = current_host_platform().as_str().ok_or_else(|| {
@@ -26,10 +26,6 @@ impl HostMetricsInput {
                 ),
             ));
         }
-        if cfg.max_process_rows_per_poll == 0 {
-            cfg.max_process_rows_per_poll = DEFAULT_MAX_PROCESS_ROWS_PER_POLL;
-        }
-
         let control = ControlState {
             generation: 1,
             enabled_families: parse_enabled_families(cfg.enabled_families.as_deref(), target)?,

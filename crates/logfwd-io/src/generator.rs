@@ -10,7 +10,14 @@ include!("generator/encoding.rs");
 
 #[cfg(test)]
 mod tests {
-    include!("generator/tests/basic.rs");
-    include!("generator/tests/timestamps.rs");
-    include!("generator/tests/record_profile.rs");
+    pub(super) use super::*;
+
+    #[path = "basic.rs"]
+    mod basic;
+    #[path = "common.rs"]
+    mod common;
+    #[path = "record_profile.rs"]
+    mod record_profile;
+    #[path = "timestamps.rs"]
+    mod timestamps;
 }

@@ -1,3 +1,4 @@
+/// Writes a projected `AnyValue` into a string column representation.
 pub(super) fn write_wire_any_as_string(
     builder: &mut ColumnarBatchBuilder,
     handle: FieldHandle,
@@ -57,6 +58,7 @@ pub(super) fn write_wire_any_as_string(
 /// Protects against stack overflow from deeply nested ArrayValue/KvListValue payloads.
 pub(super) const MAX_ANY_VALUE_DEPTH: usize = 64;
 
+/// Serializes an `AnyValue` to JSON bytes using the default recursion depth.
 pub(super) fn write_wire_any_json(
     value: WireAny<'_>,
     out: &mut Vec<u8>,
@@ -65,6 +67,7 @@ pub(super) fn write_wire_any_json(
     write_wire_any_json_depth(value, out, scratch, 0)
 }
 
+/// Serializes an `AnyValue` to JSON bytes while enforcing depth limits.
 pub(super) fn write_wire_any_json_depth(
     value: WireAny<'_>,
     out: &mut Vec<u8>,
@@ -118,6 +121,7 @@ pub(super) fn write_wire_any_json_depth(
     Ok(())
 }
 
+/// Serializes an `ArrayValue` payload to JSON.
 pub(super) fn write_array_value_json(
     array_value: &[u8],
     out: &mut Vec<u8>,
@@ -150,6 +154,7 @@ pub(super) fn write_array_value_json(
     Ok(())
 }
 
+/// Serializes a `KeyValueList` payload to JSON.
 pub(super) fn write_kvlist_value_json(
     kvlist_value: &[u8],
     out: &mut Vec<u8>,
@@ -178,6 +183,7 @@ pub(super) fn write_kvlist_value_json(
     Ok(())
 }
 
+/// Serializes a `KeyValue` payload to JSON object form.
 pub(super) fn write_key_value_json(
     kv: &[u8],
     out: &mut Vec<u8>,

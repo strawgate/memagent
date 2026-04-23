@@ -221,7 +221,7 @@ output:
     let pipe_cfg = &config.pipelines["default"];
     let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
-    let pipeline = run_until_lines(pipeline, 5);
+    let pipeline = run_until_output_lines(pipeline, 5);
 
     let lines_in = pipeline
         .metrics()

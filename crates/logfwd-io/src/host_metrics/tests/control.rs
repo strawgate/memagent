@@ -96,6 +96,25 @@
         (0..arr.len()).map(|i| arr.value(i)).collect()
     }
 
+    fn poll_until(
+        input: &mut HostMetricsInput,
+        timeout: Duration,
+        predicate: impl Fn(&[InputEvent]) -> bool,
+    ) -> Vec<InputEvent> {
+        let start = Instant::now();
+        loop {
+            let events = input.poll().expect("poll should succeed");
+            if predicate(&events) {
+                return events;
+            }
+            assert!(
+                start.elapsed() < timeout,
+                "timed out waiting for host-metrics condition"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn rejects_non_matching_platform_target() {
         let err = HostMetricsInput::new("sensor", non_host_target(), HostMetricsConfig::default())
@@ -152,10 +171,9 @@
 
         let startup = input.poll().expect("startup poll");
         assert_eq!(startup.len(), 1);
-        std::thread::sleep(Duration::from_millis(2));
 
         // Data collection rows may still appear, but "sample" placeholders must not.
-        let events = input.poll().expect("second poll");
+        let events = poll_until(&mut input, Duration::from_millis(250), |_| true);
         if !events.is_empty() {
             let batch = first_batch(&events);
             let kinds = string_col(batch, "event_kind");
@@ -180,9 +198,8 @@
         .expect("host target should be valid");
 
         let _ = input.poll().expect("startup poll");
-        std::thread::sleep(Duration::from_millis(2));
 
-        let events = input.poll().expect("second poll");
+        let events = poll_until(&mut input, Duration::from_millis(250), |events| !events.is_empty());
         assert_eq!(events.len(), 1, "second poll should emit sample rows");
         let batch = first_batch(&events);
         let kinds = string_col(batch, "event_kind");
@@ -291,9 +308,7 @@
                 "emit_signal_rows": true,
             }),
         );
-        std::thread::sleep(Duration::from_millis(2));
-
-        let events = input.poll().expect("reload poll succeeds");
+        let events = poll_until(&mut input, Duration::from_millis(250), |events| !events.is_empty());
         assert_eq!(events.len(), 1);
         let batch = first_batch(&events);
 
@@ -354,9 +369,7 @@
                 "emit_heartbeat": true,
             }),
         );
-        std::thread::sleep(Duration::from_millis(2));
-
-        let events = input.poll().expect("reload poll should succeed");
+        let events = poll_until(&mut input, Duration::from_millis(250), |events| !events.is_empty());
         assert_eq!(events.len(), 1);
         let batch = first_batch(&events);
         let kinds = string_col(batch, "event_kind");
@@ -398,13 +411,25 @@
                 "emit_signal_rows": true,
             }),
         );
-        std::thread::sleep(Duration::from_millis(2));
-
-        let events = input.poll().expect("reload poll succeeds");
-        assert!(
-            events.is_empty(),
-            "unchanged control file should not emit reload-applied rows"
-        );
+        let start = Instant::now();
+        loop {
+            let events = input.poll().expect("poll should succeed");
+            assert!(
+                events.is_empty(),
+                "unchanged control file should not emit reload-applied rows"
+            );
+            let Some(HostMetricsMachine::Running(state)) = input.machine.as_ref() else {
+                panic!("input should remain in running state after no-op reload");
+            };
+            if state.state.control.source == ControlSource::ControlFile {
+                break;
+            }
+            assert!(
+                start.elapsed() < Duration::from_millis(250),
+                "timed out waiting for no-op reload bookkeeping"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
 
         let running = match input.machine.as_ref() {
             Some(HostMetricsMachine::Running(state)) => state,
@@ -435,9 +460,8 @@
         .expect("startup should not fail on malformed optional control file");
 
         assert_eq!(input.poll().expect("startup poll").len(), 1);
-        std::thread::sleep(Duration::from_millis(2));
 
-        let events = input.poll().expect("reload poll should succeed");
+        let events = poll_until(&mut input, Duration::from_millis(250), |events| !events.is_empty());
         assert_eq!(events.len(), 1);
         let batch = first_batch(&events);
         let kinds = string_col(batch, "event_kind");
@@ -446,5 +470,53 @@
                 .iter()
                 .any(|v| v.as_deref() == Some("control_reload_failed")),
             "malformed control file should surface through reload failure rows"
+        );
+    }
+
+    #[test]
+    fn omitted_generation_advances_from_current_control_state() {
+        let (_dir, control_path) = tempfiles::control_file_path();
+
+        let mut input = HostMetricsInput::new(
+            "sensor",
+            host_target(),
+            HostMetricsConfig {
+                control_path: Some(control_path.clone()),
+                control_reload_interval: Duration::from_millis(1),
+                poll_interval: Duration::from_secs(60),
+                enabled_families: Some(vec!["process".to_string()]),
+                ..HostMetricsConfig::default()
+            },
+        )
+        .expect("host target should be valid");
+
+        assert_eq!(input.poll().expect("startup poll").len(), 1);
+
+        tempfiles::write_control_file(
+            &control_path,
+            serde_json::json!({
+                "generation": 5,
+                "enabled_families": ["dns"],
+                "emit_signal_rows": true,
+            }),
+        );
+        let events =
+            poll_until(&mut input, Duration::from_millis(250), |events| !events.is_empty());
+        assert_eq!(events.len(), 1);
+
+        tempfiles::write_control_file(
+            &control_path,
+            serde_json::json!({
+                "enabled_families": ["process"],
+                "emit_signal_rows": false,
+            }),
+        );
+        let events =
+            poll_until(&mut input, Duration::from_millis(250), |events| !events.is_empty());
+        let batch = first_batch(&events);
+        let generations = u64_col(batch, "control_generation");
+        assert!(
+            generations.iter().all(|generation| *generation == 6),
+            "missing generation should advance from current state"
         );
     }

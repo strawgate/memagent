@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
 use std::io;
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -164,9 +165,9 @@ pub struct HostMetricsConfig {
     /// Upper bound on process rows emitted per collection cycle.
     ///
     /// This cap is applied after family budgeting to prevent unbounded memory
-    /// growth when hosts expose very large process tables. The default is 1024;
-    /// `0` also means "use the default".
-    pub max_process_rows_per_poll: usize,
+    /// growth when hosts expose very large process tables. `None` uses the
+    /// runtime default of 1024 rows per poll.
+    pub max_process_rows_per_poll: Option<NonZeroUsize>,
 }
 
 impl Default for HostMetricsConfig {
@@ -178,7 +179,7 @@ impl Default for HostMetricsConfig {
             enabled_families: None,
             emit_signal_rows: true,
             max_rows_per_poll: 256,
-            max_process_rows_per_poll: DEFAULT_MAX_PROCESS_ROWS_PER_POLL,
+            max_process_rows_per_poll: None,
         }
     }
 }
@@ -209,7 +210,7 @@ struct HostMetricsCommon {
     ///
     /// Linux process snapshots can emit hundreds of rows per poll; caching
     /// avoids rereading procfs for the same process on every cycle.
-    process_container_ids: HashMap<u32, Option<String>>,
+    process_container_ids: HashMap<u32, CachedContainerId>,
     /// Wrapping counter used to rotate the budget remainder
     /// across families so no single family is permanently starved (#1935).
     poll_count: usize,
@@ -230,6 +231,12 @@ struct RunningState {
     last_control_check: Instant,
     control: ControlState,
     health: ComponentHealth,
+}
+
+#[derive(Debug, Clone)]
+struct CachedContainerId {
+    process_start_time_unix_sec: u64,
+    container_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]

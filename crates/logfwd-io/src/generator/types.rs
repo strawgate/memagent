@@ -30,6 +30,7 @@ pub enum GeneratorProfile {
 }
 
 /// Monotonic generated field configuration.
+#[derive(Debug)]
 pub struct GeneratorGeneratedField {
     /// Output field name for the generated sequence in record rows.
     pub field: String,

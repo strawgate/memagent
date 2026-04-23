@@ -627,7 +627,12 @@
             "CRI P fragment should leave pending format state"
         );
 
-        assert!(framed.poll().unwrap().is_empty());
+        let eof_events = framed.poll().unwrap();
+        assert_eq!(eof_events.len(), 1);
+        match &eof_events[0] {
+            InputEvent::EndOfFile { source_id } => assert_eq!(*source_id, Some(sid)),
+            _ => panic!("expected EOF event"),
+        }
         assert!(
             framed.sources.contains_key(&Some(sid)),
             "EOF must not remove pending CRI state"
