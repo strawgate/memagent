@@ -250,7 +250,7 @@ impl HostMetricsCommon {
         let max_process_rows_per_poll = self
             .cfg
             .max_process_rows_per_poll
-            .map_or(DEFAULT_MAX_PROCESS_ROWS_PER_POLL, |n| n.get());
+            .map_or(DEFAULT_MAX_PROCESS_ROWS_PER_POLL, NonZeroUsize::get);
         let limit = limit.min(max_process_rows_per_poll);
         if limit == 0 {
             return 0;

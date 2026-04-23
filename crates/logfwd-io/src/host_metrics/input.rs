@@ -44,7 +44,7 @@ impl HostMetricsInput {
                     schema: sensor_schema(),
                     system: System::new(),
                     networks: Networks::new_with_refreshed_list(),
-                    process_container_ids: Default::default(),
+                    process_container_ids: HashMap::default(),
                     poll_count: 0,
                 },
                 state: InitState { control },

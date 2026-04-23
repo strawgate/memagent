@@ -261,11 +261,10 @@ pub(super) fn decode_log_record_fields<'a>(
                     "invalid wire type for LogRecord.attributes",
                 ));
             }
-            (12, WireField::Len(value)) => {
-                if !value.is_empty() {
-                    super::require_utf8(value, "invalid UTF-8 LogRecord.event_name")?;
-                }
+            (12, WireField::Len(value)) if !value.is_empty() => {
+                super::require_utf8(value, "invalid UTF-8 LogRecord.event_name")?;
             }
+            (12, WireField::Len(_)) => {}
             (12, _) => {
                 return Err(ProjectionError::Invalid(
                     "invalid wire type for LogRecord.event_name",
