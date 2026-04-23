@@ -21,6 +21,7 @@ REQUIRED_KANI_CRATES = {
 }
 
 REQUIRED_KANI_FILTER_PATTERNS = {
+    "crates/logfwd-kani/**",
     "crates/logfwd-core/**",
     "crates/logfwd-arrow/**",
     "crates/logfwd-io/**",

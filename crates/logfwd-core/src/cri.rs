@@ -849,14 +849,7 @@ mod verification {
 
     const SHORT_FIELD_NAME: &str = "b";
 
-    fn assert_bytes_eq(actual: &[u8], expected: &[u8]) {
-        assert_eq!(actual.len(), expected.len());
-        let mut i = 0;
-        while i < expected.len() {
-            assert_eq!(actual[i], expected[i]);
-            i += 1;
-        }
-    }
+    use logfwd_kani::bytes::assert_bytes_eq;
 
     /// Prove parse_cri_line never panics for any 32-byte input.
     #[kani::proof]

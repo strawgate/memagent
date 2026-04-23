@@ -187,6 +187,32 @@ already-verified contracts.
 - If contracts/stubs are used, are there corresponding `proof_for_contract` harnesses?
 - If behavior/invariants changed, were docs and guardrails updated?
 
+## Shared Verification Utilities (`logfwd-kani`)
+
+For fundamental oracles and assertions used across multiple crates, use the
+`logfwd-kani` crate. Key exports:
+
+- **`logfwd_kani::bytes::assert_bytes_eq`**: bounded loop-based slice comparison
+- **`logfwd_kani::bytes::compute_real_quotes_oracle`**: reference quote-escape bitmask
+- **`logfwd_kani::bytes::prefix_xor_oracle`**: reference running XOR
+- **`logfwd_kani::datetime::jdn_days_from_epoch`**: Julian Day Number oracle
+- **`logfwd_kani::hex::hex_nibble_oracle`**: hex nibble branch-based oracle
+- **`logfwd_kani::hex::hex_decode_oracle`**: hex decode reference implementation
+- **`logfwd_kani::iter::find_byte`**: linear-scan byte search oracle
+- **`logfwd_kani::numeric::parse_int_oracle`**: i128-accumulator integer parser
+- **`logfwd_kani::proto::varint_len_oracle`**: varint encoded length predictor
+- **`logfwd_kani::proto::bytes_field_total_size_oracle`**: protobuf field size predictor
+
+Add `logfwd-kani` as a dependency:
+
+```toml
+[dependencies]
+logfwd-kani = { version = "0.1.0", path = "../logfwd-kani" }
+```
+
+Oracle functions are only called from `#[cfg(kani)]` and `#[cfg(test)]` blocks—
+never from production code paths.
+
 ## Repo Pointers
 
 - Policy and coverage rules: `dev-docs/VERIFICATION.md`
