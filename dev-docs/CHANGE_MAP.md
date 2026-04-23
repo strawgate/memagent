@@ -41,6 +41,10 @@ When scan, transform, batching, or output semantics change:
 
 - Architecture expectations in `dev-docs/ARCHITECTURE.md`.
 - Design rationale if tradeoffs changed in `dev-docs/DESIGN.md`.
+- `dev-docs/ADAPTER_CONTRACT.md` if source/framing/batching ownership or lifecycle
+  guarantees changed.
+- `dev-docs/SCANNER_CONTRACT.md` if the contiguous scanner boundary, scan input
+  shape, or scanner output guarantees changed.
 - Troubleshooting guidance if observable symptoms changed in `book/src/content/docs/troubleshooting.md`.
 - Performance docs if throughput/latency profile changed in `book/src/content/docs/architecture/performance.md`.
 
@@ -67,6 +71,15 @@ When logic moves between crates or new dependencies are introduced:
 Even docs-only PRs should update all canonical locations for that fact.
 Do not duplicate the same reference data in multiple pages.
 Link to canonical docs instead.
+
+For ingest-path docs, keep the architectural vocabulary stable:
+
+- docs use **Source / Framing / Normalization / Batching / Parsing /
+  Materialization / Enrichment / Transform / Sink**
+- user-facing config still uses `inputs` / `outputs`
+- implementation-local names (`InputEvent`, `FramedInput`, worker module names)
+  should not leak into architecture diagrams unless the code name itself is the
+  point of the explanation
 
 ## Quick pre-PR checklist
 

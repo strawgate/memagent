@@ -4,9 +4,27 @@ This document formalises the contract between callers and the scanner layer
 (`Scanner`).  It covers input requirements,
 output guarantees, and known limitations.
 
+Architecturally, the scanner sits at the **Parsing / Materialization**
+boundary. Upstream source, framing, normalization, and batching layers may use
+different internal representations, but this contract describes the shape that
+must be presented to the scanner itself.
+
 ---
 
 ## Input Requirements
+
+### Contiguous buffer boundary
+
+The default scanner entrypoints take a single contiguous `bytes::Bytes`
+backing buffer:
+
+- `Scanner::scan(Bytes)`
+- `Scanner::scan_detached(Bytes)`
+
+Upstream batching may hold one chunk or many chunks while a batch is being
+formed, but the default scan boundary is still one contiguous buffer. If
+pre-scan accumulation is fragmented, concatenation must happen before these
+scanner entrypoints are called.
 
 ### UTF-8
 
@@ -40,7 +58,7 @@ The scanner expects **newline-delimited JSON** (`\n`-separated lines):
   skipped**: a row is still emitted with all columns null.
 - A final non-empty line without trailing `\n` is processed. Reassembly of
   truly incomplete lines across reads is the responsibility of the format layer
-  (`JsonParser`, `CriParser`).
+  (`FramedInput` and its format decoders).
 
 ### Size limits
 
