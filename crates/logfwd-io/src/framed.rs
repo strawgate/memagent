@@ -13,7 +13,7 @@ use bytes::{Bytes, BytesMut};
 
 use crate::filter_hints::FilterHints;
 use crate::format::FormatDecoder;
-use crate::input::{BufferedInputEvent, CriMetadata, InputCadence, InputEvent, InputSource};
+use crate::input::{CriMetadata, FramedReadEvent, InputCadence, InputEvent, InputSource};
 #[cfg(test)]
 use crate::poll_cadence::PollCadenceSignal;
 use crate::tail::ByteOffset;
@@ -119,33 +119,40 @@ impl FramedInput {
         dst: &mut BytesMut,
         data: &[u8],
         source_id: Option<SourceId>,
-        result_events: &mut Vec<BufferedInputEvent>,
+        result_events: &mut Vec<FramedReadEvent>,
     ) {
         if data.is_empty() {
             return;
         }
         let start = dst.len();
         dst.extend_from_slice(data);
-        result_events.push(BufferedInputEvent::Data {
+        result_events.push(FramedReadEvent::Data {
             range: start..dst.len(),
             source_id,
             cri_metadata: None,
         });
     }
 
+    fn unsupported_structured_event_error(event_name: &str) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("FramedInput only supports raw byte events; inner source emitted {event_name}"),
+        )
+    }
+
     fn process_raw_events_into(
         &mut self,
         raw_events: Vec<InputEvent>,
         dst: &mut BytesMut,
-    ) -> Vec<BufferedInputEvent> {
+    ) -> io::Result<Vec<FramedReadEvent>> {
         self.last_raw_had_payload = raw_events
             .iter()
             .any(|event| matches!(event, InputEvent::Data { .. } | InputEvent::Batch { .. }));
         if raw_events.is_empty() {
-            return vec![];
+            return Ok(vec![]);
         }
 
-        let mut result_events: Vec<BufferedInputEvent> = Vec::new();
+        let mut result_events: Vec<FramedReadEvent> = Vec::new();
 
         for event in raw_events {
             match event {
@@ -337,7 +344,7 @@ impl FramedInput {
                             Some(&mut self.cri_metadata_buf),
                         );
                         if dst.len() > start {
-                            result_events.push(BufferedInputEvent::Data {
+                            result_events.push(FramedReadEvent::Data {
                                 range: start..dst.len(),
                                 source_id,
                                 cri_metadata: self.cri_metadata_for_emitted_data(),
@@ -355,14 +362,10 @@ impl FramedInput {
                         self.sources.remove(&key);
                     }
                 }
-                InputEvent::Batch {
-                    batch,
-                    source_id,
-                    accounted_bytes,
-                } => {
-                    self.stats.inc_lines(batch.num_rows() as u64);
-                    self.stats.inc_bytes(accounted_bytes);
-                    result_events.push(BufferedInputEvent::Batch { batch, source_id });
+                InputEvent::Batch { .. } => {
+                    return Err(Self::unsupported_structured_event_error(
+                        "InputEvent::Batch",
+                    ));
                 }
                 InputEvent::Rotated { source_id } => {
                     match source_id {
@@ -373,7 +376,7 @@ impl FramedInput {
                             self.sources.clear();
                         }
                     }
-                    result_events.push(BufferedInputEvent::Rotated { source_id });
+                    result_events.push(FramedReadEvent::Rotated { source_id });
                 }
                 InputEvent::Truncated { source_id } => {
                     match source_id {
@@ -384,7 +387,7 @@ impl FramedInput {
                             self.sources.clear();
                         }
                     }
-                    result_events.push(BufferedInputEvent::Truncated { source_id });
+                    result_events.push(FramedReadEvent::Truncated { source_id });
                 }
                 InputEvent::EndOfFile { source_id } => {
                     let keys_to_flush: Vec<Option<SourceId>> = match source_id {
@@ -416,7 +419,7 @@ impl FramedInput {
                                     Some(&mut self.cri_metadata_buf),
                                 );
                                 if dst.len() > start {
-                                    result_events.push(BufferedInputEvent::Data {
+                                    result_events.push(FramedReadEvent::Data {
                                         range: start..dst.len(),
                                         source_id: key,
                                         cri_metadata: self.cri_metadata_for_emitted_data(),
@@ -438,15 +441,15 @@ impl FramedInput {
             }
         }
 
-        result_events
+        Ok(result_events)
     }
 
-    fn process_raw_events(&mut self, raw_events: Vec<InputEvent>) -> Vec<InputEvent> {
+    fn process_raw_events(&mut self, raw_events: Vec<InputEvent>) -> io::Result<Vec<InputEvent>> {
         self.last_raw_had_payload = raw_events
             .iter()
             .any(|event| matches!(event, InputEvent::Data { .. } | InputEvent::Batch { .. }));
         if raw_events.is_empty() {
-            return vec![];
+            return Ok(vec![]);
         }
 
         let mut result_events: Vec<InputEvent> = Vec::new();
@@ -712,18 +715,10 @@ impl FramedInput {
                         self.sources.remove(&key);
                     }
                 }
-                InputEvent::Batch {
-                    batch,
-                    source_id,
-                    accounted_bytes,
-                } => {
-                    self.stats.inc_lines(batch.num_rows() as u64);
-                    self.stats.inc_bytes(accounted_bytes);
-                    result_events.push(InputEvent::Batch {
-                        batch,
-                        source_id,
-                        accounted_bytes: 0,
-                    });
+                InputEvent::Batch { .. } => {
+                    return Err(Self::unsupported_structured_event_error(
+                        "InputEvent::Batch",
+                    ));
                 }
                 // Rotation/truncation: clear framing state + forward event.
                 //
@@ -818,32 +813,32 @@ impl FramedInput {
             }
         }
 
-        result_events
+        Ok(result_events)
     }
 }
 
 impl InputSource for FramedInput {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
         let raw_events = self.inner.poll()?;
-        Ok(self.process_raw_events(raw_events))
+        self.process_raw_events(raw_events)
     }
 
-    fn poll_into(&mut self, dst: &mut BytesMut) -> io::Result<Option<Vec<BufferedInputEvent>>> {
+    fn poll_into(&mut self, dst: &mut BytesMut) -> io::Result<Option<Vec<FramedReadEvent>>> {
         let raw_events = self.inner.poll()?;
-        Ok(Some(self.process_raw_events_into(raw_events, dst)))
+        Ok(Some(self.process_raw_events_into(raw_events, dst)?))
     }
 
     fn poll_shutdown(&mut self) -> io::Result<Vec<InputEvent>> {
         let raw_events = self.inner.poll_shutdown()?;
-        Ok(self.process_raw_events(raw_events))
+        self.process_raw_events(raw_events)
     }
 
     fn poll_shutdown_into(
         &mut self,
         dst: &mut BytesMut,
-    ) -> io::Result<Option<Vec<BufferedInputEvent>>> {
+    ) -> io::Result<Option<Vec<FramedReadEvent>>> {
         let raw_events = self.inner.poll_shutdown()?;
-        Ok(Some(self.process_raw_events_into(raw_events, dst)))
+        Ok(Some(self.process_raw_events_into(raw_events, dst)?))
     }
 
     fn name(&self) -> &str {
@@ -1095,7 +1090,7 @@ mod tests {
 
         assert_eq!(dst.as_ref(), b"seed\nline1\nline2\n");
         assert_eq!(events.len(), 1);
-        let BufferedInputEvent::Data {
+        let FramedReadEvent::Data {
             range, source_id, ..
         } = &events[0]
         else {
@@ -1175,7 +1170,7 @@ mod tests {
             .expect("buffered path available");
 
         assert_eq!(second.len(), 1);
-        let BufferedInputEvent::Data {
+        let FramedReadEvent::Data {
             range,
             source_id,
             cri_metadata,
@@ -1231,14 +1226,14 @@ mod tests {
             .expect("second poll_into")
             .expect("buffered path available");
 
-        let BufferedInputEvent::Data {
+        let FramedReadEvent::Data {
             cri_metadata: first_metadata,
             ..
         } = &first[0]
         else {
             panic!("expected first data event");
         };
-        let BufferedInputEvent::Data {
+        let FramedReadEvent::Data {
             cri_metadata: second_metadata,
             ..
         } = &second[0]
@@ -1296,7 +1291,7 @@ mod tests {
             .expect("buffered path available");
 
         assert_eq!(shutdown.len(), 1);
-        let BufferedInputEvent::Data {
+        let FramedReadEvent::Data {
             range,
             cri_metadata,
             ..
@@ -1344,7 +1339,7 @@ mod tests {
             .expect("shared-buffer path available");
         assert_eq!(first.len(), 1);
         let first_range = match &first[0] {
-            BufferedInputEvent::Data {
+            FramedReadEvent::Data {
                 range, source_id, ..
             } => {
                 assert_eq!(*source_id, Some(SourceId(7)));
@@ -1361,7 +1356,7 @@ mod tests {
             .expect("shared-buffer path available");
         assert_eq!(second.len(), 1);
         let second_range = match &second[0] {
-            BufferedInputEvent::Data {
+            FramedReadEvent::Data {
                 range, source_id, ..
             } => {
                 assert_eq!(*source_id, Some(SourceId(7)));
@@ -1531,15 +1526,13 @@ mod tests {
     }
 
     #[test]
-    fn batch_events_increment_stats() {
+    fn batch_events_from_inner_source_are_rejected() {
         let stats = make_stats();
         let batch = make_batch();
-        let expected_rows = batch.num_rows() as u64;
-        let expected_bytes = 1234;
         let source = MockSource::new(vec![vec![InputEvent::Batch {
             batch,
             source_id: None,
-            accounted_bytes: expected_bytes,
+            accounted_bytes: 1234,
         }]]);
         let mut framed = FramedInput::new(
             Box::new(source),
@@ -1547,11 +1540,35 @@ mod tests {
             Arc::clone(&stats),
         );
 
-        let events = framed.poll().unwrap();
-        assert_eq!(events.len(), 1);
-        assert!(matches!(events[0], InputEvent::Batch { .. }));
-        assert_eq!(stats.lines(), expected_rows);
-        assert_eq!(stats.bytes(), expected_bytes);
+        let err = match framed.poll() {
+            Ok(_) => panic!("structured event should be rejected"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("InputEvent::Batch"));
+    }
+
+    #[test]
+    fn poll_into_rejects_batch_events_from_inner_source() {
+        let stats = make_stats();
+        let batch = make_batch();
+        let source = MockSource::new(vec![vec![InputEvent::Batch {
+            batch,
+            source_id: None,
+            accounted_bytes: 1234,
+        }]]);
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
+            Arc::clone(&stats),
+        );
+
+        let mut dst = BytesMut::new();
+        let err = match framed.poll_into(&mut dst) {
+            Ok(_) => panic!("shared-buffer path should reject structured event"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("InputEvent::Batch"));
+        assert!(dst.is_empty());
     }
 
     #[test]

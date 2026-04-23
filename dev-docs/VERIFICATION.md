@@ -162,7 +162,7 @@ reducer or state module when feasible, then add Kani proofs for single-step inva
 and proptest sequence coverage for multi-step behavior.
 
 For shared-buffer input work specifically, treat the runtime consumer of
-`BufferedInputEvent` as a separate state machine from `FramedInput` itself.
+`FramedReadEvent` as a separate state machine from `FramedInput` itself.
 `poll()` vs `poll_into()` equivalence tests are necessary but not sufficient:
 add a reducer-level sequence test that mixes `Data`, `Batch`, and control
 events and checks emitted `IoWorkItem` ordering against a reference model.

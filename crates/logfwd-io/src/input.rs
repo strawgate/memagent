@@ -367,22 +367,18 @@ pub enum InputEvent {
     EndOfFile { source_id: Option<SourceId> },
 }
 
-/// Events produced by the shared-buffer input path.
+/// Events produced by the shared-buffer framing path.
 ///
 /// `Data` references a byte range already appended into the caller-owned
 /// destination buffer supplied to [`InputSource::poll_into`] or
 /// [`InputSource::poll_shutdown_into`]. The range is expressed in that buffer's
 /// post-append coordinate space so the caller can derive row origins and sidecar
 /// alignment without another copy.
-pub enum BufferedInputEvent {
+pub enum FramedReadEvent {
     Data {
         range: Range<usize>,
         source_id: Option<SourceId>,
         cri_metadata: Option<CriMetadata>,
-    },
-    Batch {
-        batch: RecordBatch,
-        source_id: Option<SourceId>,
     },
     Rotated {
         source_id: Option<SourceId>,
@@ -410,8 +406,8 @@ pub trait InputSource: Send {
     /// The default implementation returns `Ok(None)` so existing sources keep
     /// using the `poll()` path unchanged. Implementations that support shared
     /// buffering must append any produced data into `dst` and describe the
-    /// appended ranges with [`BufferedInputEvent::Data`].
-    fn poll_into(&mut self, _dst: &mut BytesMut) -> io::Result<Option<Vec<BufferedInputEvent>>> {
+    /// appended ranges with [`FramedReadEvent::Data`].
+    fn poll_into(&mut self, _dst: &mut BytesMut) -> io::Result<Option<Vec<FramedReadEvent>>> {
         Ok(None)
     }
 
@@ -439,7 +435,7 @@ pub trait InputSource: Send {
     fn poll_shutdown_into(
         &mut self,
         _dst: &mut BytesMut,
-    ) -> io::Result<Option<Vec<BufferedInputEvent>>> {
+    ) -> io::Result<Option<Vec<FramedReadEvent>>> {
         Ok(None)
     }
 

@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(not(feature = "turmoil"))]
 use logfwd_diagnostics::diagnostics::PipelineMetrics;
 #[cfg(not(feature = "turmoil"))]
-use logfwd_io::input::{BufferedInputEvent, CriMetadata, InputEvent};
+use logfwd_io::input::{CriMetadata, FramedReadEvent, InputEvent};
 #[cfg(not(feature = "turmoil"))]
 use logfwd_io::poll_cadence::AdaptivePollController;
 #[cfg(not(feature = "turmoil"))]
@@ -96,21 +96,18 @@ pub(crate) fn should_repoll_shutdown(
 }
 
 #[cfg(not(feature = "turmoil"))]
-fn buffered_events_have_payload(events: &[BufferedInputEvent]) -> bool {
-    events.iter().any(|event| {
-        matches!(
-            event,
-            BufferedInputEvent::Data { .. } | BufferedInputEvent::Batch { .. }
-        )
-    })
+fn framed_read_events_have_payload(events: &[FramedReadEvent]) -> bool {
+    events
+        .iter()
+        .any(|event| matches!(event, FramedReadEvent::Data { .. }))
 }
 
 #[cfg(not(feature = "turmoil"))]
 fn is_large_single_buffered_data_event(
-    events: &[BufferedInputEvent],
+    events: &[FramedReadEvent],
     buffer_was_empty_at_poll: bool,
 ) -> bool {
-    let Some(BufferedInputEvent::Data { range, .. }) = events.first() else {
+    let Some(FramedReadEvent::Data { range, .. }) = events.first() else {
         return false;
     };
     should_flush_large_single_shared_buffer_chunk(
@@ -122,37 +119,8 @@ fn is_large_single_buffered_data_event(
 }
 
 #[cfg(not(feature = "turmoil"))]
-fn next_buffered_data_start(events: &[BufferedInputEvent], from_index: usize) -> Option<usize> {
-    events
-        .iter()
-        .skip(from_index + 1)
-        .filter_map(|event| match event {
-            BufferedInputEvent::Data { range, .. } => Some(range.start),
-            BufferedInputEvent::Batch { .. }
-            | BufferedInputEvent::Rotated { .. }
-            | BufferedInputEvent::Truncated { .. } => None,
-        })
-        .min()
-}
-
-#[cfg(not(feature = "turmoil"))]
-fn rebase_future_buffered_data_ranges(
-    events: &mut [BufferedInputEvent],
-    from_index: usize,
-    offset: usize,
-) {
-    for event in events.iter_mut().skip(from_index) {
-        if let BufferedInputEvent::Data { range, .. } = event {
-            debug_assert!(range.start >= offset);
-            debug_assert!(range.end >= offset);
-            *range = (range.start - offset)..(range.end - offset);
-        }
-    }
-}
-
-#[cfg(not(feature = "turmoil"))]
 pub(crate) fn should_repoll_shutdown_buffered(
-    events: &[BufferedInputEvent],
+    events: &[FramedReadEvent],
     is_finished: bool,
     had_source_payload: bool,
 ) -> bool {
@@ -160,7 +128,7 @@ pub(crate) fn should_repoll_shutdown_buffered(
         is_finished,
         had_source_payload,
         !events.is_empty(),
-        buffered_events_have_payload(events),
+        framed_read_events_have_payload(events),
     )
 }
 
@@ -723,7 +691,7 @@ pub(super) fn process_io_events(
 pub(super) fn process_buffered_events(
     input: &mut InputState,
     input_name: &Arc<str>,
-    events: Vec<BufferedInputEvent>,
+    events: Vec<FramedReadEvent>,
     tx: &mpsc::Sender<IoWorkItem>,
     metrics: &PipelineMetrics,
     last_bp_warn: &mut Option<Instant>,
@@ -734,7 +702,6 @@ pub(super) fn process_buffered_events(
     buffer_was_empty_at_poll: bool,
     source_metadata_plan: SourceMetadataPlan,
 ) -> bool {
-    let mut events = events;
     let source_path_snapshot = if source_metadata_plan.has_source_path() {
         input.source.source_paths()
     } else {
@@ -743,14 +710,9 @@ pub(super) fn process_buffered_events(
     let should_flush_large_single_chunk =
         is_large_single_buffered_data_event(&events, buffer_was_empty_at_poll);
 
-    let mut index = 0usize;
-    while index < events.len() {
-        let event = std::mem::replace(
-            &mut events[index],
-            BufferedInputEvent::Rotated { source_id: None },
-        );
+    for event in events {
         match event {
-            BufferedInputEvent::Data {
+            FramedReadEvent::Data {
                 range,
                 source_id,
                 cri_metadata,
@@ -778,79 +740,15 @@ pub(super) fn process_buffered_events(
                     &input.buf[range],
                 );
             }
-            BufferedInputEvent::Batch { batch, source_id } => {
-                let future_data_start = next_buffered_data_start(&events, index);
-                let future_bytes = future_data_start.map(|start| input.buf.split_off(start));
-                if let Some(start) = future_data_start {
-                    rebase_future_buffered_data_ranges(&mut events, index + 1, start);
-                }
-                if !flush_buf(
-                    &mut input.buf,
-                    &mut input.row_origins,
-                    pending_row_origin,
-                    &mut input.source_paths,
-                    &mut input.cri_metadata,
-                    &*input.source,
-                    tx,
-                    metrics,
-                    last_bp_warn,
-                    input_index,
-                    source_metadata_plan,
-                ) {
-                    return false;
-                }
-                *buffered_since = None;
-
-                let row_origins = if source_metadata_plan.has_any() {
-                    vec![RowOriginSpan {
-                        source_id,
-                        input_name: Arc::clone(input_name),
-                        rows: batch.num_rows(),
-                    }]
-                } else {
-                    Vec::new()
-                };
-                let source_paths = if source_metadata_plan.has_source_path() {
-                    source_paths_by_id(&source_path_snapshot, &row_origins)
-                } else {
-                    HashMap::new()
-                };
-                let item = IoWorkItem::Batch {
-                    batch,
-                    checkpoints: input.source.checkpoint_data(),
-                    row_origins,
-                    source_paths,
-                    queued_at: tokio::time::Instant::now(),
-                    input_index,
-                };
-                match tx.try_send(item) {
-                    Ok(()) => {}
-                    Err(mpsc::error::TrySendError::Full(item)) => {
-                        if last_bp_warn.is_none_or(|t| t.elapsed() >= Duration::from_secs(5)) {
-                            tracing::warn!(input = input.source.name(), "input.backpressure");
-                            *last_bp_warn = Some(Instant::now());
-                        }
-                        metrics.inc_backpressure_stall();
-                        if tx.blocking_send(item).is_err() {
-                            return false;
-                        }
-                    }
-                    Err(mpsc::error::TrySendError::Closed(_)) => return false,
-                }
-                if let Some(future_bytes) = future_bytes {
-                    input.buf = future_bytes;
-                }
-            }
-            BufferedInputEvent::Rotated { .. } => {
+            FramedReadEvent::Rotated { .. } => {
                 input.stats.inc_rotations();
                 tracing::info!(input = input.source.name(), "input.file_rotated");
             }
-            BufferedInputEvent::Truncated { .. } => {
+            FramedReadEvent::Truncated { .. } => {
                 input.stats.inc_rotations();
                 tracing::info!(input = input.source.name(), "input.file_truncated");
             }
         }
-        index += 1;
     }
     let flush_by_size = input.buf.len() >= safe_batch_target_bytes;
     if flush_by_size || should_flush_large_single_chunk {

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use bytes::{Bytes, BytesMut};
 use logfwd_io::format::FormatDecoder;
 use logfwd_io::framed::FramedInput;
-use logfwd_io::input::{BufferedInputEvent, CriMetadata, InputEvent, InputSource};
+use logfwd_io::input::{CriMetadata, FramedReadEvent, InputEvent, InputSource};
 use logfwd_io::tail::ByteOffset;
 use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 use logfwd_types::pipeline::SourceId;
@@ -207,11 +207,11 @@ fn normalize_legacy(events: Vec<InputEvent>) -> Vec<NormalizedEvent> {
         .collect()
 }
 
-fn normalize_buffered(events: Vec<BufferedInputEvent>, dst: &BytesMut) -> Vec<NormalizedEvent> {
+fn normalize_buffered(events: Vec<FramedReadEvent>, dst: &BytesMut) -> Vec<NormalizedEvent> {
     events
         .into_iter()
         .map(|event| match event {
-            BufferedInputEvent::Data {
+            FramedReadEvent::Data {
                 range,
                 source_id,
                 cri_metadata,
@@ -220,11 +220,8 @@ fn normalize_buffered(events: Vec<BufferedInputEvent>, dst: &BytesMut) -> Vec<No
                 source_id,
                 cri_metadata,
             },
-            BufferedInputEvent::Rotated { source_id } => NormalizedEvent::Rotated { source_id },
-            BufferedInputEvent::Truncated { source_id } => NormalizedEvent::Truncated { source_id },
-            BufferedInputEvent::Batch { .. } => {
-                panic!("replay source should not emit batch events")
-            }
+            FramedReadEvent::Rotated { source_id } => NormalizedEvent::Rotated { source_id },
+            FramedReadEvent::Truncated { source_id } => NormalizedEvent::Truncated { source_id },
         })
         .collect()
 }
