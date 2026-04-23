@@ -765,8 +765,7 @@ fn build_host_metrics_config(
             .unwrap_or(256),
         max_process_rows_per_poll: cfg
             .and_then(|c| c.max_process_rows_per_poll)
-            .filter(|&n| n > 0)
-            .unwrap_or(1024),
+            .and_then(std::num::NonZeroUsize::new),
     }
 }
 
@@ -1027,7 +1026,7 @@ mod tests {
     fn build_host_metrics_config_uses_defaults() {
         let cfg = build_host_metrics_config(None);
         assert_eq!(cfg.max_rows_per_poll, 256);
-        assert_eq!(cfg.max_process_rows_per_poll, 1024);
+        assert_eq!(cfg.max_process_rows_per_poll, None);
     }
 
     #[test]
@@ -1039,7 +1038,7 @@ mod tests {
         };
         let cfg = build_host_metrics_config(Some(&input));
         assert_eq!(cfg.max_rows_per_poll, 256);
-        assert_eq!(cfg.max_process_rows_per_poll, 1024);
+        assert_eq!(cfg.max_process_rows_per_poll, None);
     }
 
     #[test]
