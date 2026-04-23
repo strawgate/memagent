@@ -2554,6 +2554,22 @@ mod tests {
     }
 
     #[test]
+    fn metadata_columns_are_not_pushed() {
+        assert!(predicate_for(r#"SELECT * FROM logs WHERE "file.path" = '/tmp/x.log'"#).is_none());
+        assert!(predicate_for("SELECT * FROM logs WHERE __source_id = 7").is_none());
+        assert!(predicate_for("SELECT * FROM logs WHERE _stream = 'stdout'").is_none());
+        assert!(predicate_for("SELECT * FROM logs WHERE _timestamp IS NOT NULL").is_none());
+    }
+
+    #[test]
+    fn metadata_columns_are_not_pushed_case_insensitively() {
+        assert!(predicate_for(r#"SELECT * FROM logs WHERE "FILE.PATH" = '/tmp/x.log'"#).is_none());
+        assert!(predicate_for("SELECT * FROM logs WHERE __SOURCE_ID = 7").is_none());
+        assert!(predicate_for("SELECT * FROM logs WHERE _STREAM = 'stdout'").is_none());
+        assert!(predicate_for("SELECT * FROM logs WHERE _TIMESTAMP IS NOT NULL").is_none());
+    }
+
+    #[test]
     fn unpushable_or_different_ops_returns_none() {
         // OR with non-Eq comparisons can't merge to InList.
         let pred = predicate_for("SELECT * FROM logs WHERE status > 500 OR status < 200");

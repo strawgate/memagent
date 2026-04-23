@@ -9,6 +9,11 @@ defines what `Scanner` expects and produces. This document defines what the
 OTLP, file, diagnostics, and pipeline adapters must preserve before data
 reaches the scanner and after data leaves the `RecordBatch` pipeline.
 
+This document uses the architectural names **Source**, **Framing**,
+**Normalization**, **Batching**, **Enrichment**, and **Sink** when describing
+responsibilities. Current code still uses implementation names such as
+`InputSource`, `InputEvent`, and `FramedInput`.
+
 ## Scope
 
 In-scope:
@@ -166,7 +171,7 @@ ingested by `OtlpReceiverInput` must preserve the same semantics.
 
 This is the cross-crate compatibility rule that catches sink/receiver drift.
 
-## Input Source Metadata Contract
+## Source Metadata Contract
 
 Source metadata belongs to the table assembly boundary, not to transport bytes.
 
@@ -214,7 +219,7 @@ Source metadata belongs to the table assembly boundary, not to transport bytes.
   cases (invalid JSON for empty objects), and is 30x slower than post-scan
   column attachment (PR #1370 prototype measurements).
 
-## File Input Contract
+## File Source Contract
 
 The file path is:
 
@@ -237,6 +242,14 @@ The file path is:
 - Buffered remainder bytes are not checkpointable yet.
 - When EOF flushes a remainder, or a remainder is explicitly discarded after a
   documented lifecycle event, the checkpoint may then advance.
+
+### Batching / ownership rules
+
+- Pre-scan raw-byte ownership may be fragmented while batching is in progress.
+- The default scanner boundary is still contiguous: before `Scanner::scan`,
+  scanner-ready bytes must be represented as one `Bytes` buffer.
+- Optimizations may move where that contiguous buffer is assembled, but they
+  must not create a second framing contract beside `FramedInput`.
 
 ### Lifecycle rules
 

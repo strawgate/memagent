@@ -119,7 +119,7 @@ output:
     let pipe_cfg = &config.pipelines["default"];
     let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
-    let pipeline = run_until_output_lines(pipeline, 10);
+    let pipeline = run_until_output_lines(pipeline, 5);
 
     let lines_in = pipeline
         .metrics()
@@ -239,7 +239,7 @@ output:
 
     assert_eq!(
         lines_in, 5,
-        "expected 5 rows into transform after predicate pushdown, got {lines_in}"
+        "expected 5 rows into transform after scanner-side pushdown, got {lines_in}"
     );
     assert_eq!(
         lines_out, 5,

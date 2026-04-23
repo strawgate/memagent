@@ -1237,8 +1237,9 @@ output:
     std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            // Wait until transform_in shows all rows were scanned.
-            if metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 20 {
+            // Simple SQL predicates can be pushed into the scanner, so
+            // transform_in reflects only rows that survive the filter.
+            if metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 10 {
                 std::thread::sleep(Duration::from_millis(50));
                 sd.cancel();
                 return;
@@ -1257,15 +1258,19 @@ output:
         "split pipeline with SQL should work: {result:?}"
     );
 
-    // CPU worker scans 20 lines.
+    // Scanner-level predicate pushdown filters the 20 source rows to 10
+    // rows before they reach the transform stage.
     let lines_in = pipeline
         .metrics
         .transform_in
         .lines_total
         .load(Ordering::Relaxed);
-    assert_eq!(lines_in, 20, "expected 20 lines scanned, got {lines_in}");
+    assert_eq!(
+        lines_in, 10,
+        "expected 10 filtered rows into transform, got {lines_in}"
+    );
 
-    // SQL WHERE filters half -> 10 rows reach output.
+    // Those same 10 rows reach output.
     let lines_out = pipeline
         .metrics
         .transform_out
