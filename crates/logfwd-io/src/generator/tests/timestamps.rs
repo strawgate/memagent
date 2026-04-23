@@ -442,6 +442,7 @@
             "expected exactly 50 events, got {total_lines}"
         );
         assert_eq!(input.events_generated(), 50);
+        assert!(input.is_finished(), "finite generator should report completion");
 
         // Subsequent polls must return empty.
         let events = input.poll().unwrap();

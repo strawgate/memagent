@@ -246,4 +246,8 @@ impl InputSource for GeneratorInput {
         // It is either idle or emitting synthetic events under pipeline control.
         ComponentHealth::Healthy
     }
+
+    fn is_finished(&self) -> bool {
+        self.done
+    }
 }
