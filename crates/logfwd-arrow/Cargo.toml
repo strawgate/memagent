@@ -17,6 +17,7 @@ _test-internals = []
 arrow = { workspace = true }
 bytes = "1"
 logfwd-core = { version = "0.1.0", path = "../logfwd-core" }
+logfwd-kani = { version = "0.1.0", path = "../logfwd-kani" }
 logfwd-lint-attrs = { version = "0.1.0", path = "../logfwd-lint-attrs" }
 logfwd-types = { version = "0.1.0", path = "../logfwd-types" }
 

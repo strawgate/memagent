@@ -1084,30 +1084,15 @@ mod tests {
     }
 
     /// Oracle: the reference (branch-based) nibble decoder used to verify the
-    /// LUT implementation.  Kept private to this test module.
+    /// LUT implementation. Delegates to the centralized oracle in logfwd-kani.
     fn hex_nibble_oracle(c: u8) -> u8 {
-        match c {
-            b'0'..=b'9' => c - b'0',
-            b'a'..=b'f' => c - b'a' + 10,
-            b'A'..=b'F' => c - b'A' + 10,
-            _ => 0xFF,
-        }
+        logfwd_kani::hex::hex_nibble_oracle(c)
     }
 
-    /// Oracle: reference `hex_decode` implementation (original single-pass loop).
+    /// Oracle: reference `hex_decode` implementation. Delegates to the
+    /// centralized oracle in logfwd-kani.
     fn hex_decode_oracle(hex_bytes: &[u8], out: &mut [u8]) -> bool {
-        if hex_bytes.len() != out.len() * 2 {
-            return false;
-        }
-        for (i, byte) in out.iter_mut().enumerate() {
-            let hi = hex_nibble_oracle(hex_bytes[i * 2]);
-            let lo = hex_nibble_oracle(hex_bytes[i * 2 + 1]);
-            if hi > 0x0F || lo > 0x0F {
-                return false;
-            }
-            *byte = (hi << 4) | lo;
-        }
-        true
+        logfwd_kani::hex::hex_decode_oracle(hex_bytes, out)
     }
 
     proptest::proptest! {
@@ -1358,25 +1343,11 @@ mod verification {
         kani::cover!(year == 1971 && month == 6 && day == 15, "typical mid-range");
 
         let result = days_from_civil(year, month, day);
-        let oracle = jdn_days_from_epoch(year, month, day);
+        let oracle = logfwd_kani::datetime::jdn_days_from_epoch(year, month, day);
         assert!(
             result == oracle,
             "days_from_civil disagrees with JDN oracle"
         );
-    }
-
-    /// Closed-form oracle using Fliegel-Van Flandern Julian Day Number.
-    /// Returns days since 1970-01-01 without any loops.
-    fn jdn_days_from_epoch(year: i64, month: u32, day: u32) -> i64 {
-        // Fliegel-Van Flandern JDN formula (integer arithmetic).
-        let m = month as i64;
-        let d = day as i64;
-        let a = (14 - m) / 12;
-        let y = year + 4800 - a;
-        let mo = m + 12 * a - 3;
-        let jdn = d + (153 * mo + 2) / 5 + 365 * y + y / 4 - y / 100 + y / 400 - 32045;
-        // JDN of 1970-01-01 is 2440588.
-        jdn - 2440588
     }
 
     /// Prove bytes_field_size matches actual encode_bytes_field output for the

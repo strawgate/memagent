@@ -202,7 +202,8 @@ impl Sink for InstrumentedSink {
                         .push(SinkOutcome::Ok);
                     delivered.fetch_add(rows, Ordering::Relaxed);
                     if let Some(trace) = &trace {
-                        trace.record(TraceEvent::SinkResult { worker_id: 0,
+                        trace.record(TraceEvent::SinkResult {
+                            worker_id: 0,
                             outcome: SinkOutcome::Ok,
                             rows,
                         });
@@ -215,7 +216,8 @@ impl Sink for InstrumentedSink {
                         .expect("outcomes mutex poisoned")
                         .push(SinkOutcome::RetryAfter);
                     if let Some(trace) = &trace {
-                        trace.record(TraceEvent::SinkResult { worker_id: 0,
+                        trace.record(TraceEvent::SinkResult {
+                            worker_id: 0,
                             outcome: SinkOutcome::RetryAfter,
                             rows,
                         });
@@ -228,7 +230,8 @@ impl Sink for InstrumentedSink {
                         .expect("outcomes mutex poisoned")
                         .push(SinkOutcome::IoError);
                     if let Some(trace) = &trace {
-                        trace.record(TraceEvent::SinkResult { worker_id: 0,
+                        trace.record(TraceEvent::SinkResult {
+                            worker_id: 0,
                             outcome: SinkOutcome::IoError,
                             rows,
                         });
@@ -241,7 +244,8 @@ impl Sink for InstrumentedSink {
                         .expect("outcomes mutex poisoned")
                         .push(SinkOutcome::IoError);
                     if let Some(trace) = &trace {
-                        trace.record(TraceEvent::SinkResult { worker_id: 0,
+                        trace.record(TraceEvent::SinkResult {
+                            worker_id: 0,
                             outcome: SinkOutcome::IoError,
                             rows,
                         });
@@ -254,7 +258,8 @@ impl Sink for InstrumentedSink {
                         .expect("outcomes mutex poisoned")
                         .push(SinkOutcome::Rejected);
                     if let Some(trace) = &trace {
-                        trace.record(TraceEvent::SinkResult { worker_id: 0,
+                        trace.record(TraceEvent::SinkResult {
+                            worker_id: 0,
                             outcome: SinkOutcome::Rejected,
                             rows,
                         });
@@ -269,7 +274,8 @@ impl Sink for InstrumentedSink {
                         .push(SinkOutcome::Ok);
                     delivered.fetch_add(rows, Ordering::Relaxed);
                     if let Some(trace) = &trace {
-                        trace.record(TraceEvent::SinkResult { worker_id: 0,
+                        trace.record(TraceEvent::SinkResult {
+                            worker_id: 0,
                             outcome: SinkOutcome::Ok,
                             rows,
                         });
@@ -282,7 +288,8 @@ impl Sink for InstrumentedSink {
                         .expect("outcomes mutex poisoned")
                         .push(SinkOutcome::Panic);
                     if let Some(trace) = &trace {
-                        trace.record(TraceEvent::SinkResult { worker_id: 0,
+                        trace.record(TraceEvent::SinkResult {
+                            worker_id: 0,
                             outcome: SinkOutcome::Panic,
                             rows,
                         });
