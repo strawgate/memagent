@@ -23,7 +23,7 @@ talk about the ingest path.
 
 ## Crate Layers
 
-```
+```text
 ┌─────────────────────────────────────────────────────────┐
 │  logfwd (binary)                                        │
 │  CLI entrypoints, config loading, signal handling       │
@@ -74,7 +74,7 @@ batch accumulation is an ownership / flush-policy layer.
 
 ### 1. Source: bytes enter the system
 
-```
+```text
 Disk/TCP/UDP/HTTP → InputSource::poll() → InputEvent
 ```
 
@@ -103,7 +103,7 @@ thread boundary.
 
 ### 2. Framing and Normalization: source bytes -> scanner-ready NDJSON
 
-```
+```text
 InputEvent::Data { bytes: Bytes, ... } -> FramedInput::poll() -> scanner-ready bytes
 ```
 
@@ -151,7 +151,7 @@ default scanner contract is contiguous.
 
 The current hot boundary is:
 
-```
+```text
 FramedInput output -> pending_chunk | pending_chunks -> Scanner::scan(Bytes)
 ```
 
@@ -165,7 +165,7 @@ That distinction matters for future work:
 **Target:** Replace the remaining copy-heavy raw-byte path with a layered
 shared-buffer model (#2424, #2426, #2539):
 
-```
+```text
 Source bytes
   → FramedInput shared-buffer append
   → contiguous scanner batch
@@ -253,7 +253,7 @@ chunks, but the default scanner contract is still one contiguous `Bytes`.
 
 ### 6. Enrichment and Transform: RecordBatch -> RecordBatch
 
-```
+```text
 RecordBatch → sidecar attach/replace → SqlTransform::execute_blocking() → RecordBatch
 ```
 
@@ -283,7 +283,7 @@ finalization mechanics.
 
 ### 7. Sink: RecordBatch -> wire format
 
-```
+```text
 RecordBatch → OutputSink::send_batch() → HTTP/stdout/file
 ```
 
@@ -303,7 +303,7 @@ RecordBatch → OutputSink::send_batch() → HTTP/stdout/file
 Each boundary is a trait that logfwd-core defines and other crates
 implement:
 
-```
+```text
 logfwd-core defines          logfwd-arrow implements
 ──────────────────────────    ──────────────────────────
 ScanBuilder                   StreamingBuilder
@@ -334,7 +334,7 @@ to the checkpoint lifecycle machine.
 
 Production topology:
 
-```
+```text
 Per input:
   InputSource / FramedInput
     -> I/O worker OS thread
@@ -357,7 +357,7 @@ production worker topology unless explicitly noted otherwise.
 
 Understanding who owns what and when copies happen:
 
-```
+```text
 Current runtime shape (production, non-`turmoil`):
   source reads / receives bytes                           [kernel/network -> userspace]
   InputEvent::Data carries Bytes                          (ownership transfer)
