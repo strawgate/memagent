@@ -327,47 +327,38 @@ snapshot types consumed by runtime/bootstrap wiring.
 
 ## Pipeline Loop
 
-The async runtime shell in `run_async()` (`logfwd-runtime/src/pipeline.rs`)
-drives polling, batching, transform, and sink delivery:
+The async runtime shell in
+`run_async()` (`crates/logfwd-runtime/src/pipeline/run.rs`) orchestrates the
+per-input workers, owns downstream delivery, and applies output acknowledgements
+to the checkpoint lifecycle machine.
+
+Production topology:
 
 ```
-loop {
-    select! {
-        // Receive source output via bounded channel
-        msg = rx.recv() => {
-            // Accumulate scanner-ready bytes or direct RecordBatch output
-            // If batch_target_bytes or timer threshold is hit:
-            //   flush_batch()
-        }
-        // Timeout: flush partial batch
-        _ = sleep(batch_timeout) => {
-            flush_batch()
-        }
-        // Shutdown signal
-        _ = shutdown.cancelled() => {
-            // Drain channel, flush remaining, break
-        }
-    }
-}
-
-fn flush_batch():
-    raw = build_contiguous_scan_input_if_needed()
-    batch = scanner.scan(raw)        // parsing + materialization
-    batch = attach_sidecars(batch)   // enrichment
-    batch = transform.execute(batch) // SQL / transform
-    output.send_batch(batch)         // sink delivery
+Per input:
+  InputSource / FramedInput
+    -> I/O worker OS thread
+    -> bounded(4) I/O -> CPU channel
+    -> CPU worker OS thread
+    -> ChannelMsg
+    -> async pipeline loop in run_async()
+    -> processor chain / output pool / ack handling
 ```
 
-Source threads are OS threads (blocking I/O). The runtime loop is
-async (tokio). Scanner and output use `block_in_place` for sync
-operations.
+In production, polling and pre-scan batching happen in the I/O worker, scan +
+SQL happen in the CPU worker, and `run_async()` receives already transformed
+`ChannelMsg` values from those CPU workers.
+
+`turmoil` is intentionally different: it uses `async_input_poll_loop` and keeps
+scan + transform inline in the async test path. The docs below describe the
+production worker topology unless explicitly noted otherwise.
 
 ## Buffer Lifecycle
 
 Understanding who owns what and when copies happen:
 
 ```
-Current runtime shape:
+Current runtime shape (production, non-`turmoil`):
   source reads / receives bytes                           [kernel/network -> userspace]
   InputEvent::Data carries Bytes                          (ownership transfer)
   FramedInput may copy for remainder prepend or format rewrite
@@ -379,7 +370,7 @@ Current runtime shape:
 
 Current ownership boundaries:
   source boundary: InputEvent::{Data(Bytes), Batch(RecordBatch), ...}
-  batching boundary: pending_chunk | pending_chunks in runtime
+  batching boundary: pending_chunk | pending_chunks in I/O worker state
   scan boundary: one contiguous Bytes for Scanner::scan()
 
 Shared-buffer target:
@@ -394,7 +385,7 @@ The important architectural point is not "everything is always contiguous."
 It is:
 
 - mutable raw-byte ownership should be explicit
-- pre-scan accumulation may be fragmented
+- production pre-scan accumulation may be fragmented
 - the default scanner boundary is still contiguous
 - `FramedInput` remains the one framing contract for raw-byte sources
 

@@ -219,8 +219,12 @@ contiguous even when pre-scan accumulation is conceptually fragmented.
 Current ownership model:
 
 - sources and `FramedInput` exchange raw-byte data as `Bytes`
-- the runtime batching layer holds either one `Bytes` chunk or many chunks
-- if multiple chunks are buffered, concatenation happens once at flush time
+- in production (`not(feature = "turmoil")`), the I/O worker holds either one
+  `Bytes` chunk or many `Bytes` chunks before scan
+- if multiple chunks are buffered, the I/O worker concatenates once at flush
+  time before handing contiguous bytes to the scanner
+- `turmoil` keeps a simpler `BytesMut` accumulation path for the async test
+  harness
 - `Scanner::scan(Bytes)` still receives one contiguous backing buffer
 
 Why `Bytes` instead of `Vec<u8>`: the Arrow `StreamingBuilder` needs the input
