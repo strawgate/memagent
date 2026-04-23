@@ -442,8 +442,3 @@ proptest! {
         prop_assert_eq!(fast, simple);
     }
 }
-
-/// Local microbenchmark for writer helpers.
-///
-/// Run with:
-/// `cargo test -p logfwd-io otlp_receiver::tests::bench_writer_helpers_fast_vs_simple --release -- --ignored --nocapture`

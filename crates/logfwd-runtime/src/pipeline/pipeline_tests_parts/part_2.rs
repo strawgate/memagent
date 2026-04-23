@@ -503,7 +503,3 @@ output:
         "pipeline should complete successfully"
     );
 }
-
-/// Terminal held-ticket shutdown must close the input channel before
-/// joining producers. Otherwise producers blocked on a full bounded channel
-/// can keep shutdown stuck forever.

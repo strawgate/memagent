@@ -1,3 +1,7 @@
+/// Dynamic output worker pool.
+///
+/// Call [`OutputWorkerPool::submit`] from the pipeline's async loop.
+/// Call [`OutputWorkerPool::drain`] during shutdown.
 pub struct OutputWorkerPool {
     /// Workers in MRU order. Front = most recently used.
     workers: VecDeque<WorkerHandle>,

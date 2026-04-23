@@ -1,7 +1,3 @@
-/// TCP input that accepts connections and reads newline-delimited data.
-///
-/// Each connection is assigned a unique `SourceId` so downstream components
-/// can track per-connection state (e.g., partial-line remainders).
 #[derive(Debug, Clone)]
 pub struct TcpInputOptions {
     /// Maximum number of concurrent connections. Defaults to 1024.
@@ -40,8 +36,3 @@ pub struct TcpInputTlsOptions {
     /// Require clients to present a certificate signed by `client_ca_file`.
     pub require_client_auth: bool,
 }
-
-/// TCP input that accepts connections and reads newline-delimited data.
-///
-/// Each connection is assigned a unique `SourceId` so downstream components
-/// can track per-connection state (e.g., partial-line remainders).

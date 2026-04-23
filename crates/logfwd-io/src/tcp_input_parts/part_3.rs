@@ -1,3 +1,7 @@
+/// TCP input that accepts connections and reads newline-delimited data.
+///
+/// Each connection is assigned a unique `SourceId` so downstream components
+/// can track per-connection state (e.g., partial-line remainders).
 pub struct TcpInput {
     name: String,
     listener: TcpListener,

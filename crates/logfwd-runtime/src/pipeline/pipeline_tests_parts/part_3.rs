@@ -1,3 +1,6 @@
+/// Terminal held-ticket shutdown must close the input channel before
+/// joining producers. Otherwise producers blocked on a full bounded channel
+/// can keep shutdown stuck forever.
 #[tokio::test(flavor = "multi_thread")]
 async fn held_ticket_shutdown_does_not_deadlock_on_full_channel() {
     let dir = tempfile::tempdir().unwrap();
@@ -480,8 +483,3 @@ output:
         "oversized line should still be processed, got {lines_in}"
     );
 }
-
-/// A frozen output (blocks indefinitely on send_batch) must not
-/// prevent shutdown. The pipeline should still exit because shutdown
-/// cancellation breaks the select! loop, and the drain completes
-/// when input threads exit.

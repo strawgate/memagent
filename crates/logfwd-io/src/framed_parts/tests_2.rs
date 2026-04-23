@@ -444,5 +444,3 @@
     // -----------------------------------------------------------------------
     // Per-source remainder tests
     // -----------------------------------------------------------------------
-
-    /// Two sources interleaving with partial lines -- no cross-contamination.

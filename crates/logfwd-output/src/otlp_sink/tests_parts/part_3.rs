@@ -1,3 +1,9 @@
+/// Roundtrip oracle test: encode a RecordBatch with our hand-rolled encoder,
+/// decode with prost (the canonical protobuf library), and compare fields.
+///
+/// This is the definitive test that our OTLP encoding is spec-compliant.
+/// If we encode a field incorrectly, prost::Message::decode will either
+/// fail or produce different values.
 #[test]
 fn roundtrip_encode_decode_via_prost() {
     use opentelemetry_proto::tonic::{

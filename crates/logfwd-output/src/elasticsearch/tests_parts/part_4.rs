@@ -302,7 +302,3 @@ fn bulk_all_permanent_returns_rejected() {
         "error should report count: {err}"
     );
 }
-
-/// When both split halves fail with transient errors (no rows delivered),
-/// the merged result should still be retryable since it's safe for the
-/// worker pool to retry the full batch.

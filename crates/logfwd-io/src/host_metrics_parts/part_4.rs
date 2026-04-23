@@ -328,5 +328,3 @@ impl HostMetricsCommon {
         })
     }
 }
-
-}

@@ -1,3 +1,4 @@
+#[derive(Debug)]
 struct SensorRow {
     timestamp_unix_nano: u64,
     event_family: String,

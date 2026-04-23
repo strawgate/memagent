@@ -154,7 +154,7 @@
         let batch = first_batch(&events);
         let pids = u32_col_optional(batch, "process_pid");
         assert!(
-            pids.iter().any(std::option::Option::is_some),
+            pids.iter().any(Option::is_some),
             "process snapshot rows should have process_pid set"
         );
         let kinds = string_col(batch, "event_kind");
@@ -177,7 +177,7 @@
         //
         // Silent skip — `print_stderr` is a workspace-level warn and the
         // other portability skips in this PR stay silent too.
-        let mut iface_probe = sysinfo::Networks::new_with_refreshed_list();
+        let mut iface_probe = Networks::new_with_refreshed_list();
         iface_probe.refresh(true);
         if iface_probe.iter().next().is_none() {
             return;
@@ -205,7 +205,7 @@
             let batch = first_batch(&events);
             let ifaces = string_col(batch, "network_interface");
             assert!(
-                ifaces.iter().any(std::option::Option::is_some),
+                ifaces.iter().any(Option::is_some),
                 "network snapshot rows should have network_interface set"
             );
         }

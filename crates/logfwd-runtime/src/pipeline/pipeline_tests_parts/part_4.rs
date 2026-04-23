@@ -1,3 +1,7 @@
+/// A frozen output (blocks indefinitely on send_batch) must not
+/// prevent shutdown. The pipeline should still exit because shutdown
+/// cancellation breaks the select! loop, and the drain completes
+/// when input threads exit.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_async_shutdown_with_frozen_output() {
     let dir = tempfile::tempdir().unwrap();

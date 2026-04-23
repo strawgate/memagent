@@ -202,13 +202,11 @@ struct HostMetricsCommon {
     /// across families so no single family is permanently starved (#1935).
     poll_count: usize,
 }
-
 #[derive(Debug)]
 struct HostMetricsState<S> {
     common: HostMetricsCommon,
     state: S,
 }
-
 #[derive(Debug)]
 struct InitState {
     control: ControlState,
@@ -247,5 +245,3 @@ impl ControlSource {
         }
     }
 }
-
-#[derive(Debug)]

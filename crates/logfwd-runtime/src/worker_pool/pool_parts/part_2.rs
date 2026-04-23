@@ -112,8 +112,3 @@ impl OutputHealthTracker {
 // ---------------------------------------------------------------------------
 // OutputWorkerPool
 // ---------------------------------------------------------------------------
-
-/// Dynamic output worker pool.
-///
-/// Call [`OutputWorkerPool::submit`] from the pipeline's async loop.
-/// Call [`OutputWorkerPool::drain`] during shutdown.

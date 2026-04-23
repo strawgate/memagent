@@ -1,3 +1,6 @@
+/// When both split halves fail with transient errors (no rows delivered),
+/// the merged result should still be retryable since it's safe for the
+/// worker pool to retry the full batch.
 #[tokio::test]
 async fn split_both_halves_fail_returns_retryable() {
     use crate::sink::Sink;

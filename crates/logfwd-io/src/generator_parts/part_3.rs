@@ -1,3 +1,4 @@
+#[derive(Debug, Clone)]
 struct RecordFields {
     attributes: Vec<Vec<u8>>,
     sequence: Option<GeneratorGeneratedFieldState>,
