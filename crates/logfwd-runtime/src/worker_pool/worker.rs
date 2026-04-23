@@ -190,14 +190,22 @@ pub(super) async fn worker_task(
     }
 }
 
+/// Shared immutable inputs for processing a single work item.
 pub(super) struct ProcessItemContext<'a> {
+    /// Worker slot id used for metrics, tracing, and health events.
     pub(super) worker_id: usize,
+    /// Owned sink instance that receives the batch.
     pub(super) sink: &'a mut dyn Sink,
+    /// Shared output health tracker for readiness and failure transitions.
     pub(super) output_health: &'a OutputHealthTracker,
+    /// Batch metadata propagated to the sink call.
     pub(super) metadata: &'a BatchMetadata,
+    /// Maximum retry backoff applied to transient sink failures.
     pub(super) max_retry_delay: Duration,
+    /// Shutdown signal checked between retries and before sleeps.
     pub(super) cancel: &'a tokio_util::sync::CancellationToken,
     #[cfg(feature = "turmoil")]
+    /// Turmoil-only batch id used for deterministic barrier injection.
     pub(super) batch_id: u64,
 }
 
