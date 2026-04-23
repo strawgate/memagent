@@ -36,6 +36,10 @@
         {
             HostMetricsTarget::Windows
         }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            HostMetricsTarget::Unsupported
+        }
     }
 
     fn non_host_target() -> HostMetricsTarget {
@@ -50,6 +54,10 @@
         #[cfg(target_os = "windows")]
         {
             HostMetricsTarget::Linux
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            HostMetricsTarget::Unsupported
         }
     }
 

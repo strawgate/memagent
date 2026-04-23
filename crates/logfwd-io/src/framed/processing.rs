@@ -1,4 +1,9 @@
 impl FramedInput {
+    /// Wrap `inner` with newline framing and per-source format state.
+    ///
+    /// The wrapper takes ownership of `inner`, preserves partial-line
+    /// remainders across polls, isolates decoder state per `SourceId`, and
+    /// records emitted bytes and lines into `stats`.
     pub fn new(
         inner: Box<dyn InputSource>,
         format: FormatDecoder,
@@ -19,6 +24,12 @@ impl FramedInput {
             stats,
             last_raw_had_payload: false,
         }
+    }
+
+    fn source_state_mut(&mut self, key: Option<SourceId>) -> &mut SourceState {
+        self.sources.get_mut(&key).unwrap_or_else(|| {
+            panic!("source state missing for key {key:?}; framed input invariant violated")
+        })
     }
 
     fn cri_metadata_for_emitted_data(&mut self) -> Option<CriMetadata> {
@@ -205,7 +216,7 @@ impl FramedInput {
                                          bytes and resetting format state"
                                     );
                                     self.stats.inc_parse_errors(1);
-                                    let state = self.sources.get_mut(&key).expect("just inserted");
+                                    let state = self.source_state_mut(key);
                                     // Reset format so the next line starts from a clean
                                     // state (the discarded prefix may have broken CRI P/F
                                     // sequence alignment).
@@ -218,7 +229,7 @@ impl FramedInput {
                                     state.remainder = tail.split_off(start);
                                     state.overflow_tainted = true;
                                 } else {
-                                    let state = self.sources.get_mut(&key).expect("just inserted");
+                                    let state = self.source_state_mut(key);
                                     state.remainder = tail;
                                 }
                                 chunk.truncate(pos + 1);
@@ -238,14 +249,14 @@ impl FramedInput {
                                      bytes and resetting format state"
                                 );
                                 self.stats.inc_parse_errors(1);
-                                let state = self.sources.get_mut(&key).expect("just inserted");
+                                let state = self.source_state_mut(key);
                                 state.format.reset();
                                 let start = chunk.len() - MAX_REMAINDER_BYTES;
                                 state.remainder = chunk.split_off(start);
                                 state.overflow_tainted = true;
                                 // Do NOT call apply_remainder_consumed() — data is preserved.
                             } else {
-                                let state = self.sources.get_mut(&key).expect("just inserted");
+                                let state = self.source_state_mut(key);
                                 state.remainder = chunk;
                             }
                             continue;
@@ -255,7 +266,14 @@ impl FramedInput {
                     // Process complete lines through per-source format handler.
                     self.out_buf.clear();
                     self.cri_metadata_buf.clear();
-                    let state = self.sources.get_mut(&key).expect("just inserted");
+                    let (sources, out_buf, cri_metadata_buf) = (
+                        &mut self.sources,
+                        &mut self.out_buf,
+                        &mut self.cri_metadata_buf,
+                    );
+                    let state = sources.get_mut(&key).unwrap_or_else(|| {
+                        panic!("source state missing for key {key:?}; framed input invariant violated")
+                    });
                     let mut process_start = 0usize;
                     if tainted_on_entry {
                         // Overflow truncation preserves a suffix of a long line.
@@ -269,8 +287,8 @@ impl FramedInput {
                     if process_start < chunk.len() {
                         state.format.process_lines_with_metadata(
                             &chunk[process_start..],
-                            &mut self.out_buf,
-                            Some(&mut self.cri_metadata_buf),
+                            out_buf,
+                            Some(cri_metadata_buf),
                         );
                     }
                     let line_count = memchr::memchr_iter(b'\n', &chunk[process_start..]).count();
@@ -361,12 +379,21 @@ impl FramedInput {
 
                             self.out_buf.clear();
                             self.cri_metadata_buf.clear();
-                            let state = self.sources.get_mut(&key).expect("just checked existence");
+                            let (sources, out_buf, cri_metadata_buf) = (
+                                &mut self.sources,
+                                &mut self.out_buf,
+                                &mut self.cri_metadata_buf,
+                            );
+                            let state = sources.get_mut(&key).unwrap_or_else(|| {
+                                panic!(
+                                    "source state missing for key {key:?}; framed input invariant violated"
+                                )
+                            });
                             if process_start < remainder.len() {
                                 state.format.process_lines_with_metadata(
                                     &remainder[process_start..],
-                                    &mut self.out_buf,
-                                    Some(&mut self.cri_metadata_buf),
+                                    out_buf,
+                                    Some(cri_metadata_buf),
                                 );
                             }
                             let emitted_line_count =
@@ -376,7 +403,7 @@ impl FramedInput {
                             // Remainder was flushed — update tracker so
                             // checkpointable_offset advances past the
                             // flushed bytes.
-                            let state = self.sources.get_mut(&key).expect("just checked existence");
+                            let state = self.source_state_mut(key);
                             state.tracker.apply_remainder_consumed();
 
                             if !self.out_buf.is_empty() {

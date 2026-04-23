@@ -68,6 +68,10 @@ impl InputSource for FramedInput {
     }
 
     fn set_offset_by_source(&mut self, source_id: SourceId, offset: u64) {
+        // A forced rewind/reset invalidates any buffered remainder and decoder
+        // state for this source. Keep the wrapper aligned with the inner
+        // source's new starting point.
+        self.sources.remove(&Some(source_id));
         self.inner.set_offset_by_source(source_id, offset);
     }
 }

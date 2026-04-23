@@ -54,6 +54,34 @@ fn run_until_lines(mut pipeline: Pipeline, expected_lines: u64) -> Pipeline {
     pipeline
 }
 
+/// Run `pipeline` until the first output sink reports `expected_lines`
+/// forwarded rows, then cancel and return.
+fn run_until_output_lines(mut pipeline: Pipeline, expected_lines: u64) -> Pipeline {
+    let metrics = Arc::clone(pipeline.metrics());
+    let shutdown = CancellationToken::new();
+    let sd = shutdown.clone();
+    std::thread::spawn(move || {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let lines_out = metrics
+                .outputs
+                .first()
+                .map(|(_, _, stats)| stats.lines_total.load(Ordering::Relaxed))
+                .unwrap_or(0);
+            if lines_out >= expected_lines {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        sd.cancel();
+    });
+    pipeline.run(&shutdown).expect("pipeline.run failed");
+    pipeline
+}
+
 // ---------------------------------------------------------------------------
 // 1. Happy path: JSON log file → stdout output → verify lines processed
 // ---------------------------------------------------------------------------
@@ -91,7 +119,7 @@ output:
     let pipe_cfg = &config.pipelines["default"];
     let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
-    let pipeline = run_until_lines(pipeline, 10);
+    let pipeline = run_until_output_lines(pipeline, 10);
 
     let lines_in = pipeline
         .metrics()
@@ -193,7 +221,7 @@ output:
     let pipe_cfg = &config.pipelines["default"];
     let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
-    let pipeline = run_until_lines(pipeline, 10);
+    let pipeline = run_until_lines(pipeline, 5);
 
     let lines_in = pipeline
         .metrics()
@@ -210,8 +238,8 @@ output:
         .unwrap_or(0);
 
     assert_eq!(
-        lines_in, 10,
-        "expected 10 rows into transform, got {lines_in}"
+        lines_in, 5,
+        "expected 5 rows into transform after predicate pushdown, got {lines_in}"
     );
     assert_eq!(
         lines_out, 5,

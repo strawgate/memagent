@@ -118,6 +118,45 @@
         assert_eq!(collect_data(events3), b"fresh-A\n");
     }
 
+    #[test]
+    fn set_offset_clears_remainder_for_rewound_source() {
+        let stats = make_stats();
+        let sid = SourceId(7);
+        let source = MockSource::new(vec![
+            vec![InputEvent::Data {
+                bytes: Bytes::from_static(b"partial"),
+                source_id: Some(sid),
+                accounted_bytes: 7,
+                cri_metadata: None,
+            }],
+            vec![InputEvent::Data {
+                bytes: Bytes::from_static(b"fresh\n"),
+                source_id: Some(sid),
+                accounted_bytes: 6,
+                cri_metadata: None,
+            }],
+        ]);
+
+        let mut framed = FramedInput::new(
+            Box::new(source),
+            FormatDecoder::passthrough(Arc::clone(&stats)),
+            stats,
+        );
+
+        let _ = framed.poll().unwrap();
+        framed.set_offset_by_source(sid, 0);
+
+        let events = framed.poll().unwrap();
+        assert_eq!(collect_data(events), b"fresh\n");
+        assert!(
+            framed
+                .sources
+                .get(&Some(sid))
+                .is_none_or(|state| state.remainder.is_empty()),
+            "rewind should not preserve stale buffered bytes for the source"
+        );
+    }
+
     /// checkpoint_data() subtracts remainder length from inner offsets.
     #[test]
     fn checkpoint_data_subtracts_remainder() {
