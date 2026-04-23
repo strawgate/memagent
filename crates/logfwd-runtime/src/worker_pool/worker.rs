@@ -84,14 +84,17 @@ pub(super) async fn worker_task(
                         let output_name = sink.name().to_string();
                         let process_result = AssertUnwindSafe(
                             process_item(
-                                id,
-                                &mut *sink,
-                                &output_health,
+                                ProcessItemContext {
+                                    worker_id: id,
+                                    sink: &mut *sink,
+                                    output_health: &output_health,
+                                    metadata: &metadata,
+                                    max_retry_delay,
+                                    cancel: &cancel,
+                                    #[cfg(feature = "turmoil")]
+                                    batch_id,
+                                },
                                 batch,
-                                &metadata,
-                                max_retry_delay,
-                                &cancel,
-                                batch_id,
                             )
                             .instrument(output_span.clone()),
                         )
@@ -187,6 +190,25 @@ pub(super) async fn worker_task(
     }
 }
 
+/// Shared immutable inputs for processing a single work item.
+pub(super) struct ProcessItemContext<'a> {
+    /// Worker slot id used for metrics, tracing, and health events.
+    pub(super) worker_id: usize,
+    /// Mutable borrowed sink reference that receives the batch.
+    pub(super) sink: &'a mut dyn Sink,
+    /// Shared output health tracker for readiness and failure transitions.
+    pub(super) output_health: &'a OutputHealthTracker,
+    /// Batch metadata propagated to the sink call.
+    pub(super) metadata: &'a BatchMetadata,
+    /// Maximum retry backoff applied to transient sink failures.
+    pub(super) max_retry_delay: Duration,
+    /// Shutdown signal checked between retries and before sleeps.
+    pub(super) cancel: &'a tokio_util::sync::CancellationToken,
+    #[cfg(feature = "turmoil")]
+    /// Turmoil-only batch id used for deterministic barrier injection.
+    pub(super) batch_id: u64,
+}
+
 fn panic_payload_message(payload: &(dyn Any + Send)) -> &str {
     if let Some(msg) = payload.downcast_ref::<&'static str>() {
         msg
@@ -225,15 +247,18 @@ pub(super) async fn recv_with_idle_timeout(
 /// - `PoolClosed` — shutdown cancellation was observed
 /// - `InternalFailure` — unknown `SendResult` variant
 pub(super) async fn process_item(
-    worker_id: usize,
-    sink: &mut dyn Sink,
-    output_health: &OutputHealthTracker,
+    context: ProcessItemContext<'_>,
     batch: RecordBatch,
-    metadata: &BatchMetadata,
-    max_retry_delay: Duration,
-    cancel: &tokio_util::sync::CancellationToken,
-    #[cfg_attr(not(feature = "turmoil"), allow(unused_variables))] batch_id: u64,
 ) -> (DeliveryOutcome, u64, usize) {
+    let worker_id = context.worker_id;
+    let sink = &mut *context.sink;
+    let output_health = context.output_health;
+    let metadata = context.metadata;
+    let max_retry_delay = context.max_retry_delay;
+    let cancel = context.cancel;
+    #[cfg(feature = "turmoil")]
+    let batch_id = context.batch_id;
+
     sink.begin_batch();
 
     const BATCH_TIMEOUT_SECS: u64 = 60;
@@ -454,7 +479,7 @@ mod tests {
 
     use super::super::pool::WorkerConfig;
     use super::super::types::{DeliveryOutcome, WorkItem, WorkerMsg};
-    use super::{process_item, worker_task};
+    use super::{ProcessItemContext, process_item, worker_task};
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum TerminalizationAction {
@@ -603,14 +628,17 @@ mod tests {
         };
 
         let (outcome, _send_latency_ns, retries) = process_item(
-            0,
-            &mut sink,
-            &output_health,
+            ProcessItemContext {
+                worker_id: 0,
+                sink: &mut sink,
+                output_health: &output_health,
+                metadata: &metadata,
+                max_retry_delay: Duration::from_millis(10),
+                cancel: &cancel,
+                #[cfg(feature = "turmoil")]
+                batch_id: 0, // test only
+            },
             make_batch(),
-            &metadata,
-            Duration::from_millis(10),
-            &cancel,
-            0, // batch_id (test only)
         )
         .await;
 
