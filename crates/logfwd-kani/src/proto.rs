@@ -22,10 +22,13 @@ pub fn tag_size_oracle(field_number: u32) -> usize {
 
 /// Predict the total encoded size of a protobuf bytes field
 /// (tag varint + length varint + data).
+///
+/// Uses plain addition to match production semantics (overflow wraps in
+/// release mode, same as `logfwd-core::otlp::bytes_field_size`).
 pub fn bytes_field_total_size_oracle(field_number: u32, data_len: usize) -> usize {
     let tag_size = tag_size_oracle(field_number);
     let len_size = varint_len_oracle(data_len as u64);
-    tag_size.saturating_add(len_size).saturating_add(data_len)
+    tag_size + len_size + data_len
 }
 
 #[cfg(test)]

@@ -138,6 +138,12 @@ mod tests {
     }
 
     #[test]
+    fn skip_space_basic() {
+        assert_eq!(skip_space(b"   hello", 0, 8), 3);
+        assert_eq!(skip_space(b"\thello", 0, 6), 0);
+    }
+
+    #[test]
     fn find_byte_iter_basic() {
         let mut iter = FindByteIter::new(b"a.b.c", b'.');
         assert_eq!(iter.next(), Some(1));
