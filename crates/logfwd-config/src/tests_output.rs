@@ -107,25 +107,29 @@ output:
     }
 
     #[test]
-    fn file_output_rejects_compression() {
-        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: file\n  path: /tmp/out.ndjson\n  compression: zstd\n";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("unknown field") && msg.contains("compression"),
-            "file output should reject compression at parse time: {msg}"
-        );
+    fn file_output_accepts_compression() {
+        let yaml = "input:
+  type: file
+  path: /tmp/x.log
+output:
+  type: file
+  path: /tmp/out.ndjson
+  compression: zstd
+";
+        let _cfg = Config::load_str(yaml).expect("should accept compression");
     }
 
     #[test]
-    fn loki_output_rejects_compression() {
-        let yaml = "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: loki\n  endpoint: http://localhost:3100\n  compression: gzip\n";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("unknown field") && msg.contains("compression"),
-            "loki output should reject compression at parse time: {msg}"
-        );
+    fn loki_output_accepts_compression() {
+        let yaml = "input:
+  type: file
+  path: /tmp/x.log
+output:
+  type: loki
+  endpoint: http://localhost:3100
+  compression: gzip
+";
+        let _cfg = Config::load_str(yaml).expect("should accept compression");
     }
 
     // -----------------------------------------------------------------------

@@ -5,7 +5,10 @@ use crate::serde_helpers::{
     deserialize_option_string_map_strict_values, deserialize_option_vec_strict_string,
     deserialize_strict_string, deserialize_string_map_strict_values, deserialize_vec_strict_string,
 };
-use crate::shared::{TlsClientConfig, TlsServerConfig};
+use crate::shared::{
+    BatchConfig, MultilineConfig, NetworkConfig, RetryConfig, RotationConfig, TlsClientConfig,
+    TlsServerConfig,
+};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::fmt;
@@ -736,6 +739,17 @@ pub struct FileTypeConfig {
     pub max_open_files: Option<usize>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub glob_rescan_interval_ms: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
+    pub start_at: Option<String>,
+    pub encoding: Option<Format>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub follow_symlinks: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub ignore_older_secs: Option<PositiveSecs>,
+    #[serde(default)]
+    pub multiline: Option<MultilineConfig>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub max_line_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -908,8 +922,8 @@ pub enum OutputConfigV2 {
     File(FileOutputConfig),
     Parquet(ParquetOutputConfig),
     Null(NullOutputConfig),
-    Tcp(SocketOutputConfig),
-    Udp(SocketOutputConfig),
+    Tcp(TcpOutputConfig),
+    Udp(UdpOutputConfig),
     ArrowIpc(ArrowIpcOutputConfig),
 }
 
@@ -934,9 +948,9 @@ impl OutputConfigV2 {
     /// Return the endpoint for output variants that connect to a destination.
     ///
     /// ```
-    /// use logfwd_config::{OutputConfigV2, SocketOutputConfig, StdoutOutputConfig};
+    /// use logfwd_config::{OutputConfigV2, TcpOutputConfig, StdoutOutputConfig};
     ///
-    /// let tcp = OutputConfigV2::Tcp(SocketOutputConfig {
+    /// let tcp = OutputConfigV2::Tcp(TcpOutputConfig {
     ///     endpoint: Some("127.0.0.1:15140".to_owned()),
     ///     ..Default::default()
     /// });
@@ -964,7 +978,7 @@ impl OutputConfigV2 {
     /// Return authentication settings for output variants that support them.
     ///
     /// ```
-    /// use logfwd_config::{AuthConfig, OtlpOutputConfig, OutputConfigV2, SocketOutputConfig};
+    /// use logfwd_config::{AuthConfig, OtlpOutputConfig, OutputConfigV2, TcpOutputConfig};
     ///
     /// let otlp = OutputConfigV2::Otlp(OtlpOutputConfig {
     ///     auth: Some(AuthConfig {
@@ -978,7 +992,7 @@ impl OutputConfigV2 {
     ///     Some("token")
     /// );
     ///
-    /// let tcp = OutputConfigV2::Tcp(SocketOutputConfig::default());
+    /// let tcp = OutputConfigV2::Tcp(TcpOutputConfig::default());
     /// assert!(tcp.auth().is_none());
     /// ```
     pub fn auth(&self) -> Option<&AuthConfig> {
@@ -1080,6 +1094,10 @@ pub struct ElasticsearchOutputConfig {
     pub auth: Option<AuthConfig>,
     #[serde(default)]
     pub tls: Option<TlsClientConfig>,
+    #[serde(default)]
+    pub retry: Option<RetryConfig>,
+    #[serde(default)]
+    pub batch: Option<BatchConfig>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub request_timeout_ms: Option<PositiveMillis>,
 }
@@ -1104,6 +1122,12 @@ pub struct LokiOutputConfig {
     pub label_columns: Option<Vec<String>>,
     #[serde(default)]
     pub tls: Option<TlsClientConfig>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
+    #[serde(default)]
+    pub retry: Option<RetryConfig>,
+    #[serde(default)]
+    pub batch: Option<BatchConfig>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub request_timeout_ms: Option<PositiveMillis>,
 }
@@ -1145,6 +1169,14 @@ pub struct FileOutputConfig {
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub path: Option<String>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
+    #[serde(default)]
+    pub rotation: Option<RotationConfig>,
+    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
+    pub delimiter: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
+    pub path_template: Option<String>,
     pub format: Option<Format>,
 }
 
@@ -1157,6 +1189,10 @@ pub struct ParquetOutputConfig {
     pub path: Option<String>,
     #[serde(default)]
     pub compression: Option<CompressionFormat>,
+    #[serde(default)]
+    pub batch: Option<BatchConfig>,
+    #[serde(default)]
+    pub retry: Option<RetryConfig>,
     pub format: Option<Format>,
 }
 
@@ -1169,11 +1205,36 @@ pub struct NullOutputConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct SocketOutputConfig {
+pub struct TcpOutputConfig {
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub endpoint: Option<String>,
+    pub encoding: Option<Format>,
+    #[serde(alias = "format")]
+    pub framing: Option<Format>,
+    #[serde(default)]
+    pub tls: Option<TlsClientConfig>,
+    #[serde(default)]
+    pub keepalive: Option<NetworkConfig>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub timeout_secs: Option<PositiveSecs>,
+    #[serde(default)]
+    pub retry: Option<RetryConfig>,
+    #[serde(default)]
+    pub batch: Option<BatchConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct UdpOutputConfig {
+    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
+    pub endpoint: Option<String>,
+    pub encoding: Option<Format>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub max_datagram_size_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]

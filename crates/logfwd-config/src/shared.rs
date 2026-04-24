@@ -4,7 +4,10 @@
 //! batch, network, and compression knobs live on each input/output's own
 //! typed config (see `OutputConfigV2` and the input types in `types.rs`).
 
-use crate::serde_helpers::{deserialize_from_string_or_value, deserialize_option_strict_string};
+use crate::serde_helpers::{
+    PositiveMillis, PositiveSecs, deserialize_from_string_or_value,
+    deserialize_option_from_string_or_value, deserialize_option_strict_string,
+};
 use serde::Deserialize;
 
 // ── TLS ────────────────────────────────────────────────────────────────
@@ -49,4 +52,69 @@ pub struct TlsServerConfig {
     /// Require client certificate authentication. Default: false.
     #[serde(default, deserialize_with = "deserialize_from_string_or_value")]
     pub require_client_auth: bool,
+}
+
+// ── Retry ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RetryConfig {
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub max_attempts: Option<i32>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub initial_backoff_secs: Option<PositiveSecs>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub max_backoff_secs: Option<PositiveSecs>,
+}
+
+// ── Batch ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct BatchConfig {
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub max_bytes: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub max_events: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub timeout_secs: Option<PositiveSecs>,
+}
+
+// ── Rotation ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RotationConfig {
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub max_megabytes: Option<usize>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub max_days: Option<PositiveSecs>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub max_backups: Option<usize>,
+}
+
+// ── Multiline ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct MultilineConfig {
+    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
+    pub start_pattern: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
+    pub mode: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub timeout_ms: Option<PositiveMillis>,
+}
+
+// ── Network ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkConfig {
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub keepalive_enabled: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub keepalive_time_secs: Option<PositiveSecs>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub timeout_secs: Option<PositiveSecs>,
 }

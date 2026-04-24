@@ -109,6 +109,12 @@ Tail one or more log files that match a glob pattern.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `path` | string | Yes | Glob pattern, e.g. `/var/log/pods/**/*.log`. |
+| `start_at` | string | No | `beginning` or `end` to control where tailing starts. |
+| `encoding` | string | No | Log encoding format. |
+| `follow_symlinks` | boolean | No | Whether to follow symbolic links. |
+| `ignore_older_secs` | integer | No | Ignore files older than this duration (in seconds). |
+| `multiline` | object | No | Multiline configuration (`start_pattern`, `mode`, `timeout_ms`). |
+| `max_line_bytes` | integer | No | Maximum bytes to read for a single log line. |
 | `poll_interval_ms` | integer | No | How often to poll the file when tailing, in milliseconds (default: 50). |
 | `read_buf_size` | integer | No | Buffer size for file reads in bytes (default: 262144, max: 4194304). |
 | `per_file_read_budget_bytes` | integer | No | Maximum bytes read per file per poll (default: 262144). |
@@ -528,9 +534,7 @@ output:
     bearer_token: "${ES_TOKEN}"
 ```
 
-`retry_attempts`, `retry_initial_backoff_ms`, `retry_max_backoff_ms`, `batch_size`, and
-`batch_timeout_ms` are currently rejected for Elasticsearch outputs because per-output
-retry/batch controls are not wired into the Elasticsearch sink yet.
+
 
 ### `loki` output
 
@@ -545,6 +549,9 @@ Push to Grafana Loki.
 | `static_labels` | map[string,string] | No | Static labels applied to every pushed log stream. Keys and values must be non-empty. |
 | `label_columns` | array[string] | No | Additional log columns to promote as Loki labels. |
 | `auth` | object | No | Optional bearer token or custom headers for HTTP auth. |
+| `compression` | string | No | Compression format (`snappy`, `gzip`, `zstd`, `none`). |
+| `retry` | object | No | Optional retry controls (`max_attempts`, `initial_backoff_secs`, `max_backoff_secs`). |
+| `batch` | object | No | Optional batch controls (`max_bytes`, `max_events`, `timeout_secs`). |
 
 ```yaml
 output:
@@ -559,11 +566,7 @@ output:
     bearer_token: "${LOKI_TOKEN}"
 ```
 
-`compression` is not supported for Loki outputs.
 
-`retry_attempts`, `retry_initial_backoff_ms`, `retry_max_backoff_ms`, `batch_size`, and
-`batch_timeout_ms` are currently rejected for Loki outputs because the Loki sink does not
-implement per-output retry/batch controls yet.
 
 ### `file` output
 
@@ -573,6 +576,10 @@ Write records to a file.
 |-------|------|----------|-------------|
 | `path` | string | Yes | Destination file path. Parent directory must already exist and be writable. |
 | `format` | string | No | `json` for NDJSON output, or `text` to write raw lines. |
+| `compression` | string | No | Compression format (`gzip`, `zstd`, `none`). |
+| `rotation` | object | No | Optional rotation settings (`max_megabytes`, `max_days`, `max_backups`). |
+| `delimiter` | string | No | Custom delimiter for log lines. |
+| `path_template` | string | No | Template for generating output paths dynamically. |
 
 ```yaml
 output:
@@ -588,8 +595,15 @@ Send newline-delimited JSON records to a TCP endpoint.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Host:port destination (for example `tcp.example.com:9000`). |
+| `encoding` | string | No | Log format encoding (`json`, `text`, `ndjson`). |
+| `framing` | string | No | Framing format. Alias for `format`. |
+| `tls` | object | No | Optional TLS client configuration (`ca_file`, `cert_file`, `key_file`, `insecure_skip_verify`). |
+| `keepalive` | object | No | Optional network keepalive configuration (`enabled`, `time_secs`). |
+| `timeout_secs` | integer | No | Connection and send timeout in seconds. |
+| `retry` | object | No | Optional retry controls (`max_attempts`, `initial_backoff_secs`, `max_backoff_secs`). |
+| `batch` | object | No | Optional batch controls (`max_bytes`, `max_events`, `timeout_secs`). |
 
-`format`, `compression`, `tls`, retry, and batch controls are currently rejected for TCP outputs.
+
 
 ### `udp` output
 
@@ -598,8 +612,10 @@ Send newline-delimited JSON records as UDP datagrams.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Host:port destination (for example `udp.example.com:514`). |
+| `encoding` | string | No | Log format encoding (`json`, `text`, `ndjson`). |
+| `max_datagram_size_bytes` | integer | No | Maximum allowed size of UDP datagram payload in bytes. |
 
-`format`, `compression`, `tls`, retry, and batch controls are currently rejected for UDP outputs.
+
 
 ### `parquet` output *(not yet supported)*
 
@@ -608,6 +624,9 @@ Write records to Parquet files.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `path` | string | Yes | Destination file path. |
+| `compression` | string | No | Optional compression format. |
+| `batch` | object | No | Optional batch controls (`max_bytes`, `max_events`, `timeout_secs`). |
+| `retry` | object | No | Optional retry controls (`max_attempts`, `initial_backoff_secs`, `max_backoff_secs`). |
 
 ### `null` output
 

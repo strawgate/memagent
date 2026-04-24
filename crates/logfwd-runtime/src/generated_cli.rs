@@ -2,8 +2,8 @@ use std::fmt::Write as _;
 
 use logfwd_config::{
     ArrowIpcOutputConfig, AuthConfig, Config, ElasticsearchOutputConfig, LokiOutputConfig,
-    NullOutputConfig, OtlpOutputConfig, OutputConfigV2, OutputType, SocketOutputConfig,
-    StdoutOutputConfig,
+    NullOutputConfig, OtlpOutputConfig, OutputConfigV2, OutputType, StdoutOutputConfig,
+    TcpOutputConfig, UdpOutputConfig,
 };
 
 /// Fully rendered generated config plus its validated in-memory config.
@@ -123,11 +123,11 @@ pub fn resolve_blast_output_config(
         }),
         OutputType::Stdout => OutputConfigV2::Stdout(StdoutOutputConfig::default()),
         OutputType::Null => OutputConfigV2::Null(NullOutputConfig::default()),
-        OutputType::Tcp => OutputConfigV2::Tcp(SocketOutputConfig {
+        OutputType::Tcp => OutputConfigV2::Tcp(TcpOutputConfig {
             endpoint,
             ..Default::default()
         }),
-        OutputType::Udp => OutputConfigV2::Udp(SocketOutputConfig {
+        OutputType::Udp => OutputConfigV2::Udp(UdpOutputConfig {
             endpoint,
             ..Default::default()
         }),

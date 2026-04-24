@@ -206,7 +206,7 @@ mod tests {
 ///
 /// Native YAML scalars must have the target kind, while string values are parsed
 /// through `T` so env-expanded values like `${PORT}` can populate typed fields.
-pub(crate) fn deserialize_option_from_string_or_value<'de, T, D>(
+pub fn deserialize_option_from_string_or_value<'de, T, D>(
     deserializer: D,
 ) -> Result<Option<T>, D::Error>
 where
@@ -238,9 +238,7 @@ where
 }
 
 /// Deserializes an optional string field without accepting non-string YAML scalars.
-pub(crate) fn deserialize_option_strict_string<'de, D>(
-    deserializer: D,
-) -> Result<Option<String>, D::Error>
+pub fn deserialize_option_strict_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {

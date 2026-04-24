@@ -254,6 +254,11 @@ fn validate_output_config(
                 OutputType::Udp,
                 config.endpoint.as_deref(),
             )?;
+            if config.max_datagram_size_bytes == Some(0) {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{pipeline_name}' output '{label}': udp max_datagram_size_bytes must be > 0"
+                )));
+            }
         }
         OutputConfigV2::ArrowIpc(config) => {
             validate_url_output_endpoint(
@@ -422,6 +427,12 @@ impl Config {
                             if f.path.trim().is_empty() {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': file input 'path' must not be empty"
+                                )));
+                            }
+                            if f.ignore_older_secs.is_some_and(|v| v.get() == 0) {
+                                // PositiveSecs already rejects 0, but checking just in case
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': ignore_older_secs must be > 0"
                                 )));
                             }
                             if f.read_buf_size == Some(0) {

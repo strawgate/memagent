@@ -30,7 +30,10 @@ pub use serde_helpers::{PositiveMillis, PositiveSecs};
 
 #[cfg(test)]
 pub(crate) use env::expand_env_vars;
-pub use shared::{TlsClientConfig, TlsServerConfig};
+pub use shared::{
+    BatchConfig, MultilineConfig, NetworkConfig, RetryConfig, RotationConfig, TlsClientConfig,
+    TlsServerConfig,
+};
 pub use types::{
     ArrowIpcOutputConfig, ArrowIpcTypeConfig, AuthConfig, CompressionFormat, Config, ConfigError,
     CsvEnrichmentConfig, ElasticsearchOutputConfig, ElasticsearchRequestMode, EnrichmentConfig,
@@ -42,9 +45,9 @@ pub use types::{
     JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sPathConfig,
     LokiOutputConfig, NullOutputConfig, OtlpOutputConfig, OtlpProtobufDecodeModeConfig,
     OtlpProtocol, OtlpTypeConfig, OutputConfigV2, OutputType, ParquetOutputConfig, PipelineConfig,
-    S3InputConfig, S3TypeConfig, SensorTypeConfig, ServerConfig, SocketOutputConfig,
-    SourceMetadataStyle, StaticEnrichmentConfig, StdoutOutputConfig, StorageConfig, TcpTypeConfig,
-    UdpTypeConfig,
+    S3InputConfig, S3TypeConfig, SensorTypeConfig, ServerConfig, SourceMetadataStyle,
+    StaticEnrichmentConfig, StdoutOutputConfig, StorageConfig, TcpOutputConfig, TcpTypeConfig,
+    UdpOutputConfig, UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 

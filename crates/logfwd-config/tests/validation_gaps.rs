@@ -944,7 +944,7 @@ pipelines:
 }
 
 #[test]
-fn issue_1862_reject_tcp_udp_output_formats() {
+fn issue_1862_accept_tcp_udp_output_formats() {
     let yaml = r"
 pipelines:
   test:
@@ -955,12 +955,7 @@ pipelines:
         endpoint: localhost:9001
         format: json
 ";
-
-    let err = Config::load_str(yaml).unwrap_err().to_string();
-    assert!(
-        err.contains("unknown field") && err.contains("format"),
-        "tcp output should reject format at parse time: {err}"
-    );
+    let _cfg = Config::load_str(yaml).expect("should accept format on tcp");
 }
 
 #[test]
