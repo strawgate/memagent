@@ -4,40 +4,42 @@ impl InputSource for TcpInput {
 
         // Accept new connections up to the limit.
         loop {
-            if self.max_clients.is_some_and(|max| self.clients.len() >= max) {
-                // Drain (and drop) any pending connections beyond the limit so
-                // the kernel accept queue does not fill up and stall.
-                match self.listener.accept() {
-                    Ok((_stream, _addr)) => {
-                        self.connections_accepted += 1;
-                        self.stats.tcp_accepted.store(
-                            self.connections_accepted,
-                            std::sync::atomic::Ordering::Relaxed,
-                        );
-                        if self
-                            .last_max_clients_warning
-                            .is_none_or(|t| t.elapsed() > Duration::from_secs(60))
-                        {
-                            tracing::warn!(
-                                "TCP input '{}' reached max_clients limit ({}), dropping incoming connections",
-                                self.name,
-                                self.max_clients.unwrap()
+            if let Some(max_clients) = self.max_clients
+                && self.clients.len() >= max_clients
+            {
+                    // Drain (and drop) any pending connections beyond the limit so
+                    // the kernel accept queue does not fill up and stall.
+                    match self.listener.accept() {
+                        Ok((_stream, _addr)) => {
+                            self.connections_accepted += 1;
+                            self.stats.tcp_accepted.store(
+                                self.connections_accepted,
+                                std::sync::atomic::Ordering::Relaxed,
                             );
-                            self.last_max_clients_warning = Some(Instant::now());
-                        }
-                        under_pressure = true;
-                        continue; // dropped immediately
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
-                    Err(e) => {
-                        if let Some(raw) = e.raw_os_error()
-                            && (raw == libc::EMFILE || raw == libc::ENFILE)
-                        {
+                            if self
+                                .last_max_clients_warning
+                                .is_none_or(|t| t.elapsed() > Duration::from_secs(60))
+                            {
+                                tracing::warn!(
+                                    "TCP input '{}' reached max_clients limit ({}), dropping incoming connections",
+                                    self.name,
+                                    max_clients
+                                );
+                                self.last_max_clients_warning = Some(Instant::now());
+                            }
                             under_pressure = true;
+                            continue; // dropped immediately
                         }
-                        break; // transient accept error, not fatal
+                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(e) => {
+                            if let Some(raw) = e.raw_os_error()
+                                && (raw == libc::EMFILE || raw == libc::ENFILE)
+                            {
+                                under_pressure = true;
+                            }
+                            break; // transient accept error, not fatal
+                        }
                     }
-                }
             }
             match self.listener.accept() {
                 Ok((stream, _addr)) => {

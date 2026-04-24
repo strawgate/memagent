@@ -675,7 +675,10 @@ pipelines:
       - type: "null"
 "#;
         let err = Config::load_str(yaml).expect_err("tcp input must reject max_clients: 0");
-        assert!(err.to_string().contains("max_clients must be greater than 0"));
+        assert!(
+            err.to_string()
+                .contains("max_clients must be greater than 0")
+        );
     }
 
     #[test]

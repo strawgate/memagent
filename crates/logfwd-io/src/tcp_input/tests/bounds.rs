@@ -1,4 +1,44 @@
     #[test]
+    fn test_tcp_max_clients_unlimited() {
+        let mut options = TcpInputOptions::default();
+        options.max_clients = None;
+
+        let mut input = TcpInput::with_options(
+            "test_max_conns_unlimited",
+            "127.0.0.1:0",
+            options,
+            std::sync::Arc::new(logfwd_types::diagnostics::ComponentStats::new()),
+        )
+        .unwrap();
+
+        let addr = input.local_addr().unwrap();
+
+        let _client1 = StdTcpStream::connect(addr).unwrap();
+        let _client2 = StdTcpStream::connect(addr).unwrap();
+        let _client3 = StdTcpStream::connect(addr).unwrap();
+        let _client4 = StdTcpStream::connect(addr).unwrap();
+
+        // Wait a bit to ensure connections hit the kernel accept queue
+        std::thread::sleep(Duration::from_millis(50));
+
+        let _events = input.poll().unwrap();
+
+        assert_eq!(
+            input.clients.len(),
+            4,
+            "Should accept all connections when max_clients is None"
+        );
+        assert!(
+            input.last_max_clients_warning.is_none(),
+            "Should not log a warning when max_clients is None"
+        );
+        assert_eq!(
+            input.connections_accepted, 4,
+            "Should have accepted all connections"
+        );
+    }
+
+    #[test]
     fn test_tcp_max_clients_drops_and_warns() {
         let mut options = TcpInputOptions::default();
         options.max_clients = Some(2);
