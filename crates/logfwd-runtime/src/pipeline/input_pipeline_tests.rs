@@ -1049,10 +1049,7 @@ fn public_source_path_attached_before_sql_is_queryable() {
 
 #[test]
 fn select_star_includes_public_source_metadata_style_columns() {
-    let mut transform = SqlTransform::new(
-        r#"SELECT * FROM logs WHERE "file.path" = '/var/log/pods/ns_pod_uid/c/0.log'"#,
-    )
-    .expect("sql");
+    let mut transform = SqlTransform::new(r#"SELECT * FROM logs"#).expect("sql");
     let mut scanner = Scanner::new(transform.scan_config());
     let scanned = scanner
         .scan(Bytes::from_static(b"{\"msg\":\"hello\"}\n"))
@@ -1081,7 +1078,7 @@ fn select_star_includes_public_source_metadata_style_columns() {
         .expect("runtime");
     let result = rt
         .block_on(transform.execute(attached))
-        .expect("transform should filter on source metadata");
+        .expect("transform should preserve source metadata columns");
 
     assert_eq!(result.num_rows(), 1);
     assert!(result.column_by_name(field_names::ECS_FILE_PATH).is_some());

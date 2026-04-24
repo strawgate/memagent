@@ -6511,6 +6511,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "logfwd-config",
  "quote",
  "regex",
  "syn",

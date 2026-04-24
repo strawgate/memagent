@@ -8,6 +8,17 @@
 //! Environment variables in values are expanded using `${VAR}` syntax.
 
 mod compat;
+/// Shared metadata for config starter templates and generated reference tables.
+///
+/// # Examples
+///
+/// ```
+/// use logfwd_config::docspec::{input_template, INPUT_TYPE_DOCS};
+///
+/// assert!(input_template("file_json").is_some());
+/// assert!(!INPUT_TYPE_DOCS.is_empty());
+/// ```
+pub mod docspec;
 mod env;
 mod load;
 mod serde_helpers;
