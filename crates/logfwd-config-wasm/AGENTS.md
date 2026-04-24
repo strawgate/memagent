@@ -28,6 +28,6 @@ Output lands in `book/public/wasm/logfwd-config/`. The `.js` and `.wasm` files a
 ## Key constraints
 
 - **Compile target**: `wasm32-unknown-unknown` only. No `std::fs`, no `tokio`, no `std::thread`.
-- **Template sync**: `INPUT_TEMPLATES` / `OUTPUT_TEMPLATES` in `src/lib.rs` mirror `crates/logfwd/src/config_templates.rs`. Keep in sync when adding new templates.
+- **Template source**: input/output templates come from `logfwd_config::docspec`. Keep the WASM exports aligned with that shared registry rather than reintroducing local copies.
 - **Validation parity**: only expose formats and output types that pass `Config::validate`. Check `crates/logfwd-config/src/validate.rs` before adding options.
 - **No serde-wasm-bindgen**: uses JSON round-trip via `js_sys::JSON::parse`. Static data — panics on serialization failure by design.

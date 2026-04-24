@@ -166,6 +166,7 @@ miri-types:
 
 # Run the required Kani crate set enforced by CI guardrails.
 kani-required:
+    RUSTC_WRAPPER="" cargo kani -p logfwd-kani -Z function-contracts -Z mem-predicates -Z stubbing
     RUSTC_WRAPPER="" cargo kani -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing
     RUSTC_WRAPPER="" cargo kani -p logfwd-arrow --lib -Z function-contracts -Z mem-predicates -Z stubbing
     RUSTC_WRAPPER="" cargo kani -p logfwd-types -Z function-contracts -Z mem-predicates -Z stubbing
@@ -194,6 +195,10 @@ verification-trigger-contract:
 # Run structural verification checks.
 verify:
     cargo xtask verify
+
+# Regenerate config support tables from the shared docspec registry.
+generate-config-docs:
+    cargo xtask generate-config-docs
 
 # Run all lightweight verification guardrails enforced in CI.
 verification-guardrail: kani-boundary tlc-matrix-contract proptest-regressions verification-trigger-contract

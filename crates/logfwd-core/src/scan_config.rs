@@ -236,44 +236,8 @@ mod verification {
         let input = &bytes[..len];
         let result = parse_int_fast(input);
 
-        // Reference oracle: parse as i128 to detect i64 overflow
-        let expected = parse_int_oracle(input);
+        let expected = logfwd_kani::numeric::parse_int_oracle(input);
 
         assert!(result == expected, "parse_int_fast disagrees with oracle");
-    }
-
-    /// Reference parser using i128 to avoid overflow.
-    /// Returns the same result parse_int_fast should return.
-    fn parse_int_oracle(bytes: &[u8]) -> Option<i64> {
-        if bytes.is_empty() {
-            return None;
-        }
-        let (neg, start) = if bytes[0] == b'-' {
-            (true, 1usize)
-        } else {
-            (false, 0usize)
-        };
-        if start >= bytes.len() {
-            return None;
-        }
-        let mut acc: i128 = 0;
-        let mut i = start;
-        while i < bytes.len() {
-            let b = bytes[i];
-            if !b.is_ascii_digit() {
-                return None;
-            }
-            acc = acc * 10 + (b - b'0') as i128;
-            i += 1;
-        }
-        if neg {
-            acc = -acc;
-        }
-        // Check i64 bounds
-        if acc < i64::MIN as i128 || acc > i64::MAX as i128 {
-            None
-        } else {
-            Some(acc as i64)
-        }
     }
 }

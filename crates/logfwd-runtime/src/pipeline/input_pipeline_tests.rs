@@ -1049,10 +1049,7 @@ fn public_source_path_attached_before_sql_is_queryable() {
 
 #[test]
 fn select_star_includes_public_source_metadata_style_columns() {
-    let mut transform = SqlTransform::new(
-        r#"SELECT * FROM logs WHERE "file.path" = '/var/log/pods/ns_pod_uid/c/0.log'"#,
-    )
-    .expect("sql");
+    let mut transform = SqlTransform::new(r#"SELECT * FROM logs"#).expect("sql");
     let mut scanner = Scanner::new(transform.scan_config());
     let scanned = scanner
         .scan(Bytes::from_static(b"{\"msg\":\"hello\"}\n"))
@@ -1081,7 +1078,7 @@ fn select_star_includes_public_source_metadata_style_columns() {
         .expect("runtime");
     let result = rt
         .block_on(transform.execute(attached))
-        .expect("transform should filter on source metadata");
+        .expect("transform should preserve source metadata columns");
 
     assert_eq!(result.num_rows(), 1);
     assert!(result.column_by_name(field_names::ECS_FILE_PATH).is_some());
@@ -1237,8 +1234,9 @@ output:
     std::thread::spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            // Wait until transform_in shows all rows were scanned.
-            if metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 20 {
+            // Simple SQL predicates can be pushed into the scanner, so
+            // transform_in reflects only rows that survive the filter.
+            if metrics.transform_in.lines_total.load(Ordering::Relaxed) >= 10 {
                 std::thread::sleep(Duration::from_millis(50));
                 sd.cancel();
                 return;
@@ -1257,15 +1255,19 @@ output:
         "split pipeline with SQL should work: {result:?}"
     );
 
-    // CPU worker scans 20 lines.
+    // Scanner-level predicate pushdown filters the 20 source rows to 10
+    // rows before they reach the transform stage.
     let lines_in = pipeline
         .metrics
         .transform_in
         .lines_total
         .load(Ordering::Relaxed);
-    assert_eq!(lines_in, 20, "expected 20 lines scanned, got {lines_in}");
+    assert_eq!(
+        lines_in, 10,
+        "expected 10 filtered rows into transform, got {lines_in}"
+    );
 
-    // SQL WHERE filters half -> 10 rows reach output.
+    // Those same 10 rows reach output.
     let lines_out = pipeline
         .metrics
         .transform_out

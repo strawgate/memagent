@@ -6,6 +6,11 @@ receivers, processors, and exporters. OTel semantics are optional adapters at th
 **RecordBatch in, RecordBatch out.** The pipeline doesn't care whether the data is logs,
 metrics, traces, or CSV files.
 
+For ingest discussions, this document uses the canonical layer names defined in
+the [Ingest Glossary](ARCHITECTURE.md#ingest-glossary). Those names describe
+responsibilities. They intentionally do not mirror every current type or
+module name in the codebase.
+
 ## Target architecture
 
 ```
@@ -206,26 +211,35 @@ zero schema knowledge.
 OTAP's star schema (4+ tables with foreign keys) is optimized for wire efficiency, not
 queryability. Convert at the boundary when needed.
 
-### bytes::Bytes for pipeline buffer ownership
+### bytes::Bytes for ingest buffer ownership
 
-Pipeline accumulation buffers use `BytesMut` (mutable, single-owner) in each
-stage, converting to `Bytes` (immutable, refcounted) at stage boundaries via
-`split().freeze()`. This is the standard Rust pattern for I/O pipelines where
-buffers cross thread/async boundaries.
+The ingest path uses `Bytes` / `BytesMut` because the scanner boundary is still
+contiguous even when pre-scan accumulation is conceptually fragmented.
 
-Why `Bytes` instead of `Vec<u8>`: The Arrow `StreamingBuilder` needs the input
-buffer to outlive the scan phase — `StringViewArray` stores `(offset, len)` views
-into the buffer, and the `RecordBatch` carries these through SQL transform and
-output serialization. `Bytes` provides this lifetime extension via refcounting.
-`Vec<u8>` cannot be shared without cloning.
+Current ownership model:
 
-Why not `Arc<Vec<u8>>`: `Bytes` supports zero-copy `slice()` and `split()` that
-`Arc<Vec<u8>>` does not. Future FramedInput work (#608) will use `Bytes::slice()`
-for zero-copy newline framing.
+- sources and `FramedInput` exchange raw-byte data as `Bytes`
+- in production (`not(feature = "turmoil")`), the I/O worker holds either one
+  `Bytes` chunk or many `Bytes` chunks before scan
+- if multiple chunks are buffered, the I/O worker concatenates once at flush
+  time before handing contiguous bytes to the scanner
+- `turmoil` keeps a simpler `BytesMut` accumulation path for the async test
+  harness
+- `Scanner::scan(Bytes)` still receives one contiguous backing buffer
 
-Current boundary: logfwd-io produces `Vec<u8>` (tailer, FramedInput). The Bytes
-transition happens at `input_poll_loop` in pipeline.rs. logfwd-core is untouched
-(scanner takes `&[u8]` via `Bytes::Deref`).
+Why `Bytes` instead of `Vec<u8>`: the Arrow `StreamingBuilder` needs the input
+buffer to outlive scan because `StringViewArray` stores `(offset, len)` views
+into the buffer, and the `RecordBatch` carries those views through transform
+and output serialization. `Bytes` provides that lifetime extension via
+refcounting. `Vec<u8>` cannot be shared without cloning.
+
+Why not `Arc<Vec<u8>>`: `Bytes` supports zero-copy `slice()` and cheap ownership
+transfers in a way `Arc<Vec<u8>>` does not.
+
+Important boundary rule: pre-scan batching may be represented as one chunk or
+many chunks, but the default scanner contract is still contiguous `Bytes`.
+Future shared-buffer work should optimize around that contract rather than
+assuming fragmented scan is free.
 
 ### Verification strategy
 

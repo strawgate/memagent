@@ -245,6 +245,7 @@ pub(super) async fn scan_and_transform_for_send(
     })
 }
 
+#[allow(clippy::needless_pass_by_ref_mut)]
 #[cfg(feature = "turmoil")]
 pub(super) async fn transform_direct_batch_for_send(
     input: &mut InputState,
