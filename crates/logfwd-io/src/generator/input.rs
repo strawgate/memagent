@@ -242,9 +242,11 @@ impl InputSource for GeneratorInput {
     }
 
     fn health(&self) -> ComponentHealth {
-        // Generator input has no independent bind/startup/shutdown lifecycle.
-        // It is either idle or emitting synthetic events under pipeline control.
-        ComponentHealth::Healthy
+        if self.done {
+            ComponentHealth::Stopped
+        } else {
+            ComponentHealth::Healthy
+        }
     }
 
     fn is_finished(&self) -> bool {
