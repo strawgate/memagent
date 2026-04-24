@@ -498,8 +498,8 @@ when a retry re-sent data to children that had already accepted it.
 
 | Property | Type | Description |
 |----------|------|-------------|
-| `PartialSuccessIsOk` | Safety | mixed Ok+Rejected (not all rejected) yields Ok result |
-| `AllRejectedIsRejected` | Safety | all children rejected yields Rejected result |
+| `AnyRejectionIsRejected` | Safety | any child rejected yields Rejected result |
+| `AllOkIsOk` | Safety | all children succeeded yields Ok result |
 | `BatchPhaseConsistency` | Safety | fanoutResult and batchPhase are always consistent |
 | `RetryCountBound` | Safety | retryCount never exceeds MaxRetries |
 | `DeliveryCountConsistency` | Safety | totalDelivered count is non-negative |
@@ -514,7 +514,7 @@ when a retry re-sent data to children that had already accepted it.
 | `FinalizedReachable` | Reachability | Finalized phase is reachable |
 | `ChildOkOccurs` | Reachability | at least one child succeeds |
 | `ChildRejectedOccurs` | Reachability | at least one child rejects |
-| `PartialSuccessReachable` | Reachability | mixed Ok+Rejected with Ok result is reachable |
+| `PartialSuccessReachable` | Reachability | mixed Ok+Rejected with Rejected result is reachable |
 | `AllRejectedReachable` | Reachability | all-rejected result is reachable |
 | `AllOkReachable` | Reachability | all-ok result is reachable |
 | `RetryNeededReachable` | Reachability | RetryNeeded result is reachable |

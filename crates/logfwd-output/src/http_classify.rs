@@ -88,7 +88,12 @@ pub fn classify_http_status(
         return Some(SendResult::Rejected(format!("HTTP {status}: {detail}")));
     }
 
-    // 1xx, 3xx, etc. — treat as transient
+    // 3xx Redirection — permanent configuration or destination change
+    if (300..400).contains(&status) {
+        return Some(SendResult::Rejected(format!("HTTP {status}: {detail}")));
+    }
+
+    // 1xx, etc. — treat as transient
     Some(SendResult::IoError(io::Error::other(format!(
         "unexpected HTTP {status}: {detail}"
     ))))
@@ -170,8 +175,17 @@ mod tests {
     }
 
     #[test]
-    fn unexpected_status_is_io_error() {
+    fn redirect_is_rejected() {
         let result = classify_http_status(301, None, "redirect");
+        assert!(
+            matches!(result, Some(SendResult::Rejected(ref r)) if r.contains("301")),
+            "expected Rejected containing '301', got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn unexpected_status_is_io_error() {
+        let result = classify_http_status(100, None, "continue");
         assert!(
             matches!(result, Some(SendResult::IoError(_))),
             "expected IoError, got: {result:?}"

@@ -170,28 +170,40 @@ impl fmt::Display for IoAction {
 /// token, then retry with new credentials.
 ///
 /// Returns `None` for success (2xx) since success is not an error action.
-pub fn classify_http_status(status: u16, detail: &str) -> Option<IoAction> {
+pub fn classify_http_status(
+    status: u16,
+    retry_after_header: Option<&str>,
+    detail: &str,
+) -> Option<IoAction> {
     if (200..300).contains(&status) {
         return None; // success
     }
 
+    let delay = parse_retry_after(retry_after_header);
+
     if status == 429 {
-        return Some(IoAction::retry(format!(
-            "rate limited (HTTP 429): {detail}"
-        )));
+        let reason = format!("rate limited (HTTP 429): {detail}");
+        return Some(match delay {
+            Some(d) => IoAction::retry_after(reason, d),
+            None => IoAction::retry(reason),
+        });
     }
 
     // 408 Request Timeout — server explicitly says it timed out waiting.
     if status == 408 {
-        return Some(IoAction::retry(format!(
-            "request timeout (HTTP 408): {detail}"
-        )));
+        let reason = format!("request timeout (HTTP 408): {detail}");
+        return Some(match delay {
+            Some(d) => IoAction::retry_after(reason, d),
+            None => IoAction::retry(reason),
+        });
     }
 
     if (500..600).contains(&status) {
-        return Some(IoAction::retry(format!(
-            "server error (HTTP {status}): {detail}"
-        )));
+        let reason = format!("server error (HTTP {status}): {detail}");
+        return Some(match delay {
+            Some(d) => IoAction::retry_after(reason, d),
+            None => IoAction::retry(reason),
+        });
     }
 
     if (400..500).contains(&status) {
@@ -200,7 +212,14 @@ pub fn classify_http_status(status: u16, detail: &str) -> Option<IoAction> {
         )));
     }
 
-    // Unexpected status codes (1xx, 3xx) — treat as transient
+    // 3xx Redirection — permanent configuration or destination change
+    if (300..400).contains(&status) {
+        return Some(IoAction::reject(format!(
+            "redirect (HTTP {status}): {detail}"
+        )));
+    }
+
+    // Unexpected status codes (1xx, etc.) — treat as transient
     Some(IoAction::retry(format!(
         "unexpected HTTP {status}: {detail}"
     )))
@@ -222,41 +241,64 @@ mod tests {
 
     #[test]
     fn classify_2xx_is_none() {
-        assert!(classify_http_status(200, "ok").is_none());
-        assert!(classify_http_status(204, "no content").is_none());
+        assert!(classify_http_status(200, None, "ok").is_none());
+        assert!(classify_http_status(204, None, "no content").is_none());
     }
 
     #[test]
     fn classify_429_is_retry() {
-        let action = classify_http_status(429, "rate limited").unwrap();
+        let action = classify_http_status(429, None, "rate limited").unwrap();
         assert!(action.is_retryable());
+        assert_eq!(action.retry_after_hint(), None);
+    }
+
+    #[test]
+    fn classify_429_with_retry_after() {
+        let action = classify_http_status(429, Some("30"), "rate limited").unwrap();
+        assert!(action.is_retryable());
+        assert_eq!(action.retry_after_hint(), Some(Duration::from_secs(30)));
     }
 
     #[test]
     fn classify_408_is_retry() {
-        let action = classify_http_status(408, "request timeout").unwrap();
+        let action = classify_http_status(408, None, "request timeout").unwrap();
         assert!(action.is_retryable());
     }
 
     #[test]
     fn classify_401_is_reject() {
-        let action = classify_http_status(401, "unauthorized").unwrap();
+        let action = classify_http_status(401, None, "unauthorized").unwrap();
         assert!(action.is_rejected());
     }
 
     #[test]
     fn classify_5xx_is_retry() {
-        let action = classify_http_status(500, "internal error").unwrap();
+        let action = classify_http_status(500, None, "internal error").unwrap();
         assert!(action.is_retryable());
-        let action = classify_http_status(503, "unavailable").unwrap();
+        let action = classify_http_status(503, None, "unavailable").unwrap();
         assert!(action.is_retryable());
     }
 
     #[test]
+    fn classify_503_with_retry_after() {
+        let action = classify_http_status(503, Some("10"), "unavailable").unwrap();
+        assert!(action.is_retryable());
+        assert_eq!(action.retry_after_hint(), Some(Duration::from_secs(10)));
+    }
+
+    #[test]
     fn classify_4xx_is_reject() {
-        let action = classify_http_status(400, "bad request").unwrap();
+        let action = classify_http_status(400, None, "bad request").unwrap();
         assert!(action.is_rejected());
-        let action = classify_http_status(404, "not found").unwrap();
+        let action = classify_http_status(404, None, "not found").unwrap();
+        assert!(action.is_rejected());
+    }
+
+    #[test]
+    fn classify_3xx_is_reject() {
+        let action = classify_http_status(301, None, "redirect").unwrap();
+        assert!(action.is_rejected());
+        let action = classify_http_status(302, None, "found").unwrap();
         assert!(action.is_rejected());
     }
 

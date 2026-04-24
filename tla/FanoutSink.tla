@@ -165,10 +165,12 @@ EnvironmentChangesBehavior(c) ==
 \* Precondition: AllChildrenTerminal (no Pending children remain).
 \* This models the state after one full pass through all children where
 \* every child returned a terminal result (Ok, Rejected — not transient).
+AnyChildRejected == \E c \in Children : childState[c] = "Rejected"
+
 FinalizeTerminal ==
     /\ batchPhase = "Delivering"
     /\ AllChildrenTerminal
-    /\ fanoutResult' = IF AllChildrenRejected THEN "Rejected" ELSE "Ok"
+    /\ fanoutResult' = IF AnyChildRejected THEN "Rejected" ELSE "Ok"
     /\ batchPhase' = "Finalized"
     /\ batchCount' = batchCount + 1
     /\ UNCHANGED <<childState, sinkBehavior, retryCount, delivered, totalDelivered>>
@@ -254,16 +256,15 @@ Spec == Init /\ [][Next]_vars /\ Fairness
  * ======================================================================= *)
 
 
-\* PartialSuccessIsOk: if any child succeeded and not all rejected,
-\* result is Ok (not Rejected). Matches finalize_fanout_outcome().
-PartialSuccessIsOk ==
-    (batchPhase = "Finalized" /\ AllChildrenTerminal /\ ~AllChildrenRejected)
-        => fanoutResult = "Ok"
-
-\* AllRejectedIsRejected: if all children rejected, result is Rejected.
-AllRejectedIsRejected ==
-    (batchPhase = "Finalized" /\ AllChildrenTerminal /\ AllChildrenRejected)
+\* AnyRejectionIsRejected: if any child was rejected, overall result is Rejected.
+AnyRejectionIsRejected ==
+    (batchPhase = "Finalized" /\ AllChildrenTerminal /\ AnyChildRejected)
         => fanoutResult = "Rejected"
+
+\* AllOkIsOk: if all children succeeded (none rejected), result is Ok.
+AllOkIsOk ==
+    (batchPhase = "Finalized" /\ AllChildrenTerminal /\ ~AnyChildRejected)
+        => fanoutResult = "Ok"
 
 \* RetryNeverResetsTerminalChildren: retrying does not change Ok or
 \* Rejected children. This is the key anti-duplication invariant.
