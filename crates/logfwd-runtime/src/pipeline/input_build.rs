@@ -690,6 +690,26 @@ pub(super) fn build_input_state(
                 });
             }
         }
+        InputTypeConfig::MacosLog(s) => {
+            let config = s.macos_log.as_ref();
+            let level = config.and_then(|c| c.level.as_deref());
+            let subsystem = config.and_then(|c| c.subsystem.as_deref());
+            let process = config.and_then(|c| c.process.as_deref());
+
+            let source = logfwd_io::macos_log_input::MacosLogInput::new(
+                name,
+                level,
+                subsystem,
+                process,
+                Arc::clone(&stats),
+            );
+
+            (
+                Box::new(source) as Box<dyn InputSource>,
+                Format::Json,
+                64 * 1024,
+            )
+        }
         InputTypeConfig::Journald(j) => {
             use logfwd_io::journald_input::{JournaldBackendPref, JournaldConfig, JournaldInput};
 

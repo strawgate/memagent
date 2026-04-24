@@ -60,6 +60,8 @@ pub enum InputType {
     /// Windows eBPF sensor input.
     #[serde(rename = "windows_ebpf_sensor", alias = "windows_sensor_beta")]
     WindowsEbpfSensor,
+    #[serde(rename = "macos_log")]
+    MacosLog,
     ArrowIpc,
     /// Journald (systemd journal) input via native `sd_journal` API or
     /// `journalctl` subprocess fallback.
@@ -84,6 +86,7 @@ impl fmt::Display for InputType {
             InputType::LinuxEbpfSensor => f.write_str("linux_ebpf_sensor"),
             InputType::MacosEsSensor => f.write_str("macos_es_sensor"),
             InputType::WindowsEbpfSensor => f.write_str("windows_ebpf_sensor"),
+            InputType::MacosLog => f.write_str("macos_log"),
             InputType::ArrowIpc => f.write_str("arrow_ipc"),
             InputType::Journald => f.write_str("journald"),
             InputType::HostMetrics => f.write_str("host_metrics"),
@@ -675,6 +678,8 @@ pub enum InputTypeConfig {
     MacosEsSensor(SensorTypeConfig),
     #[serde(rename = "windows_ebpf_sensor", alias = "windows_sensor_beta")]
     WindowsEbpfSensor(SensorTypeConfig),
+    #[serde(rename = "macos_log")]
+    MacosLog(MacosLogTypeConfig),
     ArrowIpc(ArrowIpcTypeConfig),
     Journald(JournaldTypeConfig),
     /// Host metrics input (process snapshots, CPU, memory, network stats via sysinfo).
@@ -698,6 +703,7 @@ impl InputTypeConfig {
             Self::LinuxEbpfSensor(_) => InputType::LinuxEbpfSensor,
             Self::MacosEsSensor(_) => InputType::MacosEsSensor,
             Self::WindowsEbpfSensor(_) => InputType::WindowsEbpfSensor,
+            Self::MacosLog(_) => InputType::MacosLog,
             Self::ArrowIpc(_) => InputType::ArrowIpc,
             Self::Journald(_) => InputType::Journald,
             Self::HostMetrics(_) => InputType::HostMetrics,
@@ -1434,7 +1440,35 @@ pub struct StorageConfig {
     pub data_dir: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+/// Tagged-union wrapper for macOS OSLog input configuration.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MacosLogTypeConfig {
+    #[serde(default)]
+    pub macos_log: Option<MacosLogInputConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct MacosLogInputConfig {
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_option_strict_string"
+    )]
+    pub level: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_option_strict_string"
+    )]
+    pub subsystem: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::serde_helpers::deserialize_option_strict_string"
+    )]
+    pub process: Option<String>,
+}
+
+#[derive(Debug)]
 pub struct Config {
     pub pipelines: HashMap<String, PipelineConfig>,
     pub server: ServerConfig,

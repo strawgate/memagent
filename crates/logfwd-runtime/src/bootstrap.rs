@@ -431,6 +431,7 @@ fn input_label(i: &logfwd_config::InputConfig) -> String {
         InputTypeConfig::HostMetrics(_) => "host_metrics".to_string(),
         InputTypeConfig::Journald(_) => "journald".to_string(),
         InputTypeConfig::S3(s) => format!("s3    {}", s.s3.bucket),
+        InputTypeConfig::MacosLog(_) => "macos log stream".to_string(),
     }
 }
 

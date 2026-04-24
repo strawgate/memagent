@@ -327,6 +327,25 @@ Compatibility note: legacy names `linux_sensor_beta`, `macos_sensor_beta`,
 `windows_sensor_beta`, plus the legacy `sensor_beta:` block, are still
 accepted as aliases for backward compatibility.
 
+
+### `macos_log` input
+
+Reads the macOS Unified Log (`OSLog`) using a background `log stream --style ndjson` process. Yields structured JSON objects natively representing OSLog entries. Requires macOS 11+.
+
+```yaml
+inputs:
+  - type: macos_log
+    level: default     # Filter level (e.g. debug, info, default)
+    subsystem: com.apple.authd # Optional subsystem predicate
+    process: sudo      # Optional process predicate
+```
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `level` | `string` | No | Maps to `log stream --level`. Filters events below this level. |
+| `subsystem` | `string` | No | Predicate filter for a specific subsystem. |
+| `process` | `string` | No | Predicate filter for a specific process (by name or PID). |
+
 ### `host_metrics` input
 
 Host metrics input that collects process snapshots, CPU, memory, and network
