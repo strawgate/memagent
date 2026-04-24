@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use logfwd_config::docspec::{self, INPUT_TYPE_DOCS, OUTPUT_TYPE_DOCS};
 use quote::ToTokens;
 use regex::Regex;
 use syn::visit::Visit;
@@ -24,6 +25,8 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Regenerate config support tables in user documentation.
+    GenerateConfigDocs,
     /// Run structural verification checks.
     Verify,
 }
@@ -147,15 +150,13 @@ impl<'ast> Visit<'ast> for Collector {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::GenerateConfigDocs => run_generate_config_docs(),
         Commands::Verify => run_verify(),
     }
 }
 
 fn run_verify() -> Result<()> {
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .context("xtask must live under repo root")?
-        .to_path_buf();
+    let repo_root = repo_root()?;
 
     let modules = load_modules(&repo_root)?;
     let mut findings = Vec::new();
@@ -192,6 +193,69 @@ fn run_verify() -> Result<()> {
 
     // TODO(#2409): promote to hard failure once known gaps are addressed
     Ok(())
+}
+
+fn run_generate_config_docs() -> Result<()> {
+    let repo_root = repo_root()?;
+    let reference_path = repo_root.join("book/src/content/docs/configuration/reference.mdx");
+    let mut reference = fs::read_to_string(&reference_path).with_context(|| {
+        format!(
+            "failed to read config reference {}",
+            reference_path.display()
+        )
+    })?;
+
+    reference = replace_generated_block(
+        &reference,
+        "input-types",
+        &docspec::render_component_type_table(INPUT_TYPE_DOCS),
+    )?;
+    reference = replace_generated_block(
+        &reference,
+        "output-types",
+        &docspec::render_component_type_table(OUTPUT_TYPE_DOCS),
+    )?;
+
+    fs::write(&reference_path, reference).with_context(|| {
+        format!(
+            "failed to write regenerated config reference {}",
+            reference_path.display()
+        )
+    })?;
+
+    println!(
+        "xtask generate-config-docs: updated {}",
+        reference_path.display()
+    );
+    Ok(())
+}
+
+fn repo_root() -> Result<PathBuf> {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .context("xtask must live under repo root")
+        .map(Path::to_path_buf)
+}
+
+fn replace_generated_block(document: &str, name: &str, content: &str) -> Result<String> {
+    let begin = format!("{{/* BEGIN GENERATED: {name} */}}");
+    let end = format!("{{/* END GENERATED: {name} */}}");
+    let start = document
+        .find(&begin)
+        .with_context(|| format!("missing begin marker for generated block '{name}'"))?;
+    let block_start = start + begin.len();
+    let end_index = document[block_start..]
+        .find(&end)
+        .map(|offset| block_start + offset)
+        .with_context(|| format!("missing end marker for generated block '{name}'"))?;
+
+    let mut updated = String::with_capacity(document.len() + content.len());
+    updated.push_str(&document[..block_start]);
+    updated.push('\n');
+    updated.push_str(content.trim_matches('\n'));
+    updated.push('\n');
+    updated.push_str(&document[end_index..]);
+    Ok(updated)
 }
 
 fn load_modules(repo_root: &Path) -> Result<Vec<ModuleFacts>> {

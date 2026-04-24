@@ -63,3 +63,125 @@ pub fn compile_topology(spec: &PipelineSpec<'_>) -> Result<CompiledTopology, Str
         output_count,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{PipelineSpec, compile_topology};
+    use logfwd_config::{
+        GeneratorTypeConfig, InputConfig, InputTypeConfig, OutputConfigV2, PipelineConfig,
+        StdoutOutputConfig,
+    };
+
+    fn build_pipeline_config(
+        inputs: Vec<InputConfig>,
+        outputs: Vec<OutputConfigV2>,
+        transform: Option<String>,
+    ) -> PipelineConfig {
+        PipelineConfig {
+            inputs,
+            outputs,
+            transform,
+            workers: None,
+            enrichment: Vec::new(),
+            resource_attrs: std::collections::HashMap::new(),
+            batch_target_bytes: None,
+            batch_timeout_ms: None,
+            poll_interval_ms: None,
+        }
+    }
+
+    fn build_generator_input() -> InputConfig {
+        InputConfig {
+            name: Some("in".to_string()),
+            format: None,
+            sql: None,
+            source_metadata: Default::default(),
+            type_config: InputTypeConfig::Generator(GeneratorTypeConfig::default()),
+        }
+    }
+
+    fn build_stdout_output() -> OutputConfigV2 {
+        OutputConfigV2::Stdout(StdoutOutputConfig {
+            name: Some("out".to_string()),
+            format: None,
+        })
+    }
+
+    #[test]
+    fn compile_topology_rejects_empty_pipeline_name() {
+        let config = build_pipeline_config(
+            vec![build_generator_input()],
+            vec![build_stdout_output()],
+            None,
+        );
+        let spec = PipelineSpec {
+            name: "",
+            config: &config,
+        };
+
+        let err = compile_topology(&spec).expect_err("empty name should be rejected");
+        assert_eq!(err, "pipeline name must not be empty");
+    }
+
+    #[test]
+    fn compile_topology_rejects_missing_inputs() {
+        let config = build_pipeline_config(Vec::new(), vec![build_stdout_output()], None);
+        let spec = PipelineSpec {
+            name: "main",
+            config: &config,
+        };
+
+        let err = compile_topology(&spec).expect_err("missing inputs should be rejected");
+        assert_eq!(err, "pipeline 'main': at least one input is required");
+    }
+
+    #[test]
+    fn compile_topology_rejects_missing_outputs() {
+        let config = build_pipeline_config(vec![build_generator_input()], Vec::new(), None);
+        let spec = PipelineSpec {
+            name: "main",
+            config: &config,
+        };
+
+        let err = compile_topology(&spec).expect_err("missing outputs should be rejected");
+        assert_eq!(err, "pipeline 'main': at least one output is required");
+    }
+
+    #[test]
+    fn compile_topology_counts_nodes_with_optional_transform() {
+        let config = build_pipeline_config(
+            vec![build_generator_input(), build_generator_input()],
+            vec![build_stdout_output(), build_stdout_output()],
+            Some("SELECT * FROM logs".to_string()),
+        );
+        let spec = PipelineSpec {
+            name: "main",
+            config: &config,
+        };
+
+        let compiled = compile_topology(&spec).expect("valid topology compiles");
+        assert_eq!(compiled.name, "main");
+        assert_eq!(compiled.input_count, 2);
+        assert_eq!(compiled.transform_count, 1);
+        assert_eq!(compiled.output_count, 2);
+    }
+
+    #[test]
+    fn compile_topology_counts_zero_transforms_when_transform_is_absent() {
+        let config = build_pipeline_config(
+            vec![build_generator_input(), build_generator_input()],
+            vec![build_stdout_output(), build_stdout_output()],
+            None,
+        );
+        let spec = PipelineSpec {
+            name: "main",
+            config: &config,
+        };
+
+        let compiled = compile_topology(&spec).expect("valid topology compiles");
+        assert_eq!(compiled.name, "main");
+        assert_eq!(compiled.input_count, 2);
+        assert_eq!(compiled.transform_count, 0);
+        assert_eq!(compiled.output_count, 2);
+    }
+}
