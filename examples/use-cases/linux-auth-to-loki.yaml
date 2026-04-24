@@ -2,19 +2,19 @@
 # Use case: Linux auth.log to Loki
 # Replace paths/endpoints with values for your environment.
 
-input:
-  type: file
-  path: /var/log/auth.log
-  format: raw
-
-transform: |
-  SELECT * FROM logs
-
-output:
-  type: loki
-  endpoint: https://loki:3100
-  static_labels:
-    app: linux-auth
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /var/log/auth.log
+        format: raw
+    transform: |
+      SELECT * FROM logs
+    outputs:
+      - type: loki
+        endpoint: https://loki:3100
+        static_labels:
+          app: linux-auth
 
 # Optional: diagnostics
 # server:

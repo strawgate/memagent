@@ -138,7 +138,7 @@ Validation succeeds and prints `config ok: <n> pipeline(s)`.
 
 - Missing `input.path` for `file` input.
 - Missing `endpoint` for `otlp`/`http`/`elasticsearch`/`loki` outputs.
-- Mixing simple layout (`input`/`output`) with `pipelines` map in one file.
+- Missing the required `pipelines` map or using the wrong nesting for `inputs` / `outputs`.
 - YAML scalar mistakes in SQL.
 
 Use block scalar syntax for SQL:

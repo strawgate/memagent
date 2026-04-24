@@ -462,9 +462,6 @@ fn output_label(o: &logfwd_config::OutputConfigV2) -> String {
         OutputConfigV2::File(config) => {
             format!("file  {}", config.path.as_deref().unwrap_or(""))
         }
-        OutputConfigV2::Parquet(config) => {
-            format!("parquet  {}", config.path.as_deref().unwrap_or(""))
-        }
         OutputConfigV2::Stdout(_) => "stdout".to_string(),
         OutputConfigV2::Null(_) => "null".to_string(),
         OutputConfigV2::ArrowIpc(config) => {

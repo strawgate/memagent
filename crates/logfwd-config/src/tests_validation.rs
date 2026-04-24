@@ -158,28 +158,17 @@ server:
     }
 
     #[test]
-    fn validation_unimplemented_output_type() {
-        // Each placeholder type should be caught by Config::validate() before
-        // pipeline construction, not silently accepted.
-        for (otype, extra) in [("parquet", "path: /tmp/x"), ("http", "endpoint: http://x")] {
-            let yaml = format!(
-                "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: {otype}\n  {extra}\n"
-            );
-            let result = Config::load_str(&yaml);
-            assert!(
-                result.is_err(),
-                "validation should reject unimplemented type '{otype}'"
-            );
-            let msg = result.unwrap_err().to_string();
-            assert!(
-                msg.contains("not yet implemented"),
-                "error message should mention 'not yet implemented' for '{otype}': {msg}"
-            );
-            assert!(
-                msg.contains(otype),
-                "error message should include the type name '{otype}': {msg}"
-            );
-        }
+    fn removed_output_type_is_rejected_at_parse_time() {
+        let yaml =
+            "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: parquet\n  path: /tmp/x\n";
+        let err = Config::load_str(yaml).expect_err("removed output type should fail to parse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("parquet")
+                && (msg.contains("unknown variant")
+                    || msg.contains("does not have variant constructor")),
+            "expected parse rejection for removed parquet output: {msg}"
+        );
     }
 
     #[test]

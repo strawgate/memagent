@@ -354,21 +354,23 @@ fn cmd_init() -> Result<(), CliError> {
 # source/destination — see the examples at https://github.com/strawgate/fastforward/tree/main/examples/use-cases/
 # Or run `ff wizard` for an interactive setup.
 
-# Tail a JSON log file and stream new lines as they appear.
-input:
-  type: file
-  path: ./sample.json
-  format: json
+pipelines:
+  default:
+    # Tail a JSON log file and stream new lines as they appear.
+    inputs:
+      - type: file
+        path: ./sample.json
+        format: json
 
-# SQL transform (optional) — filter, reshape, or enrich logs.
-# Remove this section to forward all logs unmodified.
-transform: |
-  SELECT * FROM logs
-  WHERE level IN ('WARN', 'ERROR')
+    # SQL transform (optional) — filter, reshape, or enrich logs.
+    # Remove this section to forward all logs unmodified.
+    transform: |
+      SELECT * FROM logs
+      WHERE level IN ('WARN', 'ERROR')
 
-# Print matching logs to the terminal so you can see results immediately.
-output:
-  type: stdout
+    # Print matching logs to the terminal so you can see results immediately.
+    outputs:
+      - type: stdout
 
 # Optional: expose a diagnostics dashboard on http://127.0.0.1:9191
 # server:
@@ -933,11 +935,13 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().expect("temp config");
         writeln!(
             file,
-            r#"input:
-  type: otlp
-  listen: 127.0.0.1:{port}
-output:
-  type: "null"
+            r#"pipelines:
+  default:
+    inputs:
+      - type: otlp
+        listen: 127.0.0.1:{port}
+    outputs:
+      - type: "null"
 "#
         )
         .expect("write config");
@@ -976,9 +980,10 @@ output:
             output,
             "SELECT * FROM logs WHERE level='ERROR'",
         );
-        assert!(cfg.contains("input:"));
-        assert!(cfg.contains("output:"));
-        assert!(cfg.contains("transform: |"));
+        assert!(cfg.contains("pipelines:"));
+        assert!(cfg.contains("inputs:"));
+        assert!(cfg.contains("outputs:"));
+        assert!(cfg.contains("    transform: |"));
         assert!(cfg.contains("WHERE level='ERROR'"));
     }
 

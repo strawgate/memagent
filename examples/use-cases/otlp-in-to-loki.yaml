@@ -2,18 +2,18 @@
 # Use case: OTLP input to Loki
 # Replace paths/endpoints with values for your environment.
 
-input:
-  type: otlp
-  listen: 0.0.0.0:4318
-
-transform: |
-  SELECT * FROM logs
-
-output:
-  type: loki
-  endpoint: https://loki:3100
-  static_labels:
-    source: otlp
+pipelines:
+  default:
+    inputs:
+      - type: otlp
+        listen: 0.0.0.0:4318
+    transform: |
+      SELECT * FROM logs
+    outputs:
+      - type: loki
+        endpoint: https://loki:3100
+        static_labels:
+          source: otlp
 
 # Optional: diagnostics
 # server:

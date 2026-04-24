@@ -33,7 +33,7 @@ mod tests {
     }
 
     #[test]
-    fn http_output_is_rejected() {
+    fn http_output_is_supported() {
         let yaml = r"
 input:
   type: file
@@ -42,11 +42,29 @@ output:
   type: http
   endpoint: http://localhost:9200
 ";
-        let err = Config::load_str(yaml).expect_err("http output should be rejected");
+        let cfg = Config::load_str(yaml).expect("http output should validate");
+        assert_eq!(
+            cfg.pipelines["default"].outputs[0].output_type(),
+            OutputType::Http
+        );
+    }
+
+    #[test]
+    fn http_output_rejects_non_json_format() {
+        let yaml = r"
+input:
+  type: file
+  path: /tmp/x.log
+output:
+  type: http
+  endpoint: http://localhost:9200
+  format: text
+";
+        let err = Config::load_str(yaml).expect_err("http output must stay json-only");
         let msg = err.to_string();
         assert!(
-            msg.contains("not yet implemented"),
-            "error should mention 'not yet implemented': {msg}"
+            msg.contains("http output only supports format json"),
+            "unexpected error: {msg}"
         );
     }
 
@@ -743,10 +761,6 @@ format: json
             ),
             ("type: stdout\nformat: json\n", OutputType::Stdout),
             ("type: file\npath: /tmp/ff.log\n", OutputType::File),
-            (
-                "type: parquet\npath: /tmp/ff.parquet\n",
-                OutputType::Parquet,
-            ),
             ("type: \"null\"\n", OutputType::Null),
             ("type: tcp\nendpoint: 127.0.0.1:9000\n", OutputType::Tcp),
             ("type: udp\nendpoint: 127.0.0.1:9001\n", OutputType::Udp),

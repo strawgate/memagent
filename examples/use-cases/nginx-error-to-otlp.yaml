@@ -2,17 +2,17 @@
 # Use case: Nginx error logs to OTLP
 # Replace paths/endpoints with values for your environment.
 
-input:
-  type: file
-  path: /var/log/nginx/error.log
-  format: raw
-
-transform: |
-  SELECT * FROM logs
-
-output:
-  type: otlp
-  endpoint: https://otel-collector:4318/v1/logs
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /var/log/nginx/error.log
+        format: raw
+    transform: |
+      SELECT * FROM logs
+    outputs:
+      - type: otlp
+        endpoint: https://otel-collector:4318/v1/logs
 
 # Optional: diagnostics
 # server:
