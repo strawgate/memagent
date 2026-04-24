@@ -50,7 +50,9 @@ body {
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition:
+    background 0.15s,
+    color 0.15s;
   box-shadow: 0 2px 8px rgba(59, 130, 246, 0.08);
 }
 .show-more-btn:hover {
