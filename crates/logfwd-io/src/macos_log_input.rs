@@ -9,8 +9,6 @@ use std::thread;
 
 #[cfg(target_os = "macos")]
 use bytes::Bytes;
-#[cfg(target_os = "macos")]
-use crossbeam_channel::TrySendError;
 use crossbeam_channel::{Receiver, bounded};
 use logfwd_types::diagnostics::{ComponentHealth, ComponentStats};
 
@@ -34,6 +32,8 @@ pub struct MacosLogInput {
     rx: Receiver<InputEvent>,
     #[allow(dead_code)]
     thread: Option<thread::JoinHandle<()>>,
+    #[cfg(target_os = "macos")]
+    child_pid: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl MacosLogInput {
@@ -48,6 +48,8 @@ impl MacosLogInput {
         let (tx, rx) = bounded(CHANNEL_CAPACITY);
         let is_finished = Arc::new(AtomicBool::new(false));
         let finished_flag = Arc::clone(&is_finished);
+        let child_pid = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let child_pid_clone = Arc::clone(&child_pid);
         let thread_name = name.to_string();
 
         let mut cmd = Command::new("log");
@@ -60,17 +62,17 @@ impl MacosLogInput {
         // Combine predicates
         let mut predicates = Vec::new();
         if let Some(sub) = subsystem {
-            predicates.push(format!("subsystem == '{}'", sub));
+            predicates.push(format!("subsystem == '{}'", sub.replace('\'', "\\'")));
         }
         if let Some(proc) = process {
-            predicates.push(format!("process == '{}'", proc));
+            predicates.push(format!("process == '{}'", proc.replace('\'', "\\'")));
         }
 
         if !predicates.is_empty() {
             cmd.arg("--predicate").arg(predicates.join(" AND "));
         }
 
-        let thread = thread::Builder::new()
+        let thread_result = thread::Builder::new()
             .name(format!("macos-log-{name}"))
             .spawn(move || {
                 let mut child = match cmd.stdout(Stdio::piped()).spawn() {
@@ -81,6 +83,7 @@ impl MacosLogInput {
                         return;
                     }
                 };
+                child_pid_clone.store(child.id(), Ordering::Release);
 
                 let stdout = child.stdout.take().expect("Stdout should be piped");
                 let mut reader = BufReader::new(stdout);
@@ -119,10 +122,8 @@ impl MacosLogInput {
                                 cri_metadata: None,
                             };
 
-                            match tx.try_send(event) {
-                                Ok(_) => {}
-                                Err(TrySendError::Full(_)) => {}
-                                Err(TrySendError::Disconnected(_)) => break,
+                            if tx.send(event).is_err() {
+                                break; // Receiver disconnected
                             }
                         }
                         Err(e) => {
@@ -132,15 +133,24 @@ impl MacosLogInput {
                     }
                 }
                 finished_flag.store(true, Ordering::Release);
-            })
-            .expect("Failed to spawn macos_log thread");
+            });
+
+        let thread = match thread_result {
+            Ok(t) => Some(t),
+            Err(e) => {
+                tracing::error!("Failed to spawn macos_log thread: {e}");
+                is_finished.store(true, Ordering::Release);
+                None
+            }
+        };
 
         Self {
             name: name.to_string(),
             stats,
             is_finished,
             rx,
-            thread: Some(thread),
+            thread,
+            child_pid,
         }
     }
 
@@ -160,6 +170,8 @@ impl MacosLogInput {
             is_finished: Arc::new(AtomicBool::new(true)),
             rx,
             thread: None,
+            #[cfg(target_os = "macos")]
+            child_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
         }
     }
 }
@@ -242,6 +254,20 @@ mod tests {
             // On non-macos, it should immediately be finished
             assert!(input.is_finished());
             assert!(input.poll().unwrap().is_empty());
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for MacosLogInput {
+    fn drop(&mut self) {
+        let pid = self.child_pid.load(Ordering::Acquire);
+        if pid > 0 {
+            // Safety: calling libc::kill on a child process we own.
+            // The PID was set by us from Command::spawn() and only cleared here.
+            unsafe {
+                libc::kill(pid as libc::pid_t, libc::SIGTERM);
+            }
         }
     }
 }

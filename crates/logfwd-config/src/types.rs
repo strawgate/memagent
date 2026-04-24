@@ -1468,7 +1468,7 @@ pub struct MacosLogInputConfig {
     pub process: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Config {
     pub pipelines: HashMap<String, PipelineConfig>,
     pub server: ServerConfig,
