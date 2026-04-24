@@ -81,6 +81,10 @@ jobs:
             miri:
               - 'crates/logfwd-core/**'
               - 'crates/logfwd-types/**'
+              - 'crates/logfwd-io/src/framed.rs'
+              - 'crates/logfwd-io/src/format.rs'
+              - 'crates/logfwd-io/src/input.rs'
+              - 'crates/logfwd-io/tests/it/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
@@ -590,6 +594,37 @@ jobs:
           PROPTEST_DISABLE_FAILURE_PERSISTENCE: "1"
           PROPTEST_CASES: "1"
 
+  miri-io-buffered:
+    name: Miri (io buffered)
+    needs: [changes, lint]
+    if: |
+      github.event_name == 'push' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full') ||
+      (github.event.pull_request.draft == false && needs.changes.outputs.miri == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri, rust-src
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          key: miri-io-buffered-nightly
+
+      - name: Set up Miri
+        run: cargo +nightly miri setup
+
+      - name: Run targeted Miri regression (logfwd-io shared buffer)
+        run: cargo +nightly miri test -p logfwd-io framed::tests::poll_into_miri_shared_buffer_alias_regression --lib
+        env:
+          MIRIFLAGS: "-Zmiri-strict-provenance"
+          PROPTEST_DISABLE_FAILURE_PERSISTENCE: "1"
+          PROPTEST_CASES: "1"
+
   # -------------------------------------------------------------------------
   # Deterministic simulation & concurrency model checks.  Turmoil and Loom
   # both need a full from-scratch Rust build with different features, so they
@@ -853,6 +888,7 @@ jobs:
       - kani-io-output
       - miri-core
       - miri-types
+      - miri-io-buffered
       - simulation-turmoil
       - simulation-loom
       - tlc-safety

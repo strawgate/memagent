@@ -21,6 +21,8 @@ If the property is temporal ("eventually," "always," "never after X") → TLA+.
 If the function is pure, bounded, and critical → Kani.  
 If it's stateful, heap-heavy, or async → proptest.  
 For unsafe code, use Kani and proptest both.
+For allocator-backed shared-buffer paths that are too integration-heavy for
+Kani, add a narrow targeted Miri regression instead of a broad unsound proof.
 
 ---
 
@@ -159,6 +161,13 @@ do not stop at patching the shell. Extract the transition policy into a local pu
 reducer or state module when feasible, then add Kani proofs for single-step invariants
 and proptest sequence coverage for multi-step behavior.
 
+For shared-buffer input work specifically, treat the runtime consumer of
+`FramedReadEvent` as a separate state machine from `FramedInput` itself.
+`poll()` vs `poll_into()` equivalence tests are necessary but not sufficient:
+add a reducer-level sequence test that mixes `Data`, `Batch`, and control
+events and checks emitted `IoWorkItem` ordering against a reference model.
+That is the seam where shared byte ranges meet flush boundaries.
+
 ### Running proofs
 
 ```bash
@@ -169,6 +178,7 @@ cargo build -p logfwd-core \
   --target thumbv6m-none-eabi          # Verify no_std compliance
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-core --lib
 MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-types --lib
+MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-io framed::tests::poll_into_miri_shared_buffer_alias_regression --lib
 ```
 
 ### Non-core pure seam boundary contract

@@ -6,11 +6,6 @@ receivers, processors, and exporters. OTel semantics are optional adapters at th
 **RecordBatch in, RecordBatch out.** The pipeline doesn't care whether the data is logs,
 metrics, traces, or CSV files.
 
-For ingest discussions, this document uses the canonical layer names defined in
-the [Ingest Glossary](ARCHITECTURE.md#ingest-glossary). Those names describe
-responsibilities. They intentionally do not mirror every current type or
-module name in the codebase.
-
 ## Target architecture
 
 ```
@@ -211,35 +206,41 @@ zero schema knowledge.
 OTAP's star schema (4+ tables with foreign keys) is optimized for wire efficiency, not
 queryability. Convert at the boundary when needed.
 
-### bytes::Bytes for ingest buffer ownership
+### bytes::Bytes for pipeline buffer ownership
 
-The ingest path uses `Bytes` / `BytesMut` because the scanner boundary is still
-contiguous even when pre-scan accumulation is conceptually fragmented.
+The ingest path uses `BytesMut` while a component still owns mutable fill state,
+then hands off immutable `Bytes` once ownership crosses a boundary. This is the
+standard Rust pattern for I/O pipelines where buffers cross thread/async
+boundaries and may need to outlive the original producer.
 
-Current ownership model:
+Why `Bytes` instead of `Vec<u8>`: The Arrow `StreamingBuilder` needs the input
+buffer to outlive the scan phase — `StringViewArray` stores `(offset, len)` views
+into the buffer, and the `RecordBatch` carries these through SQL transform and
+output serialization. `Bytes` provides this lifetime extension via refcounting.
+`Vec<u8>` cannot be shared without cloning.
 
-- sources and `FramedInput` exchange raw-byte data as `Bytes`
-- in production (`not(feature = "turmoil")`), the I/O worker holds either one
-  `Bytes` chunk or many `Bytes` chunks before scan
-- if multiple chunks are buffered, the I/O worker concatenates once at flush
-  time before handing contiguous bytes to the scanner
-- `turmoil` keeps a simpler `BytesMut` accumulation path for the async test
-  harness
-- `Scanner::scan(Bytes)` still receives one contiguous backing buffer
+Why not `Arc<Vec<u8>>`: `Bytes` supports zero-copy `slice()` and `split()` that
+`Arc<Vec<u8>>` does not. That matters both for the zero-copy passthrough framing
+path already on `main` and for the shared-buffer framing path now landing in
+`FramedInput`, which still needs to preserve one contiguous scanner input.
 
-Why `Bytes` instead of `Vec<u8>`: the Arrow `StreamingBuilder` needs the input
-buffer to outlive scan because `StringViewArray` stores `(offset, len)` views
-into the buffer, and the `RecordBatch` carries those views through transform
-and output serialization. `Bytes` provides that lifetime extension via
-refcounting. `Vec<u8>` cannot be shared without cloning.
+Current boundary:
 
-Why not `Arc<Vec<u8>>`: `Bytes` supports zero-copy `slice()` and cheap ownership
-transfers in a way `Arc<Vec<u8>>` does not.
+- `logfwd-io` tailing uses per-source `BytesMut` read buffers.
+- `InputEvent::Data` already carries `Bytes`.
+- `FramedInput` may still keep small `Vec<u8>` remainders where a line is
+  incomplete or overflow-tainted.
+- `logfwd-runtime` currently performs the remaining pre-scan accumulation into
+  `InputState.buf: BytesMut`.
+- `logfwd-core` is untouched by this ownership shift; the scanner still takes
+  contiguous `Bytes` via `Bytes::Deref`.
 
-Important boundary rule: pre-scan batching may be represented as one chunk or
-many chunks, but the default scanner contract is still contiguous `Bytes`.
-Future shared-buffer work should optimize around that contract rather than
-assuming fragmented scan is free.
+Current implication: the remaining hot-path copy on `main` is not “tailer to
+event” anymore. It is the runtime reassembly step that appends scanner-ready
+`Bytes` into `InputState.buf` before scan on the legacy event route. The next
+architecture slice should widen the shared-buffer path so more polls append
+directly into that final batch buffer before scan, targeting that seam
+directly rather than reintroducing divergent source-side batching paths.
 
 ### Verification strategy
 

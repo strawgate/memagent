@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(not(feature = "turmoil"))]
 use logfwd_diagnostics::diagnostics::PipelineMetrics;
 #[cfg(not(feature = "turmoil"))]
-use logfwd_io::input::{CriMetadata, InputEvent};
+use logfwd_io::input::{CriMetadata, FramedReadEvent, InputEvent};
 #[cfg(not(feature = "turmoil"))]
 use logfwd_io::poll_cadence::AdaptivePollController;
 #[cfg(not(feature = "turmoil"))]
@@ -35,6 +35,10 @@ use logfwd_io::tail::ByteOffset;
 #[cfg(not(feature = "turmoil"))]
 use std::collections::HashSet;
 
+#[cfg(not(feature = "turmoil"))]
+use super::buffered_input_policy::{
+    should_flush_large_single_shared_buffer_chunk, should_repoll_buffered_shutdown,
+};
 #[cfg(not(feature = "turmoil"))]
 use super::health::{
     HealthTransitionEvent, reduce_component_health, reduce_component_health_after_poll_failure,
@@ -89,6 +93,43 @@ pub(crate) fn should_repoll_shutdown(
             )
         })
     })
+}
+
+#[cfg(not(feature = "turmoil"))]
+fn framed_read_events_have_payload(events: &[FramedReadEvent]) -> bool {
+    events
+        .iter()
+        .any(|event| matches!(event, FramedReadEvent::Data { .. }))
+}
+
+#[cfg(not(feature = "turmoil"))]
+fn is_large_single_buffered_data_event(
+    events: &[FramedReadEvent],
+    buffer_was_empty_at_poll: bool,
+) -> bool {
+    let Some(FramedReadEvent::Data { range, .. }) = events.first() else {
+        return false;
+    };
+    should_flush_large_single_shared_buffer_chunk(
+        buffer_was_empty_at_poll,
+        events.len(),
+        range.start == 0,
+        range.len(),
+    )
+}
+
+#[cfg(not(feature = "turmoil"))]
+pub(crate) fn should_repoll_shutdown_buffered(
+    events: &[FramedReadEvent],
+    is_finished: bool,
+    had_source_payload: bool,
+) -> bool {
+    should_repoll_buffered_shutdown(
+        is_finished,
+        had_source_payload,
+        !events.is_empty(),
+        framed_read_events_have_payload(events),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -645,6 +686,97 @@ pub(super) fn process_io_events(
     true
 }
 
+#[cfg(not(feature = "turmoil"))]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn process_buffered_events(
+    input: &mut InputState,
+    input_name: &Arc<str>,
+    events: Vec<FramedReadEvent>,
+    tx: &mpsc::Sender<IoWorkItem>,
+    metrics: &PipelineMetrics,
+    last_bp_warn: &mut Option<Instant>,
+    input_index: usize,
+    safe_batch_target_bytes: usize,
+    buffered_since: &mut Option<Instant>,
+    pending_row_origin: &mut Option<PendingRowOrigin>,
+    buffer_was_empty_at_poll: bool,
+    source_metadata_plan: SourceMetadataPlan,
+) -> bool {
+    let source_path_snapshot = if source_metadata_plan.has_source_path() {
+        input.source.source_paths()
+    } else {
+        Vec::new()
+    };
+    let should_flush_large_single_chunk =
+        is_large_single_buffered_data_event(&events, buffer_was_empty_at_poll);
+
+    for event in events {
+        match event {
+            FramedReadEvent::Data {
+                range,
+                source_id,
+                cri_metadata,
+            } => {
+                if source_metadata_plan.has_any() {
+                    if source_metadata_plan.has_source_path() {
+                        capture_source_path(
+                            &mut input.source_paths,
+                            &source_path_snapshot,
+                            source_id,
+                        );
+                    }
+                    append_data_row_origins(
+                        &mut input.row_origins,
+                        pending_row_origin,
+                        source_id,
+                        input_name,
+                        &input.buf[range.clone()],
+                    );
+                }
+                append_cri_metadata_for_data(
+                    &mut input.cri_metadata,
+                    cri_metadata,
+                    &input.buf[..range.start],
+                    &input.buf[range],
+                );
+            }
+            FramedReadEvent::Rotated { .. } => {
+                input.stats.inc_rotations();
+                tracing::info!(input = input.source.name(), "input.file_rotated");
+            }
+            FramedReadEvent::Truncated { .. } => {
+                input.stats.inc_rotations();
+                tracing::info!(input = input.source.name(), "input.file_truncated");
+            }
+        }
+    }
+    let flush_by_size = input.buf.len() >= safe_batch_target_bytes;
+    if flush_by_size || should_flush_large_single_chunk {
+        metrics.inc_flush_by_size();
+        if !flush_buf(
+            &mut input.buf,
+            &mut input.row_origins,
+            pending_row_origin,
+            &mut input.source_paths,
+            &mut input.cri_metadata,
+            &*input.source,
+            tx,
+            metrics,
+            last_bp_warn,
+            input_index,
+            source_metadata_plan,
+        ) {
+            return false;
+        }
+        *buffered_since = None;
+        return true;
+    }
+    if buffered_since.is_none() && !input.buf.is_empty() {
+        *buffered_since = Some(Instant::now());
+    }
+    true
+}
+
 // ---------------------------------------------------------------------------
 // I/O worker loop
 // ---------------------------------------------------------------------------
@@ -683,15 +815,28 @@ pub(super) fn io_worker_loop(
             ));
             let mut shutdown_poll_rounds = 0usize;
             loop {
-                match input.source.poll_shutdown() {
-                    Ok(events) => {
+                let buffer_was_empty_at_poll = input.buf.is_empty();
+                let buffered_events = match input.source.poll_shutdown_into(&mut input.buf) {
+                    Ok(events) => events,
+                    Err(e) => {
+                        tracing::warn!(
+                            input = input.source.name(),
+                            error = %e,
+                            "input.shutdown_poll_error"
+                        );
+                        break;
+                    }
+                };
+
+                match buffered_events {
+                    Some(events) => {
                         let cadence = input.source.get_cadence();
-                        let should_repoll = should_repoll_shutdown(
+                        let should_repoll = should_repoll_shutdown_buffered(
                             &events,
                             input.source.is_finished(),
                             cadence.signal.had_data,
                         );
-                        if !process_io_events(
+                        if !process_buffered_events(
                             &mut input,
                             &input_name,
                             events,
@@ -702,6 +847,7 @@ pub(super) fn io_worker_loop(
                             safe_batch_target_bytes,
                             &mut buffered_since,
                             &mut pending_row_origin,
+                            buffer_was_empty_at_poll,
                             source_metadata_plan,
                         ) {
                             break 'io_loop;
@@ -728,21 +874,68 @@ pub(super) fn io_worker_loop(
                             break;
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!(
-                            input = input.source.name(),
-                            error = %e,
-                            "input.shutdown_poll_error"
-                        );
-                        break;
-                    }
+                    None => match input.source.poll_shutdown() {
+                        Ok(events) => {
+                            let cadence = input.source.get_cadence();
+                            let should_repoll = should_repoll_shutdown(
+                                &events,
+                                input.source.is_finished(),
+                                cadence.signal.had_data,
+                            );
+                            if !process_io_events(
+                                &mut input,
+                                &input_name,
+                                events,
+                                &tx,
+                                &metrics,
+                                &mut last_bp_warn,
+                                input_index,
+                                safe_batch_target_bytes,
+                                &mut buffered_since,
+                                &mut pending_row_origin,
+                                source_metadata_plan,
+                            ) {
+                                break 'io_loop;
+                            }
+                            if !should_repoll {
+                                break;
+                            }
+                            shutdown_poll_rounds = shutdown_poll_rounds.saturating_add(1);
+                            if shutdown_poll_rounds
+                                .is_multiple_of(SHUTDOWN_DRAIN_PROGRESS_LOG_INTERVAL_ROUNDS)
+                            {
+                                tracing::warn!(
+                                    input = input.source.name(),
+                                    rounds = shutdown_poll_rounds,
+                                    "input.shutdown_drain_still_active"
+                                );
+                            }
+                            if shutdown_poll_rounds >= MAX_SHUTDOWN_POLL_ROUNDS {
+                                tracing::error!(
+                                    input = input.source.name(),
+                                    rounds = shutdown_poll_rounds,
+                                    "input.shutdown_drain_aborted_hard_limit"
+                                );
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                input = input.source.name(),
+                                error = %e,
+                                "input.shutdown_poll_error"
+                            );
+                            break;
+                        }
+                    },
                 }
             }
             break;
         }
 
-        let events = match input.source.poll() {
-            Ok(e) => e,
+        let buffer_was_empty_at_poll = input.buf.is_empty();
+        let buffered_events = match input.source.poll_into(&mut input.buf) {
+            Ok(events) => events,
             Err(e) => {
                 adaptive_poll.reset_fast_polls();
                 input.stats.inc_errors();
@@ -767,27 +960,74 @@ pub(super) fn io_worker_loop(
         let cadence = input.source.get_cadence();
         adaptive_poll.observe_signal(cadence.signal);
 
-        if events.is_empty() {
-            if adaptive_poll.should_fast_poll() {
-                metrics.inc_cadence_fast_repoll();
-            } else {
-                metrics.inc_cadence_idle_sleep();
-                std::thread::sleep(poll_interval);
+        match buffered_events {
+            Some(events) => {
+                if events.is_empty() {
+                    if adaptive_poll.should_fast_poll() {
+                        metrics.inc_cadence_fast_repoll();
+                    } else {
+                        metrics.inc_cadence_idle_sleep();
+                        std::thread::sleep(poll_interval);
+                    }
+                } else if !process_buffered_events(
+                    &mut input,
+                    &input_name,
+                    events,
+                    &tx,
+                    &metrics,
+                    &mut last_bp_warn,
+                    input_index,
+                    safe_batch_target_bytes,
+                    &mut buffered_since,
+                    &mut pending_row_origin,
+                    buffer_was_empty_at_poll,
+                    source_metadata_plan,
+                ) {
+                    break 'io_loop;
+                }
             }
-        } else if !process_io_events(
-            &mut input,
-            &input_name,
-            events,
-            &tx,
-            &metrics,
-            &mut last_bp_warn,
-            input_index,
-            safe_batch_target_bytes,
-            &mut buffered_since,
-            &mut pending_row_origin,
-            source_metadata_plan,
-        ) {
-            break 'io_loop;
+            None => {
+                let events = match input.source.poll() {
+                    Ok(e) => e,
+                    Err(e) => {
+                        adaptive_poll.reset_fast_polls();
+                        input.stats.inc_errors();
+                        consecutive_poll_failures = consecutive_poll_failures.saturating_add(1);
+                        input
+                            .stats
+                            .set_health(reduce_component_health_after_poll_failure(
+                                input.stats.health(),
+                                consecutive_poll_failures,
+                            ));
+                        tracing::warn!(input = input.source.name(), error = %e, "input.poll_error");
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+                };
+
+                if events.is_empty() {
+                    if adaptive_poll.should_fast_poll() {
+                        metrics.inc_cadence_fast_repoll();
+                    } else {
+                        metrics.inc_cadence_idle_sleep();
+                        std::thread::sleep(poll_interval);
+                    }
+                } else if !process_io_events(
+                    &mut input,
+                    &input_name,
+                    events,
+                    &tx,
+                    &metrics,
+                    &mut last_bp_warn,
+                    input_index,
+                    safe_batch_target_bytes,
+                    &mut buffered_since,
+                    &mut pending_row_origin,
+                    source_metadata_plan,
+                ) {
+                    break 'io_loop;
+                }
+            }
         }
 
         if input.source.is_finished() {

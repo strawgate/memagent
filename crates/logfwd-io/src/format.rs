@@ -6,7 +6,8 @@
 //! (JSON, CRI, Raw) via composition.
 
 use crate::input::CriMetadata;
-use logfwd_core::cri::{json_escape_bytes, parse_cri_line};
+use bytes::{BufMut, BytesMut};
+use logfwd_core::cri::parse_cri_line;
 use logfwd_core::reassembler::{AggregateResult, CriReassembler};
 use logfwd_types::diagnostics::ComponentStats;
 use std::sync::Arc;
@@ -193,6 +194,26 @@ impl FormatDecoder {
         out: &mut Vec<u8>,
         cri_metadata: Option<&mut CriMetadata>,
     ) {
+        self.process_lines_with_metadata_impl(chunk, out, cri_metadata);
+    }
+
+    /// Process lines and optionally collect CRI metadata sidecar rows,
+    /// appending scanner-ready output directly into a shared `BytesMut`.
+    pub fn process_lines_with_metadata_into(
+        &mut self,
+        chunk: &[u8],
+        out: &mut BytesMut,
+        cri_metadata: Option<&mut CriMetadata>,
+    ) {
+        self.process_lines_with_metadata_impl(chunk, out, cri_metadata);
+    }
+
+    fn process_lines_with_metadata_impl<O: ScannerReadyOutput>(
+        &mut self,
+        chunk: &[u8],
+        out: &mut O,
+        cri_metadata: Option<&mut CriMetadata>,
+    ) {
         match self {
             Self::Passthrough { .. } => {
                 out.extend_from_slice(chunk);
@@ -256,6 +277,31 @@ impl FormatDecoder {
     }
 }
 
+trait ScannerReadyOutput {
+    fn extend_from_slice(&mut self, bytes: &[u8]);
+    fn push_byte(&mut self, byte: u8);
+}
+
+impl ScannerReadyOutput for Vec<u8> {
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        Vec::extend_from_slice(self, bytes);
+    }
+
+    fn push_byte(&mut self, byte: u8) {
+        self.push(byte);
+    }
+}
+
+impl ScannerReadyOutput for BytesMut {
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        BytesMut::extend_from_slice(self, bytes);
+    }
+
+    fn push_byte(&mut self, byte: u8) {
+        self.put_u8(byte);
+    }
+}
+
 /// Count non-JSON lines in `chunk` and increment the parse-error counter.
 ///
 /// A line is considered a JSON object if, after stripping leading ASCII
@@ -287,9 +333,9 @@ pub(crate) fn count_json_parse_errors(chunk: &[u8], stats: &ComponentStats) {
 /// timestamp and stream are taken from the closing F line, which is correct
 /// because the CRI spec requires all fragments of the same log entry to carry
 /// the same timestamp and stream.
-fn extract_cri_messages(
+fn extract_cri_messages<O: ScannerReadyOutput>(
     input: &[u8],
-    out: &mut Vec<u8>,
+    out: &mut O,
     mut cri_metadata: Option<&mut CriMetadata>,
     aggregators: &mut [CriReassembler; 2],
     plain_text_field_name: &str,
@@ -340,7 +386,7 @@ fn extract_cri_messages(
             if !line.is_empty() && passthrough_on_fail {
                 if starts_with_json_object(line) {
                     out.extend_from_slice(line);
-                    out.push(b'\n');
+                    out.push_byte(b'\n');
                     if let Some(metadata) = &mut cri_metadata {
                         metadata.append_null_rows(1);
                     }
@@ -379,17 +425,46 @@ fn normalize_plain_text_fallback(line: &[u8]) -> Option<&[u8]> {
     (!line.is_empty()).then_some(line)
 }
 
-fn write_plain_text_fallback(line: &[u8], plain_text_field_name: &str, out: &mut Vec<u8>) {
+#[inline]
+fn append_json_byte_escape<O: ScannerReadyOutput>(byte: u8, dst: &mut O) {
+    dst.extend_from_slice(b"\\u00");
+    let hi = (byte >> 4) & 0x0F;
+    let lo = byte & 0x0F;
+    dst.push_byte(if hi < 10 { b'0' + hi } else { b'a' + hi - 10 });
+    dst.push_byte(if lo < 10 { b'0' + lo } else { b'a' + lo - 10 });
+}
+
+fn append_json_escaped<O: ScannerReadyOutput>(src: &[u8], dst: &mut O) {
+    for &b in src {
+        match b {
+            b'"' => dst.extend_from_slice(b"\\\""),
+            b'\\' => dst.extend_from_slice(b"\\\\"),
+            0x08 => dst.extend_from_slice(b"\\b"),
+            b'\t' => dst.extend_from_slice(b"\\t"),
+            b'\n' => dst.extend_from_slice(b"\\n"),
+            0x0C => dst.extend_from_slice(b"\\f"),
+            b'\r' => dst.extend_from_slice(b"\\r"),
+            0x00..=0x1F | 0x7F..=0xFF => append_json_byte_escape(b, dst),
+            _ => dst.push_byte(b),
+        }
+    }
+}
+
+fn write_plain_text_fallback<O: ScannerReadyOutput>(
+    line: &[u8],
+    plain_text_field_name: &str,
+    out: &mut O,
+) {
     out.extend_from_slice(b"{\"");
-    json_escape_bytes(plain_text_field_name.as_bytes(), out);
+    append_json_escaped(plain_text_field_name.as_bytes(), out);
     out.extend_from_slice(b"\":\"");
-    json_escape_bytes(line, out);
+    append_json_escaped(line, out);
     out.extend_from_slice(b"\"}\n");
 }
 
 /// Write a CRI message as scanner-ready JSON without CRI metadata injection.
 #[inline]
-fn write_cri_message(msg: &[u8], plain_text_field_name: &str, out: &mut Vec<u8>) {
+fn write_cri_message<O: ScannerReadyOutput>(msg: &[u8], plain_text_field_name: &str, out: &mut O) {
     let json_start = msg.iter().position(|b| !is_json_whitespace(*b));
     if let Some(start) = json_start
         && msg[start] == b'{'
@@ -398,12 +473,12 @@ fn write_cri_message(msg: &[u8], plain_text_field_name: &str, out: &mut Vec<u8>)
     } else {
         // Plain text is still wrapped so the scanner can ingest the record.
         out.extend_from_slice(b"{\"");
-        json_escape_bytes(plain_text_field_name.as_bytes(), out);
+        append_json_escaped(plain_text_field_name.as_bytes(), out);
         out.extend_from_slice(b"\":\"");
-        json_escape_bytes(msg, out);
+        append_json_escaped(msg, out);
         out.extend_from_slice(b"\"}");
     }
-    out.push(b'\n');
+    out.push_byte(b'\n');
 }
 
 #[cfg(test)]
@@ -412,10 +487,35 @@ mod tests {
     use crate::framed::FramedInput;
     use crate::input::{FileInput, InputEvent, InputSource};
     use crate::tail::TailConfig;
+    use bytes::BytesMut;
+    use proptest::prelude::*;
     use std::time::{Duration, Instant};
 
     fn make_stats() -> Arc<ComponentStats> {
         Arc::new(ComponentStats::new())
+    }
+
+    fn assert_decoder_sinks_match(
+        mut left: FormatDecoder,
+        mut right: FormatDecoder,
+        chunks: &[&[u8]],
+    ) {
+        let mut vec_out = Vec::new();
+        let mut vec_metadata = CriMetadata::default();
+        let mut bytes_out = BytesMut::new();
+        let mut bytes_metadata = CriMetadata::default();
+
+        for chunk in chunks {
+            left.process_lines_with_metadata(chunk, &mut vec_out, Some(&mut vec_metadata));
+            right.process_lines_with_metadata_into(
+                chunk,
+                &mut bytes_out,
+                Some(&mut bytes_metadata),
+            );
+        }
+
+        assert_eq!(vec_out, bytes_out.as_ref());
+        assert_eq!(vec_metadata, bytes_metadata);
     }
 
     fn process_cri_from_tempfile(input: &[u8]) -> Vec<u8> {
@@ -468,6 +568,16 @@ mod tests {
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
         assert_eq!(out, input);
+    }
+
+    #[test]
+    fn passthrough_json_process_lines_into_matches_vec_sink() {
+        let stats = make_stats();
+        assert_decoder_sinks_match(
+            FormatDecoder::passthrough_json(Arc::clone(&stats)),
+            FormatDecoder::passthrough_json(stats),
+            &[b"{\"msg\":\"ok\"}\nnot json\n"],
+        );
     }
 
     #[test]
@@ -614,6 +724,21 @@ mod tests {
     }
 
     #[test]
+    fn auto_process_lines_into_matches_vec_sink_across_mixed_sequence() {
+        let stats = make_stats();
+        assert_decoder_sinks_match(
+            FormatDecoder::auto(2 * 1024 * 1024, Arc::clone(&stats)),
+            FormatDecoder::auto(2 * 1024 * 1024, stats),
+            &[
+                b"{\"msg\":\"plain\"}\n",
+                b"2024-01-15T10:30:00Z stdout P hello \n",
+                b"2024-01-15T10:30:00Z stdout F world\n",
+                b"not a cri line\n",
+            ],
+        );
+    }
+
+    #[test]
     fn reset_clears_aggregator_state() {
         let stats = make_stats();
         let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
@@ -677,6 +802,20 @@ mod tests {
 
         proc.process_lines(b"2024-01-15T10:30:00Z stdout F \"hello\"}\n", &mut out);
         assert_eq!(out, b"{\"msg\":\"hello\"}\n");
+    }
+
+    #[test]
+    fn cri_process_lines_into_matches_vec_sink_across_partial_sequence() {
+        let stats = make_stats();
+        assert_decoder_sinks_match(
+            FormatDecoder::cri(2 * 1024 * 1024, Arc::clone(&stats)),
+            FormatDecoder::cri(2 * 1024 * 1024, stats),
+            &[
+                b"2024-01-15T10:30:00Z stdout P {\"msg\":\n",
+                b"2024-01-15T10:30:00Z stdout F \"hello\"}\n",
+                b"2024-01-15T10:30:01Z stderr F plain text\n",
+            ],
+        );
     }
 
     #[test]
@@ -788,6 +927,34 @@ mod tests {
                 value.get("msg").is_none(),
                 "non-JSON whitespace byte {prefix:#04x} must not be treated as JSON: {trimmed:?}"
             );
+        }
+    }
+
+    #[test]
+    fn plain_text_fallback_escapes_non_utf8_bytes_as_json_hex() {
+        let mut out = Vec::new();
+        write_plain_text_fallback(b"\x80\xff", "body", &mut out);
+        let text = std::str::from_utf8(&out).expect("fallback output must be ASCII JSON");
+        let parsed: serde_json::Value =
+            serde_json::from_str(text.trim_end()).expect("fallback output must parse as JSON");
+        assert_eq!(
+            parsed.get("body").and_then(serde_json::Value::as_str),
+            Some("\u{80}\u{ff}")
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn plain_text_fallback_always_emits_valid_json(
+            field_name in "[ -~]{1,8}",
+            bytes in prop::collection::vec(any::<u8>(), 0..64),
+        ) {
+            let mut out = Vec::new();
+            write_plain_text_fallback(&bytes, &field_name, &mut out);
+            let text = std::str::from_utf8(&out).expect("fallback output must remain ASCII JSON");
+            let parsed: serde_json::Value =
+                serde_json::from_str(text.trim_end()).expect("fallback output must remain valid JSON");
+            prop_assert!(parsed.get(field_name.as_str()).is_some());
         }
     }
 

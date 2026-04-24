@@ -1,10 +1,11 @@
 use std::io::{self, Read};
+use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 
 use arrow::record_batch::RecordBatch;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use logfwd_types::diagnostics::ComponentHealth;
 use logfwd_types::pipeline::SourceId;
 
@@ -366,6 +367,27 @@ pub enum InputEvent {
     EndOfFile { source_id: Option<SourceId> },
 }
 
+/// Events produced by the shared-buffer framing path.
+///
+/// `Data` references a byte range already appended into the caller-owned
+/// destination buffer supplied to [`InputSource::poll_into`] or
+/// [`InputSource::poll_shutdown_into`]. The range is expressed in that buffer's
+/// post-append coordinate space so the caller can derive row origins and sidecar
+/// alignment without another copy.
+pub enum FramedReadEvent {
+    Data {
+        range: Range<usize>,
+        source_id: Option<SourceId>,
+        cri_metadata: Option<CriMetadata>,
+    },
+    Rotated {
+        source_id: Option<SourceId>,
+    },
+    Truncated {
+        source_id: Option<SourceId>,
+    },
+}
+
 /// Trait for input sources that produce raw bytes.
 #[derive(Debug, Clone)]
 pub struct TlsInputConfig {
@@ -378,6 +400,25 @@ pub struct TlsInputConfig {
 pub trait InputSource: Send {
     /// Poll for new events. Returns empty vec if no new data.
     fn poll(&mut self) -> io::Result<Vec<InputEvent>>;
+
+    /// Poll and append scanner-ready bytes directly into `dst` when supported.
+    ///
+    /// The default implementation returns `Ok(None)` so existing sources keep
+    /// using the `poll()` path unchanged. Implementations that support shared
+    /// buffering must append any produced data into `dst` and describe the
+    /// appended ranges with [`FramedReadEvent::Data`].
+    ///
+    /// # Contract
+    ///
+    /// - On `Ok(Some(events))`, all returned ranges must reference bytes
+    ///   appended to `dst` during *this* call.
+    /// - On `Ok(None)`, `dst` must not be modified (caller falls back to
+    ///   `poll()`).
+    /// - On `Err(_)`, `dst` may contain partially appended bytes. The caller
+    ///   must not assume `dst` is unchanged after an error.
+    fn poll_into(&mut self, _dst: &mut BytesMut) -> io::Result<Option<Vec<FramedReadEvent>>> {
+        Ok(None)
+    }
 
     /// Poll during runtime shutdown before buffered input is drained.
     ///
@@ -394,6 +435,17 @@ pub trait InputSource: Send {
     /// to avoid hanging process shutdown on a misbehaving source.
     fn poll_shutdown(&mut self) -> io::Result<Vec<InputEvent>> {
         Ok(Vec::new())
+    }
+
+    /// Shutdown-drain variant of [`InputSource::poll_into`].
+    ///
+    /// The default implementation returns `Ok(None)` so callers fall back to the
+    /// existing shutdown `poll_shutdown()` path.
+    fn poll_shutdown_into(
+        &mut self,
+        _dst: &mut BytesMut,
+    ) -> io::Result<Option<Vec<FramedReadEvent>>> {
+        Ok(None)
     }
 
     /// Name of this input (from config).

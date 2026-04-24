@@ -4,6 +4,7 @@
 //! accumulates bytes) and a CPU worker (scans to RecordBatch, runs SQL).
 //! See `input_pipeline` for the I/O/compute separation architecture.
 
+mod buffered_input_policy;
 mod build;
 mod checkpoint_io;
 mod checkpoint_policy;

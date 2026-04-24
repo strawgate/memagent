@@ -181,6 +181,12 @@ reason = "The typed delivery outcome -> checkpoint disposition compatibility map
 issue = 1314
 
 [[seams]]
+path = "crates/logfwd-runtime/src/pipeline/buffered_input_policy.rs"
+status = "required"
+reason = "Shared-buffer shutdown repoll and large-first-chunk flush policy is a local pure seam extracted from the async io worker."
+issue = 2539
+
+[[seams]]
 path = "crates/logfwd-runtime/src/pipeline/checkpoint_io.rs"
 status = "recommended"
 reason = "Final checkpoint flush retry-window policy is an isolated local seam and should remain explicitly verified."
