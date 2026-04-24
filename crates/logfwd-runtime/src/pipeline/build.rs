@@ -721,6 +721,12 @@ mod tests {
                 adaptive_fast_polls_max: None,
                 max_open_files: None,
                 glob_rescan_interval_ms: None,
+                start_at: None,
+                encoding: None,
+                follow_symlinks: None,
+                ignore_older_secs: None,
+                multiline: None,
+                max_line_bytes: None,
             }),
         }
     }

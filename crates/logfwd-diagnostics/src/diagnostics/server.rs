@@ -12,11 +12,11 @@ use tokio::sync::{broadcast, oneshot};
 
 use super::metrics::PipelineMetrics;
 use super::models::{
-    BatchStatus, BottleneckStatus, ComponentHealthSnapshot, ComponentStatus, FileTransportStatus,
-    LiveResponse, MemoryStats, MemoryStatsResponse, PipelineStatus, ReadyResponse,
-    STABLE_DIAGNOSTICS_CONTRACT_VERSION, StageSeconds, StatusSnapshot, StatusSnapshotResponse,
-    SystemStatus, TcpTransportStatus, TraceLifecycleState, TransformStatus, TransportStatus,
-    UdpTransportStatus,
+    BatchStatus, BottleneckStatus, ComponentHealthSnapshot, ComponentStatus, EbpfTransportStatus,
+    FileTransportStatus, LiveResponse, MemoryStats, MemoryStatsResponse, PipelineStatus,
+    ReadyResponse, STABLE_DIAGNOSTICS_CONTRACT_VERSION, StageSeconds, StatusSnapshot,
+    StatusSnapshotResponse, SystemStatus, TcpTransportStatus, TraceLifecycleState, TransformStatus,
+    TransportStatus, UdpTransportStatus,
 };
 use super::policy;
 use super::process::process_metrics;
@@ -401,6 +401,7 @@ fn status_payload(state: &DiagnosticsState) -> StatusSnapshotResponse {
                         }),
                         tcp: None,
                         udp: None,
+                        ebpf: None,
                     }),
                     "tcp" => Some(TransportStatus {
                         file: None,
@@ -409,6 +410,7 @@ fn status_payload(state: &DiagnosticsState) -> StatusSnapshotResponse {
                             active_connections: stats.tcp_active.load(Ordering::Relaxed) as u64,
                         }),
                         udp: None,
+                        ebpf: None,
                     }),
                     "udp" => Some(TransportStatus {
                         file: None,
@@ -416,6 +418,15 @@ fn status_payload(state: &DiagnosticsState) -> StatusSnapshotResponse {
                         udp: Some(UdpTransportStatus {
                             drops_detected: stats.udp_drops.load(Ordering::Relaxed),
                             recv_buffer_size: stats.udp_recv_buf.load(Ordering::Relaxed) as u64,
+                        }),
+                        ebpf: None,
+                    }),
+                    "linux_ebpf_sensor" => Some(TransportStatus {
+                        file: None,
+                        tcp: None,
+                        udp: None,
+                        ebpf: Some(EbpfTransportStatus {
+                            drops_detected: stats.ebpf_drops.load(Ordering::Relaxed),
                         }),
                     }),
                     _ => None,
@@ -2049,6 +2060,9 @@ output:
         udp_in.udp_drops.store(100, Ordering::Relaxed);
         udp_in.udp_recv_buf.store(8388608, Ordering::Relaxed);
 
+        let ebpf_in = pm.add_input("ebpf_in", "linux_ebpf_sensor");
+        ebpf_in.ebpf_drops.store(150, Ordering::Relaxed);
+
         let mut server = DiagnosticsServer::new("127.0.0.1:0");
         server.add_pipeline(Arc::new(pm));
         let (_handle, addr) = server.start().expect("server bind failed");
@@ -2081,6 +2095,12 @@ output:
             .expect("missing udp_in input");
         assert_eq!(udp["transport"]["udp"]["drops_detected"], 100);
         assert_eq!(udp["transport"]["udp"]["recv_buffer_size"], 8_388_608);
+
+        let ebpf = inputs
+            .iter()
+            .find(|input| input["name"] == "ebpf_in")
+            .expect("missing ebpf_in input");
+        assert_eq!(ebpf["transport"]["ebpf"]["drops_detected"], 150);
     }
     #[test]
     #[ignore = "network integration test; run with `just test-network`"]

@@ -143,8 +143,6 @@ fn validate_output_config(
     label: &str,
     output: &OutputConfigV2,
 ) -> Result<(), ConfigError> {
-    let output_type = output.output_type();
-
     match output {
         OutputConfigV2::Otlp(config) => {
             validate_url_output_endpoint(
@@ -261,12 +259,26 @@ fn validate_output_config(
             }
         }
         OutputConfigV2::ArrowIpc(config) => {
-            validate_url_output_endpoint(
-                pipeline_name,
-                label,
-                OutputType::ArrowIpc,
-                config.endpoint.as_deref(),
-            )?;
+            if config.endpoint.is_some() && (config.host.is_some() || config.port.is_some()) {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{pipeline_name}' output '{label}': arrow_ipc output cannot have both 'endpoint' and 'host'/'port' configured"
+                )));
+            }
+
+            if config.endpoint.is_none() && config.host.is_none() {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{pipeline_name}' output '{label}': arrow_ipc output requires either 'endpoint' or 'host'"
+                )));
+            }
+
+            if let Some(endpoint) = &config.endpoint {
+                validate_url_output_endpoint(
+                    pipeline_name,
+                    label,
+                    OutputType::ArrowIpc,
+                    Some(endpoint.as_str()),
+                )?;
+            }
 
             if let Some(compression) = config.compression
                 && !matches!(
@@ -279,9 +291,14 @@ fn validate_output_config(
                 )));
             }
         }
-        OutputConfigV2::Http(_) | OutputConfigV2::Parquet(_) => {
+        OutputConfigV2::Http(_) => {
             return Err(ConfigError::Validation(format!(
-                "pipeline '{pipeline_name}' output '{label}': {output_type} output type is not yet implemented",
+                "pipeline '{pipeline_name}' output '{label}': 'http' output is not yet implemented",
+            )));
+        }
+        OutputConfigV2::Parquet(_) => {
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' output '{label}': 'parquet' output is not yet implemented",
             )));
         }
     }
@@ -561,6 +578,48 @@ impl Config {
                                 return Err(ConfigError::Validation(format!(
                                     "pipeline '{name}' input '{label}': otlp.max_recv_message_size_bytes must be at least 1"
                                 )));
+                            }
+
+                            if let Some(tls) = &o.tls {
+                                let cert_file = tls
+                                    .cert_file
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|v| !v.is_empty());
+                                let key_file = tls
+                                    .key_file
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|v| !v.is_empty());
+                                let client_ca_file = match tls.client_ca_file.as_deref() {
+                                    Some(path) => {
+                                        let path = path.trim();
+                                        if path.is_empty() {
+                                            return Err(ConfigError::Validation(format!(
+                                                "pipeline '{name}' input '{label}': otlp tls client_ca_file must not be empty"
+                                            )));
+                                        }
+                                        Some(path)
+                                    }
+                                    None => None,
+                                };
+
+                                if tls.require_client_auth && client_ca_file.is_none() {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': otlp tls require_client_auth requires tls.client_ca_file"
+                                    )));
+                                }
+                                if client_ca_file.is_some() && !tls.require_client_auth {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': otlp tls client_ca_file requires tls.require_client_auth: true"
+                                    )));
+                                }
+
+                                if cert_file.is_none() || key_file.is_none() {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': otlp tls requires both tls.cert_file and tls.key_file"
+                                    )));
+                                }
                             }
 
                             track_listen_addr_uniqueness(

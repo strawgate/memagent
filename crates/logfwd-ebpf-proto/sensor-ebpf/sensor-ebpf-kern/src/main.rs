@@ -27,10 +27,10 @@ use aya_ebpf::{
         bpf_get_current_cgroup_id, bpf_get_current_comm, bpf_get_current_pid_tgid,
         bpf_get_current_task, bpf_get_current_uid_gid, bpf_ktime_get_ns,
         bpf_probe_read_kernel, bpf_probe_read_kernel_str_bytes,
-        bpf_probe_read_user, bpf_probe_read_user_buf, bpf_probe_read_user_str_bytes,
+        bpf_probe_read_user, bpf_probe_read_user_buf, bpf_probe_read_user_str_bytes, bpf_get_smp_processor_id,
     },
     macros::{kprobe, map, tracepoint},
-    maps::{Array, HashMap, RingBuf},
+    maps::{Array, HashMap, PerCpuArray, RingBuf},
     programs::{ProbeContext, TracePointContext},
     EbpfContext,
 };
@@ -63,7 +63,13 @@ static SOCK_OWNERS: HashMap<u64, ConnProcessInfo> = HashMap::with_max_entries(81
 
 /// Runtime configuration from userspace (e.g., task_struct field offsets from BTF).
 #[map]
+
+/// Tracks events dropped due to the ring buffer being full.
+#[map]
+static DROPS: PerCpuArray<u64> = PerCpuArray::with_max_entries(1, 0);
+
 static CONFIG: Array<EbpfConfig> = Array::with_max_entries(1, 0);
+
 
 // ── Helpers ─────────────────────────────────────────────────────────────
 
@@ -138,7 +144,12 @@ pub fn sched_process_exec(ctx: TracePointContext) -> u32 {
 fn try_process_exec(ctx: &TracePointContext) -> Result<(), i64> {
     let mut entry = match EVENTS.reserve::<ProcessExecEvent>(0) {
         Some(e) => e,
-        None => return Ok(()),
+        None => {
+            if let Some(drops) = DROPS.get_ptr_mut(0) {
+                unsafe { *drops += 1; }
+            }
+            return Ok(());
+        }
     };
 
     let event = entry.as_mut_ptr();
@@ -202,7 +213,12 @@ fn try_process_exit(ctx: &TracePointContext) -> Result<(), i64> {
 
     let mut entry = match EVENTS.reserve::<ProcessExitEvent>(0) {
         Some(e) => e,
-        None => return Ok(()),
+        None => {
+            if let Some(drops) = DROPS.get_ptr_mut(0) {
+                unsafe { *drops += 1; }
+            }
+            return Ok(());
+        }
     };
 
     let event = entry.as_mut_ptr();
@@ -258,7 +274,12 @@ pub fn sys_enter_openat(ctx: TracePointContext) -> u32 {
 fn try_file_open(ctx: &TracePointContext) -> Result<(), i64> {
     let mut entry = match EVENTS.reserve::<FileOpenEvent>(0) {
         Some(e) => e,
-        None => return Ok(()),
+        None => {
+            if let Some(drops) = DROPS.get_ptr_mut(0) {
+                unsafe { *drops += 1; }
+            }
+            return Ok(());
+        }
     };
 
     let event = entry.as_mut_ptr();
@@ -290,7 +311,12 @@ pub fn sys_enter_unlinkat(ctx: TracePointContext) -> u32 {
 fn try_file_delete(ctx: &TracePointContext) -> Result<(), i64> {
     let mut entry = match EVENTS.reserve::<FileDeleteEvent>(0) {
         Some(e) => e,
-        None => return Ok(()),
+        None => {
+            if let Some(drops) = DROPS.get_ptr_mut(0) {
+                unsafe { *drops += 1; }
+            }
+            return Ok(());
+        }
     };
 
     let event = entry.as_mut_ptr();
@@ -321,7 +347,12 @@ pub fn sys_enter_renameat2(ctx: TracePointContext) -> u32 {
 fn try_file_rename(ctx: &TracePointContext) -> Result<(), i64> {
     let mut entry = match EVENTS.reserve::<FileRenameEvent>(0) {
         Some(e) => e,
-        None => return Ok(()),
+        None => {
+            if let Some(drops) = DROPS.get_ptr_mut(0) {
+                unsafe { *drops += 1; }
+            }
+            return Ok(());
+        }
     };
 
     let event = entry.as_mut_ptr();
@@ -356,7 +387,12 @@ pub fn sys_enter_setuid(ctx: TracePointContext) -> u32 {
 fn try_setuid(ctx: &TracePointContext) -> Result<(), i64> {
     let mut entry = match EVENTS.reserve::<SetuidEvent>(0) {
         Some(e) => e,
-        None => return Ok(()),
+        None => {
+            if let Some(drops) = DROPS.get_ptr_mut(0) {
+                unsafe { *drops += 1; }
+            }
+            return Ok(());
+        }
     };
 
     let event = entry.as_mut_ptr();
@@ -386,7 +422,12 @@ pub fn sys_enter_setgid(ctx: TracePointContext) -> u32 {
 fn try_setgid(ctx: &TracePointContext) -> Result<(), i64> {
     let mut entry = match EVENTS.reserve::<SetgidEvent>(0) {
         Some(e) => e,
-        None => return Ok(()),
+        None => {
+            if let Some(drops) = DROPS.get_ptr_mut(0) {
+                unsafe { *drops += 1; }
+            }
+            return Ok(());
+        }
     };
 
     let event = entry.as_mut_ptr();
@@ -416,7 +457,12 @@ pub fn module_load(ctx: TracePointContext) -> u32 {
 fn try_module_load(ctx: &TracePointContext) -> Result<(), i64> {
     let mut entry = match EVENTS.reserve::<ModuleLoadEvent>(0) {
         Some(e) => e,
-        None => return Ok(()),
+        None => {
+            if let Some(drops) = DROPS.get_ptr_mut(0) {
+                unsafe { *drops += 1; }
+            }
+            return Ok(());
+        }
     };
 
     let event = entry.as_mut_ptr();
@@ -455,7 +501,12 @@ pub fn sys_enter_ptrace(ctx: TracePointContext) -> u32 {
 fn try_ptrace(ctx: &TracePointContext) -> Result<(), i64> {
     let mut entry = match EVENTS.reserve::<PtraceEvent>(0) {
         Some(e) => e,
-        None => return Ok(()),
+        None => {
+            if let Some(drops) = DROPS.get_ptr_mut(0) {
+                unsafe { *drops += 1; }
+            }
+            return Ok(());
+        }
     };
 
     let event = entry.as_mut_ptr();
@@ -484,7 +535,12 @@ pub fn sys_enter_memfd_create(ctx: TracePointContext) -> u32 {
 fn try_memfd_create(ctx: &TracePointContext) -> Result<(), i64> {
     let mut entry = match EVENTS.reserve::<MemfdCreateEvent>(0) {
         Some(e) => e,
-        None => return Ok(()),
+        None => {
+            if let Some(drops) = DROPS.get_ptr_mut(0) {
+                unsafe { *drops += 1; }
+            }
+            return Ok(());
+        }
     };
 
     let event = entry.as_mut_ptr();
@@ -748,7 +804,12 @@ fn try_dns_query(ctx: &TracePointContext) -> Result<(), i64> {
     // Parse question section: label-encoded name starting at offset 12.
     let mut entry = match EVENTS.reserve::<DnsQueryEvent>(0) {
         Some(e) => e,
-        None => return Ok(()),
+        None => {
+            if let Some(drops) = DROPS.get_ptr_mut(0) {
+                unsafe { *drops += 1; }
+            }
+            return Ok(());
+        }
     };
 
     let event = entry.as_mut_ptr();

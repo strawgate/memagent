@@ -542,9 +542,10 @@ pub(super) fn build_input_state(
                         .map(logfwd_config::PositiveMillis::get),
                 };
 
-                let source = PlatformSensorInput::new(name, sensor_cfg).map_err(|e| {
-                    format!("input '{name}': failed to initialize eBPF sensor: {e}")
-                })?;
+                let source = PlatformSensorInput::new(name, sensor_cfg, Arc::clone(&stats))
+                    .map_err(|e| {
+                        format!("input '{name}': failed to initialize eBPF sensor: {e}")
+                    })?;
                 return Ok(InputState {
                     source: Box::new(source),
                     buf: BytesMut::with_capacity(64 * 1024),
@@ -946,6 +947,12 @@ mod tests {
                 adaptive_fast_polls_max: None,
                 max_open_files: None,
                 glob_rescan_interval_ms: None,
+                start_at: None,
+                encoding: None,
+                follow_symlinks: None,
+                ignore_older_secs: None,
+                multiline: None,
+                max_line_bytes: None,
             }),
         };
 
@@ -976,6 +983,12 @@ mod tests {
                 adaptive_fast_polls_max: Some(11),
                 max_open_files: Some(10),
                 glob_rescan_interval_ms: None,
+                start_at: None,
+                encoding: None,
+                follow_symlinks: None,
+                ignore_older_secs: None,
+                multiline: None,
+                max_line_bytes: None,
             }),
         };
 
@@ -1081,6 +1094,12 @@ mod tests {
                 adaptive_fast_polls_max: None,
                 max_open_files: None,
                 glob_rescan_interval_ms: None,
+                start_at: None,
+                encoding: None,
+                follow_symlinks: None,
+                ignore_older_secs: None,
+                multiline: None,
+                max_line_bytes: None,
             }),
         };
         let stats = pm.add_input("file-in", "file");
