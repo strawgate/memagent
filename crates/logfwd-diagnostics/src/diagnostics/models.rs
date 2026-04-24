@@ -157,6 +157,8 @@ pub struct TransportStatus {
     pub tcp: Option<TcpTransportStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub udp: Option<UdpTransportStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ebpf: Option<EbpfTransportStatus>,
 }
 
 /// File input transport counters.
@@ -177,6 +179,12 @@ pub struct TcpTransportStatus {
 pub struct UdpTransportStatus {
     pub drops_detected: u64,
     pub recv_buffer_size: u64,
+}
+
+/// eBPF platform sensor counters.
+#[derive(Debug, Serialize)]
+pub struct EbpfTransportStatus {
+    pub drops_detected: u64,
 }
 
 /// Transform-stage status and filtering statistics.

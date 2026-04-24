@@ -24,6 +24,7 @@ use aya::maps::RingBuf;
 use aya::programs::{KProbe, TracePoint};
 use logfwd_types::diagnostics::ComponentHealth;
 use sensor_ebpf_common::dns::dns_wire_to_dotted;
+use sensor_ebpf_common::utils::*;
 use sensor_ebpf_common::*;
 
 /// Newtype wrapper for `EbpfConfig` to satisfy aya's `Pod` trait (orphan rule).
@@ -37,13 +38,9 @@ unsafe impl aya::Pod for PodEbpfConfig {}
 use crate::input::{InputEvent, InputSource};
 use crate::platform_sensor_filter::is_event_type_enabled;
 
-/// Tracefs paths to probe for the sched_process_exit format file.
-/// Some systems mount tracefs at `/sys/kernel/tracing`, others at
-/// `/sys/kernel/debug/tracing`.
-const SCHED_PROCESS_EXIT_FORMAT_PATHS: &[&str] = &[
-    "/sys/kernel/tracing/events/sched/sched_process_exit/format",
-    "/sys/kernel/debug/tracing/events/sched/sched_process_exit/format",
-];
+// Tracefs paths to probe for the sched_process_exit format file.
+// Some systems mount tracefs at `/sys/kernel/tracing`, others at
+// `/sys/kernel/debug/tracing`.
 
 // ── Configuration ──────────────────────────────────────────────────────
 
@@ -265,6 +262,7 @@ const KPROBES: &[(&str, &str)] = &[("tcp_v4_connect", "tcp_v4_connect")];
 pub struct PlatformSensorInput {
     name: String,
     state: SensorState,
+    stats: Arc<logfwd_types::diagnostics::ComponentStats>,
 }
 
 enum SensorState {
@@ -297,7 +295,11 @@ struct EbpfConfigStatus {
 impl PlatformSensorInput {
     /// Create a new platform sensor input. eBPF programs are not loaded
     /// until the first `poll()` call.
-    pub fn new(name: impl Into<String>, config: PlatformSensorConfig) -> io::Result<Self> {
+    pub fn new(
+        name: impl Into<String>,
+        config: PlatformSensorConfig,
+        stats: Arc<logfwd_types::diagnostics::ComponentStats>,
+    ) -> io::Result<Self> {
         if !config.ebpf_binary_path.exists() {
             return Err(io::Error::new(
                 io::ErrorKind::NotFound,
@@ -310,6 +312,7 @@ impl PlatformSensorInput {
 
         Ok(Self {
             name: name.into(),
+            stats,
             state: SensorState::Init {
                 config,
                 schema: platform_sensor_schema(),
@@ -414,14 +417,14 @@ impl PlatformSensorInput {
     /// Discovers the byte offset of `task_struct.exit_code` from kernel BTF
     /// so the eBPF program can read real exit codes instead of using a sentinel.
     fn configure_ebpf_params(ebpf: &mut Ebpf) -> io::Result<EbpfConfigStatus> {
-        let exit_code_offset = match Self::find_exit_code_offset() {
+        let exit_code_offset = match find_exit_code_offset() {
             Ok(offset) => Some(offset),
             Err(e) => {
                 tracing::warn!("exit_code offset detection failed: {e}");
                 None
             }
         };
-        let group_dead_offset = match Self::find_sched_process_exit_group_dead_offset() {
+        let group_dead_offset = match find_sched_process_exit_group_dead_offset() {
             Ok(offset) => offset,
             Err(e) => {
                 tracing::warn!("group_dead offset detection failed: {e}");
@@ -468,92 +471,39 @@ impl PlatformSensorInput {
     ///
     /// Uses `pahole` (from the `dwarves` package) to introspect kernel BTF.
     /// Returns the byte offset on success.
-    fn find_exit_code_offset() -> io::Result<u32> {
-        // Try pahole — the standard tool for BTF struct layout.
-        let output = std::process::Command::new("pahole")
-            .args(["-C", "task_struct", "/sys/kernel/btf/vmlinux"])
-            .output()
-            .map_err(|e| {
-                io::Error::other(format!(
-                    "pahole not available (install dwarves package for exit_code support): {e}"
-                ))
-            })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(io::Error::other(format!(
-                "pahole failed (exit {}): {stderr}",
-                output.status
-            )));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        // pahole output: "	int  exit_code;  /*  1234  4 */"
-        for line in stdout.lines() {
-            let trimmed = line.trim();
-            if trimmed.contains("exit_code")
-                && trimmed.contains("/*")
-                && let Some(comment) = trimmed.split("/*").nth(1)
-                && let Some(offset_str) = comment.split_whitespace().next()
-                && let Ok(offset) = offset_str.parse::<u32>()
-                && offset > 0
-                && offset < 16384
-            {
-                return Ok(offset);
-            }
-        }
-
-        Err(io::Error::other(
-            "exit_code field not found in pahole output",
-        ))
-    }
-
-    /// Discover `sched_process_exit.group_dead` offset from tracepoint format.
-    ///
-    /// Probes multiple tracefs mount points and validates that the field size
-    /// is within the expected range for a boolean field (<= 4 bytes).
-    fn find_sched_process_exit_group_dead_offset() -> io::Result<Option<u32>> {
-        let format_text = Self::read_tracepoint_format()?;
-        let Some(field) = parse_tracepoint_field(&format_text, "group_dead") else {
-            return Ok(None);
+    fn check_drops(ebpf: &mut Ebpf) -> io::Result<u64> {
+        let drops_map = match ebpf.map_mut("DROPS") {
+            Some(map) => map,
+            None => return Ok(0),
         };
-        // The kernel defines group_dead as bool (1 byte). Accept sizes up to 4
-        // (some kernels may widen to int), but warn and disable on anything larger.
-        if field.size == 0 || field.size > 4 {
-            tracing::warn!(
-                size = field.size,
-                "sched_process_exit.group_dead has unexpected size; disabling group_dead support"
-            );
-            return Ok(None);
-        }
-        if field.size != 1 {
-            tracing::info!(
-                size = field.size,
-                "sched_process_exit.group_dead size is not 1; reading as u8 from first byte"
-            );
-        }
-        Ok(Some(field.offset))
-    }
 
-    /// Read the tracepoint format file, probing multiple tracefs mount points.
-    fn read_tracepoint_format() -> io::Result<String> {
-        let mut last_err = None;
-        for path in SCHED_PROCESS_EXIT_FORMAT_PATHS {
-            match std::fs::read_to_string(path) {
-                Ok(text) => return Ok(text),
-                Err(e) => {
-                    tracing::debug!("tracefs path {path} unavailable: {e}");
-                    last_err = Some(e);
+        let mut drops_array = match aya::maps::PerCpuArray::<_, u64>::try_from(drops_map) {
+            Ok(array) => array,
+            Err(_) => return Ok(0),
+        };
+
+        let mut total_drops = 0;
+        let cpus = aya::util::online_cpus()
+            .map_err(|e| io::Error::other(format!("failed to get online cpus: {e:?}")))?;
+
+        // Sum drops across all CPUs, then zero them out so we only report deltas.
+        if let Ok(per_cpu_values) = drops_array.get(&0, 0) {
+            for val in per_cpu_values.iter() {
+                if *val > 0 {
+                    total_drops += val;
                 }
             }
+            if total_drops > 0 {
+                // Zero out the map to prevent overcounting on the next poll
+                use aya::maps::PerCpuValues;
+                let zero_vals: Vec<u64> = cpus.iter().map(|_| 0).collect();
+                let _ = drops_array.set(0, PerCpuValues::try_from(zero_vals).unwrap(), 0);
+            }
         }
-        Err(io::Error::other(format!(
-            "failed to read sched_process_exit tracepoint format from any tracefs path: {}",
-            last_err.map_or_else(|| "no paths configured".to_string(), |e| e.to_string())
-        )))
+
+        Ok(total_drops)
     }
 
-    /// Drain available events from the ring buffer into an Arrow `RecordBatch`.
     fn drain_events(
         ebpf: &mut Ebpf,
         schema: &Arc<Schema>,
@@ -626,50 +576,6 @@ impl PlatformSensorInput {
             accounted_bytes,
         }))
     }
-}
-
-/// Parsed tracepoint field metadata: offset and size in bytes.
-struct TracepointField {
-    offset: u32,
-    size: u32,
-}
-
-fn parse_tracepoint_field(format_text: &str, field_name: &str) -> Option<TracepointField> {
-    for line in format_text.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("field:") || !trimmed.contains("offset:") {
-            continue;
-        }
-        let Some(field_decl) = trimmed
-            .strip_prefix("field:")
-            .and_then(|field| field.split(';').next())
-            .map(str::trim)
-        else {
-            continue;
-        };
-        let Some(field_name_with_suffix) = field_decl.split_whitespace().last() else {
-            continue;
-        };
-        let actual_name = field_name_with_suffix.split('[').next().unwrap_or_default();
-        if actual_name != field_name {
-            continue;
-        }
-        let offset = trimmed
-            .split("offset:")
-            .nth(1)
-            .and_then(|o| o.split(';').next())
-            .map(str::trim)
-            .and_then(|s| s.parse::<u32>().ok())?;
-        let size = trimmed
-            .split("size:")
-            .nth(1)
-            .and_then(|s| s.split(';').next())
-            .map(str::trim)
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0);
-        return Some(TracepointField { offset, size });
-    }
-    None
 }
 
 /// Parse a single ring buffer event into an `EventRow`.
@@ -962,6 +868,11 @@ impl InputSource for PlatformSensorInput {
                 skipped_probes,
                 degraded_capabilities,
             } => {
+                if let Ok(drops) = Self::check_drops(&mut ebpf)
+                    && drops > 0
+                {
+                    self.stats.inc_ebpf_drops(drops);
+                }
                 let result = Self::drain_events(
                     &mut ebpf,
                     &schema,
@@ -1005,113 +916,10 @@ impl InputSource for PlatformSensorInput {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_addr, parse_tracepoint_field};
+    use sensor_ebpf_common::dns::dns_wire_to_dotted;
+    use std::net::Ipv4Addr;
 
-    /// Legacy wrapper that returns only the offset (used by tests).
-    fn parse_tracepoint_field_offset(format_text: &str, field_name: &str) -> Option<u32> {
-        parse_tracepoint_field(format_text, field_name).map(|f| f.offset)
-    }
-
-    #[test]
-    fn format_addr_renders_network_order_ipv4() {
-        let addr = u32::from_ne_bytes([127, 0, 0, 1]);
-        assert_eq!(format_addr(addr), "127.0.0.1");
-    }
-
-    #[test]
-    fn format_addr_renders_multibyte_octets() {
-        let addr = u32::from_ne_bytes([192, 168, 1, 10]);
-        assert_eq!(format_addr(addr), "192.168.1.10");
-    }
-
-    #[test]
-    fn parse_tracepoint_field_offset_extracts_group_dead_offset() {
-        let text = r#"
-name: sched_process_exit
-ID: 68
-format:
-	field:unsigned short common_type;	offset:0;	size:2;	signed:0;
-	field:unsigned char common_flags;	offset:2;	size:1;	signed:0;
-	field:unsigned char common_preempt_count;	offset:3;	size:1;	signed:0;
-	field:int common_pid;	offset:4;	size:4;	signed:1;
-
-	field:char comm[16];	offset:8;	size:16;	signed:1;
-	field:pid_t pid;	offset:24;	size:4;	signed:1;
-	field:int prio;	offset:28;	size:4;	signed:1;
-	field:int group_dead;	offset:32;	size:4;	signed:1;
-"#;
-
-        assert_eq!(parse_tracepoint_field_offset(text, "group_dead"), Some(32));
-    }
-
-    #[test]
-    fn parse_tracepoint_field_offset_returns_none_when_group_dead_absent() {
-        let text = r#"
-name: sched_process_exit
-format:
-	field:unsigned short common_type;	offset:0;	size:2;	signed:0;
-	field:char comm[16];	offset:8;	size:16;	signed:1;
-	field:pid_t pid;	offset:24;	size:4;	signed:1;
-	field:int prio;	offset:28;	size:4;	signed:1;
-"#;
-
-        assert_eq!(parse_tracepoint_field_offset(text, "group_dead"), None);
-    }
-
-    #[test]
-    fn parse_tracepoint_field_offset_requires_exact_field_name() {
-        let text = r#"
-name: sched_process_exit
-format:
-	field:int not_group_dead;	offset:32;	size:4;	signed:1;
-"#;
-
-        assert_eq!(parse_tracepoint_field_offset(text, "group_dead"), None);
-    }
-
-    #[test]
-    fn parse_tracepoint_field_offset_skips_malformed_lines() {
-        let text = r#"
-name: sched_process_exit
-format:
-	field:;	offset:8;	size:4;	signed:1;
-	field:int group_dead;	offset:32;	size:4;	signed:1;
-"#;
-
-        assert_eq!(parse_tracepoint_field_offset(text, "group_dead"), Some(32));
-    }
-
-    #[test]
-    fn parse_tracepoint_field_extracts_offset_and_size() {
-        let text = r#"
-name: sched_process_exit
-format:
-	field:bool group_dead;	offset:24;	size:1;	signed:0;
-"#;
-        let field = parse_tracepoint_field(text, "group_dead").unwrap();
-        assert_eq!(field.offset, 24);
-        assert_eq!(field.size, 1);
-    }
-
-    #[test]
-    fn parse_tracepoint_field_extracts_int_sized_group_dead() {
-        let text = r#"
-name: sched_process_exit
-format:
-	field:int group_dead;	offset:32;	size:4;	signed:1;
-"#;
-        let field = parse_tracepoint_field(text, "group_dead").unwrap();
-        assert_eq!(field.offset, 32);
-        assert_eq!(field.size, 4);
-    }
-
-    #[test]
-    fn parse_tracepoint_field_returns_none_for_missing_field() {
-        let text = r#"
-name: sched_process_exit
-format:
-	field:int prio;	offset:28;	size:4;	signed:1;
-"#;
-        assert!(parse_tracepoint_field(text, "group_dead").is_none());
+    fn format_addr(addr: u32) -> Ipv4Addr {
+        Ipv4Addr::from(addr.to_ne_bytes())
     }
 }

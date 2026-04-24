@@ -36,11 +36,6 @@ struct PodEbpfConfig(EbpfConfig);
 unsafe impl aya::Pod for PodEbpfConfig {}
 
 /// Tracefs paths to probe for the sched_process_exit format file.
-const SCHED_PROCESS_EXIT_FORMAT_PATHS: &[&str] = &[
-    "/sys/kernel/tracing/events/sched/sched_process_exit/format",
-    "/sys/kernel/debug/tracing/events/sched/sched_process_exit/format",
-];
-
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let json_mode = args.iter().any(|a| a == "--json");
@@ -748,10 +743,7 @@ impl EventCounts {
     }
 }
 
-struct RuntimeConfig {
-    exit_code_offset: Option<u32>,
-    group_dead_offset: Option<u32>,
-}
+use sensor_ebpf_common::utils::*;
 
 /// Discover runtime offsets and write them to the CONFIG map.
 fn configure_runtime_config(ebpf: &mut Ebpf) -> Result<RuntimeConfig, Box<dyn std::error::Error>> {
@@ -776,107 +768,4 @@ fn configure_runtime_config(ebpf: &mut Ebpf) -> Result<RuntimeConfig, Box<dyn st
         exit_code_offset,
         group_dead_offset,
     })
-}
-
-fn find_exit_code_offset() -> Result<u32, Box<dyn std::error::Error>> {
-    let output = std::process::Command::new("pahole")
-        .args(["-C", "task_struct", "/sys/kernel/btf/vmlinux"])
-        .output()?;
-
-    if !output.status.success() {
-        return Err("pahole failed or not installed".into());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        let trimmed = line.trim();
-        if trimmed.contains("exit_code")
-            && trimmed.contains("/*")
-            && let Some(comment) = trimmed.split("/*").nth(1)
-            && let Some(off) = comment
-                .split_whitespace()
-                .next()
-                .and_then(|s| s.parse::<u32>().ok())
-            && off > 0
-            && off < 16384
-        {
-            return Ok(off);
-        }
-    }
-
-    Err("exit_code field not found in pahole output".into())
-}
-
-fn find_sched_process_exit_group_dead_offset() -> Result<Option<u32>, Box<dyn std::error::Error>> {
-    let format_text = read_tracepoint_format()?;
-    let Some(field) = parse_tracepoint_field(&format_text, "group_dead") else {
-        return Ok(None);
-    };
-    if field.size == 0 || field.size > 4 {
-        eprintln!(
-            "  WARNING: sched_process_exit.group_dead has unexpected size {}; disabling",
-            field.size
-        );
-        return Ok(None);
-    }
-    if field.size != 1 {
-        eprintln!(
-            "  NOTE: sched_process_exit.group_dead size is {} (not 1); reading as u8 from first byte",
-            field.size
-        );
-    }
-    Ok(Some(field.offset))
-}
-
-fn read_tracepoint_format() -> Result<String, Box<dyn std::error::Error>> {
-    for path in SCHED_PROCESS_EXIT_FORMAT_PATHS {
-        match std::fs::read_to_string(path) {
-            Ok(text) => return Ok(text),
-            Err(e) => eprintln!("  tracefs path {path} unavailable: {e}"),
-        }
-    }
-    Err("failed to read sched_process_exit tracepoint format from any tracefs path".into())
-}
-
-struct TracepointField {
-    offset: u32,
-    size: u32,
-}
-
-fn parse_tracepoint_field(format_text: &str, field_name: &str) -> Option<TracepointField> {
-    for line in format_text.lines() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("field:") || !trimmed.contains("offset:") {
-            continue;
-        }
-        let Some(field_decl) = trimmed
-            .strip_prefix("field:")
-            .and_then(|field| field.split(';').next())
-            .map(str::trim)
-        else {
-            continue;
-        };
-        let Some(field_name_with_suffix) = field_decl.split_whitespace().last() else {
-            continue;
-        };
-        let actual_name = field_name_with_suffix.split('[').next().unwrap_or_default();
-        if actual_name != field_name {
-            continue;
-        }
-        let offset = trimmed
-            .split("offset:")
-            .nth(1)
-            .and_then(|o| o.split(';').next())
-            .map(str::trim)
-            .and_then(|s| s.parse::<u32>().ok())?;
-        let size = trimmed
-            .split("size:")
-            .nth(1)
-            .and_then(|s| s.split(';').next())
-            .map(str::trim)
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0);
-        return Some(TracepointField { offset, size });
-    }
-    None
 }

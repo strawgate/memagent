@@ -327,6 +327,10 @@ fn test_build_sink_factory_file_resolves_relative_path_against_base_path() {
         name: Some("capture".to_string()),
         path: Some(filename.clone()),
         format: Some(Format::Json),
+        compression: None,
+        rotation: None,
+        delimiter: None,
+        path_template: None,
     });
 
     let factory = build_sink_factory(

@@ -39,6 +39,8 @@ pub struct ComponentStats {
     pub tcp_active: AtomicUsize,
     /// UDP: datagram drops detected.
     pub udp_drops: AtomicU64,
+    /// eBPF: ring buffer overflow drops.
+    pub ebpf_drops: AtomicU64,
     /// UDP: actual kernel receive buffer size.
     pub udp_recv_buf: AtomicUsize,
     /// Cumulative wall-clock nanoseconds spent in HTTP/gRPC send calls
@@ -57,6 +59,7 @@ pub struct ComponentStats {
     otel_otlp_projected_success: Counter<u64>,
     otel_otlp_projected_fallback: Counter<u64>,
     otel_otlp_projection_invalid: Counter<u64>,
+    otel_ebpf_drops: Counter<u64>,
     otel_send_ns: Counter<u64>,
     otel_send_count: Counter<u64>,
     otel_attrs: Vec<KeyValue>,
@@ -84,6 +87,7 @@ impl ComponentStats {
             tcp_accepted: AtomicU64::new(0),
             tcp_active: AtomicUsize::new(0),
             udp_drops: AtomicU64::new(0),
+            ebpf_drops: AtomicU64::new(0),
             udp_recv_buf: AtomicUsize::new(0),
             #[cfg(not(kani))]
             send_ns_total: AtomicU64::new(0),
@@ -103,6 +107,7 @@ impl ComponentStats {
             otel_otlp_projection_invalid: meter
                 .u64_counter(format!("{prefix}_otlp_projection_invalid"))
                 .build(),
+            otel_ebpf_drops: meter.u64_counter(format!("{prefix}_ebpf_drops")).build(),
             otel_send_ns: meter.u64_counter(format!("{prefix}_send_ns")).build(),
             otel_send_count: meter.u64_counter(format!("{prefix}_send_count")).build(),
             otel_attrs: attrs,
@@ -130,6 +135,12 @@ impl ComponentStats {
     pub fn inc_bytes(&self, n: u64) {
         self.bytes_total.fetch_add(n, Ordering::Relaxed);
         self.otel_bytes.add(n, &self.otel_attrs);
+    }
+
+    /// Increment eBPF ring buffer drop counter by `n` (atomic + OTel).
+    pub fn inc_ebpf_drops(&self, n: u64) {
+        self.ebpf_drops.fetch_add(n, Ordering::Relaxed);
+        self.otel_ebpf_drops.add(n, &self.otel_attrs);
     }
 
     /// Increment error counter by 1 (atomic + OTel).

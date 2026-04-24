@@ -6,6 +6,8 @@
 
 #[cfg(feature = "std")]
 pub mod dns;
+#[cfg(feature = "std")]
+pub mod utils;
 
 /// Maximum bytes captured from a filename/path in events.
 pub const MAX_FILENAME: usize = 256;
