@@ -716,10 +716,10 @@ pub struct FileTypeConfig {
     /// File input poll cadence in milliseconds (default: 50, minimum: 1).
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub poll_interval_ms: Option<PositiveMillis>,
-    /// File tail read buffer in bytes (default: 262_144, minimum: 1, maximum: 4_194_304).
+    /// File tail read buffer in bytes (default: 1,048,576, minimum: 1, maximum: 8,388,608).
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub read_buf_size: Option<usize>,
-    /// Maximum bytes read per file per poll (default: 262_144, minimum: 1).
+    /// Maximum bytes read per file per poll (default: 1,048,576, minimum: 1).
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub per_file_read_budget_bytes: Option<usize>,
     /// Immediate repoll budget armed when a file poll hits read budget
@@ -1029,6 +1029,7 @@ pub struct OtlpOutputConfig {
         deserialize_with = "deserialize_option_string_map_strict_values"
     )]
     pub headers: Option<HashMap<String, String>>,
+    /// Default retry attempts. Defaults to 10 when omitted.
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub retry_attempts: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
@@ -1037,8 +1038,10 @@ pub struct OtlpOutputConfig {
     pub retry_max_backoff_ms: Option<PositiveMillis>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub request_timeout_ms: Option<PositiveMillis>,
+    /// Default batch size in bytes. Defaults to 4 MiB (4,194,304) when omitted.
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub batch_size: Option<usize>,
+    /// Default batch timeout. Defaults to 1s (1,000ms) when omitted.
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub batch_timeout_ms: Option<PositiveMillis>,
 }
@@ -1404,8 +1407,10 @@ pub struct PipelineConfig {
     pub resource_attrs: HashMap<String, String>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub workers: Option<usize>,
+    /// Default batch size in bytes. Defaults to 4 MiB (4,194,304) when omitted.
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub batch_target_bytes: Option<usize>,
+    /// Default batch timeout. Defaults to 1s (1,000ms) when omitted.
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub batch_timeout_ms: Option<PositiveMillis>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
