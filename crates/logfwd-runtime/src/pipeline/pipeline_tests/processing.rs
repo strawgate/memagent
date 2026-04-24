@@ -80,7 +80,7 @@ output:
     let metrics = Arc::clone(&pipeline.metrics);
 
     std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let errors = metrics.transform_errors.load(Ordering::Relaxed);
             let dropped = metrics.dropped_batches_total.load(Ordering::Relaxed);

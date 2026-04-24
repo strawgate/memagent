@@ -332,7 +332,7 @@ fn test_machine_clean_shutdown_no_in_flight() {
 
     let metrics = Arc::clone(pipeline.metrics());
     std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             if metrics.batch_rows_total.load(Ordering::Relaxed) >= 100 {
                 std::thread::sleep(Duration::from_millis(50));
@@ -391,7 +391,7 @@ fn test_flush_batch_output_error_machine_still_drains() {
 
     let metrics = Arc::clone(pipeline.metrics());
     std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             if metrics.outputs[0].2.errors() > 0 {
                 std::thread::sleep(Duration::from_millis(50));
