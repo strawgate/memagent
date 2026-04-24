@@ -642,6 +642,43 @@ pipelines:
     }
 
     #[test]
+    fn tcp_input_accepts_max_clients() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 0.0.0.0:514
+        max_clients: 2048
+    outputs:
+      - type: "null"
+"#;
+        let config = Config::load_str(yaml).expect("tcp input must accept max_clients");
+        match &config.pipelines["test"].inputs[0].type_config {
+            InputTypeConfig::Tcp(tcp) => {
+                assert_eq!(tcp.max_clients, Some(2048));
+            }
+            _ => panic!("Expected TCP input config"),
+        }
+    }
+
+    #[test]
+    fn tcp_input_rejects_max_clients_zero() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: tcp
+        listen: 0.0.0.0:514
+        max_clients: 0
+    outputs:
+      - type: "null"
+"#;
+        let err = Config::load_str(yaml).expect_err("tcp input must reject max_clients: 0");
+        assert!(err.to_string().contains("max_clients must be greater than 0"));
+    }
+
+    #[test]
     fn tcp_input_rejects_adaptive_fast_polls_max() {
         let yaml = r#"
 pipelines:

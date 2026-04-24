@@ -480,6 +480,11 @@ impl Config {
                                     validation_message(err)
                                 )));
                             }
+                            if t.max_clients == Some(0) {
+                                return Err(ConfigError::Validation(format!(
+                                    "pipeline '{name}' input '{label}': tcp max_clients must be greater than 0"
+                                )));
+                            }
                             if let Some(tls) = &t.tls {
                                 let cert_file = tls
                                     .cert_file

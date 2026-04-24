@@ -4,7 +4,7 @@ impl InputSource for TcpInput {
 
         // Accept new connections up to the limit.
         loop {
-            if self.clients.len() >= self.max_clients {
+            if self.max_clients.is_some_and(|max| self.clients.len() >= max) {
                 // Drain (and drop) any pending connections beyond the limit so
                 // the kernel accept queue does not fill up and stall.
                 match self.listener.accept() {
@@ -21,7 +21,7 @@ impl InputSource for TcpInput {
                             tracing::warn!(
                                 "TCP input '{}' reached max_clients limit ({}), dropping incoming connections",
                                 self.name,
-                                self.max_clients
+                                self.max_clients.unwrap()
                             );
                             self.last_max_clients_warning = Some(Instant::now());
                         }

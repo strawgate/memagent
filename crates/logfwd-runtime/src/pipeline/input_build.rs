@@ -417,7 +417,7 @@ pub(super) fn build_input_state(
             }
             let mut options = logfwd_io::tcp_input::TcpInputOptions::default();
             if let Some(v) = t.max_clients {
-                options.max_clients = v;
+                options.max_clients = Some(v);
             }
             if let Some(v) = t.connection_timeout_ms {
                 options.connection_timeout_ms = v.get();

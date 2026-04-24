@@ -1,7 +1,7 @@
     #[test]
     fn test_tcp_max_clients_drops_and_warns() {
         let mut options = TcpInputOptions::default();
-        options.max_clients = 2;
+        options.max_clients = Some(2);
 
         let mut input = TcpInput::with_options(
             "test_max_conns",

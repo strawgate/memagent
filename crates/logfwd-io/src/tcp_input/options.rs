@@ -1,7 +1,7 @@
 #[derive(Debug, Clone)]
 pub struct TcpInputOptions {
-    /// Maximum number of concurrent connections. Defaults to 1024.
-    pub max_clients: usize,
+    /// Maximum number of concurrent connections. Defaults to unlimited.
+    pub max_clients: Option<usize>,
     /// Connection idle timeout in milliseconds. Defaults to 60000 (60s).
     pub connection_timeout_ms: u64,
     /// Connection read timeout in milliseconds (disconnects if a read yields incomplete data and the next read takes too long). Defaults to no timeout.
@@ -13,7 +13,7 @@ pub struct TcpInputOptions {
 impl Default for TcpInputOptions {
     fn default() -> Self {
         Self {
-            max_clients: 1024,
+            max_clients: None,
             connection_timeout_ms: DEFAULT_IDLE_TIMEOUT.as_millis() as u64,
             read_timeout_ms: None,
             tls: None,

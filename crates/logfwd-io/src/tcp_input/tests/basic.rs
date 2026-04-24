@@ -392,7 +392,7 @@
     #[test]
     fn test_tcp_custom_options() {
         let mut options = TcpInputOptions::default();
-        options.max_clients = 2;
+        options.max_clients = Some(2);
         options.connection_timeout_ms = 1000;
         options.read_timeout_ms = Some(500);
 
@@ -404,7 +404,7 @@
         )
         .unwrap();
 
-        assert_eq!(input.max_clients, 2);
+        assert_eq!(input.max_clients, Some(2));
         assert_eq!(input.idle_timeout.as_millis(), 1000);
         assert_eq!(input.read_timeout.unwrap().as_millis(), 500);
     }

@@ -10,7 +10,7 @@ pub struct TcpInput {
     buf: Vec<u8>,
     idle_timeout: Duration,
     read_timeout: Option<Duration>,
-    max_clients: usize,
+    max_clients: Option<usize>,
     /// Total connections accepted since creation (never decreases).
     connections_accepted: u64,
     /// Rate-limit state for max_clients warnings.
