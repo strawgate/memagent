@@ -975,6 +975,31 @@ impl Config {
                                 )));
                             }
                         }
+                        InputTypeConfig::MacosLog(s) => {
+                            if let Some(config) = &s.macos_log {
+                                if let Some(level) = &config.level
+                                    && level.trim().is_empty()
+                                {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': macos_log 'level' cannot be empty"
+                                    )));
+                                }
+                                if let Some(subsystem) = &config.subsystem
+                                    && subsystem.trim().is_empty()
+                                {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': macos_log 'subsystem' cannot be empty"
+                                    )));
+                                }
+                                if let Some(process) = &config.process
+                                    && process.trim().is_empty()
+                                {
+                                    return Err(ConfigError::Validation(format!(
+                                        "pipeline '{name}' input '{label}': macos_log 'process' cannot be empty"
+                                    )));
+                                }
+                            }
+                        }
                     }
 
                     // Reject input formats that are not yet implemented.

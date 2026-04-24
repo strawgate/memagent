@@ -21,6 +21,7 @@ pub mod input;
 pub mod journal_ffi;
 /// Journald (systemd journal) input — native API with subprocess fallback.
 pub mod journald_input;
+pub mod macos_log_input;
 pub mod otap_receiver;
 pub mod otlp_receiver;
 /// eBPF-based platform sensor input (Linux only).
