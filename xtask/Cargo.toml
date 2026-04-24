@@ -7,6 +7,7 @@ publish = false
 [dependencies]
 anyhow = "1"
 clap = { version = "4.5", features = ["derive"] }
+logfwd-config = { version = "0.1.0", path = "../crates/logfwd-config" }
 quote = "1"
 regex = "1"
 syn = { version = "2", features = ["full", "visit"] }

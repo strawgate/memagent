@@ -200,6 +200,10 @@ verification-trigger-contract:
 verify:
     cargo xtask verify
 
+# Regenerate config support tables from the shared docspec registry.
+generate-config-docs:
+    cargo xtask generate-config-docs
+
 # Run all lightweight verification guardrails enforced in CI.
 verification-guardrail: kani-boundary tlc-matrix-contract proptest-regressions verification-trigger-contract
 

@@ -353,11 +353,13 @@ impl Pipeline {
             }
             self.metrics.output_error(&ack.output_name);
         }
-        let (has_held, _checkpoint_advances) =
+        let (has_held, checkpoint_advances) =
             self.ack_all_tickets(ack.tickets, default_ticket_disposition(&ack.outcome));
+        #[cfg(not(feature = "turmoil"))]
+        let _ = &checkpoint_advances;
         #[cfg(feature = "turmoil")]
-        let _checkpoint_advances = {
-            let mut advances = _checkpoint_advances;
+        let checkpoint_advances = {
+            let mut advances = checkpoint_advances;
             advances.sort_unstable();
             advances
         };
@@ -366,7 +368,7 @@ impl Pipeline {
             crate::turmoil_barriers::RuntimeBarrierEvent::AckApplied {
                 batch_id,
                 outcome: outcome_for_event.clone(),
-                checkpoint_advances: _checkpoint_advances,
+                checkpoint_advances,
             },
         )
         .await;

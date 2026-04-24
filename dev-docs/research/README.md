@@ -26,6 +26,7 @@ artifact, or generated file under `dev-docs/research/`.
 ## Active Research
 
 - [checkpoint-snapshot-design.md](checkpoint-snapshot-design.md)
+- [config-doc-generation-design.md](config-doc-generation-design.md)
 - [config-library-poc.md](config-library-poc.md)
 - [crate-restructure-plan.md](crate-restructure-plan.md)
 - [elasticsearch-retry-contract.md](elasticsearch-retry-contract.md)
