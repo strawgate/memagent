@@ -244,7 +244,6 @@ export function layoutSwimlane(
 
       if (isScan) {
         // Skip batches with no scan time yet, or that just finished (< 300ms old)
-        if (scanMs + xfmMs < 2) continue;
         // In-progress: clamp to nowMs so the bar grows with the clock.
         // Completed: use actual end position — no clamp. (Same reasoning as worker row:
         // clamping completed bars to nowMs pins them when the server clock is ahead.)
@@ -361,7 +360,6 @@ export function layoutSwimlane(
             const ex = toXRaw(curMs + dur);
             curMs += dur;
             const w = ex - sx;
-            if (w <= 0) return;
             segments.push({ x: sx, w: Math.max(2, w), color, alpha, pulse });
           };
           addSeg(scanMs, C.scan, 0.38, false);
@@ -376,7 +374,6 @@ export function layoutSwimlane(
             const ex = toXRaw(curMs + dur);
             curMs += dur;
             const w = ex - sx;
-            if (w <= 0) return;
             segments.push({ x: sx, w: Math.max(2, w), color, alpha, pulse: false });
           };
           addSeg(scanMs, C.scan, 0.38);
@@ -403,7 +400,6 @@ export function layoutSwimlane(
             const ex = toXRaw(curMs + dur);
             curMs += dur;
             const w = ex - sx;
-            if (w <= 0) return;
             segments.push({ x: sx, w: Math.max(2, w), color, alpha, pulse });
           };
           addSeg(scanMs, C.scan, 0.38);
@@ -854,6 +850,7 @@ export function TraceExplorer({ traces }: Props) {
   const [showAll, setShowAll] = useState(false);
   const [windowMs, setWindowMs] = useState(() => autoWindow(traces));
   const userPickedWindowRef = useRef(false);
+  const autoWindowInitializedRef = useRef(traces.length > 0);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const lanesRef = useRef<Lane[]>([]);
@@ -875,7 +872,10 @@ export function TraceExplorer({ traces }: Props) {
   // Auto-adjust window when new traces arrive, unless the user has picked one.
   useEffect(() => {
     if (userPickedWindowRef.current) return;
+    if (autoWindowInitializedRef.current) return;
+    if (traces.length === 0) return;
     const w = autoWindow(traces);
+    autoWindowInitializedRef.current = true;
     if (w !== windowMs) setWindowMs(w);
   }, [traces, windowMs]);
 

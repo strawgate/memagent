@@ -1,28 +1,10 @@
-/* === Show More Charts button === */
-.show-more-btn {
-  display: inline-block;
-  margin: 10px 0;
-  padding: 6px 18px;
-  background: var(--accent);
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.08);
-}
-.show-more-btn:hover {
-  background: #2563eb;
-  color: #fff;
-}
 :root {
   --bg: #0a0d12;
   --card: #12161e;
   --card-hover: #171c26;
   --border: #1e2536;
   --accent: #3b82f6;
+  --accent-hover: #2563eb;
   --ok: #10b981;
   --warn: #f59e0b;
   --err: #ef4444;
@@ -54,6 +36,26 @@ body {
   color: var(--t1);
   font-size: 13px;
   line-height: 1.5;
+}
+
+/* === Show More Charts button === */
+.show-more-btn {
+  display: inline-block;
+  margin: 10px 0;
+  padding: 6px 18px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.08);
+}
+.show-more-btn:hover {
+  background: var(--accent-hover);
+  color: #fff;
 }
 
 /* === Layout === */
