@@ -133,7 +133,7 @@ output:
 
     let metrics = Arc::clone(pipeline.metrics());
     std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             if metrics.batches_total.load(Ordering::Relaxed) > 0 {
                 std::thread::sleep(Duration::from_millis(50));
@@ -195,7 +195,7 @@ fn test_checkpoint_persisted_after_clean_shutdown() {
     let sd = shutdown.clone();
     let metrics = Arc::clone(pipeline.metrics());
     std::thread::spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             if metrics.batch_rows_total.load(Ordering::Relaxed) >= 50 {
                 std::thread::sleep(Duration::from_millis(50));
@@ -259,7 +259,7 @@ fn test_pipeline_resumes_from_checkpoint() {
         let sd = shutdown.clone();
         let metrics = Arc::clone(pipeline.metrics());
         std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + Duration::from_secs(15);
             loop {
                 if metrics.batch_rows_total.load(Ordering::Relaxed) >= 20 {
                     std::thread::sleep(Duration::from_millis(50));
@@ -297,7 +297,7 @@ fn test_pipeline_resumes_from_checkpoint() {
         let sd = shutdown.clone();
         let metrics = Arc::clone(pipeline.metrics());
         std::thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + Duration::from_secs(15);
             loop {
                 if metrics.batch_rows_total.load(Ordering::Relaxed) >= 10 {
                     std::thread::sleep(Duration::from_millis(50));

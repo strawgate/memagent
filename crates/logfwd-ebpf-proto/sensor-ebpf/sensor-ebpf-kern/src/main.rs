@@ -180,7 +180,11 @@ fn try_process_exit(ctx: &TracePointContext) -> Result<(), i64> {
     let pid = pid_tgid as u32;
     let tgid = (pid_tgid >> 32) as u32;
     let mut should_emit = pid == tgid;
-    if let Some(cfg) = CONFIG.get(0) {
+
+    // Read config once and copy it to avoid TOCTOU races between checks.
+    let cfg_opt = CONFIG.get(0).copied();
+
+    if let Some(cfg) = &cfg_opt {
         if cfg.sched_process_exit_has_group_dead != 0 {
             let offset = cfg.sched_process_exit_group_dead_offset as usize;
             // SAFETY: the offset is parsed from the kernel tracepoint format
@@ -210,7 +214,7 @@ fn try_process_exit(ctx: &TracePointContext) -> Result<(), i64> {
         // Try to read exit_code from task_struct using BTF-provided offset.
         // Falls back to -1 sentinel when offset is unavailable or read fails.
         let mut exit_code: i32 = -1;
-        if let Some(cfg) = CONFIG.get(0) {
+        if let Some(cfg) = &cfg_opt {
             let offset = cfg.task_exit_code_offset;
             // Sanity check: offset must be within a reasonable task_struct range.
             if offset > 0 && offset < 16384 {
@@ -693,28 +697,28 @@ fn try_dns_query(ctx: &TracePointContext) -> Result<(), i64> {
         return Ok(());
     }
 
+    // Read the sockaddr struct into a local buffer to prevent TOCTOU on user memory.
+    let mut sockaddr = [0u8; 16];
     // SAFETY: dest_addr_ptr points to a user-space sockaddr provided by the syscall.
-    let sa_family: u16 = unsafe {
-        bpf_probe_read_user(dest_addr_ptr as *const u16).map_err(|e| e as i64)?
-    };
+    unsafe {
+        bpf_probe_read_user_buf(dest_addr_ptr as *const u8, &mut sockaddr)
+            .map_err(|e| e as i64)?;
+    }
+
+    let sa_family = u16::from_ne_bytes([sockaddr[0], sockaddr[1]]);
     if sa_family != AF_INET {
         return Ok(());
     }
 
     // sin_port is at offset 2 in sockaddr_in, in network byte order.
-    // SAFETY: dest_addr_ptr + 2 is within the sockaddr_in struct.
-    let sin_port: u16 = unsafe {
-        bpf_probe_read_user((dest_addr_ptr + 2) as *const u16).map_err(|e| e as i64)?
-    };
-    if u16::from_be(sin_port) != 53 {
+    let sin_port = u16::from_be_bytes([sockaddr[2], sockaddr[3]]);
+    if sin_port != 53 {
         return Ok(());
     }
 
     // Read destination IP (sin_addr at offset 4 in sockaddr_in).
-    // SAFETY: dest_addr_ptr + 4 is within the sockaddr_in struct.
-    let dst_ip: u32 = unsafe {
-        bpf_probe_read_user((dest_addr_ptr + 4) as *const u32).map_err(|e| e as i64)?
-    };
+    // Using from_ne_bytes because it is read into u32 and then processed in native endianness in userspace.
+    let dst_ip = u32::from_ne_bytes([sockaddr[4], sockaddr[5], sockaddr[6], sockaddr[7]]);
 
     // Read the UDP payload (DNS message).
     // SAFETY: buf is at fixed offset 24 in the sys_enter_sendto payload.
