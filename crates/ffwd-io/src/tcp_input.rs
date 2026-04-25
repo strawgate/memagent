@@ -5,6 +5,8 @@
 //! monotonic counter so that `FramedInput`'s per-source remainder tracking
 //! can distinguish data from different peers.
 
+#![allow(clippy::indexing_slicing)]
+
 include!("tcp_input/transport.rs");
 include!("tcp_input/options.rs");
 include!("tcp_input/listener.rs");

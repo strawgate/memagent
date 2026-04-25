@@ -3,6 +3,8 @@
 //! Produces JSON log lines at a configurable rate. Used for benchmarking
 //! and testing pipelines without external data sources.
 
+#![allow(clippy::indexing_slicing)]
+
 include!("generator/types.rs");
 include!("generator/logs.rs");
 include!("generator/input.rs");

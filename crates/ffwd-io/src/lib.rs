@@ -1,4 +1,4 @@
-#![allow(clippy::indexing_slicing)]
+#![deny(clippy::indexing_slicing)]
 
 pub mod atomic_write;
 pub(crate) mod background_http_task;

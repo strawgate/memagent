@@ -1,5 +1,3 @@
-//! Byte and slice iteration reference implementations.
-//!
 #![allow(clippy::indexing_slicing)]
 //! Byte and slice iteration reference implementations.
 //!
