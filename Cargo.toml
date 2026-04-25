@@ -217,11 +217,6 @@ empty_drop = "warn"
 unnecessary_safety_comment = "warn"
 unnecessary_safety_doc = "warn"
 
-# Tier 6: restriction-group correctness lints (opt-in, warn-level for gradual adoption).
-unwrap_used = "warn"
-expect_used = "warn"
-indexing_slicing = "warn"
-
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [
     'cfg(kani)',

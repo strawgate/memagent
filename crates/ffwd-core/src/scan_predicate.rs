@@ -120,6 +120,7 @@ impl ScanPredicate {
     /// Returns `None` if the entire predicate references the field.
     /// For AND chains, strips only the matching conjuncts and returns
     /// the remainder (or None if all stripped).
+    #[allow(clippy::expect_used)]
     pub fn strip_field(self, field_name: &str) -> Option<Self> {
         if !self.references_field(field_name.as_bytes()) {
             return Some(self);

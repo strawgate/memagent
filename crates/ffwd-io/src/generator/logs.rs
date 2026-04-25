@@ -2,7 +2,6 @@
 // xtask-verify: allow(pub_module_needs_tests) // parse_iso8601_to_epoch_ms tested via generator/tests/timestamps.rs
 
 #[allow(clippy::indexing_slicing)]
-
 /// Write the message field value (without key or quotes) into a buffer.
 ///
 /// Used by both JSON serialization and Arrow field extraction.
