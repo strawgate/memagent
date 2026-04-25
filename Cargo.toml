@@ -14,7 +14,6 @@ members = [
     "crates/logfwd-output",
     "crates/logfwd",
     "crates/logfwd-bench",
-    "crates/logfwd-competitive-bench",
     "crates/logfwd-test-utils",
     "crates/logfwd-kani",
     "crates/logfwd-lint-attrs",

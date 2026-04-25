@@ -35,7 +35,6 @@ CRATES_ROOT = REPO_ROOT / "crates"
 ALLOWED_CRATES = {
     "logfwd",
     "logfwd-bench",
-    "logfwd-competitive-bench",
     "logfwd-test-utils",
     "logfwd-ebpf-proto",
 }

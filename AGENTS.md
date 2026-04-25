@@ -96,7 +96,6 @@ The workspace `default-members` excludes `logfwd-transform` (datafusion) and `lo
 │   ├── logfwd-output/           ← Output sinks: OTLP, Elasticsearch, Loki, JSON lines, stdout
 │   ├── logfwd-types/            ← Shared value types, state-machine semantics, diagnostics
 │   ├── logfwd-bench/            ← Criterion benchmarks for the scanner pipeline
-│   ├── logfwd-competitive-bench/← Comparative benchmarks vs other log agents
 │   ├── logfwd-test-utils/       ← Shared test utilities
 │   ├── logfwd-diagnostics/      ← Diagnostics control plane: HTTP endpoints, dashboard, readiness
 │   ├── logfwd-config-wasm/      ← WASM bindings for the config validator (browser/Node.js)

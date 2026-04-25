@@ -300,7 +300,6 @@ fn is_production_src(path: &str) -> bool {
         return false;
     }
     if path.starts_with("crates/logfwd-bench/")
-        || path.starts_with("crates/logfwd-competitive-bench/")
         || path.starts_with("crates/logfwd-proto-build/")
         || path.starts_with("crates/logfwd-ebpf-proto/")
         || path.starts_with("crates/logfwd-config-wasm/")

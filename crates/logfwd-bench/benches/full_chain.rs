@@ -198,7 +198,7 @@ fn bench_grok_chain(c: &mut Criterion) {
                 let cols = logfwd_output::build_col_infos(&result);
                 buf.clear();
                 for row in 0..result.num_rows() {
-                    logfwd_output::write_row_json(&result, row, &cols, &mut buf)
+                    logfwd_output::write_row_json(&result, row, &cols, &mut buf, false)
                         .expect("JSON serialization should not fail");
                     buf.push(b'\n');
                 }

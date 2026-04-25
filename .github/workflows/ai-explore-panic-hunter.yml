@@ -43,7 +43,7 @@ jobs:
 
         Focus on `crates/logfwd/`, `crates/logfwd-core/`, `crates/logfwd-output/`,
         and `crates/logfwd-transform/`. Exclude `crates/logfwd-bench/`,
-        `crates/logfwd-competitive-bench/`, and all `tests/` directories.
+        and all `tests/` directories.
 
         File one issue with ALL findings. Group by severity:
         - **Critical**: reachable from normal operation with valid input

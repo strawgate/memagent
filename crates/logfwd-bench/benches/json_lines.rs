@@ -58,7 +58,7 @@ fn bench_json_lines(c: &mut Criterion) {
                     b.iter(|| {
                         buf.clear();
                         for row in 0..batch.num_rows() {
-                            write_row_json(batch, row, &cols, &mut buf)
+                            write_row_json(batch, row, &cols, &mut buf, false)
                                 .expect("JSON serialization should not fail");
                             buf.push(b'\n');
                         }
@@ -78,7 +78,7 @@ fn bench_json_lines(c: &mut Criterion) {
                     b.iter(|| {
                         buf.clear();
                         for row in 0..batch.num_rows() {
-                            write_row_json_resolved(row, &resolved, &mut buf)
+                            write_row_json_resolved(row, &resolved, &mut buf, false)
                                 .expect("JSON serialization should not fail");
                             buf.push(b'\n');
                         }
