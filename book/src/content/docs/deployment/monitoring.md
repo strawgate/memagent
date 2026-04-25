@@ -146,7 +146,7 @@ The diagnostics WebSocket and JSON endpoints use the metric names below
 | `ffwd.queue_wait_nanos` | Time a batch waited in the channel before processing (ns) |
 | `ffwd.batches` | Total batches flushed |
 | `ffwd.batch_rows` | Total rows across all flushed batches |
-| `ffwd.dropped_batches` | Batches dropped under backpressure |
+| `ffwd.dropped_batches` | Batches discarded due to scan, transform, or output errors |
 | `ffwd.backpressure_stalls` | Times input stalled on a full channel |
 | `ffwd.inflight_batches` | Batches currently in-flight |
 
@@ -209,7 +209,7 @@ The counters and histograms listed in the Key metrics table above are exported a
 OTLP metrics over HTTP. The push path uses the OpenTelemetry SDK, which registers
 instruments with underscore-separated names (e.g. `ffwd_input_lines`,
 `ffwd_output_bytes`). Each metric carries `pipeline`, `input`, or `output`
-resource attributes so you can filter by component. The payload uses OTLP
+metric attributes so you can filter by component. The payload uses OTLP
 protobuf encoding.
 
 :::note
