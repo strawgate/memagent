@@ -1,4 +1,5 @@
 //! OTAP star schema to flat RecordBatch conversion.
+// xtask-verify: allow(pub_module_needs_tests) // Tested via star_schema/tests.rs
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;

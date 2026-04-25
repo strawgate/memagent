@@ -31,7 +31,7 @@ impl Sink for PanicSink {
         _metadata: &'a BatchMetadata,
     ) -> Pin<Box<dyn Future<Output = SendResult> + Send + 'a>> {
         Box::pin(async move {
-            panic!("injected panic for held-ticket shutdown test");
+            panic!("injected panic for held-ticket shutdown test"); // ALLOW-PANIC: test-only processor that deliberately panics to simulate shutdown
         })
     }
 

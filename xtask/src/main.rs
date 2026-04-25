@@ -180,19 +180,18 @@ fn run_verify() -> Result<()> {
             .then(a.line.cmp(&b.line))
     });
 
-    println!(
-        "xtask verify: {} finding(s) (warnings — not yet enforced as errors)",
-        findings.len()
-    );
-    for finding in &findings {
-        println!(
-            "  warning: [{}] {}:{} {}",
-            finding.check, finding.path, finding.line, finding.message
-        );
+    #[allow(clippy::print_stderr)]
+    {
+        eprintln!("xtask verify: {} finding(s)", findings.len());
+        for finding in &findings {
+            eprintln!(
+                "  [{}] {}:{} {}",
+                finding.check, finding.path, finding.line, finding.message
+            );
+        }
     }
 
-    // TODO(#2409): promote to hard failure once known gaps are addressed
-    Ok(())
+    anyhow::bail!("xtask verify failed with {} finding(s)", findings.len());
 }
 
 fn run_generate_config_docs() -> Result<()> {

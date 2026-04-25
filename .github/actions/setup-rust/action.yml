@@ -19,6 +19,13 @@ runs:
         echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang' >> "$GITHUB_ENV"
         echo 'CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=mold' >> "$GITHUB_ENV"
 
+    - name: Disable sccache in CI
+      shell: bash
+      run: |
+        # .cargo/config.toml sets rustc-wrapper=sccache for local dev.
+        # CI doesn't install sccache, so override to empty.
+        echo 'RUSTC_WRAPPER=' >> "$GITHUB_ENV"
+
     - uses: Swatinem/rust-cache@v2
       with:
         save-if: ${{ github.ref == 'refs/heads/main' }}

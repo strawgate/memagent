@@ -75,8 +75,8 @@ This is a good base. The main weakness is that some verification facts are dupli
 
 ## Problems To Fix
 
-1. Structural policy is only partially machine-enforced.
-   [`cargo xtask verify`](../../xtask/src/main.rs) still reports warnings and exits success.
+1. ~~Structural policy is only partially machine-enforced.~~
+   **Resolved.** [`cargo xtask verify`](../../xtask/src/main.rs) now exits with a non-zero code on any violation, causing CI to fail.
 2. Verification ownership is partly duplicated.
    Kani seams already have a useful TOML contract, while TLC suite inventory is still mostly encoded in workflow and script wiring.
 3. Local TLC ergonomics lag CI.
@@ -230,7 +230,7 @@ Do not replace the current Rust-side validator yet. Extend it with spec linkage.
 
 1. Split [`../../xtask/src/main.rs`](../../xtask/src/main.rs) into submodules
 2. Add better local TLC runner parity with CI
-3. Promote `cargo xtask verify` from warning-only to failing mode once known gaps are intentionally classified
+3. ~~Promote `cargo xtask verify` from warning-only to failing mode once known gaps are intentionally classified~~ **Done.** `cargo xtask verify` now hard-fails in CI (non-zero exit code on any structural violation).
 
 ### Phase 3: Selective manifest completion
 

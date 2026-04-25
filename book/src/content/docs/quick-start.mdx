@@ -118,10 +118,10 @@ cat logs.json | ff send --config destination.yaml --format json --service checko
 ```
 
 Bare `ff` also enters send mode when stdin is piped, using the normal config
-search order. Set `LOGFWD_CONFIG` when you want an explicit destination config:
+search order. Set `FFWD_CONFIG` when you want an explicit destination config:
 
 ```bash
-cat logs.json | LOGFWD_CONFIG=destination.yaml ff --format json --service checkout
+cat logs.json | FFWD_CONFIG=destination.yaml ff --format json --service checkout
 ```
 
 ---

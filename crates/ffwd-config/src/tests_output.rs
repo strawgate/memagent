@@ -222,10 +222,10 @@ mod tests {
     #[test]
     fn auth_env_var_bearer_token() {
         // SAFETY: test is not run concurrently with other tests that modify this var.
-        unsafe { std::env::set_var("LOGFWD_TEST_TOKEN", "env-bearer-token") };
+        unsafe { std::env::set_var("FFWD_TEST_TOKEN", "env-bearer-token") };
         let yaml = single_pipeline_yaml(
             "type: file\npath: /var/log/test.log",
-            "type: otlp\nendpoint: http://localhost:4318/v1/logs\nauth:\n  bearer_token: \"${LOGFWD_TEST_TOKEN}\"",
+            "type: otlp\nendpoint: http://localhost:4318/v1/logs\nauth:\n  bearer_token: \"${FFWD_TEST_TOKEN}\"",
         );
         let cfg = Config::load_str(yaml).expect("auth env var bearer");
         let pipe = &cfg.pipelines["default"];
@@ -233,7 +233,7 @@ mod tests {
         assert_eq!(auth.bearer_token.as_deref(), Some("env-bearer-token"));
         // SAFETY: this test is not run concurrently with other tests that
         // depend on the same environment variable.
-        unsafe { std::env::remove_var("LOGFWD_TEST_TOKEN") };
+        unsafe { std::env::remove_var("FFWD_TEST_TOKEN") };
     }
 
     #[test]

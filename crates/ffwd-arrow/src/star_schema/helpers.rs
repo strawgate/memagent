@@ -1,5 +1,6 @@
 //! Helper functions for Arrow array value extraction, hex encoding,
 //! timestamp parsing, severity mapping, and attribute type tagging.
+// xtask-verify: allow(pub_module_needs_tests) // Utility module - functions tested via star_schema/tests.rs
 
 use std::sync::Arc;
 

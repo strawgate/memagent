@@ -243,7 +243,7 @@
             let entered_send = Arc::clone(&self.entered_send);
             Box::pin(async move {
                 entered_send.store(true, Ordering::Release);
-                panic!("injected send_batch panic");
+                panic!("injected send_batch panic"); // ALLOW-PANIC: test-only Output that deliberately panics to simulate failure
             })
         }
 
@@ -519,7 +519,7 @@
         let server = Server::http("127.0.0.1:0").expect("server start failed");
         let addr = match server.server_addr() {
             tiny_http::ListenAddr::IP(addr) => addr,
-            _ => panic!("expected IP listen addr"),
+            _ => panic!("expected IP listen addr"), // ALLOW-PANIC: test server always binds to IP
         };
         let content_type =
             Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..]).unwrap();

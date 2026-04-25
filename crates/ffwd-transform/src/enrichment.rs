@@ -971,10 +971,10 @@ impl GeoReloadHandle {
 /// enrichment:
 ///   - type: env_vars
 ///     table_name: deploy_meta
-///     prefix: LOGFWD_META_
+///     prefix: FFWD_META_
 /// ```
 ///
-/// With `LOGFWD_META_CLUSTER=prod` and `LOGFWD_META_REGION=us-east-1` set,
+/// With `FFWD_META_CLUSTER=prod` and `FFWD_META_REGION=us-east-1` set,
 /// the table exposes `cluster` and `region` columns.
 ///
 /// SQL: `SELECT logs.*, m.cluster, m.region FROM logs CROSS JOIN deploy_meta AS m`
@@ -1012,7 +1012,7 @@ impl EnvTable {
         }
 
         // Reject duplicate column names after lowercase normalization (e.g.
-        // LOGFWD_META_REGION and LOGFWD_META_region both present would collide).
+        // FFWD_META_REGION and FFWD_META_region both present would collide).
         for w in pairs.windows(2) {
             if w[0].0 == w[1].0 {
                 return Err(TransformError::Enrichment(format!(
@@ -2413,11 +2413,11 @@ PRETTY_NAME="Ubuntu 22.04.4 LTS"
         // SAFETY: test sets and clears env vars; must not run in parallel with other
         // tests that read the same vars.
         unsafe {
-            std::env::set_var("LOGFWD_TEST_CLUSTER", "prod");
-            std::env::set_var("LOGFWD_TEST_REGION", "us-east-1");
+            std::env::set_var("FFWD_TEST_CLUSTER", "prod");
+            std::env::set_var("FFWD_TEST_REGION", "us-east-1");
         }
 
-        let table = EnvTable::from_prefix("deploy", "LOGFWD_TEST_").expect("should succeed");
+        let table = EnvTable::from_prefix("deploy", "FFWD_TEST_").expect("should succeed");
         assert_eq!(table.name(), "deploy");
         let batch = table.snapshot().unwrap();
         assert_eq!(batch.num_rows(), 1);
@@ -2437,17 +2437,17 @@ PRETTY_NAME="Ubuntu 22.04.4 LTS"
         // SAFETY: `remove_var` is unsafe because it mutates process-global
         // state and is unsound under concurrent access. This is safe here
         // because `cargo nextest` runs each test in its own process, and
-        // these variables use a unique `LOGFWD_TEST_` prefix not read by
+        // these variables use a unique `FFWD_TEST_` prefix not read by
         // any other test.
         unsafe {
-            std::env::remove_var("LOGFWD_TEST_CLUSTER");
-            std::env::remove_var("LOGFWD_TEST_REGION");
+            std::env::remove_var("FFWD_TEST_CLUSTER");
+            std::env::remove_var("FFWD_TEST_REGION");
         }
     }
 
     #[test]
     fn env_table_no_match_returns_error() {
-        let result = EnvTable::from_prefix("nothing", "LOGFWD_NONEXISTENT_PREFIX_XYZZY_12345_");
+        let result = EnvTable::from_prefix("nothing", "FFWD_NONEXISTENT_PREFIX_XYZZY_12345_");
         assert!(result.is_err());
     }
 
@@ -2457,17 +2457,17 @@ PRETTY_NAME="Ubuntu 22.04.4 LTS"
         // Set env vars that collide after lowercasing the suffix.
         // SAFETY: test is run single-threaded via `cargo nextest` (which isolates
         // each test in its own process) or `--test-threads=1`. The vars use a
-        // unique prefix (LOGFWD_DUPTEST_) to avoid collisions with real env.
+        // unique prefix (FFWD_DUPTEST_) to avoid collisions with real env.
         unsafe {
-            std::env::set_var("LOGFWD_DUPTEST_FOO", "a");
-            std::env::set_var("LOGFWD_DUPTEST_foo", "b");
+            std::env::set_var("FFWD_DUPTEST_FOO", "a");
+            std::env::set_var("FFWD_DUPTEST_foo", "b");
         }
-        let result = EnvTable::from_prefix("dup_test", "LOGFWD_DUPTEST_");
+        let result = EnvTable::from_prefix("dup_test", "FFWD_DUPTEST_");
         // Clean up before asserting.
         // SAFETY: this removes only the unique test variables set above.
         unsafe {
-            std::env::remove_var("LOGFWD_DUPTEST_FOO");
-            std::env::remove_var("LOGFWD_DUPTEST_foo");
+            std::env::remove_var("FFWD_DUPTEST_FOO");
+            std::env::remove_var("FFWD_DUPTEST_foo");
         }
         assert!(result.is_err());
         let msg = format!("{}", result.err().unwrap());

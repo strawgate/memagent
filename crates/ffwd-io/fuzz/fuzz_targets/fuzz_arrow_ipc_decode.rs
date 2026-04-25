@@ -1,5 +1,6 @@
 #![no_main]
 
+// Trust boundary: decode_ipc_stream
 use libfuzzer_sys::fuzz_target;
 use ffwd_io::arrow_ipc_receiver::fuzz_decode_arrow_ipc_stream;
 

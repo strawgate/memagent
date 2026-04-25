@@ -263,7 +263,7 @@ impl Drop for MacosLogInput {
     fn drop(&mut self) {
         let pid = self.child_pid.load(Ordering::Acquire);
         if pid > 0 {
-            // Safety: calling libc::kill on a child process we own.
+            // SAFETY: calling libc::kill on a child process we own.
             // The PID was set by us from Command::spawn() and only cleared here.
             unsafe {
                 libc::kill(pid as libc::pid_t, libc::SIGTERM);

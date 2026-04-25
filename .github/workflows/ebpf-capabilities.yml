@@ -31,9 +31,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: true
 
-env:
-  RUSTC_WRAPPER: ""
-
 jobs:
   linux-ebpf:
     name: Linux eBPF probe + Linux sensor tests

@@ -673,7 +673,8 @@ fn should_open_checkpoint_store(checkpoint_dir: &Path, has_explicit_data_dir: bo
         return true;
     }
 
-    if std::env::var_os("LOGFWD_DATA_DIR").is_some() {
+    if std::env::var_os("FFWD_DATA_DIR").is_some() || std::env::var_os("LOGFWD_DATA_DIR").is_some()
+    {
         return true;
     }
 
@@ -681,7 +682,8 @@ fn should_open_checkpoint_store(checkpoint_dir: &Path, has_explicit_data_dir: bo
         return checkpoint_dir.exists();
     }
 
-    std::env::var_os("LOGFWD_DISABLE_DEFAULT_CHECKPOINTS").is_none()
+    std::env::var_os("FFWD_DISABLE_DEFAULT_CHECKPOINTS").is_none()
+        && std::env::var_os("LOGFWD_DISABLE_DEFAULT_CHECKPOINTS").is_none()
 }
 
 #[cfg(test)]
@@ -990,5 +992,77 @@ mod tests {
             pipeline.input_transforms[0].source_metadata_plan,
             SourceMetadataPlan::default()
         );
+    }
+
+    mod should_open_checkpoint_store_tests {
+        use super::super::should_open_checkpoint_store;
+        use serial_test::serial;
+        use std::path::Path;
+
+        #[test]
+        fn explicit_data_dir_always_opens() {
+            // Even with a nonexistent path, an explicit data dir should open.
+            assert!(should_open_checkpoint_store(
+                Path::new("/nonexistent"),
+                true
+            ));
+        }
+
+        #[test]
+        #[serial]
+        fn ffwd_data_dir_env_opens() {
+            let _guard = EnvGuard::set("FFWD_DATA_DIR", "/some/path");
+            assert!(should_open_checkpoint_store(Path::new("/anywhere"), false));
+        }
+
+        #[test]
+        #[serial]
+        fn logfwd_data_dir_env_opens() {
+            let _guard = EnvGuard::set("LOGFWD_DATA_DIR", "/some/path");
+            assert!(should_open_checkpoint_store(Path::new("/anywhere"), false));
+        }
+
+        #[test]
+        fn existing_dir_opens_in_test_mode() {
+            // In cfg(test), a pre-existing directory should open.
+            let dir = tempfile::tempdir().unwrap();
+            assert!(should_open_checkpoint_store(dir.path(), false));
+        }
+
+        #[test]
+        fn nonexistent_dir_skips_in_test_mode() {
+            // In cfg(test), a nonexistent directory should NOT open.
+            assert!(!should_open_checkpoint_store(
+                Path::new("/nonexistent/checkpoint/dir"),
+                false
+            ));
+        }
+
+        /// RAII guard that sets an env var for the duration of a test and
+        /// restores the previous value (or removes it) on drop.
+        struct EnvGuard {
+            key: &'static str,
+            prev: Option<std::ffi::OsString>,
+        }
+
+        impl EnvGuard {
+            fn set(key: &'static str, value: &str) -> Self {
+                let prev = std::env::var_os(key);
+                // SAFETY: tests using EnvGuard are marked #[serial] to
+                // prevent concurrent env mutation. Value is restored on drop.
+                unsafe { std::env::set_var(key, value) };
+                Self { key, prev }
+            }
+        }
+
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                // SAFETY: #[serial] ensures exclusive access.
+                match &self.prev {
+                    Some(v) => unsafe { std::env::set_var(self.key, v) },
+                    None => unsafe { std::env::remove_var(self.key) },
+                }
+            }
+        }
     }
 }

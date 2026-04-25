@@ -551,7 +551,7 @@ struct SharedBufferSource {
 
 impl InputSource for SharedBufferSource {
     fn poll(&mut self) -> io::Result<Vec<SourceEvent>> {
-        panic!("poll() should not be used when poll_into() is available");
+        panic!("poll() should not be used when poll_into() is available"); // ALLOW-PANIC: test-only InputSource that deliberately never uses poll()
     }
 
     fn poll_into(&mut self, dst: &mut BytesMut) -> io::Result<Option<Vec<FramedReadEvent>>> {
@@ -590,7 +590,7 @@ struct LargeSharedBufferSource {
 
 impl InputSource for LargeSharedBufferSource {
     fn poll(&mut self) -> io::Result<Vec<SourceEvent>> {
-        panic!("poll() should not be used when poll_into() is available");
+        panic!("poll() should not be used when poll_into() is available"); // ALLOW-PANIC: test-only InputSource that deliberately never uses poll()
     }
 
     fn poll_into(&mut self, dst: &mut BytesMut) -> io::Result<Option<Vec<FramedReadEvent>>> {

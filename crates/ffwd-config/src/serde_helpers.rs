@@ -1,3 +1,6 @@
+//! Serde helper functions for config deserialization.
+// xtask-verify: allow(pub_module_needs_tests) // Deserialize helpers tested indirectly via shared.rs usage
+
 use serde::Deserialize;
 use serde::de::{Error as DeError, Unexpected};
 use std::fmt;

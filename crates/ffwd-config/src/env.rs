@@ -174,10 +174,9 @@ mod tests {
     #[test]
     fn braced_env_var_expands() {
         let _guard = env_lock();
-        let _var = EnvVarGuard::set("LOGFWD_ENV_TEST_BRACED", "expanded");
+        let _var = EnvVarGuard::set("FFWD_ENV_TEST_BRACED", "expanded");
 
-        let expanded =
-            expand_env_vars("value=${LOGFWD_ENV_TEST_BRACED}").expect("env should expand");
+        let expanded = expand_env_vars("value=${FFWD_ENV_TEST_BRACED}").expect("env should expand");
 
         assert_eq!(expanded, "value=expanded");
     }
@@ -185,13 +184,12 @@ mod tests {
     #[test]
     fn missing_env_var_is_rejected() {
         let _guard = env_lock();
-        let _var = EnvVarGuard::unset("LOGFWD_ENV_TEST_MISSING");
+        let _var = EnvVarGuard::unset("FFWD_ENV_TEST_MISSING");
 
-        let err =
-            expand_env_vars("${LOGFWD_ENV_TEST_MISSING}").expect_err("missing env should fail");
+        let err = expand_env_vars("${FFWD_ENV_TEST_MISSING}").expect_err("missing env should fail");
 
         assert!(
-            err.to_string().contains("LOGFWD_ENV_TEST_MISSING"),
+            err.to_string().contains("FFWD_ENV_TEST_MISSING"),
             "error should name missing variable: {err}"
         );
     }
@@ -199,38 +197,38 @@ mod tests {
     #[test]
     fn unterminated_env_var_is_preserved() {
         let _guard = env_lock();
-        let expanded = expand_env_vars("value=${LOGFWD_ENV_TEST_UNTERMINATED")
+        let expanded = expand_env_vars("value=${FFWD_ENV_TEST_UNTERMINATED")
             .expect("unterminated variable should be preserved");
 
-        assert_eq!(expanded, "value=${LOGFWD_ENV_TEST_UNTERMINATED");
+        assert_eq!(expanded, "value=${FFWD_ENV_TEST_UNTERMINATED");
     }
 
     #[test]
     fn closed_vars_before_unterminated_tail_are_expanded() {
         let _guard = env_lock();
-        let _var = EnvVarGuard::set("LOGFWD_ENV_TEST_BRACED", "expanded");
+        let _var = EnvVarGuard::set("FFWD_ENV_TEST_BRACED", "expanded");
 
-        let expanded = expand_env_vars("${LOGFWD_ENV_TEST_BRACED}${LOGFWD_ENV_TEST_UNTERMINATED")
+        let expanded = expand_env_vars("${FFWD_ENV_TEST_BRACED}${FFWD_ENV_TEST_UNTERMINATED")
             .expect("closed variables before an unterminated tail should expand");
 
-        assert_eq!(expanded, "expanded${LOGFWD_ENV_TEST_UNTERMINATED",);
+        assert_eq!(expanded, "expanded${FFWD_ENV_TEST_UNTERMINATED",);
     }
 
     #[test]
     fn dollar_name_syntax_is_literal() {
         let _guard = env_lock();
-        let _var = EnvVarGuard::set("LOGFWD_ENV_TEST_SHORT", "expanded");
+        let _var = EnvVarGuard::set("FFWD_ENV_TEST_SHORT", "expanded");
 
         let expanded =
-            expand_env_vars("value=$LOGFWD_ENV_TEST_SHORT").expect("env should not expand");
+            expand_env_vars("value=$FFWD_ENV_TEST_SHORT").expect("env should not expand");
 
-        assert_eq!(expanded, "value=$LOGFWD_ENV_TEST_SHORT");
+        assert_eq!(expanded, "value=$FFWD_ENV_TEST_SHORT");
     }
 
     #[test]
     fn default_value_syntax_is_rejected() {
         let _guard = env_lock();
-        let err = expand_env_vars("value=${LOGFWD_ENV_TEST_DEFAULT:fallback}")
+        let err = expand_env_vars("value=${FFWD_ENV_TEST_DEFAULT:fallback}")
             .expect_err("default syntax should be rejected");
 
         assert!(
@@ -253,9 +251,9 @@ mod tests {
     #[test]
     fn backslashes_with_env_placeholder_are_literal() {
         let _guard = env_lock();
-        let _var = EnvVarGuard::set("LOGFWD_ENV_TEST_FILE", "app.log");
+        let _var = EnvVarGuard::set("FFWD_ENV_TEST_FILE", "app.log");
 
-        let expanded = expand_env_vars(r"C:\logs\${LOGFWD_ENV_TEST_FILE}")
+        let expanded = expand_env_vars(r"C:\logs\${FFWD_ENV_TEST_FILE}")
             .expect("backslashes should remain literal");
 
         assert_eq!(expanded, r"C:\logs\app.log");
@@ -264,9 +262,9 @@ mod tests {
     #[test]
     fn env_value_containing_placeholder_text_is_not_recursively_expanded() {
         let _guard = env_lock();
-        let _var = EnvVarGuard::set("LOGFWD_ENV_TEST_LITERAL", "${NOT_RECURSIVE}");
+        let _var = EnvVarGuard::set("FFWD_ENV_TEST_LITERAL", "${NOT_RECURSIVE}");
 
-        let expanded = expand_env_vars("${LOGFWD_ENV_TEST_LITERAL}")
+        let expanded = expand_env_vars("${FFWD_ENV_TEST_LITERAL}")
             .expect("env value should be inserted literally");
 
         assert_eq!(expanded, "${NOT_RECURSIVE}");

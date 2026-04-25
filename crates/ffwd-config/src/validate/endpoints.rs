@@ -1,3 +1,6 @@
+//! Endpoint validation helpers.
+// xtask-verify: allow(pub_module_needs_tests) // validate_host_port tested via validate/tests.rs
+
 use crate::types::ConfigError;
 use std::net::IpAddr;
 use url::Url;

@@ -129,7 +129,7 @@ pub struct JsonlEnrichmentConfig {
 pub struct EnvVarsEnrichmentConfig {
     #[serde(deserialize_with = "deserialize_strict_string")]
     pub table_name: String,
-    /// Environment variable name prefix to filter on (e.g. `"LOGFWD_META_"`).
+    /// Environment variable name prefix to filter on (e.g. `"FFWD_META_"`).
     #[serde(deserialize_with = "deserialize_strict_string")]
     pub prefix: String,
 }
