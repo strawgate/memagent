@@ -7,6 +7,7 @@
 // Line boundaries are found first (newline bitmask), then each line
 // is scanned independently. Within a line, the scanner iterates
 // through structural positions sequentially.
+#![allow(clippy::indexing_slicing)]
 
 use crate::scan_config::{ScanConfig, parse_int_fast};
 use crate::scan_predicate::ExtractedValue;
@@ -51,7 +52,6 @@ struct LineScratch {
 /// - The caller must have already invoked `begin_batch` on the builder before
 ///   this call (see [`ScanBuilder`] for the initialization contract).
 #[inline(never)]
-#[allow(clippy::indexing_slicing)]
 pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: &mut B) {
     if buf.is_empty() {
         return;
@@ -165,7 +165,6 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
 }
 
 /// Scan a single JSON line using pre-computed block bitmasks.
-#[allow(clippy::indexing_slicing)]
 fn scan_line<B: ScanBuilder>(
     buf: &[u8],
     start: usize,
@@ -433,7 +432,6 @@ impl PredicateScratch {
 /// fields are extracted into a scratch buffer for evaluation. If the predicate
 /// passes, deferred writes are replayed into the builder. If it fails, the
 /// row is skipped entirely (no begin_row/end_row).
-#[allow(clippy::indexing_slicing)]
 fn scan_line_with_predicate<B: ScanBuilder>(
     buf: &[u8],
     start: usize,
@@ -795,7 +793,6 @@ fn next_quote(from: usize, end: usize, blocks: &StoredBitmasks<'_>) -> Option<us
 
 /// Find the next non-whitespace position using space bitmask.
 #[inline]
-#[allow(clippy::indexing_slicing)]
 fn skip_whitespace(buf: &[u8], mut pos: usize, end: usize) -> usize {
     while pos < end {
         match buf[pos] {
@@ -810,7 +807,6 @@ fn skip_whitespace(buf: &[u8], mut pos: usize, end: usize) -> usize {
 
 /// Skip a nested object/array using brace/bracket bitmasks.
 #[inline]
-#[allow(clippy::indexing_slicing)]
 fn skip_nested(buf: &[u8], mut pos: usize, end: usize, blocks: &StoredBitmasks<'_>) -> usize {
     const MAX_TRACKED_DEPTH: u32 = 32;
     let mut depth: u32 = 0;
@@ -889,7 +885,6 @@ fn is_json_delimiter(b: u8) -> bool {
 /// Skip a bare value (used for malformed tokens).
 /// Stops at the first byte where `is_json_delimiter` returns true.
 #[inline]
-#[allow(clippy::indexing_slicing)]
 fn skip_bare_value(buf: &[u8], mut pos: usize, end: usize) -> usize {
     while pos < end {
         if is_json_delimiter(buf[pos]) {
@@ -911,7 +906,6 @@ fn skip_bare_value(buf: &[u8], mut pos: usize, end: usize) -> usize {
 ///
 /// Invalid or truncated escape sequences are passed through unchanged
 /// to avoid data loss on malformed input.
-#[allow(clippy::indexing_slicing)]
 fn decode_json_escapes(input: &[u8], out: &mut alloc::vec::Vec<u8>) {
     out.clear();
     // Decoded output is always ≤ input length (escapes expand, never shrink).
@@ -972,7 +966,6 @@ fn decode_json_escapes(input: &[u8], out: &mut alloc::vec::Vec<u8>) {
 
 /// Decode a `\uXXXX` escape (possibly a surrogate pair) starting at `pos`.
 /// Appends the decoded UTF-8 bytes to `out` and returns the new position.
-#[allow(clippy::indexing_slicing)]
 fn decode_unicode_escape(input: &[u8], pos: usize, out: &mut alloc::vec::Vec<u8>) -> usize {
     // Need at least 6 bytes: \uXXXX
     if pos + 6 > input.len() {
@@ -1029,7 +1022,6 @@ fn decode_unicode_escape(input: &[u8], pos: usize, out: &mut alloc::vec::Vec<u8>
 
 /// Parse 4 ASCII hex digits into a `u16`.
 #[inline]
-#[allow(clippy::indexing_slicing)]
 fn parse_hex4(bytes: &[u8]) -> Option<u16> {
     if bytes.len() < 4 {
         return None;
