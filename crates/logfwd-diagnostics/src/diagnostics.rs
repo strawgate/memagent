@@ -2,7 +2,7 @@ mod metrics;
 mod models;
 mod policy;
 mod process;
-mod render;
+pub(crate) mod render;
 mod server;
 mod telemetry;
 

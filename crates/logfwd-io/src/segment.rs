@@ -901,6 +901,26 @@ mod tests {
     use arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
 
+    fn test_header(segment_id: u64) -> SegmentHeader {
+        SegmentHeader {
+            version: SEGMENT_VERSION,
+            flags: FLAG_ZSTD,
+            segment_id,
+            sql_hash: 0,
+            created_epoch_ms: 0,
+        }
+    }
+
+    fn test_header_with_hash(segment_id: u64, sql_hash: u64) -> SegmentHeader {
+        SegmentHeader {
+            version: SEGMENT_VERSION,
+            flags: FLAG_ZSTD,
+            segment_id,
+            sql_hash,
+            created_epoch_ms: 0,
+        }
+    }
+
     fn make_batch(n: usize) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
             Field::new("msg", DataType::Utf8, false),
@@ -950,13 +970,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let batch = make_batch(100);
 
-        let header = SegmentHeader {
-            version: SEGMENT_VERSION,
-            flags: FLAG_ZSTD,
-            segment_id: 1,
-            sql_hash: 0,
-            created_epoch_ms: 0,
-        };
+        let header = test_header(1);
         let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
         writer.append(&batch).unwrap();
         let seg = writer.finish().unwrap();
@@ -982,13 +996,7 @@ mod tests {
     fn segment_multi_batch_roundtrip() {
         let dir = tempfile::tempdir().unwrap();
 
-        let header = SegmentHeader {
-            version: SEGMENT_VERSION,
-            flags: FLAG_ZSTD,
-            segment_id: 1,
-            sql_hash: 0,
-            created_epoch_ms: 0,
-        };
+        let header = test_header(1);
         let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
         writer.append(&make_batch(50)).unwrap();
         writer.append(&make_batch(30)).unwrap();
@@ -1011,13 +1019,7 @@ mod tests {
         let path = dir.path().join("seg-0000000001.lchk");
 
         // Write header only, no footer.
-        let header = SegmentHeader {
-            version: SEGMENT_VERSION,
-            flags: FLAG_ZSTD,
-            segment_id: 1,
-            sql_hash: 0,
-            created_epoch_ms: 0,
-        };
+        let header = test_header(1);
         fs::write(&path, header.to_bytes()).unwrap();
 
         assert!(matches!(
@@ -1031,13 +1033,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let batch = make_batch(10);
 
-        let header = SegmentHeader {
-            version: SEGMENT_VERSION,
-            flags: FLAG_ZSTD,
-            segment_id: 1,
-            sql_hash: 0,
-            created_epoch_ms: 0,
-        };
+        let header = test_header(1);
         let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
         writer.append(&batch).unwrap();
         let seg = writer.finish().unwrap();
@@ -1059,13 +1055,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let batch = make_batch(10);
 
-        let header = SegmentHeader {
-            version: SEGMENT_VERSION,
-            flags: FLAG_ZSTD,
-            segment_id: 1,
-            sql_hash: 0xAAAA,
-            created_epoch_ms: 0,
-        };
+        let header = test_header_with_hash(1, 0xAAAA);
         let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
         writer.append(&batch).unwrap();
         let seg = writer.finish().unwrap();
@@ -1081,13 +1071,7 @@ mod tests {
         // A corrupt footer claiming an enormous data_size must be rejected
         // before any allocation happens, not cause OOM or panic.
         let dir = tempfile::tempdir().unwrap();
-        let header = SegmentHeader {
-            version: SEGMENT_VERSION,
-            flags: FLAG_ZSTD,
-            segment_id: 1,
-            sql_hash: 0,
-            created_epoch_ms: 0,
-        };
+        let header = test_header(1);
         let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
         writer.append(&make_batch(10)).unwrap();
         let seg = writer.finish().unwrap();
@@ -1139,13 +1123,7 @@ mod tests {
     #[test]
     fn truncated_segment_returns_invalid_data() {
         let dir = tempfile::tempdir().unwrap();
-        let header = SegmentHeader {
-            version: SEGMENT_VERSION,
-            flags: FLAG_ZSTD,
-            segment_id: 1,
-            sql_hash: 0,
-            created_epoch_ms: 0,
-        };
+        let header = test_header(1);
 
         let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
         writer.append(&make_batch(10)).unwrap();
@@ -1176,27 +1154,14 @@ mod tests {
         fs::create_dir_all(&seg_dir).unwrap();
 
         // Write a valid segment.
-        let header = SegmentHeader {
-            version: SEGMENT_VERSION,
-            flags: FLAG_ZSTD,
-            segment_id: 1,
-            sql_hash: 0,
-            created_epoch_ms: 0,
-        };
+        let header = test_header(1);
         let mut writer = SegmentWriter::create(&seg_dir, header).unwrap();
         writer.append(&make_batch(10)).unwrap();
         writer.finish().unwrap();
 
         // Write an incomplete segment (header only).
         let incomplete_path = seg_dir.join("seg-0000000002.lchk");
-        let header2 = SegmentHeader {
-            version: SEGMENT_VERSION,
-            flags: FLAG_ZSTD,
-            segment_id: 2,
-            sql_hash: 0,
-            created_epoch_ms: 0,
-        };
-        fs::write(&incomplete_path, header2.to_bytes()).unwrap();
+        fs::write(&incomplete_path, test_header(2).to_bytes()).unwrap();
 
         let plan = recover_segments(&seg_dir, None).unwrap();
         assert_eq!(plan.segments.len(), 1);
@@ -1320,13 +1285,7 @@ mod tests {
     fn unsupported_version_is_not_treated_as_non_segment() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("seg-0000000001.lchk");
-        let header = SegmentHeader {
-            version: SEGMENT_VERSION,
-            flags: FLAG_ZSTD,
-            segment_id: 1,
-            sql_hash: 0,
-            created_epoch_ms: 0,
-        };
+        let header = test_header(1);
         let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
         writer.append(&make_batch(1)).unwrap();
         let seg = writer.finish().unwrap();
@@ -1343,13 +1302,7 @@ mod tests {
     #[test]
     fn open_rejects_missing_required_zstd_flag() {
         let dir = tempfile::tempdir().unwrap();
-        let header = SegmentHeader {
-            version: SEGMENT_VERSION,
-            flags: FLAG_ZSTD,
-            segment_id: 1,
-            sql_hash: 0,
-            created_epoch_ms: 0,
-        };
+        let header = test_header(1);
         let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
         writer.append(&make_batch(1)).unwrap();
         let seg = writer.finish().unwrap();
@@ -1366,13 +1319,7 @@ mod tests {
     #[test]
     fn open_rejects_unknown_header_flags() {
         let dir = tempfile::tempdir().unwrap();
-        let header = SegmentHeader {
-            version: SEGMENT_VERSION,
-            flags: FLAG_ZSTD,
-            segment_id: 1,
-            sql_hash: 0,
-            created_epoch_ms: 0,
-        };
+        let header = test_header(1);
         let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
         writer.append(&make_batch(1)).unwrap();
         let seg = writer.finish().unwrap();
@@ -1428,13 +1375,7 @@ mod tests {
         fs::create_dir_all(&seg_dir).unwrap();
 
         let path = seg_dir.join("seg-0000000001.lchk");
-        let header = SegmentHeader {
-            version: SEGMENT_VERSION,
-            flags: FLAG_ZSTD,
-            segment_id: 1,
-            sql_hash: 0,
-            created_epoch_ms: 0,
-        };
+        let header = test_header(1);
         let mut writer = SegmentWriter::create(&seg_dir, header).unwrap();
         writer.append(&make_batch(1)).unwrap();
         let seg = writer.finish().unwrap();
@@ -1450,13 +1391,7 @@ mod tests {
     #[test]
     fn append_rejects_writes_beyond_read_limit() {
         let dir = tempfile::tempdir().unwrap();
-        let header = SegmentHeader {
-            version: SEGMENT_VERSION,
-            flags: FLAG_ZSTD,
-            segment_id: 1,
-            sql_hash: 0,
-            created_epoch_ms: 0,
-        };
+        let header = test_header(1);
         let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
         writer.data_size = MAX_SEGMENT_DATA_SIZE;
 
@@ -1471,13 +1406,7 @@ mod tests {
         let empty = make_batch(0);
         let nonempty = make_batch(5);
 
-        let header = SegmentHeader {
-            version: SEGMENT_VERSION,
-            flags: FLAG_ZSTD,
-            segment_id: 1,
-            sql_hash: 0,
-            created_epoch_ms: 0,
-        };
+        let header = test_header(1);
         let mut writer = SegmentWriter::create(dir.path(), header).unwrap();
         writer.append(&empty).unwrap();
         writer.append(&nonempty).unwrap();

@@ -810,7 +810,9 @@ mod tests {
         for (input, expected) in cases {
             assert!(
                 matches!(parse_severity(input).0, ref s if core::mem::discriminant(s) == core::mem::discriminant(expected)),
-                "parse_severity({:?}) expected {:?}", core::str::from_utf8(input), expected
+                "parse_severity({:?}) expected {:?}",
+                core::str::from_utf8(input),
+                expected
             );
         }
     }

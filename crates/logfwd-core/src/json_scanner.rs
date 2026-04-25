@@ -1132,8 +1132,8 @@ mod tests {
         }
     }
 
-    use alloc::string::ToString;
     use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
+    use alloc::string::ToString;
 
     fn scan_default(buf: &[u8]) -> TestBuilder {
         let config = ScanConfig::default();
@@ -1286,18 +1286,38 @@ mod tests {
             (br#"{"a":"\u0041"}"#, "a", "A"),
             (br#"{"msg":"caf\u00e9"}"#, "msg", "café"),
             (br#"{"e":"\uD83D\uDE00"}"#, "e", "😀"),
-            (br#"{"a":"line1\nline2\ttab\rret"}"#, "a", "line1\nline2\ttab\rret"),
+            (
+                br#"{"a":"line1\nline2\ttab\rret"}"#,
+                "a",
+                "line1\nline2\ttab\rret",
+            ),
             (b"{\"a\":\"c:\\\\path\\\\file\"}", "a", "c:\\path\\file"),
-            (br#"{"url":"http:\/\/example.com"}"#, "url", "http://example.com"),
+            (
+                br#"{"url":"http:\/\/example.com"}"#,
+                "url",
+                "http://example.com",
+            ),
             (br#"{"x":"hello world"}"#, "x", "hello world"),
-            (br#"{"m":"start\n\tmiddle \u0041 end"}"#, "m", "start\n\tmiddle A end"),
+            (
+                br#"{"m":"start\n\tmiddle \u0041 end"}"#,
+                "m",
+                "start\n\tmiddle A end",
+            ),
         ];
         for (buf, key, expected) in cases {
             let builder = scan_default(buf);
-            assert_eq!(builder.rows.len(), 1, "buf: {:?}", core::str::from_utf8(buf));
+            assert_eq!(
+                builder.rows.len(),
+                1,
+                "buf: {:?}",
+                core::str::from_utf8(buf)
+            );
             assert!(
-                builder.rows[0].iter().any(|(k, v)| k == key && v == expected),
-                "expected {key}={expected} in {:?}", builder.rows[0]
+                builder.rows[0]
+                    .iter()
+                    .any(|(k, v)| k == key && v == expected),
+                "expected {key}={expected} in {:?}",
+                builder.rows[0]
             );
         }
     }

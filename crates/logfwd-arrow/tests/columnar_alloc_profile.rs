@@ -70,7 +70,7 @@ fn print_stats(label: &str, stats: &stats_alloc::Stats, total_rows: u64) {
 // StreamingBuilder workload runners
 // ---------------------------------------------------------------------------
 
-fn run_streaming_detached(warmup: bool) -> stats_alloc::Stats {
+fn run_streaming(warmup: bool, detached: bool) -> stats_alloc::Stats {
     let mut sb = StreamingBuilder::new(None);
 
     if warmup {
@@ -102,7 +102,11 @@ fn run_streaming_detached(warmup: bool) -> stats_alloc::Stats {
             sb.append_f64_value_by_idx(indices[13], row as f64 * 0.001);
             sb.end_row();
         }
-        let _ = sb.finish_batch_detached().unwrap();
+        if detached {
+            let _ = sb.finish_batch_detached().unwrap();
+        } else {
+            let _ = sb.finish_batch().unwrap();
+        }
     }
 
     let region = Region::new(GLOBAL);
@@ -137,81 +141,11 @@ fn run_streaming_detached(warmup: bool) -> stats_alloc::Stats {
             sb.append_f64_value_by_idx(indices[13], row as f64 * 0.001);
             sb.end_row();
         }
-        let batch = sb.finish_batch_detached().unwrap();
-        assert_eq!(batch.num_rows(), ROWS_PER_BATCH as usize);
-    }
-
-    region.change()
-}
-
-fn run_streaming_view(warmup: bool) -> stats_alloc::Stats {
-    let mut sb = StreamingBuilder::new(None);
-
-    if warmup {
-        let dummy = bytes::Bytes::from_static(b"");
-        sb.begin_batch(dummy);
-        let indices: Vec<usize> = FIELD_NAMES
-            .iter()
-            .map(|name| sb.resolve_field(name.as_bytes()))
-            .collect();
-        for row in 0..ROWS_PER_BATCH {
-            sb.begin_row();
-            for &idx in &[indices[0], indices[1], indices[4], indices[12]] {
-                sb.append_i64_value_by_idx(idx, row as i64);
-            }
-            for &idx in &[
-                indices[2],
-                indices[3],
-                indices[5],
-                indices[6],
-                indices[7],
-                indices[8],
-                indices[9],
-                indices[10],
-                indices[11],
-                indices[14],
-            ] {
-                sb.append_decoded_str_by_idx(idx, b"example-value-0123456789");
-            }
-            sb.append_f64_value_by_idx(indices[13], row as f64 * 0.001);
-            sb.end_row();
-        }
-        let _ = sb.finish_batch().unwrap();
-    }
-
-    let region = Region::new(GLOBAL);
-
-    for _batch in 0..NUM_BATCHES {
-        let dummy = bytes::Bytes::from_static(b"");
-        sb.begin_batch(dummy);
-        let indices: Vec<usize> = FIELD_NAMES
-            .iter()
-            .map(|name| sb.resolve_field(name.as_bytes()))
-            .collect();
-
-        for row in 0..ROWS_PER_BATCH {
-            sb.begin_row();
-            for &idx in &[indices[0], indices[1], indices[4], indices[12]] {
-                sb.append_i64_value_by_idx(idx, row as i64);
-            }
-            for &idx in &[
-                indices[2],
-                indices[3],
-                indices[5],
-                indices[6],
-                indices[7],
-                indices[8],
-                indices[9],
-                indices[10],
-                indices[11],
-                indices[14],
-            ] {
-                sb.append_decoded_str_by_idx(idx, b"example-value-0123456789");
-            }
-            sb.append_f64_value_by_idx(indices[13], row as f64 * 0.001);
-            sb.end_row();
-        }
-        let batch = sb.finish_batch().unwrap();
+        let batch = if detached {
+            sb.finish_batch_detached().unwrap()
+        } else {
+            sb.finish_batch().unwrap()
+        };
         assert_eq!(batch.num_rows(), ROWS_PER_BATCH as usize);
     }
 
@@ -265,54 +199,7 @@ fn make_columnar_plan() -> (
     (plan, int_handles, str_handles, float_handles)
 }
 
-fn run_columnar_detached(warmup: bool) -> stats_alloc::Stats {
-    let (plan, int_handles, str_handles, float_handles) = make_columnar_plan();
-    let mut b = ColumnarBatchBuilder::new(plan);
-
-    if warmup {
-        // Full warmup batch to prime all vec capacities
-        b.begin_batch();
-        for row in 0..ROWS_PER_BATCH {
-            b.begin_row();
-            for &h in &int_handles {
-                b.write_i64(h, row as i64);
-            }
-            for &h in &str_handles {
-                b.write_str(h, "example-value-0123456789").unwrap();
-            }
-            for &h in &float_handles {
-                b.write_f64(h, row as f64 * 0.001);
-            }
-            b.end_row();
-        }
-        let _ = b.finish_batch().unwrap();
-    }
-
-    let region = Region::new(GLOBAL);
-
-    for _batch in 0..NUM_BATCHES {
-        b.begin_batch();
-        for row in 0..ROWS_PER_BATCH {
-            b.begin_row();
-            for &h in &int_handles {
-                b.write_i64(h, row as i64);
-            }
-            for &h in &str_handles {
-                b.write_str(h, "example-value-0123456789").unwrap();
-            }
-            for &h in &float_handles {
-                b.write_f64(h, row as f64 * 0.001);
-            }
-            b.end_row();
-        }
-        let batch = b.finish_batch().unwrap();
-        assert_eq!(batch.num_rows(), ROWS_PER_BATCH as usize);
-    }
-
-    region.change()
-}
-
-fn run_columnar_view(warmup: bool) -> stats_alloc::Stats {
+fn run_columnar(warmup: bool) -> stats_alloc::Stats {
     let (plan, int_handles, str_handles, float_handles) = make_columnar_plan();
     let mut b = ColumnarBatchBuilder::new(plan);
 
@@ -370,23 +257,19 @@ fn allocation_profile() {
 
     eprintln!("\n=== StreamingBuilder ({total_rows} rows, {NUM_BATCHES} batches) ===\n");
     eprintln!("  -- Cold start --");
-    print_stats(
-        "detached (cold)",
-        &run_streaming_detached(false),
-        total_rows,
-    );
-    print_stats("view (cold)", &run_streaming_view(false), total_rows);
+    print_stats("detached (cold)", &run_streaming(false, true), total_rows);
+    print_stats("view (cold)", &run_streaming(false, false), total_rows);
     eprintln!("\n  -- Steady state (warmed) --");
-    print_stats("detached (warm)", &run_streaming_detached(true), total_rows);
-    print_stats("view (warm)", &run_streaming_view(true), total_rows);
+    print_stats("detached (warm)", &run_streaming(true, true), total_rows);
+    print_stats("view (warm)", &run_streaming(true, false), total_rows);
 
     eprintln!("\n=== ColumnarBatchBuilder ({total_rows} rows, {NUM_BATCHES} batches) ===\n");
     eprintln!("  -- Cold start --");
-    print_stats("detached (cold)", &run_columnar_detached(false), total_rows);
-    print_stats("view (cold)", &run_columnar_view(false), total_rows);
+    print_stats("detached (cold)", &run_columnar(false), total_rows);
+    print_stats("view (cold)", &run_columnar(false), total_rows);
     eprintln!("\n  -- Steady state (warmed) --");
-    print_stats("detached (warm)", &run_columnar_detached(true), total_rows);
-    print_stats("view (warm)", &run_columnar_view(true), total_rows);
+    print_stats("detached (warm)", &run_columnar(true), total_rows);
+    print_stats("view (warm)", &run_columnar(true), total_rows);
     eprintln!();
 }
 
@@ -396,10 +279,10 @@ fn allocation_profile() {
 fn allocation_comparison() {
     let total_rows = u64::from(ROWS_PER_BATCH) * NUM_BATCHES;
 
-    let sb_det = run_streaming_detached(true);
-    let sb_view = run_streaming_view(true);
-    let cb_det = run_columnar_detached(true);
-    let cb_view = run_columnar_view(true);
+    let sb_det = run_streaming(true, true);
+    let sb_view = run_streaming(true, false);
+    let cb_det = run_columnar(true);
+    let cb_view = run_columnar(true);
 
     eprintln!("\n=== Allocation Comparison — warm, {total_rows} rows ===\n");
     eprintln!(

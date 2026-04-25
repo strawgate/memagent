@@ -497,31 +497,36 @@ fn test_enrichment_empty_table_skipped() {
 
 // --- FilterHints predicate pushdown tests ---
 
+/// Table-driven tests for simple severity/facility filter hints.
 #[test]
-fn test_filter_hints_severity_lte() {
-    let a = QueryAnalyzer::new("SELECT * FROM logs WHERE severity <= 4").unwrap();
-    let h = a.filter_hints();
-    assert_eq!(h.max_severity, Some(4));
-}
+fn test_filter_hints_simple_severity_and_facility() {
+    // Simple severity-only cases
+    let severity_cases: &[(&str, u8)] = &[
+        ("SELECT * FROM logs WHERE severity <= 4", 4),
+        ("SELECT * FROM logs WHERE severity < 5", 4), // < 5 becomes <= 4
+        ("SELECT * FROM logs WHERE severity = 3", 3),
+        ("SELECT * FROM logs WHERE 5 > severity", 4), // reversed comparison
+        (
+            "SELECT * FROM logs WHERE severity <= 4 AND severity <= 2",
+            2,
+        ), // tighter bound wins
+    ];
 
-#[test]
-fn test_filter_hints_severity_lt() {
-    let a = QueryAnalyzer::new("SELECT * FROM logs WHERE severity < 5").unwrap();
-    let h = a.filter_hints();
-    assert_eq!(h.max_severity, Some(4)); // < 5 becomes <= 4
-}
+    for (sql, expected_severity) in severity_cases {
+        let a = QueryAnalyzer::new(sql).unwrap();
+        let h = a.filter_hints();
+        assert_eq!(
+            h.max_severity,
+            Some(*expected_severity),
+            "severity mismatch for: {sql}"
+        );
+        assert!(h.facilities.is_none(), "no facilities expected for: {sql}");
+    }
 
-#[test]
-fn test_filter_hints_severity_eq() {
-    let a = QueryAnalyzer::new("SELECT * FROM logs WHERE severity = 3").unwrap();
-    let h = a.filter_hints();
-    assert_eq!(h.max_severity, Some(3));
-}
-
-#[test]
-fn test_filter_hints_facility_eq() {
+    // Simple facility-only case
     let a = QueryAnalyzer::new("SELECT * FROM logs WHERE facility = 16").unwrap();
     let h = a.filter_hints();
+    assert!(h.max_severity.is_none());
     assert_eq!(h.facilities, Some(vec![16]));
 }
 
@@ -601,22 +606,6 @@ fn test_filter_hints_or_pushable_only_still_not_pushed() {
     let a = QueryAnalyzer::new("SELECT * FROM logs WHERE severity <= 4 OR severity <= 2").unwrap();
     let h = a.filter_hints();
     assert!(h.max_severity.is_none());
-}
-
-#[test]
-fn test_filter_hints_reversed_gt() {
-    // "5 > severity" means severity < 5, i.e. severity <= 4
-    let a = QueryAnalyzer::new("SELECT * FROM logs WHERE 5 > severity").unwrap();
-    let h = a.filter_hints();
-    assert_eq!(h.max_severity, Some(4));
-}
-
-#[test]
-fn test_filter_hints_tighten_severity() {
-    // Multiple severity bounds should keep the tightest (minimum)
-    let a = QueryAnalyzer::new("SELECT * FROM logs WHERE severity <= 4 AND severity <= 2").unwrap();
-    let h = a.filter_hints();
-    assert_eq!(h.max_severity, Some(2)); // tighter bound wins
 }
 
 #[test]
@@ -1016,82 +1005,55 @@ fn test_where_int_in_list() {
 // Regression tests — QueryAnalyzer column-ref collection for #415 forms
 // -----------------------------------------------------------------------
 
-/// QueryAnalyzer must collect column refs from an IS NULL expression.
+/// Table-driven tests for QueryAnalyzer column-ref collection across expression forms.
 #[test]
-fn test_query_analyzer_is_null_column_refs() {
-    let a = QueryAnalyzer::new("SELECT level FROM logs WHERE status IS NULL").unwrap();
-    assert!(
-        a.referenced_columns.contains("status"),
-        "IS NULL expr must add 'status' to referenced_columns"
-    );
-    assert!(
-        a.referenced_columns.contains("level"),
-        "'level' from SELECT must be in referenced_columns"
-    );
+fn test_query_analyzer_column_refs_expression_forms() {
+    // (sql, expected columns that must be in referenced_columns)
+    let cases: &[(&str, &[&str])] = &[
+        (
+            "SELECT level FROM logs WHERE status IS NULL",
+            &["status", "level"],
+        ),
+        ("SELECT * FROM logs WHERE level LIKE 'ERR%'", &["level"]),
+        (
+            "SELECT * FROM logs WHERE status IN ('200', '404')",
+            &["status"],
+        ),
+        (
+            "SELECT a.message FROM logs a JOIN logs b ON a.level = b.level LIMIT 5",
+            &["message", "level"],
+        ),
+        (
+            "SELECT level FROM logs UNION ALL SELECT severity FROM logs",
+            &["level", "severity"],
+        ),
+        (
+            "SELECT message FROM logs a JOIN logs b USING (level)",
+            &["message", "level"],
+        ),
+        (
+            "SELECT q.level FROM (SELECT level, status, host FROM logs WHERE status = '500' ORDER BY host) q",
+            &["level", "status", "host"],
+        ),
+        (
+            "SELECT l.message FROM logs l JOIN (SELECT level, service FROM logs WHERE service = 'api') d ON l.level = d.level",
+            &["message", "level", "service"],
+        ),
+    ];
+
+    for (sql, expected_cols) in cases {
+        let a = QueryAnalyzer::new(sql).unwrap();
+        for col in *expected_cols {
+            assert!(
+                a.referenced_columns.contains(*col),
+                "SQL: {sql}\nExpected '{col}' in referenced_columns, got: {:?}",
+                a.referenced_columns
+            );
+        }
+    }
 }
 
-/// QueryAnalyzer must collect column refs from a LIKE expression.
-#[test]
-fn test_query_analyzer_like_column_refs() {
-    let a = QueryAnalyzer::new("SELECT * FROM logs WHERE level LIKE 'ERR%'").unwrap();
-    assert!(
-        a.referenced_columns.contains("level"),
-        "LIKE expr must add 'level' to referenced_columns"
-    );
-}
-
-/// QueryAnalyzer must collect column refs from an IN list expression.
-#[test]
-fn test_query_analyzer_in_list_column_refs() {
-    let a = QueryAnalyzer::new("SELECT * FROM logs WHERE status IN ('200', '404')").unwrap();
-    assert!(
-        a.referenced_columns.contains("status"),
-        "InList expr must add 'status' to referenced_columns"
-    );
-}
-
-#[test]
-fn test_query_analyzer_join_on_column_refs() {
-    let a =
-        QueryAnalyzer::new("SELECT a.message FROM logs a JOIN logs b ON a.level = b.level LIMIT 5")
-            .unwrap();
-    assert!(
-        a.referenced_columns.contains("message"),
-        "SELECT column must be in referenced_columns"
-    );
-    assert!(
-        a.referenced_columns.contains("level"),
-        "JOIN ON column must be in referenced_columns"
-    );
-}
-
-#[test]
-fn test_query_analyzer_union_column_refs() {
-    let a =
-        QueryAnalyzer::new("SELECT level FROM logs UNION ALL SELECT severity FROM logs").unwrap();
-    assert!(
-        a.referenced_columns.contains("level"),
-        "left branch column must be in referenced_columns"
-    );
-    assert!(
-        a.referenced_columns.contains("severity"),
-        "right branch column must be in referenced_columns"
-    );
-}
-
-#[test]
-fn test_query_analyzer_join_using_column_refs() {
-    let a = QueryAnalyzer::new("SELECT message FROM logs a JOIN logs b USING (level)").unwrap();
-    assert!(
-        a.referenced_columns.contains("message"),
-        "SELECT column must be in referenced_columns"
-    );
-    assert!(
-        a.referenced_columns.contains("level"),
-        "USING column must be in referenced_columns"
-    );
-}
-
+/// STRAIGHT_JOIN may not be supported — handle both parse success and expected error.
 #[test]
 fn test_query_analyzer_straight_join_on_column_refs() {
     let sql = "SELECT a.message FROM logs a STRAIGHT_JOIN logs b ON a.level = b.level";
@@ -1115,46 +1077,7 @@ fn test_query_analyzer_straight_join_on_column_refs() {
     }
 }
 
-#[test]
-fn test_query_analyzer_derived_subquery_column_refs() {
-    let a = QueryAnalyzer::new(
-        "SELECT q.level FROM (SELECT level, status, host FROM logs WHERE status = '500' ORDER BY host) q",
-    )
-    .unwrap();
-    assert!(
-        a.referenced_columns.contains("level"),
-        "derived SELECT column must be in referenced_columns"
-    );
-    assert!(
-        a.referenced_columns.contains("status"),
-        "derived WHERE column must be in referenced_columns"
-    );
-    assert!(
-        a.referenced_columns.contains("host"),
-        "derived ORDER BY column must be in referenced_columns"
-    );
-}
-
-#[test]
-fn test_query_analyzer_joined_derived_relation_column_refs() {
-    let a = QueryAnalyzer::new(
-        "SELECT l.message FROM logs l JOIN (SELECT level, service FROM logs WHERE service = 'api') d ON l.level = d.level",
-    )
-    .unwrap();
-    assert!(
-        a.referenced_columns.contains("message"),
-        "outer SELECT column must be in referenced_columns"
-    );
-    assert!(
-        a.referenced_columns.contains("level"),
-        "join key from derived relation must be in referenced_columns"
-    );
-    assert!(
-        a.referenced_columns.contains("service"),
-        "derived subquery column must be in referenced_columns"
-    );
-}
-
+/// Table-function and TABLE() syntax: args must appear in referenced_columns.
 #[test]
 fn test_query_analyzer_table_function_args_column_refs() {
     let with_table_args = QueryAnalyzer::new("SELECT message FROM logs(level, host)").unwrap();

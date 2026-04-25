@@ -380,6 +380,22 @@ mod tests {
             .expect("make_conflict_struct_batch: failed to build RecordBatch")
     }
 
+    /// Build a RecordBatch with a single struct column from arbitrary children.
+    fn make_struct_batch(field_name: &str, children: Vec<(&str, Arc<dyn Array>)>) -> RecordBatch {
+        let struct_fields: Fields = children
+            .iter()
+            .map(|(name, arr)| Field::new(*name, arr.data_type().clone(), true))
+            .collect();
+        let arrays: Vec<Arc<dyn Array>> = children.into_iter().map(|(_, arr)| arr).collect();
+        let struct_arr = StructArray::new(struct_fields.clone(), arrays, None);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            field_name,
+            DataType::Struct(struct_fields),
+            true,
+        )]));
+        RecordBatch::try_new(schema, vec![Arc::new(struct_arr) as Arc<dyn Array>]).unwrap()
+    }
+
     // -----------------------------------------------------------------------
     // Tests
     // -----------------------------------------------------------------------
@@ -463,24 +479,19 @@ mod tests {
     fn bool_conflict_normalizes_to_utf8() {
         use arrow::array::BooleanArray;
 
-        let int_arr: Arc<dyn Array> = Arc::new(Int64Array::from(vec![None, None]));
-        let bool_arr: Arc<dyn Array> = Arc::new(BooleanArray::from(vec![Some(true), Some(false)]));
-
-        let struct_fields = Fields::from(vec![
-            Field::new("int", DataType::Int64, true),
-            Field::new("bool", DataType::Boolean, true),
-        ]);
-
-        let struct_arr = StructArray::new(struct_fields.clone(), vec![int_arr, bool_arr], None);
-
-        let schema = Arc::new(Schema::new(vec![Field::new(
+        let batch = make_struct_batch(
             "status",
-            DataType::Struct(struct_fields),
-            true,
-        )]));
-
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(struct_arr) as Arc<dyn Array>]).unwrap();
+            vec![
+                (
+                    "int",
+                    Arc::new(Int64Array::from(vec![None, None])) as Arc<dyn Array>,
+                ),
+                (
+                    "bool",
+                    Arc::new(BooleanArray::from(vec![Some(true), Some(false)])) as Arc<dyn Array>,
+                ),
+            ],
+        );
 
         let normalized = normalize_conflict_columns(batch);
         let status = normalized.column_by_name("status").unwrap();
@@ -545,31 +556,24 @@ mod tests {
     fn bool_child_preserved_as_string() {
         use arrow::array::BooleanArray;
 
-        let bool_arr: Arc<dyn Array> =
-            Arc::new(BooleanArray::from(vec![Some(true), Some(false), None]));
-        let str_arr: Arc<dyn Array> = Arc::new(StringArray::from(vec![
-            None::<&str>,
-            None,
-            Some("fallback"),
-        ]));
-
-        let struct_fields = Fields::from(vec![
-            Field::new("bool", DataType::Boolean, true),
-            Field::new("str", DataType::Utf8, true),
-        ]);
-        let struct_arr = StructArray::new(
-            struct_fields.clone(),
-            vec![Arc::clone(&bool_arr), Arc::clone(&str_arr)],
-            None,
-        );
-
-        let schema = Arc::new(Schema::new(vec![Field::new(
+        let batch = make_struct_batch(
             "active",
-            DataType::Struct(struct_fields),
-            true,
-        )]));
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(struct_arr) as Arc<dyn Array>]).unwrap();
+            vec![
+                (
+                    "bool",
+                    Arc::new(BooleanArray::from(vec![Some(true), Some(false), None]))
+                        as Arc<dyn Array>,
+                ),
+                (
+                    "str",
+                    Arc::new(StringArray::from(vec![
+                        None::<&str>,
+                        None,
+                        Some("fallback"),
+                    ])) as Arc<dyn Array>,
+                ),
+            ],
+        );
 
         let normalized = normalize_conflict_columns(batch);
         let active = normalized.column_by_name("active").unwrap();
@@ -590,26 +594,19 @@ mod tests {
     fn int_priority_over_bool() {
         use arrow::array::BooleanArray;
 
-        let int_arr: Arc<dyn Array> = Arc::new(Int64Array::from(vec![Some(42i64), None]));
-        let bool_arr: Arc<dyn Array> = Arc::new(BooleanArray::from(vec![Some(true), Some(false)]));
-
-        let struct_fields = Fields::from(vec![
-            Field::new("int", DataType::Int64, true),
-            Field::new("bool", DataType::Boolean, true),
-        ]);
-        let struct_arr = StructArray::new(
-            struct_fields.clone(),
-            vec![Arc::clone(&int_arr), Arc::clone(&bool_arr)],
-            None,
-        );
-
-        let schema = Arc::new(Schema::new(vec![Field::new(
+        let batch = make_struct_batch(
             "x",
-            DataType::Struct(struct_fields),
-            true,
-        )]));
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(struct_arr) as Arc<dyn Array>]).unwrap();
+            vec![
+                (
+                    "int",
+                    Arc::new(Int64Array::from(vec![Some(42i64), None])) as Arc<dyn Array>,
+                ),
+                (
+                    "bool",
+                    Arc::new(BooleanArray::from(vec![Some(true), Some(false)])) as Arc<dyn Array>,
+                ),
+            ],
+        );
 
         let normalized = normalize_conflict_columns(batch);
         let x = normalized.column_by_name("x").unwrap();
@@ -627,28 +624,24 @@ mod tests {
     fn schema_metadata_preserved() {
         use std::collections::HashMap;
 
-        let int_arr: Arc<dyn Array> = Arc::new(Int64Array::from(vec![Some(200i64), None]));
-        let str_arr: Arc<dyn Array> = Arc::new(StringArray::from(vec![None, Some("OK")]));
-
-        let struct_fields = Fields::from(vec![
-            Field::new("int", DataType::Int64, true),
-            Field::new("str", DataType::Utf8, true),
-        ]);
-        let struct_arr = StructArray::new(
-            struct_fields.clone(),
-            vec![Arc::clone(&int_arr), Arc::clone(&str_arr)],
-            None,
+        let batch = make_struct_batch(
+            "status",
+            vec![
+                (
+                    "int",
+                    Arc::new(Int64Array::from(vec![Some(200i64), None])) as Arc<dyn Array>,
+                ),
+                (
+                    "str",
+                    Arc::new(StringArray::from(vec![None, Some("OK")])) as Arc<dyn Array>,
+                ),
+            ],
         );
 
         let mut meta = HashMap::new();
         meta.insert("custom.key".to_string(), "custom.value".to_string());
-
-        let schema = Arc::new(Schema::new_with_metadata(
-            vec![Field::new("status", DataType::Struct(struct_fields), true)],
-            meta,
-        ));
-        let batch =
-            RecordBatch::try_new(schema, vec![Arc::new(struct_arr) as Arc<dyn Array>]).unwrap();
+        let schema_with_meta = Arc::new(batch.schema().as_ref().clone().with_metadata(meta));
+        let batch = RecordBatch::try_new(schema_with_meta, batch.columns().to_vec()).unwrap();
 
         let normalized = normalize_conflict_columns(batch);
         assert_eq!(
