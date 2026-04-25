@@ -82,7 +82,7 @@ docker run -d --cpus 0.5 --memory 128m ...
 docker run -d --cpus 2.0 --memory 512m ...
 ```
 
-Monitor `logfwd_stage_seconds_total` (metric prefix will change in a future release) and container memory usage via `docker stats`
+Monitor `ffwd_stage_seconds_total` (metric prefix will change in a future release) and container memory usage via `docker stats`
 to decide whether you need to adjust. See [Monitoring & Diagnostics](/deployment/monitoring/)
 for details on available metrics.
 

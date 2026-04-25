@@ -659,33 +659,29 @@ pub(crate) fn resolve_config_path(config_path: Option<&str>) -> Result<String, C
 /// Search well-known locations for a ffwd config file.
 ///
 /// Search order:
-///   1. `$FFWD_CONFIG` (then `$LOGFWD_CONFIG` for backward compatibility)
-///   2. `./ffwd.yaml` (then `./logfwd.yaml`)
-///   3. `~/.config/ffwd/config.yaml` (then `~/.config/logfwd/config.yaml`)
-///   4. `/etc/ffwd/config.yaml` (then `/etc/logfwd/config.yaml`)
+///   1. `$LOGFWD_CONFIG`
+///   2. `./ffwd.yaml`
+///   3. `~/.config/ffwd/config.yaml`
+///   4. `/etc/ffwd/config.yaml`
 pub(crate) fn discover_config() -> Option<std::path::PathBuf> {
     use std::env;
     use std::path::PathBuf;
 
-    // 1. Environment variable (new name, then legacy)
-    for var in ["FFWD_CONFIG", "LOGFWD_CONFIG"] {
-        if let Ok(path) = env::var(var) {
-            let p = PathBuf::from(&path);
-            if p.is_file() {
-                return Some(p);
-            }
+    // 1. Environment variable
+    if let Ok(path) = env::var("LOGFWD_CONFIG") {
+        let p = PathBuf::from(&path);
+        if p.is_file() {
+            return Some(p);
         }
     }
 
-    // 2. Current directory (new name, then legacy)
-    for name in ["ffwd.yaml", "logfwd.yaml"] {
-        let cwd = PathBuf::from(name);
-        if cwd.is_file() {
-            return Some(cwd);
-        }
+    // 2. Current directory
+    let cwd = PathBuf::from("ffwd.yaml");
+    if cwd.is_file() {
+        return Some(cwd);
     }
 
-    // 3. XDG config dir (new name, then legacy)
+    // 3. XDG config dir
     let xdg_base = env::var("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .ok()
@@ -694,21 +690,16 @@ pub(crate) fn discover_config() -> Option<std::path::PathBuf> {
                 .ok()
                 .map(|h| PathBuf::from(h).join(".config"))
         });
-    if let Some(ref base) = xdg_base {
-        for dir_name in ["ffwd", "logfwd"] {
-            let xdg = base.join(format!("{dir_name}/config.yaml"));
-            if xdg.is_file() {
-                return Some(xdg);
-            }
-        }
+    if let Some(xdg) = xdg_base.map(|b| b.join("ffwd/config.yaml"))
+        && xdg.is_file()
+    {
+        return Some(xdg);
     }
 
-    // 4. System config (new name, then legacy)
-    for dir_name in ["ffwd", "logfwd"] {
-        let etc = PathBuf::from(format!("/etc/{dir_name}/config.yaml"));
-        if etc.is_file() {
-            return Some(etc);
-        }
+    // 4. System config
+    let etc = PathBuf::from("/etc/ffwd/config.yaml");
+    if etc.is_file() {
+        return Some(etc);
     }
 
     None

@@ -24,6 +24,7 @@
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // ---------------------------------------------------------------------------
 // Generic ring buffer
@@ -181,7 +182,12 @@ impl Default for TelemetryBuffers {
 // OTLP JSON serialization
 // ---------------------------------------------------------------------------
 
-use crate::diagnostics::render::{esc as json_escape, now_nanos};
+fn now_nanos() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+}
 
 /// Serialize metric points as an OTLP JSON `ExportMetricsServiceRequest`.
 ///
@@ -250,7 +256,7 @@ pub fn traces_to_otlp_json(spans: &[SpanPoint]) -> String {
 
     let mut spans_json = Vec::new();
     for s in spans {
-        let attrs = attrs_to_json(&s.attributes);
+        let attrs = string_attrs_to_json(&s.attributes);
         let status = if s.status_code == 0 {
             String::new()
         } else {
@@ -917,7 +923,7 @@ pub fn sample_health_transitions<S: std::hash::BuildHasher>(
 // JSON helpers
 // ---------------------------------------------------------------------------
 
-fn attrs_to_json<K: AsRef<str>>(attrs: &[(K, String)]) -> String {
+fn attrs_to_json(attrs: &[(&str, String)]) -> String {
     if attrs.is_empty() {
         return "\"attributes\":[]".to_string();
     }
@@ -926,12 +932,48 @@ fn attrs_to_json<K: AsRef<str>>(attrs: &[(K, String)]) -> String {
         .map(|(k, v)| {
             format!(
                 "{{\"key\":\"{}\",\"value\":{{\"stringValue\":\"{}\"}}}}",
-                json_escape(k.as_ref()),
+                json_escape(k),
                 json_escape(v)
             )
         })
         .collect();
     format!("\"attributes\":[{}]", kvs.join(","))
+}
+
+fn string_attrs_to_json(attrs: &[(String, String)]) -> String {
+    if attrs.is_empty() {
+        return "\"attributes\":[]".to_string();
+    }
+    let kvs: Vec<String> = attrs
+        .iter()
+        .map(|(k, v)| {
+            format!(
+                "{{\"key\":\"{}\",\"value\":{{\"stringValue\":\"{}\"}}}}",
+                json_escape(k),
+                json_escape(v)
+            )
+        })
+        .collect();
+    format!("\"attributes\":[{}]", kvs.join(","))
+}
+
+fn json_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                use std::fmt::Write;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

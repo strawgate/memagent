@@ -30,7 +30,6 @@ fn main() {
     );
 
     // Split into chunks simulating framed output (4KB typical, variable)
-    let batch_target = 256 * 1024; // 256KB batch target
     let chunks: Vec<bytes::Bytes> = {
         let mut v = Vec::new();
         let mut offset = 0;
@@ -62,6 +61,7 @@ fn main() {
         v
     };
     let num_chunks = chunks.len();
+    let batch_target = 256 * 1024; // 256KB batch target
     eprintln!("Split into {num_chunks} chunks, batch target: {batch_target} bytes");
 
     // -----------------------------------------------------------------------

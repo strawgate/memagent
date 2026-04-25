@@ -17,7 +17,7 @@ use super::Compression;
 // ---------------------------------------------------------------------------
 
 /// Name emitted in the OTLP `InstrumentationScope.name` field of every `ScopeLogs`.
-pub(super) const SCOPE_NAME: &[u8] = b"logfwd";
+pub(super) const SCOPE_NAME: &[u8] = b"ffwd";
 /// Version emitted in the OTLP `InstrumentationScope.version` field (from Cargo.toml).
 pub(super) const SCOPE_VERSION: &[u8] = env!("CARGO_PKG_VERSION").as_bytes();
 /// Default gRPC outbound message size guardrail.

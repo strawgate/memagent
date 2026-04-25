@@ -328,15 +328,6 @@ mod tests {
     use proptest::prelude::*;
     use proptest::test_runner::Config as ProptestConfig;
 
-    fn process_chunk_collect(chunk: &[u8]) -> (Vec<Vec<u8>>, usize, usize) {
-        let mut reassembler = CriReassembler::new(1024 * 1024);
-        let mut lines = Vec::new();
-        let (count, errors) = process_cri_chunk(chunk, &mut reassembler, |msg| {
-            lines.push(msg.to_vec());
-        });
-        (lines, count, errors)
-    }
-
     #[test]
     fn test_parse_full_line() {
         let line =
@@ -404,7 +395,11 @@ mod tests {
         let chunk = b"2024-01-15T10:30:00Z stdout F line one\n\
                        2024-01-15T10:30:01Z stdout F line two\n\
                        2024-01-15T10:30:02Z stderr F line three\n";
-        let (lines, count, errors) = process_chunk_collect(chunk);
+        let mut reassembler = CriReassembler::new(1024 * 1024);
+        let mut lines = Vec::new();
+        let (count, errors) = process_cri_chunk(chunk, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
         assert_eq!(count, 3);
         assert_eq!(errors, 0);
         assert_eq!(lines[0], b"line one");
@@ -465,7 +460,11 @@ mod tests {
         let chunk = b"not-a-cri-line\n\
                        2024-01-15T10:30:00Z stdout F valid line\n\
                        also-invalid\n";
-        let (lines, count, errors) = process_chunk_collect(chunk);
+        let mut reassembler = CriReassembler::new(1024 * 1024);
+        let mut lines = Vec::new();
+        let (count, errors) = process_cri_chunk(chunk, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
         assert_eq!(count, 1);
         assert_eq!(errors, 2);
         assert_eq!(lines[0], b"valid line");
@@ -712,7 +711,11 @@ mod tests {
     fn test_invalid_flag_counted_as_parse_error() {
         let chunk = b"2024-01-15T10:30:00Z stdout X bad\n\
                        2024-01-15T10:30:00Z stdout F valid\n";
-        let (lines, count, errors) = process_chunk_collect(chunk);
+        let mut reassembler = CriReassembler::new(1024 * 1024);
+        let mut lines = Vec::new();
+        let (count, errors) = process_cri_chunk(chunk, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
         assert_eq!(count, 1);
         assert_eq!(errors, 1);
         assert_eq!(lines[0], b"valid");
@@ -745,7 +748,11 @@ mod tests {
         // not be silently dropped as a parse error (#698).
         let chunk = b"2024-01-15T10:30:00Z stdout F\n\
                        2024-01-15T10:30:01Z stdout F has content\n";
-        let (lines, count, errors) = process_chunk_collect(chunk);
+        let mut reassembler = CriReassembler::new(1024 * 1024);
+        let mut lines = Vec::new();
+        let (count, errors) = process_cri_chunk(chunk, &mut reassembler, |msg| {
+            lines.push(msg.to_vec());
+        });
         assert_eq!(count, 2);
         assert_eq!(errors, 0);
         assert_eq!(lines[0], b"");

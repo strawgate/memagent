@@ -608,15 +608,6 @@ mod tests {
     use super::*;
     use arrow::array::Array;
 
-    fn get_str_col<'a>(batch: &'a RecordBatch, name: &str) -> &'a StringArray {
-        batch
-            .column_by_name(name)
-            .unwrap_or_else(|| panic!("missing column: {name}"))
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap_or_else(|| panic!("column {name} is not StringArray"))
-    }
-
     // -- CRI path parsing ---------------------------------------------------
 
     #[test]
@@ -684,7 +675,12 @@ mod tests {
         let batch = table.snapshot().unwrap();
         assert_eq!(batch.num_rows(), 1);
         assert_eq!(batch.num_columns(), 2);
-        let env = get_str_col(&batch, "environment");
+        let env = batch
+            .column_by_name("environment")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(env.value(0), "production");
     }
 
@@ -717,7 +713,12 @@ mod tests {
         assert_eq!(batch.num_rows(), 1);
         assert_eq!(batch.num_columns(), 3);
         for col_name in &["hostname", "os_type", "os_arch"] {
-            let col = get_str_col(&batch, col_name);
+            let col = batch
+                .column_by_name(col_name)
+                .unwrap_or_else(|| panic!("missing column: {col_name}"))
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
             assert!(!col.value(0).is_empty(), "{col_name} should be non-empty");
         }
     }
@@ -743,7 +744,12 @@ mod tests {
         ]);
         let batch = table.snapshot().expect("should have data");
         assert_eq!(batch.num_rows(), 2);
-        let ns = get_str_col(&batch, "namespace");
+        let ns = batch
+            .column_by_name("namespace")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(ns.value(0), "default");
         assert_eq!(ns.value(1), "monitoring");
     }
@@ -804,11 +810,21 @@ mod tests {
         assert_eq!(batch.num_rows(), 2);
         assert_eq!(batch.num_columns(), 3);
 
-        let hostname = get_str_col(&batch, "hostname");
+        let hostname = batch
+            .column_by_name("hostname")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(hostname.value(0), "web-1");
         assert_eq!(hostname.value(1), "api-2");
 
-        let team = get_str_col(&batch, "team");
+        let team = batch
+            .column_by_name("team")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(team.value(0), "platform");
         assert_eq!(team.value(1), "backend");
     }
@@ -820,7 +836,12 @@ mod tests {
         table.load_from_reader(&csv_data[..]).unwrap();
         let batch = table.snapshot().unwrap();
         assert_eq!(batch.num_rows(), 2);
-        let c = get_str_col(&batch, "c");
+        let c = batch
+            .column_by_name("c")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(c.value(0), "3");
         assert!(c.is_null(1)); // padded with NULL
     }
@@ -873,7 +894,12 @@ mod tests {
         assert_eq!(rows, 2);
 
         let batch = table.snapshot().unwrap();
-        let region = get_str_col(&batch, "region");
+        let region = batch
+            .column_by_name("region")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(region.value(0), "us-east");
         assert_eq!(region.value(1), "eu-west");
     }
@@ -891,7 +917,12 @@ mod tests {
         let batch = table.snapshot().unwrap();
         assert_eq!(batch.num_rows(), 2);
 
-        let ip = get_str_col(&batch, "ip");
+        let ip = batch
+            .column_by_name("ip")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(ip.value(0), "10.0.0.1");
         assert_eq!(ip.value(1), "10.0.0.2");
     }
@@ -907,11 +938,21 @@ mod tests {
         assert_eq!(batch.num_rows(), 2);
         assert_eq!(batch.num_columns(), 3);
 
-        let a = get_str_col(&batch, "a");
+        let a = batch
+            .column_by_name("a")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(a.value(0), "1");
         assert!(a.is_null(1)); // row 2 doesn't have "a"
 
-        let c = get_str_col(&batch, "c");
+        let c = batch
+            .column_by_name("c")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert!(c.is_null(0)); // row 1 doesn't have "c"
         assert_eq!(c.value(1), "4");
     }
@@ -923,10 +964,20 @@ mod tests {
         table.load_from_reader(&data[..]).unwrap();
 
         let batch = table.snapshot().unwrap();
-        let port = get_str_col(&batch, "port");
+        let port = batch
+            .column_by_name("port")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(port.value(0), "8080");
 
-        let active = get_str_col(&batch, "active");
+        let active = batch
+            .column_by_name("active")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(active.value(0), "true");
     }
 

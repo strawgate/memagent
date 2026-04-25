@@ -48,6 +48,28 @@ mod tests {
     }
 
     #[test]
+    fn supported_event_types_match_public_event_kind_names() {
+        assert_eq!(
+            SUPPORTED_EVENT_TYPES,
+            &[
+                "exec",
+                "exit",
+                "tcp_connect",
+                "tcp_accept",
+                "file_open",
+                "file_delete",
+                "file_rename",
+                "setuid",
+                "setgid",
+                "module_load",
+                "ptrace",
+                "memfd_create",
+                "dns_query",
+            ]
+        );
+    }
+
+    #[test]
     fn no_filters_accepts_all_event_types() {
         assert!(is_event_type_enabled("exec", None, None));
         assert!(is_event_type_enabled("tcp_connect", None, None));

@@ -173,7 +173,7 @@ fn run_breakdown(
     for _ in 0..num_batches {
         buf.clear();
         for row in 0..batch.num_rows() {
-            write_row_json_resolved(row, &resolved, &mut buf, false).expect("json failed");
+            write_row_json_resolved(row, &resolved, &mut buf).expect("json failed");
             buf.push(b'\n');
         }
         std::hint::black_box(&buf);
@@ -345,7 +345,7 @@ fn run_alloc(
     for _ in 0..num_batches {
         buf.clear();
         for row in 0..batch.num_rows() {
-            write_row_json_resolved(row, &resolved, &mut buf, false).expect("json failed");
+            write_row_json_resolved(row, &resolved, &mut buf).expect("json failed");
             buf.push(b'\n');
         }
     }

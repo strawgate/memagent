@@ -175,11 +175,11 @@ pub async fn run_pipelines(
     }
 
     let meter_provider = build_meter_provider(&config, use_color)?;
-    let meter = meter_provider.meter("logfwd");
+    let meter = meter_provider.meter("ffwd");
 
     let trace_buf = ffwd_diagnostics::span_exporter::SpanBuffer::new();
     let tracer_provider = build_tracer_provider(trace_buf.clone(), &config, use_color)?;
-    let tracer = tracer_provider.tracer("logfwd");
+    let tracer = tracer_provider.tracer("ffwd");
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_env("LOGFWD_LOG")
@@ -547,41 +547,13 @@ fn acquire_instance_lock(
         .as_ref()
         .map_or_else(ffwd_io::checkpoint::default_data_dir, PathBuf::from);
     std::fs::create_dir_all(&data_dir)?;
-
-    // Acquire both the new lock and the legacy lock so a new version and an
-    // older `logfwd` build cannot run simultaneously against the same data dir.
     let lock_path = data_dir.join("ffwd.lock");
-    let legacy_lock_path = data_dir.join("logfwd.lock");
-
-    let lock_file = open_and_lock(&lock_path)?;
-    // Best-effort: grab the legacy lock too if the file exists or can be
-    // created, but don't fail startup if it can't be acquired for a
-    // non-contention reason (e.g. permissions on a fresh install).
-    match open_and_lock(&legacy_lock_path) {
-        Ok(legacy_file) => {
-            // Leak the file handle so the lock is held for the process lifetime,
-            // matching the primary lock's behavior.
-            std::mem::forget(legacy_file);
-        }
-        Err(RuntimeError::Io(ref e)) if e.kind() == io::ErrorKind::WouldBlock => {
-            return Err(RuntimeError::Io(io::Error::other(format!(
-                "another logfwd/ffwd instance is already running (legacy lock: {})",
-                legacy_lock_path.display()
-            ))));
-        }
-        Err(_) => { /* ignore non-contention errors on legacy lock */ }
-    }
-
-    Ok(Some(lock_file))
-}
-
-fn open_and_lock(lock_path: &Path) -> Result<std::fs::File, RuntimeError> {
     let lock_file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
-        .open(lock_path)?;
+        .open(&lock_path)?;
 
     #[cfg(unix)]
     {
@@ -607,7 +579,7 @@ fn open_and_lock(lock_path: &Path) -> Result<std::fs::File, RuntimeError> {
     #[cfg(not(unix))]
     eprintln!("warn: file-based instance locking not supported on this platform");
 
-    Ok(lock_file)
+    Ok(Some(lock_file))
 }
 
 fn build_meter_provider(

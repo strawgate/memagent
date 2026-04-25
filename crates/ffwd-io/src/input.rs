@@ -388,7 +388,7 @@ pub enum FramedReadEvent {
     },
 }
 
-/// TLS settings for an input listener (cert, key, mutual auth).
+/// Trait for input sources that produce raw bytes.
 #[derive(Debug, Clone)]
 pub struct TlsInputConfig {
     pub cert_file: Option<String>,
@@ -397,7 +397,6 @@ pub struct TlsInputConfig {
     pub require_client_auth: bool,
 }
 
-/// Trait for input sources that produce raw bytes.
 pub trait InputSource: Send {
     /// Poll for new events. Returns empty vec if no new data.
     fn poll(&mut self) -> io::Result<Vec<InputEvent>>;

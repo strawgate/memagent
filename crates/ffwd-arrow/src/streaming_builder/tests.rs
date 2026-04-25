@@ -678,6 +678,32 @@ mod tests {
         assert!(col.is_null(2), "row 2 should be null");
     }
 
+    /// Three-way conflict: int, float, str all appear -- struct has all three children.
+    #[test]
+    fn three_way_conflict_int_float_str() {
+        let buf = bytes::Bytes::from_static(b"text");
+        let mut b = StreamingBuilder::new(None);
+        b.begin_batch(buf.clone());
+        let si = b.resolve_field(b"mixed");
+        b.begin_row();
+        b.append_int_by_idx(si, b"42");
+        b.end_row();
+        b.begin_row();
+        b.append_float_by_idx(si, b"3.14");
+        b.end_row();
+        b.begin_row();
+        b.append_str_by_idx(si, &buf[0..4]);
+        b.end_row();
+        let batch = b.finish_batch().unwrap();
+        let col = batch.column_by_name("mixed").expect("mixed struct");
+        assert!(matches!(col.data_type(), DataType::Struct(_)));
+        let sa = col.as_any().downcast_ref::<ArrowStructArray>().unwrap();
+        let child_names: Vec<&str> = sa.fields().iter().map(|f| f.name().as_str()).collect();
+        assert!(child_names.contains(&"int"), "missing int child");
+        assert!(child_names.contains(&"float"), "missing float child");
+        assert!(child_names.contains(&"str"), "missing str child");
+    }
+
     /// Single-type int field stays as bare flat Int64 column, not a struct.
     #[test]
     fn single_type_field_stays_flat() {

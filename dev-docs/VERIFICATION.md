@@ -355,7 +355,7 @@ ffwd-core is the proven kernel. All rules are CI-enforced.
 |------|-------------|
 | `#![no_std]` + alloc | Compiler. CI: `cargo build --target thumbv6m-none-eabi` |
 | `#![forbid(unsafe_code)]` | Compiler. Cannot be overridden with `#[allow]`. |
-| Only deps: memchr + wide + logfwd-kani + logfwd-lint-attrs | CI dependency allowlist check |
+| Only deps: memchr + wide | CI dependency allowlist check |
 | No panics | `clippy::unwrap_used`, `clippy::panic`, `clippy::indexing_slicing` = deny |
 | Every public fn has a proof | Required policy + review checks + CI Kani job with per-module inventory below |
 | No IO, threads, async | Structural (no_std removes the APIs) |

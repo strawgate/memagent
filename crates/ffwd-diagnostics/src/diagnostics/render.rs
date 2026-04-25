@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Minimal JSON-string escaping (backslash, double-quote, control chars).
-pub(crate) fn esc(s: &str) -> String {
+pub(super) fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         match c {
@@ -20,8 +20,7 @@ pub(crate) fn esc(s: &str) -> String {
     out
 }
 
-/// Returns the current wall-clock time as nanoseconds since the Unix epoch.
-pub(crate) fn now_nanos() -> u64 {
+pub(super) fn now_nanos() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

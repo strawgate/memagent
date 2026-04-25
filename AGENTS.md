@@ -21,10 +21,12 @@ All commands use `just` recipes. **Never use bare `cargo clippy`** — it won't 
 # ── Build ───────────────────────────────────────────────
 just build                   # Release binary with DataFusion SQL
 just build-dev-lite          # Fast dev binary (no DataFusion SQL)
+cargo build --release -p ffwd  # Equivalent to `just build`
 
 # ── Test ────────────────────────────────────────────────
 just test                    # Default-members only (~30s, skips datafusion)
 just test-all                # Full workspace (~3min, includes datafusion)
+cargo test -p ffwd-core    # Single-crate iteration (fastest)
 
 # ── Lint & Format ──────────────────────────────────────
 just lint                    # fmt-check + clippy + toml-check (fast)
@@ -154,7 +156,7 @@ ffwd-core               Pure logic, proven, no_std, forbid(unsafe)
 
 | Crate | Key constraints |
 |-------|----------------|
-| `ffwd-core` | `no_std` + `forbid(unsafe_code)`. Only deps: memchr + wide + ffwd-kani + ffwd-lint-attrs. Every public fn needs a Kani proof. No panics, no unwrap, no indexing. |
+| `ffwd-core` | `no_std` + `forbid(unsafe_code)`. Only deps: memchr + wide. Every public fn needs a Kani proof. No panics, no unwrap, no indexing. |
 | `ffwd-arrow` | Implements core's ScanBuilder. unsafe allowed for SIMD only. proptest: SIMD ≡ scalar. |
 | `ffwd-io` | IO lives here. Tests use tempfiles. No raw payload injection (see #1615). |
 | `ffwd-transform` | DataFusion is the SQL engine. Enrichment tables implement Arrow RecordBatchReader. |

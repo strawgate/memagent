@@ -152,9 +152,11 @@ input:
 output:
   type: stdout
 ";
-        assert_config_err!(
-            yaml,
-            "stdin input only supports format auto, cri, json, or raw"
+        let err = Config::load_str(yaml).expect_err("stdin should reject unsupported format");
+        assert!(
+            err.to_string()
+                .contains("stdin input only supports format auto, cri, json, or raw"),
+            "unexpected error: {err}"
         );
     }
 
@@ -167,7 +169,11 @@ input:
 output:
   type: stdout
 ";
-        assert_config_err!(yaml, "unknown field `path`");
+        let err = Config::load_str(yaml).expect_err("stdin should reject path");
+        assert!(
+            err.to_string().contains("unknown field `path`"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -257,7 +263,12 @@ input:
 output:
   type: stdout
 ";
-        assert_config_err!(yaml, "sensor inputs do not support 'format'");
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sensor inputs do not support 'format'"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -330,7 +341,11 @@ input:
 output:
   type: stdout
 ";
-        assert_config_err!(yaml, "'format' is not supported for arrow_ipc inputs");
+        let err = Config::load_str(yaml).unwrap_err().to_string();
+        assert!(
+            err.contains("'format' is not supported for arrow_ipc inputs"),
+            "expected arrow_ipc format rejection, got: {err}"
+        );
     }
 
     #[test]
@@ -381,7 +396,11 @@ input:
 output:
   type: stdout
 "#;
-        assert_config_err!(yaml, "sensor.control_path must not be empty");
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sensor.control_path must not be empty")
+        );
     }
 
     #[test]
@@ -394,7 +413,11 @@ input:
 output:
   type: stdout
 ";
-        assert_config_err!(yaml, "unknown sensor family 'made_up_family'");
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown sensor family 'made_up_family'")
+        );
     }
 
     #[test]
@@ -421,7 +444,12 @@ input:
 output:
   type: stdout
 ";
-        assert_config_err!(yaml, "unknown sensor event type 'process_exec'");
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("unknown sensor event type 'process_exec'"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -434,7 +462,12 @@ input:
 output:
   type: stdout
 "#;
-        assert_config_err!(yaml, "sensor.exclude_event_types entries must not be empty");
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("sensor.exclude_event_types entries must not be empty"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -479,9 +512,12 @@ input:
 output:
   type: stdout
 ";
-        assert_config_err!(
-            yaml,
-            "sensor.include_event_types and sensor.exclude_event_types are only supported for linux_ebpf_sensor inputs"
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "sensor.include_event_types and sensor.exclude_event_types are only supported for linux_ebpf_sensor inputs"
+            ),
+            "unexpected error: {err}"
         );
     }
 
@@ -495,7 +531,12 @@ input:
 output:
   type: stdout
 ";
-        assert_config_err!(yaml, "max_open_files must be at least 1");
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("max_open_files must be at least 1"),
+            "expected 'max_open_files must be at least 1' in error: {msg}"
+        );
     }
 
     #[test]
@@ -633,7 +674,11 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        assert_config_err!(yaml, "max_clients must be greater than 0");
+        let err = Config::load_str(yaml).expect_err("tcp input must reject max_clients: 0");
+        assert!(
+            err.to_string()
+                .contains("max_clients must be greater than 0")
+        );
     }
 
     #[test]
@@ -681,7 +726,12 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        assert_config_err!(yaml, "requires both tls.cert_file and tls.key_file");
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("requires both tls.cert_file and tls.key_file"),
+            "expected TCP cert/key pairing validation: {err}"
+        );
     }
 
     #[test]
@@ -718,7 +768,12 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        assert_config_err!(yaml, "require_client_auth requires tls.client_ca_file");
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("require_client_auth requires tls.client_ca_file"),
+            "expected TCP mTLS client CA validation failure: {err}"
+        );
     }
 
     #[test]
@@ -736,9 +791,11 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        assert_config_err!(
-            yaml,
-            "client_ca_file requires tls.require_client_auth: true"
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("client_ca_file requires tls.require_client_auth: true"),
+            "expected TCP client CA without mTLS validation failure: {err}"
         );
     }
 

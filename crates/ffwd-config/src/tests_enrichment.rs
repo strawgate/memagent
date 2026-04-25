@@ -7,37 +7,78 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn enrichment_missing_path_rejected() {
-        let cases = [
-            (
-                "geo_database",
-                "format: mmdb\n        path: /nonexistent/path/to/GeoLite2-City.mmdb",
-                &["not found", "geo database"][..],
-            ),
-            (
-                "csv",
-                "table_name: assets\n        path: /nonexistent/path/to/assets.csv",
-                &["not found", "csv"][..],
-            ),
-            (
-                "jsonl",
-                "table_name: ips\n        path: /nonexistent/path/to/data.jsonl",
-                &["not found", "jsonl"][..],
-            ),
-        ];
-        for (etype, extra, expected) in cases {
-            let yaml = format!(
-                "pipelines:\n  app:\n    inputs:\n      - type: file\n        path: /tmp/x.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: {etype}\n        {extra}\n"
-            );
-            let err = Config::load_str(&yaml).unwrap_err();
-            let msg = err.to_string();
-            for substr in expected {
-                assert!(
-                    msg.contains(substr),
-                    "expected {substr:?} in error for {etype}: {msg}"
-                );
-            }
-        }
+    fn enrichment_geo_database_missing_path_rejected() {
+        let yaml = r"
+pipelines:
+  app:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: geo_database
+        format: mmdb
+        path: /nonexistent/path/to/GeoLite2-City.mmdb
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not found"),
+            "expected 'not found' in error: {msg}"
+        );
+        assert!(
+            msg.contains("geo database"),
+            "expected 'geo database' in error: {msg}"
+        );
+    }
+
+    #[test]
+    fn enrichment_csv_missing_path_rejected() {
+        let yaml = r"
+pipelines:
+  app:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: csv
+        table_name: assets
+        path: /nonexistent/path/to/assets.csv
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not found"),
+            "expected 'not found' in error: {msg}"
+        );
+        assert!(msg.contains("csv"), "expected 'csv' in error: {msg}");
+    }
+
+    #[test]
+    fn enrichment_jsonl_missing_path_rejected() {
+        let yaml = r"
+pipelines:
+  app:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: jsonl
+        table_name: ips
+        path: /nonexistent/path/to/data.jsonl
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("not found"),
+            "expected 'not found' in error: {msg}"
+        );
+        assert!(msg.contains("jsonl"), "expected 'jsonl' in error: {msg}");
     }
 
     #[test]
@@ -81,7 +122,12 @@ pipelines:
         table_name: env
         labels: {}
 ";
-        assert_config_err!(yaml, "at least one label");
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("at least one label"),
+            "expected 'at least one label' in error: {msg}"
+        );
     }
 
     #[test]
@@ -251,24 +297,88 @@ enrichment:
     // -----------------------------------------------------------------------
 
     #[test]
-    fn enrichment_empty_or_whitespace_path_rejected() {
-        let cases = [
-            ("geo_database", "format: mmdb\n        path: \"\""),
-            ("csv", "table_name: assets\n        path: \"\""),
-            ("jsonl", "table_name: owners\n        path: \"   \""),
-            ("geo_database", "format: mmdb\n        path: \"   \""),
-            ("csv", "table_name: assets\n        path: \"   \""),
-        ];
-        for (etype, extra) in cases {
-            let yaml = format!(
-                "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: {etype}\n        {extra}\n"
-            );
-            let err = Config::load_str(&yaml).unwrap_err();
-            let msg = err.to_string();
-            assert!(
-                msg.contains("path") && msg.contains("empty"),
-                "expected empty-path rejection for {etype}: {msg}"
-            );
-        }
+    fn geo_database_empty_path_rejected() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: geo_database
+        format: mmdb
+        path: ""
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("empty"),
+            "expected empty-path rejection for geo_database: {err}"
+        );
+    }
+
+    #[test]
+    fn csv_enrichment_empty_path_rejected() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: csv
+        table_name: assets
+        path: ""
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("empty"),
+            "expected empty-path rejection for csv enrichment: {err}"
+        );
+    }
+
+    #[test]
+    fn jsonl_enrichment_empty_path_rejected() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: jsonl
+        table_name: owners
+        path: "   "
+"#;
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("empty"),
+            "expected empty-path rejection for jsonl enrichment: {err}"
+        );
+    }
+
+    #[test]
+    fn geo_database_whitespace_path_rejected() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: geo_database\n        format: mmdb\n        path: \"   \"\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("empty"),
+            "whitespace-only path must be rejected for geo_database: {err}"
+        );
+    }
+
+    #[test]
+    fn csv_enrichment_whitespace_path_rejected() {
+        let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: csv\n        table_name: assets\n        path: \"   \"\n";
+        let err = Config::load_str(yaml).unwrap_err();
+        assert!(
+            err.to_string().contains("path") && err.to_string().contains("empty"),
+            "whitespace-only path must be rejected for csv enrichment: {err}"
+        );
     }
 }

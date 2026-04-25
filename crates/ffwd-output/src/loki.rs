@@ -818,23 +818,6 @@ fn escape_json_raw(s: &str) -> String {
 mod tests {
     use super::*;
 
-    /// Build a `LokiSink` with default (empty) config for unit tests.
-    fn test_loki_sink() -> LokiSink {
-        let config = Arc::new(LokiConfig {
-            endpoint: "http://localhost".to_string(),
-            tenant_id: None,
-            static_labels: vec![],
-            label_columns: vec![],
-            headers: vec![],
-        });
-        LokiSink::new(
-            "test".to_string(),
-            config,
-            Arc::new(reqwest::Client::new()),
-            Arc::new(ComponentStats::new()),
-        )
-    }
-
     #[test]
     fn sort_dedup_already_sorted_no_op() {
         let mut entries: Vec<LokiEntry> =
@@ -1283,7 +1266,19 @@ mod tests {
         use arrow::array::Int64Array;
         use arrow::datatypes::{Field, Schema};
 
-        let sink = test_loki_sink();
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
 
         // Batch uses the canonical "timestamp" name (OTLP receiver output).
         let schema = Arc::new(Schema::new(vec![
@@ -1324,7 +1319,19 @@ mod tests {
         use arrow::array::Int64Array;
         use arrow::datatypes::{Field, Schema};
 
-        let sink = test_loki_sink();
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
 
         // @timestamp appears BEFORE _timestamp in the schema.
         // The sink must select _timestamp (1000) not @timestamp (100).
@@ -1372,7 +1379,19 @@ mod tests {
         use arrow::array::StringArray;
         use arrow::datatypes::{Field, Schema};
 
-        let sink = test_loki_sink();
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
 
         // _timestamp column is Utf8 (scanner output from tailed log files and
         // star_to_flat output).  The expected nanosecond value for
@@ -1546,7 +1565,19 @@ mod tests {
         use arrow::array::Int64Array;
         use arrow::datatypes::{Field, Schema};
 
-        let sink = test_loki_sink();
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
 
         let schema = Arc::new(Schema::new(vec![Field::new(
             field_names::TIMESTAMP_UNDERSCORE,
@@ -1583,7 +1614,19 @@ mod tests {
         use arrow::array::Int64Array;
         use arrow::datatypes::{Field, Schema};
 
-        let sink = test_loki_sink();
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
 
         // Schema: @timestamp (index 0) BEFORE _timestamp (index 1).
         // The old `position(|f| underscore || at)` would incorrectly pick @timestamp
@@ -1739,7 +1782,19 @@ mod tests {
         use arrow::array::Int64Array;
         use arrow::datatypes::{Field, Schema};
 
-        let sink = test_loki_sink();
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
 
         let schema = Arc::new(Schema::new(vec![Field::new(
             field_names::TIMESTAMP_UNDERSCORE,
@@ -1779,7 +1834,19 @@ mod tests {
         use arrow::array::TimestampNanosecondArray;
         use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 
-        let sink = test_loki_sink();
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
 
         let expected_ns: i64 = 1_705_314_600_000_000_000;
         let schema = Arc::new(Schema::new(vec![
@@ -1822,7 +1889,19 @@ mod tests {
         use arrow::array::TimestampMicrosecondArray;
         use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 
-        let sink = test_loki_sink();
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
 
         let raw_us: i64 = 1_705_314_600_000_000;
         let expected_ns: u64 = (raw_us * 1_000) as u64;
@@ -1856,7 +1935,19 @@ mod tests {
         use arrow::array::TimestampMillisecondArray;
         use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 
-        let sink = test_loki_sink();
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
 
         let raw_ms: i64 = 1_705_314_600_000;
         let expected_ns: u64 = (raw_ms * 1_000_000) as u64;
@@ -1890,7 +1981,19 @@ mod tests {
         use arrow::array::TimestampSecondArray;
         use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 
-        let sink = test_loki_sink();
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
 
         let raw_s: i64 = 1_705_314_600;
         let expected_ns: u64 = (raw_s * 1_000_000_000) as u64;
@@ -1924,7 +2027,19 @@ mod tests {
         use arrow::array::TimestampSecondArray;
         use arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 
-        let sink = test_loki_sink();
+        let config = Arc::new(LokiConfig {
+            endpoint: "http://localhost".to_string(),
+            tenant_id: None,
+            static_labels: vec![],
+            label_columns: vec![],
+            headers: vec![],
+        });
+        let sink = LokiSink::new(
+            "test".to_string(),
+            config,
+            Arc::new(reqwest::Client::new()),
+            Arc::new(ComponentStats::new()),
+        );
 
         let schema = Arc::new(Schema::new(vec![Field::new(
             field_names::TIMESTAMP_UNDERSCORE,

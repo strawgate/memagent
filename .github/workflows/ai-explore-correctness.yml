@@ -21,7 +21,7 @@ jobs:
         Review the codebase for correctness issues:
 
         1. **JSON parsing fidelity**: Does the scanner in
-           `crates/ffwd-core/src/json_scanner.rs` correctly handle all JSON
+           `crates/ffwd-core/src/scanner.rs` correctly handle all JSON
            edge cases? Check: escaped quotes in strings, unicode escapes
            (\uXXXX), nested objects/arrays, empty objects, null values,
            very long strings, numbers at int64 boundaries.

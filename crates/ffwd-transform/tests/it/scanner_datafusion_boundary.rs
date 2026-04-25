@@ -173,70 +173,24 @@ fn collect_i64_col(batch: &RecordBatch, name: &str) -> Vec<Option<i64>> {
 }
 
 // ===========================================================================
-// Helper: run a test closure against all three string-type batch variants
+// Section 1: Utf8View columns
 // ===========================================================================
 
-fn for_all_string_types(test_fn: impl Fn(RecordBatch, &str)) {
-    for (batch, label) in [
-        (make_utf8view_batch(), "Utf8View"),
-        (make_dict_utf8_batch(), "Dict<Utf8>"),
-        (make_dict_utf8view_batch(), "Dict<Utf8View>"),
-    ] {
-        test_fn(batch, label);
-    }
-}
+// --- WHERE ---
 
-// ===========================================================================
-// Section 1: Tests that apply to ALL string-type variants
-// ===========================================================================
-
-/// WHERE clause on a string column must filter rows correctly (all string types).
+/// WHERE clause on a Utf8View column must filter rows correctly.
 #[test]
-fn all_string_types_where_equals() {
-    for_all_string_types(|batch, label| {
-        let mut t = SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
-        let result = t.execute_blocking(batch).unwrap();
-        assert_eq!(result.num_rows(), 2, "[{label}] expected 2 ERROR rows");
-        let levels = collect_string_col(&result, "level_str");
-        assert!(
-            levels.iter().all(|v| v == "ERROR"),
-            "[{label}] all rows must be ERROR"
-        );
-    });
+fn utf8view_where_equals() {
+    let batch = make_utf8view_batch();
+    let mut t = SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+    assert_eq!(result.num_rows(), 2, "expected 2 ERROR rows");
+    let levels = collect_string_col(&result, "level_str");
+    assert!(
+        levels.iter().all(|v| v == "ERROR"),
+        "all rows must be ERROR"
+    );
 }
-
-/// GROUP BY on a string column must produce one row per distinct value (all string types).
-#[test]
-fn all_string_types_group_by_count() {
-    for_all_string_types(|batch, label| {
-        let mut t = SqlTransform::new(
-            "SELECT level_str, COUNT(*) AS cnt FROM logs GROUP BY level_str ORDER BY level_str",
-        )
-        .unwrap();
-        let result = t.execute_blocking(batch).unwrap();
-        assert_eq!(result.num_rows(), 3, "[{label}] three distinct levels");
-        let levels = collect_string_col(&result, "level_str");
-        assert_eq!(levels, ["DEBUG", "ERROR", "INFO"], "[{label}]");
-        let counts = collect_i64_col(&result, "cnt");
-        assert_eq!(counts, [Some(1), Some(2), Some(1)], "[{label}]");
-    });
-}
-
-/// ORDER BY ASC on a string column must sort lexicographically (all string types).
-#[test]
-fn all_string_types_order_by_asc() {
-    for_all_string_types(|batch, label| {
-        let mut t = SqlTransform::new("SELECT level_str FROM logs ORDER BY level_str ASC").unwrap();
-        let result = t.execute_blocking(batch).unwrap();
-        assert_eq!(result.num_rows(), 4, "[{label}]");
-        let levels = collect_string_col(&result, "level_str");
-        assert_eq!(levels, ["DEBUG", "ERROR", "ERROR", "INFO"], "[{label}]");
-    });
-}
-
-// ===========================================================================
-// Section 2: Utf8View-only tests (WHERE variants, GROUP BY SUM, ORDER BY DESC, JOINs)
-// ===========================================================================
 
 /// WHERE clause with NOT EQUAL on a Utf8View column.
 #[test]
@@ -263,6 +217,26 @@ fn utf8view_where_like() {
     assert_eq!(msgs[0], "disk full");
 }
 
+// --- GROUP BY ---
+
+/// GROUP BY on a Utf8View column must produce one row per distinct value.
+#[test]
+fn utf8view_group_by_count() {
+    let batch = make_utf8view_batch();
+    let mut t = SqlTransform::new(
+        "SELECT level_str, COUNT(*) AS cnt FROM logs GROUP BY level_str ORDER BY level_str",
+    )
+    .unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+    // Three distinct levels: DEBUG, ERROR, INFO (ORDER BY level_str ASC)
+    assert_eq!(result.num_rows(), 3, "three distinct levels");
+    let levels = collect_string_col(&result, "level_str");
+    assert_eq!(levels, ["DEBUG", "ERROR", "INFO"]);
+    let counts = collect_i64_col(&result, "cnt");
+    // DEBUG→1, ERROR→2, INFO→1
+    assert_eq!(counts, [Some(1), Some(2), Some(1)]);
+}
+
 /// GROUP BY with SUM on a Utf8View-keyed group.
 #[test]
 fn utf8view_group_by_sum() {
@@ -280,6 +254,20 @@ fn utf8view_group_by_sum() {
     assert_eq!(totals, [Some(20), Some(8), Some(10)]);
 }
 
+// --- ORDER BY ---
+
+/// ORDER BY on a Utf8View column must sort rows lexicographically.
+#[test]
+fn utf8view_order_by_asc() {
+    let batch = make_utf8view_batch();
+    let mut t = SqlTransform::new("SELECT level_str FROM logs ORDER BY level_str ASC").unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+    assert_eq!(result.num_rows(), 4);
+    let levels = collect_string_col(&result, "level_str");
+    // Sorted ascending: DEBUG, ERROR, ERROR, INFO
+    assert_eq!(levels, ["DEBUG", "ERROR", "ERROR", "INFO"]);
+}
+
 /// ORDER BY DESC on a Utf8View column.
 #[test]
 fn utf8view_order_by_desc() {
@@ -288,8 +276,11 @@ fn utf8view_order_by_desc() {
     let result = t.execute_blocking(batch).unwrap();
     assert_eq!(result.num_rows(), 4);
     let levels = collect_string_col(&result, "level_str");
+    // Sorted descending: INFO, ERROR, ERROR, DEBUG
     assert_eq!(levels, ["INFO", "ERROR", "ERROR", "DEBUG"]);
 }
+
+// --- JOIN ---
 
 /// CROSS JOIN between a Utf8View-column table and a static enrichment table.
 #[test]
@@ -358,8 +349,21 @@ fn utf8view_hash_join_on_string_key() {
 }
 
 // ===========================================================================
-// Section 3: Dictionary<Int32, Utf8>-specific tests (WHERE IN)
+// Section 2: Dictionary<Int32, Utf8> columns
 // ===========================================================================
+
+// --- WHERE ---
+
+/// WHERE clause on a Dictionary<Int32, Utf8> column.
+#[test]
+fn dict_utf8_where_equals() {
+    let batch = make_dict_utf8_batch();
+    let mut t = SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+    assert_eq!(result.num_rows(), 2, "expected 2 ERROR rows");
+    let levels = collect_string_col(&result, "level_str");
+    assert!(levels.iter().all(|v| v == "ERROR"));
+}
 
 /// WHERE … IN (…) on a Dictionary<Int32, Utf8> column.
 #[test]
@@ -373,6 +377,87 @@ fn dict_utf8_where_in() {
     let mut levels = collect_string_col(&result, "level_str");
     levels.sort();
     assert_eq!(levels, ["DEBUG", "INFO"]);
+}
+
+// --- GROUP BY ---
+
+/// GROUP BY on a Dictionary<Int32, Utf8> column.
+#[test]
+fn dict_utf8_group_by_count() {
+    let batch = make_dict_utf8_batch();
+    let mut t = SqlTransform::new(
+        "SELECT level_str, COUNT(*) AS cnt FROM logs GROUP BY level_str ORDER BY level_str",
+    )
+    .unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+    assert_eq!(result.num_rows(), 3);
+    let levels = collect_string_col(&result, "level_str");
+    assert_eq!(levels, ["DEBUG", "ERROR", "INFO"]);
+    let counts = collect_i64_col(&result, "cnt");
+    assert_eq!(counts, [Some(1), Some(2), Some(1)]);
+}
+
+// --- ORDER BY ---
+
+/// ORDER BY ASC on a Dictionary<Int32, Utf8> column.
+#[test]
+fn dict_utf8_order_by_asc() {
+    let batch = make_dict_utf8_batch();
+    let mut t = SqlTransform::new("SELECT level_str FROM logs ORDER BY level_str ASC").unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+    assert_eq!(result.num_rows(), 4);
+    let levels = collect_string_col(&result, "level_str");
+    assert_eq!(levels, ["DEBUG", "ERROR", "ERROR", "INFO"]);
+}
+
+// ===========================================================================
+// Section 3: Dictionary<Int32, Utf8View> columns
+// ===========================================================================
+
+// --- WHERE ---
+
+/// WHERE clause on a Dictionary<Int32, Utf8View> column.
+///
+/// This is the most demanding variant: dictionary indexing over a view-based
+/// string type.  DataFusion's type coercion must be able to handle this.
+#[test]
+fn dict_utf8view_where_equals() {
+    let batch = make_dict_utf8view_batch();
+    let mut t = SqlTransform::new("SELECT * FROM logs WHERE level_str = 'ERROR'").unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+    assert_eq!(result.num_rows(), 2, "expected 2 ERROR rows");
+    let levels = collect_string_col(&result, "level_str");
+    assert!(levels.iter().all(|v| v == "ERROR"));
+}
+
+// --- GROUP BY ---
+
+/// GROUP BY on a Dictionary<Int32, Utf8View> column.
+///
+/// Arrow 58 / DataFusion 53 added support for dictionary packing with Utf8View
+/// values, so this query now succeeds where it previously returned an error.
+#[test]
+fn dict_utf8view_group_by_count() {
+    let batch = make_dict_utf8view_batch();
+    let mut t = SqlTransform::new(
+        "SELECT level_str, COUNT(*) AS cnt FROM logs GROUP BY level_str ORDER BY level_str",
+    )
+    .unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+    assert_eq!(result.num_rows(), 3, "expected 3 distinct levels");
+}
+
+// --- ORDER BY ---
+
+/// ORDER BY ASC on a Dictionary<Int32, Utf8View> column.
+#[test]
+fn dict_utf8view_order_by_asc() {
+    let batch = make_dict_utf8view_batch();
+    let mut t = SqlTransform::new("SELECT level_str FROM logs ORDER BY level_str ASC").unwrap();
+    let result = t.execute_blocking(batch).unwrap();
+    assert_eq!(result.num_rows(), 4);
+    let levels = collect_string_col(&result, "level_str");
+    assert_eq!(levels, ["DEBUG", "ERROR", "ERROR", "INFO"]);
 }
 
 // ===========================================================================

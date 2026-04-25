@@ -600,7 +600,8 @@ pub fn parse_timestamp_nanos(ts: &[u8]) -> Option<u64> {
 }
 
 /// Parse 4 ASCII digits at offset. Returns 0 on non-digit.
-#[cfg(kani)]
+// Only used by Kani proof harnesses; production paths use parse_4digits_checked.
+#[allow(dead_code)]
 #[inline(always)]
 #[cfg_attr(kani, kani::ensures(|result: &u16| *result <= 9999))]
 #[verified(kani = "verify_parse_4digits_contract")]
@@ -616,7 +617,8 @@ fn parse_4digits(s: &[u8], off: usize) -> u16 {
 }
 
 /// Parse 2 ASCII digits at offset. Returns 0 on non-digit.
-#[cfg(kani)]
+// Only used by Kani proof harnesses; production paths use parse_2digits_checked.
+#[allow(dead_code)]
 #[inline(always)]
 #[cfg_attr(kani, kani::ensures(|result: &u8| *result <= 99))]
 #[verified(kani = "verify_parse_2digits_contract")]
@@ -784,37 +786,37 @@ mod tests {
 
     #[test]
     fn test_parse_severity() {
-        let cases: &[(&[u8], Severity)] = &[
-            (b"INFO", Severity::Info),
-            (b"info", Severity::Info),
-            (b"WARN", Severity::Warn),
-            (b"ERROR", Severity::Error),
-            (b"DEBUG", Severity::Debug),
-            (b"TRACE", Severity::Trace),
-            (b"FATAL", Severity::Fatal),
-            (b"unknown", Severity::Unspecified),
-            // Aliases
-            (b"WARNING", Severity::Warn),
-            (b"warning", Severity::Warn),
-            (b"Warning", Severity::Warn),
-            (b"ERR", Severity::Error),
-            (b"err", Severity::Error),
-            (b"Err", Severity::Error),
-            (b"NOTICE", Severity::Info),
-            (b"notice", Severity::Info),
-            (b"Notice", Severity::Info),
-            (b"CRITICAL", Severity::Fatal),
-            (b"critical", Severity::Fatal),
-            (b"Critical", Severity::Fatal),
-        ];
-        for (input, expected) in cases {
-            assert!(
-                matches!(parse_severity(input).0, ref s if core::mem::discriminant(s) == core::mem::discriminant(expected)),
-                "parse_severity({:?}) expected {:?}",
-                core::str::from_utf8(input),
-                expected
-            );
-        }
+        assert!(matches!(parse_severity(b"INFO").0, Severity::Info));
+        assert!(matches!(parse_severity(b"info").0, Severity::Info));
+        assert!(matches!(parse_severity(b"WARN").0, Severity::Warn));
+        assert!(matches!(parse_severity(b"ERROR").0, Severity::Error));
+        assert!(matches!(parse_severity(b"DEBUG").0, Severity::Debug));
+        assert!(matches!(parse_severity(b"TRACE").0, Severity::Trace));
+        assert!(matches!(parse_severity(b"FATAL").0, Severity::Fatal));
+        assert!(matches!(
+            parse_severity(b"unknown").0,
+            Severity::Unspecified
+        ));
+    }
+
+    #[test]
+    fn test_parse_severity_aliases() {
+        // WARNING -> Warn (#1866)
+        assert!(matches!(parse_severity(b"WARNING").0, Severity::Warn));
+        assert!(matches!(parse_severity(b"warning").0, Severity::Warn));
+        assert!(matches!(parse_severity(b"Warning").0, Severity::Warn));
+        // ERR -> Error (#1912)
+        assert!(matches!(parse_severity(b"ERR").0, Severity::Error));
+        assert!(matches!(parse_severity(b"err").0, Severity::Error));
+        assert!(matches!(parse_severity(b"Err").0, Severity::Error));
+        // NOTICE -> Info (#1912)
+        assert!(matches!(parse_severity(b"NOTICE").0, Severity::Info));
+        assert!(matches!(parse_severity(b"notice").0, Severity::Info));
+        assert!(matches!(parse_severity(b"Notice").0, Severity::Info));
+        // CRITICAL -> Fatal (#1912)
+        assert!(matches!(parse_severity(b"CRITICAL").0, Severity::Fatal));
+        assert!(matches!(parse_severity(b"critical").0, Severity::Fatal));
+        assert!(matches!(parse_severity(b"Critical").0, Severity::Fatal));
     }
 
     #[test]

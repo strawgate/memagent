@@ -226,7 +226,16 @@ output:
   type: otlp
   endpoint: ${LOGFWD_NONEXISTENT_VAR_12345}
 ";
-        assert_config_err!(yaml, "LOGFWD_NONEXISTENT_VAR_12345", "not set");
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("LOGFWD_NONEXISTENT_VAR_12345"),
+            "error should mention the variable name: {msg}"
+        );
+        assert!(
+            msg.contains("not set"),
+            "error should say variable is not set: {msg}"
+        );
     }
 
     #[test]
@@ -254,7 +263,12 @@ pipelines:
     outputs:
       - type: stdout
 ";
-        assert_config_err!(yaml, "duplicate entry with key \"app\"");
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("duplicate entry with key \"app\""),
+            "duplicate pipeline names must be rejected before validation: {msg}"
+        );
     }
 
     #[test]

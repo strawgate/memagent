@@ -55,18 +55,6 @@ pub use validate::validate_host_port;
 // Tests
 // ---------------------------------------------------------------------------
 
-/// Asserts that `Config::load_str(yaml)` fails and the error message contains
-/// every given substring (AND logic). Replaces the repetitive
-/// `unwrap_err → to_string → contains` pattern across test files.
-#[cfg(test)]
-macro_rules! assert_config_err {
-    ($yaml:expr, $($substr:expr),+ $(,)?) => {{
-        let err = $crate::Config::load_str($yaml).unwrap_err();
-        let msg = err.to_string();
-        $(assert!(msg.contains($substr), "expected {:?} in error: {msg}", $substr);)+
-    }};
-}
-
 #[cfg(test)]
 mod tests_config_parsing;
 #[cfg(test)]

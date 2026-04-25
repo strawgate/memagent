@@ -45,54 +45,6 @@ fn input_type_exposes_public_source_paths(type_config: &InputTypeConfig) -> bool
     )
 }
 
-/// Spawn a periodic reload task for a file-backed enrichment table.
-///
-/// Calls `table.reload()` on a blocking thread every `interval_secs`.
-/// `kind` is used for log messages (e.g. "CSV", "JSONL", "KV file").
-#[cfg(feature = "datafusion")]
-fn spawn_enrichment_reload<T, E>(
-    table: &Arc<T>,
-    table_name: &str,
-    kind: &'static str,
-    interval_secs: u64,
-    reload: fn(&T) -> Result<usize, E>,
-) where
-    T: Send + Sync + 'static,
-    E: std::fmt::Display + Send + 'static,
-{
-    let t = Arc::clone(table);
-    let name = table_name.to_string();
-    if let Ok(handle) = tokio::runtime::Handle::try_current() {
-        handle.spawn(async move {
-            let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
-            ticker.tick().await;
-            loop {
-                ticker.tick().await;
-                let t2 = Arc::clone(&t);
-                match tokio::task::spawn_blocking(move || reload(&t2)).await {
-                    Ok(Ok(n)) => tracing::debug!(
-                        table = %name, rows = n,
-                        "{kind} enrichment table reloaded"
-                    ),
-                    Ok(Err(e)) => tracing::warn!(
-                        table = %name, error = %e,
-                        "{kind} enrichment table reload failed"
-                    ),
-                    Err(e) => tracing::warn!(
-                        table = %name, error = %e,
-                        "{kind} enrichment table reload task panicked"
-                    ),
-                }
-            }
-        });
-    } else {
-        tracing::warn!(
-            table = %name,
-            "refresh_interval ignored: no active Tokio runtime"
-        );
-    }
-}
-
 impl Pipeline {
     /// Construct a pipeline from parsed YAML config.
     pub fn from_config(
@@ -284,13 +236,39 @@ impl Pipeline {
                         if let Some(interval_secs) =
                             cfg.refresh_interval.map(ffwd_config::PositiveSecs::get)
                         {
-                            spawn_enrichment_reload(
-                                &table,
-                                &cfg.table_name,
-                                "CSV",
-                                interval_secs,
-                                crate::transform::enrichment::CsvFileTable::reload,
-                            );
+                            let t = Arc::clone(&table);
+                            let name = cfg.table_name.clone();
+                            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                                handle.spawn(async move {
+                                    let mut ticker =
+                                        tokio::time::interval(Duration::from_secs(interval_secs));
+                                    ticker.tick().await;
+                                    loop {
+                                        ticker.tick().await;
+                                        let t2 = Arc::clone(&t);
+                                        match tokio::task::spawn_blocking(move || t2.reload()).await
+                                        {
+                                            Ok(Ok(n)) => tracing::debug!(
+                                                table = %name, rows = n,
+                                                "CSV enrichment table reloaded"
+                                            ),
+                                            Ok(Err(e)) => tracing::warn!(
+                                                table = %name, error = %e,
+                                                "CSV enrichment table reload failed"
+                                            ),
+                                            Err(e) => tracing::warn!(
+                                                table = %name, error = %e,
+                                                "CSV enrichment table reload task panicked"
+                                            ),
+                                        }
+                                    }
+                                });
+                            } else {
+                                tracing::warn!(
+                                    table = %name,
+                                    "refresh_interval ignored: no active Tokio runtime"
+                                );
+                            }
                         }
                         enrichment_tables.push(table);
                     }
@@ -312,13 +290,39 @@ impl Pipeline {
                         if let Some(interval_secs) =
                             cfg.refresh_interval.map(ffwd_config::PositiveSecs::get)
                         {
-                            spawn_enrichment_reload(
-                                &table,
-                                &cfg.table_name,
-                                "JSONL",
-                                interval_secs,
-                                crate::transform::enrichment::JsonLinesFileTable::reload,
-                            );
+                            let t = Arc::clone(&table);
+                            let name = cfg.table_name.clone();
+                            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                                handle.spawn(async move {
+                                    let mut ticker =
+                                        tokio::time::interval(Duration::from_secs(interval_secs));
+                                    ticker.tick().await;
+                                    loop {
+                                        ticker.tick().await;
+                                        let t2 = Arc::clone(&t);
+                                        match tokio::task::spawn_blocking(move || t2.reload()).await
+                                        {
+                                            Ok(Ok(n)) => tracing::debug!(
+                                                table = %name, rows = n,
+                                                "JSONL enrichment table reloaded"
+                                            ),
+                                            Ok(Err(e)) => tracing::warn!(
+                                                table = %name, error = %e,
+                                                "JSONL enrichment table reload failed"
+                                            ),
+                                            Err(e) => tracing::warn!(
+                                                table = %name, error = %e,
+                                                "JSONL enrichment table reload task panicked"
+                                            ),
+                                        }
+                                    }
+                                });
+                            } else {
+                                tracing::warn!(
+                                    table = %name,
+                                    "refresh_interval ignored: no active Tokio runtime"
+                                );
+                            }
                         }
                         enrichment_tables.push(table);
                     }
@@ -353,13 +357,39 @@ impl Pipeline {
                         if let Some(interval_secs) =
                             cfg.refresh_interval.map(ffwd_config::PositiveSecs::get)
                         {
-                            spawn_enrichment_reload(
-                                &table,
-                                &cfg.table_name,
-                                "KV file",
-                                interval_secs,
-                                crate::transform::enrichment::KvFileTable::reload,
-                            );
+                            let t = Arc::clone(&table);
+                            let name = cfg.table_name.clone();
+                            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                                handle.spawn(async move {
+                                    let mut ticker =
+                                        tokio::time::interval(Duration::from_secs(interval_secs));
+                                    ticker.tick().await;
+                                    loop {
+                                        ticker.tick().await;
+                                        let t2 = Arc::clone(&t);
+                                        match tokio::task::spawn_blocking(move || t2.reload()).await
+                                        {
+                                            Ok(Ok(n)) => tracing::debug!(
+                                                table = %name, columns = n,
+                                                "KV file enrichment table reloaded"
+                                            ),
+                                            Ok(Err(e)) => tracing::warn!(
+                                                table = %name, error = %e,
+                                                "KV file enrichment table reload failed"
+                                            ),
+                                            Err(e) => tracing::warn!(
+                                                table = %name, error = %e,
+                                                "KV file enrichment table reload task panicked"
+                                            ),
+                                        }
+                                    }
+                                });
+                            } else {
+                                tracing::warn!(
+                                    table = %name,
+                                    "refresh_interval ignored: no active Tokio runtime"
+                                );
+                            }
                         }
                         enrichment_tables.push(table);
                     }

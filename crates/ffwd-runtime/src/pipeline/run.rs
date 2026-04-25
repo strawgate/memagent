@@ -13,7 +13,6 @@ use super::{ChannelMsg, Pipeline, now_nanos};
 use crate::worker_pool::AckItem;
 use ffwd_io::checkpoint::SourceCheckpoint;
 use ffwd_output::BatchMetadata;
-use ffwd_types::pipeline::SourceId;
 
 #[cfg(not(feature = "turmoil"))]
 use super::InputTransform;
@@ -272,8 +271,17 @@ impl Pipeline {
             let draining = machine.begin_drain();
             match draining.stop() {
                 Ok(stopped) => {
-                    self.persist_final_checkpoints(stopped.final_checkpoints())
-                        .await;
+                    // All in-flight batches resolved — persist final checkpoints.
+                    if let Some(ref mut store) = self.checkpoint_store {
+                        for (source_id, offset) in stopped.final_checkpoints() {
+                            store.update(SourceCheckpoint {
+                                source_id: source_id.0,
+                                path: None, // path is metadata, not required for restore
+                                offset: *offset,
+                            });
+                        }
+                        flush_checkpoint_with_retry(store.as_mut()).await;
+                    }
                 }
                 Err(still_draining) => {
                     let abandoned = still_draining.in_flight_count();
@@ -284,8 +292,16 @@ impl Pipeline {
                     let stopped = still_draining.force_stop();
                     // Persist what we have — committed checkpoints are still
                     // valid (they only reflect contiguously-acked batches).
-                    self.persist_final_checkpoints(stopped.final_checkpoints())
-                        .await;
+                    if let Some(ref mut store) = self.checkpoint_store {
+                        for (source_id, offset) in stopped.final_checkpoints() {
+                            store.update(SourceCheckpoint {
+                                source_id: source_id.0,
+                                path: None,
+                                offset: *offset,
+                            });
+                        }
+                        flush_checkpoint_with_retry(store.as_mut()).await;
+                    }
                 }
             }
         }
@@ -298,23 +314,6 @@ impl Pipeline {
         )
         .await;
         Ok(())
-    }
-
-    /// Persist final checkpoints from the stopped state machine.
-    async fn persist_final_checkpoints(
-        &mut self,
-        checkpoints: &std::collections::BTreeMap<SourceId, u64>,
-    ) {
-        if let Some(ref mut store) = self.checkpoint_store {
-            for (source_id, offset) in checkpoints {
-                store.update(SourceCheckpoint {
-                    source_id: source_id.0,
-                    path: None,
-                    offset: *offset,
-                });
-            }
-            flush_checkpoint_with_retry(store.as_mut()).await;
-        }
     }
 
     /// Apply a pool `AckItem` at the worker/checkpoint seam.

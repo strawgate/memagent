@@ -18,9 +18,8 @@
 /// Aggregates CRI partial lines into complete messages.
 ///
 /// Feed CRI message bytes with their P/F flag. The aggregator returns
-/// [`AggregateResult::Complete`] when a full message is ready (on F lines),
-/// [`AggregateResult::Pending`] for P lines (buffered internally), or
-/// [`AggregateResult::Truncated`] when the message exceeds the size limit.
+/// `Some(message)` when a complete message is ready (on F lines), or
+/// `None` for P lines (buffered internally).
 ///
 /// # Lifecycle
 ///

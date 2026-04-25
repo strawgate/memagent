@@ -15,54 +15,6 @@ use ffwd_core::scanner::BuilderState;
 
 use super::{StreamingBuilder, append_string_view, new_emitted_name_set};
 
-/// Scatter `(row, value)` pairs into a nullable [`Int64Array`].
-#[inline]
-fn scatter_int64(entries: &[(u32, i64)], num_rows: usize) -> Int64Array {
-    let mut values = vec![0i64; num_rows];
-    let mut valid = vec![false; num_rows];
-    for &(row, v) in entries {
-        let r = row as usize;
-        debug_assert!(r < num_rows, "row index out of bounds: {r} >= {num_rows}");
-        if r < num_rows {
-            values[r] = v;
-            valid[r] = true;
-        }
-    }
-    Int64Array::new(values.into(), Some(NullBuffer::from(valid)))
-}
-
-/// Scatter `(row, value)` pairs into a nullable [`Float64Array`].
-#[inline]
-fn scatter_float64(entries: &[(u32, f64)], num_rows: usize) -> Float64Array {
-    let mut values = vec![0.0f64; num_rows];
-    let mut valid = vec![false; num_rows];
-    for &(row, v) in entries {
-        let r = row as usize;
-        debug_assert!(r < num_rows, "row index out of bounds: {r} >= {num_rows}");
-        if r < num_rows {
-            values[r] = v;
-            valid[r] = true;
-        }
-    }
-    Float64Array::new(values.into(), Some(NullBuffer::from(valid)))
-}
-
-/// Scatter `(row, value)` pairs into a nullable [`BooleanArray`].
-#[inline]
-fn scatter_bool(entries: &[(u32, bool)], num_rows: usize) -> BooleanArray {
-    let mut values = vec![false; num_rows];
-    let mut valid = vec![false; num_rows];
-    for &(row, v) in entries {
-        let r = row as usize;
-        debug_assert!(r < num_rows, "row index out of bounds: {r} >= {num_rows}");
-        if r < num_rows {
-            values[r] = v;
-            valid[r] = true;
-        }
-    }
-    BooleanArray::new(values.into(), Some(NullBuffer::from(valid)))
-}
-
 impl StreamingBuilder {
     /// Build a RecordBatch with zero-copy StringViewArrays.
     ///
@@ -133,13 +85,35 @@ impl StreamingBuilder {
                 let mut child_arrays: Vec<ArrayRef> = Vec::new();
 
                 if fc.has_int {
-                    let array = scatter_int64(&fc.int_values, num_rows);
+                    let mut values = vec![0i64; num_rows];
+                    let mut valid = vec![false; num_rows];
+                    for &(row, v) in &fc.int_values {
+                        let row = row as usize;
+                        if row >= num_rows {
+                            continue;
+                        }
+                        values[row] = v;
+                        valid[row] = true;
+                    }
+                    let nulls = NullBuffer::from(valid);
+                    let array = Int64Array::new(values.into(), Some(nulls));
                     child_fields.push(Arc::new(Field::new("int", DataType::Int64, true)));
                     child_arrays.push(Arc::new(array) as ArrayRef);
                 }
 
                 if fc.has_float {
-                    let array = scatter_float64(&fc.float_values, num_rows);
+                    let mut values = vec![0.0f64; num_rows];
+                    let mut valid = vec![false; num_rows];
+                    for &(row, v) in &fc.float_values {
+                        let row = row as usize;
+                        if row >= num_rows {
+                            continue;
+                        }
+                        values[row] = v;
+                        valid[row] = true;
+                    }
+                    let nulls = NullBuffer::from(valid);
+                    let array = Float64Array::new(values.into(), Some(nulls));
                     child_fields.push(Arc::new(Field::new("float", DataType::Float64, true)));
                     child_arrays.push(Arc::new(array) as ArrayRef);
                 }
@@ -173,7 +147,18 @@ impl StreamingBuilder {
                 }
 
                 if fc.has_bool {
-                    let array = scatter_bool(&fc.bool_values, num_rows);
+                    let mut values = vec![false; num_rows];
+                    let mut valid = vec![false; num_rows];
+                    for &(row, v) in &fc.bool_values {
+                        let row = row as usize;
+                        if row >= num_rows {
+                            continue;
+                        }
+                        values[row] = v;
+                        valid[row] = true;
+                    }
+                    let nulls = NullBuffer::from(valid);
+                    let array = BooleanArray::new(values.into(), Some(nulls));
                     child_fields.push(Arc::new(Field::new("bool", DataType::Boolean, true)));
                     child_arrays.push(Arc::new(array) as ArrayRef);
                 }
@@ -197,14 +182,36 @@ impl StreamingBuilder {
                 // Single-type field: bare flat column.
                 if fc.has_int {
                     reserve_name(name.as_ref())?;
-                    let array = scatter_int64(&fc.int_values, num_rows);
+                    let mut values = vec![0i64; num_rows];
+                    let mut valid = vec![false; num_rows];
+                    for &(row, v) in &fc.int_values {
+                        let row = row as usize;
+                        if row >= num_rows {
+                            continue;
+                        }
+                        values[row] = v;
+                        valid[row] = true;
+                    }
+                    let nulls = NullBuffer::from(valid);
+                    let array = Int64Array::new(values.into(), Some(nulls));
                     schema_fields.push(Field::new(name.as_ref(), DataType::Int64, true));
                     arrays.push(Arc::new(array) as ArrayRef);
                 }
 
                 if fc.has_float {
                     reserve_name(name.as_ref())?;
-                    let array = scatter_float64(&fc.float_values, num_rows);
+                    let mut values = vec![0.0f64; num_rows];
+                    let mut valid = vec![false; num_rows];
+                    for &(row, v) in &fc.float_values {
+                        let row = row as usize;
+                        if row >= num_rows {
+                            continue;
+                        }
+                        values[row] = v;
+                        valid[row] = true;
+                    }
+                    let nulls = NullBuffer::from(valid);
+                    let array = Float64Array::new(values.into(), Some(nulls));
                     schema_fields.push(Field::new(name.as_ref(), DataType::Float64, true));
                     arrays.push(Arc::new(array) as ArrayRef);
                 }
@@ -242,7 +249,18 @@ impl StreamingBuilder {
 
                 if fc.has_bool {
                     reserve_name(name.as_ref())?;
-                    let array = scatter_bool(&fc.bool_values, num_rows);
+                    let mut values = vec![false; num_rows];
+                    let mut valid = vec![false; num_rows];
+                    for &(row, v) in &fc.bool_values {
+                        let row = row as usize;
+                        if row >= num_rows {
+                            continue;
+                        }
+                        values[row] = v;
+                        valid[row] = true;
+                    }
+                    let nulls = NullBuffer::from(valid);
+                    let array = BooleanArray::new(values.into(), Some(nulls));
                     schema_fields.push(Field::new(name.as_ref(), DataType::Boolean, true));
                     arrays.push(Arc::new(array) as ArrayRef);
                 }
@@ -374,13 +392,33 @@ impl StreamingBuilder {
                 let mut child_arrays: Vec<ArrayRef> = Vec::new();
 
                 if fc.has_int {
-                    let array = scatter_int64(&fc.int_values, num_rows);
+                    let mut values = vec![0i64; num_rows];
+                    let mut valid = vec![false; num_rows];
+                    for &(row, v) in &fc.int_values {
+                        let r = row as usize;
+                        if r < num_rows {
+                            values[r] = v;
+                            valid[r] = true;
+                        }
+                    }
+                    let nulls = NullBuffer::from(valid);
+                    let array = Int64Array::new(values.into(), Some(nulls));
                     child_fields.push(Arc::new(Field::new("int", DataType::Int64, true)));
                     child_arrays.push(Arc::new(array) as ArrayRef);
                 }
 
                 if fc.has_float {
-                    let array = scatter_float64(&fc.float_values, num_rows);
+                    let mut values = vec![0.0f64; num_rows];
+                    let mut valid = vec![false; num_rows];
+                    for &(row, v) in &fc.float_values {
+                        let r = row as usize;
+                        if r < num_rows {
+                            values[r] = v;
+                            valid[r] = true;
+                        }
+                    }
+                    let nulls = NullBuffer::from(valid);
+                    let array = Float64Array::new(values.into(), Some(nulls));
                     child_fields.push(Arc::new(Field::new("float", DataType::Float64, true)));
                     child_arrays.push(Arc::new(array) as ArrayRef);
                 }
@@ -408,7 +446,17 @@ impl StreamingBuilder {
                 }
 
                 if fc.has_bool {
-                    let array = scatter_bool(&fc.bool_values, num_rows);
+                    let mut values = vec![false; num_rows];
+                    let mut valid = vec![false; num_rows];
+                    for &(row, v) in &fc.bool_values {
+                        let r = row as usize;
+                        if r < num_rows {
+                            values[r] = v;
+                            valid[r] = true;
+                        }
+                    }
+                    let nulls = NullBuffer::from(valid);
+                    let array = BooleanArray::new(values.into(), Some(nulls));
                     child_fields.push(Arc::new(Field::new("bool", DataType::Boolean, true)));
                     child_arrays.push(Arc::new(array) as ArrayRef);
                 }
@@ -428,14 +476,34 @@ impl StreamingBuilder {
             } else {
                 if fc.has_int {
                     reserve_name(name.as_ref())?;
-                    let array = scatter_int64(&fc.int_values, num_rows);
+                    let mut values = vec![0i64; num_rows];
+                    let mut valid = vec![false; num_rows];
+                    for &(row, v) in &fc.int_values {
+                        let r = row as usize;
+                        if r < num_rows {
+                            values[r] = v;
+                            valid[r] = true;
+                        }
+                    }
+                    let nulls = NullBuffer::from(valid);
+                    let array = Int64Array::new(values.into(), Some(nulls));
                     schema_fields.push(Field::new(name.as_ref(), DataType::Int64, true));
                     arrays.push(Arc::new(array) as ArrayRef);
                 }
 
                 if fc.has_float {
                     reserve_name(name.as_ref())?;
-                    let array = scatter_float64(&fc.float_values, num_rows);
+                    let mut values = vec![0.0f64; num_rows];
+                    let mut valid = vec![false; num_rows];
+                    for &(row, v) in &fc.float_values {
+                        let r = row as usize;
+                        if r < num_rows {
+                            values[r] = v;
+                            valid[r] = true;
+                        }
+                    }
+                    let nulls = NullBuffer::from(valid);
+                    let array = Float64Array::new(values.into(), Some(nulls));
                     schema_fields.push(Field::new(name.as_ref(), DataType::Float64, true));
                     arrays.push(Arc::new(array) as ArrayRef);
                 }
@@ -465,7 +533,17 @@ impl StreamingBuilder {
 
                 if fc.has_bool {
                     reserve_name(name.as_ref())?;
-                    let array = scatter_bool(&fc.bool_values, num_rows);
+                    let mut values = vec![false; num_rows];
+                    let mut valid = vec![false; num_rows];
+                    for &(row, v) in &fc.bool_values {
+                        let r = row as usize;
+                        if r < num_rows {
+                            values[r] = v;
+                            valid[r] = true;
+                        }
+                    }
+                    let nulls = NullBuffer::from(valid);
+                    let array = BooleanArray::new(values.into(), Some(nulls));
                     schema_fields.push(Field::new(name.as_ref(), DataType::Boolean, true));
                     arrays.push(Arc::new(array) as ArrayRef);
                 }

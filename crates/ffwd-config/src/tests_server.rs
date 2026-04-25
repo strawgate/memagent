@@ -61,7 +61,12 @@ output:
 server:
   diagnostics: ${LOGFWD_DIAG_ADDR}
 ";
-        assert_config_err!(yaml, "LOGFWD_DIAG_ADDR");
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("LOGFWD_DIAG_ADDR"),
+            "error should mention the variable name: {msg}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -90,6 +95,15 @@ output:
 server:
   log_level: inof
 ";
-        assert_config_err!(yaml, "log_level", "not a recognised log level");
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("log_level"),
+            "expected 'log_level' in error: {msg}"
+        );
+        assert!(
+            msg.contains("not a recognised log level"),
+            "expected 'not a recognised log level' in error: {msg}"
+        );
     }
 }

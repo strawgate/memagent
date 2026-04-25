@@ -81,14 +81,6 @@ crates/
   ffwd-competitive-bench/  Comparative benchmarks vs other log agents.
   ffwd-test-utils/   Shared test utilities.
   ffwd-ebpf-proto/   eBPF log capture protocol definitions (experimental).
-  ffwd-config-wasm/  WASM bindings for the config validator (browser/Node.js).
-  ffwd-types/        Shared value types, state-machine semantics, diagnostics.
-  ffwd-diagnostics/  Diagnostics control plane: HTTP endpoints, dashboard, readiness.
-  ffwd-kani/         Verification oracles and Kani proof helpers.
-  ffwd-lint-attrs/   Custom proc-macro lint attributes (no_panic, pure).
-  ffwd-lints/        Custom Clippy-style lint passes.
-  ffwd-otap-proto/   OTAP protocol definitions.
-  ffwd-proto-build/  Protobuf build scripts.
 ```
 
 ## Build, test, lint, bench, fuzz
