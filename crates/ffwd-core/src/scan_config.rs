@@ -90,6 +90,7 @@ impl ScanConfig {
 /// this as a `#[requires]` would force every caller to guard against empty
 /// input even though the function already does the right thing.
 #[inline(always)]
+#[allow(clippy::indexing_slicing)]
 pub fn parse_int_fast(bytes: &[u8]) -> Option<i64> {
     if bytes.is_empty() {
         return None;

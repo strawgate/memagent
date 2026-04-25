@@ -500,6 +500,7 @@ pub struct FinalizationMode {
 /// (row, field), so `facts.len() == num_rows ∧ last == num_rows - 1` is
 /// sufficient.  When dedup is disabled duplicate writes are possible, breaking
 /// the pigeonhole premise, so we conservatively return false.
+#[allow(clippy::indexing_slicing)]
 fn is_dense<T>(facts: &[(u32, T)], num_rows: usize, dedup: bool) -> bool {
     dedup
         && facts.len() == num_rows
@@ -518,6 +519,7 @@ fn is_dense<T>(facts: &[(u32, T)], num_rows: usize, dedup: bool) -> bool {
 ///
 /// Returns `(values, dense)`. Callers use `dense` to decide whether a
 /// validity bitmap is needed.
+#[allow(clippy::indexing_slicing)]
 fn scatter_values<T: Default + Copy>(
     facts: &[(u32, T)],
     num_rows: usize,
@@ -549,6 +551,7 @@ fn scatter_values<T: Default + Copy>(
 /// Returns raw bytes where bit `i` is **set** (1) iff row `i` is valid
 /// (has at least one fact). This follows Arrow convention: 1 = valid, 0 = null.
 /// Arrow-free — just a `Vec<u8>` that callers wrap in `NullBuffer`.
+#[allow(clippy::indexing_slicing)]
 fn validity_bitmap_bits<T>(facts: &[(u32, T)], num_rows: usize) -> Vec<u8> {
     let byte_len = num_rows.div_ceil(8);
     let mut bits = vec![0u8; byte_len];
@@ -572,6 +575,7 @@ fn sparse_null_buffer<T>(facts: &[(u32, T)], num_rows: usize) -> NullBuffer {
     NullBuffer::new(arrow::buffer::BooleanBuffer::new(buf, 0, num_rows))
 }
 
+#[allow(clippy::indexing_slicing)]
 fn build_int64(facts: &[(u32, i64)], num_rows: usize, dedup: bool) -> (ArrayRef, DataType) {
     let (values, dense) = scatter_values(facts, num_rows, dedup);
     let nulls = if dense {
@@ -585,6 +589,7 @@ fn build_int64(facts: &[(u32, i64)], num_rows: usize, dedup: bool) -> (ArrayRef,
     )
 }
 
+#[allow(clippy::indexing_slicing)]
 fn build_float64(facts: &[(u32, f64)], num_rows: usize, dedup: bool) -> (ArrayRef, DataType) {
     let (values, dense) = scatter_values(facts, num_rows, dedup);
     let nulls = if dense {
@@ -598,6 +603,7 @@ fn build_float64(facts: &[(u32, f64)], num_rows: usize, dedup: bool) -> (ArrayRe
     )
 }
 
+#[allow(clippy::indexing_slicing)]
 fn build_bool(facts: &[(u32, bool)], num_rows: usize, dedup: bool) -> (ArrayRef, DataType) {
     let (values, dense) = scatter_values(facts, num_rows, dedup);
     let nulls = if dense {
@@ -611,6 +617,7 @@ fn build_bool(facts: &[(u32, bool)], num_rows: usize, dedup: bool) -> (ArrayRef,
     )
 }
 
+#[allow(clippy::indexing_slicing)]
 fn build_string(
     facts: &[(u32, StringRef)],
     num_rows: usize,
@@ -647,6 +654,7 @@ fn build_string(
 /// Caller guarantees all bytes referenced by `facts` are valid UTF-8 (validated
 /// at the ingestion boundary — scanner, OTLP decoder, or Rust's type system
 /// via `write_str(&str)`).
+#[allow(clippy::indexing_slicing)]
 fn build_string_view_trusted(
     facts: &[(u32, StringRef)],
     num_rows: usize,
@@ -742,6 +750,7 @@ fn build_string_view_trusted(
 ///
 /// Strings ≤ 12 bytes are inlined. Longer strings reference a buffer block.
 #[inline(always)]
+#[allow(clippy::indexing_slicing)]
 fn make_string_view(
     sref: StringRef,
     original_buf: &[u8],
@@ -818,6 +827,7 @@ fn make_string_view(
 ///
 /// Copies string bytes into a contiguous values buffer. Used when the ingestion
 /// boundary has not validated UTF-8 (e.g., raw external input).
+#[allow(clippy::indexing_slicing)]
 fn build_string_array_validated(
     facts: &[(u32, StringRef)],
     num_rows: usize,
@@ -944,6 +954,7 @@ fn read_str_bytes<'a>(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::indexing_slicing)]
 fn build_conflict_struct(
     name: &str,
     num_rows: usize,

@@ -35,6 +35,7 @@ pub struct CriLine<'a> {
 /// This is zero-copy — all returned slices point into the input `line`.
 /// Uses `byte_search::find_byte` (Kani-proven) instead of memchr.
 #[inline]
+#[allow(clippy::indexing_slicing)]
 pub fn parse_cri_line(line: &[u8]) -> Option<CriLine<'_>> {
     use crate::byte_search::find_byte;
 
@@ -204,6 +205,7 @@ pub fn process_cri_to_buf_with_plain_text_field(
 }
 
 #[inline]
+#[allow(clippy::indexing_slicing)]
 fn process_cri_chunk_lines<F>(
     chunk: &[u8],
     reassembler: &mut CriReassembler,

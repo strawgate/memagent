@@ -152,6 +152,7 @@ pub(super) fn str_value_at(arr: &dyn Array, row: usize) -> String {
     }
 }
 
+#[allow(clippy::indexing_slicing)]
 pub(super) fn hex_encode_lower(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut out = String::with_capacity(bytes.len() * 2);
@@ -208,6 +209,7 @@ pub(super) fn build_fixed_binary_array<const N: usize>(
 }
 
 /// Parse a hex string to a fixed-size byte array.
+#[allow(clippy::indexing_slicing)]
 pub(super) fn hex_to_fixed<const N: usize>(hex: &str) -> Option<[u8; N]> {
     let hex = hex.trim();
     if hex.len() != N * 2 {

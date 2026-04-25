@@ -107,6 +107,7 @@ impl<'a> StructuralIter<'a> {
     }
 
     /// Load and process the block at the given index.
+    #[allow(clippy::indexing_slicing)]
     fn load_block(&mut self, idx: usize) {
         self.block_idx = idx;
         self.block_offset = idx * 64;
@@ -198,6 +199,7 @@ impl<'a> StructuralIter<'a> {
     ///
     /// Uses the space bitmask — O(1) per block, no byte scanning.
     #[inline]
+    #[allow(clippy::indexing_slicing)]
     pub fn next_non_space(&self, from: usize) -> usize {
         if from >= self.len {
             return self.len;

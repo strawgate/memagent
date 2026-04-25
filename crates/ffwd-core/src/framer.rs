@@ -55,6 +55,7 @@ impl FrameOutput {
 
     /// Get the byte range of line `i`. Panics if `i >= len()`.
     #[inline]
+    #[allow(clippy::indexing_slicing)]
     pub fn line_range(&self, i: usize) -> (usize, usize) {
         assert!(i < self.count, "line index out of bounds");
         self.line_ranges[i]
@@ -62,6 +63,7 @@ impl FrameOutput {
 
     /// Iterate over line ranges.
     #[inline]
+    #[allow(clippy::indexing_slicing)]
     pub fn iter(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
         self.line_ranges[..self.count].iter().copied()
     }
@@ -79,6 +81,7 @@ impl NewlineFramer {
     ///
     /// Returns a `FrameOutput` with ranges of complete lines and the
     /// offset of any partial remainder.
+    #[allow(clippy::indexing_slicing)]
     pub fn frame(&self, input: &[u8]) -> FrameOutput {
         let mut output = FrameOutput {
             line_ranges: [(0, 0); MAX_LINES_PER_FRAME],

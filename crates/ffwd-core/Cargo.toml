@@ -31,8 +31,5 @@ tempfile = "3"
 name = "scanner"
 harness = false
 
-[lints]
-workspace = true
-
 [lints.clippy]
 indexing_slicing = "deny"

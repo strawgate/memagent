@@ -12,6 +12,7 @@
 /// Formally verified by Kani for all 16-byte inputs (see proof below).
 #[inline]
 #[cfg_attr(kani, kani::requires(from <= haystack.len()))]
+#[allow(clippy::indexing_slicing)]
 pub fn find_byte(haystack: &[u8], needle: u8, from: usize) -> Option<usize> {
     let mut i = from;
     while i < haystack.len() {
@@ -29,6 +30,7 @@ pub fn find_byte(haystack: &[u8], needle: u8, from: usize) -> Option<usize> {
 /// Equivalent to `memchr::memrchr(needle, &haystack[..end])`.
 #[inline]
 #[cfg_attr(kani, kani::requires(end <= haystack.len()))]
+#[allow(clippy::indexing_slicing)]
 pub fn rfind_byte(haystack: &[u8], needle: u8, end: usize) -> Option<usize> {
     if end == 0 || haystack.is_empty() {
         return None;
