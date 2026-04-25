@@ -31,7 +31,7 @@ pub use types::{
     JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sPathConfig,
     LokiOutputConfig, NullOutputConfig, OtlpOutputConfig, OtlpProtobufDecodeModeConfig,
     OtlpProtocol, OtlpTypeConfig, OutputConfigV2, OutputType, ParquetOutputConfig, PipelineConfig,
-    S3InputConfig, S3TypeConfig, SensorTypeConfig, ServerConfig, SocketOutputConfig,
+    ReadFrom, S3InputConfig, S3TypeConfig, SensorTypeConfig, ServerConfig, SocketOutputConfig,
     SourceMetadataStyle, StaticEnrichmentConfig, StdoutOutputConfig, StorageConfig, TcpTypeConfig,
     UdpTypeConfig,
 };
