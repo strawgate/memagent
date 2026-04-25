@@ -243,7 +243,7 @@ pub fn metrics_to_otlp_json(points: &[MetricPoint]) -> String {
 
     let version = env!("CARGO_PKG_VERSION");
     format!(
-        "{{\"resourceMetrics\":[{{\"resource\":{{\"attributes\":[{{\"key\":\"service.name\",\"value\":{{\"stringValue\":\"ffwd\"}}}},{{\"key\":\"service.version\",\"value\":{{\"stringValue\":\"{version}\"}}}}]}},\"scopeMetrics\":[{{\"scope\":{{\"name\":\"logfwd.diagnostics\",\"version\":\"{version}\"}},\"metrics\":[{metrics}]}}]}}]}}",
+        "{{\"resourceMetrics\":[{{\"resource\":{{\"attributes\":[{{\"key\":\"service.name\",\"value\":{{\"stringValue\":\"logfwd\"}}}},{{\"key\":\"service.version\",\"value\":{{\"stringValue\":\"{version}\"}}}}]}},\"scopeMetrics\":[{{\"scope\":{{\"name\":\"logfwd.diagnostics\",\"version\":\"{version}\"}},\"metrics\":[{metrics}]}}]}}]}}",
         metrics = metrics_json.join(",")
     )
 }
@@ -281,7 +281,7 @@ pub fn traces_to_otlp_json(spans: &[SpanPoint]) -> String {
 
     let version = env!("CARGO_PKG_VERSION");
     format!(
-        "{{\"resourceSpans\":[{{\"resource\":{{\"attributes\":[{{\"key\":\"service.name\",\"value\":{{\"stringValue\":\"ffwd\"}}}},{{\"key\":\"service.version\",\"value\":{{\"stringValue\":\"{version}\"}}}}]}},\"scopeSpans\":[{{\"scope\":{{\"name\":\"logfwd.diagnostics\",\"version\":\"{version}\"}},\"spans\":[{spans}]}}]}}]}}",
+        "{{\"resourceSpans\":[{{\"resource\":{{\"attributes\":[{{\"key\":\"service.name\",\"value\":{{\"stringValue\":\"logfwd\"}}}},{{\"key\":\"service.version\",\"value\":{{\"stringValue\":\"{version}\"}}}}]}},\"scopeSpans\":[{{\"scope\":{{\"name\":\"logfwd.diagnostics\",\"version\":\"{version}\"}},\"spans\":[{spans}]}}]}}]}}",
         spans = spans_json.join(",")
     )
 }
@@ -305,7 +305,7 @@ pub fn logs_to_otlp_json(logs: &[LogPoint]) -> String {
 
     let version = env!("CARGO_PKG_VERSION");
     format!(
-        "{{\"resourceLogs\":[{{\"resource\":{{\"attributes\":[{{\"key\":\"service.name\",\"value\":{{\"stringValue\":\"ffwd\"}}}},{{\"key\":\"service.version\",\"value\":{{\"stringValue\":\"{version}\"}}}}]}},\"scopeLogs\":[{{\"scope\":{{\"name\":\"logfwd.diagnostics\",\"version\":\"{version}\"}},\"logRecords\":[{logs}]}}]}}]}}",
+        "{{\"resourceLogs\":[{{\"resource\":{{\"attributes\":[{{\"key\":\"service.name\",\"value\":{{\"stringValue\":\"logfwd\"}}}},{{\"key\":\"service.version\",\"value\":{{\"stringValue\":\"{version}\"}}}}]}},\"scopeLogs\":[{{\"scope\":{{\"name\":\"logfwd.diagnostics\",\"version\":\"{version}\"}},\"logRecords\":[{logs}]}}]}}]}}",
         logs = logs_json.join(",")
     )
 }
@@ -1243,15 +1243,15 @@ mod tests {
         // Memory stats should be present.
         assert!(
             points.iter().any(|p| p.name == "logfwd.memory.resident"),
-            "expected ffwd.memory.resident metric"
+            "expected logfwd.memory.resident metric"
         );
         assert!(
             points.iter().any(|p| p.name == "logfwd.memory.allocated"),
-            "expected ffwd.memory.allocated metric"
+            "expected logfwd.memory.allocated metric"
         );
         assert!(
             points.iter().any(|p| p.name == "logfwd.memory.active"),
-            "expected ffwd.memory.active metric"
+            "expected logfwd.memory.active metric"
         );
 
         // Verify memory values.
@@ -1269,7 +1269,7 @@ mod tests {
             points
                 .iter()
                 .any(|p| p.name == "logfwd.pipeline.transform_errors"),
-            "expected ffwd.pipeline.transform_errors"
+            "expected logfwd.pipeline.transform_errors"
         );
 
         // The full roundtrip produces valid OTLP JSON.
@@ -1337,7 +1337,7 @@ mod tests {
         let bottleneck = points
             .iter()
             .find(|p| p.name == "logfwd.pipeline.bottleneck")
-            .expect("expected ffwd.pipeline.bottleneck gauge");
+            .expect("expected logfwd.pipeline.bottleneck gauge");
 
         let stage_attr = bottleneck
             .attributes
