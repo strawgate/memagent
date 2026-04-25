@@ -1,9 +1,9 @@
 use crate::serde_helpers::{
-    PositiveMillis, deserialize_from_string_or_value, deserialize_option_from_string_or_value,
-    deserialize_option_strict_string, deserialize_option_vec_strict_string,
-    deserialize_strict_string, deserialize_vec_strict_string,
+    PositiveMillis, PositiveSecs, deserialize_from_string_or_value,
+    deserialize_option_from_string_or_value, deserialize_option_strict_string,
+    deserialize_option_vec_strict_string, deserialize_strict_string, deserialize_vec_strict_string,
 };
-use crate::shared::TlsServerConfig;
+use crate::shared::{MultilineConfig, TlsServerConfig};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -390,6 +390,17 @@ pub struct FileTypeConfig {
     pub max_open_files: Option<usize>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub glob_rescan_interval_ms: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
+    pub start_at: Option<String>,
+    pub encoding: Option<Format>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub follow_symlinks: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub ignore_older_secs: Option<PositiveSecs>,
+    #[serde(default)]
+    pub multiline: Option<MultilineConfig>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub max_line_bytes: Option<usize>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

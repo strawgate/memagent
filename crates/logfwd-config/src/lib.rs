@@ -38,9 +38,9 @@ pub use types::{
     JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sPathConfig,
     LokiOutputConfig, NullOutputConfig, OtlpOutputConfig, OtlpProtobufDecodeModeConfig,
     OtlpProtocol, OtlpTypeConfig, OutputConfigV2, OutputType, PipelineConfig, S3InputConfig,
-    S3TypeConfig, SensorTypeConfig, ServerConfig, SocketOutputConfig, SourceMetadataStyle,
-    StaticEnrichmentConfig, StdoutOutputConfig, StorageConfig, TcpOutputConfig, TcpTypeConfig,
-    UdpOutputConfig, UdpTypeConfig,
+    S3TypeConfig, SensorTypeConfig, ServerConfig, SourceMetadataStyle, StaticEnrichmentConfig,
+    StdoutOutputConfig, StorageConfig, TcpOutputConfig, TcpTypeConfig, UdpOutputConfig,
+    UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 

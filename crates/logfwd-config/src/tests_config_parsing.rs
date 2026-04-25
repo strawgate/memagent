@@ -62,7 +62,7 @@ mod tests {
         );
         yaml.push_str("\nserver:\n  diagnostics: 0.0.0.0:9090\n  log_level: info\n");
         yaml.push_str("\nstorage:\n  data_dir: /var/lib/logfwd\n");
-        let cfg = Config::load_str(&yaml).expect("should parse simple config");
+        let cfg = Config::load_str(yaml).expect("should parse simple config");
         assert_eq!(cfg.pipelines.len(), 1);
         let pipe = &cfg.pipelines["default"];
         assert_eq!(pipe.inputs.len(), 1);
@@ -140,7 +140,7 @@ mod tests {
             None,
             "type: \"null\"",
         );
-        let err = Config::load_str(&yaml).expect_err("beats alias should no longer parse");
+        let err = Config::load_str(yaml).expect_err("beats alias should no longer parse");
         let msg = err.to_string();
         assert!(
             msg.contains("beats")
@@ -205,7 +205,7 @@ server:
             None,
             "type: otlp\nendpoint: ${LOGFWD_TEST_ENDPOINT}",
         );
-        let cfg = Config::load_str(&yaml).expect("env var substitution");
+        let cfg = Config::load_str(yaml).expect("env var substitution");
         let pipe = &cfg.pipelines["default"];
         assert_eq!(pipe.outputs[0].endpoint(), Some("http://my-collector:4317"));
         // SAFETY: this test is not run concurrently with other tests that
@@ -242,7 +242,7 @@ server:
             None,
             "type: otlp\nendpoint: ${LOGFWD_NONEXISTENT_VAR_12345}",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("LOGFWD_NONEXISTENT_VAR_12345"),
@@ -359,18 +359,17 @@ pipelines:
             None,
             "type: otlp\nendpoint: http://otel-collector:4317",
         );
-        let cfg = Config::load_str(&yaml).expect("should parse config without resource_attrs");
+        let cfg = Config::load_str(yaml).expect("should parse config without resource_attrs");
         let pipe = &cfg.pipelines["default"];
         assert!(pipe.resource_attrs.is_empty());
     }
 
     #[test]
     fn normalize_args_canonical_form_unchanged() {
-        use crate::*;
         // When --config is already at position 1, args are returned unchanged.
         // (We test the normalize_args logic via Config parsing instead since
         // normalize_args lives in the binary crate.)
-        let _ = Config::load_str; // ensure the import is live
+        let _ = Config::load_str("pipelines: {}\n").expect_err("empty pipelines should fail");
     }
 
     #[test]
@@ -380,7 +379,7 @@ pipelines:
             None,
             "type: stdout",
         );
-        let cfg = Config::load_str(&yaml).expect("format: text should be accepted");
+        let cfg = Config::load_str(yaml).expect("format: text should be accepted");
         let pipe = &cfg.pipelines["default"];
         assert_eq!(pipe.inputs[0].format, Some(Format::Text));
     }

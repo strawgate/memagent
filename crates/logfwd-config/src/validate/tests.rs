@@ -406,7 +406,7 @@ fn otlp_valid_protocol_accepted() {
         let yaml = format!(
             "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: otlp\n        endpoint: http://localhost:4317\n        protocol: {proto}\n"
         );
-        Config::load_str(&yaml)
+        Config::load_str(yaml)
             .unwrap_or_else(|e| panic!("protocol '{proto}' should be accepted: {e}"));
     }
 }
@@ -428,7 +428,7 @@ fn otlp_valid_compression_accepted() {
         let yaml = format!(
             "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: otlp\n        endpoint: http://localhost:4317\n        compression: {comp}\n"
         );
-        Config::load_str(&yaml)
+        Config::load_str(yaml)
             .unwrap_or_else(|e| panic!("compression '{comp}' should be accepted for otlp: {e}"));
     }
 }
@@ -461,7 +461,7 @@ fn elasticsearch_valid_compression_accepted() {
         let yaml = format!(
             "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: elasticsearch\n        endpoint: http://localhost:9200\n        compression: {comp}\n"
         );
-        Config::load_str(&yaml).unwrap_or_else(|e| {
+        Config::load_str(yaml).unwrap_or_else(|e| {
             panic!("compression '{comp}' should be accepted for elasticsearch: {e}")
         });
     }

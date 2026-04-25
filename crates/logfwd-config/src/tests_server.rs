@@ -15,7 +15,7 @@ mod tests {
             single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: stdout"),
             "server:\n  diagnostics: 127.0.0.1:9090\n",
         );
-        Config::load_str(&yaml).expect("valid diagnostics address");
+        Config::load_str(yaml).expect("valid diagnostics address");
     }
 
     #[test]
@@ -26,7 +26,7 @@ mod tests {
             single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: stdout"),
             "server:\n  diagnostics: not-an-address\n",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("diagnostics"),
@@ -47,7 +47,7 @@ mod tests {
             single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: stdout"),
             "server:\n  diagnostics: ${LOGFWD_DIAG_ADDR}\n",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("LOGFWD_DIAG_ADDR"),
@@ -66,7 +66,7 @@ mod tests {
                 single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: stdout"),
                 &format!("server:\n  log_level: {level}\n"),
             );
-            Config::load_str(&yaml)
+            Config::load_str(yaml)
                 .unwrap_or_else(|e| panic!("log_level '{level}' should be valid: {e}"));
         }
     }
@@ -77,7 +77,7 @@ mod tests {
             single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: stdout"),
             "server:\n  log_level: inof\n",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("log_level"),

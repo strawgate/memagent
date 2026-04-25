@@ -22,7 +22,7 @@ pipelines:
         format: mmdb
         path: /nonexistent/path/to/GeoLite2-City.mmdb
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("not found"),
@@ -49,7 +49,7 @@ pipelines:
         table_name: assets
         path: /nonexistent/path/to/assets.csv
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("not found"),
@@ -73,7 +73,7 @@ pipelines:
         table_name: ips
         path: /nonexistent/path/to/data.jsonl
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("not found"),
@@ -105,7 +105,7 @@ pipelines:
         format: mmdb
         path: data/GeoLite2-City.mmdb
 ";
-        Config::load_str(&yaml).expect("relative enrichment paths should pass validation");
+        Config::load_str(yaml).expect("relative enrichment paths should pass validation");
     }
 
     #[test]
@@ -123,7 +123,7 @@ pipelines:
         table_name: env
         labels: {}
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("at least one label"),
@@ -148,7 +148,7 @@ pipelines:
           dc: us-east-1
           team: platform
 ";
-        let cfg = Config::load_str(&yaml).expect("static enrichment should parse");
+        let cfg = Config::load_str(yaml).expect("static enrichment should parse");
         let pipe = &cfg.pipelines["app"];
         assert_eq!(pipe.enrichment.len(), 1);
         match &pipe.enrichment[0] {
@@ -174,7 +174,7 @@ pipelines:
     enrichment:
       - type: host_info
 ";
-        let cfg = Config::load_str(&yaml).expect("host_info enrichment should parse");
+        let cfg = Config::load_str(yaml).expect("host_info enrichment should parse");
         let pipe = &cfg.pipelines["app"];
         assert_eq!(pipe.enrichment.len(), 1);
         assert!(matches!(&pipe.enrichment[0], EnrichmentConfig::HostInfo(_)));
@@ -194,7 +194,7 @@ pipelines:
       - type: k8s_path
         table_name: pods
 ";
-        let cfg = Config::load_str(&yaml).expect("k8s_path enrichment should parse");
+        let cfg = Config::load_str(yaml).expect("k8s_path enrichment should parse");
         let pipe = &cfg.pipelines["app"];
         assert_eq!(pipe.enrichment.len(), 1);
         match &pipe.enrichment[0] {
@@ -216,7 +216,7 @@ pipelines:
     enrichment:
       - type: k8s_path
 ";
-        let cfg = Config::load_str(&yaml).expect("k8s_path with default table_name should parse");
+        let cfg = Config::load_str(yaml).expect("k8s_path with default table_name should parse");
         let pipe = &cfg.pipelines["app"];
         match &pipe.enrichment[0] {
             EnrichmentConfig::K8sPath(c) => assert_eq!(c.table_name, "k8s_pods"),
@@ -233,7 +233,7 @@ pipelines:
             "pipelines:\n  app:\n    inputs:\n      - type: file\n        path: /tmp/x.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: csv\n        table_name: assets\n        path: {}\n",
             tmp.display()
         );
-        let cfg = Config::load_str(&yaml).expect("csv enrichment should parse");
+        let cfg = Config::load_str(yaml).expect("csv enrichment should parse");
         let pipe = &cfg.pipelines["app"];
         assert_eq!(pipe.enrichment.len(), 1);
         match &pipe.enrichment[0] {
@@ -255,7 +255,7 @@ pipelines:
             "pipelines:\n  app:\n    inputs:\n      - type: file\n        path: /tmp/x.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: jsonl\n        table_name: ip_owners\n        path: {}\n",
             tmp.display()
         );
-        let cfg = Config::load_str(&yaml).expect("jsonl enrichment should parse");
+        let cfg = Config::load_str(yaml).expect("jsonl enrichment should parse");
         let pipe = &cfg.pipelines["app"];
         assert_eq!(pipe.enrichment.len(), 1);
         match &pipe.enrichment[0] {
@@ -277,7 +277,7 @@ pipelines:
             "type: stdout",
             "enrichment:\n  - type: host_info\n  - type: k8s_path",
         );
-        let cfg = Config::load_str(&yaml).expect("simple form with enrichment should parse");
+        let cfg = Config::load_str(yaml).expect("simple form with enrichment should parse");
         let pipe = &cfg.pipelines["default"];
         assert_eq!(
             pipe.enrichment.len(),
@@ -307,7 +307,7 @@ pipelines:
         format: mmdb
         path: ""
 "#;
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains("path") && err.to_string().contains("empty"),
             "expected empty-path rejection for geo_database: {err}"
@@ -329,7 +329,7 @@ pipelines:
         table_name: assets
         path: ""
 "#;
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains("path") && err.to_string().contains("empty"),
             "expected empty-path rejection for csv enrichment: {err}"
@@ -351,7 +351,7 @@ pipelines:
         table_name: owners
         path: "   "
 "#;
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains("path") && err.to_string().contains("empty"),
             "expected empty-path rejection for jsonl enrichment: {err}"
@@ -361,7 +361,7 @@ pipelines:
     #[test]
     fn geo_database_whitespace_path_rejected() {
         let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: geo_database\n        format: mmdb\n        path: \"   \"\n";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains("path") && err.to_string().contains("empty"),
             "whitespace-only path must be rejected for geo_database: {err}"
@@ -371,7 +371,7 @@ pipelines:
     #[test]
     fn csv_enrichment_whitespace_path_rejected() {
         let yaml = "pipelines:\n  test:\n    inputs:\n      - type: file\n        path: /tmp/test.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: csv\n        table_name: assets\n        path: \"   \"\n";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains("path") && err.to_string().contains("empty"),
             "whitespace-only path must be rejected for csv enrichment: {err}"

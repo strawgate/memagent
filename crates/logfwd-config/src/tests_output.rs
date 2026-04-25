@@ -26,7 +26,7 @@ mod tests {
                 "type: file\npath: /tmp/x.log",
                 &format!("type: {alias}\n{extra}"),
             );
-            let err = Config::load_str(&yaml).expect_err("legacy alias should fail");
+            let err = Config::load_str(yaml).expect_err("legacy alias should fail");
             assert!(
                 err.to_string().contains("unknown variant"),
                 "expected unknown variant error for {alias}: {err}"
@@ -40,7 +40,7 @@ mod tests {
             "type: file\npath: /tmp/x.log",
             "type: http\nendpoint: http://localhost:9200",
         );
-        let cfg = Config::load_str(&yaml).expect("http output should validate");
+        let cfg = Config::load_str(yaml).expect("http output should validate");
         assert_eq!(
             cfg.pipelines["default"].outputs[0].output_type(),
             OutputType::Http
@@ -53,7 +53,7 @@ mod tests {
             "type: file\npath: /tmp/x.log",
             "type: http\nendpoint: http://localhost:9200\nformat: text",
         );
-        let err = Config::load_str(&yaml).expect_err("http output must stay json-only");
+        let err = Config::load_str(yaml).expect_err("http output must stay json-only");
         let msg = err.to_string();
         assert!(
             msg.contains("http output only supports format json"),
@@ -64,7 +64,7 @@ mod tests {
     #[test]
     fn file_output_requires_path() {
         let yaml = single_pipeline_yaml("type: file\npath: /var/log/test.log", "type: file");
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("file output requires 'path'"),
@@ -78,7 +78,7 @@ mod tests {
             "type: file\npath: /tmp/x.log",
             "type: file\npath: /tmp/out.ndjson",
         );
-        let cfg = Config::load_str(&yaml).unwrap();
+        let cfg = Config::load_str(yaml).unwrap();
         assert_eq!(
             cfg.pipelines["default"].outputs[0].output_type(),
             OutputType::File
@@ -89,7 +89,7 @@ mod tests {
     fn file_output_empty_path_rejected() {
         // Regression test for #1663: path: "" passed --validate but failed at startup.
         let yaml = single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: file\npath: \"\"");
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("path' must not be empty") || msg.contains("path must not be empty"),
@@ -103,7 +103,7 @@ mod tests {
             "type: file\npath: /tmp/x.log",
             "type: file\npath: /tmp/out.ndjson\nformat: console",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("file output only supports format json or text"));
     }
@@ -116,35 +116,25 @@ mod tests {
             "type: file\npath: /tmp/x.log",
             "type: stdout\nformat: console",
         );
-        Config::load_str(&yaml).expect("stdout with format: console should be valid");
+        Config::load_str(yaml).expect("stdout with format: console should be valid");
     }
 
     #[test]
-    fn file_output_rejects_compression() {
+    fn file_output_accepts_compression() {
         let yaml = single_pipeline_yaml(
             "type: file\npath: /tmp/x.log",
             "type: file\npath: /tmp/out.ndjson\ncompression: zstd",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("unknown field") && msg.contains("compression"),
-            "file output should reject compression at parse time: {msg}"
-        );
+        Config::load_str(yaml).expect("file output compression should validate");
     }
 
     #[test]
-    fn loki_output_rejects_compression() {
+    fn loki_output_accepts_compression() {
         let yaml = single_pipeline_yaml(
             "type: file\npath: /tmp/x.log",
             "type: loki\nendpoint: http://localhost:3100\ncompression: gzip",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("unknown field") && msg.contains("compression"),
-            "loki output should reject compression at parse time: {msg}"
-        );
+        Config::load_str(yaml).expect("loki output compression should validate");
     }
 
     // -----------------------------------------------------------------------
@@ -157,7 +147,7 @@ mod tests {
             "type: file\npath: /var/log/test.log",
             "type: otlp\nendpoint: http://localhost:4318/v1/logs\nauth:\n  bearer_token: \"my-secret-token\"",
         );
-        let cfg = Config::load_str(&yaml).expect("auth bearer_token");
+        let cfg = Config::load_str(yaml).expect("auth bearer_token");
         let pipe = &cfg.pipelines["default"];
         let auth = pipe.outputs[0].auth().expect("auth present");
         assert_eq!(auth.bearer_token.as_deref(), Some("my-secret-token"));
@@ -170,7 +160,7 @@ mod tests {
             "type: file\npath: /var/log/test.log",
             "type: otlp\nendpoint: http://localhost:4318/v1/logs\nauth:\n  headers:\n    X-API-Key: \"supersecret\"\n    X-Tenant: \"acme\"",
         );
-        let cfg = Config::load_str(&yaml).expect("auth custom headers");
+        let cfg = Config::load_str(yaml).expect("auth custom headers");
         let pipe = &cfg.pipelines["default"];
         let auth = pipe.outputs[0].auth().expect("auth present");
         assert_eq!(auth.bearer_token, None);
@@ -192,7 +182,7 @@ mod tests {
             "type: file\npath: /var/log/test.log",
             "type: otlp\nendpoint: http://localhost:4318/v1/logs\nauth:\n  bearer_token: \"${LOGFWD_TEST_TOKEN}\"",
         );
-        let cfg = Config::load_str(&yaml).expect("auth env var bearer");
+        let cfg = Config::load_str(yaml).expect("auth env var bearer");
         let pipe = &cfg.pipelines["default"];
         let auth = pipe.outputs[0].auth().expect("auth present");
         assert_eq!(auth.bearer_token.as_deref(), Some("env-bearer-token"));
@@ -207,7 +197,7 @@ mod tests {
             "type: file\npath: /var/log/test.log",
             "type: otlp\nendpoint: http://localhost:4318/v1/logs",
         );
-        let cfg = Config::load_str(&yaml).expect("no auth");
+        let cfg = Config::load_str(yaml).expect("no auth");
         let pipe = &cfg.pipelines["default"];
         assert!(pipe.outputs[0].auth().is_none());
     }
@@ -222,7 +212,7 @@ mod tests {
             "type: file\npath: /var/log/test.log",
             "type: elasticsearch\nendpoint: http://localhost:9200\nrequest_mode: streaming",
         );
-        let cfg = Config::load_str(&yaml).expect("streaming request_mode should validate");
+        let cfg = Config::load_str(yaml).expect("streaming request_mode should validate");
         let pipe = &cfg.pipelines["default"];
         assert_eq!(
             elasticsearch_request_mode(&pipe.outputs[0]),
@@ -236,7 +226,7 @@ mod tests {
             "type: file\npath: /var/log/test.log",
             "type: elasticsearch\nendpoint: http://localhost:9200\nrequest_mode: fancy",
         );
-        let err = Config::load_str(&yaml).expect_err("invalid request_mode should fail");
+        let err = Config::load_str(yaml).expect_err("invalid request_mode should fail");
         let msg = err.to_string();
         assert!(
             msg.contains("fancy") && msg.contains("buffered") && msg.contains("streaming"),
@@ -250,7 +240,7 @@ mod tests {
             "type: file\npath: /var/log/test.log",
             "type: elasticsearch\nendpoint: http://localhost:9200\ncompression: gzip\nrequest_mode: streaming",
         );
-        let err = Config::load_str(&yaml).expect_err("streaming+gzip should fail");
+        let err = Config::load_str(yaml).expect_err("streaming+gzip should fail");
         assert!(err.to_string().contains("does not support gzip"));
     }
 
@@ -260,7 +250,7 @@ mod tests {
             "type: file\npath: /var/log/test.log",
             "type: otlp\nendpoint: http://localhost:4318/v1/logs\nrequest_mode: streaming",
         );
-        let err = Config::load_str(&yaml).expect_err("request_mode should be es-only");
+        let err = Config::load_str(yaml).expect_err("request_mode should be es-only");
         let msg = err.to_string();
         assert!(
             msg.contains("unknown field") && msg.contains("request_mode"),
@@ -277,7 +267,7 @@ mod tests {
         // Unquoted `type: null` is YAML null — must be rejected, not silently
         // routed to the Null sink.
         let yaml = single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: null");
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("invalid type: unit value") && msg.contains("outputs[0]"),
@@ -291,7 +281,7 @@ mod tests {
             "type: file\npath: /tmp/x.log",
             "type:\nendpoint: https://collector:4318",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("invalid type: unit value") && msg.contains("outputs[0]"),
@@ -311,7 +301,7 @@ pipelines:
     outputs:
       - type: null
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("invalid type: unit value") && msg.contains("pipelines.app.outputs[0]"),
@@ -323,7 +313,7 @@ pipelines:
     fn quoted_type_null_creates_null_sink() {
         // `type: "null"` (quoted string) creates the Null sink intentionally.
         let yaml = single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: \"null\"");
-        let cfg = Config::load_str(&yaml).expect("type: \"null\" quoted");
+        let cfg = Config::load_str(yaml).expect("type: \"null\" quoted");
         assert_eq!(
             cfg.pipelines["default"].outputs[0].output_type(),
             OutputType::Null
@@ -336,7 +326,7 @@ pipelines:
             "type: file\npath: /tmp/x.log",
             "type: \"null\"\nendpoint: https://collector:4318",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("unknown field `endpoint`")
@@ -364,7 +354,7 @@ pipelines:
                 "type: file\npath: /tmp/x.log",
                 &format!("type: \"null\"\n{field}: {value}"),
             );
-            let err = Config::load_str(&yaml).unwrap_err();
+            let err = Config::load_str(yaml).unwrap_err();
             let msg = err.to_string();
             let unknown_field = format!("unknown field `{field}`");
             assert!(
@@ -377,7 +367,7 @@ pipelines:
     #[test]
     fn whole_output_null_is_rejected() {
         let yaml = "pipelines:\n  default:\n    inputs:\n      - type: file\n        path: /tmp/x.log\n    outputs:\n      - null\n";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("invalid type: unit value") || msg.contains("outputs[0]"),
@@ -388,7 +378,7 @@ pipelines:
     #[test]
     fn missing_output_type_is_rejected() {
         let yaml = "pipelines:\n  default:\n    inputs:\n      - type: file\n        path: /tmp/x.log\n    outputs:\n      - {}\n";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("missing configuration field") && msg.contains("type"),
@@ -399,7 +389,7 @@ pipelines:
     #[test]
     fn empty_string_output_type_is_rejected() {
         let yaml = single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: \"\"");
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("unknown variant ``") && msg.contains("outputs[0]"),
@@ -412,7 +402,7 @@ pipelines:
         // `type: ~` (YAML null as type value) must not silently become the Null
         // sink — that would cause silent data loss.
         let yaml = single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: ~");
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("invalid type: unit value") && msg.contains("outputs[0]"),
@@ -437,7 +427,7 @@ pipelines:
         endpoint: http://localhost:4317
         index: my-index
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains("index"),
             "expected index rejection: {err}"
@@ -457,7 +447,7 @@ pipelines:
         endpoint: http://localhost:9200
         protocol: grpc
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains("protocol"),
             "expected protocol rejection: {err}"
@@ -476,7 +466,7 @@ pipelines:
       - type: stdout
         compression: zstd
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains("compression"),
             "expected compression rejection: {err}"
@@ -496,7 +486,7 @@ pipelines:
         auth:
           bearer_token: "secret"
 "#;
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains("auth"),
             "expected auth rejection: {err}"
@@ -515,7 +505,7 @@ pipelines:
       - type: stdout
         path: /tmp/out.log
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains("path"),
             "expected path rejection: {err}"
@@ -538,7 +528,7 @@ pipelines:
       - type: stdout
         tenant_id: my-tenant
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("unknown field") && msg.contains("tenant_id"),
@@ -559,7 +549,7 @@ pipelines:
         static_labels:
           env: prod
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("unknown field") && msg.contains("static_labels"),
@@ -580,7 +570,7 @@ pipelines:
         label_columns:
           - container_name
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("unknown field") && msg.contains("label_columns"),
@@ -608,7 +598,7 @@ pipelines:
         endpoint: http://localhost:4317
         compression: gzip
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("arrow_ipc output only supports 'zstd' or 'none'")
@@ -630,7 +620,7 @@ pipelines:
         endpoint: http://localhost:4317
         compression: none
 ";
-        Config::load_str(&yaml).expect("arrow_ipc output should accept none compression");
+        Config::load_str(yaml).expect("arrow_ipc output should accept none compression");
     }
 
     // -----------------------------------------------------------------------

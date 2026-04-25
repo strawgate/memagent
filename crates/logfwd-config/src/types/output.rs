@@ -1,8 +1,9 @@
 use crate::serde_helpers::{
-    PositiveMillis, deserialize_option_from_string_or_value, deserialize_option_strict_string,
-    deserialize_option_string_map_strict_values, deserialize_option_vec_strict_string,
+    PositiveMillis, PositiveSecs, deserialize_option_from_string_or_value,
+    deserialize_option_strict_string, deserialize_option_string_map_strict_values,
+    deserialize_option_vec_strict_string,
 };
-use crate::shared::TlsClientConfig;
+use crate::shared::{BatchConfig, NetworkConfig, RetryConfig, RotationConfig, TlsClientConfig};
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -21,8 +22,8 @@ pub enum OutputConfigV2 {
     Stdout(StdoutOutputConfig),
     File(FileOutputConfig),
     Null(NullOutputConfig),
-    Tcp(SocketOutputConfig),
-    Udp(SocketOutputConfig),
+    Tcp(TcpOutputConfig),
+    Udp(UdpOutputConfig),
     ArrowIpc(ArrowIpcOutputConfig),
 }
 
@@ -155,6 +156,10 @@ pub struct ElasticsearchOutputConfig {
     pub auth: Option<AuthConfig>,
     #[serde(default)]
     pub tls: Option<TlsClientConfig>,
+    #[serde(default)]
+    pub retry: Option<RetryConfig>,
+    #[serde(default)]
+    pub batch: Option<BatchConfig>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub request_timeout_ms: Option<PositiveMillis>,
 }
@@ -179,6 +184,12 @@ pub struct LokiOutputConfig {
     pub label_columns: Option<Vec<String>>,
     #[serde(default)]
     pub tls: Option<TlsClientConfig>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
+    #[serde(default)]
+    pub retry: Option<RetryConfig>,
+    #[serde(default)]
+    pub batch: Option<BatchConfig>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub request_timeout_ms: Option<PositiveMillis>,
 }
@@ -193,15 +204,19 @@ pub struct StdoutOutputConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-/// File output configuration for the typed V2 schema.
-///
-/// File compression is intentionally not part of the typed schema; unknown
-/// fields are rejected during deserialization.
 pub struct FileOutputConfig {
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub path: Option<String>,
+    #[serde(default)]
+    pub compression: Option<CompressionFormat>,
+    #[serde(default)]
+    pub rotation: Option<RotationConfig>,
+    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
+    pub delimiter: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
+    pub path_template: Option<String>,
     pub format: Option<Format>,
 }
 
@@ -214,15 +229,37 @@ pub struct NullOutputConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct SocketOutputConfig {
+pub struct TcpOutputConfig {
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub endpoint: Option<String>,
+    pub encoding: Option<Format>,
+    #[serde(alias = "format")]
+    pub framing: Option<Format>,
+    #[serde(default)]
+    pub tls: Option<TlsClientConfig>,
+    #[serde(default)]
+    pub keepalive: Option<NetworkConfig>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub timeout_secs: Option<PositiveSecs>,
+    #[serde(default)]
+    pub retry: Option<RetryConfig>,
+    #[serde(default)]
+    pub batch: Option<BatchConfig>,
 }
 
-pub type TcpOutputConfig = SocketOutputConfig;
-pub type UdpOutputConfig = SocketOutputConfig;
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct UdpOutputConfig {
+    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
+    pub name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
+    pub endpoint: Option<String>,
+    pub encoding: Option<Format>,
+    #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
+    pub max_datagram_size_bytes: Option<usize>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]

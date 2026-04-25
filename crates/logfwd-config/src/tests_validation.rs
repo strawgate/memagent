@@ -10,7 +10,7 @@ mod tests {
     #[test]
     fn validation_missing_input_path() {
         let yaml = single_pipeline_yaml("type: file", "type: stdout");
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("path"), "expected 'path' in error: {msg}");
     }
@@ -18,7 +18,7 @@ mod tests {
     #[test]
     fn validation_missing_output_endpoint() {
         let yaml = single_pipeline_yaml("type: file\npath: /var/log/test.log", "type: otlp");
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("endpoint"),
@@ -32,7 +32,7 @@ mod tests {
             "type: file\npath: /var/log/test.log",
             "type: otlp\nendpoint: http://collector:4318\ncompression: gzip",
         );
-        Config::load_str(&yaml).expect("gzip OTLP compression should validate");
+        Config::load_str(yaml).expect("gzip OTLP compression should validate");
     }
 
     #[test]
@@ -52,7 +52,7 @@ mod tests {
             &format!("storage:\n  data_dir: {}\n", path.display()),
         );
 
-        let err = Config::load_str(&yaml).expect_err("non-directory storage.data_dir must fail");
+        let err = Config::load_str(yaml).expect_err("non-directory storage.data_dir must fail");
         assert!(
             err.to_string().contains("exists but is not a directory"),
             "expected non-directory storage.data_dir rejection, got: {err}"
@@ -63,7 +63,7 @@ mod tests {
     #[test]
     fn validation_udp_requires_listen() {
         let yaml = single_pipeline_yaml("type: udp", "type: stdout");
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("listen"), "expected 'listen' in error: {msg}");
     }
@@ -71,7 +71,7 @@ mod tests {
     #[test]
     fn validation_otlp_requires_listen() {
         let yaml = single_pipeline_yaml("type: otlp", "type: stdout");
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("listen"), "expected 'listen' in error: {msg}");
     }
@@ -79,7 +79,7 @@ mod tests {
     #[test]
     fn validation_arrow_ipc_requires_listen() {
         let yaml = single_pipeline_yaml("type: arrow_ipc", "type: stdout");
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("listen"), "expected 'listen' in error: {msg}");
     }
@@ -100,7 +100,7 @@ pipelines:
     outputs:
       - type: stdout
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("unknown field `input`") || msg.contains("unknown field `output`"),
@@ -114,7 +114,7 @@ pipelines:
 server:
   log_level: info
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("must define"),
@@ -128,7 +128,7 @@ server:
             "type: file\npath: /tmp/x.log",
             "type: parquet\npath: /tmp/x",
         );
-        let err = Config::load_str(&yaml).expect_err("removed output type should fail to parse");
+        let err = Config::load_str(yaml).expect_err("removed output type should fail to parse");
         let msg = err.to_string();
         assert!(
             msg.contains("parquet")
@@ -147,7 +147,7 @@ server:
                 &format!("type: file\npath: /tmp/x.log\nformat: {format}"),
                 "type: stdout",
             );
-            let result = Config::load_str(&yaml);
+            let result = Config::load_str(yaml);
             assert!(
                 result.is_err(),
                 "validation should reject unimplemented format '{format}'"
@@ -172,7 +172,7 @@ pipelines:
     outputs:
       - type: stdout
 ";
-        let err = Config::load_str(&yaml).expect_err("top-level transform must be rejected");
+        let err = Config::load_str(yaml).expect_err("top-level transform must be rejected");
         assert!(
             err.to_string().contains("unknown field `transform`"),
             "unexpected parse error: {err}"
@@ -187,7 +187,7 @@ pipelines:
                 "type: file\npath: /tmp/x.log",
                 &format!("type: {otype}\nendpoint: collector:4317"),
             );
-            let result = Config::load_str(&yaml);
+            let result = Config::load_str(yaml);
             assert!(
                 result.is_err(),
                 "expected error for scheme-less endpoint with type '{otype}'"
@@ -213,7 +213,7 @@ pipelines:
                 "type: file\npath: /tmp/x.log",
                 &format!("type: {otype}\nendpoint: {scheme}collector:4317"),
             );
-            Config::load_str(&yaml)
+            Config::load_str(yaml)
                 .unwrap_or_else(|e| panic!("scheme '{scheme}' should be valid for '{otype}': {e}"));
         }
     }
@@ -226,7 +226,7 @@ pipelines:
             "type: file\npath: /var/log/test.log",
             "type: otlp\nendpoint: ${LOGFWD_NONEXISTENT_ENDPOINT_VAR}",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("LOGFWD_NONEXISTENT_ENDPOINT_VAR"),
@@ -272,7 +272,7 @@ pipelines:
 resource_attrs:
   service.name: my-service
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("unknown field `resource_attrs`"), "got: {msg}");
     }
@@ -292,7 +292,7 @@ enrichment:
     format: mmdb
     path: /tmp/geo.mmdb
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("unknown field `enrichment`"), "got: {msg}");
     }
@@ -309,7 +309,7 @@ pipelines:
       - type: stdout
     workers: 0
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("workers"),
@@ -333,7 +333,7 @@ pipelines:
       - type: stdout
     batch_target_bytes: 0
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("batch_target_bytes"),
@@ -353,7 +353,7 @@ pipelines:
       - type: stdout
     poll_interval_ms: 0
 ";
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         // Now rejected at parse time via PositiveMillis.
         assert!(

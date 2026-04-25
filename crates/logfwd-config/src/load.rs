@@ -28,8 +28,8 @@ impl Config {
     }
 
     /// Parse configuration from a YAML string.
-    pub fn load_str(yaml: &str) -> Result<Self, ConfigError> {
-        Self::load_str_with_base_path(yaml, None)
+    pub fn load_str(yaml: impl AsRef<str>) -> Result<Self, ConfigError> {
+        Self::load_str_with_base_path(yaml.as_ref(), None)
     }
 
     /// Parse configuration from YAML with a base path for relative-path validation.

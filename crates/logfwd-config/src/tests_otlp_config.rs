@@ -23,7 +23,7 @@ pipelines:
         endpoint: http://localhost:3100
 ";
         let config = Config::load_str(yaml).unwrap();
-        let pipeline = config.pipelines.get("test").unwrap();
+        let pipeline = &config.pipelines["test"];
         let input = &pipeline.inputs[0];
 
         match &input.type_config {

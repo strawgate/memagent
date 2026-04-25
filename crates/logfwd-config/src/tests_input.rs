@@ -14,7 +14,7 @@ mod tests {
                 &format!("type: file\npath: /tmp/x.log\nformat: {format}"),
                 "type: stdout",
             );
-            Config::load_str(&yaml).unwrap_or_else(|e| panic!("failed for format '{format}': {e}"));
+            Config::load_str(yaml).unwrap_or_else(|e| panic!("failed for format '{format}': {e}"));
         }
     }
 
@@ -40,7 +40,7 @@ mod tests {
                 format!("type: {itype}\n{extra}")
             };
             let yaml = single_pipeline_yaml(&input, "type: stdout");
-            Config::load_str(&yaml).unwrap_or_else(|e| panic!("failed for {itype}: {e}"));
+            Config::load_str(yaml).unwrap_or_else(|e| panic!("failed for {itype}: {e}"));
         }
     }
 
@@ -65,7 +65,7 @@ mod tests {
                 format!("type: {otype}\n{extra}")
             };
             let yaml = single_pipeline_yaml("type: file\npath: /tmp/x.log", &output);
-            Config::load_str(&yaml).unwrap_or_else(|e| panic!("failed for {otype}: {e}"));
+            Config::load_str(yaml).unwrap_or_else(|e| panic!("failed for {otype}: {e}"));
         }
     }
 
@@ -76,7 +76,7 @@ mod tests {
             "type: stdout",
         );
         let cfg =
-            Config::load_str(&yaml).expect("otlp input with protobuf_decode_mode should parse");
+            Config::load_str(yaml).expect("otlp input with protobuf_decode_mode should parse");
         let pipe = &cfg.pipelines["default"];
         assert!(matches!(
             &pipe.inputs[0].type_config,
@@ -91,7 +91,7 @@ mod tests {
             "type: otlp\nlisten: 127.0.0.1:4318\nresource_prefix: resource.attributes.",
             "type: stdout",
         );
-        let err = Config::load_str(&yaml).expect_err("resource_prefix is no longer supported");
+        let err = Config::load_str(yaml).expect_err("resource_prefix is no longer supported");
         let msg = err.to_string();
         assert!(
             msg.contains("resource_prefix") || msg.contains("unknown field"),
@@ -105,7 +105,7 @@ mod tests {
             "type: file\npath: /var/log/app.log\nprotobuf_decode_mode: projected_fallback",
             "type: stdout",
         );
-        let err = Config::load_str(&yaml).expect_err("protobuf_decode_mode must be otlp-only");
+        let err = Config::load_str(yaml).expect_err("protobuf_decode_mode must be otlp-only");
         let msg = err.to_string();
         assert!(
             msg.contains("protobuf_decode_mode") || msg.contains("unknown field"),
@@ -118,7 +118,7 @@ mod tests {
         for format in ["auto", "cri", "json", "raw"] {
             let yaml =
                 single_pipeline_yaml(&format!("type: stdin\nformat: {format}"), "type: stdout");
-            let cfg = Config::load_str(&yaml)
+            let cfg = Config::load_str(yaml)
                 .unwrap_or_else(|e| panic!("failed for stdin format {format}: {e}"));
             let input = &cfg.pipelines["default"].inputs[0];
             assert_eq!(input.input_type(), InputType::Stdin);
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn stdin_input_rejects_unsupported_format() {
         let yaml = single_pipeline_yaml("type: stdin\nformat: logfmt", "type: stdout");
-        let err = Config::load_str(&yaml).expect_err("stdin should reject unsupported format");
+        let err = Config::load_str(yaml).expect_err("stdin should reject unsupported format");
         assert!(
             err.to_string()
                 .contains("stdin input only supports format auto, cri, json, or raw"),
@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn stdin_input_rejects_file_only_fields() {
         let yaml = single_pipeline_yaml("type: stdin\npath: /tmp/app.log", "type: stdout");
-        let err = Config::load_str(&yaml).expect_err("stdin should reject path");
+        let err = Config::load_str(yaml).expect_err("stdin should reject path");
         assert!(
             err.to_string().contains("unknown field `path`"),
             "unexpected error: {err}"
@@ -158,7 +158,7 @@ mod tests {
                 &format!("type: {itype}\nsensor_beta:\n  poll_interval_ms: 1000"),
                 "type: stdout",
             );
-            let err = Config::load_str(&yaml).expect_err("legacy sensor type alias should fail");
+            let err = Config::load_str(yaml).expect_err("legacy sensor type alias should fail");
             let msg = err.to_string();
             assert!(
                 msg.contains("unknown variant"),
@@ -184,7 +184,7 @@ mod tests {
             "type: file\npath: /tmp/test.log\npoll_interval_ms: 100\nread_buf_size: 1048576\nper_file_read_budget_bytes: 2097152",
             "type: stdout",
         );
-        let cfg = Config::load_str(&yaml).unwrap();
+        let cfg = Config::load_str(yaml).unwrap();
         let pipe = &cfg.pipelines["default"];
         let input = &pipe.inputs[0];
         let f = match &input.type_config {
@@ -205,7 +205,7 @@ mod tests {
                 &format!("type: file\npath: /tmp/test.log\n{field}: {value}"),
                 "type: stdout",
             );
-            let err = Config::load_str(&yaml).unwrap_err().to_string();
+            let err = Config::load_str(yaml).unwrap_err().to_string();
             assert!(
                 err.contains(&format!("'{field}' must be at least 1")),
                 "expected error about positive {field}, got: {err}"
@@ -217,7 +217,7 @@ mod tests {
             "type: file\npath: /tmp/test.log\npoll_interval_ms: 0",
             "type: stdout",
         );
-        let err = Config::load_str(&yaml).unwrap_err().to_string();
+        let err = Config::load_str(yaml).unwrap_err().to_string();
         assert!(
             err.contains("invalid value") || err.contains("positive"),
             "expected zero-rejection error for poll_interval_ms, got: {err}"
@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn sensor_rejects_format_configuration() {
         let yaml = single_pipeline_yaml("type: linux_ebpf_sensor\nformat: raw", "type: stdout");
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string()
                 .contains("sensor inputs do not support 'format'"),
@@ -260,7 +260,7 @@ mod tests {
                     format!("type: {in_type}\n{extra}\n{field}")
                 };
                 let yaml = single_pipeline_yaml(&input, "type: stdout");
-                let err = Config::load_str(&yaml).unwrap_err().to_string();
+                let err = Config::load_str(yaml).unwrap_err().to_string();
                 let field_name = field.split(':').next().unwrap();
                 assert!(
                     err.contains(field_name) || err.contains("unknown field"),
@@ -278,11 +278,10 @@ mod tests {
             "type: file\npath: /tmp/x.log\nsensor:\n  poll_interval_ms: 1000",
             "type: stdout",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains("sensor") || err.to_string().contains("unknown field"),
-            "expected serde rejection of sensor for file input: {}",
-            err
+            "expected serde rejection of sensor for file input: {err}"
         );
     }
 
@@ -292,7 +291,7 @@ mod tests {
             "type: arrow_ipc\nlisten: 0.0.0.0:4319\nformat: raw",
             "type: stdout",
         );
-        let err = Config::load_str(&yaml).unwrap_err().to_string();
+        let err = Config::load_str(yaml).unwrap_err().to_string();
         assert!(
             err.contains("'format' is not supported for arrow_ipc inputs"),
             "expected arrow_ipc format rejection, got: {err}"
@@ -305,7 +304,7 @@ mod tests {
             "type: linux_ebpf_sensor\nsensor:\n  poll_interval_ms: 0",
             "type: stdout",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         // Now rejected at parse time via PositiveMillis.
         let msg = err.to_string();
         assert!(
@@ -320,7 +319,7 @@ mod tests {
             "type: linux_ebpf_sensor\nsensor:\n  control_reload_interval_ms: 0",
             "type: stdout",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         // Now rejected at parse time via PositiveMillis.
         let msg = err.to_string();
         assert!(
@@ -335,7 +334,7 @@ mod tests {
             "type: linux_ebpf_sensor\nsensor:\n  control_path: \"   \"",
             "type: stdout",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string()
                 .contains("sensor.control_path must not be empty")
@@ -348,7 +347,7 @@ mod tests {
             "type: linux_ebpf_sensor\nsensor:\n  enabled_families: [process, made_up_family]",
             "type: stdout",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string()
                 .contains("unknown sensor family 'made_up_family'")
@@ -361,7 +360,7 @@ mod tests {
             "type: linux_ebpf_sensor\nsensor:\n  include_event_types: [exec, tcp_connect]\n  exclude_event_types: [tcp_accept]",
             "type: stdout",
         );
-        Config::load_str(&yaml).expect("known linux sensor event types should validate");
+        Config::load_str(yaml).expect("known linux sensor event types should validate");
     }
 
     #[test]
@@ -370,7 +369,7 @@ mod tests {
             "type: linux_ebpf_sensor\nsensor:\n  include_event_types: [process_exec]",
             "type: stdout",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string()
                 .contains("unknown sensor event type 'process_exec'"),
@@ -384,7 +383,7 @@ mod tests {
             "type: linux_ebpf_sensor\nsensor:\n  exclude_event_types: [\"  \"]",
             "type: stdout",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string()
                 .contains("sensor.exclude_event_types entries must not be empty"),
@@ -398,7 +397,7 @@ mod tests {
             "type: linux_ebpf_sensor\nsensor:\n  include_event_types: [\" exec \", \"  tcp_connect\"]\n  exclude_event_types: [\"exit  \"]",
             "type: stdout",
         );
-        let cfg = Config::load_str(&yaml).expect("padded event types should validate");
+        let cfg = Config::load_str(yaml).expect("padded event types should validate");
         let pipeline = cfg.pipelines.values().next().unwrap();
         let input = &pipeline.inputs[0];
         match &input.type_config {
@@ -425,7 +424,7 @@ mod tests {
             "type: host_metrics\nsensor:\n  include_event_types: [exec]",
             "type: stdout",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string().contains(
                 "sensor.include_event_types and sensor.exclude_event_types are only supported for linux_ebpf_sensor inputs"
@@ -440,7 +439,7 @@ mod tests {
             "type: file\npath: /var/log/test.log\nmax_open_files: 0",
             "type: stdout",
         );
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("max_open_files must be at least 1"),
@@ -454,13 +453,13 @@ mod tests {
             "type: file\npath: /var/log/test.log\nmax_open_files: 1",
             "type: stdout",
         );
-        Config::load_str(&yaml).expect("max_open_files: 1 should be valid");
+        Config::load_str(yaml).expect("max_open_files: 1 should be valid");
     }
 
     #[test]
     fn max_open_files_absent_accepted() {
         let yaml = single_pipeline_yaml("type: file\npath: /var/log/test.log", "type: stdout");
-        Config::load_str(&yaml).expect("absent max_open_files should be valid");
+        Config::load_str(yaml).expect("absent max_open_files should be valid");
     }
 
     #[test]
@@ -469,7 +468,7 @@ mod tests {
             "type: file\npath: /var/log/test.log\nadaptive_fast_polls_max: 0",
             "type: stdout",
         );
-        Config::load_str(&yaml).expect("adaptive_fast_polls_max: 0 should be valid for file");
+        Config::load_str(yaml).expect("adaptive_fast_polls_max: 0 should be valid for file");
     }
 
     #[test]
@@ -478,7 +477,7 @@ mod tests {
             "type: file\npath: /var/log/test.log\nadaptive_fast_polls_max: 12",
             "type: stdout",
         );
-        Config::load_str(&yaml).expect("adaptive_fast_polls_max should be configurable for file");
+        Config::load_str(yaml).expect("adaptive_fast_polls_max should be configurable for file");
     }
 
     // -----------------------------------------------------------------------
@@ -499,7 +498,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let _ = Config::load_str(&yaml).expect_err("file input must reject listen");
+        let _ = Config::load_str(yaml).expect_err("file input must reject listen");
     }
 
     #[test]
@@ -514,7 +513,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let _ = Config::load_str(&yaml).expect_err("tcp input must reject path");
+        let _ = Config::load_str(yaml).expect_err("tcp input must reject path");
     }
 
     #[test]
@@ -529,7 +528,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let _ = Config::load_str(&yaml).expect_err("tcp input must reject max_open_files");
+        let _ = Config::load_str(yaml).expect_err("tcp input must reject max_open_files");
     }
 
     #[test]
@@ -544,7 +543,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let _ = Config::load_str(&yaml).expect_err("tcp input must reject adaptive_fast_polls_max");
+        let _ = Config::load_str(yaml).expect_err("tcp input must reject adaptive_fast_polls_max");
     }
 
     #[test]
@@ -561,7 +560,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        Config::load_str(&yaml).expect("tcp tls with cert+key should validate");
+        Config::load_str(yaml).expect("tcp tls with cert+key should validate");
     }
 
     #[test]
@@ -577,7 +576,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string()
                 .contains("requires both tls.cert_file and tls.key_file"),
@@ -601,7 +600,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        Config::load_str(&yaml).expect("tcp mTLS with client CA should validate");
+        Config::load_str(yaml).expect("tcp mTLS with client CA should validate");
     }
 
     #[test]
@@ -619,7 +618,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string()
                 .contains("require_client_auth requires tls.client_ca_file"),
@@ -642,7 +641,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(&yaml).unwrap_err();
+        let err = Config::load_str(yaml).unwrap_err();
         assert!(
             err.to_string()
                 .contains("client_ca_file requires tls.require_client_auth: true"),
@@ -666,7 +665,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let _ = Config::load_str(&yaml).expect_err("udp input must reject tls");
+        let _ = Config::load_str(yaml).expect_err("udp input must reject tls");
     }
 
     #[test]
@@ -681,7 +680,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let _ = Config::load_str(&yaml).expect_err("tcp input must reject glob_rescan_interval_ms");
+        let _ = Config::load_str(yaml).expect_err("tcp input must reject glob_rescan_interval_ms");
     }
 
     #[test]
@@ -695,6 +694,6 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        Config::load_str(&yaml).expect("arrow_ipc input should validate when listen is provided");
+        Config::load_str(yaml).expect("arrow_ipc input should validate when listen is provided");
     }
 }

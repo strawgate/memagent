@@ -781,10 +781,10 @@ mod tests {
         let start = document
             .find(&begin)
             .unwrap_or_else(|| panic!("missing {begin} marker in {path}"));
-        let end_index = document[start..]
-            .find(&end)
-            .map(|offset| start + offset)
-            .unwrap_or_else(|| panic!("missing {end} marker in {path}"));
+        let end_index = document[start..].find(&end).map_or_else(
+            || panic!("missing {end} marker in {path}"),
+            |offset| start + offset,
+        );
         let actual = document[start + begin.len()..end_index]
             .trim_matches('\n')
             .trim();

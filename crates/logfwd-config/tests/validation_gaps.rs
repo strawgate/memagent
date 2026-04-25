@@ -1,6 +1,8 @@
 use logfwd_config::Config;
 use std::ffi::OsString;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -23,10 +25,15 @@ impl EnvVarGuard {
 
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
-        // SAFETY: tests that mutate process environment hold ENV_LOCK.
         match &self.previous {
-            Some(val) => unsafe { std::env::set_var(self.key, val) },
-            None => unsafe { std::env::remove_var(self.key) },
+            Some(val) => {
+                // SAFETY: tests that mutate process environment hold ENV_LOCK.
+                unsafe { std::env::set_var(self.key, val) };
+            }
+            None => {
+                // SAFETY: tests that mutate process environment hold ENV_LOCK.
+                unsafe { std::env::remove_var(self.key) };
+            }
         }
     }
 }
@@ -108,7 +115,7 @@ fn push_block_sequence(yaml: &mut String, indent: usize, body: &str) {
 fn config_deserialization_error_includes_simple_layout_field_path() {
     let yaml = single_pipeline_yaml("type: generator", "type: stdout\nbatch_size: not-a-number");
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("config deserialization error"),
         "error should include a deserialization path: {err}"
@@ -153,7 +160,7 @@ pipelines:
 fn raw_yaml_number_for_string_field_is_rejected() {
     let yaml = single_pipeline_yaml("type: file\npath: 123", "type: stdout");
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("config deserialization error"),
         "error should come from deserialization: {err}"
@@ -171,7 +178,7 @@ fn raw_yaml_bool_for_string_field_is_rejected() {
         "type: stdout",
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("config deserialization error"),
         "error should come from deserialization: {err}"
@@ -235,7 +242,7 @@ fn raw_yaml_number_for_bool_field_is_rejected() {
         "type: stdout",
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("config deserialization error"),
         "error should come from deserialization: {err}"
@@ -276,7 +283,7 @@ fn generator_attribute_scalar_types_are_preserved() {
         "type: stdout",
     );
 
-    let config = Config::load_str(&yaml).expect("generator attributes should parse");
+    let config = Config::load_str(yaml).expect("generator attributes should parse");
     let input = &config.pipelines["default"].inputs[0];
     let attributes = match &input.type_config {
         logfwd_config::InputTypeConfig::Generator(generator) => generator
@@ -313,7 +320,7 @@ fn env_generator_attribute_values_remain_strings() {
         "type: stdout",
     );
 
-    let config = Config::load_str(&yaml).expect("generator attributes should parse");
+    let config = Config::load_str(yaml).expect("generator attributes should parse");
     let input = &config.pipelines["default"].inputs[0];
     let attributes = match &input.type_config {
         logfwd_config::InputTypeConfig::Generator(generator) => generator
@@ -342,7 +349,7 @@ fn env_expansion_preserves_yaml_hash_content() {
 
     let yaml = single_pipeline_yaml("type: file\npath: ${LOGFWD_ISSUE_1855}", "type: stdout");
 
-    let config = Config::load_str(&yaml).expect("config should parse after env expansion");
+    let config = Config::load_str(yaml).expect("config should parse after env expansion");
     let input = &config.pipelines["default"].inputs[0];
     let path = match &input.type_config {
         logfwd_config::InputTypeConfig::File(file) => file.path.as_str(),
@@ -417,7 +424,7 @@ fn env_bool_string_is_parsed_by_typed_schema() {
         "type: stdout",
     );
 
-    let config = Config::load_str(&yaml).expect("config should parse env-backed bool");
+    let config = Config::load_str(yaml).expect("config should parse env-backed bool");
     let input = &config.pipelines["default"].inputs[0];
     let strict_path = match &input.type_config {
         logfwd_config::InputTypeConfig::Http(http) => {
@@ -439,7 +446,7 @@ fn env_bool_string_is_parsed_by_shared_tls_schema() {
         "type: otlp\nendpoint: http://127.0.0.1:4318\ntls:\n  insecure_skip_verify: ${LOGFWD_ISSUE_1855_TLS_SKIP_VERIFY}",
     );
 
-    let config = Config::load_str(&yaml).expect("config should parse env-backed TLS bool");
+    let config = Config::load_str(yaml).expect("config should parse env-backed TLS bool");
     let logfwd_config::OutputConfigV2::Otlp(output) = &config.pipelines["default"].outputs[0]
     else {
         panic!("expected otlp output");
@@ -459,7 +466,7 @@ fn quoted_env_expansion_preserves_string_scalars() {
         "type: stdout",
     );
 
-    let config = Config::load_str(&yaml).expect("quoted env-backed string should parse");
+    let config = Config::load_str(yaml).expect("quoted env-backed string should parse");
     let input = &config.pipelines["default"].inputs[0];
     let path = match &input.type_config {
         logfwd_config::InputTypeConfig::File(file) => file.path.as_str(),
@@ -479,7 +486,7 @@ fn tagged_quoted_env_expansion_preserves_string_scalars() {
         "type: stdout",
     );
 
-    let config = Config::load_str(&yaml).expect("tagged quoted env-backed string should parse");
+    let config = Config::load_str(yaml).expect("tagged quoted env-backed string should parse");
     let input = &config.pipelines["default"].inputs[0];
     let path = match &input.type_config {
         logfwd_config::InputTypeConfig::File(file) => file.path.as_str(),
@@ -501,7 +508,7 @@ fn tagged_unquoted_env_expansion_preserves_string_scalars() {
         "type: stdout",
     );
 
-    let config = Config::load_str(&yaml).expect("tagged unquoted env-backed string should parse");
+    let config = Config::load_str(yaml).expect("tagged unquoted env-backed string should parse");
     let input = &config.pipelines["default"].inputs[0];
     let path = match &input.type_config {
         logfwd_config::InputTypeConfig::File(file) => file.path.as_str(),
@@ -515,7 +522,7 @@ fn tagged_unquoted_env_expansion_preserves_string_scalars() {
 fn explicit_string_yaml_tag_preserves_string_field() {
     let yaml = single_pipeline_yaml("type: file\npath: !!str 123", "type: stdout");
 
-    let config = Config::load_str(&yaml).expect("explicit string tag should parse as string");
+    let config = Config::load_str(yaml).expect("explicit string tag should parse as string");
     let input = &config.pipelines["default"].inputs[0];
     let path = match &input.type_config {
         logfwd_config::InputTypeConfig::File(file) => file.path.as_str(),
@@ -529,7 +536,7 @@ fn explicit_string_yaml_tag_preserves_string_field() {
 fn non_string_core_yaml_tag_for_string_field_is_rejected() {
     let yaml = single_pipeline_yaml("type: file\npath: !!int \"123\"", "type: stdout");
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("config deserialization error"),
         "error should come from deserialization: {err}"
@@ -544,7 +551,7 @@ fn non_string_core_yaml_tag_for_string_field_is_rejected() {
 fn custom_yaml_tag_for_string_field_is_rejected() {
     let yaml = single_pipeline_yaml("type: file\npath: !custom \"123\"", "type: stdout");
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("unsupported explicit YAML tag"),
         "error should reject unsupported explicit tags: {err}"
@@ -559,7 +566,7 @@ fn custom_yaml_tag_for_mapping_key_is_rejected() {
         "resource_attrs:\n  !custom key: value",
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("unsupported explicit YAML tag"),
         "error should reject unsupported explicit mapping-key tags: {err}"
@@ -576,7 +583,7 @@ fn anchored_quoted_env_expansion_preserves_string_scalars() {
         "type: stdout",
     );
 
-    let config = Config::load_str(&yaml).expect("anchored quoted env-backed string should parse");
+    let config = Config::load_str(yaml).expect("anchored quoted env-backed string should parse");
     let input = &config.pipelines["default"].inputs[0];
     let path = match &input.type_config {
         logfwd_config::InputTypeConfig::File(file) => file.path.as_str(),
@@ -616,7 +623,7 @@ pipelines:
 fn plain_scalar_apostrophe_is_not_treated_as_quote_boundary() {
     let yaml = single_pipeline_yaml("type: file\npath: /var/log/it's.log", "type: stdout");
 
-    let config = Config::load_str(&yaml).expect("plain scalar apostrophe should parse");
+    let config = Config::load_str(yaml).expect("plain scalar apostrophe should parse");
     let input = &config.pipelines["default"].inputs[0];
     let path = match &input.type_config {
         logfwd_config::InputTypeConfig::File(file) => file.path.as_str(),
@@ -982,7 +989,7 @@ fn issue_2349_reject_null_output_endpoint() {
         "type: \"null\"\nendpoint: https://collector:4318",
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("unknown field") && err.contains("endpoint"),
         "null output should reject endpoint at parse time: {err}"
@@ -1026,7 +1033,7 @@ pipelines:
         out_path.display()
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("file output parent directory") && err.contains("is not usable"),
         "unexpected error: {err}"
@@ -1078,7 +1085,7 @@ pipelines:
         out_path.display()
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("file output parent") && err.contains("is not a directory"),
         "unexpected error: {err}"
@@ -1114,7 +1121,7 @@ pipelines:
         out_path.display()
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("file output parent") && err.contains("read-only"),
         "unexpected error: {err}"
@@ -1150,7 +1157,7 @@ pipelines:
         out_path.display()
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("file output path") && err.contains("read-only"),
         "unexpected error: {err}"
@@ -1160,6 +1167,9 @@ pipelines:
     let mut writable_perms = fs::metadata(&out_path)
         .expect("file metadata should be readable")
         .permissions();
+    #[cfg(unix)]
+    writable_perms.set_mode(0o644);
+    #[cfg(not(unix))]
     writable_perms.set_readonly(false);
     fs::set_permissions(&out_path, writable_perms).expect("permissions reset should succeed");
     fs::remove_dir_all(&dir).expect("temp dir cleanup should succeed");
@@ -1183,7 +1193,7 @@ pipelines:
         out_path.display()
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("file output path") && err.contains("is a directory"),
         "unexpected error: {err}"
@@ -1210,7 +1220,7 @@ pipelines:
         out_path.display()
     );
 
-    Config::load_str(&yaml).expect("writable output parent should validate");
+    Config::load_str(yaml).expect("writable output parent should validate");
 
     fs::remove_dir_all(&dir).expect("temp dir cleanup should succeed");
 }
@@ -1275,14 +1285,14 @@ fn issue_1958_generator_record_profile_preserves_null_attribute_values() {
         "type: stdout",
     );
 
-    Config::load_str(&yaml).expect("generator null attributes should remain supported");
+    Config::load_str(yaml).expect("generator null attributes should remain supported");
 }
 
 #[test]
 fn issue_2060_reject_unmatched_opening_bracket_in_host_port() {
     let yaml = single_pipeline_yaml("type: udp\nlisten: foo[bar:4317", "type: stdout");
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(err.contains("unmatched '['"), "unexpected error: {err}");
 }
 
@@ -1293,7 +1303,7 @@ fn issue_2062_reject_sensor_max_rows_per_poll_zero() {
         "type: stdout",
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("sensor.max_rows_per_poll") && err.contains("at least 1"),
         "unexpected error: {err}"
@@ -1307,7 +1317,7 @@ fn issue_2178_reject_otlp_max_recv_message_size_bytes_zero() {
         "type: stdout",
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("otlp.max_recv_message_size_bytes") && err.contains("at least 1"),
         "unexpected error: {err}"
