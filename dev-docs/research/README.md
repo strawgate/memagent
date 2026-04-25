@@ -29,6 +29,7 @@ artifact, or generated file under `dev-docs/research/`.
 - [config-doc-generation-design.md](config-doc-generation-design.md)
 - [config-library-poc.md](config-library-poc.md)
 - [crate-restructure-plan.md](crate-restructure-plan.md)
+- [ebpf-edr-research.md](ebpf-edr-research.md)
 - [elasticsearch-retry-contract.md](elasticsearch-retry-contract.md)
 - [file-tailing-design.md](file-tailing-design.md)
 - [linearizability-porcupine-plan.md](linearizability-porcupine-plan.md)
@@ -40,6 +41,10 @@ artifact, or generated file under `dev-docs/research/`.
 - [type-suffix-redesign.md](type-suffix-redesign.md)
 - [verification-gap-analysis.md](verification-gap-analysis.md)
 - [zero-copy-pipeline-design.md](zero-copy-pipeline-design.md)
+
+## Completed Syntheses
+
+- [architecture-synthesis-2026-04-19.md](architecture-synthesis-2026-04-19.md)
 
 ## Durable Design Notes
 
