@@ -76,6 +76,40 @@ mod tests {
     }
 
     #[test]
+    fn output_rejects_unwired_sink_knobs() {
+        let cases = [
+            (
+                "tcp encoding",
+                "type: tcp\nendpoint: 127.0.0.1:9000\nencoding: json",
+                "encoding",
+            ),
+            (
+                "udp max datagram",
+                "type: udp\nendpoint: 127.0.0.1:9001\nmax_datagram_size_bytes: 1400",
+                "max_datagram_size_bytes",
+            ),
+            (
+                "arrow ipc batch size",
+                "type: arrow_ipc\nendpoint: http://localhost:4317\nbatch_size: 1024",
+                "batch_size",
+            ),
+        ];
+
+        for (name, output_body, field) in cases {
+            let yaml = single_pipeline_yaml("type: file\npath: /tmp/x.log", output_body);
+            let err = match Config::load_str(yaml) {
+                Ok(_) => panic!("{name}: unwired field '{field}' should fail validation"),
+                Err(err) => err,
+            };
+            let msg = err.to_string();
+            assert!(
+                msg.contains("does not support") && msg.contains(field),
+                "{name}: unexpected error: {msg}"
+            );
+        }
+    }
+
+    #[test]
     fn file_output_requires_path() {
         let yaml = single_pipeline_yaml("type: file\npath: /var/log/test.log", "type: file");
         let err = Config::load_str(yaml).unwrap_err();
@@ -134,21 +168,31 @@ mod tests {
     }
 
     #[test]
-    fn file_output_accepts_compression() {
+    fn file_output_rejects_unwired_compression() {
         let yaml = single_pipeline_yaml(
             "type: file\npath: /tmp/x.log",
             "type: file\npath: /tmp/out.ndjson\ncompression: zstd",
         );
-        Config::load_str(yaml).expect("file output compression should validate");
+        let err = Config::load_str(yaml).expect_err("file output compression is not wired");
+        assert!(
+            err.to_string()
+                .contains("does not support 'compression' yet"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
-    fn loki_output_accepts_compression() {
+    fn loki_output_rejects_unwired_compression() {
         let yaml = single_pipeline_yaml(
             "type: file\npath: /tmp/x.log",
             "type: loki\nendpoint: http://localhost:3100\ncompression: gzip",
         );
-        Config::load_str(yaml).expect("loki output compression should validate");
+        let err = Config::load_str(yaml).expect_err("loki output compression is not wired");
+        assert!(
+            err.to_string()
+                .contains("does not support 'compression' yet"),
+            "unexpected error: {err}"
+        );
     }
 
     // -----------------------------------------------------------------------

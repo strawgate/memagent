@@ -408,6 +408,7 @@ impl Pipeline {
                             Arc::new(crate::transform::enrichment::K8sClusterInfoTable::new());
                         enrichment_tables.push(table);
                     }
+                    _ => return Err("unsupported enrichment type".to_owned()),
                 }
             }
 

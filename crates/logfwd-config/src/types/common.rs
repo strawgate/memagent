@@ -96,6 +96,7 @@ impl fmt::Display for InputType {
 /// `snake_case`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SourceMetadataStyle {
     /// Do not attach source metadata columns.
     #[default]
@@ -125,6 +126,7 @@ impl fmt::Display for SourceMetadataStyle {
 /// OTLP protobuf decode strategy for OTLP inputs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum OtlpProtobufDecodeModeConfig {
     /// Decode through the generated prost OTLP model.
     #[default]
@@ -298,6 +300,7 @@ impl fmt::Display for Format {
 /// HTTP methods accepted by HTTP input/output configuration.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
+#[non_exhaustive]
 pub enum HttpMethodConfig {
     Get,
     Post,

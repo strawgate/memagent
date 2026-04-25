@@ -76,6 +76,7 @@ fn source_metadata_style_source_path(
         logfwd_config::SourceMetadataStyle::Vector => SourcePathColumn::Vector,
         logfwd_config::SourceMetadataStyle::None
         | logfwd_config::SourceMetadataStyle::Fastforward => SourcePathColumn::None,
+        _ => SourcePathColumn::None,
     }
 }
 

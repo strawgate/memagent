@@ -696,7 +696,7 @@ pipelines:
 }
 
 #[test]
-fn arrow_ipc_accepts_batch_size() {
+fn arrow_ipc_rejects_unwired_batch_size() {
     let yaml = r"
 pipelines:
   test:
@@ -708,7 +708,12 @@ pipelines:
         endpoint: http://localhost:9000
         batch_size: 512
 ";
-    Config::load_str(yaml).expect("arrow_ipc should accept batch_size");
+    let err = Config::load_str(yaml).expect_err("arrow_ipc batch_size is not wired");
+    assert!(
+        err.to_string()
+            .contains("does not support 'batch_size' yet"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]

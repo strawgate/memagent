@@ -133,6 +133,9 @@ fn resolve_otlp_protobuf_decode_mode(
                 ))
             }
         }
+        _ => Err(format!(
+            "input '{name}': unsupported protobuf_decode_mode value"
+        )),
     }
 }
 
@@ -370,6 +373,7 @@ pub(super) fn build_input_state(
                         HttpMethodConfig::Options => {
                             logfwd_io::http_input::HttpInputMethod::Options
                         }
+                        _ => return Err(format!("input '{name}': unsupported http.method value")),
                     };
                 }
             }

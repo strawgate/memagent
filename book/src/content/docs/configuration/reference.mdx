@@ -562,13 +562,10 @@ Send newline-delimited JSON records to a TCP endpoint.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Host:port destination (for example `tcp.example.com:9000`). |
-| `encoding` | enum | No | Row encoding (`json`, `raw`, `text`, or `console`). |
-| `framing` | enum | No | Stream framing format. |
-| `tls` | object | No | Optional TLS client options (`ca_file`, `cert_file`, `key_file`, `insecure_skip_verify`). |
-| `keepalive` | object | No | Optional TCP keepalive settings. |
-| `timeout_secs` | integer | No | Optional connection timeout in seconds. |
-| `retry` | object | No | Optional retry settings. |
-| `batch` | object | No | Optional batch settings. |
+
+TCP output currently emits newline-delimited JSON. `encoding`, `framing`, `tls`,
+`keepalive`, `timeout_secs`, `retry`, and `batch` are rejected until the sink
+runtime implements them.
 
 ### `udp` output
 
@@ -577,8 +574,10 @@ Send newline-delimited JSON records as UDP datagrams.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Host:port destination (for example `udp.example.com:514`). |
-| `encoding` | enum | No | Datagram row encoding (`json`, `raw`, `text`, or `console`). |
-| `max_datagram_size_bytes` | integer | No | Optional maximum datagram payload size. |
+
+UDP output currently emits newline-delimited JSON using the built-in datagram
+size. `encoding` and `max_datagram_size_bytes` are rejected until the sink
+runtime implements them.
 
 ### `null` output
 

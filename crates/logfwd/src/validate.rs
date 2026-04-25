@@ -510,6 +510,7 @@ fn validate_pipeline_read_only(
                         logfwd::transform::enrichment::K8sClusterInfoTable::new(),
                     ));
                 }
+                _ => return Err("unsupported enrichment type".to_owned()),
             }
         }
 

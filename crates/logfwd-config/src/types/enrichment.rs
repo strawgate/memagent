@@ -136,6 +136,7 @@ pub struct K8sClusterInfoConfig {}
 /// Tagged enrichment configuration for pipeline lookup tables.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum EnrichmentConfig {
     GeoDatabase(GeoDatabaseConfig),
     Static(StaticEnrichmentConfig),

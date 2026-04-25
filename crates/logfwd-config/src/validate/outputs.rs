@@ -50,6 +50,21 @@ fn validate_socket_output_endpoint(
     Ok(())
 }
 
+fn reject_unsupported_output_field(
+    pipeline_name: &str,
+    label: &str,
+    output_type: &str,
+    field: &str,
+    is_set: bool,
+) -> Result<(), ConfigError> {
+    if is_set {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' output '{label}': {output_type} output does not support '{field}' yet"
+        )));
+    }
+    Ok(())
+}
+
 fn validate_elasticsearch_index(
     pipeline_name: &str,
     label: &str,
@@ -190,6 +205,27 @@ pub(super) fn validate_output_config(
                 config.static_labels.as_ref(),
                 config.label_columns.as_deref(),
             )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "loki",
+                "compression",
+                config.compression.is_some(),
+            )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "loki",
+                "retry",
+                config.retry.is_some(),
+            )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "loki",
+                "batch",
+                config.batch.is_some(),
+            )?;
         }
         OutputConfigV2::Stdout(config) => {
             if let Some(format) = &config.format
@@ -221,6 +257,34 @@ pub(super) fn validate_output_config(
                     "pipeline '{pipeline_name}' output '{label}': file output only supports format json or text"
                 )));
             }
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "file",
+                "compression",
+                config.compression.is_some(),
+            )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "file",
+                "rotation",
+                config.rotation.is_some(),
+            )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "file",
+                "delimiter",
+                config.delimiter.is_some(),
+            )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "file",
+                "path_template",
+                config.path_template.is_some(),
+            )?;
         }
         OutputConfigV2::Null(_) => {}
         OutputConfigV2::Tcp(config) => {
@@ -229,6 +293,55 @@ pub(super) fn validate_output_config(
                 label,
                 OutputType::Tcp,
                 config.endpoint.as_deref(),
+            )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "tcp",
+                "encoding",
+                config.encoding.is_some(),
+            )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "tcp",
+                "framing",
+                config.framing.is_some(),
+            )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "tcp",
+                "tls",
+                config.tls.is_some(),
+            )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "tcp",
+                "keepalive",
+                config.keepalive.is_some(),
+            )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "tcp",
+                "timeout_secs",
+                config.timeout_secs.is_some(),
+            )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "tcp",
+                "retry",
+                config.retry.is_some(),
+            )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "tcp",
+                "batch",
+                config.batch.is_some(),
             )?;
         }
         OutputConfigV2::Udp(config) => {
@@ -243,6 +356,20 @@ pub(super) fn validate_output_config(
                     "pipeline '{pipeline_name}' output '{label}': udp.max_datagram_size_bytes must be at least 1"
                 )));
             }
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "udp",
+                "encoding",
+                config.encoding.is_some(),
+            )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "udp",
+                "max_datagram_size_bytes",
+                config.max_datagram_size_bytes.is_some(),
+            )?;
         }
         OutputConfigV2::ArrowIpc(config) => {
             validate_url_output_endpoint(
@@ -262,6 +389,27 @@ pub(super) fn validate_output_config(
                     "pipeline '{pipeline_name}' output '{label}': arrow_ipc output only supports 'zstd' or 'none' compression, not '{compression}'"
                 )));
             }
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "arrow_ipc",
+                "buffer_size_bytes",
+                config.buffer_size_bytes.is_some(),
+            )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "arrow_ipc",
+                "batch_size",
+                config.batch_size.is_some(),
+            )?;
+            reject_unsupported_output_field(
+                pipeline_name,
+                label,
+                "arrow_ipc",
+                "write_schema_on_connect",
+                config.write_schema_on_connect.is_some(),
+            )?;
         }
     }
 
