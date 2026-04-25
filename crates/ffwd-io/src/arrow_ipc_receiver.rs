@@ -11,6 +11,8 @@
 //! `application/vnd.apache.arrow.stream+lz4` (lz4 compressed).
 //! Also supports `Content-Encoding: zstd` and `Content-Encoding: lz4` headers.
 
+#![allow(clippy::indexing_slicing)]
+
 use std::io;
 use std::io::Read as _;
 use std::sync::mpsc;

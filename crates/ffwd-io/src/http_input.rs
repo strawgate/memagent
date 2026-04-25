@@ -4,6 +4,8 @@
 //! optionally compressed request bodies, and forwards newline-delimited bytes
 //! to the pipeline scanner path as [`crate::input::SourceEvent::Data`].
 
+#![allow(clippy::indexing_slicing)]
+
 use std::io;
 use std::io::Read as _;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};

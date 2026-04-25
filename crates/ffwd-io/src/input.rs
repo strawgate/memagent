@@ -1,3 +1,5 @@
+#![allow(clippy::indexing_slicing)]
+
 use std::io::{self, Read};
 use std::ops::Range;
 use std::path::PathBuf;

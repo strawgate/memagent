@@ -1,3 +1,5 @@
+#![allow(clippy::indexing_slicing)]
+
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;

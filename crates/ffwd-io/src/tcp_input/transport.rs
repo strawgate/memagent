@@ -1,3 +1,4 @@
+#[allow(clippy::indexing_slicing)]
 use std::io::{self, Read};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Once;

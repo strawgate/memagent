@@ -1,3 +1,5 @@
+#[allow(clippy::indexing_slicing)]
+
 use std::collections::HashMap;
 use std::io;
 use std::io::Write;
