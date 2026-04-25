@@ -126,7 +126,7 @@ mod verification {
     /// Prove find_byte returns the FIRST match and never panics.
     /// Tested on 16-byte inputs — function is a trivial loop, so
     /// correctness does not depend on buffer size.
-    #[kani::proof]
+    #[kani::proof_for_contract(find_byte)]
     #[kani::unwind(18)]
     fn verify_find_byte_correct() {
         let haystack: [u8; 16] = kani::any();
@@ -165,7 +165,7 @@ mod verification {
 
     /// Prove rfind_byte returns the LAST match and never panics.
     /// Tested on 16-byte inputs — same trivial loop, size-independent.
-    #[kani::proof]
+    #[kani::proof_for_contract(rfind_byte)]
     #[kani::unwind(18)]
     fn verify_rfind_byte_correct() {
         let haystack: [u8; 16] = kani::any();

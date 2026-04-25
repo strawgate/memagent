@@ -2482,7 +2482,7 @@ mod verification {
 
     /// skip_whitespace returns a position in [start, end].
     /// If result < end, the byte at result is NOT whitespace.
-    #[kani::proof]
+    #[kani::proof_for_contract(skip_whitespace)]
     #[kani::unwind(17)]
     #[kani::solver(cadical)]
     fn verify_skip_whitespace() {
@@ -2510,7 +2510,7 @@ mod verification {
 
     /// skip_bare_value returns a position in [start, end].
     /// All bytes before result are NOT delimiters.
-    #[kani::proof]
+    #[kani::proof_for_contract(skip_bare_value)]
     #[kani::unwind(17)]
     #[kani::solver(cadical)]
     fn verify_skip_bare_value() {
