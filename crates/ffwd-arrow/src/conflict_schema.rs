@@ -63,6 +63,8 @@ fn pick_conflict_value_source(
     }
 }
 
+// TODO(#2626): investigate replacing indexing with range checks or pattern matching
+#[allow(clippy::indexing_slicing)]
 fn conflict_child_kind(name: &str) -> Option<ConflictValueSource> {
     let bytes = name.as_bytes();
     match bytes.len() {
@@ -255,6 +257,7 @@ pub fn merge_to_utf8(
 }
 
 #[cfg(kani)]
+#[allow(clippy::indexing_slicing)]
 mod verification {
     use super::*;
 

@@ -10,6 +10,8 @@
 //       InRow → end_row() → InBatch
 //     InBatch → finish_batch() → Idle
 
+#![allow(clippy::indexing_slicing)]
+
 use ffwd_core::scanner::BuilderState;
 
 /// Row lifecycle state machine for columnar builders.

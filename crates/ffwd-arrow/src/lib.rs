@@ -44,6 +44,7 @@ pub use scanner::Scanner;
 pub use streaming_builder::StreamingBuilder;
 
 #[cfg(kani)]
+#[allow(clippy::indexing_slicing)]
 mod verification {
     use super::*;
 
