@@ -996,6 +996,7 @@ mod tests {
 
     mod should_open_checkpoint_store_tests {
         use super::super::should_open_checkpoint_store;
+        use serial_test::serial;
         use std::path::Path;
 
         #[test]
@@ -1008,12 +1009,14 @@ mod tests {
         }
 
         #[test]
+        #[serial]
         fn ffwd_data_dir_env_opens() {
             let _guard = EnvGuard::set("FFWD_DATA_DIR", "/some/path");
             assert!(should_open_checkpoint_store(Path::new("/anywhere"), false));
         }
 
         #[test]
+        #[serial]
         fn logfwd_data_dir_env_opens() {
             let _guard = EnvGuard::set("LOGFWD_DATA_DIR", "/some/path");
             assert!(should_open_checkpoint_store(Path::new("/anywhere"), false));
@@ -1045,8 +1048,8 @@ mod tests {
         impl EnvGuard {
             fn set(key: &'static str, value: &str) -> Self {
                 let prev = std::env::var_os(key);
-                // SAFETY: each test using EnvGuard runs serially (cargo test
-                // default) and restores the value on drop.
+                // SAFETY: tests using EnvGuard are marked #[serial] to
+                // prevent concurrent env mutation. Value is restored on drop.
                 unsafe { std::env::set_var(key, value) };
                 Self { key, prev }
             }
@@ -1054,7 +1057,7 @@ mod tests {
 
         impl Drop for EnvGuard {
             fn drop(&mut self) {
-                // SAFETY: see set() above.
+                // SAFETY: #[serial] ensures exclusive access.
                 match &self.prev {
                     Some(v) => unsafe { std::env::set_var(self.key, v) },
                     None => unsafe { std::env::remove_var(self.key) },
