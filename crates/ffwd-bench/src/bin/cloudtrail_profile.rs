@@ -473,7 +473,9 @@ fn parse_mode(args: &[String], flag: &str) -> Option<Mode> {
 }
 
 fn print_help() {
-    println!("Usage: cargo run -p ffwd-bench --release --bin cloudtrail_profile -- [OPTIONS]");
+    println!(
+        "Usage: just bench, or: cargo run -p ffwd-bench --release --bin cloudtrail_profile -- [OPTIONS]"
+    );
     println!("  --lines <N>              Number of CloudTrail records (default: {DEFAULT_LINES})");
     println!("  --seed <N>               RNG seed (default: {DEFAULT_SEED})");
     println!("  --iterations <N>         Repeat the selected generation path (default: 1)");

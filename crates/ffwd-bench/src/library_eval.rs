@@ -7,7 +7,8 @@
 //! 3. `backon` retry overhead vs hand-rolled loop
 //! 4. `async-compression` write path — streaming compress throughput
 //!
-//! Run: `cargo run --release --bin library-eval -p ffwd-bench`
+//! Run: `just bench` for standard benchmarks, or directly:
+//!   `cargo run --release --bin library-eval -p ffwd-bench`
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

@@ -32,9 +32,11 @@ Read these files first:
 Scan the diff for `unsafe` blocks:
 
 ### ffwd-core
+
 This crate uses `#![forbid(unsafe_code)]`. Any unsafe block here is a compile error. If the diff introduces unsafe in this crate, flag immediately as **SAFETY** severity — this violates a hard CI-enforced constraint.
 
 ### ffwd-arrow
+
 Unsafe is allowed ONLY for SIMD operations. For each `unsafe` block:
 
 1. **SAFETY comment**: Must have a `// SAFETY:` comment immediately above the unsafe block that names the specific invariant being relied upon. Reject generic comments like "this is safe" or "we checked the bounds." The comment must name the exact guarantee:
@@ -48,6 +50,7 @@ Unsafe is allowed ONLY for SIMD operations. For each `unsafe` block:
 3. **Proptest oracle**: There must be a proptest in the same module or a companion test file proving SIMD output matches scalar output for the same inputs. Look for test functions with `proptest!` macro that compare SIMD and scalar code paths.
 
 ### ffwd-types
+
 No unsafe is expected. Flag any new unsafe blocks.
 
 ## Step 3 — SIMD conformance testing

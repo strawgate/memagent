@@ -1,6 +1,6 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 //! Measure data sizes across the pipeline: raw JSON → Arrow RecordBatch → IPC → Parquet
-//! Run with: cargo run -p ffwd-bench --release --bin sizes
+//! Run with: just bench, or: cargo run -p ffwd-bench --release --bin sizes
 
 use arrow::ipc::writer::{FileWriter, IpcWriteOptions};
 use arrow::record_batch::RecordBatch;

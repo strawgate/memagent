@@ -37,13 +37,13 @@ metadata:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: ffwd
+  name: ff
   namespace: collectors
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: ffwd-config
+  name: ff-config
   namespace: collectors
 data:
   config.yaml: |
@@ -70,30 +70,30 @@ data:
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: ffwd
+  name: ff
   namespace: collectors
   labels:
-    app: ffwd
+    app: ff
 spec:
   selector:
     matchLabels:
-      app: ffwd
+      app: ff
   template:
     metadata:
       labels:
-        app: ffwd
+        app: ff
     spec:
-      serviceAccountName: ffwd
+      serviceAccountName: ff
       tolerations:
         - operator: Exists  # run on all nodes including control-plane
       containers:
-        - name: ffwd
+        - name: ff
           image: ghcr.io/strawgate/fastforward:latest
           imagePullPolicy: IfNotPresent
           args:
             - run
             - --config
-            - /etc/ffwd/config.yaml
+            - /etc/ff/config.yaml
           env:
             - name: OTEL_ENDPOINT
               value: http://otel-collector.monitoring.svc.cluster.local:4317
@@ -112,7 +112,7 @@ spec:
               mountPath: /var/log
               readOnly: true
             - name: config
-              mountPath: /etc/ffwd
+              mountPath: /etc/ff
               readOnly: true
       volumes:
         - name: varlog
@@ -120,27 +120,27 @@ spec:
             path: /var/log
         - name: config
           configMap:
-            name: ffwd-config
+            name: ff-config
 ```
 
 Apply it:
 
 ```bash
 kubectl apply -f deploy/daemonset.yml
-kubectl -n collectors rollout status daemonset/ffwd
+kubectl -n collectors rollout status daemonset/ff
 ```
 
 ### Validate rollout
 
 ```bash
 # Pod health
-kubectl -n collectors get pods -l app=ffwd -o wide
+kubectl -n collectors get pods -l app=ff -o wide
 
 # Runtime logs
-kubectl -n collectors logs daemonset/ffwd --tail=100
+kubectl -n collectors logs daemonset/ff --tail=100
 
 # Diagnostics endpoint (port-forward one pod)
-POD=$(kubectl -n collectors get pods -l app=ffwd -o jsonpath='{.items[0].metadata.name}')
+POD=$(kubectl -n collectors get pods -l app=ff -o jsonpath='{.items[0].metadata.name}')
 kubectl -n collectors port-forward "$POD" 9090:9090
 curl -s http://localhost:9090/admin/v1/status | jq .
 ```
@@ -151,13 +151,13 @@ If a new deployment causes dropped logs or sustained output errors, revert quick
 
 ```bash
 # Roll back DaemonSet to previous revision
-kubectl -n collectors rollout undo daemonset/ffwd
+kubectl -n collectors rollout undo daemonset/ff
 
 # Verify rollback completion
-kubectl -n collectors rollout status daemonset/ffwd
+kubectl -n collectors rollout status daemonset/ff
 
 # Confirm forwarding resumes
-kubectl -n collectors logs daemonset/ffwd --tail=100
+kubectl -n collectors logs daemonset/ff --tail=100
 ```
 
 

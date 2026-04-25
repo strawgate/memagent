@@ -21,12 +21,10 @@ All commands use `just` recipes. **Never use bare `cargo clippy`** — it won't 
 # ── Build ───────────────────────────────────────────────
 just build                   # Release binary with DataFusion SQL
 just build-dev-lite          # Fast dev binary (no DataFusion SQL)
-cargo build --release -p ffwd  # Equivalent to `just build`
 
 # ── Test ────────────────────────────────────────────────
 just test                    # Default-members only (~30s, skips datafusion)
 just test-all                # Full workspace (~3min, includes datafusion)
-cargo test -p ffwd-core    # Single-crate iteration (fastest)
 
 # ── Lint & Format ──────────────────────────────────────
 just lint                    # fmt-check + clippy + toml-check (fast)

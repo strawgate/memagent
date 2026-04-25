@@ -149,11 +149,16 @@ impl CheckpointStore for FileCheckpointStore {
 
 /// Return a sensible default data directory.
 ///
-/// - Root processes use `/var/lib/ffwd`.
-/// - All others use `$HOME/.ffwd` (or `.ffwd` in the current directory
-///   if `$HOME` is not set).
+/// Checks `$FFWD_DATA_DIR` first, then `$LOGFWD_DATA_DIR` for backward
+/// compatibility. For root processes the default is `/var/lib/ffwd`, falling
+/// back to `/var/lib/logfwd` when the new path does not yet exist but the
+/// legacy path does. Non-root processes follow the same pattern with
+/// `$HOME/.ffwd` / `$HOME/.logfwd`.
 pub fn default_data_dir() -> PathBuf {
     // Check for an explicit override via environment variable first.
+    if let Ok(dir) = std::env::var("FFWD_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
     if let Ok(dir) = std::env::var("LOGFWD_DATA_DIR") {
         return PathBuf::from(dir);
     }
@@ -161,12 +166,29 @@ pub fn default_data_dir() -> PathBuf {
     #[cfg(unix)]
     {
         if libc_geteuid() == 0 {
-            return PathBuf::from("/var/lib/ffwd");
+            let new_path = PathBuf::from("/var/lib/ffwd");
+            if new_path.exists() {
+                return new_path;
+            }
+            let legacy_path = PathBuf::from("/var/lib/logfwd");
+            if legacy_path.exists() {
+                return legacy_path;
+            }
+            return new_path;
         }
     }
 
     if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".ffwd")
+        let home = PathBuf::from(home);
+        let new_path = home.join(".ffwd");
+        if new_path.exists() {
+            return new_path;
+        }
+        let legacy_path = home.join(".logfwd");
+        if legacy_path.exists() {
+            return legacy_path;
+        }
+        new_path
     } else {
         PathBuf::from(".ffwd")
     }
