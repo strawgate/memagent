@@ -277,7 +277,7 @@ outputs:
         let generated = build_stdin_send_config_yaml(yaml, None, None, &[])
             .expect("mapping-form outputs should be accepted");
         let config =
-            logfwd_config::Config::load_str(&generated).expect("generated config should parse");
+            ffwd_config::Config::load_str(&generated).expect("generated config should parse");
         let pipeline = &config.pipelines["default"];
         assert_eq!(pipeline.outputs.len(), 1);
     }

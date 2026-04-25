@@ -51,6 +51,17 @@ pub use validate::validate_host_port;
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Assert that loading a YAML config string fails and the error contains all
+/// given substrings.
+#[cfg(test)]
+macro_rules! assert_config_err {
+    ($yaml:expr, $($substr:expr),+ $(,)?) => {{
+        let err = $crate::Config::load_str($yaml).unwrap_err();
+        let msg = err.to_string();
+        $(assert!(msg.contains($substr), "expected {:?} in error: {msg}", $substr);)+
+    }};
+}
+
 #[cfg(test)]
 mod test_yaml;
 #[cfg(test)]

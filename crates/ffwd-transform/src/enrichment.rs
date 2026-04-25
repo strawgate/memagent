@@ -99,7 +99,7 @@ impl EnrichmentTable for StaticTable {
 
 /// Column naming convention for host enrichment.
 ///
-/// Mirrors `logfwd_config::HostInfoStyle` — the runtime wiring layer
+/// Mirrors `ffwd_config::HostInfoStyle` — the runtime wiring layer
 /// converts from config to this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HostInfoStyle {

@@ -259,13 +259,13 @@ impl Pipeline {
                     }
                     EnrichmentConfig::HostInfo(cfg) => {
                         let style = match cfg.style {
-                            logfwd_config::HostInfoStyle::Raw => {
+                            ffwd_config::HostInfoStyle::Raw => {
                                 crate::transform::enrichment::HostInfoStyle::Raw
                             }
-                            logfwd_config::HostInfoStyle::Ecs => {
+                            ffwd_config::HostInfoStyle::Ecs => {
                                 crate::transform::enrichment::HostInfoStyle::Ecs
                             }
-                            logfwd_config::HostInfoStyle::Otel => {
+                            ffwd_config::HostInfoStyle::Otel => {
                                 crate::transform::enrichment::HostInfoStyle::Otel
                             }
                         };

@@ -1011,7 +1011,7 @@ mod tests {
         let cfg = config_templates::render_config(input, output, "SELECT * FROM logs");
         assert!(cfg.contains("        static_labels:\n          service: myapp"));
         assert!(cfg.contains("        label_columns:\n          - level"));
-        logfwd_config::Config::load_str(&cfg).expect("rendered loki template should parse");
+        ffwd_config::Config::load_str(&cfg).expect("rendered loki template should parse");
 
         let use_case = config_templates::USE_CASE_TEMPLATES
             .iter()
@@ -1020,7 +1020,7 @@ mod tests {
         let cfg = config_templates::render_use_case(use_case, use_case.transform);
         assert!(cfg.contains("        static_labels:\n          app: nginx"));
         assert!(cfg.contains("        label_columns:\n          - status"));
-        logfwd_config::Config::load_str(&cfg).expect("rendered loki use case should parse");
+        ffwd_config::Config::load_str(&cfg).expect("rendered loki use case should parse");
     }
 
     #[test]

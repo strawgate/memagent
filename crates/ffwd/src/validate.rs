@@ -226,12 +226,8 @@ enum KnownColumnsMode {
     InternalOnly(&'static [&'static str]),
 }
 
-fn known_input_columns_read_only(
-    input_cfg: &ffwd_config::InputConfig,
-) -> Option<KnownColumnsMode> {
-    use ffwd_config::{
-        Format, GeneratorComplexityConfig, GeneratorProfileConfig, InputTypeConfig,
-    };
+fn known_input_columns_read_only(input_cfg: &ffwd_config::InputConfig) -> Option<KnownColumnsMode> {
+    use ffwd_config::{Format, GeneratorComplexityConfig, GeneratorProfileConfig, InputTypeConfig};
 
     match &input_cfg.type_config {
         // Generator logs/simple has a stable built-in schema. Other profiles
@@ -379,36 +375,33 @@ fn validate_pipeline_read_only(
                     {
                         path = base.join(path);
                     }
-                    let db: Arc<dyn ffwd::transform::enrichment::GeoDatabase> =
-                        match geo_cfg.format {
-                            GeoDatabaseFormat::Mmdb => {
-                                let mmdb =
-                                    ffwd::transform::udf::geo_lookup::MmdbDatabase::open(&path)
-                                        .map_err(|e| {
-                                        format!(
-                                            "failed to open geo database '{}': {e}",
-                                            path.display()
-                                        )
-                                    })?;
-                                Arc::new(mmdb)
-                            }
-                            GeoDatabaseFormat::CsvRange => {
-                                let csv = ffwd::transform::udf::CsvRangeDatabase::open(&path)
-                                    .map_err(|e| {
-                                        format!(
-                                            "failed to open CSV range geo database '{}': {e}",
-                                            path.display()
-                                        )
-                                    })?;
-                                Arc::new(csv)
-                            }
-                            _ => {
-                                return Err(format!(
-                                    "unsupported geo database format: {:?}",
-                                    geo_cfg.format
-                                ));
-                            }
-                        };
+                    let db: Arc<dyn ffwd::transform::enrichment::GeoDatabase> = match geo_cfg.format
+                    {
+                        GeoDatabaseFormat::Mmdb => {
+                            let mmdb = ffwd::transform::udf::geo_lookup::MmdbDatabase::open(&path)
+                                .map_err(|e| {
+                                    format!("failed to open geo database '{}': {e}", path.display())
+                                })?;
+                            Arc::new(mmdb)
+                        }
+                        GeoDatabaseFormat::CsvRange => {
+                            let csv = ffwd::transform::udf::CsvRangeDatabase::open(&path).map_err(
+                                |e| {
+                                    format!(
+                                        "failed to open CSV range geo database '{}': {e}",
+                                        path.display()
+                                    )
+                                },
+                            )?;
+                            Arc::new(csv)
+                        }
+                        _ => {
+                            return Err(format!(
+                                "unsupported geo database format: {:?}",
+                                geo_cfg.format
+                            ));
+                        }
+                    };
                     geo_database = Some(db);
                 }
                 EnrichmentConfig::Static(cfg) => {

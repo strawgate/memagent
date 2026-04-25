@@ -497,11 +497,7 @@ fn check_trust_boundary_manifest(repo_root: &Path, findings: &mut Vec<Finding>) 
 
     // Collect all fuzz target source files.
     let mut fuzz_sources = Vec::new();
-    for crate_dir in [
-        "crates/ffwd-core",
-        "crates/ffwd-io",
-        "crates/ffwd-output",
-    ] {
+    for crate_dir in ["crates/ffwd-core", "crates/ffwd-io", "crates/ffwd-output"] {
         let root = repo_root.join(crate_dir);
         if !root.exists() {
             continue;
