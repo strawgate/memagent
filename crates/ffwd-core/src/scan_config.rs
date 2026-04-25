@@ -87,7 +87,7 @@ impl ScanConfig {
 /// No Kani contract needed: the function handles all inputs gracefully via
 /// checked_mul/checked_add. The only precondition would be "bytes is not
 /// empty", but returning None on empty is the intended behavior — expressing
-/// this as a #[requires] would force every caller to guard against empty
+/// this as a `#[requires]` would force every caller to guard against empty
 /// input even though the function already does the right thing.
 #[inline(always)]
 pub fn parse_int_fast(bytes: &[u8]) -> Option<i64> {
