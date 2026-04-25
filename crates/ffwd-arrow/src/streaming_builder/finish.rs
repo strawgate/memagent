@@ -1,4 +1,6 @@
 //! RecordBatch finalization: `finish_batch` (zero-copy) and
+#![allow(clippy::indexing_slicing)]
+//! RecordBatch finalization: `finish_batch` (zero-copy) and
 //! `finish_batch_detached` (owned/detached strings).
 
 use std::sync::Arc;

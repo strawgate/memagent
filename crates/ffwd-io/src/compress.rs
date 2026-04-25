@@ -2,6 +2,8 @@
 //! The key optimization is reusing the ZSTD_CCtx across chunks — context
 //! creation is expensive (~128KB allocation), but reset is nearly free.
 
+#![allow(clippy::indexing_slicing)]
+
 use std::io;
 
 /// Compressed chunk with its header, ready for wire transmission.

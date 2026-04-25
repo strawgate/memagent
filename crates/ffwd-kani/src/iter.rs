@@ -1,5 +1,8 @@
 //! Byte and slice iteration reference implementations.
 //!
+#![allow(clippy::indexing_slicing)]
+//! Byte and slice iteration reference implementations.
+//!
 //! Simple linear-scan implementations used as comparison targets for
 //! verifying the optimized (memchr-accelerated) production implementations.
 

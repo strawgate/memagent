@@ -3,6 +3,8 @@
 // entire module until the remaining transitions are wired up.
 #![allow(dead_code)]
 
+#![allow(clippy::indexing_slicing)]
+
 use std::fs::File;
 use std::io;
 use std::path::PathBuf;

@@ -1,3 +1,4 @@
+#![allow(clippy::indexing_slicing)]
 //! Byte-level comparison and bitmask helpers for Kani proofs.
 
 extern crate alloc;

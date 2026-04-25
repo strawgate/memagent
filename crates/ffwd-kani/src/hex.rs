@@ -1,3 +1,4 @@
+#![allow(clippy::indexing_slicing)]
 //! Reference hex encoding/decoding implementations.
 
 /// Reference hex nibble decoder (branch-based, not LUT).

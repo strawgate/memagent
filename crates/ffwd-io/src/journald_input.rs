@@ -10,6 +10,8 @@
 //! processes them identically. The `backend` config controls selection:
 //! `auto` (default) tries native first then falls back to subprocess.
 
+#![allow(clippy::indexing_slicing)]
+
 use std::io::{self, BufRead, BufReader, Read};
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;

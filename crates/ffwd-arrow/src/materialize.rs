@@ -1,3 +1,4 @@
+#![allow(clippy::indexing_slicing)]
 // materialize.rs — Detach a RecordBatch from its input buffer.
 //
 // StreamingBuilder produces StringViewArray columns that reference the
