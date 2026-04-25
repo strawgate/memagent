@@ -42,6 +42,7 @@ pipelines:
       - type: file
         path: "{data_file}"
         format: json
+        read_from: beginning
     transform: "{transform}"
     outputs:
       - type: http

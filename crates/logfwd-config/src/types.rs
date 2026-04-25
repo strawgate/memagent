@@ -730,6 +730,20 @@ pub struct FileTypeConfig {
     pub max_open_files: Option<usize>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub glob_rescan_interval_ms: Option<u64>,
+    /// Where to start reading from when a file is first discovered.
+    /// Defaults to `end`.
+    #[serde(default)]
+    pub read_from: ReadFrom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadFrom {
+    /// Start reading from the beginning of the file.
+    Beginning,
+    /// Start reading from the end of the file (tailing mode).
+    #[default]
+    End,
 }
 
 #[derive(Debug, Clone, Deserialize)]

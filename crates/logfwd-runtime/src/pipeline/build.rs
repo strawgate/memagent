@@ -27,7 +27,7 @@ pub(crate) const DEFAULT_WORKERS: usize = 4;
 /// Default target batch size in bytes; reaching this target triggers a flush.
 pub(crate) const DEFAULT_BATCH_TARGET_BYTES: usize = 4 * 1024 * 1024;
 /// Default maximum time a partial batch waits before flushing.
-pub(crate) const DEFAULT_BATCH_TIMEOUT: Duration = Duration::from_millis(100);
+pub(crate) const DEFAULT_BATCH_TIMEOUT: Duration = Duration::from_secs(1);
 /// Default interval between input polls when `poll_interval_ms` is unset.
 pub(crate) const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// Default idle duration before recyclable output workers shut down.

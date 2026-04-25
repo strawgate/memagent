@@ -18,8 +18,8 @@ use super::InputState;
 
 // ── File-input defaults ────────────────────────────────────────────────
 const DEFAULT_FILE_POLL_INTERVAL_MS: u64 = 50;
-const DEFAULT_READ_BUF_SIZE: usize = 256 * 1024;
-const DEFAULT_PER_FILE_READ_BUDGET_BYTES: usize = 256 * 1024;
+const DEFAULT_READ_BUF_SIZE: usize = 1024 * 1024;
+const DEFAULT_PER_FILE_READ_BUDGET_BYTES: usize = 1024 * 1024;
 const DEFAULT_MAX_OPEN_FILES: usize = 1024;
 
 // ── Generator-input defaults ───────────────────────────────────────────
@@ -150,7 +150,7 @@ pub(super) fn build_input_state(
             let path = require_non_empty(name, "file", "path", Some(&f.path))?;
             let format = cfg.format.clone().unwrap_or(Format::Auto);
             let mut tail_config = TailConfig {
-                start_from_end: false,
+                start_from_end: matches!(f.read_from, logfwd_config::ReadFrom::End),
                 poll_interval_ms: f.poll_interval_ms.map_or(
                     DEFAULT_FILE_POLL_INTERVAL_MS,
                     logfwd_config::PositiveMillis::get,
