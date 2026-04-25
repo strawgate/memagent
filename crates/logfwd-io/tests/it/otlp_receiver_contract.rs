@@ -14,7 +14,7 @@ use logfwd_types::diagnostics::ComponentStats;
 use logfwd_types::field_names;
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
-    common::v1::{any_value::Value, AnyValue, KeyValue},
+    common::v1::{AnyValue, KeyValue, any_value::Value},
     logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
     resource::v1::Resource,
 };
