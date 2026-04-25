@@ -132,6 +132,11 @@ export function App() {
       return frame.rows[0]?.value ?? 0;
     };
 
+    const sumAll = (name: string): number => {
+      const frame = store.selectLatestValues({ metricName: name });
+      return frame.rows.reduce((acc, r) => acc + (r.value ?? 0), 0);
+    };
+
     // Like val(), but returns undefined when the metric is absent so optional
     // StatsResponse fields stay undefined instead of masking missing data as 0.
     const optVal = (name: string): number | undefined => {
@@ -150,13 +155,13 @@ export function App() {
       output_bytes: val("ffwd.output_bytes"),
       output_errors: val("ffwd.output_errors"),
       batches: val("ffwd.batches"),
-      scan_sec: val("ffwd.stage_nanos") / 1e9,
+      scan_sec: (sumAll("ffwd_stage_scan_nanos") + sumAll("ffwd_stage_transform_nanos") + sumAll("ffwd_stage_output_nanos")) / 1e9,
       transform_sec: 0,
       output_sec: 0,
       backpressure_stalls: val("ffwd.backpressure_stalls"),
       inflight_batches: val("ffwd.inflight_batches"),
-      channel_depth: optVal("ffwd.channel_depth"),
-      channel_capacity: optVal("ffwd.channel_capacity"),
+      channel_depth: undefined,
+      channel_capacity: undefined,
       mem_resident: optVal("process.memory.resident"),
       mem_allocated: optVal("process.memory.allocated"),
       mem_active: optVal("process.memory.active"),
