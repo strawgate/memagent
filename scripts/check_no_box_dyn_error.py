@@ -35,7 +35,6 @@ CRATES_ROOT = REPO_ROOT / "crates"
 ALLOWED_CRATES = {
     "ffwd",
     "ffwd-bench",
-    "ffwd-competitive-bench",
     "ffwd-test-utils",
     "ffwd-ebpf-proto",
 }

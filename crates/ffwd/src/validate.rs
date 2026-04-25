@@ -27,7 +27,7 @@ where
 
     // Build a no-op meter for validation (no OTel export needed).
     let meter_provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder().build();
-    let meter = meter_provider.meter("logfwd");
+    let meter = meter_provider.meter("ffwd");
 
     let mut errors = 0;
     for (name, pipe_cfg) in &config.pipelines {
@@ -226,8 +226,12 @@ enum KnownColumnsMode {
     InternalOnly(&'static [&'static str]),
 }
 
-fn known_input_columns_read_only(input_cfg: &ffwd_config::InputConfig) -> Option<KnownColumnsMode> {
-    use ffwd_config::{Format, GeneratorComplexityConfig, GeneratorProfileConfig, InputTypeConfig};
+fn known_input_columns_read_only(
+    input_cfg: &ffwd_config::InputConfig,
+) -> Option<KnownColumnsMode> {
+    use ffwd_config::{
+        Format, GeneratorComplexityConfig, GeneratorProfileConfig, InputTypeConfig,
+    };
 
     match &input_cfg.type_config {
         // Generator logs/simple has a stable built-in schema. Other profiles
@@ -375,33 +379,36 @@ fn validate_pipeline_read_only(
                     {
                         path = base.join(path);
                     }
-                    let db: Arc<dyn ffwd::transform::enrichment::GeoDatabase> = match geo_cfg.format
-                    {
-                        GeoDatabaseFormat::Mmdb => {
-                            let mmdb = ffwd::transform::udf::geo_lookup::MmdbDatabase::open(&path)
-                                .map_err(|e| {
-                                    format!("failed to open geo database '{}': {e}", path.display())
-                                })?;
-                            Arc::new(mmdb)
-                        }
-                        GeoDatabaseFormat::CsvRange => {
-                            let csv = ffwd::transform::udf::CsvRangeDatabase::open(&path).map_err(
-                                |e| {
-                                    format!(
-                                        "failed to open CSV range geo database '{}': {e}",
-                                        path.display()
-                                    )
-                                },
-                            )?;
-                            Arc::new(csv)
-                        }
-                        _ => {
-                            return Err(format!(
-                                "unsupported geo database format: {:?}",
-                                geo_cfg.format
-                            ));
-                        }
-                    };
+                    let db: Arc<dyn ffwd::transform::enrichment::GeoDatabase> =
+                        match geo_cfg.format {
+                            GeoDatabaseFormat::Mmdb => {
+                                let mmdb =
+                                    ffwd::transform::udf::geo_lookup::MmdbDatabase::open(&path)
+                                        .map_err(|e| {
+                                        format!(
+                                            "failed to open geo database '{}': {e}",
+                                            path.display()
+                                        )
+                                    })?;
+                                Arc::new(mmdb)
+                            }
+                            GeoDatabaseFormat::CsvRange => {
+                                let csv = ffwd::transform::udf::CsvRangeDatabase::open(&path)
+                                    .map_err(|e| {
+                                        format!(
+                                            "failed to open CSV range geo database '{}': {e}",
+                                            path.display()
+                                        )
+                                    })?;
+                                Arc::new(csv)
+                            }
+                            _ => {
+                                return Err(format!(
+                                    "unsupported geo database format: {:?}",
+                                    geo_cfg.format
+                                ));
+                            }
+                        };
                     geo_database = Some(db);
                 }
                 EnrichmentConfig::Static(cfg) => {
@@ -416,9 +423,21 @@ fn validate_pipeline_read_only(
                     );
                     enrichment_tables.push(table);
                 }
-                EnrichmentConfig::HostInfo(_) => {
-                    enrichment_tables
-                        .push(Arc::new(ffwd::transform::enrichment::HostInfoTable::new()));
+                EnrichmentConfig::HostInfo(cfg) => {
+                    let style = match cfg.style {
+                        ffwd_config::HostInfoStyle::Raw => {
+                            ffwd::transform::enrichment::HostInfoStyle::Raw
+                        }
+                        ffwd_config::HostInfoStyle::Ecs => {
+                            ffwd::transform::enrichment::HostInfoStyle::Ecs
+                        }
+                        ffwd_config::HostInfoStyle::Otel => {
+                            ffwd::transform::enrichment::HostInfoStyle::Otel
+                        }
+                    };
+                    enrichment_tables.push(Arc::new(
+                        ffwd::transform::enrichment::HostInfoTable::with_style(style),
+                    ));
                 }
                 EnrichmentConfig::K8sPath(cfg) => {
                     enrichment_tables.push(Arc::new(
@@ -513,7 +532,7 @@ fn validate_pipeline_read_only(
     #[cfg(not(feature = "datafusion"))]
     if !config.enrichment.is_empty() {
         return Err(
-            "pipeline enrichment requires DataFusion. Build default/full logfwd \
+            "pipeline enrichment requires DataFusion. Build default/full ffwd \
              (or add `--features datafusion`)"
                 .to_owned(),
         );
@@ -775,7 +794,7 @@ mod tests {
 
     #[test]
     fn generated_wizard_config_is_validated_before_write() {
-        let output_path = std::path::Path::new("logfwd.generated.yaml");
+        let output_path = std::path::Path::new("ffwd.generated.yaml");
         let invalid_yaml = single_pipeline_yaml_with_transform(
             "type: otlp\nlisten: 127.0.0.1:4318",
             "SELECT level AS x, msg AS x FROM logs",

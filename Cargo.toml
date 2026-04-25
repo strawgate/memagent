@@ -14,7 +14,6 @@ members = [
     "crates/ffwd-output",
     "crates/ffwd",
     "crates/ffwd-bench",
-    "crates/ffwd-competitive-bench",
     "crates/ffwd-test-utils",
     "crates/ffwd-kani",
     "crates/ffwd-lint-attrs",

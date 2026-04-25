@@ -15,7 +15,7 @@
 //! This module is `no_std` compatible (no alloc needed -- just 4 u64 fields).
 //! All state transitions are pure arithmetic, which is Kani's sweet spot:
 //! loop-free bitwise/arithmetic operations verify over the full 64-bit range.
-//! See `dev-docs/research/checkpoint-kani-plan.md` for the verification plan.
+//! See `dev-docs/VERIFICATION.md` for the verification plan.
 
 /// Pure state machine for checkpoint-remainder coordination.
 ///

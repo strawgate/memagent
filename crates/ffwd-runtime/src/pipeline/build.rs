@@ -257,8 +257,21 @@ impl Pipeline {
                         );
                         enrichment_tables.push(table);
                     }
-                    EnrichmentConfig::HostInfo(_) => {
-                        let table = Arc::new(crate::transform::enrichment::HostInfoTable::new());
+                    EnrichmentConfig::HostInfo(cfg) => {
+                        let style = match cfg.style {
+                            logfwd_config::HostInfoStyle::Raw => {
+                                crate::transform::enrichment::HostInfoStyle::Raw
+                            }
+                            logfwd_config::HostInfoStyle::Ecs => {
+                                crate::transform::enrichment::HostInfoStyle::Ecs
+                            }
+                            logfwd_config::HostInfoStyle::Otel => {
+                                crate::transform::enrichment::HostInfoStyle::Otel
+                            }
+                        };
+                        let table = Arc::new(
+                            crate::transform::enrichment::HostInfoTable::with_style(style),
+                        );
                         enrichment_tables.push(table);
                     }
                     EnrichmentConfig::K8sPath(cfg) => {

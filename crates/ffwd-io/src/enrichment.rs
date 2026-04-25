@@ -93,7 +93,14 @@ impl EnrichmentTable for StaticTable {
 
 /// System host metadata. One row, resolved at construction time.
 ///
-/// Columns: hostname, os_type, os_arch
+/// Columns: `hostname`, `os_type`, `os_arch`, `os_name`, `os_family`,
+/// `os_version`, `os_kernel`, `host_id`, `boot_id`
+///
+/// Fields align with Elastic Common Schema `host.*` / `host.os.*`, Fluent Bit
+/// sysinfo, and Vector host metadata.  On Linux, extended fields are read from
+/// `/etc/os-release`, `/proc/sys/kernel/osrelease`, `/etc/machine-id`, and
+/// `/proc/sys/kernel/random/boot_id`.  On other platforms they degrade to empty
+/// strings.
 pub struct HostInfoTable {
     batch: RecordBatch,
 }
@@ -105,15 +112,34 @@ impl Default for HostInfoTable {
 }
 
 impl HostInfoTable {
+    /// Snapshot host metadata at construction time.
     pub fn new() -> Self {
         let hostname = gethostname::gethostname().to_string_lossy().into_owned();
         let os_type = std::env::consts::OS.to_string();
         let os_arch = std::env::consts::ARCH.to_string();
 
+        let os_release = read_os_release();
+        let os_name = os_release_field(&os_release, "PRETTY_NAME");
+        let os_family = os_release_field(&os_release, "ID_LIKE")
+            .or_else(|| os_release_field(&os_release, "ID"))
+            .unwrap_or_default();
+        let os_version = os_release_field(&os_release, "VERSION_ID").unwrap_or_default();
+        let os_name = os_name.unwrap_or_default();
+
+        let os_kernel = read_trimmed_file("/proc/sys/kernel/osrelease");
+        let host_id = read_trimmed_file("/etc/machine-id");
+        let boot_id = read_trimmed_file("/proc/sys/kernel/random/boot_id");
+
         let schema = Arc::new(Schema::new(vec![
             Field::new("hostname", DataType::Utf8, false),
             Field::new("os_type", DataType::Utf8, false),
             Field::new("os_arch", DataType::Utf8, false),
+            Field::new("os_name", DataType::Utf8, false),
+            Field::new("os_family", DataType::Utf8, false),
+            Field::new("os_version", DataType::Utf8, false),
+            Field::new("os_kernel", DataType::Utf8, false),
+            Field::new("host_id", DataType::Utf8, false),
+            Field::new("boot_id", DataType::Utf8, false),
         ]));
         let batch = RecordBatch::try_new(
             schema,
@@ -121,6 +147,12 @@ impl HostInfoTable {
                 Arc::new(StringArray::from(vec![hostname.as_str()])),
                 Arc::new(StringArray::from(vec![os_type.as_str()])),
                 Arc::new(StringArray::from(vec![os_arch.as_str()])),
+                Arc::new(StringArray::from(vec![os_name.as_str()])),
+                Arc::new(StringArray::from(vec![os_family.as_str()])),
+                Arc::new(StringArray::from(vec![os_version.as_str()])),
+                Arc::new(StringArray::from(vec![os_kernel.as_str()])),
+                Arc::new(StringArray::from(vec![host_id.as_str()])),
+                Arc::new(StringArray::from(vec![boot_id.as_str()])),
             ],
         )
         .expect("host_info schema mismatch");
@@ -137,6 +169,55 @@ impl EnrichmentTable for HostInfoTable {
     fn snapshot(&self) -> Option<RecordBatch> {
         Some(self.batch.clone())
     }
+}
+
+/// Read a file and return its trimmed contents, or empty string on failure.
+fn read_trimmed_file(path: &str) -> String {
+    std::fs::read_to_string(path)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Read and parse `/etc/os-release` (or `/usr/lib/os-release` fallback)
+/// into key-value pairs.
+fn read_os_release() -> Vec<(String, String)> {
+    let content = std::fs::read_to_string("/etc/os-release")
+        .or_else(|_| std::fs::read_to_string("/usr/lib/os-release"))
+        .unwrap_or_default();
+    parse_os_release(&content)
+}
+
+/// Parse os-release file contents into key-value pairs.
+fn parse_os_release(content: &str) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, val)) = line.split_once('=') else {
+            continue;
+        };
+        let val = val.trim();
+        let val = if val.len() >= 2
+            && ((val.starts_with('"') && val.ends_with('"'))
+                || (val.starts_with('\'') && val.ends_with('\'')))
+        {
+            &val[1..val.len() - 1]
+        } else {
+            val
+        };
+        pairs.push((key.to_string(), val.to_string()));
+    }
+    pairs
+}
+
+/// Look up a field from parsed os-release key-value pairs.
+fn os_release_field(pairs: &[(String, String)], key: &str) -> Option<String> {
+    pairs
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -711,7 +792,9 @@ mod tests {
         assert_eq!(table.name(), "host_info");
         let batch = table.snapshot().unwrap();
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 3);
+        assert_eq!(batch.num_columns(), 9);
+
+        // Core fields must always be non-empty.
         for col_name in &["hostname", "os_type", "os_arch"] {
             let col = batch
                 .column_by_name(col_name)
@@ -720,6 +803,21 @@ mod tests {
                 .downcast_ref::<StringArray>()
                 .unwrap();
             assert!(!col.value(0).is_empty(), "{col_name} should be non-empty");
+        }
+
+        // Extended fields must exist (may be empty on non-Linux).
+        for col_name in &[
+            "os_name",
+            "os_family",
+            "os_version",
+            "os_kernel",
+            "host_id",
+            "boot_id",
+        ] {
+            assert!(
+                batch.column_by_name(col_name).is_some(),
+                "missing column: {col_name}"
+            );
         }
     }
 

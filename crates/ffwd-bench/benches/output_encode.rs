@@ -477,7 +477,7 @@ fn bench_output_encode(c: &mut Criterion) {
                     b.iter(|| {
                         json_buf.clear();
                         for row in 0..batch.num_rows() {
-                            ffwd_output::write_row_json(batch, row, &cols, &mut json_buf)
+                            ffwd_output::write_row_json(batch, row, &cols, &mut json_buf, false)
                                 .expect("JSON serialization should not fail");
                             json_buf.push(b'\n');
                         }
@@ -495,7 +495,7 @@ fn bench_output_encode(c: &mut Criterion) {
                 b.iter(|| {
                     buf.clear();
                     for row in 0..batch.num_rows() {
-                        ffwd_output::write_row_json(batch, row, &cols, &mut buf)
+                        ffwd_output::write_row_json(batch, row, &cols, &mut buf, false)
                             .expect("JSON serialization should not fail");
                         buf.push(b'\n');
                     }

@@ -96,7 +96,6 @@ The workspace `default-members` excludes `ffwd-transform` (datafusion) and `ffwd
 │   ├── ffwd-output/           ← Output sinks: OTLP, Elasticsearch, Loki, JSON lines, stdout
 │   ├── ffwd-types/            ← Shared value types, state-machine semantics, diagnostics
 │   ├── ffwd-bench/            ← Criterion benchmarks for the scanner pipeline
-│   ├── ffwd-competitive-bench/← Comparative benchmarks vs other log agents
 │   ├── ffwd-test-utils/       ← Shared test utilities
 │   ├── ffwd-diagnostics/      ← Diagnostics control plane: HTTP endpoints, dashboard, readiness
 │   ├── ffwd-config-wasm/      ← WASM bindings for the config validator (browser/Node.js)
@@ -156,7 +155,7 @@ ffwd-core               Pure logic, proven, no_std, forbid(unsafe)
 
 | Crate | Key constraints |
 |-------|----------------|
-| `ffwd-core` | `no_std` + `forbid(unsafe_code)`. Only deps: memchr + wide. Every public fn needs a Kani proof. No panics, no unwrap, no indexing. |
+| `ffwd-core` | `no_std` + `forbid(unsafe_code)`. Only deps: memchr + wide + ffwd-kani + ffwd-lint-attrs. Every public fn needs a Kani proof. No panics, no unwrap, no indexing. |
 | `ffwd-arrow` | Implements core's ScanBuilder. unsafe allowed for SIMD only. proptest: SIMD ≡ scalar. |
 | `ffwd-io` | IO lives here. Tests use tempfiles. No raw payload injection (see #1615). |
 | `ffwd-transform` | DataFusion is the SQL engine. Enrichment tables implement Arrow RecordBatchReader. |

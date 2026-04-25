@@ -511,26 +511,6 @@ bench-pipelines seconds="10":
     just bench-udp {{seconds}}
     just bench-otlp {{seconds}}
 
-# Build release binary with Profile-Guided Optimisation (PGO).
-# Runs a training workload automatically; output binary is target/release/ff-pgo.
-# Requires llvm-profdata on PATH (e.g. `sudo apt install llvm`).
-build-pgo:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    PGO_DIR=$(mktemp -d)
-    echo "==> Step 1: build with PGO instrumentation (profile-generate)"
-    RUSTFLAGS="-Cprofile-generate=${PGO_DIR}" cargo build --release -p ffwd
-    echo "==> Step 2: run training workload to collect profiles"
-    FF=./target/release/ff cargo run -p ffwd-competitive-bench --release -- \
-        --lines 500000 --mode binary --cpus 1 --memory 1g \
-        --scenarios passthrough,json_parse,filter
-    echo "==> Step 3: merge raw profiles"
-    llvm-profdata merge -output="${PGO_DIR}/merged.profdata" "${PGO_DIR}"/*.profraw
-    echo "==> Step 4: rebuild with PGO profile applied"
-    RUSTFLAGS="-Cprofile-use=${PGO_DIR}/merged.profdata" cargo build --release -p ffwd
-    cp target/release/ff target/release/ff-pgo
-    echo "PGO binary written to target/release/ff-pgo"
-
 # Run Tier 1 criterion benchmarks (fast, ~30s — composed functions, no heavy I/O)
 bench:
     cargo bench -p ffwd-bench --bench pipeline --bench output_encode --bench full_chain
@@ -548,20 +528,6 @@ bench-full:
 bench-system:
     @echo "System-level benchmarks: pipeline end-to-end with real I/O"
     just bench-pipelines
-
-# Run competitive benchmarks (binary mode, local dev)
-bench-competitive *ARGS:
-    cargo run -p ffwd-competitive-bench --release -- {{ARGS}}
-
-# Run competitive benchmarks in Docker with profiling
-bench-docker:
-    cargo build --release -p ffwd
-    cargo build --release --features dhat-heap -p ffwd
-    cp target/release/ff target/release/ff-dhat
-    cargo build --release -p ffwd
-    FF=./target/release/ff cargo run -p ffwd-competitive-bench --release -- \
-        --lines 5000000 --docker --cpus 1 --memory 1g --markdown \
-        --profile ./profiles --dhat-binary ./target/release/ff-dhat
 
 # Run a local File -> OTLP profile with pprof-rs.
 # Outputs a temp directory containing config.yaml, logs.json, pipeline.log,
@@ -656,11 +622,6 @@ bench-framed-input *ARGS:
 # Allocation-focused FramedInput profiling (dhat-backed, slower; no throughput numbers).
 bench-framed-input-alloc *ARGS:
     cargo run -p ffwd-bench --release --features bench-tools,dhat-heap --bin framed_input_profile -- --alloc-only {{ARGS}}
-
-# Run low-and-slow rate-ingest benchmark (ff only, measures memory and CPU at each eps)
-bench-rate *ARGS:
-    cargo build --release -p ffwd
-    FF=./target/release/ff cargo run -p ffwd-competitive-bench --release -- --rate-bench {{ARGS}}
 
 # Run sustained-load memory profiler (generator → SQL → null, default 5 minutes).
 # Use --quick (30s) for CI or --medium (120s) for quick checks.

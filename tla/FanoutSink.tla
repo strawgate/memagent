@@ -355,7 +355,7 @@ ChildOkOccurs == ~(\E c \in Children : childState[c] = "Ok")
 ChildRejectedOccurs == ~(\E c \in Children : childState[c] = "Rejected")
 
 \* Mixed Ok and Rejected terminal state rejects the batch.
-PartialSuccessReachable == ~(
+MixedRejectedReachable == ~(
     /\ batchPhase = "Finalized"
     /\ fanoutResult = "Rejected"
     /\ \E c \in Children : childState[c] = "Rejected"

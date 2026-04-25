@@ -97,30 +97,144 @@ impl EnrichmentTable for StaticTable {
 // Host info (resolved once at startup)
 // ---------------------------------------------------------------------------
 
+/// Column naming convention for host enrichment.
+///
+/// Mirrors `logfwd_config::HostInfoStyle` — the runtime wiring layer
+/// converts from config to this enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HostInfoStyle {
+    /// Flat column names (FastForward default).
+    #[default]
+    Raw,
+    /// ECS/Beats-style dotted column names.
+    Ecs,
+    /// OpenTelemetry semantic convention column names.
+    Otel,
+}
+
+/// Column names for each host info style.
+struct HostInfoColumns {
+    hostname: &'static str,
+    os_type: &'static str,
+    os_arch: &'static str,
+    os_name: &'static str,
+    os_family: &'static str,
+    os_version: &'static str,
+    os_kernel: &'static str,
+    host_id: &'static str,
+    boot_id: &'static str,
+}
+
+const RAW_COLUMNS: HostInfoColumns = HostInfoColumns {
+    hostname: "hostname",
+    os_type: "os_type",
+    os_arch: "os_arch",
+    os_name: "os_name",
+    os_family: "os_family",
+    os_version: "os_version",
+    os_kernel: "os_kernel",
+    host_id: "host_id",
+    boot_id: "boot_id",
+};
+
+const ECS_COLUMNS: HostInfoColumns = HostInfoColumns {
+    hostname: "host.hostname",
+    os_type: "host.os.type",
+    os_arch: "host.architecture",
+    os_name: "host.os.name",
+    os_family: "host.os.family",
+    os_version: "host.os.version",
+    os_kernel: "host.os.kernel",
+    host_id: "host.id",
+    boot_id: "host.boot.id",
+};
+
+const OTEL_COLUMNS: HostInfoColumns = HostInfoColumns {
+    hostname: "host.name",
+    os_type: "os.type",
+    os_arch: "host.arch",
+    os_name: "os.name",
+    os_family: "os.family",
+    os_version: "os.version",
+    os_kernel: "os.kernel",
+    host_id: "host.id",
+    boot_id: "host.boot.id",
+};
+
+fn host_info_columns(style: HostInfoStyle) -> &'static HostInfoColumns {
+    match style {
+        HostInfoStyle::Raw => &RAW_COLUMNS,
+        HostInfoStyle::Ecs => &ECS_COLUMNS,
+        HostInfoStyle::Otel => &OTEL_COLUMNS,
+    }
+}
+
 /// System host metadata. One row, resolved at construction time.
 ///
-/// Columns: hostname, os_type, os_arch
+/// Column names depend on the chosen [`HostInfoStyle`]:
+///
+/// | Semantic | `raw` | `ecs` / `beats` | `otel` |
+/// |----------|-------|-----------------|--------|
+/// | hostname | `hostname` | `host.hostname` | `host.name` |
+/// | OS type | `os_type` | `host.os.type` | `os.type` |
+/// | architecture | `os_arch` | `host.architecture` | `host.arch` |
+/// | OS name | `os_name` | `host.os.name` | `os.name` |
+/// | OS family | `os_family` | `host.os.family` | `os.family` |
+/// | OS version | `os_version` | `host.os.version` | `os.version` |
+/// | kernel | `os_kernel` | `host.os.kernel` | `os.kernel` |
+/// | machine id | `host_id` | `host.id` | `host.id` |
+/// | boot id | `boot_id` | `host.boot.id` | `host.boot.id` |
+///
+/// On Linux, extended fields are read from `/etc/os-release`,
+/// `/proc/sys/kernel/osrelease`, `/etc/machine-id`, and
+/// `/proc/sys/kernel/random/boot_id`.  On other platforms they degrade to
+/// empty strings.
 pub struct HostInfoTable {
     batch: RecordBatch,
 }
 
 impl Default for HostInfoTable {
     fn default() -> Self {
-        Self::new()
+        Self::with_style(HostInfoStyle::default())
     }
 }
 
 impl HostInfoTable {
-    /// Snapshot host metadata at construction time: hostname, OS type, architecture.
+    /// Snapshot host metadata using the default `raw` column naming style.
     pub fn new() -> Self {
+        Self::with_style(HostInfoStyle::default())
+    }
+
+    /// Snapshot host metadata using the specified column naming style.
+    pub fn with_style(style: HostInfoStyle) -> Self {
+        let cols = host_info_columns(style);
+
         let hostname = gethostname::gethostname().to_string_lossy().into_owned();
         let os_type = std::env::consts::OS.to_string();
         let os_arch = std::env::consts::ARCH.to_string();
 
+        let os_release = read_os_release();
+        let os_name = os_release_field(&os_release, "PRETTY_NAME");
+        let os_family = os_release_field(&os_release, "ID_LIKE")
+            .or_else(|| os_release_field(&os_release, "ID"))
+            .unwrap_or_default();
+        let os_version = os_release_field(&os_release, "VERSION_ID").unwrap_or_default();
+        let os_name = os_name.unwrap_or_default();
+
+        let os_kernel = read_trimmed_file("/proc/sys/kernel/osrelease");
+        let host_id = read_trimmed_file("/etc/machine-id");
+        let boot_id = read_trimmed_file("/proc/sys/kernel/random/boot_id");
+
         let schema = Arc::new(Schema::new(vec![
-            Field::new("hostname", DataType::Utf8, false),
-            Field::new("os_type", DataType::Utf8, false),
-            Field::new("os_arch", DataType::Utf8, false),
+            Field::new(cols.hostname, DataType::Utf8, false),
+            Field::new(cols.os_type, DataType::Utf8, false),
+            Field::new(cols.os_arch, DataType::Utf8, false),
+            Field::new(cols.os_name, DataType::Utf8, false),
+            Field::new(cols.os_family, DataType::Utf8, false),
+            Field::new(cols.os_version, DataType::Utf8, false),
+            Field::new(cols.os_kernel, DataType::Utf8, false),
+            Field::new(cols.host_id, DataType::Utf8, false),
+            Field::new(cols.boot_id, DataType::Utf8, false),
         ]));
         let batch = RecordBatch::try_new(
             schema,
@@ -128,6 +242,12 @@ impl HostInfoTable {
                 Arc::new(StringArray::from(vec![hostname.as_str()])),
                 Arc::new(StringArray::from(vec![os_type.as_str()])),
                 Arc::new(StringArray::from(vec![os_arch.as_str()])),
+                Arc::new(StringArray::from(vec![os_name.as_str()])),
+                Arc::new(StringArray::from(vec![os_family.as_str()])),
+                Arc::new(StringArray::from(vec![os_version.as_str()])),
+                Arc::new(StringArray::from(vec![os_kernel.as_str()])),
+                Arc::new(StringArray::from(vec![host_id.as_str()])),
+                Arc::new(StringArray::from(vec![boot_id.as_str()])),
             ],
         )
         .expect("host_info schema mismatch");
@@ -144,6 +264,52 @@ impl EnrichmentTable for HostInfoTable {
     fn snapshot(&self) -> Option<RecordBatch> {
         Some(self.batch.clone())
     }
+}
+
+/// Read a file and return its trimmed contents, or empty string on failure.
+fn read_trimmed_file(path: &str) -> String {
+    std::fs::read_to_string(path)
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Read and parse `/etc/os-release` (or `/usr/lib/os-release` fallback)
+/// into key-value pairs.
+fn read_os_release() -> Vec<(String, String)> {
+    let content = std::fs::read_to_string("/etc/os-release")
+        .or_else(|_| std::fs::read_to_string("/usr/lib/os-release"))
+        .unwrap_or_default();
+    parse_os_release(&content)
+}
+
+/// Parse os-release file contents into key-value pairs.
+fn parse_os_release(content: &str) -> Vec<(String, String)> {
+    let mut pairs = Vec::new();
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, val)) = line.split_once('=') else {
+            continue;
+        };
+        let val = val.trim();
+        let val = if val.len() >= 2
+            && ((val.starts_with('"') && val.ends_with('"'))
+                || (val.starts_with('\'') && val.ends_with('\'')))
+        {
+            &val[1..val.len() - 1]
+        } else {
+            val
+        };
+        pairs.push((key.to_string(), val.to_string()));
+    }
+    pairs
+}
+
+/// Look up a field from parsed os-release key-value pairs.
+fn os_release_field(pairs: &[(String, String)], key: &str) -> Option<String> {
+    pairs.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -1687,7 +1853,9 @@ mod tests {
         assert_eq!(table.name(), "host_info");
         let batch = table.snapshot().unwrap();
         assert_eq!(batch.num_rows(), 1);
-        assert_eq!(batch.num_columns(), 3);
+        assert_eq!(batch.num_columns(), 9);
+
+        // Core fields must always be non-empty.
         for col_name in &["hostname", "os_type", "os_arch"] {
             let col = batch
                 .column_by_name(col_name)
@@ -1697,6 +1865,105 @@ mod tests {
                 .unwrap();
             assert!(!col.value(0).is_empty(), "{col_name} should be non-empty");
         }
+
+        // Extended fields must exist (may be empty on non-Linux).
+        for col_name in &[
+            "os_name",
+            "os_family",
+            "os_version",
+            "os_kernel",
+            "host_id",
+            "boot_id",
+        ] {
+            assert!(
+                batch.column_by_name(col_name).is_some(),
+                "missing column: {col_name}"
+            );
+        }
+    }
+
+    #[test]
+    fn host_info_linux_extended_fields_populated() {
+        if std::env::consts::OS != "linux" {
+            return; // extended fields rely on procfs / os-release
+        }
+        let table = HostInfoTable::new();
+        let batch = table.snapshot().unwrap();
+
+        let os_kernel = batch
+            .column_by_name("os_kernel")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert!(
+            !os_kernel.is_empty(),
+            "os_kernel should be populated on Linux"
+        );
+    }
+
+    #[test]
+    fn parse_os_release_extracts_fields() {
+        let content = r#"NAME="Ubuntu"
+VERSION_ID="22.04"
+ID=ubuntu
+ID_LIKE=debian
+PRETTY_NAME="Ubuntu 22.04.4 LTS"
+"#;
+        let pairs = parse_os_release(content);
+        assert_eq!(
+            os_release_field(&pairs, "PRETTY_NAME"),
+            Some("Ubuntu 22.04.4 LTS".to_string()),
+        );
+        assert_eq!(
+            os_release_field(&pairs, "ID_LIKE"),
+            Some("debian".to_string()),
+        );
+        assert_eq!(
+            os_release_field(&pairs, "VERSION_ID"),
+            Some("22.04".to_string()),
+        );
+    }
+
+    #[test]
+    fn parse_os_release_skips_comments_and_blanks() {
+        let content = "# comment\n\nID=alpine\n";
+        let pairs = parse_os_release(content);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0], ("ID".to_string(), "alpine".to_string()));
+    }
+
+    #[test]
+    fn host_info_ecs_style_uses_dotted_names() {
+        let table = HostInfoTable::with_style(HostInfoStyle::Ecs);
+        let batch = table.snapshot().unwrap();
+        assert_eq!(batch.num_columns(), 9);
+        assert!(batch.column_by_name("host.hostname").is_some());
+        assert!(batch.column_by_name("host.os.type").is_some());
+        assert!(batch.column_by_name("host.architecture").is_some());
+        assert!(batch.column_by_name("host.os.name").is_some());
+        assert!(batch.column_by_name("host.os.family").is_some());
+        assert!(batch.column_by_name("host.os.version").is_some());
+        assert!(batch.column_by_name("host.os.kernel").is_some());
+        assert!(batch.column_by_name("host.id").is_some());
+        assert!(batch.column_by_name("host.boot.id").is_some());
+    }
+
+    #[test]
+    fn host_info_otel_style_uses_semantic_names() {
+        let table = HostInfoTable::with_style(HostInfoStyle::Otel);
+        let batch = table.snapshot().unwrap();
+        assert_eq!(batch.num_columns(), 9);
+        assert!(batch.column_by_name("host.name").is_some());
+        assert!(batch.column_by_name("os.type").is_some());
+        assert!(batch.column_by_name("host.arch").is_some());
+        assert!(batch.column_by_name("os.name").is_some());
+        assert!(batch.column_by_name("os.family").is_some());
+        assert!(batch.column_by_name("os.version").is_some());
+        assert!(batch.column_by_name("os.kernel").is_some());
+        assert!(batch.column_by_name("host.id").is_some());
+        assert!(batch.column_by_name("host.boot.id").is_some());
     }
 
     // -- K8s path table -----------------------------------------------------
