@@ -175,17 +175,22 @@ pub async fn run_pipelines(
     }
 
     let meter_provider = build_meter_provider(&config, use_color)?;
-    let meter = meter_provider.meter("ffwd");
+    let meter = meter_provider.meter("ff");
 
     let trace_buf = ffwd_diagnostics::span_exporter::SpanBuffer::new();
     let tracer_provider = build_tracer_provider(trace_buf.clone(), &config, use_color)?;
-    let tracer = tracer_provider.tracer("ffwd");
+    let tracer = tracer_provider.tracer("ff");
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
-    let env_filter = tracing_subscriber::EnvFilter::try_from_env("FFWD_LOG")
+    let env_filter = tracing_subscriber::EnvFilter::try_from_env("FF_LOG")
+        .or_else(|_| {
+            tracing_subscriber::EnvFilter::try_from_env("FFWD_LOG").inspect(|_| {
+                eprintln!("[ffwd] FFWD_LOG is deprecated; use FF_LOG instead");
+            })
+        })
         .or_else(|_| {
             tracing_subscriber::EnvFilter::try_from_env("LOGFWD_LOG").inspect(|_| {
-                eprintln!("[ffwd] LOGFWD_LOG is deprecated; use FFWD_LOG instead");
+                eprintln!("[ffwd] LOGFWD_LOG is deprecated; use FF_LOG instead");
             })
         })
         .or_else(|_| tracing_subscriber::EnvFilter::try_from_default_env())
@@ -225,12 +230,15 @@ pub async fn run_pipelines(
     let diag_handle = if let Some(ref addr) = config.server.diagnostics {
         let mut server = ffwd_diagnostics::diagnostics::DiagnosticsServer::new(addr);
         server.set_config(options.config_path, options.config_yaml);
-        let expose_config = std::env::var("FFWD_UNSAFE_EXPOSE_CONFIG")
+        let expose_config = std::env::var("FF_UNSAFE_EXPOSE_CONFIG")
+            .or_else(|_| {
+                std::env::var("FFWD_UNSAFE_EXPOSE_CONFIG").inspect(|_| {
+                    tracing::warn!("FFWD_UNSAFE_EXPOSE_CONFIG is deprecated; use FF_UNSAFE_EXPOSE_CONFIG instead");
+                })
+            })
             .or_else(|_| {
                 std::env::var("LOGFWD_UNSAFE_EXPOSE_CONFIG").inspect(|_| {
-                    tracing::warn!(
-                        "LOGFWD_UNSAFE_EXPOSE_CONFIG is deprecated; use FFWD_UNSAFE_EXPOSE_CONFIG instead"
-                    );
+                    tracing::warn!("LOGFWD_UNSAFE_EXPOSE_CONFIG is deprecated; use FF_UNSAFE_EXPOSE_CONFIG instead");
                 })
             })
             .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));

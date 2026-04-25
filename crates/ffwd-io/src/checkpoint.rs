@@ -149,19 +149,24 @@ impl CheckpointStore for FileCheckpointStore {
 
 /// Return a sensible default data directory.
 ///
-/// - Root processes use `/var/lib/ffwd`.
-/// - All others use `$HOME/.ffwd` (or `.ffwd` in the current directory
+/// - Root processes use `/var/lib/ff`.
+/// - All others use `$HOME/.ff` (or `.ff` in the current directory
 ///   if `$HOME` is not set).
 pub fn default_data_dir() -> PathBuf {
-    // Check for an explicit override via environment variable first.
-    // New name takes precedence; legacy name is a deprecated fallback.
+    if let Ok(dir) = std::env::var("FF_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
     if let Ok(dir) = std::env::var("FFWD_DATA_DIR") {
+        #[allow(clippy::print_stderr)]
+        {
+            eprintln!("[ffwd] FFWD_DATA_DIR is deprecated; use FF_DATA_DIR instead");
+        }
         return PathBuf::from(dir);
     }
     if let Ok(dir) = std::env::var("LOGFWD_DATA_DIR") {
         #[allow(clippy::print_stderr)]
         {
-            eprintln!("[ffwd] LOGFWD_DATA_DIR is deprecated; use FFWD_DATA_DIR instead");
+            eprintln!("[ffwd] LOGFWD_DATA_DIR is deprecated; use FF_DATA_DIR instead");
         }
         return PathBuf::from(dir);
     }
@@ -169,14 +174,14 @@ pub fn default_data_dir() -> PathBuf {
     #[cfg(unix)]
     {
         if libc_geteuid() == 0 {
-            return PathBuf::from("/var/lib/ffwd");
+            return PathBuf::from("/var/lib/ff");
         }
     }
 
     if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".ffwd")
+        PathBuf::from(home).join(".ff")
     } else {
-        PathBuf::from(".ffwd")
+        PathBuf::from(".ff")
     }
 }
 

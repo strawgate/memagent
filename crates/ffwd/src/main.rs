@@ -53,9 +53,15 @@ const CLI_AFTER_HELP: &str = r"Examples:
   ff completions bash
 
 Environment:
-  FFWD_CONFIG    Config file path (auto-discovered if not set)
-  FFWD_LOG       Set log filter (for example FFWD_LOG=debug)
-  RUST_LOG         Fallback if FFWD_LOG is not set
+  FF_CONFIG      Config file path (auto-discovered if not set)
+  FF_LOG         Set log filter (for example FF_LOG=debug)
+  RUST_LOG         Fallback if FF_LOG is not set
+
+  FF_DATA_DIR, FFWD_DATA_DIR, LOGFWD_DATA_DIR    Data directory (FF_DATA_DIR takes precedence)
+  FF_UNSAFE_EXPOSE_CONFIG, FFWD_UNSAFE_EXPOSE_CONFIG, LOGFWD_UNSAFE_EXPOSE_CONFIG
+                Enable config endpoint (FF_UNSAFE_EXPOSE_CONFIG takes precedence)
+  FF_DISABLE_DEFAULT_CHECKPOINTS, FFWD_DISABLE_DEFAULT_CHECKPOINTS, LOGFWD_DISABLE_DEFAULT_CHECKPOINTS
+                Disable automatic checkpoint store (FF_DISABLE_DEFAULT_CHECKPOINTS takes precedence)
 
 Config Search Order:
   1. --config <path>
