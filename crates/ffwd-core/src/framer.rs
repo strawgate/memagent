@@ -13,6 +13,7 @@
 //! The framer uses plain byte loops (no memchr, no Vec) so Kani can prove
 //! it correct. LLVM auto-vectorizes the byte scan loop, so performance is
 //! comparable to hand-written SIMD.
+#![allow(clippy::indexing_slicing)]
 
 /// Maximum number of lines per frame operation.
 ///

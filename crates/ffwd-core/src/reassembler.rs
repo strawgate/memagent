@@ -14,6 +14,7 @@
 //!
 //! The internal buffer reuses its capacity across P/F sequences via `clear()`,
 //! so allocation only happens once (on the first P line seen).
+#![allow(clippy::indexing_slicing)]
 
 /// Aggregates CRI partial lines into complete messages.
 ///

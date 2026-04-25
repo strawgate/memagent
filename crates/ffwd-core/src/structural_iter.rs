@@ -10,6 +10,7 @@
 // The iterator handles Stage 1 (SIMD detection) and escape processing
 // internally. Consumers see only unescaped, not-in-string structural
 // positions (plus quotes and newlines which are always yielded).
+#![allow(clippy::indexing_slicing)]
 
 use crate::structural::{ProcessedBlock, StreamingClassifier, find_structural_chars};
 

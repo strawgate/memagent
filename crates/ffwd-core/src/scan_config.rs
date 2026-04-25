@@ -2,6 +2,7 @@
 //
 // Defines ScanConfig and FieldSpec, used by the Scanner and the SQL
 // transform layer.
+#![allow(clippy::indexing_slicing)]
 
 use crate::scan_predicate::ScanPredicate;
 use alloc::{string::String, vec, vec::Vec};

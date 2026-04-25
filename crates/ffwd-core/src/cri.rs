@@ -11,6 +11,7 @@
 //!
 //! Partial lines (flag "P") must be reassembled: concatenate all "P" chunks
 //! until an "F" chunk arrives, then emit the combined line.
+#![allow(clippy::indexing_slicing)]
 
 // Re-export reassembler types so bench/fuzz targets can reach them via
 // `ffwd_core::cri::CriReassembler` and `ffwd_core::cri::AggregateResult`.

@@ -19,6 +19,7 @@
 //! Wire format: each field = tag_varint + value
 //!   tag = (field_number << 3) | wire_type
 //!   wire_type: 0=varint, 1=64-bit fixed, 2=length-delimited, 5=32-bit fixed
+#![allow(clippy::indexing_slicing)]
 
 // --- Protobuf field number constants ---
 //

@@ -7,6 +7,7 @@
 // Line boundaries are found first (newline bitmask), then each line
 // is scanned independently. Within a line, the scanner iterates
 // through structural positions sequentially.
+#![allow(clippy::indexing_slicing)]
 
 use crate::scan_config::{ScanConfig, parse_int_fast};
 use crate::scan_predicate::ExtractedValue;

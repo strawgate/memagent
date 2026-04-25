@@ -3,6 +3,7 @@
 //! These use plain byte loops instead of memchr so Kani can formally
 //! verify them. LLVM auto-vectorizes the loops, so runtime performance
 //! is comparable to hand-written SIMD.
+#![allow(clippy::indexing_slicing)]
 
 /// Find the first occurrence of `needle` in `haystack` starting at `from`.
 ///
