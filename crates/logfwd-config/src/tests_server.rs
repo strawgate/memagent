@@ -43,16 +43,16 @@ mod tests {
     #[test]
     fn diagnostics_address_with_unset_env_var_rejected() {
         // Unset ${VAR} placeholders must be rejected at config-load time.
-        let yaml = append_root_sections(
-            single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: stdout"),
-            "server:\n  diagnostics: ${LOGFWD_DIAG_ADDR}\n",
-        );
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("LOGFWD_DIAG_ADDR"),
-            "error should mention the variable name: {msg}"
-        );
+        let yaml = r"
+input:
+  type: file
+  path: /tmp/x.log
+output:
+  type: stdout
+server:
+  diagnostics: ${LOGFWD_DIAG_ADDR}
+";
+        assert_config_err!(yaml, "LOGFWD_DIAG_ADDR");
     }
 
     // -----------------------------------------------------------------------
@@ -77,15 +77,6 @@ mod tests {
             single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: stdout"),
             "server:\n  log_level: inof\n",
         );
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("log_level"),
-            "expected 'log_level' in error: {msg}"
-        );
-        assert!(
-            msg.contains("not a recognised log level"),
-            "expected 'not a recognised log level' in error: {msg}"
-        );
+        assert_config_err!(yaml, "log_level", "not a recognised log level");
     }
 }

@@ -156,7 +156,7 @@ logfwd-core               Pure logic, proven, no_std, forbid(unsafe)
 
 | Crate | Key constraints |
 |-------|----------------|
-| `logfwd-core` | `no_std` + `forbid(unsafe_code)`. Only deps: memchr + wide. Every public fn needs a Kani proof. No panics, no unwrap, no indexing. |
+| `logfwd-core` | `no_std` + `forbid(unsafe_code)`. Only deps: memchr + wide + logfwd-kani + logfwd-lint-attrs. Every public fn needs a Kani proof. No panics, no unwrap, no indexing. |
 | `logfwd-arrow` | Implements core's ScanBuilder. unsafe allowed for SIMD only. proptest: SIMD ≡ scalar. |
 | `logfwd-io` | IO lives here. Tests use tempfiles. No raw payload injection (see #1615). |
 | `logfwd-transform` | DataFusion is the SQL engine. Enrichment tables implement Arrow RecordBatchReader. |

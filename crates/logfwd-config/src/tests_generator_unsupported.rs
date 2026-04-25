@@ -17,11 +17,6 @@ pipelines:
       - type: loki
         endpoint: http://localhost:3100
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("has an unsupported type"),
-            "{}",
-            err
-        );
+        assert_config_err!(yaml, "has an unsupported type");
     }
 }

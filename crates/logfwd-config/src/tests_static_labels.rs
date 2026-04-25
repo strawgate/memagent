@@ -18,13 +18,7 @@ pipelines:
           ok_key: ok_value
           bad_key: \"\"
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("keys and values must not be empty"),
-            "{}",
-            err
-        );
+        assert_config_err!(yaml, "keys and values must not be empty");
 
         let yaml2 = "
 pipelines:
@@ -39,12 +33,6 @@ pipelines:
         static_labels:
           \"\": ok_value
 ";
-        let err2 = Config::load_str(yaml2).unwrap_err();
-        assert!(
-            err2.to_string()
-                .contains("keys and values must not be empty"),
-            "{}",
-            err2
-        );
+        assert_config_err!(yaml2, "keys and values must not be empty");
     }
 }

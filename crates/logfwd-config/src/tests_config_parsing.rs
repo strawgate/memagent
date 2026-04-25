@@ -201,21 +201,15 @@ server:
 
     #[test]
     fn unset_env_var_rejected() {
-        let yaml = single_pipeline_yaml(
-            "type: file\npath: /var/log/test.log",
-            None,
-            "type: otlp\nendpoint: ${LOGFWD_NONEXISTENT_VAR_12345}",
-        );
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("LOGFWD_NONEXISTENT_VAR_12345"),
-            "error should mention the variable name: {msg}"
-        );
-        assert!(
-            msg.contains("not set"),
-            "error should say variable is not set: {msg}"
-        );
+        let yaml = r"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: otlp
+  endpoint: ${LOGFWD_NONEXISTENT_VAR_12345}
+";
+        assert_config_err!(yaml, "LOGFWD_NONEXISTENT_VAR_12345", "not set");
     }
 
     #[test]
@@ -243,12 +237,7 @@ pipelines:
     outputs:
       - type: stdout
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("duplicate entry with key \"app\""),
-            "duplicate pipeline names must be rejected before validation: {msg}"
-        );
+        assert_config_err!(yaml, "duplicate entry with key \"app\"");
     }
 
     #[test]
