@@ -413,142 +413,93 @@ impl<'de> Deserialize<'de> for StrictString {
 
 // ── Positive-duration newtypes ────────────────────────────────────────
 
-/// A millisecond duration that must be > 0.
-/// Wraps `NonZeroU64` so zero values are rejected at deserialization time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PositiveMillis(NonZeroU64);
+macro_rules! define_positive_duration {
+    ($name:ident, $duration_from_fn:ident, $doc:expr) => {
+        #[doc = $doc]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        pub struct $name(NonZeroU64);
 
-impl PositiveMillis {
-    pub fn new(value: u64) -> Option<Self> {
-        NonZeroU64::new(value).map(Self)
-    }
+        impl $name {
+            /// Creates a positive duration wrapper from a raw integer.
+            ///
+            /// Returns `None` when `value == 0`.
+            pub fn new(value: u64) -> Option<Self> {
+                NonZeroU64::new(value).map(Self)
+            }
 
-    pub fn get(self) -> u64 {
-        self.0.get()
-    }
+            /// Returns the underlying non-zero integer value.
+            pub fn get(self) -> u64 {
+                self.0.get()
+            }
+        }
+
+        impl From<$name> for u64 {
+            fn from(v: $name) -> u64 {
+                v.get()
+            }
+        }
+
+        impl From<$name> for std::time::Duration {
+            fn from(v: $name) -> std::time::Duration {
+                std::time::Duration::$duration_from_fn(v.get())
+            }
+        }
+
+        impl serde::Serialize for $name {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                self.0.get().serialize(serializer)
+            }
+        }
+
+        impl StrictScalar for $name {
+            fn expecting(formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("a positive integer (> 0)")
+            }
+
+            fn from_string<E>(value: &str) -> Result<Self, E>
+            where
+                E: DeError,
+            {
+                let n: u64 = value.parse().map_err(E::custom)?;
+                NonZeroU64::new(n).map(Self).ok_or_else(|| {
+                    E::invalid_value(Unexpected::Unsigned(0), &"a positive integer (> 0)")
+                })
+            }
+
+            fn from_i64<E>(value: i64) -> Result<Self, E>
+            where
+                E: DeError,
+            {
+                let n: u64 = value.try_into().map_err(|_e| {
+                    E::invalid_value(Unexpected::Signed(value), &"a positive integer (> 0)")
+                })?;
+                NonZeroU64::new(n).map(Self).ok_or_else(|| {
+                    E::invalid_value(Unexpected::Unsigned(0), &"a positive integer (> 0)")
+                })
+            }
+
+            fn from_u64<E>(value: u64) -> Result<Self, E>
+            where
+                E: DeError,
+            {
+                NonZeroU64::new(value).map(Self).ok_or_else(|| {
+                    E::invalid_value(Unexpected::Unsigned(0), &"a positive integer (> 0)")
+                })
+            }
+        }
+    };
 }
 
-impl From<PositiveMillis> for u64 {
-    fn from(v: PositiveMillis) -> u64 {
-        v.get()
-    }
-}
+define_positive_duration!(
+    PositiveMillis,
+    from_millis,
+    "A millisecond duration that must be > 0. Wraps `NonZeroU64` so zero values are \
+     rejected at deserialization time."
+);
 
-impl From<PositiveMillis> for std::time::Duration {
-    fn from(v: PositiveMillis) -> std::time::Duration {
-        std::time::Duration::from_millis(v.get())
-    }
-}
-
-impl serde::Serialize for PositiveMillis {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.get().serialize(serializer)
-    }
-}
-
-impl StrictScalar for PositiveMillis {
-    fn expecting(formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a positive integer (> 0)")
-    }
-
-    fn from_string<E>(value: &str) -> Result<Self, E>
-    where
-        E: DeError,
-    {
-        let n: u64 = value.parse().map_err(E::custom)?;
-        NonZeroU64::new(n)
-            .map(Self)
-            .ok_or_else(|| E::invalid_value(Unexpected::Unsigned(0), &"a positive integer (> 0)"))
-    }
-
-    fn from_i64<E>(value: i64) -> Result<Self, E>
-    where
-        E: DeError,
-    {
-        let n: u64 = value.try_into().map_err(|_e| {
-            E::invalid_value(Unexpected::Signed(value), &"a positive integer (> 0)")
-        })?;
-        NonZeroU64::new(n)
-            .map(Self)
-            .ok_or_else(|| E::invalid_value(Unexpected::Unsigned(0), &"a positive integer (> 0)"))
-    }
-
-    fn from_u64<E>(value: u64) -> Result<Self, E>
-    where
-        E: DeError,
-    {
-        NonZeroU64::new(value)
-            .map(Self)
-            .ok_or_else(|| E::invalid_value(Unexpected::Unsigned(0), &"a positive integer (> 0)"))
-    }
-}
-
-/// A seconds duration that must be > 0.
-/// Wraps `NonZeroU64` so zero values are rejected at deserialization time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PositiveSecs(NonZeroU64);
-
-impl PositiveSecs {
-    pub fn new(value: u64) -> Option<Self> {
-        NonZeroU64::new(value).map(Self)
-    }
-
-    pub fn get(self) -> u64 {
-        self.0.get()
-    }
-}
-
-impl From<PositiveSecs> for u64 {
-    fn from(v: PositiveSecs) -> u64 {
-        v.get()
-    }
-}
-
-impl From<PositiveSecs> for std::time::Duration {
-    fn from(v: PositiveSecs) -> std::time::Duration {
-        std::time::Duration::from_secs(v.get())
-    }
-}
-
-impl serde::Serialize for PositiveSecs {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.0.get().serialize(serializer)
-    }
-}
-
-impl StrictScalar for PositiveSecs {
-    fn expecting(formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("a positive integer (> 0)")
-    }
-
-    fn from_string<E>(value: &str) -> Result<Self, E>
-    where
-        E: DeError,
-    {
-        let n: u64 = value.parse().map_err(E::custom)?;
-        NonZeroU64::new(n)
-            .map(Self)
-            .ok_or_else(|| E::invalid_value(Unexpected::Unsigned(0), &"a positive integer (> 0)"))
-    }
-
-    fn from_i64<E>(value: i64) -> Result<Self, E>
-    where
-        E: DeError,
-    {
-        let n: u64 = value.try_into().map_err(|_e| {
-            E::invalid_value(Unexpected::Signed(value), &"a positive integer (> 0)")
-        })?;
-        NonZeroU64::new(n)
-            .map(Self)
-            .ok_or_else(|| E::invalid_value(Unexpected::Unsigned(0), &"a positive integer (> 0)"))
-    }
-
-    fn from_u64<E>(value: u64) -> Result<Self, E>
-    where
-        E: DeError,
-    {
-        NonZeroU64::new(value)
-            .map(Self)
-            .ok_or_else(|| E::invalid_value(Unexpected::Unsigned(0), &"a positive integer (> 0)"))
-    }
-}
+define_positive_duration!(
+    PositiveSecs,
+    from_secs,
+    "A duration in seconds that must be > 0. Wraps `NonZeroU64` so zero values are \
+     rejected at deserialization time."
+);
