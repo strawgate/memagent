@@ -12,7 +12,14 @@
 use bytes::{Bytes, BytesMut};
 
 use crate::filter_hints::FilterHints;
-use crate::format::FormatDecoder;
+use crate::format::{CRI_MAX_MESSAGE, FormatDecoder};
+
+/// Maximum bytes to buffer as a line remainder before discarding.
+///
+/// This equals [`CRI_MAX_MESSAGE`] so that a single complete CRI message
+/// can always be buffered when a newline arrives late — the CRI log format
+/// has no inherent framing of its own.
+const MAX_REMAINDER_BYTES: usize = CRI_MAX_MESSAGE;
 use crate::input::{CriMetadata, FramedReadEvent, InputCadence, InputSource, SourceEvent};
 #[cfg(test)]
 use crate::poll_cadence::PollCadenceSignal;
@@ -26,8 +33,6 @@ use std::sync::Arc;
 
 /// Maximum remainder buffer size before discarding (prevents OOM on
 /// input without newlines). Applied per source.
-const MAX_REMAINDER_BYTES: usize = 2 * 1024 * 1024;
-
 const INITIAL_CRI_METADATA_SPANS: usize = 16;
 const INITIAL_CRI_TIMESTAMP_BYTES: usize = 1024;
 
