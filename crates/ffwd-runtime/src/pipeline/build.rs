@@ -993,4 +993,73 @@ mod tests {
             SourceMetadataPlan::default()
         );
     }
+
+    mod should_open_checkpoint_store_tests {
+        use super::super::should_open_checkpoint_store;
+        use std::path::Path;
+
+        #[test]
+        fn explicit_data_dir_always_opens() {
+            // Even with a nonexistent path, an explicit data dir should open.
+            assert!(should_open_checkpoint_store(
+                Path::new("/nonexistent"),
+                true
+            ));
+        }
+
+        #[test]
+        fn ffwd_data_dir_env_opens() {
+            let _guard = EnvGuard::set("FFWD_DATA_DIR", "/some/path");
+            assert!(should_open_checkpoint_store(Path::new("/anywhere"), false));
+        }
+
+        #[test]
+        fn logfwd_data_dir_env_opens() {
+            let _guard = EnvGuard::set("LOGFWD_DATA_DIR", "/some/path");
+            assert!(should_open_checkpoint_store(Path::new("/anywhere"), false));
+        }
+
+        #[test]
+        fn existing_dir_opens_in_test_mode() {
+            // In cfg(test), a pre-existing directory should open.
+            let dir = tempfile::tempdir().unwrap();
+            assert!(should_open_checkpoint_store(dir.path(), false));
+        }
+
+        #[test]
+        fn nonexistent_dir_skips_in_test_mode() {
+            // In cfg(test), a nonexistent directory should NOT open.
+            assert!(!should_open_checkpoint_store(
+                Path::new("/nonexistent/checkpoint/dir"),
+                false
+            ));
+        }
+
+        /// RAII guard that sets an env var for the duration of a test and
+        /// restores the previous value (or removes it) on drop.
+        struct EnvGuard {
+            key: &'static str,
+            prev: Option<std::ffi::OsString>,
+        }
+
+        impl EnvGuard {
+            fn set(key: &'static str, value: &str) -> Self {
+                let prev = std::env::var_os(key);
+                // SAFETY: each test using EnvGuard runs serially (cargo test
+                // default) and restores the value on drop.
+                unsafe { std::env::set_var(key, value) };
+                Self { key, prev }
+            }
+        }
+
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                // SAFETY: see set() above.
+                match &self.prev {
+                    Some(v) => unsafe { std::env::set_var(self.key, v) },
+                    None => unsafe { std::env::remove_var(self.key) },
+                }
+            }
+        }
+    }
 }

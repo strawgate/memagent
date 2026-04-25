@@ -183,7 +183,11 @@ pub async fn run_pipelines(
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_env("FFWD_LOG")
-        .or_else(|_| tracing_subscriber::EnvFilter::try_from_env("LOGFWD_LOG"))
+        .or_else(|_| {
+            tracing_subscriber::EnvFilter::try_from_env("LOGFWD_LOG").inspect(|_| {
+                eprintln!("[ffwd] LOGFWD_LOG is deprecated; use FFWD_LOG instead");
+            })
+        })
         .or_else(|_| tracing_subscriber::EnvFilter::try_from_default_env())
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let fmt_layer = if options.json_logs_for_stderr {
@@ -222,6 +226,13 @@ pub async fn run_pipelines(
         let mut server = ffwd_diagnostics::diagnostics::DiagnosticsServer::new(addr);
         server.set_config(options.config_path, options.config_yaml);
         let expose_config = std::env::var("FFWD_UNSAFE_EXPOSE_CONFIG")
+            .or_else(|_| {
+                std::env::var("LOGFWD_UNSAFE_EXPOSE_CONFIG").inspect(|_| {
+                    tracing::warn!(
+                        "LOGFWD_UNSAFE_EXPOSE_CONFIG is deprecated; use FFWD_UNSAFE_EXPOSE_CONFIG instead"
+                    );
+                })
+            })
             .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
         server.set_config_endpoint_enabled(expose_config);
         server.set_trace_buffer(trace_buf);
