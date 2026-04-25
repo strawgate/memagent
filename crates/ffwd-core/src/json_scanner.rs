@@ -2462,14 +2462,14 @@ mod tests {
 //   #[cfg_attr(kani, kani::requires(PRECONDITION))]
 //   fn helper_function(buf: &[u8], pos: usize, end: usize) -> usize { ... }
 //
-// The #[requires] documents preconditions that Kani uses as assumed facts
+// The \#[requires] documents preconditions that Kani uses as assumed facts
 // in ALL downstream proofs that call this function — without re-verifying
 // the invariant. This is "proof composition" and is why contracts on hot-path
 // helpers (skip_whitespace, skip_bare_value) reduce overall proof complexity.
 //
 // Proof harnesses still use kani::assume() to bound arbitrary inputs — this is
 // intentional. The assume documents the constraint explicitly in the harness and
-// guards against future API changes. When a function has #[requires], Kani first
+// guards against future API changes. When a function has \#\[requires\], Kani first
 // checks that the assume is consistent with the requires before using the requires
 // as the canonical bound.
 //
