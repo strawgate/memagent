@@ -654,14 +654,14 @@ pub(crate) fn resolve_config_path(config_path: Option<&str>) -> Result<String, C
         return Ok(path.to_string_lossy().to_string());
     }
     Err(CliError::Config(
-        "no config file found (use --config or set LOGFWD_CONFIG)".to_owned(),
+        "no config file found (use --config or set FFWD_CONFIG)".to_owned(),
     ))
 }
 
 /// Search well-known locations for a ffwd config file.
 ///
 /// Search order:
-///   1. `$LOGFWD_CONFIG`
+///   1. `$FFWD_CONFIG`
 ///   2. `./ffwd.yaml`
 ///   3. `~/.config/ffwd/config.yaml`
 ///   4. `/etc/ffwd/config.yaml`
@@ -670,7 +670,7 @@ pub(crate) fn discover_config() -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
 
     // 1. Environment variable
-    if let Ok(path) = env::var("LOGFWD_CONFIG") {
+    if let Ok(path) = env::var("FFWD_CONFIG") {
         let p = PathBuf::from(&path);
         if p.is_file() {
             return Some(p);

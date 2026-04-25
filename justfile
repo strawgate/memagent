@@ -128,11 +128,11 @@ clippy-all:
 
 # Tests — default-members only (skips datafusion)
 test:
-    LOGFWD_DISABLE_DEFAULT_CHECKPOINTS=1 cargo nextest run --profile ci
+    FFWD_DISABLE_DEFAULT_CHECKPOINTS=1 cargo nextest run --profile ci
 
 # Tests — full workspace (CI uses this)
 test-all:
-    LOGFWD_DISABLE_DEFAULT_CHECKPOINTS=1 cargo nextest run --workspace --profile ci
+    FFWD_DISABLE_DEFAULT_CHECKPOINTS=1 cargo nextest run --workspace --profile ci
 
 # Run semantic lints via dylint (hot_path_no_alloc, and any future
 # semantic lints defined in crates/ffwd-lints/).

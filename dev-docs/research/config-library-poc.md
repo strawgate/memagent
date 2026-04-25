@@ -49,8 +49,8 @@ enough to replace `Config::expand_env_yaml_str` or `Config::load_str`.
 ### `figment`
 
 Figment supports layered configuration and environment overlays. The POC
-confirms `Env::prefixed("LOGFWD_").split("__")` can override nested typed
-fields such as `LOGFWD_PIPELINES__APP__WORKERS=9`.
+confirms `Env::prefixed("FFWD_").split("__")` can override nested typed
+fields such as `FFWD_PIPELINES__APP__WORKERS=9`.
 
 It does not solve `${VAR}` interpolation inside YAML values. Its YAML provider
 also depends on `serde_yaml`.
@@ -62,7 +62,7 @@ YAML-aware placeholder expansion.
 
 `config` supports layered configuration and environment overlays. The POC
 confirms `Environment::with_prefix("LOGFWD").prefix_separator("_").separator("__")`
-can override nested typed fields such as `LOGFWD_PIPELINES__APP__WORKERS=9`.
+can override nested typed fields such as `FFWD_PIPELINES__APP__WORKERS=9`.
 
 It does not solve `${VAR}` interpolation inside YAML values. Unlike Figment, its
 YAML feature uses `yaml-rust2` rather than deprecated `serde_yaml`.
@@ -103,7 +103,7 @@ The production design should be:
    text, so YAML-specific values like `.nan` still reach semantic validation.
 4. Deserialize to `RawConfig` through `config`, letting the typed Rust schema
    parse env-backed strings into numeric, boolean, and enum fields.
-5. Add an optional `LOGFWD_` environment overlay source using `__` as the nested
+5. Add an optional `FFWD_` environment overlay source using `__` as the nested
    separator.
 6. Run existing semantic validation.
 

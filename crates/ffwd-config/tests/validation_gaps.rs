@@ -312,11 +312,11 @@ fn generator_attribute_scalar_types_are_preserved() {
 #[test]
 fn env_generator_attribute_values_remain_strings() {
     let _env_lock = env_lock();
-    let _count = EnvVarGuard::set("LOGFWD_ISSUE_1855_GENERATOR_COUNT", "7");
-    let _enabled = EnvVarGuard::set("LOGFWD_ISSUE_1855_GENERATOR_ENABLED", "true");
+    let _count = EnvVarGuard::set("FFWD_ISSUE_1855_GENERATOR_COUNT", "7");
+    let _enabled = EnvVarGuard::set("FFWD_ISSUE_1855_GENERATOR_ENABLED", "true");
 
     let yaml = single_pipeline_yaml(
-        "type: generator\ngenerator:\n  profile: record\n  attributes:\n    count: ${LOGFWD_ISSUE_1855_GENERATOR_COUNT}\n    enabled: ${LOGFWD_ISSUE_1855_GENERATOR_ENABLED}",
+        "type: generator\ngenerator:\n  profile: record\n  attributes:\n    count: ${FFWD_ISSUE_1855_GENERATOR_COUNT}\n    enabled: ${FFWD_ISSUE_1855_GENERATOR_ENABLED}",
         "type: stdout",
     );
 
@@ -345,9 +345,9 @@ fn env_generator_attribute_values_remain_strings() {
 #[test]
 fn env_expansion_preserves_yaml_hash_content() {
     let _env_lock = env_lock();
-    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855", "/var/log/my app #1.log");
+    let _env = EnvVarGuard::set("FFWD_ISSUE_1855", "/var/log/my app #1.log");
 
-    let yaml = single_pipeline_yaml("type: file\npath: ${LOGFWD_ISSUE_1855}", "type: stdout");
+    let yaml = single_pipeline_yaml("type: file\npath: ${FFWD_ISSUE_1855}", "type: stdout");
 
     let config = Config::load_str(yaml).expect("config should parse after env expansion");
     let input = &config.pipelines["default"].inputs[0];
@@ -362,10 +362,10 @@ fn env_expansion_preserves_yaml_hash_content() {
 #[test]
 fn effective_yaml_preserves_yaml_hash_content() {
     let _env_lock = env_lock();
-    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_EFFECTIVE", "/var/log/my app #1.log");
+    let _env = EnvVarGuard::set("FFWD_ISSUE_1855_EFFECTIVE", "/var/log/my app #1.log");
 
     let yaml = single_pipeline_yaml(
-        "type: file\npath: ${LOGFWD_ISSUE_1855_EFFECTIVE}",
+        "type: file\npath: ${FFWD_ISSUE_1855_EFFECTIVE}",
         "type: stdout",
     );
 
@@ -389,12 +389,12 @@ fn effective_yaml_preserves_yaml_hash_content() {
 #[test]
 fn env_numeric_string_is_parsed_by_typed_schema() {
     let _env_lock = env_lock();
-    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_WORKERS", "4");
+    let _env = EnvVarGuard::set("FFWD_ISSUE_1855_WORKERS", "4");
 
     let yaml = r"
 pipelines:
   test:
-    workers: ${LOGFWD_ISSUE_1855_WORKERS}
+    workers: ${FFWD_ISSUE_1855_WORKERS}
     inputs:
       - type: generator
     outputs:
@@ -417,10 +417,10 @@ pipelines:
 #[test]
 fn env_bool_string_is_parsed_by_typed_schema() {
     let _env_lock = env_lock();
-    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_STRICT_PATH", "false");
+    let _env = EnvVarGuard::set("FFWD_ISSUE_1855_STRICT_PATH", "false");
 
     let yaml = single_pipeline_yaml(
-        "type: http\nlisten: 127.0.0.1:8080\nhttp:\n  strict_path: ${LOGFWD_ISSUE_1855_STRICT_PATH}",
+        "type: http\nlisten: 127.0.0.1:8080\nhttp:\n  strict_path: ${FFWD_ISSUE_1855_STRICT_PATH}",
         "type: stdout",
     );
 
@@ -439,11 +439,11 @@ fn env_bool_string_is_parsed_by_typed_schema() {
 #[test]
 fn env_bool_string_is_parsed_by_shared_tls_schema() {
     let _env_lock = env_lock();
-    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_TLS_SKIP_VERIFY", "true");
+    let _env = EnvVarGuard::set("FFWD_ISSUE_1855_TLS_SKIP_VERIFY", "true");
 
     let yaml = single_pipeline_yaml(
         "type: generator",
-        "type: otlp\nendpoint: http://127.0.0.1:4318\ntls:\n  insecure_skip_verify: ${LOGFWD_ISSUE_1855_TLS_SKIP_VERIFY}",
+        "type: otlp\nendpoint: http://127.0.0.1:4318\ntls:\n  insecure_skip_verify: ${FFWD_ISSUE_1855_TLS_SKIP_VERIFY}",
     );
 
     let config = Config::load_str(yaml).expect("config should parse env-backed TLS bool");
@@ -458,10 +458,10 @@ fn env_bool_string_is_parsed_by_shared_tls_schema() {
 #[test]
 fn quoted_env_expansion_preserves_string_scalars() {
     let _env_lock = env_lock();
-    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_QUOTED_PATH", "1234");
+    let _env = EnvVarGuard::set("FFWD_ISSUE_1855_QUOTED_PATH", "1234");
 
     let yaml = single_pipeline_yaml(
-        "type: file\npath: \"${LOGFWD_ISSUE_1855_QUOTED_PATH}\"",
+        "type: file\npath: \"${FFWD_ISSUE_1855_QUOTED_PATH}\"",
         "type: stdout",
     );
 
@@ -478,10 +478,10 @@ fn quoted_env_expansion_preserves_string_scalars() {
 #[test]
 fn tagged_quoted_env_expansion_preserves_string_scalars() {
     let _env_lock = env_lock();
-    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_TAGGED_PATH", "true");
+    let _env = EnvVarGuard::set("FFWD_ISSUE_1855_TAGGED_PATH", "true");
 
     let yaml = single_pipeline_yaml(
-        "type: file\npath: !!str \"${LOGFWD_ISSUE_1855_TAGGED_PATH}\"",
+        "type: file\npath: !!str \"${FFWD_ISSUE_1855_TAGGED_PATH}\"",
         "type: stdout",
     );
 
@@ -498,12 +498,12 @@ fn tagged_quoted_env_expansion_preserves_string_scalars() {
 #[test]
 fn tagged_unquoted_env_expansion_preserves_string_scalars() {
     let _env_lock = env_lock();
-    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_TAGGED_UNQUOTED", "123");
+    let _env = EnvVarGuard::set("FFWD_ISSUE_1855_TAGGED_UNQUOTED", "123");
 
     // Env substitution already produces string data; the explicit string tag
     // should preserve that behavior.
     let yaml = single_pipeline_yaml(
-        "type: file\npath: !str ${LOGFWD_ISSUE_1855_TAGGED_UNQUOTED}",
+        "type: file\npath: !str ${FFWD_ISSUE_1855_TAGGED_UNQUOTED}",
         "type: stdout",
     );
 
@@ -575,10 +575,10 @@ fn custom_yaml_tag_for_mapping_key_is_rejected() {
 #[test]
 fn anchored_quoted_env_expansion_preserves_string_scalars() {
     let _env_lock = env_lock();
-    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_ANCHORED_PATH", "true");
+    let _env = EnvVarGuard::set("FFWD_ISSUE_1855_ANCHORED_PATH", "true");
 
     let yaml = single_pipeline_yaml(
-        "type: file\npath: &path \"${LOGFWD_ISSUE_1855_ANCHORED_PATH}\"",
+        "type: file\npath: &path \"${FFWD_ISSUE_1855_ANCHORED_PATH}\"",
         "type: stdout",
     );
 
@@ -595,14 +595,14 @@ fn anchored_quoted_env_expansion_preserves_string_scalars() {
 #[test]
 fn mixed_env_uses_schema_for_types_and_strings_for_string_fields() {
     let _env_lock = env_lock();
-    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_MIXED", "4");
+    let _env = EnvVarGuard::set("FFWD_ISSUE_1855_MIXED", "4");
 
     let yaml = r#"
 pipelines:
   test:
-    workers: ${LOGFWD_ISSUE_1855_MIXED}
+    workers: ${FFWD_ISSUE_1855_MIXED}
     resource_attrs:
-      note: "${LOGFWD_ISSUE_1855_MIXED}"
+      note: "${FFWD_ISSUE_1855_MIXED}"
     inputs:
       - type: generator
     outputs:
@@ -635,14 +635,14 @@ fn plain_scalar_apostrophe_is_not_treated_as_quote_boundary() {
 #[test]
 fn block_scalar_mixed_indentation_expands() {
     let _env_lock = env_lock();
-    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_BLOCK_FIELD", "message");
+    let _env = EnvVarGuard::set("FFWD_ISSUE_1855_BLOCK_FIELD", "message");
 
     let yaml = r#"
 pipelines:
   test:
     transform: |
       {
-        "${LOGFWD_ISSUE_1855_BLOCK_FIELD}"
+        "${FFWD_ISSUE_1855_BLOCK_FIELD}"
       }
     inputs:
       - type: generator
@@ -686,15 +686,15 @@ pipelines:
 #[test]
 fn env_expanded_mapping_key_collision_is_rejected() {
     let _env_lock = env_lock();
-    let _env_a = EnvVarGuard::set("LOGFWD_ISSUE_1855_KEY_A", "prod");
-    let _env_b = EnvVarGuard::set("LOGFWD_ISSUE_1855_KEY_B", "prod");
+    let _env_a = EnvVarGuard::set("FFWD_ISSUE_1855_KEY_A", "prod");
+    let _env_b = EnvVarGuard::set("FFWD_ISSUE_1855_KEY_B", "prod");
 
     let yaml = r"
 pipelines:
   test:
     resource_attrs:
-      ${LOGFWD_ISSUE_1855_KEY_A}: one
-      ${LOGFWD_ISSUE_1855_KEY_B}: two
+      ${FFWD_ISSUE_1855_KEY_A}: one
+      ${FFWD_ISSUE_1855_KEY_B}: two
     inputs:
       - type: generator
     outputs:
@@ -712,11 +712,11 @@ pipelines:
 #[test]
 fn env_expansion_applies_to_mapping_keys() {
     let _env_lock = env_lock();
-    let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_PIPELINE", "from-env");
+    let _env = EnvVarGuard::set("FFWD_ISSUE_1855_PIPELINE", "from-env");
 
     let yaml = r"
 pipelines:
-  ${LOGFWD_ISSUE_1855_PIPELINE}:
+  ${FFWD_ISSUE_1855_PIPELINE}:
     inputs:
       - type: generator
     outputs:

@@ -29,10 +29,10 @@ pub fn proptest_cases() -> u32 {
 /// These tests exercise real file IO, fsyncs, restarts, and replay logic, so
 /// the generic `PROPTEST_CASES` default of 256 is too slow for normal PR runs.
 ///
-/// Override with `LOGFWD_PROPTEST_STATE_MACHINE_CASES` when you want deeper coverage.
+/// Override with `FFWD_PROPTEST_STATE_MACHINE_CASES` when you want deeper coverage.
 /// If that env var is unset, we cap the general proptest budget at 16 cases.
 pub fn state_machine_proptest_cases() -> u32 {
-    std::env::var("LOGFWD_PROPTEST_STATE_MACHINE_CASES")
+    std::env::var("FFWD_PROPTEST_STATE_MACHINE_CASES")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or_else(|| proptest_cases().min(16))

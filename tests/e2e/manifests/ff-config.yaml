@@ -14,7 +14,7 @@ data:
       format: cri
 
     transform: >-
-      SELECT * FROM logs WHERE message_str LIKE '%LOGFWD_E2E_MARKER%'
+      SELECT * FROM logs WHERE message_str LIKE '%FFWD_E2E_MARKER%'
 
     output:
       type: http

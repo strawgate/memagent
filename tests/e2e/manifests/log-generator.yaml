@@ -13,15 +13,15 @@ spec:
       args:
         - |
           sleep 5
-          echo '{"message":"LOGFWD_E2E_MARKER_001","level":"INFO","seq":1}'
-          echo '{"message":"LOGFWD_E2E_MARKER_002","level":"INFO","seq":2}'
-          echo '{"message":"LOGFWD_E2E_MARKER_003","level":"WARN","seq":3}'
-          echo '{"message":"LOGFWD_E2E_MARKER_004","level":"INFO","seq":4}'
-          echo '{"message":"LOGFWD_E2E_MARKER_005","level":"ERROR","seq":5}'
-          echo '{"message":"LOGFWD_E2E_MARKER_006","level":"INFO","seq":6}'
-          echo '{"message":"LOGFWD_E2E_MARKER_007","level":"DEBUG","seq":7}'
-          echo '{"message":"LOGFWD_E2E_MARKER_008","level":"INFO","seq":8}'
-          echo '{"message":"LOGFWD_E2E_MARKER_009","level":"WARN","seq":9}'
-          echo '{"message":"LOGFWD_E2E_MARKER_010","level":"INFO","seq":10}'
+          echo '{"message":"FFWD_E2E_MARKER_001","level":"INFO","seq":1}'
+          echo '{"message":"FFWD_E2E_MARKER_002","level":"INFO","seq":2}'
+          echo '{"message":"FFWD_E2E_MARKER_003","level":"WARN","seq":3}'
+          echo '{"message":"FFWD_E2E_MARKER_004","level":"INFO","seq":4}'
+          echo '{"message":"FFWD_E2E_MARKER_005","level":"ERROR","seq":5}'
+          echo '{"message":"FFWD_E2E_MARKER_006","level":"INFO","seq":6}'
+          echo '{"message":"FFWD_E2E_MARKER_007","level":"DEBUG","seq":7}'
+          echo '{"message":"FFWD_E2E_MARKER_008","level":"INFO","seq":8}'
+          echo '{"message":"FFWD_E2E_MARKER_009","level":"WARN","seq":9}'
+          echo '{"message":"FFWD_E2E_MARKER_010","level":"INFO","seq":10}'
           echo "log-generator: all 10 markers emitted"
           sleep 3600

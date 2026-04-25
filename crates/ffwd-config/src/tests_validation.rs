@@ -201,9 +201,9 @@ input:
   path: /var/log/test.log
 output:
   type: otlp
-  endpoint: ${LOGFWD_NONEXISTENT_ENDPOINT_VAR}
+  endpoint: ${FFWD_NONEXISTENT_ENDPOINT_VAR}
 ";
-        assert_config_err!(yaml, "LOGFWD_NONEXISTENT_ENDPOINT_VAR");
+        assert_config_err!(yaml, "FFWD_NONEXISTENT_ENDPOINT_VAR");
     }
 
     #[test]

@@ -100,8 +100,8 @@ case "${1:-}" in
     if [ "${2:-}" = "-n" ] && [ "${3:-}" = "e2e-ff" ] && [ "${4:-}" = "log-generator" ]; then
       if [ -f "$STATE_DIR/log_generator_running" ]; then
         printf '%s\n' \
-          'LOGFWD_E2E_MARKER_001' \
-          'LOGFWD_E2E_MARKER_010' \
+          'FFWD_E2E_MARKER_001' \
+          'FFWD_E2E_MARKER_010' \
           'log-generator: all 10 markers emitted'
         printf 'ready' >"$STATE_DIR/marker_ready"
       fi

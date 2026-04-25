@@ -733,7 +733,7 @@ enrichment:
     path: /etc/os-release
   - type: env_vars
     table_name: deploy_meta
-    prefix: LOGFWD_META_
+    prefix: FFWD_META_
   - type: csv
     table_name: assets
     path: /etc/ffwd/assets.csv
@@ -910,10 +910,10 @@ The prefix is stripped and the remainder lower-cased to form column names.
 enrichment:
   - type: env_vars
     table_name: deploy_meta
-    prefix: LOGFWD_META_
+    prefix: FFWD_META_
 ```
 
-With `LOGFWD_META_CLUSTER=prod` and `LOGFWD_META_REGION=us-east-1` set, the table
+With `FFWD_META_CLUSTER=prod` and `FFWD_META_REGION=us-east-1` set, the table
 exposes `cluster` and `region` columns.
 
 ```sql
@@ -1056,7 +1056,7 @@ When `server.diagnostics` is configured, FastForward exposes an HTTP API for mon
 | `/ready` | GET | Readiness probe. Returns 200 OK when required components are initialized and in a ready health state; returns 503 while components are still starting, stopping, stopped, failed, or otherwise not ready. |
 | `/admin/v1/status` | GET | Canonical rich status payload with live/ready state, component health, and per-pipeline counters. |
 | `/admin/v1/stats` | GET | Aggregate process stats (uptime, RSS, CPU, aggregate line counts). |
-| `/admin/v1/config` | GET | Currently loaded YAML configuration and its file path (disabled by default; enable with `LOGFWD_UNSAFE_EXPOSE_CONFIG=1`). May expose sensitive values; do not enable in shared or production environments unless strictly required. |
+| `/admin/v1/config` | GET | Currently loaded YAML configuration and its file path (disabled by default; enable with `FFWD_UNSAFE_EXPOSE_CONFIG=1`). May expose sensitive values; do not enable in shared or production environments unless strictly required. |
 | `/admin/v1/logs` | GET | Recent log lines from FastForward's own stderr (ring buffer). |
 | `/admin/v1/history` | GET | Time-series data (1-hour window) for dashboard charts. |
 | `/admin/v1/traces` | GET | Recent batch processing spans for detailed latency analysis. |
@@ -1113,7 +1113,7 @@ values directly from the environment without treating the env value as YAML:
 ```yaml
 pipelines:
   app:
-    workers: ${LOGFWD_WORKERS}
+    workers: ${FFWD_WORKERS}
 ```
 
 String fields remain strings even when the expanded value looks like a YAML

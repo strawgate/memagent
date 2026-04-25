@@ -50,9 +50,9 @@ input:
 output:
   type: stdout
 server:
-  diagnostics: ${LOGFWD_DIAG_ADDR}
+  diagnostics: ${FFWD_DIAG_ADDR}
 ";
-        assert_config_err!(yaml, "LOGFWD_DIAG_ADDR");
+        assert_config_err!(yaml, "FFWD_DIAG_ADDR");
     }
 
     // -----------------------------------------------------------------------

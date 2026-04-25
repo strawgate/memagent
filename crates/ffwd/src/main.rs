@@ -28,14 +28,14 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 const LONG_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     " (",
-    env!("LOGFWD_GIT_HASH"),
-    env!("LOGFWD_GIT_DIRTY"),
+    env!("FFWD_GIT_HASH"),
+    env!("FFWD_GIT_DIRTY"),
     " ",
-    env!("LOGFWD_BUILD_DATE"),
+    env!("FFWD_BUILD_DATE"),
     ", ",
-    env!("LOGFWD_TARGET"),
+    env!("FFWD_TARGET"),
     ", ",
-    env!("LOGFWD_PROFILE"),
+    env!("FFWD_PROFILE"),
     ")"
 );
 const CLI_AFTER_HELP: &str = r"Examples:
@@ -53,13 +53,13 @@ const CLI_AFTER_HELP: &str = r"Examples:
   ff completions bash
 
 Environment:
-  LOGFWD_CONFIG    Config file path (auto-discovered if not set)
-  LOGFWD_LOG       Set log filter (for example LOGFWD_LOG=debug)
-  RUST_LOG         Fallback if LOGFWD_LOG is not set
+  FFWD_CONFIG    Config file path (auto-discovered if not set)
+  FFWD_LOG       Set log filter (for example FFWD_LOG=debug)
+  RUST_LOG         Fallback if FFWD_LOG is not set
 
 Config Search Order:
   1. --config <path>
-  2. $LOGFWD_CONFIG
+  2. $FFWD_CONFIG
   3. ./ffwd.yaml
   4. ~/.config/ffwd/config.yaml
   5. /etc/ffwd/config.yaml

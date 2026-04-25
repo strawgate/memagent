@@ -1015,7 +1015,7 @@ async fn serve_stats(State(state): State<Arc<DiagnosticsState>>) -> impl IntoRes
 
 async fn serve_config(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
     if !state.config_endpoint_enabled {
-        let body = r#"{"error":"config_endpoint_disabled","message":"set LOGFWD_UNSAFE_EXPOSE_CONFIG=1 to enable /admin/v1/config"}"#;
+        let body = r#"{"error":"config_endpoint_disabled","message":"set FFWD_UNSAFE_EXPOSE_CONFIG=1 to enable /admin/v1/config"}"#;
         return (
             StatusCode::FORBIDDEN,
             [("content-type", "application/json")],

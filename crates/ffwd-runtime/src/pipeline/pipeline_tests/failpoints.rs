@@ -178,7 +178,7 @@ fn test_checkpoint_persisted_after_clean_shutdown() {
     // SAFETY: serialised by CHECKPOINT_ENV_MUTEX; spawned thread only
     // accesses metrics/shutdown, not environment variables.
     unsafe {
-        std::env::set_var("LOGFWD_DATA_DIR", dir.path());
+        std::env::set_var("FFWD_DATA_DIR", dir.path());
     }
 
     let mut pipeline = pipeline_with_sink(&log_path, Box::new(DevNullSink));
@@ -220,7 +220,7 @@ fn test_checkpoint_persisted_after_clean_shutdown() {
     // SAFETY: serialised by CHECKPOINT_ENV_MUTEX; spawned thread only
     // accesses metrics/shutdown, not environment variables.
     unsafe {
-        std::env::remove_var("LOGFWD_DATA_DIR");
+        std::env::remove_var("FFWD_DATA_DIR");
     }
 }
 
@@ -235,7 +235,7 @@ fn test_pipeline_resumes_from_checkpoint() {
     // SAFETY: serialised by CHECKPOINT_ENV_MUTEX; spawned thread only
     // accesses metrics/shutdown, not environment variables.
     unsafe {
-        std::env::set_var("LOGFWD_DATA_DIR", dir.path());
+        std::env::set_var("FFWD_DATA_DIR", dir.path());
     }
 
     // First run: write 20 lines, process them.
@@ -315,6 +315,6 @@ fn test_pipeline_resumes_from_checkpoint() {
     // SAFETY: serialised by CHECKPOINT_ENV_MUTEX; spawned thread only
     // accesses metrics/shutdown, not environment variables.
     unsafe {
-        std::env::remove_var("LOGFWD_DATA_DIR");
+        std::env::remove_var("FFWD_DATA_DIR");
     }
 }
