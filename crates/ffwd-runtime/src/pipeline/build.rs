@@ -400,7 +400,7 @@ impl Pipeline {
         #[cfg(not(feature = "datafusion"))]
         if !config.enrichment.is_empty() {
             return Err(
-                "pipeline enrichment requires DataFusion. Build default/full logfwd \
+                "pipeline enrichment requires DataFusion. Build default/full ffwd \
                  (or add `--features datafusion`)"
                     .to_string(),
             );
