@@ -673,7 +673,8 @@ fn should_open_checkpoint_store(checkpoint_dir: &Path, has_explicit_data_dir: bo
         return true;
     }
 
-    if std::env::var_os("FFWD_DATA_DIR").is_some() {
+    if std::env::var_os("FFWD_DATA_DIR").is_some() || std::env::var_os("LOGFWD_DATA_DIR").is_some()
+    {
         return true;
     }
 
@@ -682,6 +683,7 @@ fn should_open_checkpoint_store(checkpoint_dir: &Path, has_explicit_data_dir: bo
     }
 
     std::env::var_os("FFWD_DISABLE_DEFAULT_CHECKPOINTS").is_none()
+        && std::env::var_os("LOGFWD_DISABLE_DEFAULT_CHECKPOINTS").is_none()
 }
 
 #[cfg(test)]

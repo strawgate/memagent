@@ -183,6 +183,7 @@ pub async fn run_pipelines(
     let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_env("FFWD_LOG")
+        .or_else(|_| tracing_subscriber::EnvFilter::try_from_env("LOGFWD_LOG"))
         .or_else(|_| tracing_subscriber::EnvFilter::try_from_default_env())
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let fmt_layer = if options.json_logs_for_stderr {
