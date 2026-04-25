@@ -93,6 +93,22 @@ fn validate_elasticsearch_index(
     Ok(())
 }
 
+/// Sanitize a Loki label name the same way the Loki runtime does: replace
+/// any character that is not `[a-zA-Z0-9_]` (or not `[a-zA-Z_]` at position 0)
+/// with `_`.
+fn sanitize_loki_label_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len().max(1));
+    for (idx, ch) in name.chars().enumerate() {
+        let valid = if idx == 0 {
+            ch.is_ascii_alphabetic() || ch == '_'
+        } else {
+            ch.is_ascii_alphanumeric() || ch == '_'
+        };
+        out.push(if valid { ch } else { '_' });
+    }
+    if out.is_empty() { "_".to_string() } else { out }
+}
+
 fn validate_loki_labels(
     pipeline_name: &str,
     label: &str,
@@ -109,15 +125,54 @@ fn validate_loki_labels(
         }
     }
 
-    if let (Some(static_labels), Some(label_columns)) = (static_labels, label_columns)
-        && let Some(conflict) = label_columns
+    // Detect intra-map collisions within static_labels after sanitization.
+    if let Some(static_labels) = static_labels {
+        let mut seen: HashMap<String, &str> = HashMap::new();
+        for key in static_labels.keys() {
+            let sanitized = sanitize_loki_label_name(key);
+            if let Some(existing) = seen.get(&sanitized) {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{pipeline_name}' output '{label}': loki static_labels key '{key}' sanitizes to '{sanitized}' which collides with existing key '{existing}'"
+                )));
+            }
+            seen.insert(sanitized, key.as_str());
+        }
+    }
+
+    // Detect intra-map collisions within label_columns after sanitization.
+    if let Some(label_columns) = label_columns {
+        let mut seen: HashMap<String, &str> = HashMap::new();
+        for col in label_columns {
+            let sanitized = sanitize_loki_label_name(col);
+            if let Some(existing) = seen.get(&sanitized) {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{pipeline_name}' output '{label}': loki label_columns entry '{col}' sanitizes to '{sanitized}' which collides with existing entry '{existing}'"
+                )));
+            }
+            seen.insert(sanitized, col.as_str());
+        }
+    }
+
+    // Detect cross-map collisions between static_labels and label_columns
+    // after sanitization.
+    if let (Some(static_labels), Some(label_columns)) = (static_labels, label_columns) {
+        let mut sanitized_static: HashMap<String, &str> = HashMap::new();
+        for key in static_labels.keys() {
+            sanitized_static.insert(sanitize_loki_label_name(key), key.as_str());
+        }
+        if let Some(conflict) = label_columns
             .iter()
-            .map(String::as_str)
-            .find(|column| static_labels.contains_key(*column))
-    {
-        return Err(ConfigError::Validation(format!(
-            "pipeline '{pipeline_name}' output '{label}': loki label '{conflict}' is defined in both 'label_columns' and 'static_labels'"
-        )));
+            .find(|col| sanitized_static.contains_key(&sanitize_loki_label_name(col)))
+        {
+            let sanitized = sanitize_loki_label_name(conflict);
+            let static_key = sanitized_static
+                .get(&sanitized)
+                .copied()
+                .unwrap_or(conflict.as_str());
+            return Err(ConfigError::Validation(format!(
+                "pipeline '{pipeline_name}' output '{label}': loki label '{conflict}' (sanitizes to '{sanitized}') conflicts with 'static_labels' key '{static_key}'"
+            )));
+        }
     }
 
     Ok(())

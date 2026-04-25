@@ -1271,10 +1271,79 @@ pipelines:
 ";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(err.contains("conflicts with"), "unexpected error: {err}");
+}
+
+#[test]
+fn issue_2575_reject_loki_sanitized_label_collisions() {
+    let yaml = r"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+    outputs:
+      - type: loki
+        endpoint: http://localhost:3100
+        static_labels:
+          service.name: my-service
+        label_columns:
+          - service_name
+";
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
-        err.contains("is defined in both 'label_columns' and 'static_labels'"),
-        "unexpected error: {err}"
+        err.contains("loki label") && err.contains("conflicts with"),
+        "sanitized collision should be rejected: {err}"
     );
+}
+
+#[test]
+fn issue_2575_reject_loki_intra_static_labels_collision() {
+    let yaml = r"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+    outputs:
+      - type: loki
+        endpoint: http://localhost:3100
+        static_labels:
+          service.name: my-service
+          service-name: other-service
+        label_columns:
+          - level
+";
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("sanitizes to") && err.contains("collides with"),
+        "intra-static_labels collision should be rejected: {err}"
+    );
+}
+
+#[test]
+fn loki_sanitized_labels_non_colliding_static_and_columns_pass_validation() {
+    let yaml = r"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+    outputs:
+      - type: loki
+        endpoint: http://localhost:3100
+        static_labels:
+          service.name: my-service
+        label_columns:
+          - level
+          - host
+";
+    Config::load_str(yaml).expect("non-colliding loki labels should pass");
 }
 
 #[test]
