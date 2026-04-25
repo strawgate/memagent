@@ -159,7 +159,10 @@ pub fn default_data_dir() -> PathBuf {
         return PathBuf::from(dir);
     }
     if let Ok(dir) = std::env::var("LOGFWD_DATA_DIR") {
-        eprintln!("[ffwd] LOGFWD_DATA_DIR is deprecated; use FFWD_DATA_DIR instead");
+        #[allow(clippy::print_stderr)]
+        {
+            eprintln!("[ffwd] LOGFWD_DATA_DIR is deprecated; use FFWD_DATA_DIR instead");
+        }
         return PathBuf::from(dir);
     }
 
