@@ -307,7 +307,7 @@ fn build_equivalence_proptest_config() -> ProptestConfig {
         max_shrink_iters: 5_000,
         ..ProptestConfig::default()
     };
-    if cfg!(miri) || std::env::var_os("LOGFWD_DISABLE_PROPTEST_PERSISTENCE").is_some() {
+    if cfg!(miri) || std::env::var_os("FFWD_DISABLE_PROPTEST_PERSISTENCE").is_some() {
         config.failure_persistence = None;
     }
     config

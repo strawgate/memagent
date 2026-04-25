@@ -154,7 +154,15 @@ impl CheckpointStore for FileCheckpointStore {
 ///   if `$HOME` is not set).
 pub fn default_data_dir() -> PathBuf {
     // Check for an explicit override via environment variable first.
+    // New name takes precedence; legacy name is a deprecated fallback.
+    if let Ok(dir) = std::env::var("FFWD_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
     if let Ok(dir) = std::env::var("LOGFWD_DATA_DIR") {
+        #[allow(clippy::print_stderr)]
+        {
+            eprintln!("[ffwd] LOGFWD_DATA_DIR is deprecated; use FFWD_DATA_DIR instead");
+        }
         return PathBuf::from(dir);
     }
 

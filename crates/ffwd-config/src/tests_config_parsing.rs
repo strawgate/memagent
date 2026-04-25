@@ -163,18 +163,18 @@ server:
     fn env_var_substitution() {
         // SAFETY: this test is not run concurrently with other tests that
         // depend on the same environment variable.
-        unsafe { std::env::set_var("LOGFWD_TEST_ENDPOINT", "http://my-collector:4317") };
+        unsafe { std::env::set_var("FFWD_TEST_ENDPOINT", "http://my-collector:4317") };
         let yaml = single_pipeline_yaml(
             "type: file\npath: /var/log/test.log",
             None,
-            "type: otlp\nendpoint: ${LOGFWD_TEST_ENDPOINT}",
+            "type: otlp\nendpoint: ${FFWD_TEST_ENDPOINT}",
         );
         let cfg = Config::load_str(yaml).expect("env var substitution");
         let pipe = &cfg.pipelines["default"];
         assert_eq!(pipe.outputs[0].endpoint(), Some("http://my-collector:4317"));
         // SAFETY: this test is not run concurrently with other tests that
         // depend on the same environment variable.
-        unsafe { std::env::remove_var("LOGFWD_TEST_ENDPOINT") };
+        unsafe { std::env::remove_var("FFWD_TEST_ENDPOINT") };
     }
 
     #[test]
@@ -207,16 +207,16 @@ input:
   path: /var/log/test.log
 output:
   type: otlp
-  endpoint: ${LOGFWD_NONEXISTENT_VAR_12345}
+  endpoint: ${FFWD_NONEXISTENT_VAR_12345}
 ";
-        assert_config_err!(yaml, "LOGFWD_NONEXISTENT_VAR_12345", "not set");
+        assert_config_err!(yaml, "FFWD_NONEXISTENT_VAR_12345", "not set");
     }
 
     #[test]
     fn unterminated_env_var_preserved_as_is() {
         assert_eq!(
-            expand_env_vars("endpoint: ${LOGFWD_TEST_UNTERMINATED").unwrap(),
-            "endpoint: ${LOGFWD_TEST_UNTERMINATED"
+            expand_env_vars("endpoint: ${FFWD_TEST_UNTERMINATED").unwrap(),
+            "endpoint: ${FFWD_TEST_UNTERMINATED"
         );
     }
 

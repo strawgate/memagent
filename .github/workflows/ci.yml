@@ -24,7 +24,7 @@ env:
   CARGO_BUILD_JOBS: "4"
   NEXTEST_TEST_THREADS: "4"
   RUST_TEST_THREADS: "4"
-  LOGFWD_DISABLE_DEFAULT_CHECKPOINTS: "1"
+  FFWD_DISABLE_DEFAULT_CHECKPOINTS: "1"
   TOKIO_WORKER_THREADS: "4"
   RAYON_NUM_THREADS: "4"
   # Disable sccache in CI — config.toml enables it for local dev builds.

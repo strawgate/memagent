@@ -163,7 +163,7 @@ fn yaml_string(value: &str) -> serde_yaml_ng::Value {
 pub(crate) fn resolve_send_config_path(config_path: Option<&str>) -> Result<String, CliError> {
     resolve_config_path(config_path).map_err(|err| match err {
         CliError::Config(_) => CliError::Config(
-            "no destination config file found (use `ff send --config <file>` or set LOGFWD_CONFIG)"
+            "no destination config file found (use `ff send --config <file>` or set FFWD_CONFIG)"
                 .to_owned(),
         ),
         CliError::Runtime(e) => CliError::Runtime(e),

@@ -72,25 +72,25 @@ fn build_date() -> String {
 
 fn main() {
     println!(
-        "cargo:rustc-env=LOGFWD_GIT_HASH={}",
+        "cargo:rustc-env=FFWD_GIT_HASH={}",
         git_string(&["rev-parse", "--short", "HEAD"])
     );
 
     let dirty = git_output(&["status", "--porcelain"]).is_some_and(|o| !o.is_empty());
     println!(
-        "cargo:rustc-env=LOGFWD_GIT_DIRTY={}",
+        "cargo:rustc-env=FFWD_GIT_DIRTY={}",
         if dirty { "-dirty" } else { "" }
     );
 
-    println!("cargo:rustc-env=LOGFWD_BUILD_DATE={}", build_date());
+    println!("cargo:rustc-env=FFWD_BUILD_DATE={}", build_date());
 
     println!(
-        "cargo:rustc-env=LOGFWD_TARGET={}",
+        "cargo:rustc-env=FFWD_TARGET={}",
         std::env::var("TARGET").unwrap_or_else(|_| "unknown".to_string())
     );
 
     println!(
-        "cargo:rustc-env=LOGFWD_PROFILE={}",
+        "cargo:rustc-env=FFWD_PROFILE={}",
         std::env::var("PROFILE").unwrap_or_else(|_| "unknown".to_string())
     );
 

@@ -13,8 +13,8 @@
 //!   cargo run --release --bin http_receiver_apples -p ffwd-bench
 //!
 //! Optional env vars:
-//!   LOGFWD_HTTP_BENCH_DURATION_SECS=6
-//!   LOGFWD_HTTP_BENCH_CONCURRENCY=8,32
+//!   FFWD_HTTP_BENCH_DURATION_SECS=6
+//!   FFWD_HTTP_BENCH_CONCURRENCY=8,32
 use std::convert::Infallible;
 use std::io::Read as _;
 use std::net::SocketAddr;
@@ -830,7 +830,7 @@ fn pseudo_hex(seed: u64, digits: usize) -> String {
 }
 
 fn read_duration_secs() -> u64 {
-    std::env::var("LOGFWD_HTTP_BENCH_DURATION_SECS")
+    std::env::var("FFWD_HTTP_BENCH_DURATION_SECS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|v| *v > 0)
@@ -838,7 +838,7 @@ fn read_duration_secs() -> u64 {
 }
 
 fn read_concurrency_list() -> Vec<usize> {
-    let raw = std::env::var("LOGFWD_HTTP_BENCH_CONCURRENCY").unwrap_or_else(|_| "8,32".to_string());
+    let raw = std::env::var("FFWD_HTTP_BENCH_CONCURRENCY").unwrap_or_else(|_| "8,32".to_string());
     let mut out = Vec::new();
     for part in raw.split(',') {
         if let Ok(v) = part.trim().parse::<usize>()

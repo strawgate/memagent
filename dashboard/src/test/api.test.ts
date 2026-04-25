@@ -114,7 +114,7 @@ describe("api", () => {
         jsonResponse(
           {
             error: "config_endpoint_disabled",
-            message: "set LOGFWD_UNSAFE_EXPOSE_CONFIG=1 to enable /admin/v1/config",
+            message: "set FFWD_UNSAFE_EXPOSE_CONFIG=1 to enable /admin/v1/config",
           },
           403
         )
@@ -122,7 +122,7 @@ describe("api", () => {
       const result = await api.config();
       expect(result).toEqual({
         data: null,
-        errorMessage: "set LOGFWD_UNSAFE_EXPOSE_CONFIG=1 to enable /admin/v1/config",
+        errorMessage: "set FFWD_UNSAFE_EXPOSE_CONFIG=1 to enable /admin/v1/config",
       });
     });
   });
