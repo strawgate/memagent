@@ -14,9 +14,7 @@ input:
 output:
   type: stdout
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("path"), "expected 'path' in error: {msg}");
+        assert_config_err!(yaml, "path");
     }
 
     #[test]
@@ -28,12 +26,7 @@ input:
 output:
   type: otlp
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("endpoint"),
-            "expected 'endpoint' in error: {msg}"
-        );
+        assert_config_err!(yaml, "endpoint");
     }
 
     #[test]
@@ -91,9 +84,7 @@ input:
 output:
   type: stdout
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("listen"), "expected 'listen' in error: {msg}");
+        assert_config_err!(yaml, "listen");
     }
 
     #[test]
@@ -104,9 +95,7 @@ input:
 output:
   type: stdout
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("listen"), "expected 'listen' in error: {msg}");
+        assert_config_err!(yaml, "listen");
     }
 
     #[test]
@@ -117,9 +106,7 @@ input:
 output:
   type: stdout
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("listen"), "expected 'listen' in error: {msg}");
+        assert_config_err!(yaml, "listen");
     }
 
     #[test]
@@ -138,9 +125,7 @@ pipelines:
     outputs:
       - type: stdout
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(msg.contains("mix"), "expected 'mix' in error: {msg}");
+        assert_config_err!(yaml, "mix");
     }
 
     #[test]
@@ -149,12 +134,7 @@ pipelines:
 server:
   log_level: info
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("must define"),
-            "expected 'must define' in error: {msg}"
-        );
+        assert_config_err!(yaml, "must define");
     }
 
     #[test]
@@ -215,11 +195,9 @@ pipelines:
     outputs:
       - type: stdout
 ";
-        let err = Config::load_str(yaml).expect_err("top-level transform must be rejected");
-        assert!(
-            err.to_string()
-                .contains("top-level `transform` cannot be used with `pipelines:`"),
-            "unexpected validation error: {err}"
+        assert_config_err!(
+            yaml,
+            "top-level `transform` cannot be used with `pipelines:`"
         );
     }
 
@@ -272,12 +250,7 @@ output:
   type: otlp
   endpoint: ${LOGFWD_NONEXISTENT_ENDPOINT_VAR}
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("LOGFWD_NONEXISTENT_ENDPOINT_VAR"),
-            "error should mention the variable name: {msg}"
-        );
+        assert_config_err!(yaml, "LOGFWD_NONEXISTENT_ENDPOINT_VAR");
     }
 
     #[test]
@@ -318,16 +291,7 @@ pipelines:
 resource_attrs:
   service.name: my-service
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("top-level `resource_attrs`"),
-            "error should mention top-level resource_attrs: {msg}"
-        );
-        assert!(
-            msg.contains("pipelines"),
-            "error should mention pipelines: {msg}"
-        );
+        assert_config_err!(yaml, "top-level `resource_attrs`", "pipelines");
     }
 
     #[test]
@@ -345,16 +309,7 @@ enrichment:
     format: mmdb
     path: /tmp/geo.mmdb
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("top-level `enrichment`"),
-            "error should mention top-level enrichment: {msg}"
-        );
-        assert!(
-            msg.contains("pipelines"),
-            "error should mention pipelines form: {msg}"
-        );
+        assert_config_err!(yaml, "top-level `enrichment`", "pipelines");
     }
 
     #[test]
@@ -369,16 +324,7 @@ pipelines:
       - type: stdout
     workers: 0
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("workers"),
-            "expected 'workers' in error: {msg}"
-        );
-        assert!(
-            msg.contains("must be in range 1..=1024"),
-            "expected range-bounded workers message in error: {msg}"
-        );
+        assert_config_err!(yaml, "workers", "must be in range 1..=1024");
     }
 
     #[test]
@@ -393,12 +339,7 @@ pipelines:
       - type: stdout
     batch_target_bytes: 0
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("batch_target_bytes"),
-            "expected 'batch_target_bytes' in error: {msg}"
-        );
+        assert_config_err!(yaml, "batch_target_bytes");
     }
 
     #[test]

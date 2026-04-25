@@ -2,7 +2,8 @@ mod metrics;
 mod models;
 mod policy;
 mod process;
-mod render;
+/// HTML rendering helpers for the diagnostics dashboard.
+pub(crate) mod render;
 mod server;
 mod telemetry;
 

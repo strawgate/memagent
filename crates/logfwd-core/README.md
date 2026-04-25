@@ -8,7 +8,7 @@ Proven pure-logic kernel. Scanner, parsers, pipeline state machine, OTLP encodin
 |------|-------------|
 | `#![no_std]` + alloc | Compiler. CI: `cargo build --target thumbv6m-none-eabi` |
 | `#![forbid(unsafe_code)]` | Compiler. Cannot be overridden with `#[allow]`. |
-| Only deps: memchr + wide | CI dependency allowlist check |
+| Only deps: memchr + wide + logfwd-kani + logfwd-lint-attrs | CI dependency allowlist check |
 | No panics | `clippy::unwrap_used`, `clippy::panic`, `clippy::indexing_slicing` = deny |
 | Proof-bearing core modules stay Kani-covered | CI Kani job + `dev-docs/VERIFICATION.md` inventory |
 | No IO, no threads, no async | Structural (`no_std` removes the APIs) |

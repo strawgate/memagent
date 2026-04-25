@@ -1,4 +1,4 @@
-// scanner.rs — Scan configuration types for JSON field extraction.
+// scan_config.rs — Scan configuration types for JSON field extraction.
 //
 // Defines ScanConfig and FieldSpec, used by the Scanner and the SQL
 // transform layer.

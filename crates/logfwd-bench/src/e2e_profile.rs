@@ -2,11 +2,11 @@
 //! Profile each stage of the full pipeline: read → scan → transform → encode → "send"
 //! Run with: cargo run -p logfwd-bench --release --features bench-tools --bin e2e_profile
 
-use std::io::Write;
 use std::sync::Arc;
 use std::time::Instant;
 
 use logfwd_arrow::scanner::Scanner;
+use logfwd_bench::generate_simple;
 use logfwd_core::scan_config::ScanConfig;
 use logfwd_io::compress::ChunkCompressor;
 use logfwd_output::BatchMetadata;
@@ -162,23 +162,4 @@ fn main() {
             "  {n:>7} lines: scan={scan:>5}ms  xform={xform:>4}ms  otlp={encode:>5}ms  zstd={compress:>4}ms  total={total:>5}ms  {lps:>8} lines/sec"
         );
     }
-}
-
-fn generate_simple(n: usize) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(n * 180);
-    let levels = ["INFO", "DEBUG", "WARN", "ERROR"];
-    let paths = [
-        "/api/v1/users",
-        "/api/v1/orders",
-        "/api/v2/products",
-        "/health",
-        "/api/v1/auth",
-    ];
-    for i in 0..n {
-        write!(buf, r#"{{"timestamp":"2024-01-15T10:30:00.{:03}Z","level":"{}","message":"request handled GET {}/{}","duration_ms":{},"request_id":"{:016x}","service":"myapp"}}"#,
-            i % 1000, levels[i % 4], paths[i % 5], 10000 + (i * 7) % 90000,
-            1 + (i * 13) % 500, (i as u64).wrapping_mul(0x517cc1b727220a95)).unwrap();
-        buf.push(b'\n');
-    }
-    buf
 }

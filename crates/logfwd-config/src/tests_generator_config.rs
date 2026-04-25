@@ -136,11 +136,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("generator.sequence.field"),
-            "expected empty sequence field rejection: {err}"
-        );
+        assert_config_err!(yaml, "generator.sequence.field");
     }
 
     #[test]
@@ -159,12 +155,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("must not duplicate a generator.attributes key"),
-            "expected duplicate generated field rejection: {err}"
-        );
+        assert_config_err!(yaml, "must not duplicate a generator.attributes key");
     }
 
     #[test]
@@ -179,11 +170,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("batch_size must be at least 1"),
-            "expected zero batch size rejection: {err}"
-        );
+        assert_config_err!(yaml, "batch_size must be at least 1");
     }
 
     #[test]
@@ -200,12 +187,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("attributes keys must not be empty"),
-            "expected empty attribute key rejection: {err}"
-        );
+        assert_config_err!(yaml, "attributes keys must not be empty");
     }
 
     #[test]
@@ -222,11 +204,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("float values must be finite"),
-            "expected non-finite attribute rejection: {err}"
-        );
+        assert_config_err!(yaml, "float values must be finite");
     }
 
     #[test]
@@ -242,12 +220,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("event_created_unix_nano_field must not be empty"),
-            "expected empty event_created field rejection: {err}"
-        );
+        assert_config_err!(yaml, "event_created_unix_nano_field must not be empty");
     }
 
     #[test]
@@ -265,12 +238,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("must not duplicate a generator.attributes key"),
-            "expected event_created/attribute duplication rejection: {err}"
-        );
+        assert_config_err!(yaml, "must not duplicate a generator.attributes key");
     }
 
     #[test]
@@ -288,12 +256,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("must not duplicate generator.sequence.field"),
-            "expected event_created/sequence duplication rejection: {err}"
-        );
+        assert_config_err!(yaml, "must not duplicate generator.sequence.field");
     }
 
     #[test]
@@ -309,11 +272,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("require generator.profile=record"),
-            "expected record profile requirement rejection: {err}"
-        );
+        assert_config_err!(yaml, "require generator.profile=record");
     }
 
     // -----------------------------------------------------------------------
@@ -380,11 +339,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("step_ms must not be zero"),
-            "expected zero step rejection: {err}"
-        );
+        assert_config_err!(yaml, "step_ms must not be zero");
     }
 
     #[test]
@@ -400,11 +355,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("YYYY-MM-DDTHH:MM:SSZ"),
-            "expected format rejection: {err}"
-        );
+        assert_config_err!(yaml, "YYYY-MM-DDTHH:MM:SSZ");
     }
 
     #[test]
@@ -421,12 +372,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string()
-                .contains("only supported for the logs profile"),
-            "expected logs-only rejection: {err}"
-        );
+        assert_config_err!(yaml, "only supported for the logs profile");
     }
 
     #[test]
@@ -442,11 +388,7 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("day 31 out of range"),
-            "expected invalid date rejection: {err}"
-        );
+        assert_config_err!(yaml, "day 31 out of range");
     }
 
     #[test]
@@ -462,10 +404,6 @@ pipelines:
     outputs:
       - type: "null"
 "#;
-        let err = Config::load_str(yaml).unwrap_err();
-        assert!(
-            err.to_string().contains("month 13 out of range"),
-            "expected invalid month rejection: {err}"
-        );
+        assert_config_err!(yaml, "month 13 out of range");
     }
 }

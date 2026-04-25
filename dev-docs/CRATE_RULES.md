@@ -8,7 +8,7 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 |------|-------------|
 | `#![no_std]` + alloc | Compiler. CI: `cargo build --target thumbv6m-none-eabi` |
 | `#![forbid(unsafe_code)]` | Compiler. Cannot be overridden with `#[allow]`. |
-| Only deps: memchr + wide + logfwd-kani | CI dependency allowlist check |
+| Only deps: memchr + wide + logfwd-kani + logfwd-lint-attrs | CI dependency allowlist check |
 | No panics | `clippy::unwrap_used`, `clippy::panic`, `clippy::indexing_slicing` = deny |
 | Every public item documented | `#![warn(missing_docs)]` at crate root |
 | No stdout/stderr writes | `clippy::print_stdout`, `clippy::print_stderr` = warn workspace-wide; no `#![allow]` opt-out |

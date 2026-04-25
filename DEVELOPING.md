@@ -74,13 +74,21 @@ crates/
   logfwd-core/         Proven kernel. Scanner, parsers, pipeline state machine, OTLP encoding. no_std.
   logfwd-arrow/        Arrow integration. ScanBuilder impls, SIMD backends, RecordBatch builders.
   logfwd-config/       YAML config parsing and validation.
+  logfwd-config-wasm/  WASM bindings for the config validator (browser/Node.js).
   logfwd-io/           I/O layer. File tailing, TCP/UDP/OTLP inputs, checkpointing, diagnostics.
   logfwd-transform/    DataFusion SQL transforms, UDFs (grok, regexp_extract, geo_lookup).
   logfwd-output/       Output sinks (OTLP, Elasticsearch, Loki, JSON lines, stdout).
+  logfwd-types/        Shared value types, state-machine semantics, diagnostics.
+  logfwd-diagnostics/  Diagnostics control plane: HTTP endpoints, dashboard, readiness.
   logfwd-bench/        Criterion benchmarks for the scanner pipeline.
   logfwd-competitive-bench/  Comparative benchmarks vs other log agents.
   logfwd-test-utils/   Shared test utilities.
+  logfwd-kani/         Verification oracles and Kani proof helpers.
+  logfwd-lint-attrs/   Custom proc-macro lint attributes (no_panic, pure).
+  logfwd-lints/        Custom Clippy-style lint passes.
   logfwd-ebpf-proto/   eBPF log capture protocol definitions (experimental).
+  logfwd-otap-proto/   OTAP protocol definitions.
+  logfwd-proto-build/  Protobuf build scripts.
 ```
 
 ## Build, test, lint, bench, fuzz

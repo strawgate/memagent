@@ -1132,15 +1132,27 @@ mod tests {
         }
     }
 
+    use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
     use alloc::string::ToString;
+
+    fn scan_default(buf: &[u8]) -> TestBuilder {
+        let config = ScanConfig::default();
+        let mut builder = TestBuilder::new();
+        scan_streaming(buf, &config, &mut builder);
+        builder
+    }
+
+    fn config_with_predicate(pred: ScanPredicate) -> ScanConfig {
+        ScanConfig {
+            row_predicate: Some(pred),
+            ..ScanConfig::default()
+        }
+    }
 
     #[test]
     fn simple_object() {
         let buf = br#"{"name":"alice","age":30}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
+        let builder = scan_default(buf);
         assert_eq!(builder.rows.len(), 1);
         let row = &builder.rows[0];
         assert!(row.iter().any(|(k, v)| k == "name" && v == "alice"));
@@ -1205,10 +1217,7 @@ mod tests {
     #[test]
     fn ndjson_two_lines() {
         let buf = b"{\"a\":\"x\"}\n{\"b\":\"y\"}\n";
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
+        let builder = scan_default(buf);
         assert_eq!(builder.rows.len(), 2);
         assert!(builder.rows[0].iter().any(|(k, v)| k == "a" && v == "x"));
         assert!(builder.rows[1].iter().any(|(k, v)| k == "b" && v == "y"));
@@ -1217,10 +1226,7 @@ mod tests {
     #[test]
     fn nested_object_skipped() {
         let buf = br#"{"outer":{"inner":1},"flat":"val"}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
+        let builder = scan_default(buf);
         assert_eq!(builder.rows.len(), 1);
         let row = &builder.rows[0];
         assert!(
@@ -1233,10 +1239,7 @@ mod tests {
     #[test]
     fn null_boolean_number() {
         let buf = br#"{"n":null,"t":true,"f":false,"i":42,"x":3.14}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
+        let builder = scan_default(buf);
         assert_eq!(builder.rows.len(), 1);
         let row = &builder.rows[0];
         assert!(row.iter().any(|(k, v)| k == "n" && v == "null"));
@@ -1249,10 +1252,7 @@ mod tests {
     #[test]
     fn validates_null_token() {
         let buf = br#"{"x":nul}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
+        let builder = scan_default(buf);
         assert_eq!(builder.rows.len(), 1);
         assert!(builder.rows[0].is_empty());
     }
@@ -1260,10 +1260,7 @@ mod tests {
     #[test]
     fn validates_boolean_token() {
         let buf = br#"{"x":turkey}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
+        let builder = scan_default(buf);
         assert_eq!(builder.rows.len(), 1);
         assert!(builder.rows[0].is_empty());
     }
@@ -1272,10 +1269,7 @@ mod tests {
     fn escaped_quotes_in_value() {
         // After #410 fix: scanner decodes \" to " in string values.
         let buf = br#"{"msg":"said \"hello\""}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
+        let builder = scan_default(buf);
         assert_eq!(builder.rows.len(), 1);
         let row = &builder.rows[0];
         assert!(
@@ -1287,113 +1281,45 @@ mod tests {
     // --- Escape decoding tests (#410) ---
 
     #[test]
-    fn unicode_escape_u0041() {
-        // \u0041 is 'A' — must be decoded, not double-escaped.
-        let buf = br#"{"a":"\u0041"}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
-        assert_eq!(builder.rows.len(), 1);
-        let row = &builder.rows[0];
-        assert!(row.iter().any(|(k, v)| k == "a" && v == "A"));
-    }
-
-    #[test]
-    fn unicode_escape_e_acute() {
-        // \u00e9 is 'é' — must be decoded to UTF-8.
-        let buf = br#"{"msg":"caf\u00e9"}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
-        assert_eq!(builder.rows.len(), 1);
-        let row = &builder.rows[0];
-        assert!(row.iter().any(|(k, v)| k == "msg" && v == "café"));
-    }
-
-    #[test]
-    fn unicode_surrogate_pair() {
-        // \uD83D\uDE00 is U+1F600 (😀) — surrogate pair decoded to UTF-8.
-        let buf = br#"{"e":"\uD83D\uDE00"}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
-        assert_eq!(builder.rows.len(), 1);
-        let row = &builder.rows[0];
-        assert!(row.iter().any(|(k, v)| k == "e" && v == "😀"));
-    }
-
-    #[test]
-    fn escape_newline_tab_cr() {
-        let buf = br#"{"a":"line1\nline2\ttab\rret"}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
-        assert_eq!(builder.rows.len(), 1);
-        let row = &builder.rows[0];
-        assert!(
-            row.iter()
-                .any(|(k, v)| k == "a" && v == "line1\nline2\ttab\rret")
-        );
-    }
-
-    #[test]
-    fn escape_backslash() {
-        // \\\\ in raw bytes is two JSON-escaped backslashes → two literal backslashes
-        let buf = b"{\"a\":\"c:\\\\path\\\\file\"}";
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
-        assert_eq!(builder.rows.len(), 1);
-        let row = &builder.rows[0];
-        assert!(row.iter().any(|(k, v)| k == "a" && v == "c:\\path\\file"));
-    }
-
-    #[test]
-    fn escape_solidus() {
-        let buf = br#"{"url":"http:\/\/example.com"}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
-        assert_eq!(builder.rows.len(), 1);
-        let row = &builder.rows[0];
-        assert!(
-            row.iter()
-                .any(|(k, v)| k == "url" && v == "http://example.com")
-        );
-    }
-
-    #[test]
-    fn no_escape_passthrough() {
-        // Strings without backslashes pass through unchanged (fast path).
-        let buf = br#"{"x":"hello world"}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
-        assert_eq!(builder.rows.len(), 1);
-        let row = &builder.rows[0];
-        assert!(row.iter().any(|(k, v)| k == "x" && v == "hello world"));
-    }
-
-    #[test]
-    fn mixed_escapes_and_plain_text() {
-        let buf = br#"{"m":"start\n\tmiddle \u0041 end"}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
-        assert_eq!(builder.rows.len(), 1);
-        let row = &builder.rows[0];
-        assert!(
-            row.iter()
-                .any(|(k, v)| k == "m" && v == "start\n\tmiddle A end")
-        );
+    fn escape_decoding() {
+        let cases: &[(&[u8], &str, &str)] = &[
+            (br#"{"a":"\u0041"}"#, "a", "A"),
+            (br#"{"msg":"caf\u00e9"}"#, "msg", "café"),
+            (br#"{"e":"\uD83D\uDE00"}"#, "e", "😀"),
+            (
+                br#"{"a":"line1\nline2\ttab\rret"}"#,
+                "a",
+                "line1\nline2\ttab\rret",
+            ),
+            (b"{\"a\":\"c:\\\\path\\\\file\"}", "a", "c:\\path\\file"),
+            (
+                br#"{"url":"http:\/\/example.com"}"#,
+                "url",
+                "http://example.com",
+            ),
+            (br#"{"x":"hello world"}"#, "x", "hello world"),
+            (
+                br#"{"m":"start\n\tmiddle \u0041 end"}"#,
+                "m",
+                "start\n\tmiddle A end",
+            ),
+        ];
+        for (buf, key, expected) in cases {
+            let builder = scan_default(buf);
+            assert_eq!(
+                builder.rows.len(),
+                1,
+                "buf: {:?}",
+                core::str::from_utf8(buf)
+            );
+            assert!(
+                builder.rows[0]
+                    .iter()
+                    .any(|(k, v)| k == key && v == expected),
+                "expected {key}={expected} in {:?}",
+                builder.rows[0]
+            );
+        }
     }
 
     #[test]
@@ -1456,10 +1382,7 @@ mod tests {
     #[test]
     fn array_value() {
         let buf = br#"{"tags":["a","b"],"x":1}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
+        let builder = scan_default(buf);
         assert_eq!(builder.rows.len(), 1);
         let row = &builder.rows[0];
         assert!(row.iter().any(|(k, v)| k == "tags" && v == r#"["a","b"]"#));
@@ -1511,10 +1434,7 @@ mod tests {
     #[test]
     fn rejects_truex_suffix() {
         let buf = br#"{"x":truex}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
+        let builder = scan_default(buf);
         assert_eq!(builder.rows.len(), 1);
         assert!(builder.rows[0].is_empty());
     }
@@ -1522,10 +1442,7 @@ mod tests {
     #[test]
     fn rejects_nullified_suffix() {
         let buf = br#"{"x":nullified}"#;
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
+        let builder = scan_default(buf);
         assert_eq!(builder.rows.len(), 1);
         assert!(builder.rows[0].is_empty());
     }
@@ -1543,11 +1460,7 @@ mod tests {
         }
         buf_str.push_str(",\"b\":2}");
 
-        let buf = buf_str.as_bytes();
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
+        let builder = scan_default(buf_str.as_bytes());
         assert_eq!(builder.rows.len(), 1);
         let row = &builder.rows[0];
         assert!(row.iter().any(|(k, v)| k == "b" && v == "int:2"));
@@ -1565,10 +1478,7 @@ mod tests {
         }
         buf.push_str(",\"b\":2}");
 
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf.as_bytes(), &config, &mut builder);
-
+        let builder = scan_default(buf.as_bytes());
         assert_eq!(builder.rows.len(), 1);
         let row = &builder.rows[0];
         assert!(
@@ -1611,11 +1521,7 @@ mod tests {
         }
         buf_str.push_str(",\"b\":2}");
 
-        let buf = buf_str.as_bytes();
-        let config = ScanConfig::default();
-        let mut builder = TestBuilder::new();
-        scan_streaming(buf, &config, &mut builder);
-
+        let builder = scan_default(buf_str.as_bytes());
         assert_eq!(builder.rows.len(), 1);
         let row = &builder.rows[0];
         // If it drops remaining lines, it won't see "b"
@@ -1863,13 +1769,9 @@ mod tests {
         let buf =
             b"{\"level\":\"INFO\",\"msg\":\"hello\"}\r\n{\"level\":\"WARN\",\"msg\":\"world\"}\r\n";
 
-        // extract_all=true captures all fields without listing them explicitly.
         let config = ScanConfig {
-            wanted_fields: alloc::vec![],
-            extract_all: true,
             line_field_name: Some("body".to_string()),
-            validate_utf8: false,
-            row_predicate: None,
+            ..ScanConfig::default()
         };
 
         let mut builder = TestBuilder::new();
@@ -1923,13 +1825,7 @@ mod tests {
     #[test]
     fn crlf_only_line_is_empty() {
         let buf = b"\r\n{\"x\":\"1\"}\r\n";
-        let config = ScanConfig {
-            wanted_fields: alloc::vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: None,
-        };
+        let config = ScanConfig::default();
         let mut builder = TestBuilder::new();
         scan_streaming(buf, &config, &mut builder);
 
@@ -1946,11 +1842,8 @@ mod tests {
     fn trailing_cr_after_newline_no_spurious_empty_row_with_line_capture() {
         let buf = b"{\"x\":\"1\"}\n\r";
         let config = ScanConfig {
-            wanted_fields: alloc::vec![],
-            extract_all: true,
             line_field_name: Some("body".to_string()),
-            validate_utf8: false,
-            row_predicate: None,
+            ..ScanConfig::default()
         };
         let mut builder = TestBuilder::new();
         scan_streaming(buf, &config, &mut builder);
@@ -1965,11 +1858,8 @@ mod tests {
     fn lone_carriage_return_emits_no_rows_even_with_line_capture() {
         let buf = b"\r";
         let config = ScanConfig {
-            wanted_fields: alloc::vec![],
-            extract_all: true,
             line_field_name: Some("body".to_string()),
-            validate_utf8: false,
-            row_predicate: None,
+            ..ScanConfig::default()
         };
         let mut builder = TestBuilder::new();
         scan_streaming(buf, &config, &mut builder);
@@ -1983,11 +1873,8 @@ mod tests {
     fn empty_lf_line_skipped_even_with_line_capture() {
         let buf = b"\n{\"x\":\"1\"}\n\n";
         let config = ScanConfig {
-            wanted_fields: alloc::vec![],
-            extract_all: true,
             line_field_name: Some("body".to_string()),
-            validate_utf8: false,
-            row_predicate: None,
+            ..ScanConfig::default()
         };
         let mut builder = TestBuilder::new();
         scan_streaming(buf, &config, &mut builder);
@@ -2016,13 +1903,7 @@ mod tests {
         // Integration: an array value inside a JSON object should parse correctly.
         // The number in `[1,2]` must not swallow the `]`.
         let input = b"{\"arr\":[1,2]}\n";
-        let config = ScanConfig {
-            wanted_fields: alloc::vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: None,
-        };
+        let config = ScanConfig::default();
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);
         assert_eq!(
@@ -2038,20 +1919,12 @@ mod tests {
 
     #[test]
     fn predicate_filters_non_matching_rows() {
-        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
-
         let input = b"{\"level\":\"info\",\"msg\":\"hello\"}\n{\"level\":\"error\",\"msg\":\"bad\"}\n{\"level\":\"debug\",\"msg\":\"trace\"}\n";
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: Some(ScanPredicate::Compare {
-                field: "level".into(),
-                op: CmpOp::Eq,
-                value: ScalarValue::Str("error".into()),
-            }),
-        };
+        let config = config_with_predicate(ScanPredicate::Compare {
+            field: "level".into(),
+            op: CmpOp::Eq,
+            value: ScalarValue::Str("error".into()),
+        });
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);
 
@@ -2067,20 +1940,12 @@ mod tests {
 
     #[test]
     fn predicate_passes_all_when_all_match() {
-        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
-
         let input = b"{\"level\":\"error\",\"msg\":\"a\"}\n{\"level\":\"error\",\"msg\":\"b\"}\n";
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: Some(ScanPredicate::Compare {
-                field: "level".into(),
-                op: CmpOp::Eq,
-                value: ScalarValue::Str("error".into()),
-            }),
-        };
+        let config = config_with_predicate(ScanPredicate::Compare {
+            field: "level".into(),
+            op: CmpOp::Eq,
+            value: ScalarValue::Str("error".into()),
+        });
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);
         assert_eq!(builder.rows.len(), 2, "all rows should pass");
@@ -2088,20 +1953,12 @@ mod tests {
 
     #[test]
     fn predicate_filters_all_when_none_match() {
-        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
-
         let input = b"{\"level\":\"info\"}\n{\"level\":\"debug\"}\n";
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: Some(ScanPredicate::Compare {
-                field: "level".into(),
-                op: CmpOp::Eq,
-                value: ScalarValue::Str("error".into()),
-            }),
-        };
+        let config = config_with_predicate(ScanPredicate::Compare {
+            field: "level".into(),
+            op: CmpOp::Eq,
+            value: ScalarValue::Str("error".into()),
+        });
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);
         assert_eq!(builder.rows.len(), 0, "no rows should pass");
@@ -2109,20 +1966,12 @@ mod tests {
 
     #[test]
     fn predicate_with_numeric_comparison() {
-        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
-
         let input = b"{\"status\":200,\"msg\":\"ok\"}\n{\"status\":503,\"msg\":\"fail\"}\n{\"status\":404,\"msg\":\"miss\"}\n";
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: Some(ScanPredicate::Compare {
-                field: "status".into(),
-                op: CmpOp::Ge,
-                value: ScalarValue::Int(500),
-            }),
-        };
+        let config = config_with_predicate(ScanPredicate::Compare {
+            field: "status".into(),
+            op: CmpOp::Ge,
+            value: ScalarValue::Int(500),
+        });
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);
         assert_eq!(builder.rows.len(), 1, "only status>=500 should pass");
@@ -2135,27 +1984,19 @@ mod tests {
 
     #[test]
     fn predicate_and_chain() {
-        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
-
         let input = b"{\"level\":\"error\",\"status\":503}\n{\"level\":\"error\",\"status\":200}\n{\"level\":\"info\",\"status\":503}\n";
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: Some(ScanPredicate::And(vec![
-                ScanPredicate::Compare {
-                    field: "level".into(),
-                    op: CmpOp::Eq,
-                    value: ScalarValue::Str("error".into()),
-                },
-                ScanPredicate::Compare {
-                    field: "status".into(),
-                    op: CmpOp::Ge,
-                    value: ScalarValue::Int(500),
-                },
-            ])),
-        };
+        let config = config_with_predicate(ScanPredicate::And(vec![
+            ScanPredicate::Compare {
+                field: "level".into(),
+                op: CmpOp::Eq,
+                value: ScalarValue::Str("error".into()),
+            },
+            ScanPredicate::Compare {
+                field: "status".into(),
+                op: CmpOp::Ge,
+                value: ScalarValue::Int(500),
+            },
+        ]));
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);
         assert_eq!(
@@ -2168,15 +2009,7 @@ mod tests {
     #[test]
     fn no_predicate_unchanged_behavior() {
         let input = b"{\"a\":\"1\"}\n{\"a\":\"2\"}\n";
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: None,
-        };
-        let mut builder = TestBuilder::new();
-        scan_streaming(input, &config, &mut builder);
+        let builder = scan_default(input);
         assert_eq!(builder.rows.len(), 2, "no predicate = all rows");
     }
 
@@ -2186,8 +2019,6 @@ mod tests {
 
     #[test]
     fn predicate_with_escape_crossing_64_byte_boundary() {
-        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
-
         // Build a line where the "level" value crosses a 64-byte block boundary
         // by padding the key with enough characters. The escape \" in the value
         // forces the decode path.
@@ -2200,17 +2031,11 @@ mod tests {
         line.push_str("\":\"pad\",\"level\":\"err\\\"or\"}");
         line.push('\n');
 
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: Some(ScanPredicate::Compare {
-                field: "level".into(),
-                op: CmpOp::Eq,
-                value: ScalarValue::Str("err\"or".into()),
-            }),
-        };
+        let config = config_with_predicate(ScanPredicate::Compare {
+            field: "level".into(),
+            op: CmpOp::Eq,
+            value: ScalarValue::Str("err\"or".into()),
+        });
         let mut builder = TestBuilder::new();
         scan_streaming(line.as_bytes(), &config, &mut builder);
         assert_eq!(
@@ -2222,22 +2047,14 @@ mod tests {
 
     #[test]
     fn predicate_field_order_independence() {
-        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
-
         // Same fields in different order — predicate should work regardless.
         let input =
             b"{\"msg\":\"hello\",\"level\":\"error\"}\n{\"level\":\"info\",\"msg\":\"world\"}\n";
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: Some(ScanPredicate::Compare {
-                field: "level".into(),
-                op: CmpOp::Eq,
-                value: ScalarValue::Str("error".into()),
-            }),
-        };
+        let config = config_with_predicate(ScanPredicate::Compare {
+            field: "level".into(),
+            op: CmpOp::Eq,
+            value: ScalarValue::Str("error".into()),
+        });
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);
         assert_eq!(builder.rows.len(), 1);
@@ -2250,22 +2067,14 @@ mod tests {
 
     #[test]
     fn predicate_duplicate_keys_first_write_wins() {
-        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
-
         // Duplicate "level" key — first value should win for both
         // predicate evaluation and output.
         let input = b"{\"level\":\"error\",\"level\":\"info\"}\n";
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: Some(ScanPredicate::Compare {
-                field: "level".into(),
-                op: CmpOp::Eq,
-                value: ScalarValue::Str("error".into()),
-            }),
-        };
+        let config = config_with_predicate(ScanPredicate::Compare {
+            field: "level".into(),
+            op: CmpOp::Eq,
+            value: ScalarValue::Str("error".into()),
+        });
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);
         // First "level" is "error" → predicate passes.
@@ -2279,22 +2088,14 @@ mod tests {
 
     #[test]
     fn predicate_duplicate_keys_different_types() {
-        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
-
         // Same key appears as string then int — scanner creates conflict columns.
         // Predicate evaluates against the first occurrence (string "200").
         let input = b"{\"status\":\"200\",\"status\":503}\n";
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: Some(ScanPredicate::Compare {
-                field: "status".into(),
-                op: CmpOp::Eq,
-                value: ScalarValue::Str("200".into()),
-            }),
-        };
+        let config = config_with_predicate(ScanPredicate::Compare {
+            field: "status".into(),
+            op: CmpOp::Eq,
+            value: ScalarValue::Str("200".into()),
+        });
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);
         // First "status" is string "200" → predicate matches.
@@ -2303,20 +2104,12 @@ mod tests {
 
     #[test]
     fn predicate_nested_json_is_not_null() {
-        use crate::scan_predicate::ScanPredicate;
-
         // Nested object should be treated as non-null.
         let input = b"{\"payload\":{\"key\":\"val\"},\"level\":\"error\"}\n{\"level\":\"info\"}\n";
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: Some(ScanPredicate::IsNull {
-                field: "payload".into(),
-                negated: true, // IS NOT NULL
-            }),
-        };
+        let config = config_with_predicate(ScanPredicate::IsNull {
+            field: "payload".into(),
+            negated: true, // IS NOT NULL
+        });
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);
         // First row has payload (nested object) → IS NOT NULL passes.
@@ -2326,21 +2119,13 @@ mod tests {
 
     #[test]
     fn predicate_cross_type_string_vs_int() {
-        use crate::scan_predicate::{CmpOp, ScalarValue, ScanPredicate};
-
         // JSON has status as string "503", predicate compares as int 503.
         let input = b"{\"status\":\"503\",\"msg\":\"fail\"}\n{\"status\":\"200\",\"msg\":\"ok\"}\n";
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: Some(ScanPredicate::Compare {
-                field: "status".into(),
-                op: CmpOp::Ge,
-                value: ScalarValue::Int(500),
-            }),
-        };
+        let config = config_with_predicate(ScanPredicate::Compare {
+            field: "status".into(),
+            op: CmpOp::Ge,
+            value: ScalarValue::Int(500),
+        });
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);
         // String "503" should coerce to int 503 for comparison.
@@ -2349,23 +2134,15 @@ mod tests {
 
     #[test]
     fn predicate_in_list_filters_correctly() {
-        use crate::scan_predicate::{ScalarValue, ScanPredicate};
-
         let input = b"{\"level\":\"error\"}\n{\"level\":\"fatal\"}\n{\"level\":\"info\"}\n{\"level\":\"warn\"}\n";
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: Some(ScanPredicate::InList {
-                field: "level".into(),
-                values: vec![
-                    ScalarValue::Str("error".into()),
-                    ScalarValue::Str("fatal".into()),
-                ],
-                negated: false,
-            }),
-        };
+        let config = config_with_predicate(ScanPredicate::InList {
+            field: "level".into(),
+            values: vec![
+                ScalarValue::Str("error".into()),
+                ScalarValue::Str("fatal".into()),
+            ],
+            negated: false,
+        });
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);
         assert_eq!(
@@ -2377,19 +2154,11 @@ mod tests {
 
     #[test]
     fn predicate_contains_substring_match() {
-        use crate::scan_predicate::ScanPredicate;
-
         let input = b"{\"msg\":\"connection timeout after 30s\"}\n{\"msg\":\"request completed\"}\n{\"msg\":\"read timeout\"}\n";
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: Some(ScanPredicate::Contains {
-                field: "msg".into(),
-                substring: "timeout".into(),
-            }),
-        };
+        let config = config_with_predicate(ScanPredicate::Contains {
+            field: "msg".into(),
+            substring: "timeout".into(),
+        });
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);
         assert_eq!(builder.rows.len(), 2, "both timeout messages should pass");
@@ -2397,20 +2166,12 @@ mod tests {
 
     #[test]
     fn predicate_starts_with_prefix_match() {
-        use crate::scan_predicate::ScanPredicate;
-
         let input =
             b"{\"msg\":\"ERROR: disk full\"}\n{\"msg\":\"INFO: ok\"}\n{\"msg\":\"ERROR: oom\"}\n";
-        let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
-            line_field_name: None,
-            validate_utf8: false,
-            row_predicate: Some(ScanPredicate::StartsWith {
-                field: "msg".into(),
-                prefix: "ERROR".into(),
-            }),
-        };
+        let config = config_with_predicate(ScanPredicate::StartsWith {
+            field: "msg".into(),
+            prefix: "ERROR".into(),
+        });
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);
         assert_eq!(
@@ -2422,20 +2183,16 @@ mod tests {
 
     #[test]
     fn predicate_on_line_capture_field() {
-        use crate::scan_predicate::ScanPredicate;
-
         // When line_field_name is set and predicate references it,
         // the line content should be available for predicate evaluation.
         let input = b"{\"level\":\"error\"}\n{\"level\":\"info\"}\n";
         let config = ScanConfig {
-            wanted_fields: vec![],
-            extract_all: true,
             line_field_name: Some("body".into()),
-            validate_utf8: false,
             row_predicate: Some(ScanPredicate::IsNull {
                 field: "body".into(),
                 negated: true, // IS NOT NULL
             }),
+            ..ScanConfig::default()
         };
         let mut builder = TestBuilder::new();
         scan_streaming(input, &config, &mut builder);

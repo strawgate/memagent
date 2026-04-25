@@ -45,4 +45,61 @@ pipelines:
             _ => panic!("Expected OTLP input config"),
         }
     }
+
+    // ── OTLP TLS validation (mirrors TCP TLS tests in tests_input.rs) ──
+
+    #[test]
+    fn otlp_tls_requires_cert_and_key_together() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: otlp
+        listen: 0.0.0.0:4318
+        tls:
+          cert_file: /tmp/server.pem
+    outputs:
+      - type: "null"
+"#;
+        assert_config_err!(yaml, "requires both tls.cert_file and tls.key_file");
+    }
+
+    #[test]
+    fn otlp_mtls_requires_client_ca() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: otlp
+        listen: 0.0.0.0:4318
+        tls:
+          cert_file: /tmp/server.pem
+          key_file: /tmp/server.key
+          require_client_auth: true
+    outputs:
+      - type: "null"
+"#;
+        assert_config_err!(yaml, "require_client_auth requires tls.client_ca_file");
+    }
+
+    #[test]
+    fn otlp_client_ca_requires_mtls_enabled() {
+        let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: otlp
+        listen: 0.0.0.0:4318
+        tls:
+          cert_file: /tmp/server.pem
+          key_file: /tmp/server.key
+          client_ca_file: /tmp/ca.pem
+    outputs:
+      - type: "null"
+"#;
+        assert_config_err!(
+            yaml,
+            "client_ca_file requires tls.require_client_auth: true"
+        );
+    }
 }
