@@ -52,6 +52,7 @@ struct LineScratch {
 ///   this call (see [`ScanBuilder`] for the initialization contract).
 #[inline(never)]
 #[allow(clippy::indexing_slicing)]
+#[allow(clippy::expect_used)]
 pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: &mut B) {
     if buf.is_empty() {
         return;
