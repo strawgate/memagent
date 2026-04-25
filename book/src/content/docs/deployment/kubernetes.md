@@ -37,13 +37,13 @@ metadata:
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: ffwd
+  name: ff
   namespace: collectors
 ---
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: ffwd-config
+  name: ff-config
   namespace: collectors
 data:
   config.yaml: |
@@ -112,7 +112,7 @@ spec:
               mountPath: /var/log
               readOnly: true
             - name: config
-              mountPath: /etc/ffwd
+              mountPath: /etc/ff
               readOnly: true
       volumes:
         - name: varlog
@@ -120,7 +120,7 @@ spec:
             path: /var/log
         - name: config
           configMap:
-            name: ffwd-config
+            name: ff-config
 ```
 
 Apply it:

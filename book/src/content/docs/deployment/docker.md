@@ -236,7 +236,7 @@ If a config/image update causes failures:
 
 ```bash
 # Stop and remove current container
-docker rm -f ffwd
+docker rm -f ff
 
 # Run last known-good image or config
 docker run -d \
