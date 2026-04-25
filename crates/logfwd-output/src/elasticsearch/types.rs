@@ -16,6 +16,7 @@ use logfwd_types::diagnostics::ComponentStats;
 pub(crate) struct ElasticsearchConfig {
     pub(super) endpoint: String,
     pub(super) headers: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)>,
+    #[allow(dead_code)]
     pub(super) compress: bool,
     pub(super) request_mode: ElasticsearchRequestMode,
     /// Maximum uncompressed bulk payload size in bytes. Batches that serialize
