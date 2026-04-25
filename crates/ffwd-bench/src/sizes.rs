@@ -289,7 +289,7 @@ fn generate_simple(n: usize) -> Vec<u8> {
             r#"{{"timestamp":"2024-01-15T10:30:00.{:03}Z","level":"{}","message":"request handled GET {}/{}","duration_ms":{},"request_id":"{:016x}","service":"myapp"}}"#,
             i % 1000, levels[i % 4], paths[i % 5], 10000 + (i * 7) % 90000,
             1 + (i * 13) % 500, (i as u64).wrapping_mul(0x517cc1b727220a95),
-        ).unwrap();
+        ).expect("write to Vec<u8>");
         buf.push(b'\n');
     }
     buf
@@ -313,7 +313,7 @@ fn generate_wide(n: usize) -> Vec<u8> {
             i32::from(i % 20 == 0),
             if i % 3 == 0 { "true" } else { "false" },
             (i * 7) % 200, i % 4, 1 + i % 5, i % 10,
-        ).unwrap();
+        ).expect("write to Vec<u8>");
         buf.push(b'\n');
     }
     buf
@@ -330,7 +330,7 @@ fn generate_narrow(n: usize) -> Vec<u8> {
             levels[i % 4],
             i
         )
-        .unwrap();
+        .expect("write to Vec<u8>");
         buf.push(b'\n');
     }
     buf
