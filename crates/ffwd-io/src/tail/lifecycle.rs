@@ -2,7 +2,6 @@
 // are defined ahead of their first use.  Suppress dead-code warnings for the
 // entire module until the remaining transitions are wired up.
 #![allow(dead_code)]
-
 #![allow(clippy::indexing_slicing)]
 
 use std::fs::File;
