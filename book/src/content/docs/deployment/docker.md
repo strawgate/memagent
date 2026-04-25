@@ -21,15 +21,15 @@ Start with these settings for predictable behavior:
 
 ```bash
 docker run -d \
-  --name ffwd \
+  --name ff \
   -v /var/log:/var/log:ro \
-  -v ./config.yaml:/etc/ffwd/config.yaml:ro \
-  -v ffwd-data:/var/lib/ffwd \
+  -v ./config.yaml:/etc/ff/config.yaml:ro \
+  -v ff-data:/var/lib/ff \
   -p 9090:9090 \
   --cpus 1.0 \
   --memory 256m \
   ghcr.io/strawgate/fastforward:latest \
-  run --config /etc/ffwd/config.yaml
+  run --config /etc/ff/config.yaml
 ```
 
 ### Flag breakdown
@@ -37,8 +37,8 @@ docker run -d \
 | Flag | Purpose |
 |------|---------|
 | `-v /var/log:/var/log:ro` | Gives FastForward read-only access to host log files |
-| `-v ./config.yaml:/etc/ffwd/config.yaml:ro` | Injects your pipeline configuration (read-only) |
-| `-v ffwd-data:/var/lib/ffwd` | Persists checkpoint data between container restarts |
+| `-v ./config.yaml:/etc/ff/config.yaml:ro` | Injects your pipeline configuration (read-only) |
+| `-v ff-data:/var/lib/ff` | Persists checkpoint data between container restarts |
 | `-p 9090:9090` | Exposes the diagnostics/admin API on the host |
 | `--cpus 1.0` | Limits the container to one CPU core |
 | `--memory 256m` | Hard memory cap; the OOM killer fires if exceeded |
@@ -46,7 +46,7 @@ docker run -d \
 ## Checkpoint persistence
 
 :::tip[Always mount a checkpoint volume]
-Without a persistent volume for `/var/lib/ffwd`, FastForward loses its file-read
+Without a persistent volume for `/var/lib/ff`, FastForward loses its file-read
 position on every container restart. This causes **duplicate log delivery**
 (re-reading from the beginning) or **data loss** (if the output has
 already acknowledged earlier batches). A Docker named volume or a host-path
@@ -55,17 +55,17 @@ bind mount eliminates both problems.
 
 ```bash
 # Named volume (recommended — Docker manages the lifecycle)
--v ffwd-data:/var/lib/ffwd
+-v ff-data:/var/lib/ff
 
 # Host-path bind mount (useful when you need direct access to checkpoint files)
--v /opt/ffwd/data:/var/lib/ffwd
+-v /opt/ff/data:/var/lib/ff
 ```
 
 Your configuration must reference the same directory:
 
 ```yaml
 storage:
-  data_dir: /var/lib/ffwd
+  data_dir: /var/lib/ff
 ```
 
 ## Resource constraints
@@ -94,17 +94,17 @@ at startup.
 
 ```bash
 docker run -d \
-  --name ffwd \
+  --name ff \
   -e OTEL_ENDPOINT=https://collector.internal:4318 \
   -e OTEL_TOKEN=my-secret-token \
   -v /var/log:/var/log:ro \
-  -v ./config.yaml:/etc/ffwd/config.yaml:ro \
-  -v ffwd-data:/var/lib/ffwd \
+  -v ./config.yaml:/etc/ff/config.yaml:ro \
+  -v ff-data:/var/lib/ff \
   -p 9090:9090 \
   --cpus 1.0 \
   --memory 256m \
   ghcr.io/strawgate/fastforward:latest \
-  run --config /etc/ffwd/config.yaml
+  run --config /etc/ff/config.yaml
 ```
 
 Then reference them in `config.yaml`:
@@ -125,16 +125,16 @@ to publish the listener ports.
 
 ```bash
 docker run -d \
-  --name ffwd \
-  -v ./config.yaml:/etc/ffwd/config.yaml:ro \
-  -v ffwd-data:/var/lib/ffwd \
+  --name ff \
+  -v ./config.yaml:/etc/ff/config.yaml:ro \
+  -v ff-data:/var/lib/ff \
   -p 9090:9090 \
   -p 5140:5140/tcp \
   -p 5140:5140/udp \
   --cpus 1.0 \
   --memory 256m \
   ghcr.io/strawgate/fastforward:latest \
-  run --config /etc/ffwd/config.yaml
+  run --config /etc/ff/config.yaml
 ```
 
 Matching input configuration:
@@ -168,13 +168,13 @@ over OTLP to the collector sidecar, and exposes the diagnostics API.
 ```yaml
 # docker-compose.yml
 services:
-  ffwd:
+  ff:
     image: ghcr.io/strawgate/fastforward:latest
-    command: ["run", "--config", "/etc/ffwd/config.yaml"]
+    command: ["run", "--config", "/etc/ff/config.yaml"]
     volumes:
       - /var/log:/var/log:ro
-      - ./config.yaml:/etc/ffwd/config.yaml:ro
-      - ffwd-data:/var/lib/ffwd
+      - ./config.yaml:/etc/ff/config.yaml:ro
+      - ff-data:/var/lib/ff
     ports:
       - "9090:9090"
     environment:
@@ -199,22 +199,22 @@ services:
     restart: unless-stopped
 
 volumes:
-  ffwd-data:
+  ff-data:
 ```
 
 Start the stack:
 
 ```bash
 docker compose up -d
-docker compose logs -f ffwd
+docker compose logs -f ff
 ```
 
 ## Validate container health
 
 ```bash
 # Process and startup logs
-docker ps --filter name=ffwd
-docker logs --tail=100 ffwd
+docker ps --filter name=ff
+docker logs --tail=100 ff
 
 # Diagnostics
 curl -s http://localhost:9090/live | jq .
@@ -240,19 +240,19 @@ docker rm -f ffwd
 
 # Run last known-good image or config
 docker run -d \
-  --name ffwd \
+  --name ff \
   -v /var/log:/var/log:ro \
-  -v ./config.last-known-good.yaml:/etc/ffwd/config.yaml:ro \
-  -v ffwd-data:/var/lib/ffwd \
+  -v ./config.last-known-good.yaml:/etc/ff/config.yaml:ro \
+  -v ff-data:/var/lib/ff \
   -p 9090:9090 \
   ghcr.io/strawgate/fastforward:<known-good-tag> \
-  run --config /etc/ffwd/config.yaml
+  run --config /etc/ff/config.yaml
 ```
 
 Then validate with the same diagnostics commands above.
 
 :::tip
-Because checkpoint data is stored in the `ffwd-data` volume, rolling back
+Because checkpoint data is stored in the `ff-data` volume, rolling back
 the image or configuration does not lose read position. FastForward resumes where
 it left off.
 :::

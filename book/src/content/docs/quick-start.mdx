@@ -31,8 +31,8 @@ The Cargo package is named `ffwd`; the installed CLI binary is `ff`. Docker imag
     ```bash
     docker run --rm \
       -v /var/log:/var/log:ro \
-      -v $(pwd)/config.yaml:/etc/ffwd/config.yaml:ro \
-      ghcr.io/strawgate/fastforward:latest run --config /etc/ffwd/config.yaml
+      -v $(pwd)/config.yaml:/etc/ff/config.yaml:ro \
+      ghcr.io/strawgate/fastforward:latest run --config /etc/ff/config.yaml
     ```
 
     Images are published to `ghcr.io/strawgate/fastforward` for `linux/amd64` and `linux/arm64`. See [Docker deployment](/deployment/docker/) for compose files and volume configuration.

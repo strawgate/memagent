@@ -19,8 +19,8 @@ server:
 - Keep one terminal tailing logs:
 
 ```bash
-kubectl -n collectors logs -f daemonset/ffwd
-# or local/docker: docker logs -f ffwd
+kubectl -n collectors logs -f daemonset/ff
+# or local/docker: docker logs -f ff
 ```
 :::
 
@@ -99,7 +99,7 @@ curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].transform'
 curl -v http://otel-collector:4318/v1/logs
 
 # Kubernetes DNS resolution check
-POD=$(kubectl -n collectors get pods -l app=ffwd -o jsonpath='{.items[0].metadata.name}')
+POD=$(kubectl -n collectors get pods -l app=ff -o jsonpath='{.items[0].metadata.name}')
 kubectl -n collectors exec "$POD" -- nslookup otel-collector
 ```
 
@@ -177,7 +177,7 @@ Stage times should be stable, with no sudden sustained growth in output time.
 2. Excessive transform complexity.
    - Simplify query or split into named pipelines.
 3. Node resource pressure.
-   - Increase CPU/memory requests for the `ffwd` DaemonSet.
+   - Increase CPU/memory requests for the `ff` DaemonSet.
 
 ### Verify fix
 
