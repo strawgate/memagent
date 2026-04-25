@@ -12,6 +12,10 @@ use ffwd_core::reassembler::{AggregateResult, CriReassembler};
 use ffwd_types::diagnostics::ComponentStats;
 use std::sync::Arc;
 
+/// Maximum CRI message size in bytes (2 MiB). Used as the default max_message_size
+/// for `FormatDecoder::cri` and `FormatDecoder::auto`.
+pub const CRI_MAX_MESSAGE: usize = 2 * 1024 * 1024;
+
 /// Processes framed input lines according to the configured format.
 ///
 /// - `Passthrough`: lines are already scanner-ready (Raw — no JSON validation)
@@ -537,7 +541,7 @@ mod tests {
         .expect("file tailer");
         let mut framed = FramedInput::new(
             Box::new(file_input),
-            FormatDecoder::cri(2 * 1024 * 1024, Arc::clone(&stats)),
+            FormatDecoder::cri(CRI_MAX_MESSAGE, Arc::clone(&stats)),
             stats,
         );
 
@@ -583,7 +587,7 @@ mod tests {
     #[test]
     fn cri_full_lines_extracted() {
         let stats = make_stats();
-        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
+        let mut proc = FormatDecoder::cri(CRI_MAX_MESSAGE, stats);
         let input = b"2024-01-15T10:30:00Z stdout F {\"msg\":\"hello\"}\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
@@ -593,7 +597,7 @@ mod tests {
     #[test]
     fn cri_partial_then_full_merged() {
         let stats = make_stats();
-        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
+        let mut proc = FormatDecoder::cri(CRI_MAX_MESSAGE, stats);
         let mut out = Vec::new();
 
         // Partial line
@@ -608,7 +612,7 @@ mod tests {
     #[test]
     fn cri_interleaved_streams_do_not_cross_contaminate() {
         let stats = make_stats();
-        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, Arc::clone(&stats));
+        let mut proc = FormatDecoder::cri(CRI_MAX_MESSAGE, Arc::clone(&stats));
         let mut out = Vec::new();
 
         proc.process_lines(b"2024-01-15T10:30:00Z stdout P out-\n", &mut out);
@@ -630,7 +634,7 @@ mod tests {
     #[test]
     fn cri_malformed_lines_count_errors() {
         let stats = make_stats();
-        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, Arc::clone(&stats));
+        let mut proc = FormatDecoder::cri(CRI_MAX_MESSAGE, Arc::clone(&stats));
         let input = b"not a cri line\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
@@ -646,7 +650,7 @@ mod tests {
     #[test]
     fn auto_passthrough_for_non_cri_json() {
         let stats = make_stats();
-        let mut proc = FormatDecoder::auto(2 * 1024 * 1024, stats);
+        let mut proc = FormatDecoder::auto(CRI_MAX_MESSAGE, stats);
         let input = b"{\"msg\":\"plain json\"}\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
@@ -656,7 +660,7 @@ mod tests {
     #[test]
     fn auto_wraps_plain_text_for_non_cri() {
         let stats = make_stats();
-        let mut proc = FormatDecoder::auto(2 * 1024 * 1024, stats);
+        let mut proc = FormatDecoder::auto(CRI_MAX_MESSAGE, stats);
         let input = b"not a cri line\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
@@ -666,7 +670,7 @@ mod tests {
     #[test]
     fn auto_wraps_plain_text_for_non_cri_crlf_without_carriage_return() {
         let stats = make_stats();
-        let mut proc = FormatDecoder::auto(2 * 1024 * 1024, stats);
+        let mut proc = FormatDecoder::auto(CRI_MAX_MESSAGE, stats);
         let input = b"not a cri line\r\n\r\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
@@ -676,7 +680,7 @@ mod tests {
     #[test]
     fn auto_handles_cri_when_valid() {
         let stats = make_stats();
-        let mut proc = FormatDecoder::auto(2 * 1024 * 1024, stats);
+        let mut proc = FormatDecoder::auto(CRI_MAX_MESSAGE, stats);
         let input = b"2024-01-15T10:30:00Z stdout F {\"msg\":\"cri\"}\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
@@ -686,7 +690,7 @@ mod tests {
     #[test]
     fn auto_sidecar_tracks_nulls_for_non_cri_rows() {
         let stats = make_stats();
-        let mut proc = FormatDecoder::auto(2 * 1024 * 1024, stats);
+        let mut proc = FormatDecoder::auto(CRI_MAX_MESSAGE, stats);
         let input =
             b"{\"msg\":\"plain\"}\n2024-01-15T10:30:00Z stdout F {\"msg\":\"cri\"}\nnot cri\n";
         let mut out = Vec::new();
@@ -709,7 +713,7 @@ mod tests {
     #[test]
     fn auto_malformed_line_resets_pending_state() {
         let stats = make_stats();
-        let mut proc = FormatDecoder::auto(2 * 1024 * 1024, stats);
+        let mut proc = FormatDecoder::auto(CRI_MAX_MESSAGE, stats);
         let mut out = Vec::new();
 
         proc.process_lines(b"2024-01-15T10:30:00Z stdout P hello \n", &mut out);
@@ -727,8 +731,8 @@ mod tests {
     fn auto_process_lines_into_matches_vec_sink_across_mixed_sequence() {
         let stats = make_stats();
         assert_decoder_sinks_match(
-            FormatDecoder::auto(2 * 1024 * 1024, Arc::clone(&stats)),
-            FormatDecoder::auto(2 * 1024 * 1024, stats),
+            FormatDecoder::auto(CRI_MAX_MESSAGE, Arc::clone(&stats)),
+            FormatDecoder::auto(CRI_MAX_MESSAGE, stats),
             &[
                 b"{\"msg\":\"plain\"}\n",
                 b"2024-01-15T10:30:00Z stdout P hello \n",
@@ -741,7 +745,7 @@ mod tests {
     #[test]
     fn reset_clears_aggregator_state() {
         let stats = make_stats();
-        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
+        let mut proc = FormatDecoder::cri(CRI_MAX_MESSAGE, stats);
         let mut out = Vec::new();
 
         // Feed a partial
@@ -759,7 +763,7 @@ mod tests {
     #[test]
     fn cri_collects_timestamp_and_stream_sidecar() {
         let stats = make_stats();
-        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
+        let mut proc = FormatDecoder::cri(CRI_MAX_MESSAGE, stats);
         let mut out = Vec::new();
         let mut metadata = CriMetadata::default();
 
@@ -794,7 +798,7 @@ mod tests {
         // For a P+F sequence the timestamp/stream from the closing F line are used.
         // P message: `{"msg":`, F message: `"hello"}`, concatenated: `{"msg":"hello"}`
         let stats = make_stats();
-        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
+        let mut proc = FormatDecoder::cri(CRI_MAX_MESSAGE, stats);
         let mut out = Vec::new();
 
         proc.process_lines(b"2024-01-15T10:30:00Z stdout P {\"msg\":\n", &mut out);
@@ -808,8 +812,8 @@ mod tests {
     fn cri_process_lines_into_matches_vec_sink_across_partial_sequence() {
         let stats = make_stats();
         assert_decoder_sinks_match(
-            FormatDecoder::cri(2 * 1024 * 1024, Arc::clone(&stats)),
-            FormatDecoder::cri(2 * 1024 * 1024, stats),
+            FormatDecoder::cri(CRI_MAX_MESSAGE, Arc::clone(&stats)),
+            FormatDecoder::cri(CRI_MAX_MESSAGE, stats),
             &[
                 b"2024-01-15T10:30:00Z stdout P {\"msg\":\n",
                 b"2024-01-15T10:30:00Z stdout F \"hello\"}\n",
@@ -823,7 +827,7 @@ mod tests {
         // Non-JSON CRI messages (plain text) must be wrapped so that message
         // content is not silently lost when the scanner sees a non-JSON line.
         let stats = make_stats();
-        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
+        let mut proc = FormatDecoder::cri(CRI_MAX_MESSAGE, stats);
         let input = b"2024-01-15T10:30:00Z stdout F plain text message\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
@@ -834,7 +838,7 @@ mod tests {
     fn cri_non_json_message_uses_configured_plain_text_field() {
         let stats = make_stats();
         let mut proc =
-            FormatDecoder::cri_with_plain_text_field(2 * 1024 * 1024, "payload".to_string(), stats);
+            FormatDecoder::cri_with_plain_text_field(CRI_MAX_MESSAGE, "payload".to_string(), stats);
         let input = b"2024-01-15T10:30:00Z stdout F plain text message\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
@@ -845,7 +849,7 @@ mod tests {
     fn cri_non_json_message_escapes_special_chars() {
         // Plain text containing JSON-special characters must be properly escaped.
         let stats = make_stats();
-        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
+        let mut proc = FormatDecoder::cri(CRI_MAX_MESSAGE, stats);
         let input = b"2024-01-15T10:30:00Z stdout F say \"hello\"\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
@@ -857,7 +861,7 @@ mod tests {
     #[test]
     fn cri_empty_json_object_message_produces_valid_json() {
         let stats = make_stats();
-        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
+        let mut proc = FormatDecoder::cri(CRI_MAX_MESSAGE, stats);
         let input = b"2024-01-15T10:30:00Z stdout F {}\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);
@@ -874,7 +878,7 @@ mod tests {
     #[test]
     fn cri_whitespace_json_object_message_produces_valid_json() {
         let stats = make_stats();
-        let mut proc = FormatDecoder::cri(2 * 1024 * 1024, stats);
+        let mut proc = FormatDecoder::cri(CRI_MAX_MESSAGE, stats);
         let input = b"2024-01-15T10:30:00Z stdout F { }\n";
         let mut out = Vec::new();
         proc.process_lines(input, &mut out);

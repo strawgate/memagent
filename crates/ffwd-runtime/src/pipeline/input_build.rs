@@ -22,6 +22,9 @@ const DEFAULT_READ_BUF_SIZE: usize = 256 * 1024;
 const DEFAULT_PER_FILE_READ_BUDGET_BYTES: usize = 256 * 1024;
 const DEFAULT_MAX_OPEN_FILES: usize = 1024;
 
+/// Default capacity for the ingest buffer ( BytesMut::with_capacity).
+const DEFAULT_INGEST_BUFFER_CAP: usize = 4 * 1024 * 1024;
+
 // ── Generator-input defaults ───────────────────────────────────────────
 const DEFAULT_GENERATOR_BATCH_SIZE: usize = 1000;
 
@@ -189,7 +192,7 @@ pub(super) fn build_input_state(
             }
             .map_err(|e| format!("input '{name}': failed to create tailer: {e}"))?;
             validate_input_format(name, InputType::File, &format)?;
-            (Box::new(source), format, 4 * 1024 * 1024)
+            (Box::new(source), format, DEFAULT_INGEST_BUFFER_CAP)
         }
         InputTypeConfig::Generator(g) => {
             use ffwd_io::generator::{
@@ -284,7 +287,7 @@ pub(super) fn build_input_state(
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Generator, &format)?;
             let source = GeneratorInput::new(name, config);
-            (Box::new(source), format, 4 * 1024 * 1024)
+            (Box::new(source), format, DEFAULT_INGEST_BUFFER_CAP)
         }
         InputTypeConfig::Otlp(o) => {
             let addr = require_non_empty(name, "otlp", "listen", Some(&o.listen))?;
@@ -313,7 +316,7 @@ pub(super) fn build_input_state(
             let _ = protobuf_decode_mode;
             return Ok(IngestState {
                 source: Box::new(source),
-                buf: BytesMut::with_capacity(4 * 1024 * 1024),
+                buf: BytesMut::with_capacity(DEFAULT_INGEST_BUFFER_CAP),
                 row_origins: Vec::new(),
                 source_paths: HashMap::new(),
                 cri_metadata: ffwd_io::input::CriMetadata::default(),
@@ -340,7 +343,7 @@ pub(super) fn build_input_state(
             .map_err(|e| format!("input '{name}': failed to start Arrow IPC receiver: {e}"))?;
             return Ok(IngestState {
                 source: Box::new(source),
-                buf: BytesMut::with_capacity(4 * 1024 * 1024),
+                buf: BytesMut::with_capacity(DEFAULT_INGEST_BUFFER_CAP),
                 row_origins: Vec::new(),
                 source_paths: HashMap::new(),
                 cri_metadata: ffwd_io::input::CriMetadata::default(),
@@ -391,13 +394,13 @@ pub(super) fn build_input_state(
             }
             let source = ffwd_io::http_input::HttpInput::new_with_options(name, addr, options)
                 .map_err(|e| format!("input '{name}': failed to start HTTP input: {e}"))?;
-            (Box::new(source), format, 4 * 1024 * 1024)
+            (Box::new(source), format, DEFAULT_INGEST_BUFFER_CAP)
         }
         InputTypeConfig::Stdin(_) => {
             let format = cfg.format.clone().unwrap_or(Format::Auto);
             validate_input_format(name, InputType::Stdin, &format)?;
             let source = StdinInput::new(name);
-            (Box::new(source), format, 4 * 1024 * 1024)
+            (Box::new(source), format, DEFAULT_INGEST_BUFFER_CAP)
         }
         InputTypeConfig::Udp(u) => {
             let addr = require_non_empty(name, "udp", "listen", Some(&u.listen))?;
@@ -474,7 +477,7 @@ pub(super) fn build_input_state(
                     .map_err(|e| format!("input '{name}': failed to bind TCP {addr}: {e}"))?;
             let format = cfg.format.clone().unwrap_or(Format::Json);
             validate_input_format(name, InputType::Tcp, &format)?;
-            (Box::new(source), format, 4 * 1024 * 1024)
+            (Box::new(source), format, DEFAULT_INGEST_BUFFER_CAP)
         }
         InputTypeConfig::LinuxEbpfSensor(s) => {
             #[cfg(not(target_os = "linux"))]
@@ -690,7 +693,7 @@ pub(super) fn build_input_state(
                 let framed = FramedInput::new(Box::new(source), format_proc, Arc::clone(&stats));
                 return Ok(IngestState {
                     source: Box::new(framed),
-                    buf: BytesMut::with_capacity(4 * 1024 * 1024),
+                    buf: BytesMut::with_capacity(DEFAULT_INGEST_BUFFER_CAP),
                     row_origins: Vec::new(),
                     source_paths: HashMap::new(),
                     cri_metadata: ffwd_io::input::CriMetadata::default(),
@@ -752,7 +755,7 @@ pub(super) fn build_input_state(
             let format = cfg.format.clone().unwrap_or(Format::Json);
             let source = JournaldInput::new(name, config, Arc::clone(&stats))
                 .map_err(|e| format!("input '{name}': failed to start journald receiver: {e}"))?;
-            (Box::new(source), format, 4 * 1024 * 1024)
+            (Box::new(source), format, DEFAULT_INGEST_BUFFER_CAP)
         }
     };
 
