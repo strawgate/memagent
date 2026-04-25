@@ -31,4 +31,4 @@ name = "builder_profile"
 required-features = ["_test-internals"]
 
 [lints]
-workspace = true
+clippy.indexing_slicing = "deny"

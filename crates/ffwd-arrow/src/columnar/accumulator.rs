@@ -13,6 +13,8 @@
 // which monotonically increases. build_string relies on this for its
 // sequential merge with the row range.
 
+#![allow(clippy::indexing_slicing)]
+
 use std::sync::Arc;
 
 use arrow::array::{

@@ -11,6 +11,8 @@
 // structured producers such as OTLP projection. StreamingBuilder remains the
 // scanner-facing adapter.
 
+#![allow(clippy::indexing_slicing)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

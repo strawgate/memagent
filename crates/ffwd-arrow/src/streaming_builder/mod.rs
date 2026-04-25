@@ -7,6 +7,8 @@
 //
 // For the hot pipeline path: scan -> query -> output -> discard.
 
+#![allow(clippy::indexing_slicing)]
+
 //! Zero-copy Arrow RecordBatch builder for the hot pipeline path.
 
 mod finish;

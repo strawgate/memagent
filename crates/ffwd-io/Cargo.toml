@@ -107,4 +107,4 @@ tower = { version = "0.5", features = ["util"] }
 ureq = "3"
 
 [lints]
-workspace = true
+clippy.indexing_slicing = "deny"

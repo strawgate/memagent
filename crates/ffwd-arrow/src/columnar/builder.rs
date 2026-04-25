@@ -14,6 +14,8 @@
 // StreamingBuilder remains the scanner-facing ScanBuilder adapter.
 // ColumnarBatchBuilder is for structured producers (OTLP, CSV, etc).
 
+#![allow(clippy::indexing_slicing)]
+
 use std::sync::Arc;
 
 use arrow::buffer::Buffer;
