@@ -18,8 +18,8 @@ from otlp_proto import parse_proto_fields, vendored_proto_root
 
 
 REPO = Path(__file__).resolve().parents[1]
-OUT = REPO / "crates" / "logfwd-output" / "src" / "generated" / "otlp_log_record_fast_v1.rs"
-PROTO_BASE = REPO / "crates" / "logfwd-io" / "codegen" / "opentelemetry-proto"
+OUT = REPO / "crates" / "ffwd-output" / "src" / "generated" / "otlp_log_record_fast_v1.rs"
+PROTO_BASE = REPO / "crates" / "ffwd-io" / "codegen" / "opentelemetry-proto"
 PROTO_ROOT = vendored_proto_root(PROTO_BASE)
 PROTO_VERSION = PROTO_ROOT.name
 PROTO_FILES = [
@@ -121,7 +121,7 @@ def render(spec: dict) -> str:
 use arrow::array::Array;
 use super::{{BatchColumns, BatchMetadata, encode_col_attr, encode_fixed32, encode_tag,
     encode_varint, numeric_timestamp_ns}};
-use logfwd_core::otlp::{{self, Severity, bytes_field_size, encode_bytes_field, encode_fixed64,
+use ffwd_core::otlp::{{self, Severity, bytes_field_size, encode_bytes_field, encode_fixed64,
     encode_varint_field, hex_decode, parse_severity, parse_timestamp_nanos}};
 
 /// Generated v1 OTLP LogRecord encoder.

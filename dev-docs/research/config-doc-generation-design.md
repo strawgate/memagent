@@ -15,8 +15,8 @@ The target outcome is:
 - one canonical source for curated per-field docs metadata;
 - generated support tables, field tables, and starter snippets;
 - no drift between:
-  - `crates/logfwd-config/src/types.rs`
-  - `crates/logfwd-config-wasm/src/lib.rs`
+  - `crates/ffwd-config/src/types.rs`
+  - `crates/ffwd-config-wasm/src/lib.rs`
   - `book/src/content/docs/configuration/reference.mdx`
   - `book/src/content/docs/configuration/inputs.md`
   - `book/src/content/docs/configuration/outputs.mdx`
@@ -33,10 +33,10 @@ The target outcome is:
 FastForward currently has three overlapping sources of truth:
 
 1. Typed config models and validation:
-   - `crates/logfwd-config/src/types.rs`
-   - `crates/logfwd-config/src/validate.rs`
+   - `crates/ffwd-config/src/types.rs`
+   - `crates/ffwd-config/src/validate.rs`
 2. Curated builder/template metadata:
-   - `crates/logfwd-config-wasm/src/lib.rs`
+   - `crates/ffwd-config-wasm/src/lib.rs`
 3. Hand-authored public docs:
    - `book/src/content/docs/configuration/reference.mdx`
    - `book/src/content/docs/configuration/inputs.md`
@@ -100,10 +100,10 @@ Rust syntax.
 
 ## Proposed Source Layout
 
-Add a docs metadata module under `logfwd-config`, for example:
+Add a docs metadata module under `ffwd-config`, for example:
 
 ```text
-crates/logfwd-config/src/docspec/
+crates/ffwd-config/src/docspec/
 ├── mod.rs
 ├── inputs.rs
 ├── outputs.rs
@@ -113,7 +113,7 @@ crates/logfwd-config/src/docspec/
 This module should be usable from:
 
 - a docs generator (`xtask` or `scripts/docs/...`);
-- `logfwd-config-wasm`;
+- `ffwd-config-wasm`;
 - tests that enforce coverage against config enums.
 
 ## Proposed Data Model
@@ -226,7 +226,7 @@ There are two reasonable approaches:
 
 ### Option A: Explicit inventory functions in Rust
 
-Add small helper functions in `logfwd-config` that return:
+Add small helper functions in `ffwd-config` that return:
 
 - input type tags + aliases
 - output type tags
@@ -267,7 +267,7 @@ Ship first:
 Generate:
 
 - support tables for `reference.mdx`
-- builder templates for `logfwd-config-wasm`
+- builder templates for `ffwd-config-wasm`
 
 Do not generate field tables yet.
 
@@ -376,7 +376,7 @@ Mitigation:
 
 Build a hybrid system:
 
-1. add a small Rust docs metadata registry in `logfwd-config`;
+1. add a small Rust docs metadata registry in `ffwd-config`;
 2. use explicit Rust inventory helpers for coverage, not source parsing;
 3. generate builder templates and support tables first;
 4. generate field reference tables second;

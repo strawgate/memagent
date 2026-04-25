@@ -1,6 +1,6 @@
 # Tokio Async Patterns (Repo-Scoped)
 
-Operational patterns used in `logfwd-runtime` and pipeline shells.
+Operational patterns used in `ffwd-runtime` and pipeline shells.
 
 ## Boundary Rule
 

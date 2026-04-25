@@ -18,7 +18,7 @@ As of April 2026, the verification surface is large enough that structure matter
 - `#[cfg(kani)]` modules: ~52
 - TLA+: 7 primary specs under [`../../tla`](../../tla)
 - TLC configs: 21 safety/liveness/coverage/thorough configs
-- Turmoil simulation files: 17 under [`../../crates/logfwd/tests/turmoil_sim`](../../crates/logfwd/tests/turmoil_sim)
+- Turmoil simulation files: 17 under [`../../crates/ffwd/tests/turmoil_sim`](../../crates/ffwd/tests/turmoil_sim)
 - Verification guardrail scripts: 5 under [`../../scripts`](../../scripts)
 - Non-core Kani seams in boundary contract: 39
 
@@ -69,7 +69,7 @@ The repo currently uses four verification storage patterns:
 3. Verification manifests where a machine-readable inventory already pays for itself
    Example: `kani-boundary-contract.toml`, `fuzz-manifest.toml`
 4. Runtime/simulation evidence under test trees
-   Example: [`../../crates/logfwd/tests/turmoil_sim`](../../crates/logfwd/tests/turmoil_sim)
+   Example: [`../../crates/ffwd/tests/turmoil_sim`](../../crates/ffwd/tests/turmoil_sim)
 
 This is a good base. The main weakness is that some verification facts are duplicated across prose, TOML, CI YAML, `just`, and `xtask` logic.
 
@@ -199,8 +199,8 @@ This would align local and CI execution more closely with the CCF-style wrapper 
 
 The repo already has a prototype bridge in:
 
-- [`../../crates/logfwd/tests/turmoil_sim/trace_validation.rs`](../../crates/logfwd/tests/turmoil_sim/trace_validation.rs)
-- [`../../crates/logfwd/tests/turmoil_sim/trace_bridge.rs`](../../crates/logfwd/tests/turmoil_sim/trace_bridge.rs)
+- [`../../crates/ffwd/tests/turmoil_sim/trace_validation.rs`](../../crates/ffwd/tests/turmoil_sim/trace_validation.rs)
+- [`../../crates/ffwd/tests/turmoil_sim/trace_bridge.rs`](../../crates/ffwd/tests/turmoil_sim/trace_bridge.rs)
 
 The next step should be to connect trace validation to a spec-backed model, following the shape used by CCF and etcd:
 

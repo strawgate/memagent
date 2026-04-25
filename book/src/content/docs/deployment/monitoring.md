@@ -191,7 +191,7 @@ server:
 ### What gets pushed
 
 All of the counters and histograms listed in the Key metrics table above are
-exported as OTLP metrics, using the `logfwd_` prefix (metric prefix will change in a future release). Each metric includes
+exported as OTLP metrics, using the `logfwd_` prefix (metric prefix will change to `ffwd_` in a future release). Each metric includes
 resource attributes identifying the host and FastForward instance. The payload uses
 OTLP protobuf encoding over HTTP.
 
@@ -199,7 +199,7 @@ OTLP protobuf encoding over HTTP.
 
 ```bash
 # 1. Confirm FastForward is sending metrics (look for export lines in debug logs)
-docker logs logfwd 2>&1 | grep -i "metrics export"
+docker logs ffwd 2>&1 | grep -i "metrics export"
 
 # 2. Query the collector's own metrics to see ingest counts
 curl -s http://otel-collector:8888/metrics | grep otelcol_receiver_accepted_metric_points

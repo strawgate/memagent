@@ -1,0 +1,74 @@
+[package]
+name = "ffwd"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "ff"
+path = "src/main.rs"
+
+[lib]
+doctest = false
+
+[features]
+default = ["datafusion"]
+dhat-heap = ["dhat", "ffwd-runtime/dhat-heap"]
+cpu-profiling = ["ffwd-runtime/cpu-profiling"]
+turmoil = ["ffwd-runtime/turmoil"]
+datafusion = ["dep:ffwd-transform", "ffwd-runtime/datafusion"]
+otlp-research = [
+    "ffwd-config/otlp-research",
+    "ffwd-runtime/otlp-research",
+    "ffwd-io/otlp-research",
+]
+s3 = ["ffwd-runtime/s3"]
+
+[dependencies]
+arrow = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+clap_complete = { workspace = true }
+clap_complete_nushell = { workspace = true }
+dhat = { version = "0.3", optional = true }
+ffwd-arrow = { version = "0.1.0", path = "../ffwd-arrow" }
+ffwd-config = { version = "0.1.0", path = "../ffwd-config" }
+ffwd-core = { version = "0.1.0", path = "../ffwd-core" }
+ffwd-diagnostics = { version = "0.1.0", path = "../ffwd-diagnostics" }
+ffwd-io = { version = "0.1.0", path = "../ffwd-io" }
+ffwd-output = { version = "0.1.0", path = "../ffwd-output" }
+ffwd-runtime = { version = "0.1.0", path = "../ffwd-runtime", default-features = false }
+ffwd-transform = { version = "0.1.0", path = "../ffwd-transform", optional = true }
+ffwd-types = { version = "0.1.0", path = "../ffwd-types" }
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+serde_yaml_ng = { workspace = true }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "signal",
+    "time",
+    "sync",
+] }
+tokio-util = { version = "0.7" }
+tracing = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+tikv-jemallocator = { version = "0.6", features = ["stats"] }
+
+[dev-dependencies]
+arrow = { workspace = true }
+bytes = { workspace = true }
+ffwd-test-utils = { version = "0.1.0", path = "../ffwd-test-utils" }
+futures-util = { workspace = true }
+serde_json = "1"
+stats_alloc = { workspace = true }
+tempfile = "3"
+turmoil = { workspace = true, features = ["unstable-barriers"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+turmoil = { workspace = true, features = ["unstable-barriers", "unstable-fs"] }
+
+[lints]
+workspace = true

@@ -64,7 +64,7 @@ source. The typed-variant machinery is invisible for non-JSON inputs.
 SQL `SELECT status FROM logs` either fails or returns the struct — not
 the per-row coalesced value.
 
-**Solution:** `normalize_conflict_columns()` in `logfwd-transform` detects
+**Solution:** `normalize_conflict_columns()` in `ffwd-transform` detects
 conflict structs via `is_conflict_struct()` and replaces each in-place with
 a synthesized flat `Utf8` column before handing the batch to DataFusion:
 
@@ -94,7 +94,7 @@ otherwise. They work correctly on both single-type and conflict batches.
 ### Output serialization
 
 Output sinks receive the original `RecordBatch` (before SQL normalization).
-They use `build_col_infos()` from `logfwd-output`, which returns a
+They use `build_col_infos()` from `ffwd-output`, which returns a
 `Vec<ColInfo>` — one per logical field. Each `ColInfo` carries
 `json_variants: Vec<ColVariant>` (int > float > str priority) and
 `str_variants: Vec<ColVariant>` (str > int > float).
@@ -175,17 +175,17 @@ normalization, replacing the direct MemTable registration used today.
 
 ### Phase 10b (complete — PR #713)
 - Standardized double-underscore suffixes in `StreamingBuilder`
-- `logfwd.conflict_groups` schema metadata stamped in builders
+- `ffwd.conflict_groups` schema metadata stamped in builders
 - `strip_conflict_suffix` / `suffix_order` updated in `conflict_schema.rs`
   and `json_extract.rs`
 
 ### Phase 10c (complete — PR #760)
-- **Replaced** flat `__int`/`__str`/`__float` columns + `logfwd.conflict_groups`
+- **Replaced** flat `__int`/`__str`/`__float` columns + `ffwd.conflict_groups`
   metadata with a single Arrow `StructArray` conflict column per field
 - `is_conflict_struct()` structural detection replaces metadata parsing
 - `normalize_conflict_columns()` rewrites struct → flat Utf8 for SQL path
 - `ColVariant` / `ColInfo` / `build_col_infos()` / `write_row_json()` added
-  to `logfwd-output` for type-preserving output serialization
+  to `ffwd-output` for type-preserving output serialization
 - `json_extract` UDF updated: step 1 skips structs, step 2 extracts from
   struct children
 - OTLP sink skips struct columns instead of emitting empty-string attributes

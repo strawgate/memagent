@@ -52,11 +52,11 @@ jobs:
 
       - name: Build (cross)
         if: matrix.use_cross == true
-        run: cross build --release -p logfwd --target ${{ matrix.target }}
+        run: cross build --release -p ffwd --target ${{ matrix.target }}
 
       - name: Build (cargo)
         if: matrix.use_cross != true
-        run: cargo build --release -p logfwd --target ${{ matrix.target }}
+        run: cargo build --release -p ffwd --target ${{ matrix.target }}
 
       - name: Rename binary
         run: cp target/${{ matrix.target }}/release/ff ${{ matrix.artifact }}

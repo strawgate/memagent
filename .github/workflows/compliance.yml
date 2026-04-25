@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo test -p logfwd --test it -- 'compliance::' 2>&1 | tee compliance_pipeline.txt
+          cargo test -p ffwd --test it -- 'compliance::' 2>&1 | tee compliance_pipeline.txt
 
       - name: Run file handling compliance tests
         id: file
@@ -35,7 +35,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo test -p logfwd --test it -- 'compliance_file::' 2>&1 | tee compliance_file.txt
+          cargo test -p ffwd --test it -- 'compliance_file::' 2>&1 | tee compliance_file.txt
 
       - name: Run data integrity compliance tests
         id: data
@@ -43,7 +43,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo test -p logfwd-core --test it -- 'compliance_data::' 2>&1 | tee compliance_data.txt
+          cargo test -p ffwd-core --test it -- 'compliance_data::' 2>&1 | tee compliance_data.txt
 
       - name: Upload compliance test logs
         uses: actions/upload-artifact@v7

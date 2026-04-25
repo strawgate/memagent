@@ -196,10 +196,10 @@ input:
   type: tcp
   listen: 0.0.0.0:5140
   tls:
-    cert_file: /etc/logfwd/tls/server.pem
-    key_file: /etc/logfwd/tls/server.key
+    cert_file: /etc/ffwd/tls/server.pem
+    key_file: /etc/ffwd/tls/server.key
     require_client_auth: true
-    client_ca_file: /etc/logfwd/tls/clients-ca.pem
+    client_ca_file: /etc/ffwd/tls/clients-ca.pem
 ```
 
 `client_ca_file` enables client certificate verification and is accepted only

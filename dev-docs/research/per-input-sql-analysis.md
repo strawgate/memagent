@@ -2,7 +2,7 @@
 
 > **Status:** Active  
 > **Date:** 2026-04-06  
-> **Context:** logfwd currently has one `SqlTransform` per pipeline. This analysis explores moving SQL to each input.  
+> **Context:** ffwd currently has one `SqlTransform` per pipeline. This analysis explores moving SQL to each input.  
 > **Tracking:** Relates to [#1363](https://github.com/strawgate/fastforward/issues/1363)
 
 ---
@@ -58,7 +58,7 @@ The pipeline merges per-input RecordBatches into a union schema before passing t
 
 **Concern:** Schema discovery is now **lazy** — we don't know the union until all inputs have produced at least one batch. The first batch from Input A might flow through steps before Input B has started, meaning steps see a partial schema initially.
 
-**Verdict:** Workable. This is the natural extension of what logfwd already does.
+**Verdict:** Workable. This is the natural extension of what ffwd already does.
 
 #### Option (c): Each input is an independent pipeline
 
@@ -207,7 +207,7 @@ All three collectors support per-input transforms:
 
 **The common pattern:** Per-input transforms handle source-specific parsing/filtering. Global transforms handle cross-source operations. Schema is typically schemaless (JSON/MessagePack), avoiding the union problem entirely.
 
-**logfwd's difference:** We use Arrow RecordBatches with fixed schemas. This makes per-input SQL more complex but also more powerful (columnar pushdown, vectorized execution).
+**ffwd's difference:** We use Arrow RecordBatches with fixed schemas. This makes per-input SQL more complex but also more powerful (columnar pushdown, vectorized execution).
 
 ---
 
@@ -351,7 +351,7 @@ pipelines:
     enrichment:
       - type: geo_database
         format: mmdb
-        path: /etc/logfwd/GeoIP2-City.mmdb
+        path: /etc/ffwd/GeoIP2-City.mmdb
 
     outputs:
       - type: otlp
@@ -483,7 +483,7 @@ pipelines:
         enrichment:
           - type: csv_file
             table_name: app_meta
-            path: /etc/logfwd/app_metadata.csv
+            path: /etc/ffwd/app_metadata.csv
 ```
 
 **Pros:** Explicit scoping. Input A's enrichment tables don't pollute Input B's namespace.  
@@ -508,7 +508,7 @@ pipelines:
         enrichment:  # Additional, only for this input
           - type: csv_file
             table_name: app_meta
-            path: /etc/logfwd/app_metadata.csv
+            path: /etc/ffwd/app_metadata.csv
 ```
 
 ### Recommendation
@@ -564,7 +564,7 @@ pipelines:
       - type: host_info
       - type: geo_database
         format: mmdb
-        path: /etc/logfwd/GeoIP2-City.mmdb
+        path: /etc/ffwd/GeoIP2-City.mmdb
 
     outputs:
       - type: otlp

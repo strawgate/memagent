@@ -5,7 +5,7 @@ import { viteSingleFile } from "vite-plugin-singlefile";
 export default defineConfig({
   plugins: [preact(), viteSingleFile()],
   build: {
-    outDir: "../crates/logfwd-diagnostics/src/dashboard-dist",
+    outDir: "../crates/ffwd-diagnostics/src/dashboard-dist",
     emptyOutDir: true,
   },
   server: {

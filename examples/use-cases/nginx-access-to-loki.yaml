@@ -2,22 +2,22 @@
 # Use case: Nginx access logs to Loki
 # Replace paths/endpoints with values for your environment.
 
-input:
-  type: file
-  path: /var/log/nginx/access.log
-  format: raw
-
-transform: |
-  SELECT * FROM logs
-
-output:
-  type: loki
-  endpoint: https://loki:3100
-  static_labels:
-    app: nginx
-    stream: access
-  label_columns:
-    - status
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /var/log/nginx/access.log
+        format: raw
+    transform: |
+      SELECT * FROM logs
+    outputs:
+      - type: loki
+        endpoint: https://loki:3100
+        static_labels:
+          app: nginx
+          stream: access
+        label_columns:
+          - status
 
 # Optional: diagnostics
 # server:

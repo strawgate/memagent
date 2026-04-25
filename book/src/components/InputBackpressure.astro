@@ -177,7 +177,7 @@
 
   // --- DOM ---
   var MODES = [
-    { id: 'file', label: 'File Input', desc: 'Log file keeps growing — logfwd falls behind, catches up later' },
+    { id: 'file', label: 'File Input', desc: 'Log file keeps growing — ffwd falls behind, catches up later' },
     { id: 'udp', label: 'UDP Input', desc: 'Datagrams arrive — kernel buffer fills, packets dropped forever' },
     { id: 'otlp', label: 'OTLP Input', desc: 'Upstream agent sends batches — gets 429, backs off with retry' },
   ];
@@ -259,7 +259,7 @@
     var wrap = el('div', 'ib-file-bar-wrap');
     var label = el('div', 'ib-file-bar-label');
     var l1 = el('span'); l1.textContent = 'Written (on disk)';
-    var l2 = el('span'); l2.textContent = 'Read by logfwd';
+    var l2 = el('span'); l2.textContent = 'Read by ffwd';
     label.appendChild(l1); label.appendChild(l2);
     wrap.appendChild(label);
 
@@ -314,7 +314,7 @@
 
   function buildOtlpViz() {
     vizEl.innerHTML = '';
-    var title = el('div', 'ib-viz-title'); title.textContent = 'Upstream agent → logfwd';
+    var title = el('div', 'ib-viz-title'); title.textContent = 'Upstream agent → ffwd';
     vizEl.appendChild(title);
     otlpReqsEl = el('div', 'ib-otlp-reqs');
     vizEl.appendChild(otlpReqsEl);
@@ -477,10 +477,10 @@
       var gap = Math.round(fileWritten - fileRead);
       if (!overloaded || gap <= 1) {
         calloutEl.className = 'ib-callout ok';
-        calloutEl.innerHTML = '<b>File input is safe.</b> Data is on disk \u2014 logfwd reads at its own pace. When the pipeline catches up, the gap closes. No data is ever lost.';
+        calloutEl.innerHTML = '<b>File input is safe.</b> Data is on disk \u2014 ffwd reads at its own pace. When the pipeline catches up, the gap closes. No data is ever lost.';
       } else {
         calloutEl.className = 'ib-callout warn';
-        calloutEl.innerHTML = '<b>' + gap + ' lines behind.</b> The file keeps growing but logfwd\'s checkpoint tracks the read position. When output recovers, logfwd resumes from exactly where it left off. Try increasing pipeline speed to watch it catch up.';
+        calloutEl.innerHTML = '<b>' + gap + ' lines behind.</b> The file keeps growing but ffwd\'s checkpoint tracks the read position. When output recovers, ffwd resumes from exactly where it left off. Try increasing pipeline speed to watch it catch up.';
       }
     } else if (mode === 'udp') {
       if (udpDropped > 0) {
@@ -496,7 +496,7 @@
     } else {
       if (otlpRetrying) {
         calloutEl.className = 'ib-callout warn';
-        calloutEl.innerHTML = '<b>Upstream is backing off.</b> logfwd returned <code>429 Too Many Requests</code> with a <code>Retry-After</code> header. The upstream agent queues the batch and retries with exponential backoff. No data is lost \u2014 the sender holds it until logfwd is ready.';
+        calloutEl.innerHTML = '<b>Upstream is backing off.</b> ffwd returned <code>429 Too Many Requests</code> with a <code>Retry-After</code> header. The upstream agent queues the batch and retries with exponential backoff. No data is lost \u2014 the sender holds it until ffwd is ready.';
       } else if (otlpRejected > 0) {
         calloutEl.className = 'ib-callout ok';
         calloutEl.innerHTML = '<b>OTLP flow control working.</b> ' + otlpRejected + ' batches were temporarily rejected with 429, but the upstream agent retried and delivered them. This is the designed behavior \u2014 backpressure propagates to the sender via HTTP status codes.';

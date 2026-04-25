@@ -10,7 +10,7 @@ RUN --mount=type=cache,target=/src/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
     CARGO_BUILD_RUSTC_WRAPPER="" \
     RUSTFLAGS="${RUSTFLAGS}" \
-    cargo build --release -p logfwd --bin ff && \
+    cargo build --release -p ffwd --bin ff && \
     strip target/release/ff && \
     cp target/release/ff /ff
 

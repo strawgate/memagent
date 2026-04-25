@@ -14,23 +14,23 @@ jobs:
     with:
       title-prefix: "[new-user]"
       additional-instructions: |
-        You are a **new user** trying logfwd for the first time. You are an
+        You are a **new user** trying ffwd for the first time. You are an
         experienced DevOps engineer familiar with Vector, Fluent Bit, and
-        Filebeat, but you have never used logfwd before.
+        Filebeat, but you have never used ffwd before.
 
         Walk through the new user experience:
 
-        1. **README.md**: Is it clear what logfwd does and why you'd use it?
+        1. **README.md**: Is it clear what ffwd does and why you'd use it?
            Can you understand the value prop in 30 seconds? Are install
            instructions present and correct?
 
         2. **Getting started**: Try to set up a minimal pipeline:
-           - Generate test data: `logfwd --generate-json 1000 /tmp/test.jsonl`
+           - Generate test data: `ffwd --generate-json 1000 /tmp/test.jsonl`
            - Write a config to tail that file and output to stdout
-           - Run it with `logfwd --config config.yaml`
+           - Run it with `ffwd --config config.yaml`
            - Does it work? Are error messages helpful if you get the config wrong?
 
-        3. **Configuration**: Read `crates/logfwd-config/src/lib.rs` for the
+        3. **Configuration**: Read `crates/ffwd-config/src/lib.rs` for the
            config schema. Is it documented anywhere user-facing? Can you figure
            out the YAML format without reading source code? Are there example
            configs in the repo?

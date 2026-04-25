@@ -2,19 +2,19 @@
 # Use case: Kubernetes CRI logs to Loki
 # Replace paths/endpoints with values for your environment.
 
-input:
-  type: file
-  path: /var/log/containers/*.log
-  format: cri
-
-transform: |
-  SELECT * FROM logs
-
-output:
-  type: loki
-  endpoint: https://loki:3100
-  static_labels:
-    cluster: prod
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /var/log/containers/*.log
+        format: cri
+    transform: |
+      SELECT * FROM logs
+    outputs:
+      - type: loki
+        endpoint: https://loki:3100
+        static_labels:
+          cluster: prod
 
 # Optional: diagnostics
 # server:

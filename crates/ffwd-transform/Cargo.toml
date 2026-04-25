@@ -1,0 +1,32 @@
+[package]
+name = "ffwd-transform"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+arrow = { workspace = true }
+bytes = "1"
+csv = "1"
+datafusion = { workspace = true }
+ffwd-arrow = { version = "0.1.0", path = "../ffwd-arrow" }
+ffwd-core = { version = "0.1.0", path = "../ffwd-core" }
+ffwd-types = { version = "0.1.0", path = "../ffwd-types" }
+gethostname = "1"
+grok = { version = "2.4", default-features = false, features = ["fancy-regex"] }
+maxminddb = "0.27"
+regex = "1"
+serde_json = "1"
+thiserror = { workspace = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

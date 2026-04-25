@@ -140,7 +140,7 @@
     { id:'log', t:'Step 1: The log line', dur:4000,
       d:'A request fails and the application writes a JSON log line:<br><code style="font-size:0.72rem;line-height:1.8;display:inline-block;margin-top:0.3rem">{ "level": "ERROR", "message": "request failed", "status": 503, "duration_ms": 42.7 }</code>' },
     { id:'detect', t:'Step 2: SIMD detection', dur:5000,
-      d:'logfwd runs one SIMD pass. Structural characters light up as the bitmask fills in — 32 bytes per CPU cycle.' },
+      d:'ffwd runs one SIMD pass. Structural characters light up as the bitmask fills in — 32 bytes per CPU cycle.' },
     { id:'strings', t:'Step 3: String mask', dur:4500,
       d:'<code>prefix_xor</code> identifies bytes inside strings. Structural chars inside strings (dashed) are false positives.' },
     { id:'result', t:'Step 4: Usable positions', dur:4500,

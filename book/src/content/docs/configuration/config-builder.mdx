@@ -1,6 +1,6 @@
 ---
 title: "Config Builder"
-description: "Interactive pipeline config generator — pick an input, an output, and get a ready-to-run logfwd.yaml"
+description: "Interactive pipeline config generator — pick an input, an output, and get a ready-to-run ffwd.yaml"
 ---
 
 import ConfigBuilder from '../../../components/ConfigBuilder.astro';
@@ -13,6 +13,6 @@ Optionally add a SQL transform to filter or reshape events before they reach the
 
 ---
 
-The generated YAML is validated against the same Rust config types used by `logfwd` itself,
+The generated YAML is validated against the same Rust config types used by `ffwd` itself,
 so the structure and field values are guaranteed to be valid.
 Fill in paths, endpoints, and credentials for your environment before deploying.

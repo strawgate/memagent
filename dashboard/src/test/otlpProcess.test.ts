@@ -13,7 +13,7 @@ function tracesDoc(spans: Array<Record<string, unknown>>): OtlpTracesDocument {
         resource: { attributes: [] },
         scopeSpans: [
           {
-            scope: { name: "logfwd.diagnostics" },
+            scope: { name: "ffwd.diagnostics" },
             spans,
           },
         ],

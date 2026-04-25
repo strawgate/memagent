@@ -11,7 +11,7 @@ tasks:
     name: Build dashboard
     description: |
       Compile the Preact/TypeScript diagnostics dashboard into
-      crates/logfwd-io/src/dashboard.html. Must run before cargo build/test/clippy.
+      crates/ffwd-io/src/dashboard.html. Must run before cargo build/test/clippy.
     command: |
       cd dashboard && npm ci && npm run build
     triggeredBy:

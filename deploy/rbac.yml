@@ -1,5 +1,5 @@
-# Upgrade note: clusters that previously applied the old logfwd manifests may
-# keep stale logfwd ServiceAccount, ClusterRole, and ClusterRoleBinding objects.
+# Upgrade note: clusters that previously applied the old ffwd manifests may
+# keep stale ffwd ServiceAccount, ClusterRole, and ClusterRoleBinding objects.
 # Delete those old resources after all workloads use the ff service account.
 apiVersion: v1
 kind: ServiceAccount

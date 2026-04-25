@@ -2,38 +2,38 @@
 
 > **Status:** Active
 > **Date:** 2026-04-03
-> **Context:** Plan to split logfwd-core and logfwd-io for build time and blast radius improvements.
+> **Context:** Plan to split ffwd-core and ffwd-io for build time and blast radius improvements.
 
 ## Current State
 
 10 workspace crates, 42,745 lines, 586 tests.
 
 ```
-Layer 0 (leaves):   logfwd-core (8.5K, 4 deps, no_std)    logfwd-config (1.4K, 20 deps)
-Layer 1:            logfwd-arrow (2.3K, 144 deps)          logfwd-io (9.1K, 363 deps)
-Layer 2:            logfwd-transform (3.9K, 921 deps)      logfwd-output (6.5K, 551 deps)
-Layer 3:            logfwd (4.8K, 1105 deps)
+Layer 0 (leaves):   ffwd-core (8.5K, 4 deps, no_std)    ffwd-config (1.4K, 20 deps)
+Layer 1:            ffwd-arrow (2.3K, 144 deps)          ffwd-io (9.1K, 363 deps)
+Layer 2:            ffwd-transform (3.9K, 921 deps)      ffwd-output (6.5K, 551 deps)
+Layer 3:            ffwd (4.8K, 1105 deps)
 ```
 
 ## Problems
 
-### 1. logfwd-core blast radius = 8 crates
+### 1. ffwd-core blast radius = 8 crates
 
-logfwd-core contains BOTH the SIMD scanner (changes often during optimization)
+ffwd-core contains BOTH the SIMD scanner (changes often during optimization)
 AND pipeline types (SourceId, BatchTicket, PipelineMachine — stable, everything
 depends on these). Touching SIMD code rebuilds output sinks.
 
-### 2. logfwd-io is a kitchen sink (9.1K lines, 19 ext deps)
+### 2. ffwd-io is a kitchen sink (9.1K lines, 19 ext deps)
 
 Contains file tailing, TCP/UDP, OTLP receiver, checkpointing, compression,
 enrichment, diagnostics server, metrics. These are unrelated concerns.
 
 ### 3. Undocumented cross-layer dependencies
 
-logfwd-output depends on logfwd-io (tailer change → sink rebuild).
-logfwd-transform depends on logfwd-io (tailer change → DataFusion rebuild).
+ffwd-output depends on ffwd-io (tailer change → sink rebuild).
+ffwd-transform depends on ffwd-io (tailer change → DataFusion rebuild).
 
-### 4. 125s test in logfwd-transform
+### 4. 125s test in ffwd-transform
 
 `edge_very_long_value` dominates CI. One test = 95% of total test wall time.
 
@@ -47,51 +47,51 @@ logfwd-transform depends on logfwd-io (tailer change → DataFusion rebuild).
 
 ```toml
 default-members = [
-    "crates/logfwd-config",
-    "crates/logfwd-core",
-    "crates/logfwd-arrow",
-    "crates/logfwd-transform",
-    "crates/logfwd-io",
-    "crates/logfwd-output",
-    "crates/logfwd",
+    "crates/ffwd-config",
+    "crates/ffwd-core",
+    "crates/ffwd-arrow",
+    "crates/ffwd-transform",
+    "crates/ffwd-io",
+    "crates/ffwd-output",
+    "crates/ffwd",
 ]
 ```
 
-Excludes logfwd-bench, logfwd-competitive-bench, logfwd-test-utils from
+Excludes ffwd-bench, ffwd-competitive-bench, ffwd-test-utils from
 `cargo build` and `cargo check`. CI uses `--workspace` explicitly.
 
-### Phase B: Extract logfwd-types (highest value)
+### Phase B: Extract ffwd-types (highest value)
 
-Move from logfwd-core to new logfwd-types crate:
+Move from ffwd-core to new ffwd-types crate:
 - `pipeline/mod.rs` (BatchTicket, PipelineMachine, SourceId, etc.)
 - `pipeline/batch.rs`
 - `pipeline/lifecycle.rs`
 - `pipeline/registry.rs`
 - Error types if any
 
-logfwd-types is no_std, no deps beyond core. logfwd-core depends on
-logfwd-types (re-exports for backward compat). Other crates that only
-need pipeline types depend on logfwd-types directly, not logfwd-core.
+ffwd-types is no_std, no deps beyond core. ffwd-core depends on
+ffwd-types (re-exports for backward compat). Other crates that only
+need pipeline types depend on ffwd-types directly, not ffwd-core.
 
 **Blast radius change:**
-- Touch SIMD in logfwd-core → rebuilds arrow, transform, bench (NOT output, io)
+- Touch SIMD in ffwd-core → rebuilds arrow, transform, bench (NOT output, io)
 - Touch pipeline types → rebuilds everything (but types are stable)
 
-### Phase C: Remove logfwd-io dep from output and transform
+### Phase C: Remove ffwd-io dep from output and transform
 
-logfwd-output needs: conflict_schema (move to logfwd-arrow), checkpoint types
-(move to logfwd-types). After moving, output depends on types + arrow + HTTP.
-logfwd-transform needs: enrichment trait (move to logfwd-types). After moving,
+ffwd-output needs: conflict_schema (move to ffwd-arrow), checkpoint types
+(move to ffwd-types). After moving, output depends on types + arrow + HTTP.
+ffwd-transform needs: enrichment trait (move to ffwd-types). After moving,
 transform depends on types + arrow + datafusion.
 
-### Phase D: Split logfwd-io (optional, lower priority)
+### Phase D: Split ffwd-io (optional, lower priority)
 
 Split into:
-- logfwd-input (file tailing, TCP, UDP, OTLP receiver)
-- logfwd-checkpoint (checkpoint store, fingerprinting)
-- logfwd-diagnostics (diagnostics server, metrics, spans)
+- ffwd-input (file tailing, TCP, UDP, OTLP receiver)
+- ffwd-checkpoint (checkpoint store, fingerprinting)
+- ffwd-diagnostics (diagnostics server, metrics, spans)
 
-Only do this if logfwd-io blast radius remains a problem after Phase C.
+Only do this if ffwd-io blast radius remains a problem after Phase C.
 
 ## Research References
 

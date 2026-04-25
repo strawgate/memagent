@@ -3,7 +3,7 @@
 
 Library crates must expose `thiserror`-style enums with matchable variants
 so callers can recover. `Box<dyn Error>` strips that ability and is
-permitted only in the binary crate (`logfwd`) and in benches/profilers.
+permitted only in the binary crate (`ffwd`) and in benches/profilers.
 
 Scope:
 - Every `.rs` file under `crates/<name>/src/` for crates not on the
@@ -30,13 +30,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 CRATES_ROOT = REPO_ROOT / "crates"
 
 # Crates allowed to use Box<dyn Error> in public signatures. The binary
-# crate (`logfwd`) is the application shell; benches/profilers, test
+# crate (`ffwd`) is the application shell; benches/profilers, test
 # utilities, and experimental sensor binaries are not library APIs.
 ALLOWED_CRATES = {
-    "logfwd",
-    "logfwd-bench",
-    "logfwd-test-utils",
-    "logfwd-ebpf-proto",
+    "ffwd",
+    "ffwd-bench",
+    "ffwd-test-utils",
+    "ffwd-ebpf-proto",
 }
 
 # Top-level crate-relative path components that opt a file out of the

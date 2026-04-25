@@ -1,0 +1,13 @@
+---
+source: crates/ffwd-output/src/elasticsearch/tests/snapshots.rs
+assertion_line: 228
+expression: output
+---
+{"index":{"_index":"test-index"}}
+{"msg":"say \"hello\" world","@timestamp":"1970-01-01T00:00:00.000000000Z"}
+{"index":{"_index":"test-index"}}
+{"msg":"line1\nline2\ttab","@timestamp":"1970-01-01T00:00:00.000000000Z"}
+{"index":{"_index":"test-index"}}
+{"msg":"back\\slash","@timestamp":"1970-01-01T00:00:00.000000000Z"}
+{"index":{"_index":"test-index"}}
+{"msg":"control\u0000char","@timestamp":"1970-01-01T00:00:00.000000000Z"}

@@ -2,7 +2,7 @@
 
 <!-- Source-of-truth note: structural verification rules are machine-enforced by `cargo xtask verify`. Keep this document aligned with `xtask/src/main.rs` checks and manifests under `dev-docs/verification/`. -->
 
-logfwd uses five complementary verification techniques. Choose based on what you need to prove.
+ffwd uses five complementary verification techniques. Choose based on what you need to prove.
 
 For verification inventory, manifests, guardrails, and organization guidance,
 start with [`dev-docs/verification/README.md`](verification/README.md).
@@ -121,8 +121,8 @@ random — the SAT solver considers ALL possible values simultaneously.
 
 ### Kani quick path (10 minutes)
 
-1. Assume Kani is required for any changed pure/bounded `logfwd-core` logic.
-2. For new public `logfwd-core` functions, add or update a Kani proof.
+1. Assume Kani is required for any changed pure/bounded `ffwd-core` logic.
+2. For new public `ffwd-core` functions, add or update a Kani proof.
 3. Put harnesses in `#[cfg(kani)] mod verification` in the same file.
 4. Use `verify_<function>_<property>` naming and add `kani::cover!`.
 5. Add unwind bounds for loops.
@@ -171,14 +171,14 @@ That is the seam where shared byte ranges meet flush boundaries.
 ### Running proofs
 
 ```bash
-cargo kani -p logfwd-core              # All proofs in a crate
+cargo kani -p ffwd-core              # All proofs in a crate
 cargo kani --harness verify_my_fn      # Specific harness
-cargo kani -p logfwd-core --tests      # Kani + unit tests
-cargo build -p logfwd-core \
+cargo kani -p ffwd-core --tests      # Kani + unit tests
+cargo build -p ffwd-core \
   --target thumbv6m-none-eabi          # Verify no_std compliance
-MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-core --lib
-MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-types --lib
-MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-io framed::tests::poll_into_miri_shared_buffer_alias_regression --lib
+MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p ffwd-core --lib
+MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p ffwd-types --lib
+MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p ffwd-io framed::tests::poll_into_miri_shared_buffer_alias_regression --lib
 ```
 
 ### Non-core pure seam boundary contract
@@ -203,23 +203,23 @@ just kani-boundary
 
 CI runs this check in the dedicated `Verification guardrail` job, and the
 required `CI conclusion` status depends on that guardrail passing. CI also runs
-`cargo kani` for the required proof-bearing crates (`logfwd-core`,
-`logfwd-arrow`, `logfwd-types`, `logfwd-io`, `logfwd-output`,
-`logfwd-runtime`, `logfwd-diagnostics`, and `logfwd`) under the following
+`cargo kani` for the required proof-bearing crates (`ffwd-core`,
+`ffwd-arrow`, `ffwd-types`, `ffwd-io`, `ffwd-output`,
+`ffwd-runtime`, `ffwd-diagnostics`, and `ffwd`) under the following
 conditions (from the `kani` job in `.github/workflows/ci.yml`):
 
 - **any push** to the repository, OR
 - a pull request carrying the **`ci:full` label**, OR
 - a **non-draft pull request** where the path-filter outputs
   `kani_required == 'true'` — i.e. at least one changed file matches one of:
-  - `crates/logfwd-core/**`
-  - `crates/logfwd-arrow/**`
-  - `crates/logfwd-types/**`
-  - `crates/logfwd-io/**`
-  - `crates/logfwd-output/**`
-  - `crates/logfwd-runtime/**`
-  - `crates/logfwd-diagnostics/**`
-  - `crates/logfwd/**`
+  - `crates/ffwd-core/**`
+  - `crates/ffwd-arrow/**`
+  - `crates/ffwd-types/**`
+  - `crates/ffwd-io/**`
+  - `crates/ffwd-output/**`
+  - `crates/ffwd-runtime/**`
+  - `crates/ffwd-diagnostics/**`
+  - `crates/ffwd/**`
   - `Cargo.toml`
   - `Cargo.lock`
   - `dev-docs/verification/kani-boundary-contract.toml`
@@ -301,9 +301,9 @@ For logic that depends on OS types (like `std::fs::File`), we extract pure reduc
 state transition functions. This allows us to prove the core logic using symbolic state
 (like `kani::vec::exact_vec` for memory buffers) without modeling the entire syscall layer.
 
-### Proven Statements (logfwd-kani)
+### Proven Statements (ffwd-kani)
 Shared fundamental logic (hex encoding, RFC 3339 parsing, numeric digits, byte search,
-protobuf sizing) is centralized in `logfwd-kani`. These functions are mathematically
+protobuf sizing) is centralized in `ffwd-kani`. These functions are mathematically
 simple reference implementations ("oracles") used as comparison targets in proofs across
 the workspace. Production code stays in its original crate — oracles are only called from
 `#[cfg(kani)]` and `#[cfg(test)]` blocks.
@@ -342,14 +342,14 @@ The Rust type system enforces invariants that no runtime verification can match:
 - `BatchTicket<S, C>` — `#[must_use]` and consume-on-transition prevent silent ticket
   drops. Illegal transitions (e.g., acking a Queued ticket) are compile errors.
 - `AckReceipt<C>` — `#[must_use]` ensures every receipt reaches `apply_ack`.
-- `#![forbid(unsafe_code)]` in logfwd-core — cannot be bypassed with `#[allow]`.
+- `#![forbid(unsafe_code)]` in ffwd-core — cannot be bypassed with `#[allow]`.
 - `#![no_std]` — compiler removes the IO APIs structurally.
 
 ---
 
-## logfwd-core rules
+## ffwd-core rules
 
-logfwd-core is the proven kernel. All rules are CI-enforced.
+ffwd-core is the proven kernel. All rules are CI-enforced.
 
 | Rule | Enforcement |
 |------|-------------|
@@ -377,41 +377,41 @@ logfwd-core is the proven kernel. All rules are CI-enforced.
 | `cri.rs` | CRI log parsing + partial line reassembly | Kani exhaustive (19 proofs) |
 | `otlp.rs` | Protobuf wire format + OTLP encoding + timestamp parsing | Kani mixed exhaustive + bounded (37 proofs incl. 3 contract verifications + 4 compositional stubs) |
 | `pipeline/lifecycle.rs` | Pipeline state machine (ordered ACK, drain, shutdown) | Kani exhaustive (16 proofs) + proptest + **TLA+** |
-| `logfwd-runtime/pipeline/health.rs` | Pipeline component-health transition reducer (`observed`, bounded startup poll failure escalation, shutdown) | Kani exhaustive (6 proofs) + unit tests + proptest sequence checks |
+| `ffwd-runtime/pipeline/health.rs` | Pipeline component-health transition reducer (`observed`, bounded startup poll failure escalation, shutdown) | Kani exhaustive (6 proofs) + unit tests + proptest sequence checks |
 | `pipeline/batch.rs` | BatchTicket typestate (ack/nack/fail/reject) | Kani exhaustive (5 proofs) + compile-time |
-| `logfwd-types/diagnostics/health.rs` | `ComponentHealth` lattice (`combine`, readiness, storage repr) | Kani exhaustive (4 proofs) + unit tests |
-| `logfwd-output/lib.rs` | Conflict struct detection, ColVariant priority ordering | Kani (8 proofs: ColVariant field preservation, variant_dt, is_conflict_struct, json/str priority contracts) |
-| `logfwd-output/sink.rs` | Fanout helper correctness: `merge_child_send_result` pending-signal tracking and `finalize_fanout_outcome` outcome precedence | Kani (2 proofs: `verify_merge_child_send_result_tracks_pending_signals`, `verify_finalize_fanout_outcome_precedence`) |
-| `logfwd-output/sink/health.rs` | Output health reducer + fanout roll-up semantics | Kani (7 proofs: retrying terminal preservation, shutdown completion, startup recovery, delivery recovery, shutdown request semantics, fanout commutativity, fatal-failure drain preservation) + unit tests + proptest sequence/aggregation checks |
-| `logfwd-diagnostics/stderr_capture.rs` | Stderr capture buffering + ANSI stripping helpers | Kani exhaustive (2 proofs) + unit tests |
-| `logfwd-diagnostics/metric_history.rs` | Tiered diagnostics metric history retention/serialization helpers | Unit tests |
-| `logfwd-diagnostics/span_exporter.rs` | In-process OTel span snapshot buffering/export helpers | Unit tests |
-| `logfwd-diagnostics/diagnostics/policy.rs` | Control-plane readiness/status policy mapping (`health_reason`, `readiness_impact`, readiness snapshot consistency) | Kani exhaustive (4 proofs) + unit tests + proptest mapping checks |
-| `logfwd-io/otlp_receiver/convert.rs` | OTLP proto→JSON/Arrow conversion helpers extracted from the runtime shell | Kani recommended (1 proof: hex encoding) + unit tests + proptest oracle checks (writer helpers and request→NDJSON fast-vs-simple equivalence) + ignored release microbench guardrails |
-| `logfwd-io/otlp_receiver/projection.rs` | Experimental OTLP wire projection into Arrow (bypasses prost object graph) | 56 tests: prost-reference oracle parity (primitive, multi-resource/scope, randomized), malformed wire rejection (truncated varint/fixed64/fixed32/len, invalid UTF-8 in key/value/body, group mismatch, group depth, field zero, oversized field, wrong wire type), nested unknown-field interleavings, intentionally ignored metadata fields, high-cardinality dynamic attributes, unsupported-but-valid AnyValue fallback (array/kvlist in body/attrs, mixed primitive+unsupported), unsupported+malformed fallback rejection, ProjectedFallback mode parity. Proptest: 128-case arbitrary-byte ProjectedFallback-vs-prost classification, 64-case single-container randomized parity, and 32-case multi-container randomized parity. Projected decode remains non-default pending production-path benchmark gates. |
-| `logfwd-io/otlp_receiver.rs` | Receiver channel-drain boundedness, projected decoder pool sharding, HTTP decode backpressure, and decompression expansion limits | Unit tests (`drain_receiver_payloads` limit, queue carry-over, event order + `accounted_bytes` preservation, projected decoder shard/round-robin behavior, 429 on protobuf decode permit exhaustion, gzip/zstd expansion-limit rejection) |
-| `logfwd-io/tcp_input.rs` (wrapper over `tcp_input/*`) | TCP per-client bounded-read predicate (`should_stop_client_read`) and noisy-neighbor progress envelope | Kani (3 proofs: zero counters, independent caps, predicate equivalence) + unit tests + proptest predicate equivalence + noisy-vs-quiet bounded-progress regression |
-| `logfwd-io/udp_input.rs` | UDP bounded-drain predicate (`should_stop_udp_drain`), per-poll datagram work cap, and sender-scoped source identity | Kani (3 proofs: zero counters, independent caps, predicate equivalence) + unit tests + proptest predicate equivalence + bounded-drain/recovery regression + IPv4/IPv6 `SourceId` attribution tests |
-| `logfwd-io/s3_input/mod.rs` | S3 object fetch orchestration, per-object `SourceId`, EOF flushing, and optional object-key source metadata snapshots | Kani exempt: async/network shell with stateful channel orchestration. Unit tests cover source path enable/disable, active/current snapshot cleanup, and EOF-only snapshot preservation; S3 integration tests cover parallel fetch ordering, accounted bytes, and EOF marker behavior. |
-| `logfwd-output/elasticsearch.rs` | Elasticsearch bulk NDJSON serialization + timestamp suffix writer | Unit tests + proptest oracle checks (serialize_batch and timestamp suffix fast-vs-simple equivalence) + ignored release microbench guardrails |
-| `logfwd-output/otlp_sink.rs` | OTLP sink row encoder and generated-fast encoder parity | Unit tests + proptest oracle check (generated-fast vs handwritten encoder equivalence on random UTF-8 rows) |
-| `logfwd-transform/enrichment.rs` | CSV enrichment parsing, header validation, nullable `Utf8View` batch production, and DataFusion join integration | Unit tests for CSV edge cases and legacy-value/null parity + integration test for `Utf8View` join output. Kani is not required because this path is heap-heavy CSV/DataFusion integration rather than a bounded pure seam. |
-| `logfwd-io/polling_input_health.rs` | Polling-input source health reducer for tail/TCP/UDP (`healthy`, backpressure, error-backoff) | Kani exhaustive (3 proofs) + unit tests + proptest sequence checks |
-| `logfwd-io/receiver_health.rs` | Standalone receiver health reducer (`noop`, backpressure, fatal, shutdown) | Kani exhaustive (6 proofs) + unit tests + proptest sequence checks |
-| `logfwd-io/input.rs` | CRI metadata sidecar row-alignment helpers (`append_null_rows`, `append_value`) | Kani bounded (2 proofs: null-row append alignment and value/null append always counts one row) + unit tests for invalid stream fallback |
-| `logfwd-io/format.rs` | CRI message extraction, metadata sidecar collection, Auto-mode fallthrough to passthrough | Kani (4 proofs: scanner-ready JSON output structure and JSON vs plain-text path dispatch) |
-| `logfwd-io/framed.rs` | Per-source framing/remainder checkpoint boundary (`overflow_tainted`, EOF remainder flush, source-scoped EOF semantics, idle source-state reclamation) | Unit tests (remainder carry/overflow, per-source isolation, EOF flush + checkpoint advancement contracts, complete-state reclamation and CRI partial retention) |
-| `logfwd-io/tail/verification.rs` | File tailer pure reducers for EOF emission + shutdown EOF gating + error backoff (`eof_model_transition`, `shutdown_should_emit_eof`, `backoff_transition`) | Kani (8 proofs: EOF at-most-once thresholding, reset semantics, two-poll/repeat cycle, shutdown caught-up gating, backoff cap/reset/monotonicity) + proptest (state reducer invariants in `tail/state.rs`) + **TLA+** (`tla/TailLifecycle.tla`) |
-| `logfwd-io/segment.rs` | Checkpoint segment envelope read/write/recovery (`LCHK` header/footer, checksum, replay plan) | Unit tests for panic/OOM/silent-mask hardening (unsupported-version, permission-denied I/O surfacing, write/read size-bound parity, recovery error semantics) |
-| `logfwd-runtime/pipeline/checkpoint_policy.rs` | Typed delivery outcome -> checkpoint disposition mapping plus bounded ordered-commit seam model (`Ack`, `Reject`, `Hold`) | Kani exhaustive/bounded (3 proofs: outcome mapping, hold no-advance, ack/reject terminal equivalence) + unit tests + proptest ordered sequence invariants |
-| `logfwd-runtime/pipeline/checkpoint_io.rs` | Final checkpoint flush retry window (`MAX_ATTEMPTS`, retry/no-retry boundary, retryable error classification, stop-on-success behavior) | Kani (3 proofs: zero/one-attempt no-retry, retry-window equivalence, retryable error classification) + unit tests + proptest retry-window equivalence checks + async retry behavior tests |
-| `logfwd-runtime/pipeline/input_poll.rs` | Turmoil input-loop flush predicate (`should_flush_buffer`) for byte-batch/timeout emission policy | Kani (3 proofs: empty-buffer no-flush, timeout gate semantics, predicate equivalence) + unit tests + proptest policy equivalence |
-| `logfwd-runtime/worker_pool/health.rs` | Pool idle-phase insertion + worker-slot aggregation policy | Kani exhaustive (3 proofs) + unit tests + proptest aggregation checks |
-| `logfwd-runtime/worker_pool.rs` | MRU dispatch decision + typed delivery outcome helpers | Kani (8 dispatch/outcome proofs) + unit tests for worker-slot aggregation, drain-phase stickiness, and create-failure behavior |
-| `logfwd-arrow/storage_builder.rs` | StructArray conflict column assembly | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
-| `logfwd-arrow/streaming_builder.rs` | StructArray conflict column assembly (StringView) | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
-| `logfwd-arrow/columnar/builder.rs` | Generated-string offset accounting and lowercase hex append helpers | Kani recommended (5 proofs: buffer-len add, append-len add, `StringRef` conversion, hex-length doubling, hex oracle) + unit tests + proptest hex oracle |
-| `logfwd-arrow/conflict_schema.rs` | Conflict-struct detection + row-level precedence selection | Kani recommended (2 proofs) + unit tests |
+| `ffwd-types/diagnostics/health.rs` | `ComponentHealth` lattice (`combine`, readiness, storage repr) | Kani exhaustive (4 proofs) + unit tests |
+| `ffwd-output/lib.rs` | Conflict struct detection, ColVariant priority ordering | Kani (8 proofs: ColVariant field preservation, variant_dt, is_conflict_struct, json/str priority contracts) |
+| `ffwd-output/sink.rs` | Fanout helper correctness: `merge_child_send_result` pending-signal tracking and `finalize_fanout_outcome` outcome precedence | Kani (2 proofs: `verify_merge_child_send_result_tracks_pending_signals`, `verify_finalize_fanout_outcome_precedence`) |
+| `ffwd-output/sink/health.rs` | Output health reducer + fanout roll-up semantics | Kani (7 proofs: retrying terminal preservation, shutdown completion, startup recovery, delivery recovery, shutdown request semantics, fanout commutativity, fatal-failure drain preservation) + unit tests + proptest sequence/aggregation checks |
+| `ffwd-diagnostics/stderr_capture.rs` | Stderr capture buffering + ANSI stripping helpers | Kani exhaustive (2 proofs) + unit tests |
+| `ffwd-diagnostics/metric_history.rs` | Tiered diagnostics metric history retention/serialization helpers | Unit tests |
+| `ffwd-diagnostics/span_exporter.rs` | In-process OTel span snapshot buffering/export helpers | Unit tests |
+| `ffwd-diagnostics/diagnostics/policy.rs` | Control-plane readiness/status policy mapping (`health_reason`, `readiness_impact`, readiness snapshot consistency) | Kani exhaustive (4 proofs) + unit tests + proptest mapping checks |
+| `ffwd-io/otlp_receiver/convert.rs` | OTLP proto→JSON/Arrow conversion helpers extracted from the runtime shell | Kani recommended (1 proof: hex encoding) + unit tests + proptest oracle checks (writer helpers and request→NDJSON fast-vs-simple equivalence) + ignored release microbench guardrails |
+| `ffwd-io/otlp_receiver/projection.rs` | Experimental OTLP wire projection into Arrow (bypasses prost object graph) | 56 tests: prost-reference oracle parity (primitive, multi-resource/scope, randomized), malformed wire rejection (truncated varint/fixed64/fixed32/len, invalid UTF-8 in key/value/body, group mismatch, group depth, field zero, oversized field, wrong wire type), nested unknown-field interleavings, intentionally ignored metadata fields, high-cardinality dynamic attributes, unsupported-but-valid AnyValue fallback (array/kvlist in body/attrs, mixed primitive+unsupported), unsupported+malformed fallback rejection, ProjectedFallback mode parity. Proptest: 128-case arbitrary-byte ProjectedFallback-vs-prost classification, 64-case single-container randomized parity, and 32-case multi-container randomized parity. Projected decode remains non-default pending production-path benchmark gates. |
+| `ffwd-io/otlp_receiver.rs` | Receiver channel-drain boundedness, projected decoder pool sharding, HTTP decode backpressure, and decompression expansion limits | Unit tests (`drain_receiver_payloads` limit, queue carry-over, event order + `accounted_bytes` preservation, projected decoder shard/round-robin behavior, 429 on protobuf decode permit exhaustion, gzip/zstd expansion-limit rejection) |
+| `ffwd-io/tcp_input.rs` (wrapper over `tcp_input/*`) | TCP per-client bounded-read predicate (`should_stop_client_read`) and noisy-neighbor progress envelope | Kani (3 proofs: zero counters, independent caps, predicate equivalence) + unit tests + proptest predicate equivalence + noisy-vs-quiet bounded-progress regression |
+| `ffwd-io/udp_input.rs` | UDP bounded-drain predicate (`should_stop_udp_drain`), per-poll datagram work cap, and sender-scoped source identity | Kani (3 proofs: zero counters, independent caps, predicate equivalence) + unit tests + proptest predicate equivalence + bounded-drain/recovery regression + IPv4/IPv6 `SourceId` attribution tests |
+| `ffwd-io/s3_input/mod.rs` | S3 object fetch orchestration, per-object `SourceId`, EOF flushing, and optional object-key source metadata snapshots | Kani exempt: async/network shell with stateful channel orchestration. Unit tests cover source path enable/disable, active/current snapshot cleanup, and EOF-only snapshot preservation; S3 integration tests cover parallel fetch ordering, accounted bytes, and EOF marker behavior. |
+| `ffwd-output/elasticsearch.rs` | Elasticsearch bulk NDJSON serialization + timestamp suffix writer | Unit tests + proptest oracle checks (serialize_batch and timestamp suffix fast-vs-simple equivalence) + ignored release microbench guardrails |
+| `ffwd-output/otlp_sink.rs` | OTLP sink row encoder and generated-fast encoder parity | Unit tests + proptest oracle check (generated-fast vs handwritten encoder equivalence on random UTF-8 rows) |
+| `ffwd-transform/enrichment.rs` | CSV enrichment parsing, header validation, nullable `Utf8View` batch production, and DataFusion join integration | Unit tests for CSV edge cases and legacy-value/null parity + integration test for `Utf8View` join output. Kani is not required because this path is heap-heavy CSV/DataFusion integration rather than a bounded pure seam. |
+| `ffwd-io/polling_input_health.rs` | Polling-input source health reducer for tail/TCP/UDP (`healthy`, backpressure, error-backoff) | Kani exhaustive (3 proofs) + unit tests + proptest sequence checks |
+| `ffwd-io/receiver_health.rs` | Standalone receiver health reducer (`noop`, backpressure, fatal, shutdown) | Kani exhaustive (6 proofs) + unit tests + proptest sequence checks |
+| `ffwd-io/input.rs` | CRI metadata sidecar row-alignment helpers (`append_null_rows`, `append_value`) | Kani bounded (2 proofs: null-row append alignment and value/null append always counts one row) + unit tests for invalid stream fallback |
+| `ffwd-io/format.rs` | CRI message extraction, metadata sidecar collection, Auto-mode fallthrough to passthrough | Kani (4 proofs: scanner-ready JSON output structure and JSON vs plain-text path dispatch) |
+| `ffwd-io/framed.rs` | Per-source framing/remainder checkpoint boundary (`overflow_tainted`, EOF remainder flush, source-scoped EOF semantics, idle source-state reclamation) | Unit tests (remainder carry/overflow, per-source isolation, EOF flush + checkpoint advancement contracts, complete-state reclamation and CRI partial retention) |
+| `ffwd-io/tail/verification.rs` | File tailer pure reducers for EOF emission + shutdown EOF gating + error backoff (`eof_model_transition`, `shutdown_should_emit_eof`, `backoff_transition`) | Kani (8 proofs: EOF at-most-once thresholding, reset semantics, two-poll/repeat cycle, shutdown caught-up gating, backoff cap/reset/monotonicity) + proptest (state reducer invariants in `tail/state.rs`) + **TLA+** (`tla/TailLifecycle.tla`) |
+| `ffwd-io/segment.rs` | Checkpoint segment envelope read/write/recovery (`LCHK` header/footer, checksum, replay plan) | Unit tests for panic/OOM/silent-mask hardening (unsupported-version, permission-denied I/O surfacing, write/read size-bound parity, recovery error semantics) |
+| `ffwd-runtime/pipeline/checkpoint_policy.rs` | Typed delivery outcome -> checkpoint disposition mapping plus bounded ordered-commit seam model (`Ack`, `Reject`, `Hold`) | Kani exhaustive/bounded (3 proofs: outcome mapping, hold no-advance, ack/reject terminal equivalence) + unit tests + proptest ordered sequence invariants |
+| `ffwd-runtime/pipeline/checkpoint_io.rs` | Final checkpoint flush retry window (`MAX_ATTEMPTS`, retry/no-retry boundary, retryable error classification, stop-on-success behavior) | Kani (3 proofs: zero/one-attempt no-retry, retry-window equivalence, retryable error classification) + unit tests + proptest retry-window equivalence checks + async retry behavior tests |
+| `ffwd-runtime/pipeline/input_poll.rs` | Turmoil input-loop flush predicate (`should_flush_buffer`) for byte-batch/timeout emission policy | Kani (3 proofs: empty-buffer no-flush, timeout gate semantics, predicate equivalence) + unit tests + proptest policy equivalence |
+| `ffwd-runtime/worker_pool/health.rs` | Pool idle-phase insertion + worker-slot aggregation policy | Kani exhaustive (3 proofs) + unit tests + proptest aggregation checks |
+| `ffwd-runtime/worker_pool.rs` | MRU dispatch decision + typed delivery outcome helpers | Kani (8 dispatch/outcome proofs) + unit tests for worker-slot aggregation, drain-phase stickiness, and create-failure behavior |
+| `ffwd-arrow/storage_builder.rs` | StructArray conflict column assembly | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
+| `ffwd-arrow/streaming_builder.rs` | StructArray conflict column assembly (StringView) | Kani (2 proofs: duplicate name guard, row count invariant) + unit tests |
+| `ffwd-arrow/columnar/builder.rs` | Generated-string offset accounting and lowercase hex append helpers | Kani recommended (5 proofs: buffer-len add, append-len add, `StringRef` conversion, hex-length doubling, hex oracle) + unit tests + proptest hex oracle |
+| `ffwd-arrow/conflict_schema.rs` | Conflict-struct detection + row-level precedence selection | Kani recommended (2 proofs) + unit tests |
 | `scanner_conformance.rs` (accumulation) | BytesMut accumulation → Bytes → Scanner equivalence | proptest (3 tests × 256 cases: random split, single chunk, per-line split; full value comparison) |
 
 ### Verification tiers
@@ -436,12 +436,12 @@ BatchTicket `#[must_use]` + consume-on-transition, AckReceipt `#[must_use]`.
 
 ---
 
-## Adding a function to logfwd-core
+## Adding a function to ffwd-core
 
 1. Write the function. Pure logic only — no IO, no allocation-heavy patterns, no panics.
 
 2. Choose verification tier:
-   - New public `logfwd-core` function: Kani proof required (Tier 1 or Tier 2).
+   - New public `ffwd-core` function: Kani proof required (Tier 1 or Tier 2).
    - If Kani is infeasible in current shape: extract a pure seam and prove it,
      or document an explicit exemption with proptest/TLA+ coverage.
 
@@ -476,7 +476,7 @@ mod tests {
 
 4. Verify locally before submitting:
 ```bash
-cargo kani -p logfwd-core --harness verify_my_function_property
-cargo test -p logfwd-core
-cargo build -p logfwd-core --target thumbv6m-none-eabi
+cargo kani -p ffwd-core --harness verify_my_function_property
+cargo test -p ffwd-core
+cargo build -p ffwd-core --target thumbv6m-none-eabi
 ```

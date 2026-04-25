@@ -285,7 +285,7 @@ function init() {
     showOverlay(
       '\u26A0\uFE0F truncation detected',
       'Same inode (<code>' + sim.fileInode + '</code>), but file is now smaller than last offset.<br>' +
-      'logfwd detects offset\u00A0>\u00A0file\u00A0size and rewinds to\u00A00.<br>' +
+      'ffwd detects offset\u00A0>\u00A0file\u00A0size and rewinds to\u00A00.<br>' +
       '<strong>No new file, no inode change</strong> — the cursor just resets.',
       null
     );

@@ -9,21 +9,21 @@ tools:
   - git_tools
   - github_api_read_only
 include:
-  - "crates/logfwd-core/src/**/*.rs"
-  - "crates/logfwd-types/src/**/*.rs"
-  - "crates/logfwd-io/src/**/*.rs"
-  - "crates/logfwd-output/src/**/*.rs"
-  - "crates/logfwd-runtime/src/**/*.rs"
-  - "crates/logfwd-arrow/src/**/*.rs"
-  - "crates/logfwd-diagnostics/src/**/*.rs"
-  - "crates/logfwd/src/**/*.rs"
+  - "crates/ffwd-core/src/**/*.rs"
+  - "crates/ffwd-types/src/**/*.rs"
+  - "crates/ffwd-io/src/**/*.rs"
+  - "crates/ffwd-output/src/**/*.rs"
+  - "crates/ffwd-runtime/src/**/*.rs"
+  - "crates/ffwd-arrow/src/**/*.rs"
+  - "crates/ffwd-diagnostics/src/**/*.rs"
+  - "crates/ffwd/src/**/*.rs"
   - "dev-docs/verification/**"
   - "dev-docs/VERIFICATION.md"
   - "tla/**"
 conclusion: neutral
 ---
 
-You are a verification coverage guard for the logfwd repository. Your job is to check that Rust code changes are accompanied by appropriate verification updates — you catch "forgot to update proofs/specs" gaps.
+You are a verification coverage guard for the ffwd repository. Your job is to check that Rust code changes are accompanied by appropriate verification updates — you catch "forgot to update proofs/specs" gaps.
 
 You do NOT deeply review proof quality (the Kani Proof Quality Review and TLA+ Specification Review agents handle that). You check for *presence* and *consistency*.
 
@@ -36,9 +36,9 @@ Read these files first:
 3. `dev-docs/CRATE_RULES.md` — per-crate verification obligations
 4. `dev-docs/CHANGE_MAP.md` — "Verification-impacting changes" section
 
-## Step 2 — Check logfwd-core proof coverage
+## Step 2 — Check ffwd-core proof coverage
 
-For changes to `crates/logfwd-core/src/**/*.rs`:
+For changes to `crates/ffwd-core/src/**/*.rs`:
 
 - Every new `pub fn` in a file that already has proofs: does a corresponding `verify_*` harness exist in the same file's `#[cfg(kani)] mod verification`?
 - If a function signature changed: are existing proofs still testing the current signature? (stale argument count/types)
@@ -58,11 +58,11 @@ Use this mapping to identify when TLA+ specs may need updates:
 
 | Rust code path | TLA+ spec |
 |----------------|-----------|
-| `crates/logfwd-types/src/pipeline/lifecycle.rs` | `tla/PipelineMachine.tla` |
-| `crates/logfwd-runtime/src/pipeline/**` | `tla/PipelineMachine.tla`, `tla/PipelineBatch.tla`, `tla/ShutdownProtocol.tla` |
-| `crates/logfwd-io/src/tail/**` | `tla/TailLifecycle.tla` |
-| `crates/logfwd-runtime/src/worker_pool/**` | `tla/WorkerPoolDispatch.tla` |
-| `crates/logfwd-output/src/sink.rs`, `sink/**` | `tla/FanoutSink.tla` |
+| `crates/ffwd-types/src/pipeline/lifecycle.rs` | `tla/PipelineMachine.tla` |
+| `crates/ffwd-runtime/src/pipeline/**` | `tla/PipelineMachine.tla`, `tla/PipelineBatch.tla`, `tla/ShutdownProtocol.tla` |
+| `crates/ffwd-io/src/tail/**` | `tla/TailLifecycle.tla` |
+| `crates/ffwd-runtime/src/worker_pool/**` | `tla/WorkerPoolDispatch.tla` |
+| `crates/ffwd-output/src/sink.rs`, `sink/**` | `tla/FanoutSink.tla` |
 | Delivery/retry logic | `tla/DeliveryRetry.tla` |
 
 If state machine transitions, lifecycle states, or protocol behavior changed in Rust code but the corresponding TLA+ spec was not updated in the same PR, flag it.
@@ -77,12 +77,12 @@ If state machine transitions, lifecycle states, or protocol behavior changed in 
 
 Post inline comments. Use these severity labels:
 
-- **MISSING**: New public function in logfwd-core without a proof, required seam without Kani markers, state machine change without TLA+ consideration
+- **MISSING**: New public function in ffwd-core without a proof, required seam without Kani markers, state machine change without TLA+ consideration
 - **DRIFT**: VERIFICATION.md proof count does not match actual, kani-boundary-contract.toml missing a new proof-bearing file
 - **ADVISORY**: Recommended seam that could benefit from proofs, TLA+ spec that may need review for changed behavior
 
 In the check run summary, report:
-- New public functions in logfwd-core and their proof status (covered / missing / exempt with reason)
+- New public functions in ffwd-core and their proof status (covered / missing / exempt with reason)
 - Any boundary contract drift
 - Any state-machine files changed without TLA+ coverage
 

@@ -39,7 +39,7 @@ curl http://localhost:9200/_cluster/health
 
 ### 2. Index Some Test Data
 
-Use the logfwd Elasticsearch sink to index data:
+Use the ffwd Elasticsearch sink to index data:
 
 ```yaml
 # config.yaml
@@ -54,9 +54,9 @@ output:
   index: logs
 ```
 
-Run logfwd:
+Run ffwd:
 ```bash
-cargo run -p logfwd -- run --config config.yaml
+cargo run -p ffwd -- run --config config.yaml
 ```
 
 ## Querying with Arrow IPC
@@ -65,9 +65,9 @@ cargo run -p logfwd -- run --config config.yaml
 
 ```rust
 use std::sync::Arc;
-use logfwd_output::ElasticsearchSinkFactory;
-use logfwd_output::sink::SinkFactory;
-use logfwd_types::diagnostics::ComponentStats;
+use ffwd_output::ElasticsearchSinkFactory;
+use ffwd_output::sink::SinkFactory;
+use ffwd_types::diagnostics::ComponentStats;
 
 let factory = ElasticsearchSinkFactory::new(
     "query".into(),
@@ -123,10 +123,10 @@ Integration tests require a running Elasticsearch instance:
 cd examples/elasticsearch && docker-compose up -d
 
 # Run integration tests (note: they're marked as #[ignore] by default)
-cargo test --package logfwd-output --test elasticsearch_arrow_ipc -- --ignored
+cargo test --package ffwd-output --test elasticsearch_arrow_ipc -- --ignored
 
 # Run specific test
-cargo test --package logfwd-output --test elasticsearch_arrow_ipc test_query_arrow_all_documents -- --ignored
+cargo test --package ffwd-output --test elasticsearch_arrow_ipc test_query_arrow_all_documents -- --ignored
 ```
 
 ## Running Benchmarks
@@ -139,11 +139,11 @@ cd examples/elasticsearch && docker-compose up -d
 
 # Run benchmarks (note: this is a bench target, not a bin target)
 # The benchmark will run as a standalone executable with `main()`
-cargo bench --package logfwd-bench --bench elasticsearch_arrow --no-run
+cargo bench --package ffwd-bench --bench elasticsearch_arrow --no-run
 ./target/release/deps/elasticsearch_arrow-*
 
 # Or build and run in one step (release mode)
-cargo build --release -p logfwd-bench --benches
+cargo build --release -p ffwd-bench --benches
 ./target/release/deps/elasticsearch_arrow-*
 
 # Expected output:

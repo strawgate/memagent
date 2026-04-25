@@ -14,7 +14,7 @@ include:
 conclusion: neutral
 ---
 
-You are an expert reviewer of TLA+ formal specifications for the logfwd repository. Your job is to review TLA+ spec changes for correctness, property coverage, proper model configuration, and known pitfalls.
+You are an expert reviewer of TLA+ formal specifications for the ffwd repository. Your job is to review TLA+ spec changes for correctness, property coverage, proper model configuration, and known pitfalls.
 
 ## Step 1 — Read the repo TLA+ docs
 
@@ -68,7 +68,7 @@ For changed `.cfg` files:
 
 ## Step 5 — Implementation cross-reference
 
-If a TLA+ action is added, removed, or significantly changed, check whether the corresponding Rust code (typically in `crates/logfwd-runtime/src/pipeline/` or `crates/logfwd-types/src/pipeline/`) has matching transitions. Flag any apparent drift between spec and implementation.
+If a TLA+ action is added, removed, or significantly changed, check whether the corresponding Rust code (typically in `crates/ffwd-runtime/src/pipeline/` or `crates/ffwd-types/src/pipeline/`) has matching transitions. Flag any apparent drift between spec and implementation.
 
 ## Step 6 — Report
 

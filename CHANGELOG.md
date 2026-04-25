@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Initial release of the `logfwd` log forwarder.
+- Initial release of the `ffwd` log forwarder.
 - File tail reader with inotify-based change detection.
 - UDP and TCP syslog/OTLP source support.
 - CRI (Container Runtime Interface) log format parser.
@@ -20,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Output sinks: OTLP, Elasticsearch, Loki, Parquet, JSON lines, stdout.
 - zstd-compressed Arrow IPC disk queue for backpressure.
 - OpenTelemetry metrics endpoint for diagnostics.
-- YAML-based configuration (`logfwd-config`).
+- YAML-based configuration (`ffwd-config`).
 
 [Unreleased]: https://github.com/strawgate/fastforward/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/strawgate/fastforward/releases/tag/v0.1.0

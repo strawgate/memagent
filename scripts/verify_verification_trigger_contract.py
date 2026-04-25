@@ -14,19 +14,19 @@ CI_WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
 JUSTFILE = ROOT / "justfile"
 
 REQUIRED_KANI_CRATES = {
-    "logfwd-core",
-    "logfwd-arrow",
-    "logfwd-io",
-    "logfwd-output",
+    "ffwd-core",
+    "ffwd-arrow",
+    "ffwd-io",
+    "ffwd-output",
 }
 
 REQUIRED_KANI_FILTER_PATTERNS = {
-    "crates/logfwd-kani/**",
-    "crates/logfwd-core/**",
-    "crates/logfwd-arrow/**",
-    "crates/logfwd-io/**",
-    "crates/logfwd-output/**",
-    "crates/logfwd-diagnostics/**",
+    "crates/ffwd-kani/**",
+    "crates/ffwd-core/**",
+    "crates/ffwd-arrow/**",
+    "crates/ffwd-io/**",
+    "crates/ffwd-output/**",
+    "crates/ffwd-diagnostics/**",
     "Cargo.toml",
     "Cargo.lock",
     "dev-docs/verification/kani-boundary-contract.toml",
@@ -36,9 +36,9 @@ REQUIRED_KANI_FILTER_PATTERNS = {
 
 REQUIRED_TLA_FILTER_PATTERNS = {
     "tla/**",
-    "crates/logfwd-types/src/pipeline/**",
-    "crates/logfwd-runtime/src/pipeline/**",
-    "crates/logfwd-io/src/tail/**",
+    "crates/ffwd-types/src/pipeline/**",
+    "crates/ffwd-runtime/src/pipeline/**",
+    "crates/ffwd-io/src/tail/**",
 }
 
 REQUIRED_GUARDRAIL_SCRIPTS = {
@@ -427,13 +427,13 @@ jobs:
         with:
           filters: |
             kani_required:
-              - 'crates/logfwd-core/**'
+              - 'crates/ffwd-core/**'
               - 'Cargo.toml'
             tla:
               - 'tla/**'
 """
         entries = extract_paths_filter_entries(ci_text, "kani_required")
-        self.assertEqual(entries, {"crates/logfwd-core/**", "Cargo.toml"})
+        self.assertEqual(entries, {"crates/ffwd-core/**", "Cargo.toml"})
 
     def test_extract_paths_filter_entries_uses_changes_job_block(self) -> None:
         ci_text = """
@@ -452,10 +452,10 @@ jobs:
         with:
           filters: |
             kani_required:
-              - 'crates/logfwd-core/**'
+              - 'crates/ffwd-core/**'
 """
         entries = extract_paths_filter_entries(ci_text, "kani_required")
-        self.assertEqual(entries, {"crates/logfwd-core/**"})
+        self.assertEqual(entries, {"crates/ffwd-core/**"})
 
     def test_extract_paths_filter_entries_uses_filter_id_step(self) -> None:
         ci_text = """
@@ -472,10 +472,10 @@ jobs:
         with:
           filters: |
             kani_required:
-              - 'crates/logfwd-core/**'
+              - 'crates/ffwd-core/**'
 """
         entries = extract_paths_filter_entries(ci_text, "kani_required")
-        self.assertEqual(entries, {"crates/logfwd-core/**"})
+        self.assertEqual(entries, {"crates/ffwd-core/**"})
 
     def test_extract_paths_filter_entries_accepts_yaml_block_scalar_variants(self) -> None:
         for block_style in ("|", "|-", ">", ">-"):
@@ -489,10 +489,10 @@ jobs:
         with:
           filters: {block_style}
             kani_required:
-              - 'crates/logfwd-core/**'
+              - 'crates/ffwd-core/**'
 """
                 entries = extract_paths_filter_entries(ci_text, "kani_required")
-                self.assertEqual(entries, {"crates/logfwd-core/**"})
+                self.assertEqual(entries, {"crates/ffwd-core/**"})
 
     def test_extract_kani_args_crates(self) -> None:
         ci_text = """
@@ -502,11 +502,11 @@ jobs:
       - uses: model-checking/kani-github-action@v1
         with:
           args: >-
-            -p logfwd-core
-            -p logfwd-io
+            -p ffwd-core
+            -p ffwd-io
             -Z function-contracts
 """
-        self.assertEqual(extract_kani_args_crates(ci_text), {"logfwd-core", "logfwd-io"})
+        self.assertEqual(extract_kani_args_crates(ci_text), {"ffwd-core", "ffwd-io"})
 
     def test_extract_kani_args_crates_split_shards(self) -> None:
         ci_text = """
@@ -516,25 +516,25 @@ jobs:
       - uses: model-checking/kani-github-action@v1
         with:
           args: >-
-            -p logfwd-core
+            -p ffwd-core
   kani-arrow:
     steps:
       - uses: model-checking/kani-github-action@v1
         with:
           args: >-
-            -p logfwd-arrow
+            -p ffwd-arrow
             --lib
   kani-periphery:
     steps:
       - uses: model-checking/kani-github-action@v1
         with:
           args: >-
-            -p logfwd-io
-            -p logfwd-output
+            -p ffwd-io
+            -p ffwd-output
 """
         self.assertEqual(
             extract_kani_args_crates(ci_text),
-            {"logfwd-core", "logfwd-arrow", "logfwd-io", "logfwd-output"},
+            {"ffwd-core", "ffwd-arrow", "ffwd-io", "ffwd-output"},
         )
 
     def test_extract_kani_args_crates_uses_kani_action_step(self) -> None:
@@ -549,19 +549,19 @@ jobs:
       - uses: model-checking/kani-github-action@v1
         with:
           args: >-
-            -p logfwd-core
+            -p ffwd-core
 """
-        self.assertEqual(extract_kani_args_crates(ci_text), {"logfwd-core"})
+        self.assertEqual(extract_kani_args_crates(ci_text), {"ffwd-core"})
 
     def test_extract_just_kani_required_crates_accepts_recipe_dependencies(self) -> None:
         just_text = """
 kani-required: prep-cache
-    cargo kani -p logfwd-core
-    cargo kani -p logfwd-io
+    cargo kani -p ffwd-core
+    cargo kani -p ffwd-io
 """
         self.assertEqual(
             extract_just_kani_required_crates(just_text),
-            {"logfwd-core", "logfwd-io"},
+            {"ffwd-core", "ffwd-io"},
         )
 
     def test_extract_job_block_scopes_to_jobs_section(self) -> None:

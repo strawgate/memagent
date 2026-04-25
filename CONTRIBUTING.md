@@ -1,10 +1,10 @@
-# Contributing to logfwd
+# Contributing to ffwd
 
 ## First 20 Minutes
 
 1. Open `dev-docs/README.md` and choose the task route.
 2. Run `just ci` to verify a clean fast baseline.
-3. Run the smallest crate-local loop for your change (for example `cargo test -p logfwd-core`).
+3. Run the smallest crate-local loop for your change (for example `cargo test -p ffwd-core`).
 4. Read only the canonical docs for your change type:
    - config/schema: `dev-docs/CHANGE_MAP.md`
    - scanner/core logic: `dev-docs/SCANNER_CONTRACT.md` + `dev-docs/VERIFICATION.md`
@@ -61,7 +61,7 @@ just bench
 ### Public API changes
 
 If your PR adds or changes any `pub` item in a crate with a stable
-surface (`logfwd-core`, `logfwd-types`, `logfwd-config`, `logfwd-io`
+surface (`ffwd-core`, `ffwd-types`, `ffwd-config`, `ffwd-io`
 traits like `InputSource`), verify:
 
 - [ ] `///` doc comment on every new `pub` item, with a working example
@@ -95,15 +95,15 @@ See `DEVELOPING.md` → *Performance change workflow*.
 
 ### Unsafe / SIMD changes
 
-If your PR touches `unsafe` or SIMD code in `logfwd-arrow`:
+If your PR touches `unsafe` or SIMD code in `ffwd-arrow`:
 
 - [ ] Every new `unsafe` block carries a `// SAFETY:` comment naming
       the upheld invariants (`clippy::undocumented_unsafe_blocks = deny`).
 - [ ] proptest SIMD-equivalence coverage extended to cover the new path.
-      This is the primary correctness guard for `logfwd-arrow` SIMD —
-      Miri does not cover it (`just miri` only runs on `logfwd-core` and
-      `logfwd-types`).
-- [ ] For `unsafe` in `logfwd-core` or `logfwd-types`, run `just miri`
+      This is the primary correctness guard for `ffwd-arrow` SIMD —
+      Miri does not cover it (`just miri` only runs on `ffwd-core` and
+      `ffwd-types`).
+- [ ] For `unsafe` in `ffwd-core` or `ffwd-types`, run `just miri`
       locally before pushing.
 
 ## Code Style
@@ -133,7 +133,7 @@ just clippy       # Clippy with -D warnings (same as CI default tier)
 just fmt          # Format code
 just bench        # Criterion benchmarks
 just kani         # Run Kani proofs (requires: cargo install --locked kani-verifier && cargo kani setup)
-cargo test -p logfwd-core  # Fast single-crate iteration
+cargo test -p ffwd-core  # Fast single-crate iteration
 ```
 
 ## Issues and Labels

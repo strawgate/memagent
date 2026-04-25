@@ -96,11 +96,11 @@ jobs:
       - name: Build rustdoc (public API only)
         run: |
           cargo doc --no-deps \
-            -p logfwd \
-            -p logfwd-core \
-            -p logfwd-config \
-            -p logfwd-output \
-            -p logfwd-transform
+            -p ffwd \
+            -p ffwd-core \
+            -p ffwd-config \
+            -p ffwd-output \
+            -p ffwd-transform
           cp -r target/doc book/dist/api
 
       - name: Include benchmark dashboard

@@ -1,4 +1,4 @@
-module logfwd/linearizability
+module ffwd/linearizability
 
 go 1.22
 

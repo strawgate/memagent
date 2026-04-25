@@ -1,4 +1,4 @@
-# Agent Guide — logfwd
+# Agent Guide — ffwd
 
 > A Rust log forwarder: tails files, parses JSON/CRI with portable SIMD, transforms with SQL (DataFusion), ships to OTLP collectors. Single static binary, ~15 MB.
 > Humans: start with `dev-docs/README.md` for the fastest contributor path. This file is optimized for coding agents.
@@ -21,12 +21,12 @@ All commands use `just` recipes. **Never use bare `cargo clippy`** — it won't 
 # ── Build ───────────────────────────────────────────────
 just build                   # Release binary with DataFusion SQL
 just build-dev-lite          # Fast dev binary (no DataFusion SQL)
-cargo build --release -p logfwd  # Equivalent to `just build`
+cargo build --release -p ffwd  # Equivalent to `just build`
 
 # ── Test ────────────────────────────────────────────────
 just test                    # Default-members only (~30s, skips datafusion)
 just test-all                # Full workspace (~3min, includes datafusion)
-cargo test -p logfwd-core    # Single-crate iteration (fastest)
+cargo test -p ffwd-core    # Single-crate iteration (fastest)
 
 # ── Lint & Format ──────────────────────────────────────
 just lint                    # fmt-check + clippy + toml-check (fast)
@@ -56,7 +56,7 @@ just profile-otlp-local      # CPU profile: file → OTLP with flamegraph
 
 ### Why two tiers?
 
-The workspace `default-members` excludes `logfwd-transform` (datafusion) and `logfwd` (binary). Bare `cargo check` / `just clippy` skip them (~30s vs ~3min). Use `--workspace`, `-p logfwd`, or the `-all` just targets when you need the full build. CI always uses `--workspace`.
+The workspace `default-members` excludes `ffwd-transform` (datafusion) and `ffwd` (binary). Bare `cargo check` / `just clippy` skip them (~30s vs ~3min). Use `--workspace`, `-p ffwd`, or the `-all` just targets when you need the full build. CI always uses `--workspace`.
 
 ## Working Efficiently
 
@@ -86,22 +86,22 @@ The workspace `default-members` excludes `logfwd-transform` (datafusion) and `lo
 ├── .cargo/config.toml           ← sccache wrapper, build settings
 │
 ├── crates/
-│   ├── logfwd/                  ← Binary crate: CLI, startup, signal handling
-│   ├── logfwd-runtime/          ← Async orchestration: pipeline loop, worker pool
-│   ├── logfwd-core/             ← Proven kernel (no_std, forbid(unsafe)): scanner, parsers, framer, OTLP encoding
-│   ├── logfwd-arrow/            ← Arrow integration: ScanBuilder impls, SIMD backends, RecordBatch
-│   ├── logfwd-config/           ← YAML config parsing and validation
-│   ├── logfwd-io/               ← I/O layer: file tailing, TCP/UDP/OTLP inputs, checkpointing
-│   ├── logfwd-transform/        ← DataFusion SQL transforms, UDFs (grok, regexp_extract, geo_lookup)
-│   ├── logfwd-output/           ← Output sinks: OTLP, Elasticsearch, Loki, JSON lines, stdout
-│   ├── logfwd-types/            ← Shared value types, state-machine semantics, diagnostics
-│   ├── logfwd-bench/            ← Criterion benchmarks for the scanner pipeline
-│   ├── logfwd-test-utils/       ← Shared test utilities
-│   ├── logfwd-diagnostics/      ← Diagnostics control plane: HTTP endpoints, dashboard, readiness
-│   ├── logfwd-config-wasm/      ← WASM bindings for the config validator (browser/Node.js)
-│   ├── logfwd-ebpf-proto/       ← eBPF log capture protocol definitions (experimental)
-│   ├── logfwd-otap-proto/       ← OTAP protocol definitions
-│   └── logfwd-proto-build/      ← Protobuf build scripts
+│   ├── ffwd/                  ← Binary crate: CLI, startup, signal handling
+│   ├── ffwd-runtime/          ← Async orchestration: pipeline loop, worker pool
+│   ├── ffwd-core/             ← Proven kernel (no_std, forbid(unsafe)): scanner, parsers, framer, OTLP encoding
+│   ├── ffwd-arrow/            ← Arrow integration: ScanBuilder impls, SIMD backends, RecordBatch
+│   ├── ffwd-config/           ← YAML config parsing and validation
+│   ├── ffwd-io/               ← I/O layer: file tailing, TCP/UDP/OTLP inputs, checkpointing
+│   ├── ffwd-transform/        ← DataFusion SQL transforms, UDFs (grok, regexp_extract, geo_lookup)
+│   ├── ffwd-output/           ← Output sinks: OTLP, Elasticsearch, Loki, JSON lines, stdout
+│   ├── ffwd-types/            ← Shared value types, state-machine semantics, diagnostics
+│   ├── ffwd-bench/            ← Criterion benchmarks for the scanner pipeline
+│   ├── ffwd-test-utils/       ← Shared test utilities
+│   ├── ffwd-diagnostics/      ← Diagnostics control plane: HTTP endpoints, dashboard, readiness
+│   ├── ffwd-config-wasm/      ← WASM bindings for the config validator (browser/Node.js)
+│   ├── ffwd-ebpf-proto/       ← eBPF log capture protocol definitions (experimental)
+│   ├── ffwd-otap-proto/       ← OTAP protocol definitions
+│   └── ffwd-proto-build/      ← Protobuf build scripts
 │
 ├── dev-docs/                    ← Developer documentation
 │   ├── README.md                ← Developer-doc start page and task routing
@@ -138,30 +138,30 @@ log files → SIMD parse → Arrow RecordBatch → DataFusion SQL → OTLP → c
 Data flows through four layers (dependencies flow downward only):
 
 ```
-logfwd (binary)           CLI entrypoints, config loading, signal handling
+ffwd (binary)           CLI entrypoints, config loading, signal handling
        ↓
-logfwd-runtime            Async orchestration, pipeline loop, worker pool
+ffwd-runtime            Async orchestration, pipeline loop, worker pool
        ↓
-logfwd-arrow              ScanBuilder impls, SIMD backends, RecordBatch builders
+ffwd-arrow              ScanBuilder impls, SIMD backends, RecordBatch builders
        ↓
-logfwd-core               Pure logic, proven, no_std, forbid(unsafe)
+ffwd-core               Pure logic, proven, no_std, forbid(unsafe)
 ```
 
-**Pipeline loop** (`logfwd-runtime/src/pipeline.rs`): input threads (OS threads, blocking IO) feed a bounded `tokio::sync::mpsc` channel → async pipeline loop batches and flushes → scanner → SQL transform → output sinks. See `dev-docs/ARCHITECTURE.md` for the full data flow.
+**Pipeline loop** (`ffwd-runtime/src/pipeline.rs`): input threads (OS threads, blocking IO) feed a bounded `tokio::sync::mpsc` channel → async pipeline loop batches and flushes → scanner → SQL transform → output sinks. See `dev-docs/ARCHITECTURE.md` for the full data flow.
 
-**Key abstraction boundary**: `ScanBuilder` trait (defined in `logfwd-core`, implemented in `logfwd-arrow`). The scanner knows nothing about Arrow — it calls trait methods.
+**Key abstraction boundary**: `ScanBuilder` trait (defined in `ffwd-core`, implemented in `ffwd-arrow`). The scanner knows nothing about Arrow — it calls trait methods.
 
 ## Crate rules (CI-enforced)
 
 | Crate | Key constraints |
 |-------|----------------|
-| `logfwd-core` | `no_std` + `forbid(unsafe_code)`. Only deps: memchr + wide. Every public fn needs a Kani proof. No panics, no unwrap, no indexing. |
-| `logfwd-arrow` | Implements core's ScanBuilder. unsafe allowed for SIMD only. proptest: SIMD ≡ scalar. |
-| `logfwd-io` | IO lives here. Tests use tempfiles. No raw payload injection (see #1615). |
-| `logfwd-transform` | DataFusion is the SQL engine. Enrichment tables implement Arrow RecordBatchReader. |
-| `logfwd-output` | Uses core for OTLP encoding. Transport separated from serialization. |
-| `logfwd-runtime` | Async orchestration only. Extract pure reducers instead of growing async shells. |
-| `logfwd` (binary) | CLI/bootstrap only. No long-lived runtime orchestration logic. |
+| `ffwd-core` | `no_std` + `forbid(unsafe_code)`. Only deps: memchr + wide + ffwd-kani + ffwd-lint-attrs. Every public fn needs a Kani proof. No panics, no unwrap, no indexing. |
+| `ffwd-arrow` | Implements core's ScanBuilder. unsafe allowed for SIMD only. proptest: SIMD ≡ scalar. |
+| `ffwd-io` | IO lives here. Tests use tempfiles. No raw payload injection (see #1615). |
+| `ffwd-transform` | DataFusion is the SQL engine. Enrichment tables implement Arrow RecordBatchReader. |
+| `ffwd-output` | Uses core for OTLP encoding. Transport separated from serialization. |
+| `ffwd-runtime` | Async orchestration only. Extract pure reducers instead of growing async shells. |
+| `ffwd` (binary) | CLI/bootstrap only. No long-lived runtime orchestration logic. |
 
 Full details: `dev-docs/CRATE_RULES.md`.
 
@@ -185,7 +185,7 @@ Full details: `dev-docs/CODE_STYLE.md`.
 | **proptest** | Stateful, heap-heavy, or async code; SIMD conformance |
 | **Miri** | UB detection, allocator behavior |
 
-- Every new public function in `logfwd-core` **requires** a Kani proof.
+- Every new public function in `ffwd-core` **requires** a Kani proof.
 - SIMD backends **require** proptest (SIMD output ≡ scalar output).
 - State-machine changes **require** updating TLA+ specs + Kani/proptest.
 
@@ -234,7 +234,7 @@ Component labels use `component:` prefix (e.g., `component:processor/scanner`). 
 - **Start developer docs quickly:** `dev-docs/README.md` — canonical map and task routing.
 - **Find a crate's purpose:** `crates/<name>/` — each has a `Cargo.toml` and many have an `AGENTS.md` with crate-specific rules.
 - **Find how data flows:** `dev-docs/ARCHITECTURE.md` — full pipeline diagram and buffer lifecycle.
-- **Find what SQL UDFs exist:** `crates/logfwd-transform/src/udf/` for `json()`, `json_int()`, `json_float()`, `regexp_extract()`, `grok()`, `geo_lookup()`, `hash()` (internal), and `crates/logfwd-transform/src/cast_udf.rs` for `int()` / `float()` — all are custom `ScalarUDFImpl` implementations registered on the DataFusion context.
+- **Find what SQL UDFs exist:** `crates/ffwd-transform/src/udf/` for `json()`, `json_int()`, `json_float()`, `regexp_extract()`, `grok()`, `geo_lookup()`, `hash()` (internal), and `crates/ffwd-transform/src/cast_udf.rs` for `int()` / `float()` — all are custom `ScalarUDFImpl` implementations registered on the DataFusion context.
 - **Find config schema:** `book/src/content/docs/configuration/reference.mdx` — all YAML fields, input/output types.
 - **Find example configs:** `examples/use-cases/` — 20 common patterns.
 - **Review active work/priorities:** open GitHub issues and PRs (`gh issue list --state open`, `gh pr list --state open`).

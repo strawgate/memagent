@@ -176,11 +176,11 @@ Start simple, optimize if profiling shows small batches are a problem.
 ## Relationship to proven core (#262)
 
 The Framer and Aggregator are pure logic — they identify ranges
-within buffers without IO. They belong in logfwd-core (proven).
+within buffers without IO. They belong in ffwd-core (proven).
 
-The Reader is IO — it belongs in logfwd-input.
+The Reader is IO — it belongs in ffwd-input.
 
-The Scanner is already in logfwd-core.
+The Scanner is already in ffwd-core.
 
 This aligns perfectly with the proven core architecture: core
 handles framing, aggregation, and scanning (provable pure logic).

@@ -18,8 +18,8 @@ responsibilities. Current code still uses implementation names such as
 
 In-scope:
 
-- OTLP HTTP input (`crates/logfwd-io/src/otlp_receiver.rs`)
-- OTLP output (`crates/logfwd-output/src/otlp_sink.rs`)
+- OTLP HTTP input (`crates/ffwd-io/src/otlp_receiver.rs`)
+- OTLP output (`crates/ffwd-output/src/otlp_sink.rs`)
 - File input + framing + checkpointed delivery
 - diagnostics/readiness/status surfaces
 - pipeline checkpoint and output retry semantics

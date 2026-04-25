@@ -2,18 +2,18 @@
 # Use case: App JSON errors-only to OTLP
 # Replace paths/endpoints with values for your environment.
 
-input:
-  type: file
-  path: /srv/app/logs/*.json
-  format: json
-
-transform: |
-  SELECT * FROM logs
-  WHERE level IN ('warn', 'error', 'WARN', 'ERROR')
-
-output:
-  type: otlp
-  endpoint: https://otel-collector:4318/v1/logs
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /srv/app/logs/*.json
+        format: json
+    transform: |
+      SELECT * FROM logs
+      WHERE level IN ('warn', 'error', 'WARN', 'ERROR')
+    outputs:
+      - type: otlp
+        endpoint: https://otel-collector:4318/v1/logs
 
 # Optional: diagnostics
 # server:

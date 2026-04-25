@@ -11,7 +11,7 @@ import DataFlowAnimation from '../../components/DataFlowAnimation.astro';
 FastForward is a research project exploring how to build a fast log forwarder with Rust. This guide gets you from zero to a working pipeline in about 15 minutes.
 
 :::note
-The Cargo package is named `logfwd`; the installed CLI binary is `ff`. Docker images are published to `ghcr.io/strawgate/fastforward`.
+The Cargo package is named `ffwd`; the installed CLI binary is `ff`. Docker images are published to `ghcr.io/strawgate/fastforward`.
 :::
 
 ## Install
@@ -23,7 +23,7 @@ The Cargo package is named `logfwd`; the installed CLI binary is `ff`. Docker im
     ```bash
     git clone https://github.com/strawgate/fastforward.git
     cd fastforward
-    cargo build --release -p logfwd
+    cargo build --release -p ffwd
     sudo cp target/release/ff /usr/local/bin/
     ```
   </TabItem>
@@ -31,8 +31,8 @@ The Cargo package is named `logfwd`; the installed CLI binary is `ff`. Docker im
     ```bash
     docker run --rm \
       -v /var/log:/var/log:ro \
-      -v $(pwd)/config.yaml:/etc/logfwd/config.yaml:ro \
-      ghcr.io/strawgate/fastforward:latest run --config /etc/logfwd/config.yaml
+      -v $(pwd)/config.yaml:/etc/ffwd/config.yaml:ro \
+      ghcr.io/strawgate/fastforward:latest run --config /etc/ffwd/config.yaml
     ```
 
     Images are published to `ghcr.io/strawgate/fastforward` for `linux/amd64` and `linux/arm64`. See [Docker deployment](/deployment/docker/) for compose files and volume configuration.
@@ -67,14 +67,15 @@ This creates 10,000 JSON log lines with fields like `level`, `message`, `status`
 
 ```yaml
 # config.yaml
-input:
-  type: file
-  path: logs.json
-  format: json
-
-output:
-  type: stdout
-  format: console
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: logs.json
+        format: json
+    outputs:
+      - type: stdout
+        format: console
 ```
 
 ```bash
@@ -135,19 +136,19 @@ ff generate-json 10000 logs.json    # regenerate — FastForward tracks file pos
 
 ```yaml
 # config.yaml
-input:
-  type: file
-  path: logs.json
-  format: json
-
-transform: |
-  SELECT level, message, status, duration_ms
-  FROM logs
-  WHERE level = 'ERROR' AND duration_ms > 50
-
-output:
-  type: stdout
-  format: console
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: logs.json
+        format: json
+    transform: |
+      SELECT level, message, status, duration_ms
+      FROM logs
+      WHERE level = 'ERROR' AND duration_ms > 50
+    outputs:
+      - type: stdout
+        format: console
 ```
 
 ```bash
@@ -183,20 +184,20 @@ ff blast --destination otlp --endpoint http://127.0.0.1:4318/v1/logs
 
 ```yaml
 # config.yaml
-input:
-  type: file
-  path: logs.json
-  format: json
-
-transform: |
-  SELECT level, message, status, duration_ms
-  FROM logs
-  WHERE level IN ('ERROR', 'WARN')
-
-output:
-  type: otlp
-  endpoint: http://127.0.0.1:4318/v1/logs
-  compression: zstd
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: logs.json
+        format: json
+    transform: |
+      SELECT level, message, status, duration_ms
+      FROM logs
+      WHERE level IN ('ERROR', 'WARN')
+    outputs:
+      - type: otlp
+        endpoint: http://127.0.0.1:4318/v1/logs
+        compression: zstd
 ```
 
 ```bash
@@ -223,18 +224,18 @@ This config tails Kubernetes pod logs in CRI format, filters by severity, and sh
 
 ```yaml
 # pipeline.yaml
-input:
-  type: file
-  path: /var/log/pods/**/*.log
-  format: cri
-
-transform: |
-  SELECT * FROM logs WHERE level IN ('ERROR', 'WARN')
-
-output:
-  type: otlp
-  endpoint: https://otel-collector:4318/v1/logs
-  compression: zstd
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /var/log/pods/**/*.log
+        format: cri
+    transform: |
+      SELECT * FROM logs WHERE level IN ('ERROR', 'WARN')
+    outputs:
+      - type: otlp
+        endpoint: https://otel-collector:4318/v1/logs
+        compression: zstd
 
 server:
   diagnostics: 0.0.0.0:9090
@@ -297,7 +298,7 @@ server:
 ```
 
 :::note
-The simple layout (`input`/`output` at top level) and advanced layout (`pipelines` map) cannot be mixed in the same config file.
+FastForward examples and generated configs use the `pipelines` map shown above.
 :::
 
 ---

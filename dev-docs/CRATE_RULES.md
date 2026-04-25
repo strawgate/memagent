@@ -2,20 +2,20 @@
 
 Rules and constraints for each crate. Enforced by CI, not just convention.
 
-## logfwd-core (proven)
+## ffwd-core (proven)
 
 | Rule | Enforcement |
 |------|-------------|
 | `#![no_std]` + alloc | Compiler. CI: `cargo build --target thumbv6m-none-eabi` |
 | `#![forbid(unsafe_code)]` | Compiler. Cannot be overridden with `#[allow]`. |
-| Only deps: memchr + wide + logfwd-kani | CI dependency allowlist check |
+| Only deps: memchr + wide + ffwd-kani | CI dependency allowlist check |
 | No panics | `clippy::unwrap_used`, `clippy::panic`, `clippy::indexing_slicing` = deny |
 | Every public item documented | `#![warn(missing_docs)]` at crate root |
 | No stdout/stderr writes | `clippy::print_stdout`, `clippy::print_stderr` = warn workspace-wide; no `#![allow]` opt-out |
 | Proof-bearing core modules stay Kani-covered | CI Kani job + `dev-docs/VERIFICATION.md` inventory |
 | No IO, no threads, no async | Structural (no_std removes the APIs) |
 
-## logfwd-kani (verification oracles)
+## ffwd-kani (verification oracles)
 
 | Rule | Enforcement |
 |------|-------------|
@@ -25,7 +25,7 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Every public item documented | `#![warn(missing_docs)]` at crate root |
 | Internal Kani proofs verify oracle correctness | CI Kani job |
 
-## logfwd-arrow
+## ffwd-arrow
 
 | Rule | Enforcement |
 |------|-------------|
@@ -35,7 +35,7 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Deps: core + arrow + bytes | Cargo.toml |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
-## logfwd-types
+## ffwd-types
 
 | Rule | Enforcement |
 |------|-------------|
@@ -45,7 +45,7 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | No stdout/stderr writes | `clippy::print_stdout`, `clippy::print_stderr` = warn workspace-wide; no `#![allow]` opt-out |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
-## logfwd-config
+## ffwd-config
 
 | Rule | Enforcement |
 |------|-------------|
@@ -55,37 +55,37 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | No stdout/stderr writes | `clippy::print_stdout`, `clippy::print_stderr` = warn workspace-wide; no `#![allow]` opt-out |
 | **TODO:** enable `#![warn(missing_docs)]` once the ~280 existing schema gaps are documented (tracked separately; do not regress new public items) | Code review for now |
 
-## logfwd-io
+## ffwd-io
 
 | Rule | Enforcement |
 |------|-------------|
 | IO is expected here | — |
 | Tests use tempfiles, not real filesystems | Convention |
-| Deps: core + arrow + notify + serde + logfwd-diagnostics | Cargo.toml |
+| Deps: core + arrow + notify + serde + ffwd-diagnostics | Cargo.toml |
 | `InputSource` implementations must define `health()` explicitly; no optimistic trait default | Compilation + code review |
-| `InputSource` trait-shape changes must pass cross-workspace compile checks for turmoil tests and bench binaries (`cargo test -p logfwd --features turmoil --test turmoil_sim --no-run`, `cargo build -p logfwd-bench --features bench-tools --bin framed_input_profile`) | CI/local verification checklist |
+| `InputSource` trait-shape changes must pass cross-workspace compile checks for turmoil tests and bench binaries (`cargo test -p ffwd --features turmoil --test turmoil_sim --no-run`, `cargo build -p ffwd-bench --features bench-tools --bin framed_input_profile`) | CI/local verification checklist |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 | **No raw payload injection.** Source metadata must never be written into raw input bytes. `_source_path`, `_source_id`, `_input`, UDP sender identity, and future source descriptors must be attached from sidecar metadata after scan, before SQL, or exposed through cold-path enrichment tables. The CI guard scans Rust crate code for legacy injection helpers/toggles and raw byte writes of guarded source metadata fields. | CI guard script (`python3 scripts/check_no_raw_payload_injection.py`) + code review |
 
-## logfwd-diagnostics
+## ffwd-diagnostics
 
 | Rule | Enforcement |
 |------|-------------|
 | Owns diagnostics server, telemetry shaping, and stderr/span buffering | Architecture |
-| Allowed deps: `logfwd-types`, `tiny_http`, `tracing`, `serde(_yaml_ng/_json)`, `opentelemetry(_sdk)`, `url`, `libc` | Cargo.toml + review |
-| Owns diagnostics dashboard asset `crates/logfwd-diagnostics/src/dashboard.html` (generated from `dashboard/`) | Dashboard build + code review |
-| Must not depend on runtime orchestration crates (`logfwd-runtime`, `logfwd-output`) | Cargo dependency graph + review |
+| Allowed deps: `ffwd-types`, `tiny_http`, `tracing`, `serde(_yaml_ng/_json)`, `opentelemetry(_sdk)`, `url`, `libc` | Cargo.toml + review |
+| Owns diagnostics dashboard asset `crates/ffwd-diagnostics/src/dashboard.html` (generated from `dashboard/`) | Dashboard build + code review |
+| Must not depend on runtime orchestration crates (`ffwd-runtime`, `ffwd-output`) | Cargo dependency graph + review |
 | Kani seams for readiness policy and stderr escaping stay tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
-## logfwd-config-wasm
+## ffwd-config-wasm
 
 | Rule | Enforcement |
 |------|-------------|
-| WASM bindings for the config validator; must expose the same parsing/validation surface as `logfwd-config` so browser and Node.js hosts reject invalid YAML with identical diagnostics | Architecture |
-| Allowed deps: `logfwd-config`, `wasm-bindgen`, `serde`, `serde_json`, `js-sys` | Cargo.toml + review |
+| WASM bindings for the config validator; must expose the same parsing/validation surface as `ffwd-config` so browser and Node.js hosts reject invalid YAML with identical diagnostics | Architecture |
+| Allowed deps: `ffwd-config`, `wasm-bindgen`, `serde`, `serde_json`, `js-sys` | Cargo.toml + review |
 | Must not depend on runtime, I/O, or transform crates — the validator is pure-config parsing | Cargo dependency graph + review |
 
-## logfwd-transform
+## ffwd-transform
 
 | Rule | Enforcement |
 |------|-------------|
@@ -93,7 +93,7 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Enrichment tables implement Arrow's RecordBatchReader | Convention |
 | Deps: core + arrow + datafusion | Cargo.toml |
 
-## logfwd-output
+## ffwd-output
 
 | Rule | Enforcement |
 |------|-------------|
@@ -105,7 +105,7 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Public errors are `thiserror` enums, not `Box<dyn Error>` | CI script: `python3 scripts/check_no_box_dyn_error.py` |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
-## logfwd-bench
+## ffwd-bench
 
 | Rule | Enforcement |
 |------|-------------|
@@ -113,42 +113,42 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Benchmark-only dependencies stay isolated here unless also used by production or test crates | Cargo.toml + dependency review |
 | Source metadata benchmarks must keep raw JSON metadata injection only as a historical comparison baseline, never as production guidance | Code review |
 
-## logfwd-lint-attrs
+## ffwd-lint-attrs
 
 | Rule | Enforcement |
 |------|-------------|
 | Proc-macro crate only. Exports attribute markers (`#[hot_path]` today, `#[cancel_safe]` / `#[no_panic]` / `#[checkpoint_ordered]` planned) consumed by the dylint lint library | Architecture |
 | All attributes must be compile-time no-ops: the function/item behaves identically with or without the attribute | Code review |
-| May not depend on any other logfwd crate | Cargo.toml |
+| May not depend on any other ffwd crate | Cargo.toml |
 
-## logfwd-lints
+## ffwd-lints
 
 | Rule | Enforcement |
 |------|-------------|
 | Excluded from the main workspace (`Cargo.toml` `exclude` list). Pins its own rustc nightly via `rust-toolchain` and links against `rustc-private` crates | Workspace config |
 | Dylint library — compiled as `cdylib`, invoked via `cargo dylint` (wrapped by `just dylint`) | Architecture |
-| Every lint that expects a source-level marker looks for the marker the corresponding attribute in `logfwd-lint-attrs` emits (e.g., `#[doc = "__logfwd_hot_path__"]`), because proc-macro attributes are stripped before HIR | Code review |
-| Every new lint adds an entry to the lint table in `dev-docs/CODE_STYLE.md` → *Semantic lints (dylint)* and to `crates/logfwd-lints/README.md` | Code review |
+| Every lint that expects a source-level marker looks for the marker the corresponding attribute in `ffwd-lint-attrs` emits (e.g., `#[doc = "__ffwd_hot_path__"]`), because proc-macro attributes are stripped before HIR | Code review |
+| Every new lint adds an entry to the lint table in `dev-docs/CODE_STYLE.md` → *Semantic lints (dylint)* and to `crates/ffwd-lints/README.md` | Code review |
 | CI integration via `just dylint` (not yet on mandatory path — see roadmap) | `justfile` |
 
-## logfwd-runtime
+## ffwd-runtime
 
 | Rule | Enforcement |
 |------|-------------|
 | Owns async pipeline orchestration, worker pool, and processor chain | Architecture |
 | Domain logic stays in lower crates when a pure seam exists | Code review |
-| Feature forwarding must preserve `datafusion` and `turmoil` behavior for downstream `logfwd` users | Compilation |
+| Feature forwarding must preserve `datafusion` and `turmoil` behavior for downstream `ffwd` users | Compilation |
 | No `panic!`/`todo!`/`unimplemented!` in production paths | CI script: `python3 scripts/check_no_panic_in_production.py` (test modules and `// ALLOW-PANIC: <reason>` lines are exempt) |
 | Public errors are `thiserror` enums, not `Box<dyn Error>` | CI script: `python3 scripts/check_no_box_dyn_error.py` |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
-## logfwd (binary / facade)
+## ffwd (binary / facade)
 
 | Rule | Enforcement |
 |------|-------------|
 | CLI/bootstrap only — no long-lived runtime orchestration | Code review |
 | Public re-exports must stay compatibility-only and not fork runtime behavior | Code review |
-| Pipeline decisions still go through core state machine via `logfwd-runtime` | Architecture |
+| Pipeline decisions still go through core state machine via `ffwd-runtime` | Architecture |
 | Pure seam Kani boundary status tracked in `dev-docs/verification/kani-boundary-contract.toml` | CI script: `python3 scripts/verify_kani_boundary_contract.py` |
 
 ## sensor-ebpf (prototype)
@@ -179,20 +179,20 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 
 ## Crate boundary examples (good vs bad)
 
-### Good: core logic stays in `logfwd-core`
+### Good: core logic stays in `ffwd-core`
 
-- Parsing primitives, framing logic, and deterministic state transitions live in `logfwd-core`.
+- Parsing primitives, framing logic, and deterministic state transitions live in `ffwd-core`.
 - Platform or transport integration layers call core APIs without reimplementing core semantics.
 
 ### Bad: business logic in the binary crate
 
-- Avoid adding transform semantics, framing behavior, or output encoding rules directly in `logfwd`.
+- Avoid adding transform semantics, framing behavior, or output encoding rules directly in `ffwd`.
 - The binary should orchestrate startup/wiring, not own domain logic.
 
 ### Good: IO and transport concerns stay out of core
 
 - File watching, sockets, retries, and collector-specific transport behavior belong in IO/output layers.
-- `logfwd-core` remains pure and portable with no OS dependencies.
+- `ffwd-core` remains pure and portable with no OS dependencies.
 
 ### Bad: leaking heavy dependencies across boundaries
 

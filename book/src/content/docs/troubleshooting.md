@@ -19,8 +19,8 @@ server:
 - Keep one terminal tailing logs:
 
 ```bash
-kubectl -n collectors logs -f daemonset/logfwd
-# or local/docker: docker logs -f logfwd
+kubectl -n collectors logs -f daemonset/ffwd
+# or local/docker: docker logs -f ffwd
 ```
 :::
 
@@ -99,7 +99,7 @@ curl -s http://localhost:9090/admin/v1/status | jq '.pipelines[0].transform'
 curl -v http://otel-collector:4318/v1/logs
 
 # Kubernetes DNS resolution check
-POD=$(kubectl -n collectors get pods -l app=logfwd -o jsonpath='{.items[0].metadata.name}')
+POD=$(kubectl -n collectors get pods -l app=ffwd -o jsonpath='{.items[0].metadata.name}')
 kubectl -n collectors exec "$POD" -- nslookup otel-collector
 ```
 
@@ -138,7 +138,7 @@ Validation succeeds and prints `config ok: <n> pipeline(s)`.
 
 - Missing `input.path` for `file` input.
 - Missing `endpoint` for `otlp`/`http`/`elasticsearch`/`loki` outputs.
-- Mixing simple layout (`input`/`output`) with `pipelines` map in one file.
+- Missing the required `pipelines` map or using the wrong nesting for `inputs` / `outputs`.
 - YAML scalar mistakes in SQL.
 
 Use block scalar syntax for SQL:
@@ -177,7 +177,7 @@ Stage times should be stable, with no sudden sustained growth in output time.
 2. Excessive transform complexity.
    - Simplify query or split into named pipelines.
 3. Node resource pressure.
-   - Increase CPU/memory requests for the `logfwd` DaemonSet.
+   - Increase CPU/memory requests for the `ffwd` DaemonSet.
 
 ### Verify fix
 

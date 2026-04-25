@@ -135,11 +135,11 @@ test-all:
     LOGFWD_DISABLE_DEFAULT_CHECKPOINTS=1 cargo nextest run --workspace --profile ci
 
 # Run semantic lints via dylint (hot_path_no_alloc, and any future
-# semantic lints defined in crates/logfwd-lints/).
+# semantic lints defined in crates/ffwd-lints/).
 # Requires: cargo install --locked cargo-dylint dylint-link
 #           rustup toolchain install nightly-2025-09-18 --component llvm-tools-preview --component rustc-dev
 dylint:
-    cargo dylint --path crates/logfwd-lints -- --workspace
+    cargo dylint --path crates/ffwd-lints -- --workspace
 
 # Run required Kani formal verification proofs for production crates
 # Requires: cargo install --locked kani-verifier && cargo kani setup
@@ -160,25 +160,25 @@ miri:
     just miri-io-buffered
 
 miri-core:
-    RUSTC_WRAPPER="" MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-core --lib
+    RUSTC_WRAPPER="" MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p ffwd-core --lib
 
 miri-types:
-    RUSTC_WRAPPER="" MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-types --lib
+    RUSTC_WRAPPER="" MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p ffwd-types --lib
 
 miri-io-buffered:
-    RUSTC_WRAPPER="" MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p logfwd-io framed::tests::poll_into_miri_shared_buffer_alias_regression --lib
+    RUSTC_WRAPPER="" MIRIFLAGS="-Zmiri-strict-provenance" cargo +nightly miri test -p ffwd-io framed::tests::poll_into_miri_shared_buffer_alias_regression --lib
 
 # Run the required Kani crate set enforced by CI guardrails.
 kani-required:
-    RUSTC_WRAPPER="" cargo kani -p logfwd-kani -Z function-contracts -Z mem-predicates -Z stubbing
-    RUSTC_WRAPPER="" cargo kani -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing
-    RUSTC_WRAPPER="" cargo kani -p logfwd-arrow --lib -Z function-contracts -Z mem-predicates -Z stubbing
-    RUSTC_WRAPPER="" cargo kani -p logfwd-types -Z function-contracts -Z mem-predicates -Z stubbing
-    RUSTC_WRAPPER="" cargo kani -p logfwd-io -Z function-contracts -Z mem-predicates -Z stubbing
-    RUSTC_WRAPPER="" cargo kani -p logfwd-output -Z function-contracts -Z mem-predicates -Z stubbing
-    RUSTC_WRAPPER="" cargo kani -p logfwd-runtime -Z function-contracts -Z mem-predicates -Z stubbing
-    RUSTC_WRAPPER="" cargo kani -p logfwd-diagnostics -Z function-contracts -Z mem-predicates -Z stubbing
-    RUSTC_WRAPPER="" cargo kani -p logfwd -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p ffwd-kani -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p ffwd-core -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p ffwd-arrow --lib -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p ffwd-types -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p ffwd-io -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p ffwd-output -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p ffwd-runtime -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p ffwd-diagnostics -Z function-contracts -Z mem-predicates -Z stubbing
+    RUSTC_WRAPPER="" cargo kani -p ffwd -Z function-contracts -Z mem-predicates -Z stubbing
 
 # Validate the non-core Kani boundary contract.
 kani-boundary:
@@ -256,7 +256,7 @@ tlc-tail:
 # Verify each feature flag compiles independently (cargo-hack).
 # Requires: cargo install cargo-hack
 hack-check:
-    cargo hack check --each-feature --no-dev-deps -p logfwd -p logfwd-runtime -p logfwd-io -p logfwd-config
+    cargo hack check --each-feature --no-dev-deps -p ffwd -p ffwd-runtime -p ffwd-io -p ffwd-config
 
 # Lint — fast (default-members, skips datafusion)
 lint: fmt-check otlp-codegen-check workspace-inheritance-guard public-api-error-guard production-panic-guard clippy toml-check
@@ -303,7 +303,7 @@ deny:
     cargo deny check
 
 # Build the diagnostics dashboard (Preact + TypeScript → single HTML file)
-# Requires Node.js. Output: crates/logfwd-diagnostics/src/dashboard.html
+# Requires Node.js. Output: crates/ffwd-diagnostics/src/dashboard.html
 # Must run before cargo build/test/clippy (CI does this automatically).
 dashboard:
     cd dashboard && npm install --prefer-offline && npm run build
@@ -314,24 +314,24 @@ dashboard:
 test-extended:
     PROPTEST_CASES=10000 cargo nextest run --profile ci
     cargo nextest run --profile ci --run-ignored ignored-only
-    cargo test -p logfwd --features turmoil --test turmoil_sim
+    cargo test -p ffwd --features turmoil --test turmoil_sim
 
 # Run turmoil simulation including Porcupine linearizability checker integration.
 test-linearizability:
-    cargo test -p logfwd --features turmoil --test turmoil_sim linearizability::porcupine_checker_accepts_runtime_history
+    cargo test -p ffwd --features turmoil --test turmoil_sim linearizability::porcupine_checker_accepts_runtime_history
 
 # ---------------------------------------------------------------------------
 # Mutation testing (cargo-mutants)
 # ---------------------------------------------------------------------------
 
-# Run mutation testing on a single crate (default: logfwd-core).
+# Run mutation testing on a single crate (default: ffwd-core).
 # Requires: cargo install cargo-mutants cargo-nextest
 # Config:   .cargo/mutants.toml (exclusions, timeout, nextest)
-mutants crate="logfwd-core":
+mutants crate="ffwd-core":
     cargo mutants -p {{crate}}
 
 # Run mutation testing only on code changed vs origin/main (fast, CI-friendly).
-mutants-diff crate="logfwd-core":
+mutants-diff crate="ffwd-core":
     #!/usr/bin/env bash
     set -euo pipefail
     git rev-parse --verify origin/main >/dev/null
@@ -339,12 +339,12 @@ mutants-diff crate="logfwd-core":
 
 # Build release binary (full package, includes DataFusion SQL)
 build:
-    cargo build --release -p logfwd
+    cargo build --release -p ffwd
 
 # Build a fast local dev binary without DataFusion SQL.
 # Useful for tighter compile/edit loops; this is NOT the release artifact.
 build-dev-lite:
-    cargo build --release -p logfwd --no-default-features
+    cargo build --release -p ffwd --no-default-features
 
 # ---------------------------------------------------------------------------
 # End-to-end pipeline benchmarks (bench/scenarios/*.yaml)
@@ -461,7 +461,7 @@ bench-es seconds="10":
         docker compose -f examples/elasticsearch/docker-compose.yml down
         exit 1
     fi
-    cargo build --release -p logfwd
+    cargo build --release -p ffwd
     echo "==> ES benchmark (generator → elasticsearch)"
     just _bench-run es bench/scenarios/es-sender.yaml {{seconds}}
     echo "==> Stopping Elasticsearch"
@@ -491,7 +491,7 @@ bench-es-streaming seconds="10":
         docker compose -f examples/elasticsearch/docker-compose.yml down
         exit 1
     fi
-    cargo build --release -p logfwd
+    cargo build --release -p ffwd
     echo "==> ES streaming benchmark (generator → elasticsearch)"
     just _bench-run es-streaming bench/scenarios/es-sender-streaming.yaml {{seconds}}
     echo "==> Stopping Elasticsearch"
@@ -505,7 +505,7 @@ bench-e2e seconds="10":
 bench-pipelines seconds="10":
     @echo "ff pipeline benchmarks ({{seconds}}s each)"
     @echo "================================================"
-    cargo build --release -p logfwd
+    cargo build --release -p ffwd
     just bench-self {{seconds}}
     just bench-tcp {{seconds}}
     just bench-udp {{seconds}}
@@ -513,16 +513,16 @@ bench-pipelines seconds="10":
 
 # Run Tier 1 criterion benchmarks (fast, ~30s — composed functions, no heavy I/O)
 bench:
-    cargo bench -p logfwd-bench --bench pipeline --bench output_encode --bench full_chain
+    cargo bench -p ffwd-bench --bench pipeline --bench output_encode --bench full_chain
 
 # Run throughput ceiling benchmark (generator → scan → null, no transform)
 bench-ceiling:
-    cargo bench -p logfwd-bench --bench throughput_ceiling
+    cargo bench -p ffwd-bench --bench throughput_ceiling
 
 # Run all criterion benchmarks (Tier 1 + Tier 2 — includes I/O and batch scaling, ~2-5min)
 # Excludes elasticsearch_arrow which requires a running ES instance.
 bench-full:
-    cargo bench -p logfwd-bench --bench pipeline --bench output_encode --bench full_chain --bench builder_compare --bench batch_formation --bench file_io --bench throughput_ceiling
+    cargo bench -p ffwd-bench --bench pipeline --bench output_encode --bench full_chain --bench builder_compare --bench batch_formation --bench file_io --bench throughput_ceiling
 
 # Run system-level benchmarks (pipeline, contention, backpressure — requires running services)
 bench-system:
@@ -539,7 +539,7 @@ profile-otlp-local lines="500000" seconds="6":
     PORT=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
 
     echo "==> Build cpu-profiling binary"
-    RUSTC_WRAPPER= cargo build --release --features cpu-profiling -p logfwd
+    RUSTC_WRAPPER= cargo build --release --features cpu-profiling -p ffwd
 
     mkdir -p "${ROOT}/bin"
     cp target/release/ff "${ROOT}/bin/ff-prof"
@@ -589,44 +589,44 @@ profile-otlp-local lines="500000" seconds="6":
 
 # Run OTLP I/O Criterion benchmarks (stage-separated: parser, decode, encode, compression, e2e).
 bench-otlp-io *ARGS:
-    cargo bench -p logfwd-bench --bench otlp_io -- {{ARGS}}
+    cargo bench -p ffwd-bench --bench otlp_io -- {{ARGS}}
 
 # Run OTLP I/O benchmarks with fast local iteration settings.
 bench-otlp-io-fast *ARGS:
-    cargo bench -p logfwd-bench --bench otlp_io -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
+    cargo bench -p ffwd-bench --bench otlp_io -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
 
 # Run source metadata attachment benchmarks.
 bench-source-metadata *ARGS:
-    cargo bench -p logfwd-bench --bench source_metadata -- {{ARGS}}
+    cargo bench -p ffwd-bench --bench source_metadata -- {{ARGS}}
 
 # Run source metadata attachment benchmarks with fast local iteration settings.
 bench-source-metadata-fast *ARGS:
-    cargo bench -p logfwd-bench --bench source_metadata -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
+    cargo bench -p ffwd-bench --bench source_metadata -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
 
 # Profile OTLP decode/encode CPU with the normal allocator (flamegraph, per-mode timings).
 profile-otlp-io *ARGS:
-    cargo run -p logfwd-bench --release --features bench-tools --bin otlp_io_profile -- {{ARGS}}
+    cargo run -p ffwd-bench --release --features bench-tools --bin otlp_io_profile -- {{ARGS}}
 
 # Profile OTLP decode/encode allocation counts with stats_alloc instrumentation.
 profile-otlp-io-alloc *ARGS:
-    cargo run -p logfwd-bench --release --features bench-tools,otlp-profile-alloc --bin otlp_io_profile -- {{ARGS}}
+    cargo run -p ffwd-bench --release --features bench-tools,otlp-profile-alloc --bin otlp_io_profile -- {{ARGS}}
 
 # Generate microbenchmark report (markdown)
 bench-report:
-    cargo run -p logfwd-bench --features bench-tools
+    cargo run -p ffwd-bench --features bench-tools
 
 # Profile FramedInput / format processing overhead and print a markdown report.
 bench-framed-input *ARGS:
-    cargo run -p logfwd-bench --release --features bench-tools --bin framed_input_profile -- {{ARGS}}
+    cargo run -p ffwd-bench --release --features bench-tools --bin framed_input_profile -- {{ARGS}}
 
 # Allocation-focused FramedInput profiling (dhat-backed, slower; no throughput numbers).
 bench-framed-input-alloc *ARGS:
-    cargo run -p logfwd-bench --release --features bench-tools,dhat-heap --bin framed_input_profile -- --alloc-only {{ARGS}}
+    cargo run -p ffwd-bench --release --features bench-tools,dhat-heap --bin framed_input_profile -- --alloc-only {{ARGS}}
 
 # Run sustained-load memory profiler (generator → SQL → null, default 5 minutes).
 # Use --quick (30s) for CI or --medium (120s) for quick checks.
 bench-memory *ARGS:
-    cargo run -p logfwd-bench --release --features bench-tools --bin memory-profile -- {{ARGS}}
+    cargo run -p ffwd-bench --release --features bench-tools --bin memory-profile -- {{ARGS}}
 
 # Profile file output (JSON lines serialization + file I/O) CPU, memory, or per-stage breakdown.
 # Modes: breakdown (default), cpu (flamegraph), alloc (allocation counts).
@@ -635,19 +635,19 @@ bench-memory *ARGS:
 #   just profile-file-output --schema wide                # breakdown, wide schema
 #   just profile-file-output --mode cpu --schema wide     # CPU flamegraph, wide
 profile-file-output *ARGS:
-    cargo run -p logfwd-bench --release --features bench-tools --bin file_output_profile -- {{ARGS}}
+    cargo run -p ffwd-bench --release --features bench-tools --bin file_output_profile -- {{ARGS}}
 
 # Profile file output allocation counts (requires stats_alloc instrumented allocator).
 profile-file-output-alloc *ARGS:
-    cargo run -p logfwd-bench --release --features bench-tools,otlp-profile-alloc --bin file_output_profile -- --mode alloc {{ARGS}}
+    cargo run -p ffwd-bench --release --features bench-tools,otlp-profile-alloc --bin file_output_profile -- --mode alloc {{ARGS}}
 
 # Start a local OTLP blackhole receiver using main CLI devour wrapper.
 bench-devour-otlp listen="127.0.0.1:4318":
-    cargo run -p logfwd --release -- devour --mode otlp --listen {{listen}}
+    cargo run -p ffwd --release -- devour --mode otlp --listen {{listen}}
 
 # Blast generated OTLP data to a receiver endpoint using main CLI blast wrapper.
 bench-blast-otlp endpoint="http://127.0.0.1:4318/v1/logs" duration="15":
-    cargo run -p logfwd --release -- blast --destination otlp --endpoint {{endpoint}} --duration-secs {{duration}}
+    cargo run -p ffwd --release -- blast --destination otlp --endpoint {{endpoint}} --duration-secs {{duration}}
 
 # Install development tools
 install-tools:

@@ -87,7 +87,7 @@ spec:
               mountPath: /etc/ff
               readOnly: true
             - name: data
-              mountPath: /var/lib/logfwd
+              mountPath: /var/lib/ffwd
       volumes:
         - name: varlog
           hostPath:
@@ -97,5 +97,5 @@ spec:
             name: ff-config
         - name: data
           hostPath:
-            path: /var/lib/logfwd
+            path: /var/lib/ffwd
             type: DirectoryOrCreate

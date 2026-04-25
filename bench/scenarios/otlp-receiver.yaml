@@ -1,7 +1,9 @@
-input:
-  type: otlp
-  listen: 127.0.0.1:14318
-output:
-  type: "null"
+pipelines:
+  default:
+    inputs:
+      - type: otlp
+        listen: 127.0.0.1:14318
+    outputs:
+      - type: "null"
 server:
   diagnostics: 127.0.0.1:9091

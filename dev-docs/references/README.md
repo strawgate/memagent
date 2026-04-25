@@ -1,6 +1,6 @@
 # Reference Notes
 
-Repo-scoped quick references for external libraries used by logfwd.
+Repo-scoped quick references for external libraries used by ffwd.
 
 ## Principles
 

@@ -1,7 +1,7 @@
 # cargo-mutants configuration
 # https://mutants.rs/config.html
 #
-# Run: cargo mutants -p logfwd-core --test-tool nextest
+# Run: cargo mutants -p ffwd-core --test-tool nextest
 # PR:  git diff origin/main...HEAD | cargo mutants --in-diff - --test-tool nextest
 
 # Use nextest (matches CI test runner).
@@ -9,7 +9,7 @@ test_tool = "nextest"
 
 # Exclude Kani verification modules — these are proof harnesses that only run
 # under `cargo kani`, not `cargo test`.  Without this exclusion ~32% of
-# logfwd-core mutants are false-positive "missed".
+# ffwd-core mutants are false-positive "missed".
 exclude_re = [
     "verification::", # Kani proof harnesses (all crates)
     "::tests::",      # test-only helper functions

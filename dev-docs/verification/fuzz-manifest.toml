@@ -6,8 +6,8 @@
 primary = "cargo-fuzz"
 secondary = "bolero (evaluation)"
 
-[crates.logfwd_core_fuzz]
-manifest = "crates/logfwd-core/fuzz/Cargo.toml"
+[crates.ffwd_core_fuzz]
+manifest = "crates/ffwd-core/fuzz/Cargo.toml"
 targets = [
     "fuzz_scanner",
     "fuzz_pipe_event",
@@ -19,8 +19,8 @@ targets = [
     "fuzz_cri",
 ]
 
-[crates.logfwd_io_fuzz]
-manifest = "crates/logfwd-io/fuzz/Cargo.toml"
+[crates.ffwd_io_fuzz]
+manifest = "crates/ffwd-io/fuzz/Cargo.toml"
 targets = [
     "fuzz_otlp_protobuf_decode",
     "fuzz_otlp_json_decode",
@@ -31,9 +31,9 @@ targets = [
 ]
 
 [trust_boundaries]
-otlp_protobuf_decode = "crates/logfwd-io/src/otlp_receiver/decode.rs::decode_otlp_protobuf"
-otlp_json_decode = "crates/logfwd-io/src/otlp_receiver/decode.rs::decode_otlp_json"
-decompress = "crates/logfwd-io/src/otlp_receiver/decode.rs::{decompress_gzip,decompress_zstd}"
-otap_decode = "crates/logfwd-io/src/otap_receiver.rs::decode_batch_arrow_records"
-arrow_ipc_decode = "crates/logfwd-io/src/arrow_ipc_receiver.rs::decode_ipc_stream"
-protojson_numbers = "crates/logfwd-io/src/otlp_receiver/convert.rs::{parse_protojson_i64,parse_protojson_u64,parse_protojson_f64}"
+otlp_protobuf_decode = "crates/ffwd-io/src/otlp_receiver/decode.rs::decode_otlp_protobuf"
+otlp_json_decode = "crates/ffwd-io/src/otlp_receiver/decode.rs::decode_otlp_json"
+decompress = "crates/ffwd-io/src/otlp_receiver/decode.rs::{decompress_gzip,decompress_zstd}"
+otap_decode = "crates/ffwd-io/src/otap_receiver.rs::decode_batch_arrow_records"
+arrow_ipc_decode = "crates/ffwd-io/src/arrow_ipc_receiver.rs::decode_ipc_stream"
+protojson_numbers = "crates/ffwd-io/src/otlp_receiver/convert.rs::{parse_protojson_i64,parse_protojson_u64,parse_protojson_f64}"

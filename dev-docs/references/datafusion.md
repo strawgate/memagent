@@ -1,6 +1,6 @@
 # DataFusion Notes (Repo-Scoped)
 
-How we use DataFusion in logfwd, without generic tutorial material.
+How we use DataFusion in ffwd, without generic tutorial material.
 
 ## Role in Pipeline
 
@@ -10,7 +10,7 @@ How we use DataFusion in logfwd, without generic tutorial material.
 
 ## Repo Rules
 
-- `logfwd-transform` owns SQL behavior.
+- `ffwd-transform` owns SQL behavior.
 - Keep query semantics deterministic across batches.
 - Avoid config-driven magic outside canonical SQL behavior.
 - Treat DataFusion as engine, not place for business policy.

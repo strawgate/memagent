@@ -114,11 +114,11 @@
 
   var STEPS = [
     { id: 'buffer', t: 'The shared buffer',
-      d: 'logfwd reads the input and parses JSON fields. All string values end up in a single contiguous buffer in memory. This buffer is reference-counted — it stays alive as long as any column references it.' },
+      d: 'ffwd reads the input and parses JSON fields. All string values end up in a single contiguous buffer in memory. This buffer is reference-counted — it stays alive as long as any column references it.' },
     { id: 'views', t: 'StringViewArray columns',
       d: 'Each Arrow column stores 16-byte views — just an offset and length into the shared buffer. No string data is copied. Five columns pointing into one buffer use <strong>1x</strong> the memory, not 5x.' },
     { id: 'compare', t: 'Memory savings',
-      d: 'If logfwd copied strings (like most parsers), each column would own its data independently. With zero-copy views, the total memory is the buffer size plus 5 tiny view structs — an <strong>80% reduction</strong>.' },
+      d: 'If ffwd copied strings (like most parsers), each column would own its data independently. With zero-copy views, the total memory is the buffer size plus 5 tiny view structs — an <strong>80% reduction</strong>.' },
   ];
 
   // Build DOM
@@ -189,7 +189,7 @@
   m1.appendChild(m1l); m1.appendChild(m1v);
 
   var m2 = el('div', 'zc-mem-item');
-  var m2l = el('div', 'zc-mem-label'); m2l.textContent = 'Zero-copy (logfwd)';
+  var m2l = el('div', 'zc-mem-label'); m2l.textContent = 'Zero-copy (ffwd)';
   var m2v = el('div', 'zc-mem-val good'); m2v.textContent = copySize + ' + ' + viewOverhead + ' = ' + zeroCopyTotal + ' bytes';
   m2.appendChild(m2l); m2.appendChild(m2v);
 

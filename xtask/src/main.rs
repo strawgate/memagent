@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use logfwd_config::docspec::{self, INPUT_TYPE_DOCS, OUTPUT_TYPE_DOCS};
+use ffwd_config::docspec::{self, INPUT_TYPE_DOCS, OUTPUT_TYPE_DOCS};
 use quote::ToTokens;
 use regex::Regex;
 use syn::visit::Visit;
@@ -299,13 +299,13 @@ fn is_production_src(path: &str) -> bool {
     if path.ends_with("/main.rs") {
         return false;
     }
-    if path.starts_with("crates/logfwd-bench/")
-        || path.starts_with("crates/logfwd-proto-build/")
-        || path.starts_with("crates/logfwd-ebpf-proto/")
-        || path.starts_with("crates/logfwd-config-wasm/")
-        || path.starts_with("crates/logfwd-lints/")
-        || path.starts_with("crates/logfwd-lint-attrs/")
-        || path.starts_with("crates/logfwd-test-utils/")
+    if path.starts_with("crates/ffwd-bench/")
+        || path.starts_with("crates/ffwd-proto-build/")
+        || path.starts_with("crates/ffwd-ebpf-proto/")
+        || path.starts_with("crates/ffwd-config-wasm/")
+        || path.starts_with("crates/ffwd-lints/")
+        || path.starts_with("crates/ffwd-lint-attrs/")
+        || path.starts_with("crates/ffwd-test-utils/")
     {
         return false;
     }
@@ -357,7 +357,7 @@ fn is_non_trivial_fn(node: &ItemFn) -> bool {
 fn check_pub_fn_needs_proof(modules: &[ModuleFacts], findings: &mut Vec<Finding>) {
     let check = "pub_fn_needs_proof";
     for module in modules {
-        if !module.path.starts_with("crates/logfwd-core/src/") || is_allowed(module, check) {
+        if !module.path.starts_with("crates/ffwd-core/src/") || is_allowed(module, check) {
             continue;
         }
 
@@ -497,11 +497,7 @@ fn check_trust_boundary_manifest(repo_root: &Path, findings: &mut Vec<Finding>) 
 
     // Collect all fuzz target source files.
     let mut fuzz_sources = Vec::new();
-    for crate_dir in [
-        "crates/logfwd-core",
-        "crates/logfwd-io",
-        "crates/logfwd-output",
-    ] {
+    for crate_dir in ["crates/ffwd-core", "crates/ffwd-io", "crates/ffwd-output"] {
         let root = repo_root.join(crate_dir);
         if !root.exists() {
             continue;

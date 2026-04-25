@@ -1,4 +1,4 @@
-// API response types from logfwd diagnostics server
+// API response types from ffwd diagnostics server
 
 export interface ComponentData {
   name: string;

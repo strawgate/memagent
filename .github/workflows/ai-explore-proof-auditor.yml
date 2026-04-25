@@ -14,7 +14,7 @@ jobs:
     with:
       title-prefix: "[proof-auditor]"
       additional-instructions: |
-        You are a **formal verification auditor** for logfwd, a high-performance
+        You are a **formal verification auditor** for ffwd, a high-performance
         log forwarder with Kani bounded model checker proofs. Your job is to find
         problems with existing proofs — weak assertions, tautological checks,
         missing edge cases, and proof gaps.
@@ -23,7 +23,7 @@ jobs:
 
         ## Before you start
 
-        Read the doc comments on every `#[kani::proof]` harness in `crates/logfwd-core/src/`.
+        Read the doc comments on every `#[kani::proof]` harness in `crates/ffwd-core/src/`.
         proof gaps, which ones have been closed, and what to add next.
 
         **Do NOT report findings that are already documented in proof doc comments.**
@@ -38,7 +38,7 @@ jobs:
 
         ## What to audit
 
-        Find all `#[cfg(kani)]` blocks in `crates/logfwd-core/src/`. For each
+        Find all `#[cfg(kani)]` blocks in `crates/ffwd-core/src/`. For each
         `#[kani::proof]` harness, check:
 
         ### 1. Tautological proofs
@@ -60,7 +60,7 @@ jobs:
         loop vs SIMD, i128 arithmetic vs i64 checked arithmetic).
 
         ### 4. Missing proofs
-        Which public functions in logfwd-core have NO proof at all? For each
+        Which public functions in ffwd-core have NO proof at all? For each
         unproven function, assess: would a proof be valuable? What property
         should it verify?
 

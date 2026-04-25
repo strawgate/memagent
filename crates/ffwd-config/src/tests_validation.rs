@@ -1,0 +1,318 @@
+//! Validation tests: missing fields, invalid values, unimplemented types/formats,
+//! endpoint schemes, layout conflicts, and pipeline-level knobs.
+
+#[cfg(test)]
+mod tests {
+    use crate::test_yaml::{append_root_sections, single_pipeline_yaml};
+    use crate::*;
+    use std::fs;
+
+    #[test]
+    fn validation_missing_input_path() {
+        let yaml = single_pipeline_yaml("type: file", "type: stdout");
+        assert_config_err!(yaml, "path");
+    }
+
+    #[test]
+    fn validation_missing_output_endpoint() {
+        let yaml = single_pipeline_yaml("type: file\npath: /var/log/test.log", "type: otlp");
+        assert_config_err!(yaml, "endpoint");
+    }
+
+    #[test]
+    fn validation_otlp_gzip_is_allowed() {
+        let yaml = single_pipeline_yaml(
+            "type: file\npath: /var/log/test.log",
+            "type: otlp\nendpoint: http://collector:4318\ncompression: gzip",
+        );
+        Config::load_str(yaml).expect("gzip OTLP compression should validate");
+    }
+
+    #[test]
+    fn validation_storage_data_dir_existing_non_directory_rejected() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time must be after unix epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "ffwd-config-storage-non-dir-{}-{unique}.tmp",
+            std::process::id()
+        ));
+        fs::write(&path, b"not-a-directory").expect("write temp file");
+
+        let yaml = append_root_sections(
+            single_pipeline_yaml("type: file\npath: /var/log/test.log", "type: stdout"),
+            &format!("storage:\n  data_dir: {}\n", path.display()),
+        );
+
+        let err = Config::load_str(yaml).expect_err("non-directory storage.data_dir must fail");
+        assert!(
+            err.to_string().contains("exists but is not a directory"),
+            "expected non-directory storage.data_dir rejection, got: {err}"
+        );
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn validation_udp_requires_listen() {
+        let yaml = single_pipeline_yaml("type: udp", "type: stdout");
+        assert_config_err!(yaml, "listen");
+    }
+
+    #[test]
+    fn validation_otlp_requires_listen() {
+        let yaml = single_pipeline_yaml("type: otlp", "type: stdout");
+        assert_config_err!(yaml, "listen");
+    }
+
+    #[test]
+    fn validation_arrow_ipc_requires_listen() {
+        let yaml = single_pipeline_yaml("type: arrow_ipc", "type: stdout");
+        assert_config_err!(yaml, "listen");
+    }
+
+    #[test]
+    fn validation_mixed_simple_and_pipelines() {
+        let yaml = r"
+input:
+  type: file
+  path: /tmp/x.log
+output:
+  type: stdout
+pipelines:
+  extra:
+    inputs:
+      - type: file
+        path: /tmp/y.log
+    outputs:
+      - type: stdout
+";
+        assert_config_err!(yaml, "unknown field");
+    }
+
+    #[test]
+    fn validation_no_pipelines() {
+        let yaml = r"
+server:
+  log_level: info
+";
+        assert_config_err!(yaml, "must define");
+    }
+
+    #[test]
+    fn removed_output_type_is_rejected_at_parse_time() {
+        let yaml = single_pipeline_yaml(
+            "type: file\npath: /tmp/x.log",
+            "type: parquet\npath: /tmp/x",
+        );
+        let err = Config::load_str(yaml).expect_err("removed output type should fail to parse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("parquet")
+                && (msg.contains("unknown variant")
+                    || msg.contains("does not have variant constructor")),
+            "expected parse rejection for removed parquet output: {msg}"
+        );
+    }
+
+    #[test]
+    fn validation_unimplemented_input_format() {
+        // Unimplemented input formats must be rejected at config validation time,
+        // not silently treated as JSON which would corrupt data.
+        for format in ["logfmt", "syslog"] {
+            let yaml = single_pipeline_yaml(
+                &format!("type: file\npath: /tmp/x.log\nformat: {format}"),
+                "type: stdout",
+            );
+            let result = Config::load_str(yaml);
+            assert!(
+                result.is_err(),
+                "validation should reject unimplemented format '{format}'"
+            );
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("not yet implemented"),
+                "error message should mention 'not yet implemented' for '{format}': {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn pipelines_form_rejects_top_level_transform() {
+        let yaml = r"
+transform: SELECT * FROM logs
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+";
+        assert_config_err!(yaml, "unknown field `transform`");
+    }
+
+    #[test]
+    fn validation_endpoint_missing_scheme() {
+        // Scheme-less endpoints must be rejected for supported URL-based outputs.
+        for otype in ["otlp", "elasticsearch"] {
+            let yaml = single_pipeline_yaml(
+                "type: file\npath: /tmp/x.log",
+                &format!("type: {otype}\nendpoint: collector:4317"),
+            );
+            let result = Config::load_str(yaml);
+            assert!(
+                result.is_err(),
+                "expected error for scheme-less endpoint with type '{otype}'"
+            );
+            let msg = result.unwrap_err().to_string();
+            assert!(
+                msg.contains("scheme"),
+                "error should mention 'scheme' for '{otype}': {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn validation_endpoint_valid_schemes() {
+        // Both http:// and https:// must be accepted for supported URL-based outputs.
+        for (otype, scheme) in [
+            ("otlp", "http://"),
+            ("otlp", "https://"),
+            ("elasticsearch", "http://"),
+            ("elasticsearch", "https://"),
+        ] {
+            let yaml = single_pipeline_yaml(
+                "type: file\npath: /tmp/x.log",
+                &format!("type: {otype}\nendpoint: {scheme}collector:4317"),
+            );
+            Config::load_str(yaml)
+                .unwrap_or_else(|e| panic!("scheme '{scheme}' should be valid for '{otype}': {e}"));
+        }
+    }
+
+    #[test]
+    fn validation_endpoint_unset_env_var_rejected() {
+        // An endpoint referencing an unset env var must fail at config load
+        // time with a clear error message naming the variable.
+        let yaml = r"
+input:
+  type: file
+  path: /var/log/test.log
+output:
+  type: otlp
+  endpoint: ${LOGFWD_NONEXISTENT_ENDPOINT_VAR}
+";
+        assert_config_err!(yaml, "LOGFWD_NONEXISTENT_ENDPOINT_VAR");
+    }
+
+    #[test]
+    fn ipv6_empty_bracket_rejected() {
+        let err = validate_host_port("[]:8080");
+        assert!(err.is_err(), "expected error for empty IPv6 brackets");
+        assert!(err.unwrap_err().to_string().contains("empty IPv6 address"));
+    }
+
+    #[test]
+    fn ipv6_double_closing_bracket_rejected() {
+        // "[::1]]:4317" has a double closing bracket; rfind would accept it by
+        // treating "[::1]]" as the host — find (first ']') correctly rejects it.
+        let err = validate_host_port("[::1]]:4317");
+        assert!(
+            err.is_err(),
+            "expected error for double closing bracket '[::1]]:4317'"
+        );
+    }
+
+    #[test]
+    fn ipv6_valid_address_accepted() {
+        assert!(validate_host_port("[::1]:8080").is_ok());
+        assert!(validate_host_port("[2001:db8::1]:4317").is_ok());
+        // IPv6 zone IDs (%eth0) not supported by std::net::Ipv6Addr — skip.
+    }
+
+    #[test]
+    fn top_level_resource_attrs_rejected_with_pipelines_form() {
+        let yaml = r"
+pipelines:
+  app:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+resource_attrs:
+  service.name: my-service
+";
+        assert_config_err!(yaml, "unknown field `resource_attrs`");
+    }
+
+    #[test]
+    fn top_level_enrichment_rejected_with_pipelines_form() {
+        let yaml = r"
+pipelines:
+  app:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+enrichment:
+  - type: geo_database
+    format: mmdb
+    path: /tmp/geo.mmdb
+";
+        assert_config_err!(yaml, "unknown field `enrichment`");
+    }
+
+    #[test]
+    fn workers_zero_is_rejected() {
+        let yaml = r"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+    workers: 0
+";
+        assert_config_err!(yaml, "workers", "must be in range 1..=1024");
+    }
+
+    #[test]
+    fn batch_target_bytes_zero_is_rejected() {
+        let yaml = r"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+    batch_target_bytes: 0
+";
+        assert_config_err!(yaml, "batch_target_bytes");
+    }
+
+    #[test]
+    fn poll_interval_ms_must_be_positive() {
+        let yaml = r"
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+    outputs:
+      - type: stdout
+    poll_interval_ms: 0
+";
+        let err = Config::load_str(yaml).unwrap_err();
+        let msg = err.to_string();
+        // Now rejected at parse time via PositiveMillis.
+        assert!(
+            msg.contains("invalid value") || msg.contains("positive"),
+            "got: {msg}"
+        );
+    }
+}

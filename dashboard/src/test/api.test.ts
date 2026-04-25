@@ -45,7 +45,7 @@ describe("api", () => {
     });
 
     it("config() fetches /admin/v1/config", async () => {
-      const body = { path: "/etc/logfwd.yaml", raw_yaml: "inputs: []" };
+      const body = { path: "/etc/ffwd.yaml", raw_yaml: "inputs: []" };
       mockFetch.mockResolvedValue(jsonResponse(body));
 
       const result = await api.config();

@@ -91,10 +91,10 @@ describe("useTelemetryWebSocket", () => {
           resource: { attributes: [] },
           scopeMetrics: [
             {
-              scope: { name: "logfwd.diagnostics" },
+              scope: { name: "ffwd.diagnostics" },
               metrics: [
                 {
-                  name: "logfwd.uptime_seconds",
+                  name: "ffwd.uptime_seconds",
                   gauge: {
                     dataPoints: [{ timeUnixNano: "1000", asDouble: 42.5 }],
                   },
@@ -124,7 +124,7 @@ describe("useTelemetryWebSocket", () => {
           resource: { attributes: [] },
           scopeSpans: [
             {
-              scope: { name: "logfwd.diagnostics" },
+              scope: { name: "ffwd.diagnostics" },
               spans: [],
             },
           ],

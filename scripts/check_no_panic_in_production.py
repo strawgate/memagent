@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fail if `panic!`, `todo!`, or `unimplemented!` appears outside test code
-in production crates (`logfwd-runtime`, `logfwd-output`).
+in production crates (`ffwd-runtime`, `ffwd-output`).
 
 A production panic crashes the running pipeline. These macros are
 acceptable in tests, under a `// ALLOW-PANIC: <reason>` line marker, or
@@ -40,7 +40,7 @@ CRATES_ROOT = REPO_ROOT / "crates"
 
 # Production crates whose src/ is subject to the guard. Tests/benches
 # in these crates are still allowed via the in-file test-context tracking.
-GUARDED_CRATES = ("logfwd-runtime", "logfwd-output")
+GUARDED_CRATES = ("ffwd-runtime", "ffwd-output")
 
 # Macros that constitute a hard production panic.
 PANIC_MACROS = re.compile(r"\b(panic|todo|unimplemented)!\s*\(")
@@ -227,7 +227,7 @@ def main() -> int:
         return 0
 
     print(
-        "Production-panic guard failed in logfwd-runtime / logfwd-output. "
+        "Production-panic guard failed in ffwd-runtime / ffwd-output. "
         "Use `?`, structured error variants, or `// ALLOW-PANIC: <reason>` "
         "for genuinely unreachable invariants. See dev-docs/CODE_STYLE.md "
         "-> Error Handling.",

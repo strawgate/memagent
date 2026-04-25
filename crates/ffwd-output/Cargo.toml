@@ -1,0 +1,66 @@
+[package]
+name = "ffwd-output"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+arrow = { workspace = true }
+ffwd-arrow = { version = "0.1.0", path = "../ffwd-arrow" }
+ffwd-config = { version = "0.1.0", path = "../ffwd-config" }
+ffwd-core = { version = "0.1.0", path = "../ffwd-core" }
+ffwd-otap-proto = { version = "0.1.0", path = "../ffwd-otap-proto" }
+ffwd-types = { version = "0.1.0", path = "../ffwd-types" }
+flate2 = "1"
+httpdate = "1"
+itoa = "1"
+memchr = "2"
+prost = "0.14"
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "http2",
+    "gzip",
+    "json",
+    "stream",
+] }
+ryu = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = "1.0"
+thiserror = { workspace = true }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "net",
+    "macros",
+    "time",
+    "io-std",
+    "io-util",
+] }
+tokio-stream = "0.1.18"
+tracing = { workspace = true }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+zstd = "0.13"
+
+[dev-dependencies]
+arrow = { workspace = true, features = ["test_utils"] }
+insta = "1"
+memchr = "2"
+mockito = "1.7.2"
+opentelemetry-proto = { version = "0.31", features = [
+    "logs",
+    "gen-tonic-messages",
+] }
+proptest = "1"
+serde_json = "1.0.149"
+serial_test = "3"
+stats_alloc = { workspace = true }
+tiny_http = "0.12"
+
+[features]
+elasticsearch_integration_tests = []
+
+[lints]
+workspace = true

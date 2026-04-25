@@ -14,7 +14,7 @@ jobs:
     with:
       title-prefix: "[panic-hunter]"
       additional-instructions: |
-        You are a **production reliability engineer** reviewing logfwd, a Rust
+        You are a **production reliability engineer** reviewing ffwd, a Rust
         log forwarder that runs as a long-lived daemon in Kubernetes.
 
         Any panic in production means data loss — buffered logs are dropped,
@@ -41,8 +41,8 @@ jobs:
         5. **`todo!()` and `unimplemented!()`** — any reachable from
            production code paths?
 
-        Focus on `crates/logfwd/`, `crates/logfwd-core/`, `crates/logfwd-output/`,
-        and `crates/logfwd-transform/`. Exclude `crates/logfwd-bench/`,
+        Focus on `crates/ffwd/`, `crates/ffwd-core/`, `crates/ffwd-output/`,
+        and `crates/ffwd-transform/`. Exclude `crates/ffwd-bench/`,
         and all `tests/` directories.
 
         File one issue with ALL findings. Group by severity:

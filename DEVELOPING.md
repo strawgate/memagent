@@ -1,4 +1,4 @@
-# Developing logfwd
+# Developing ffwd
 
 ## Fast Start
 
@@ -8,7 +8,7 @@ If you are new, do this first:
 just ci
 just test
 # Optional crate-local shortcut during focused iteration:
-# cargo test -p logfwd-core
+# cargo test -p ffwd-core
 ```
 
 Then read only the section needed for your task:
@@ -69,17 +69,25 @@ docker compose -f docker-compose.dev.yml down     # stop
 
 ```
 crates/
-  logfwd/              Binary crate. CLI entrypoints and compatibility re-exports.
-  logfwd-runtime/      Runtime orchestration. Pipeline loop, worker pool, processors.
-  logfwd-core/         Proven kernel. Scanner, parsers, pipeline state machine, OTLP encoding. no_std.
-  logfwd-arrow/        Arrow integration. ScanBuilder impls, SIMD backends, RecordBatch builders.
-  logfwd-config/       YAML config parsing and validation.
-  logfwd-io/           I/O layer. File tailing, TCP/UDP/OTLP inputs, checkpointing, diagnostics.
-  logfwd-transform/    DataFusion SQL transforms, UDFs (grok, regexp_extract, geo_lookup).
-  logfwd-output/       Output sinks (OTLP, Elasticsearch, Loki, JSON lines, stdout).
-  logfwd-bench/        Criterion benchmarks for the scanner pipeline.
-  logfwd-test-utils/   Shared test utilities.
-  logfwd-ebpf-proto/   eBPF log capture protocol definitions (experimental).
+  ffwd/              Binary crate. CLI entrypoints and compatibility re-exports.
+  ffwd-runtime/      Runtime orchestration. Pipeline loop, worker pool, processors.
+  ffwd-core/         Proven kernel. Scanner, parsers, pipeline state machine, OTLP encoding. no_std.
+  ffwd-arrow/        Arrow integration. ScanBuilder impls, SIMD backends, RecordBatch builders.
+  ffwd-config/       YAML config parsing and validation.
+  ffwd-config-wasm/  WASM bindings for the config validator (browser/Node.js).
+  ffwd-io/           I/O layer. File tailing, TCP/UDP/OTLP inputs, checkpointing, diagnostics.
+  ffwd-transform/    DataFusion SQL transforms, UDFs (grok, regexp_extract, geo_lookup).
+  ffwd-output/       Output sinks (OTLP, Elasticsearch, Loki, JSON lines, stdout).
+  ffwd-types/        Shared value types, state-machine semantics, diagnostics.
+  ffwd-diagnostics/  Diagnostics control plane: HTTP endpoints, dashboard, readiness.
+  ffwd-bench/        Criterion benchmarks for the scanner pipeline.
+  ffwd-test-utils/   Shared test utilities.
+  ffwd-kani/         Verification oracles and Kani proof helpers.
+  ffwd-lint-attrs/   Custom proc-macro lint attributes (no_panic, pure).
+  ffwd-lints/        Custom Clippy-style lint passes.
+  ffwd-ebpf-proto/   eBPF log capture protocol definitions (experimental).
+  ffwd-otap-proto/   OTAP protocol definitions.
+  ffwd-proto-build/  Protobuf build scripts.
 ```
 
 ## Build, test, lint, bench, fuzz
@@ -92,19 +100,19 @@ just test-all                # tests (full workspace, ~3min)
 just lint                    # fmt + clippy + toml
 just lint-all                # full: fmt + clippy + toml + deny + kani-boundary
 just miri-setup              # install nightly Miri components locally
-just miri                    # Miri checks for logfwd-core and logfwd-types
+just miri                    # Miri checks for ffwd-core and ffwd-types
 just tlc-tail                # run TailLifecycle TLA+ model check
-just build                   # release logfwd binary (includes DataFusion SQL)
+just build                   # release ffwd binary (includes DataFusion SQL)
 just build-dev-lite          # dev-only fast binary (no DataFusion SQL)
-cargo test -p logfwd-core    # single crate (fastest iteration)
+cargo test -p ffwd-core    # single crate (fastest iteration)
 just fuzz scanner 300        # fuzz a target for 300s (nightly)
 ```
 
 
 
-> **Why two tiers?** The workspace `default-members` excludes `logfwd-transform`
-> (datafusion) and `logfwd` (binary). Bare `cargo check` / `just clippy` skip
-> them (~30s vs ~3min). Use `--workspace`, `-p logfwd`, or the `-all` just
+> **Why two tiers?** The workspace `default-members` excludes `ffwd-transform`
+> (datafusion) and `ffwd` (binary). Bare `cargo check` / `just clippy` skip
+> them (~30s vs ~3min). Use `--workspace`, `-p ffwd`, or the `-all` just
 > targets when you need the full build. CI always uses `--workspace`.
 > Adding the `ci:full` PR label includes the slower verification lanes in
 > subsequent CI runs (for example, after pushing a commit or rerunning CI):
@@ -117,19 +125,19 @@ proptest failure:
 
 ```bash
 # Run one test by pattern (matches test name substring).
-cargo nextest run -p logfwd-core --lib scanner::handles_empty_line
+cargo nextest run -p ffwd-core --lib scanner::handles_empty_line
 
 # Run all tests in a module.
-cargo nextest run -p logfwd-arrow --lib scanner::
+cargo nextest run -p ffwd-arrow --lib scanner::
 
 # Raise proptest case count for a suspected edge case. The default
 # is 256; use 10_000+ when you think a rare shape is being missed.
-PROPTEST_CASES=10000 cargo nextest run -p logfwd-arrow --lib
+PROPTEST_CASES=10000 cargo nextest run -p ffwd-arrow --lib
 
 # Re-run a minimized regression that was pinned into a regression file.
 # `crates/*/proptest-regressions/` holds previously-shrunk failing seeds;
 # proptest reads them automatically when the matching test runs.
-cargo nextest run -p logfwd-arrow --lib scanner::round_trip
+cargo nextest run -p ffwd-arrow --lib scanner::round_trip
 ```
 
 Turmoil tests use deterministic seeds: set `TURMOIL_SEED=<N>` to
@@ -162,13 +170,13 @@ Rules of thumb when reading results:
 
 ## DataFusion in Dev vs Release
 
-`logfwd` now has a feature-gated SQL engine:
+`ffwd` now has a feature-gated SQL engine:
 
 - **Release/full package (default):** includes DataFusion.
-  - `cargo build --release -p logfwd`
+  - `cargo build --release -p ffwd`
   - `just build`
 - **Dev-lite (opt-in):** skips DataFusion for faster local iteration.
-  - `cargo build --release -p logfwd --no-default-features`
+  - `cargo build --release -p ffwd --no-default-features`
   - `just build-dev-lite`
 
 Use the dev-lite build only when you're intentionally working on non-SQL paths.
@@ -224,7 +232,7 @@ breaking builds for developers who have not installed the linker.
 ## Local CPU profiling (macOS)
 
 The `cpu-profiling` feature works locally on macOS, but the shutdown path matters:
-the profiled `logfwd` process must receive `SIGTERM` directly so it can build and
+the profiled `ffwd` process must receive `SIGTERM` directly so it can build and
 write `flamegraph.svg` before exiting.
 
 The easiest way to run the full File -> OTLP path locally is:
@@ -235,11 +243,11 @@ just profile-otlp-local
 
 This recipe:
 
-- builds `logfwd` with `--features cpu-profiling`
+- builds `ffwd` with `--features cpu-profiling`
 - generates a JSON input file
 - starts a local OTLP blackhole on a fresh port
-- runs `logfwd` with a file input and OTLP output
-- sends `SIGTERM` to the real `logfwd` child process after a short run
+- runs `ffwd` with a file input and OTLP output
+- sends `SIGTERM` to the real `ffwd` child process after a short run
 - leaves a temp directory containing `config.yaml`, `logs.json`, `pipeline.log`,
   `blackhole.log`, and `flamegraph.svg`
 
@@ -265,7 +273,7 @@ Caveats:
   run `RUSTC_WRAPPER= cargo clean` and retry. The profiled release build is
   large because `release` keeps debug info for flamegraphs.
 - Killing a wrapper shell is not sufficient; the `SIGTERM` must reach the
-  actual `logfwd` process.
+  actual `ffwd` process.
 
 ---
 
@@ -280,9 +288,9 @@ artifact to back it.
    bench on `main` and save the report. `just bench` runs the Tier 1
    suite (`pipeline`, `output_encode`, `full_chain`). For more
    targeted Criterion runs, invoke the specific `--bench` target directly.
-   Helper and profiling binaries in `logfwd-bench` are gated behind
+   Helper and profiling binaries in `ffwd-bench` are gated behind
    `--features bench-tools`; prefer the `just profile-*` recipes, or pass
-   that feature explicitly for direct `cargo run -p logfwd-bench --bin ...`
+   that feature explicitly for direct `cargo run -p ffwd-bench --bin ...`
    commands.
 2. **Profile to find the actual hotspot.** On macOS: `just profile-otlp-local`
    produces a flamegraph. For FramedInput-specific work:
@@ -304,10 +312,10 @@ artifact to back it.
    research/design notes under `dev-docs/research/`. See
    `dev-docs/CHANGE_MAP.md` for co-change requirements.
 
-If the change touches `unsafe` SIMD in `logfwd-arrow`, verify it
-against the scalar fallback with proptest (`cargo test -p logfwd-arrow`
-exercises the equivalence proptests). Miri does not cover `logfwd-arrow`
-— `just miri` runs only the `logfwd-core` and `logfwd-types` suites.
+If the change touches `unsafe` SIMD in `ffwd-arrow`, verify it
+against the scalar fallback with proptest (`cargo test -p ffwd-arrow`
+exercises the equivalence proptests). Miri does not cover `ffwd-arrow`
+— `just miri` runs only the `ffwd-core` and `ffwd-types` suites.
 For SIMD invariants enforced at the type level, `just kani-boundary`
 verifies the scanner contract.
 

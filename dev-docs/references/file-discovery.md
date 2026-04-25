@@ -1,6 +1,6 @@
 # File Discovery Notes (Repo-Scoped)
 
-How file discovery works in `logfwd-io` tailing paths.
+How file discovery works in `ffwd-io` tailing paths.
 
 ## Reliability Model
 

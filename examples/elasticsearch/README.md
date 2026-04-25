@@ -1,6 +1,6 @@
 # Elasticsearch Output Examples
 
-This directory contains example configurations for using logfwd with Elasticsearch.
+This directory contains example configurations for using ffwd with Elasticsearch.
 
 ## Quick Start
 

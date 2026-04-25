@@ -10,7 +10,7 @@ reviews:
         type(optional-scope): concise description (#issue-number).
         Allowed types: feat, fix, refactor, docs, bench, test, chore.
         Scope is the crate name when the change is crate-specific
-        (e.g., feat(logfwd-core): add varint overflow proof (#123)).
+        (e.g., feat(ffwd-core): add varint overflow proof (#123)).
         The description must name the observable behavior change, not
         the mechanism. Reject vague titles like "update scanner" or
         "fix bug". Require "fix: CRI aggregator drops final partial line
@@ -27,7 +27,7 @@ reviews:
           Pass if: (1) no .unwrap()/.expect("vague") in production paths — use ? or
           a real invariant explanation; (2) no .clone()/allocation inside hot-path
           loops without a benchmark justification comment; (3) all unsafe blocks outside
-          logfwd-core have a // SAFETY: comment stating the specific invariant; (4) new
+          ffwd-core have a // SAFETY: comment stating the specific invariant; (4) new
           state machines use the typestate pattern (except when the PR justifies why typestate is impractical for that specific case); (5) no feature flags for behavior,
           no speculative traits, no sentinel values where Option applies; (6) all new
           public items have /// doc comments describing behavior, not just the name.
@@ -41,7 +41,7 @@ reviews:
           VERIFICATION.md is not updated. Full guidance: dev-docs/review-guides/formal-verification-coverage.md
 
 
-          KANI — WHEN REQUIRED. Every new non-exempt public function in logfwd-core needs
+          KANI — WHEN REQUIRED. Every new non-exempt public function in ffwd-core needs
           a Kani proof. Exemptions (ONLY these three): async functions; heap-heavy code
           creating Vec/HashMap/BTreeMap proportional to input size; trivial getters/setters
           with no logic. Any function with logic (parsing, encoding, bit ops, state
@@ -88,7 +88,7 @@ reviews:
           COMPOSITIONAL PROOFS. Hot-path leaf functions called from multiple sites must
           have #[cfg_attr(kani, kani::requires/ensures)] contracts verified with
           proof_for_contract so callers can use stub_verified. Reject deeply nested logic
-          added to logfwd-core hot paths without contracts on the leaves.
+          added to ffwd-core hot paths without contracts on the leaves.
 
 
           TLA+. Any PR touching lifecycle.rs, PipelineMachine transitions, drain, checkpoint
@@ -103,7 +103,7 @@ reviews:
           NEVER use CONSTRAINT for liveness — use model constants instead.
 
 
-          PROPTEST. New SIMD code in logfwd-arrow MUST have a proptest oracle
+          PROPTEST. New SIMD code in ffwd-arrow MUST have a proptest oracle
           (SIMD == scalar, PROPTEST_CASES=2000). New scanner behavior MUST cover: escape
           sequences crossing 64-byte boundaries; fields in different orders; duplicate
           keys same type (first-write-wins); duplicate keys different types (two suffixed
@@ -132,7 +132,7 @@ reviews:
       - name: Crate Boundary and Dependency Integrity
         mode: error
         instructions: |
-          Pass if: (1) logfwd-core has no std:: imports, no unsafe, and no dependencies
+          Pass if: (1) ffwd-core has no std:: imports, no unsafe, and no dependencies
           beyond memchr and wide; (2) dependency direction is strictly lower-to-higher
           (core → arrow → io → transform/output, config has no data-crate deps); (3)
           the binary crate contains only async orchestration — no parsing or encoding

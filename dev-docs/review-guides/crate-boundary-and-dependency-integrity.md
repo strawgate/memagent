@@ -6,13 +6,13 @@ Use this checklist to reject architectural boundary regressions.
 
 Reject PRs that do any of the following:
 
-- Add `std` usage to `logfwd-core`.
-- Introduce `unsafe` in `logfwd-core`.
-- Add non-allowlisted dependencies to `logfwd-core`.
+- Add `std` usage to `ffwd-core`.
+- Introduce `unsafe` in `ffwd-core`.
+- Add non-allowlisted dependencies to `ffwd-core`.
 - Introduce upward or cyclic crate dependencies.
-- Move domain logic into `logfwd` binary crate.
+- Move domain logic into `ffwd` binary crate.
 
-## Core Contract (`logfwd-core`)
+## Core Contract (`ffwd-core`)
 
 - Must remain `no_std` + `forbid(unsafe_code)`.
 - Must not include IO, async runtime, thread management, or transport logic.
@@ -22,10 +22,10 @@ Reject PRs that do any of the following:
 
 Dependency flow must remain downward by layer:
 
-1. `logfwd-core`
-2. `logfwd-arrow` / `logfwd-types`
+1. `ffwd-core`
+2. `ffwd-arrow` / `ffwd-types`
 3. IO/transform/output/runtime crates
-4. `logfwd` binary shell
+4. `ffwd` binary shell
 
 If a lower crate depends on a higher one, fail review.
 

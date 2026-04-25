@@ -21,7 +21,7 @@ The nightly Turmoil tests are failing due to several concurrency bugs in the pip
 
 ### Bug 1: Ack Starvation in Select Loop (HIGH PRIORITY)
 
-**Location:** `crates/logfwd-runtime/src/pipeline/mod.rs`, `run_async()` select loop
+**Location:** `crates/ffwd-runtime/src/pipeline/mod.rs`, `run_async()` select loop
 
 **Problem:**
 The `tokio::select!` macro is **unbiased by default**. Under sustained input load:
@@ -64,7 +64,7 @@ loop {
 
 ### Bug 2: Worker Panic Leaks Batch Tickets (MEDIUM PRIORITY)
 
-**Location:** `crates/logfwd-runtime/src/worker_pool/worker.rs` (worker task)
+**Location:** `crates/ffwd-runtime/src/worker_pool/worker.rs` (worker task)
 
 **Problem:**
 If `Sink::send_batch()` panics:
@@ -103,7 +103,7 @@ match result {
 
 ### Bug 3: Rejected Batch Advances Checkpoint (DESIGN ISSUE)
 
-**Location:** `crates/logfwd-runtime/src/pipeline/mod.rs`, `ack_all_tickets()` path
+**Location:** `crates/ffwd-runtime/src/pipeline/mod.rs`, `ack_all_tickets()` path
 
 **Problem:**
 `record_ack_and_advance()` treats `reject()` identically to `ack()` for checkpoint advancement. When a batch is rejected:
@@ -142,7 +142,7 @@ Options:
 
 ### Bug 4: Race Condition in Multi-Worker Out-of-Order Ack (LOW PRIORITY)
 
-**Location:** `crates/logfwd-types/src/pipeline/lifecycle.rs`, `record_ack_and_advance()`
+**Location:** `crates/ffwd-types/src/pipeline/lifecycle.rs`, `record_ack_and_advance()`
 
 **Problem:**
 With multiple workers:
@@ -159,7 +159,7 @@ With multiple workers:
 
 ### Bug 5: TCP Server Crash Recovery Limited (KNOWN LIMITATION)
 
-**Location:** `crates/logfwd/tests/turmoil_sim/network_sim.rs`, `tcp_server_crash_triggers_reconnect`
+**Location:** `crates/ffwd/tests/turmoil_sim/network_sim.rs`, `tcp_server_crash_triggers_reconnect`
 
 **Problem:**
 After server crash + bounce:
@@ -182,7 +182,7 @@ This is a **design limitation**, not a bug. Options:
 
 ### Phase 1: Ack Starvation Fix (Critical)
 
-**File:** `crates/logfwd-runtime/src/pipeline/mod.rs`
+**File:** `crates/ffwd-runtime/src/pipeline/mod.rs`
 
 **Changes:**
 1. Add `biased` to select! loop
@@ -210,7 +210,7 @@ loop {
 
 ### Phase 2: Worker Panic Recovery (High)
 
-**File:** `crates/logfwd-runtime/src/worker_pool/worker.rs`
+**File:** `crates/ffwd-runtime/src/worker_pool/worker.rs`
 
 **Changes:**
 1. Wrap `sink.send_batch()` in panic catch
@@ -223,7 +223,7 @@ loop {
 
 ### Phase 3: Reject Behavior Review (Medium)
 
-**File:** `crates/logfwd-runtime/src/pipeline/mod.rs`, `ack_all_tickets()`
+**File:** `crates/ffwd-runtime/src/pipeline/mod.rs`, `ack_all_tickets()`
 
 **Decision needed:** Should reject advance checkpoint?
 
@@ -288,25 +288,25 @@ cargo test --features turmoil --test turmoil_sim --release
 ## Appendix: Key Code Locations
 
 ### Pipeline Select Loop
-- **File:** `crates/logfwd-runtime/src/pipeline/mod.rs`
+- **File:** `crates/ffwd-runtime/src/pipeline/mod.rs`
 - **Search:** `run_async()`, `tokio::select!`
 - **Function:** `run_async()`
 
 ### PipelineMachine
 
-- **File:** `crates/logfwd-types/src/pipeline/lifecycle.rs`
+- **File:** `crates/ffwd-types/src/pipeline/lifecycle.rs`
 - **Search:** `apply_ack()`, `record_ack_and_advance()`
 - **Key Methods:** `apply_ack()`, `record_ack_and_advance()`
 
 ### BatchTicket
 
-- **File:** `crates/logfwd-types/src/pipeline/batch.rs`
+- **File:** `crates/ffwd-types/src/pipeline/batch.rs`
 - **Search:** `ack()`, `reject()`, `fail()`
 - **Key Methods:** `ack()`, `reject()`, `fail()`
 
 ### Worker Pool
 
-- **File:** `crates/logfwd-runtime/src/worker_pool/pool.rs`
+- **File:** `crates/ffwd-runtime/src/worker_pool/pool.rs`
 - **Search:** `submit()`, worker loop
 
 ---
@@ -316,4 +316,4 @@ cargo test --features turmoil --test turmoil_sim --release
 1. [Turmoil Documentation](https://docs.rs/turmoil/latest/turmoil/)
 2. [Tokio Select Bias](https://docs.rs/tokio/latest/tokio/macro.select.html#fairness)
 3. `dev-docs/references/turmoil-simulation.md` - Internal turmoil patterns
-4. `crates/logfwd/tests/turmoil_sim/` - All simulation tests
+4. `crates/ffwd/tests/turmoil_sim/` - All simulation tests

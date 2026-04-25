@@ -316,7 +316,7 @@ function init() {
       '\u26A0\uFE0F logrotate: rotation detected',
       '<code>app.log</code> \u2192 <code>app.log.1</code><br>' +
       'inode\u00A0' + oldInode + '\u00A0\u2192\u00A0' + newInode + '<br>' +
-      'logfwd drains old file, opens new at offset\u00A00. No data lost.',
+      'ffwd drains old file, opens new at offset\u00A00. No data lost.',
       'warn', isAuto ? 3500 : null
     );
     mainFile.el.className = 'tl-file old';

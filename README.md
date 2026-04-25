@@ -19,14 +19,14 @@ FastForward is a research and learning project exploring how far you can push a 
 
 The [documentation site](https://strawgate.github.io/fastforward/) has interactive guides that explain how each piece works — from SIMD parsing to backpressure to checkpoint ordering — with live simulations you can play with.
 
-> **Note:** The Cargo package is named `logfwd`; the installed CLI binary is `ff`.
+> **Note:** The Cargo package is named `ffwd`; the installed CLI binary is `ff`.
 
 ## Try it
 
 ```bash
 # Build from source (Rust 1.89+)
 git clone https://github.com/strawgate/fastforward.git && cd fastforward
-cargo build --release -p logfwd
+cargo build --release -p ffwd
 
 # Generate some test data
 ./target/release/ff generate-json 100000 logs.json

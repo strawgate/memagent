@@ -4,7 +4,7 @@ This reference is intentionally deep.
 Kani proofs in this repository are a high-complexity, high-leverage area, and
 agents need enough detail to make good proof design choices without re-research.
 
-Use this doc for proof authoring and review in `logfwd-*` crates.
+Use this doc for proof authoring and review in `ffwd-*` crates.
 
 ## Kani In The Verification Stack
 
@@ -40,7 +40,7 @@ Follow these defaults unless `dev-docs/VERIFICATION.md` says otherwise:
 - Prefer `kani::any_where()` over broad `any()` plus many detached `assume()` calls.
 
 Proofs are typically required for:
-- Parser/framer primitives in `logfwd-core`
+- Parser/framer primitives in `ffwd-core`
 - Bitmask/structural operations
 - Encoding math and bounds-sensitive format logic
 - Pure state transitions
@@ -62,8 +62,8 @@ just kani-boundary
 Focused iteration:
 
 ```bash
-RUSTC_WRAPPER="" cargo kani -p logfwd-core --harness verify_my_harness -Z function-contracts -Z mem-predicates -Z stubbing
-RUSTC_WRAPPER="" cargo kani -p logfwd-core -Z function-contracts -Z mem-predicates -Z stubbing
+RUSTC_WRAPPER="" cargo kani -p ffwd-core --harness verify_my_harness -Z function-contracts -Z mem-predicates -Z stubbing
+RUSTC_WRAPPER="" cargo kani -p ffwd-core -Z function-contracts -Z mem-predicates -Z stubbing
 ```
 
 Guardrail and contract checks:
@@ -137,15 +137,15 @@ For order-sensitive logic, model operation ordering symbolically with
 `any_where()` rather than hardcoding one sequence.
 
 Repository examples:
-- `crates/logfwd-types/src/pipeline/lifecycle.rs`
+- `crates/ffwd-types/src/pipeline/lifecycle.rs`
 
 ### 5) Compositional contracts (`proof_for_contract` + `stub_verified`)
 
 Use contracts to keep deep call chains tractable.
 
 Repository examples:
-- `crates/logfwd-core/src/structural.rs`
-- `crates/logfwd-core/src/otlp.rs`
+- `crates/ffwd-core/src/structural.rs`
+- `crates/ffwd-core/src/otlp.rs`
 
 Workflow:
 1. Add `#[cfg_attr(kani, kani::requires(...))]` / `ensures(...)` contracts.
@@ -187,27 +187,27 @@ already-verified contracts.
 - If contracts/stubs are used, are there corresponding `proof_for_contract` harnesses?
 - If behavior/invariants changed, were docs and guardrails updated?
 
-## Shared Verification Utilities (`logfwd-kani`)
+## Shared Verification Utilities (`ffwd-kani`)
 
 For fundamental oracles and assertions used across multiple crates, use the
-`logfwd-kani` crate. Key exports:
+`ffwd-kani` crate. Key exports:
 
-- **`logfwd_kani::bytes::assert_bytes_eq`**: bounded loop-based slice comparison
-- **`logfwd_kani::bytes::compute_real_quotes_oracle`**: reference quote-escape bitmask
-- **`logfwd_kani::bytes::prefix_xor_oracle`**: reference running XOR
-- **`logfwd_kani::datetime::jdn_days_from_epoch`**: Julian Day Number oracle
-- **`logfwd_kani::hex::hex_nibble_oracle`**: hex nibble branch-based oracle
-- **`logfwd_kani::hex::hex_decode_oracle`**: hex decode reference implementation
-- **`logfwd_kani::iter::find_byte`**: linear-scan byte search oracle
-- **`logfwd_kani::numeric::parse_int_oracle`**: i128-accumulator integer parser
-- **`logfwd_kani::proto::varint_len_oracle`**: varint encoded length predictor
-- **`logfwd_kani::proto::bytes_field_total_size_oracle`**: protobuf field size predictor
+- **`ffwd_kani::bytes::assert_bytes_eq`**: bounded loop-based slice comparison
+- **`ffwd_kani::bytes::compute_real_quotes_oracle`**: reference quote-escape bitmask
+- **`ffwd_kani::bytes::prefix_xor_oracle`**: reference running XOR
+- **`ffwd_kani::datetime::jdn_days_from_epoch`**: Julian Day Number oracle
+- **`ffwd_kani::hex::hex_nibble_oracle`**: hex nibble branch-based oracle
+- **`ffwd_kani::hex::hex_decode_oracle`**: hex decode reference implementation
+- **`ffwd_kani::iter::find_byte`**: linear-scan byte search oracle
+- **`ffwd_kani::numeric::parse_int_oracle`**: i128-accumulator integer parser
+- **`ffwd_kani::proto::varint_len_oracle`**: varint encoded length predictor
+- **`ffwd_kani::proto::bytes_field_total_size_oracle`**: protobuf field size predictor
 
-Add `logfwd-kani` as a dependency:
+Add `ffwd-kani` as a dependency:
 
 ```toml
 [dependencies]
-logfwd-kani = { version = "0.1.0", path = "../logfwd-kani" }
+ffwd-kani = { version = "0.1.0", path = "../ffwd-kani" }
 ```
 
 Oracle functions are only called from `#[cfg(kani)]` and `#[cfg(test)]` blocks—

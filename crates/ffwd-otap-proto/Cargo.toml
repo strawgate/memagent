@@ -1,0 +1,23 @@
+[package]
+name = "ffwd-otap-proto"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[package.metadata.cargo-machete]
+# Documented ignores: prost is required for the generated protobuf types,
+# and ffwd-proto-build is a build dependency utilized in the build script.
+ignored = ["ffwd-proto-build", "prost"]
+
+[lib]
+doctest = false
+
+[dependencies]
+prost = "0.14"
+
+[build-dependencies]
+ffwd-proto-build = { version = "0.1.0", path = "../ffwd-proto-build" }
+
+[lints]
+workspace = true

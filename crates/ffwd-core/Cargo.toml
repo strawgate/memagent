@@ -1,0 +1,35 @@
+[package]
+name = "ffwd-core"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[dependencies]
+ffwd-kani = { version = "0.1.0", path = "../ffwd-kani" }
+ffwd-lint-attrs = { version = "0.1.0", path = "../ffwd-lint-attrs" }
+memchr = { version = "2", default-features = false }
+wide = { version = "1.3.0", default-features = false }
+
+[dev-dependencies]
+arrow = { workspace = true }
+arrow-json = { workspace = true }
+bytes = "1"
+chrono = { version = "0.4.44", default-features = false }
+criterion = { version = "0.7", features = ["html_reports"] }
+ffwd-arrow = { version = "0.1.0", path = "../ffwd-arrow" }
+ffwd-test-utils = { version = "0.1.0", path = "../ffwd-test-utils" }
+memmap2 = "0.9"
+proptest = "1"
+sonic-rs = "0.5"
+tempfile = "3"
+
+[[bench]]
+name = "scanner"
+harness = false
+
+[lints]
+workspace = true

@@ -7,7 +7,7 @@ It tells you which files usually need to change together so behavior, docs, and 
 
 When you add, rename, or remove config fields:
 
-- Config schema and validation in `logfwd-config` (and bootstrap wiring in `logfwd` when needed).
+- Config schema and validation in `ffwd-config` (and bootstrap wiring in `ffwd` when needed).
 - User-facing config reference in `book/src/content/docs/configuration/reference.mdx`.
 - Related task pages that show examples (`book/src/content/docs/getting-started/`, `book/src/content/docs/deployment/`).
 - Validation and negative tests for invalid configs.
@@ -16,7 +16,7 @@ When you add, rename, or remove config fields:
 
 Output YAML deserializes straight into `OutputConfigV2` — the typed
 `#[serde(tag = "type", rename_all = "snake_case")]` enum in
-`crates/logfwd-config/src/types.rs`. The flat `OutputConfig` struct and
+`crates/ffwd-config/src/types.rs`. The flat `OutputConfig` struct and
 its `From<OutputConfigV2> for OutputConfig` / `From<&OutputConfig> for OutputConfigV2` bridges were removed; nothing
 else in the workspace carries a second shape. If your PR introduces a
 new output type, add it as one more variant:
@@ -25,7 +25,7 @@ new output type, add it as one more variant:
   typed configs with `#[serde(deny_unknown_fields)]`.
 - Add the variant to `OutputConfigV2` and extend the `name()`,
   `endpoint()`, and `output_type()` match arms.
-- Add the sink construction arm in `logfwd-output::factory::build_sink_factory`.
+- Add the sink construction arm in `ffwd-output::factory::build_sink_factory`.
 - Do **not** reintroduce a shared flat struct — a knob that only applies
   to one output belongs on that variant. `deny_unknown_fields` then
   rejects the knob on every other variant for free.
@@ -73,7 +73,7 @@ Do not duplicate the same reference data in multiple pages.
 Link to canonical docs instead.
 
 For ingest-path docs, keep the architectural vocabulary stable by treating the
-[Ingest Glossary](ARCHITECTURE.md#ingest-glossary) as canonical. User-facing
+[Ingest vocabulary](ARCHITECTURE.md#ingest-vocabulary) as canonical. User-facing
 config still uses `inputs` / `outputs`, and implementation-local names
 (`SourceEvent`, `FramedInput`, worker module names) should not leak into
 architecture diagrams unless the code name itself is the point of the

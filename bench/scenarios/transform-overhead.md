@@ -1,7 +1,7 @@
 # DataFusion SQL Transform: Per-Batch Overhead Profiling
 
 > Profiling report for issue #927.
-> Benchmark: `cargo bench -p logfwd-bench --bench transform_overhead`
+> Benchmark: `cargo bench -p ffwd-bench --bench transform_overhead`
 > Environment: GitHub Actions runner (x86-64)
 
 ## 1. Current Baseline

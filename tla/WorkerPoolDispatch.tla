@@ -1,7 +1,7 @@
 --------------------- MODULE WorkerPoolDispatch ---------------------
 (*
  * Formal model of the OutputWorkerPool dispatch algorithm from
- * crates/logfwd-runtime/src/worker_pool/pool.rs
+ * crates/ffwd-runtime/src/worker_pool/pool.rs
  *
  * Models:
  *   - MRU-first dispatch: try workers front-to-back, send to first

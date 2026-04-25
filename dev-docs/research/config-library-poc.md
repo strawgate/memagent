@@ -6,7 +6,7 @@
 
 ## Question
 
-Can we replace logfwd's hand-written YAML-aware environment expansion and
+Can we replace ffwd's hand-written YAML-aware environment expansion and
 config loading with a published Rust config library?
 
 ## Current Semantics To Preserve
@@ -24,7 +24,7 @@ config loading with a published Rust config library?
 ## POC Results
 
 The implementation-facing behavior is now covered by focused tests in
-`crates/logfwd-config/src/env.rs`.
+`crates/ffwd-config/src/env.rs`.
 
 ### `subst`
 
@@ -40,7 +40,7 @@ It is not a drop-in replacement:
   expansion does not happen;
 - exact numeric placeholders remain strings, so typed coercion must happen in a
   later config/schema layer;
-- it currently depends on `serde_yaml 0.9.34+deprecated`, while logfwd already
+- it currently depends on `serde_yaml 0.9.34+deprecated`, while ffwd already
   uses `serde_yaml_ng`.
 
 Conclusion: useful reference behavior for safe value interpolation, but not
@@ -74,17 +74,17 @@ typed env overrides.
 
 `varsubst` is a narrow string-substitution crate. With default features disabled,
 it supports brace-delimited `${VAR}` placeholders without `$VAR` short syntax
-and without backslash escape handling. That makes it a good fit for logfwd's
+and without backslash escape handling. That makes it a good fit for ffwd's
 documented placeholder language because regex anchors like `$` and Windows paths
 like `C:\logs\${FILE}` remain ordinary config data.
 
 It leaves missing variables unchanged instead of reporting them. The production
 wrapper handles that by running a second pass with all present environment
 variables masked out, then rejecting any remaining `${VAR}` placeholder. This
-keeps missing-variable failure policy in logfwd while delegating placeholder
+keeps missing-variable failure policy in ffwd while delegating placeholder
 parsing and substitution to the crate.
 
-Conclusion: best candidate for the `${VAR}` string grammar, provided logfwd owns
+Conclusion: best candidate for the `${VAR}` string grammar, provided ffwd owns
 the missing-variable policy wrapper.
 
 ## Recommendation
@@ -97,7 +97,7 @@ instead of hand-parsing placeholders.
 The production design should be:
 
 1. Read YAML from file or string.
-2. Run logfwd's YAML-aware `${VAR}` expansion over the parsed YAML AST, delegating
+2. Run ffwd's YAML-aware `${VAR}` expansion over the parsed YAML AST, delegating
    per-string placeholder substitution to `varsubst`; env values remain strings.
 3. Convert the expanded YAML AST into a `config` source without reparsing YAML
    text, so YAML-specific values like `.nan` still reach semantic validation.

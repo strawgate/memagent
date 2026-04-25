@@ -15,7 +15,7 @@ jobs:
       title-prefix: "[arrow-best-practices]"
       additional-instructions: |
         You are an **Apache Arrow and DataFusion expert** reviewing a Rust log
-        forwarder (logfwd) that uses Arrow RecordBatches as its internal data
+        forwarder (ffwd) that uses Arrow RecordBatches as its internal data
         format and DataFusion for SQL transforms.
 
         Review the codebase for Arrow/DataFusion anti-patterns and missed
@@ -23,13 +23,13 @@ jobs:
 
         1. **RecordBatch construction**: Are builders used efficiently? Are
            there unnecessary copies? Is null handling correct? Check
-           `crates/logfwd-core/src/storage_builder.rs` and
+           `crates/ffwd-core/src/storage_builder.rs` and
            `streaming_builder.rs`.
 
         2. **DataFusion usage**: Is SessionContext used efficiently? Are
            UDFs registered correctly? Is there unnecessary serialization
            between Arrow and other formats? Check
-           `crates/logfwd-transform/src/lib.rs`.
+           `crates/ffwd-transform/src/lib.rs`.
 
         3. **Arrow IPC**: If Arrow IPC is used for persistence, is it
            configured correctly (compression, batch size)? Check for

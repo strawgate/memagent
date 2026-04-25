@@ -2,17 +2,17 @@
 # Use case: UDP raw line logs to OTLP
 # Replace paths/endpoints with values for your environment.
 
-input:
-  type: udp
-  listen: 0.0.0.0:5514
-  format: raw
-
-transform: |
-  SELECT * FROM logs
-
-output:
-  type: otlp
-  endpoint: https://otel-collector:4318/v1/logs
+pipelines:
+  default:
+    inputs:
+      - type: udp
+        listen: 0.0.0.0:5514
+        format: raw
+    transform: |
+      SELECT * FROM logs
+    outputs:
+      - type: otlp
+        endpoint: https://otel-collector:4318/v1/logs
 
 # Optional: diagnostics
 # server:

@@ -1,6 +1,6 @@
 # Arrow Notes (Repo-Scoped)
 
-How Arrow is used in logfwd.
+How Arrow is used in ffwd.
 
 ## Role
 

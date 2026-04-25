@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build && cp ../crates/logfwd-diagnostics/src/dashboard-dist/index.html ../crates/logfwd-diagnostics/src/dashboard.html",
+    "build": "tsc -b && vite build && cp ../crates/ffwd-diagnostics/src/dashboard-dist/index.html ../crates/ffwd-diagnostics/src/dashboard.html",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",

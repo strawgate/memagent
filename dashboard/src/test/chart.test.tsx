@@ -31,7 +31,7 @@ vi.mock("uplot", () => {
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG: ChartConfig = {
-  metricName: "logfwd.input_lines_per_sec",
+  metricName: "ffwd.input_lines_per_sec",
   label: "Lines / sec",
   color: "#3b82f6",
   unit: "/s",

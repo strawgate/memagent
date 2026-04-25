@@ -1,21 +1,21 @@
-input:
-  type: file
-  path: /var/log/app/*.log
-  format: json
-
-transform: |
-  SELECT
-    level,
-    message,
-    status,
-    duration_ms
-  FROM logs
-  WHERE level IN ('ERROR', 'WARN')
-    OR status >= 400
-
-output:
-  type: elasticsearch
-  endpoint: https://elasticsearch.example.com:9200
-  index: application-errors
-  auth:
-    bearer_token: ${ELASTICSEARCH_API_KEY}
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /var/log/app/*.log
+        format: json
+    transform: |
+      SELECT
+        level,
+        message,
+        status,
+        duration_ms
+      FROM logs
+      WHERE level IN ('ERROR', 'WARN')
+        OR status >= 400
+    outputs:
+      - type: elasticsearch
+        endpoint: https://elasticsearch.example.com:9200
+        index: application-errors
+        auth:
+          bearer_token: ${ELASTICSEARCH_API_KEY}

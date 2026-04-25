@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/src/target \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS="${CARGO_PROFILE_RELEASE_CODEGEN_UNITS}" \
     CARGO_PROFILE_RELEASE_DEBUG="${CARGO_PROFILE_RELEASE_DEBUG}" \
     RUSTFLAGS="${RUSTFLAGS}" \
-    cargo build --locked --release -p logfwd --bin ff && \
+    cargo build --locked --release -p ffwd --bin ff && \
     strip target/release/ff && \
     cp target/release/ff /ff
 

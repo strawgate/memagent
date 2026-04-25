@@ -3,7 +3,7 @@
 > **Status:** Active
 > **Date:** 2026-03-31
 > **Context:** gap analysis of TLA+ spec and Kani proof coverage with high-priority findings on RotateFile and invariants.
-> **Scope:** `dev-docs/research/FileCheckpoint.tla` (archived), `crates/logfwd-core/src/checkpoint_tracker.rs`
+> **Scope:** `dev-docs/research/FileCheckpoint.tla` (archived), `crates/ffwd-core/src/checkpoint_tracker.rs`
 
 ---
 

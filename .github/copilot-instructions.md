@@ -1,4 +1,4 @@
-# Copilot Instructions for logfwd
+# Copilot Instructions for ffwd
 
 Read `AGENTS.md` in the repository root for full project context, crate structure, reference docs, and code quality requirements.
 

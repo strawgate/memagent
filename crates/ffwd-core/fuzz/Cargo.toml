@@ -1,0 +1,61 @@
+[package]
+name = "ffwd-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arrow = { version = "54", default-features = false }
+bytes = "1"
+ffwd-arrow = { path = "../../ffwd-arrow" }
+ffwd-core = { path = ".." }
+ffwd-output = { path = "../../ffwd-output" }
+ffwd-transform = { path = "../../ffwd-transform" }
+ffwd-types = { path = "../../ffwd-types" }
+libfuzzer-sys = "0.4"
+reqwest = { version = "0.12", default-features = false }
+
+[workspace]
+
+[[bin]]
+name = "fuzz_scanner"
+path = "fuzz_targets/scanner.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_pipe_event"
+path = "fuzz_targets/pipe_event.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_zero_copy_scanner"
+path = "fuzz_targets/zero_copy_scanner.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_scanner_consistency"
+path = "fuzz_targets/scanner_consistency.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_structural_streaming"
+path = "fuzz_targets/structural_streaming.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_scanner_sink"
+path = "fuzz_targets/scanner_sink.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_scanner_transform"
+path = "fuzz_targets/scanner_transform.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_cri"
+path = "fuzz_targets/cri.rs"
+doc = false

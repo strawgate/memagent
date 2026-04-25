@@ -1,6 +1,6 @@
 # Benchmark Scenarios
 
-Each scenario tests a different input/output path end-to-end using two logfwd pipelines: a **sender** (generator → network output) and a **receiver** (network input → null).
+Each scenario tests a different input/output path end-to-end using two ffwd pipelines: a **sender** (generator → network output) and a **receiver** (network input → null).
 
 ## Running
 
@@ -44,8 +44,8 @@ just bench-pipelines
 
 On Linux, use `taskset` to pin to specific cores:
 ```bash
-taskset -c 0 logfwd run --config receiver.yaml &
-taskset -c 1 logfwd run --config sender.yaml &
+taskset -c 0 ffwd run --config receiver.yaml &
+taskset -c 1 ffwd run --config sender.yaml &
 ```
 
 ## Benchkit OTLP in CI

@@ -1,8 +1,10 @@
-input:
-  type: generator
-transform: |
-  SELECT * FROM logs
-output:
-  type: "null"
+pipelines:
+  default:
+    inputs:
+      - type: generator
+    transform: |
+      SELECT * FROM logs
+    outputs:
+      - type: "null"
 server:
   diagnostics: 127.0.0.1:9090

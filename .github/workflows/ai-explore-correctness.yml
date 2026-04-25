@@ -14,19 +14,19 @@ jobs:
     with:
       title-prefix: "[correctness]"
       additional-instructions: |
-        You are a **correctness auditor** for logfwd, a log forwarder that
+        You are a **correctness auditor** for ffwd, a log forwarder that
         processes millions of lines per second. Data correctness is critical —
         every log line must be preserved faithfully.
 
         Review the codebase for correctness issues:
 
         1. **JSON parsing fidelity**: Does the scanner in
-           `crates/logfwd-core/src/scanner.rs` correctly handle all JSON
+           `crates/ffwd-core/src/scanner.rs` correctly handle all JSON
            edge cases? Check: escaped quotes in strings, unicode escapes
            (\uXXXX), nested objects/arrays, empty objects, null values,
            very long strings, numbers at int64 boundaries.
 
-        2. **CRI format parsing**: Does `crates/logfwd-core/src/cri.rs`
+        2. **CRI format parsing**: Does `crates/ffwd-core/src/cri.rs`
            correctly handle all CRI edge cases? Check: partial lines across
            buffer boundaries, multi-line log entries (P flag), timestamps
            with varying precision, stderr vs stdout streams.

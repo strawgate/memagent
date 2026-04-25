@@ -8,7 +8,7 @@ Reject PRs when any required proof/test is missing for changed critical logic.
 
 ## Kani Required Areas
 
-For `logfwd-core` logic that is pure/bounded:
+For `ffwd-core` logic that is pure/bounded:
 
 - Parsers and framing logic.
 - Encoding and size math.

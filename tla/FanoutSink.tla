@@ -1,7 +1,7 @@
 ------------------------- MODULE FanoutSink -------------------------
 (*
  * Formal model of the AsyncFanoutSink delivery protocol from
- * crates/logfwd-output/src/sink.rs
+ * crates/ffwd-output/src/sink.rs
  *
  * Models:
  *   - Per-child state tracking: Pending → Ok | Rejected (terminal)
@@ -10,8 +10,7 @@
  *   - begin_batch resets all children to Pending for a new logical batch
  *   - Aggregate outcome: finalize_fanout_outcome logic
  *     - any Pending → RetryNeeded (transient failure)
- *     - all Rejected → Rejected
- *     - any Ok (mixed Ok+Rejected) → Ok (partial success)
+ *     - any Rejected, including mixed Ok+Rejected → Rejected
  *     - all Ok → Ok
  *   - Multi-batch lifecycle with MaxBatches bound
  *
@@ -355,10 +354,10 @@ ChildOkOccurs == ~(\E c \in Children : childState[c] = "Ok")
 \* At least one child rejected.
 ChildRejectedOccurs == ~(\E c \in Children : childState[c] = "Rejected")
 
-\* Partial success: mixed Ok and Rejected with Ok result.
-PartialSuccessReachable == ~(
+\* Mixed Ok and Rejected terminal state rejects the batch.
+MixedRejectedReachable == ~(
     /\ batchPhase = "Finalized"
-    /\ fanoutResult = "Ok"
+    /\ fanoutResult = "Rejected"
     /\ \E c \in Children : childState[c] = "Rejected"
     /\ \E c \in Children : childState[c] = "Ok")
 

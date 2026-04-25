@@ -1,6 +1,6 @@
 # OTLP Notes (Repo-Scoped)
 
-Boundary expectations for OTLP ingest and egress in logfwd.
+Boundary expectations for OTLP ingest and egress in ffwd.
 
 ## Role
 

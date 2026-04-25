@@ -21,7 +21,7 @@ jobs:
         spec that a simple coding agent could execute without design
         decisions. If you can't, say so clearly.
 
-        This is logfwd — a Rust log forwarder (file tail → SIMD parse
+        This is ffwd — a Rust log forwarder (file tail → SIMD parse
         → Arrow RecordBatch → DataFusion SQL → OTLP/ES/Loki). Read
         CLAUDE.md for the full project guide.
 

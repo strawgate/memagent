@@ -1,6 +1,6 @@
 # TLA+ Formal Specifications
 
-Formal models for the logfwd pipeline design. These specs capture
+Formal models for the ffwd pipeline design. These specs capture
 properties that Kani (bounded model checker) cannot express — temporal
 logic, liveness, and protocol-level design invariants.
 
@@ -26,7 +26,7 @@ java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCFanoutSink.tla -config tla/Fanout
 ## PipelineMachine.tla
 
 Models `PipelineMachine<S, C>` from
-`crates/logfwd-core/src/pipeline/lifecycle.rs`.
+`crates/ffwd-core/src/pipeline/lifecycle.rs`.
 
 ### What it proves
 
@@ -83,7 +83,7 @@ tla/
   MCPipelineMachine.tla         — TLC config: symmetry sets, model constants
   PipelineMachine.cfg           — safety model (~10.8M distinct states locally)
   PipelineMachine.liveness.cfg  — liveness model (smaller constants, no SYMMETRY)
-  PipelineMachine.thorough.cfg  — PR-CI thorough safety model (3 sources, 3 batches)
+  PipelineMachine.thorough.cfg  — optional local thorough safety model (3 sources, 3 batches)
   PipelineMachine.nightly.thorough.cfg — nightly deep safety model (3 sources, 4 batches)
   PipelineMachine.coverage.cfg  — reachability / vacuity guards
 
@@ -177,7 +177,8 @@ impossible.
 
 ```bash
 java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.thorough.cfg
-# PR CI default thorough depth: Sources={"s1","s2","s3"}, MaxBatchesPerSource=3
+# Local thorough depth: Sources={"s1","s2","s3"}, MaxBatchesPerSource=3
+# PR CI intentionally skips thorough configs; nightly owns scheduled deep runs.
 ```
 
 **Model 5 — Nightly deep safety sweep (slowest):**
@@ -301,7 +302,7 @@ java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/Pip
 ## DeliveryRetry.tla
 
 Models the worker delivery retry loop from
-`crates/logfwd-runtime/src/worker_pool/worker.rs` (`process_item`). This is the
+`crates/ffwd-runtime/src/worker_pool/worker.rs` (`process_item`). This is the
 highest-priority spec because PipelineMachine.tla assumes `WF(AckBatch)` (batches
 eventually terminalize) but nothing formally verified that assumption until now.
 
@@ -382,7 +383,7 @@ under weak fairness (with sink recovery or shutdown cancellation).
 
 ## TailLifecycle.tla
 
-Models the pure tail reducer behavior extracted in `crates/logfwd-io/src/tail/state.rs`:
+Models the pure tail reducer behavior extracted in `crates/ffwd-io/src/tail/state.rs`:
 
 - EOF emission thresholding (`eof_emitted` + idle streak)
 - graceful-shutdown EOF gating (`fileOffset >= fileSize`)
@@ -411,7 +412,7 @@ just tlc-tail
 ## WorkerPoolDispatch.tla
 
 Models the MRU worker dispatch algorithm from
-`crates/logfwd-runtime/src/worker_pool/pool.rs`.
+`crates/ffwd-runtime/src/worker_pool/pool.rs`.
 
 ### Model parameters
 
@@ -479,7 +480,7 @@ remaining in-flight items are force-rejected after the timeout.
 ## FanoutSink.tla
 
 Models the `AsyncFanoutSink` delivery protocol from
-`crates/logfwd-output/src/sink.rs`. The fanout sends every batch to N child
+`crates/ffwd-output/src/sink.rs`. The fanout sends every batch to N child
 sinks, tracks per-child completion state, and prevents duplicate delivery when
 the worker pool retries a partially-failed batch.
 
@@ -514,7 +515,7 @@ when a retry re-sent data to children that had already accepted it.
 | `FinalizedReachable` | Reachability | Finalized phase is reachable |
 | `ChildOkOccurs` | Reachability | at least one child succeeds |
 | `ChildRejectedOccurs` | Reachability | at least one child rejects |
-| `PartialSuccessReachable` | Reachability | mixed Ok+Rejected with Rejected result is reachable |
+| `MixedRejectedReachable` | Reachability | mixed Ok+Rejected with Rejected result is reachable |
 | `AllRejectedReachable` | Reachability | all-rejected result is reachable |
 | `AllOkReachable` | Reachability | all-ok result is reachable |
 | `RetryNeededReachable` | Reachability | RetryNeeded result is reachable |

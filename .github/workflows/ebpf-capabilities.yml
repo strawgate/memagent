@@ -7,9 +7,9 @@ on:
       # Run this workflow only for eBPF/sensor surfaces.
       - ".github/workflows/ebpf-capabilities.yml"
       - "scripts/ci-ebpf-capabilities.sh"
-      - "crates/logfwd-ebpf-proto/**"
-      - "crates/logfwd-io/src/host_metrics.rs"
-      - "crates/logfwd-io/src/platform_sensor.rs"
+      - "crates/ffwd-ebpf-proto/**"
+      - "crates/ffwd-io/src/host_metrics.rs"
+      - "crates/ffwd-io/src/platform_sensor.rs"
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened, ready_for_review]
@@ -17,9 +17,9 @@ on:
       # Trigger on PR updates only when eBPF/sensor code changed.
       - ".github/workflows/ebpf-capabilities.yml"
       - "scripts/ci-ebpf-capabilities.sh"
-      - "crates/logfwd-ebpf-proto/**"
-      - "crates/logfwd-io/src/host_metrics.rs"
-      - "crates/logfwd-io/src/platform_sensor.rs"
+      - "crates/ffwd-ebpf-proto/**"
+      - "crates/ffwd-io/src/host_metrics.rs"
+      - "crates/ffwd-io/src/platform_sensor.rs"
   workflow_dispatch:
   schedule:
     - cron: "17 9 * * 1"
@@ -76,17 +76,17 @@ jobs:
           fi
 
       - name: Test eBPF proto crate
-        run: cargo test -p logfwd-ebpf-proto --all-targets
+        run: cargo test -p ffwd-ebpf-proto --all-targets
 
       - name: Test Linux sensor/config paths
         run: |
-          cargo test -p logfwd-io host_metrics::tests -- --nocapture
-          cargo test -p logfwd-io platform_sensor::tests -- --nocapture
-          cargo test -p logfwd-config sensor_ -- --nocapture
-          cargo test -p logfwd validate_pipelines_read_only_rejects_sensor_format -- --nocapture
+          cargo test -p ffwd-io host_metrics::tests -- --nocapture
+          cargo test -p ffwd-io platform_sensor::tests -- --nocapture
+          cargo test -p ffwd-config sensor_ -- --nocapture
+          cargo test -p ffwd validate_pipelines_read_only_rejects_sensor_format -- --nocapture
 
       - name: Check pipe-capture userspace loader builds
-        run: cargo check --manifest-path crates/logfwd-ebpf-proto/pipe-capture/Cargo.toml
+        run: cargo check --manifest-path crates/ffwd-ebpf-proto/pipe-capture/Cargo.toml
 
       - name: Probe runner eBPF capabilities
         run: scripts/ci-ebpf-capabilities.sh artifacts/ebpf-capabilities
@@ -129,9 +129,9 @@ jobs:
 
       - name: Test macOS sensor/config paths
         run: |
-          cargo test -p logfwd-io host_metrics::tests -- --nocapture
-          cargo test -p logfwd-config sensor_ -- --nocapture
-          cargo test -p logfwd validate_pipelines_read_only_rejects_sensor_format -- --nocapture
+          cargo test -p ffwd-io host_metrics::tests -- --nocapture
+          cargo test -p ffwd-config sensor_ -- --nocapture
+          cargo test -p ffwd validate_pipelines_read_only_rejects_sensor_format -- --nocapture
 
       - name: Probe macOS sensor capabilities
         run: |
@@ -226,9 +226,9 @@ jobs:
       - name: Test Windows sensor/config paths
         shell: pwsh
         run: |
-          cargo test -p logfwd-io host_metrics::tests -- --nocapture
-          cargo test -p logfwd-config sensor_ -- --nocapture
-          cargo test -p logfwd validate_pipelines_read_only_rejects_sensor_format -- --nocapture
+          cargo test -p ffwd-io host_metrics::tests -- --nocapture
+          cargo test -p ffwd-config sensor_ -- --nocapture
+          cargo test -p ffwd validate_pipelines_read_only_rejects_sensor_format -- --nocapture
 
       - name: Probe eBPF for Windows capabilities
         shell: pwsh

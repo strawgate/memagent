@@ -1,6 +1,6 @@
 # Design
 
-logfwd is an Arrow-native data processing pipeline. The core moves `RecordBatch` between
+ffwd is an Arrow-native data processing pipeline. The core moves `RecordBatch` between
 receivers, processors, and exporters. OTel semantics are optional adapters at the edges.
 
 **RecordBatch in, RecordBatch out.** The pipeline doesn't care whether the data is logs,
@@ -9,33 +9,33 @@ metrics, traces, or CSV files.
 ## Target architecture
 
 ```
-logfwd-core         Proven pure logic. #![no_std], #![forbid(unsafe_code)]
+ffwd-core         Proven pure logic. #![no_std], #![forbid(unsafe_code)]
                     Parsing, encoding, pipeline state machine.
                     Streaming structural classification, framer, CRI, scanner.
                     Dependencies: memchr, wide (portable SIMD).
                     Every public function has a Kani proof or proptest.
 
-logfwd-arrow        Arrow integration. Implements core's ScanBuilder trait.
+ffwd-arrow        Arrow integration. Implements core's ScanBuilder trait.
                     StreamingBuilder, Scanner.
                     Bridge between parsed fields and RecordBatch.
 
-logfwd-io           Produces RecordBatch from external sources.
+ffwd-io           Produces RecordBatch from external sources.
                     File tailer, OTLP/TCP/UDP receivers, Arrow IPC reader.
                     Raw data goes through core→arrow→RecordBatch.
                     Arrow-native sources skip straight to RecordBatch.
 
-logfwd-transform    RecordBatch → RecordBatch via DataFusion SQL.
+ffwd-transform    RecordBatch → RecordBatch via DataFusion SQL.
                     UDFs, enrichment tables, JOINs.
                     CSV enrichment tables produce Utf8View columns via the
                     shared columnar builder.
 
-logfwd-output       Consumes RecordBatch, sends externally.
+ffwd-output       Consumes RecordBatch, sends externally.
                     OTLP, Arrow IPC, JSON lines. Parquet/ClickHouse are planned.
 
-logfwd-runtime      Async runtime shell. Pipeline orchestration,
+ffwd-runtime      Async runtime shell. Pipeline orchestration,
                     worker pool, processor chain, diagnostics wiring.
 
-logfwd              Binary shell. CLI, config loading, signal handling,
+ffwd              Binary shell. CLI, config loading, signal handling,
                     startup/shutdown bootstrap, compatibility re-exports.
 ```
 
@@ -70,7 +70,7 @@ with CPU. SIMD structural scanning runs at 3.0 GiB/s (9 structural characters, N
 
 ## Architecture decisions
 
-### no_std structural enforcement for logfwd-core
+### no_std structural enforcement for ffwd-core
 
 `#![no_std]` with `extern crate alloc`. The compiler blocks IO — not lints that can be
 `#[allow]`'d. This is the rustls/s2n-quic pattern. Four independent research studies
@@ -103,11 +103,11 @@ characters and producing `u64` bitmasks. Cross-block state: only 2 `u64` values 
 carry, string interior carry). Stage 2 walks structural positions using `trailing_zeros` +
 clear-lowest-bit. This is the proven simdjson architecture.
 
-### Scalar SIMD fallback in logfwd-core
+### Scalar SIMD fallback in ffwd-core
 
 `#![forbid(unsafe_code)]` is in core. SIMD intrinsics require unsafe. Solution: core has a
 safe scalar `find_structural_chars_scalar` that is the Kani-provable specification. SIMD
-impls live in logfwd-arrow behind a `CharDetector` trait. proptest verifies SIMD matches
+impls live in ffwd-arrow behind a `CharDetector` trait. proptest verifies SIMD matches
 scalar for random inputs.
 
 ### Pipeline state machine over linear BatchToken
@@ -226,18 +226,18 @@ path already on `main` and for the shared-buffer framing path now landing in
 
 Current boundary:
 
-- `logfwd-io` tailing uses per-source `BytesMut` read buffers.
+- `ffwd-io` tailing uses per-source `BytesMut` read buffers.
 - `SourceEvent::Data` already carries `Bytes`.
 - `FramedInput` may still keep small `Vec<u8>` remainders where a line is
   incomplete or overflow-tainted.
-- `logfwd-runtime` currently performs the remaining pre-scan accumulation into
-  `InputState.buf: BytesMut`.
-- `logfwd-core` is untouched by this ownership shift; the scanner still takes
+- `ffwd-runtime` currently performs the remaining pre-scan accumulation into
+  `IngestState.buf: BytesMut`.
+- `ffwd-core` is untouched by this ownership shift; the scanner still takes
   contiguous `Bytes` via `Bytes::Deref`.
 
 Current implication: the remaining hot-path copy on `main` is not “tailer to
 event” anymore. It is the runtime reassembly step that appends scanner-ready
-`Bytes` into `InputState.buf` before scan on the legacy event route. The next
+`Bytes` into `IngestState.buf` before scan on the legacy event route. The next
 architecture slice should widen the shared-buffer path so more polls append
 directly into that final batch buffer before scan, targeting that seam
 directly rather than reintroducing divergent source-side batching paths.

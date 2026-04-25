@@ -91,7 +91,7 @@ The output schema can use generic Arrow kinds such as:
 - `Int64`
 - `Bool`
 
-Those are builder-level kinds. OTLP semantics stay outside `logfwd-arrow`.
+Those are builder-level kinds. OTLP semantics stay outside `ffwd-arrow`.
 
 ## Validation boundaries
 
@@ -114,7 +114,7 @@ It is useful because it shows:
 - where view-backed strings help
 - what append/storage surface the shared engine needs
 
-It does **not** mean OTLP semantics belong in `logfwd-arrow`.
+It does **not** mean OTLP semantics belong in `ffwd-arrow`.
 
 ## Canonical stance
 

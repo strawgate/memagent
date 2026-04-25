@@ -14,8 +14,8 @@ from otlp_proto import parse_proto_fields, vendored_proto_root
 
 
 REPO = Path(__file__).resolve().parents[1]
-OUT = REPO / "crates" / "logfwd-io" / "src" / "otlp_receiver" / "projection" / "generated.rs"
-PROTO_BASE = REPO / "crates" / "logfwd-io" / "codegen" / "opentelemetry-proto"
+OUT = REPO / "crates" / "ffwd-io" / "src" / "otlp_receiver" / "projection" / "generated.rs"
+PROTO_BASE = REPO / "crates" / "ffwd-io" / "codegen" / "opentelemetry-proto"
 PROTO_ROOT = vendored_proto_root(PROTO_BASE)
 PROTO_VERSION = PROTO_ROOT.name
 PROTO_FILES = [
@@ -1274,9 +1274,9 @@ def render(spec: dict) -> str:
 // spec: {spec["name"]} v{spec["version"]}; opentelemetry-proto {spec["proto_version"]}
 
 use super::{{ProjectionError, StringStorage, WireAny, WireField, WireScratch}};
-use logfwd_arrow::columnar::builder::ColumnarBatchBuilder;
-use logfwd_arrow::columnar::plan::{{BatchPlan, FieldHandle, FieldKind}};
-use logfwd_types::field_names;
+use ffwd_arrow::columnar::builder::ColumnarBatchBuilder;
+use ffwd_arrow::columnar::plan::{{BatchPlan, FieldHandle, FieldKind}};
+use ffwd_types::field_names;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum WireKind {{
@@ -1515,7 +1515,7 @@ fn read_varint(input: &mut &[u8]) -> Result<u64, ProjectionError> {{
 #[cfg(test)]
 mod generated_tests {{
     use super::*;
-    use logfwd_core::otlp;
+    use ffwd_core::otlp;
 
 {generated_test_vectors}
 

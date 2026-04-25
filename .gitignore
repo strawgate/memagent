@@ -13,7 +13,7 @@ book/dist/
 book/node_modules/
 book/.astro/
 .DS_Store
-crates/logfwd-io/src/dashboard-dist/
+crates/ffwd-io/src/dashboard-dist/
 .playwright-mcp/
 .playwright-cli/
 *.env

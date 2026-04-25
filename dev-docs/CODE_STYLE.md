@@ -48,7 +48,7 @@ overrides — adjust the workspace config instead.
 - **No `.unwrap()` in production paths.** Use `?`, `.expect("reason")`, or
   `unwrap_or`. CI runs `clippy -- -D warnings`, so any clippy warning is
   a build failure.
-- **unsafe_code** is `forbid` in logfwd-core. Other crates allow it sparingly.
+- **unsafe_code** is `forbid` in ffwd-core. Other crates allow it sparingly.
   Every `unsafe` block must have a `// SAFETY:` comment.
   `clippy::undocumented_unsafe_blocks` is `deny` — the SAFETY comment is
   enforced, not encouraged.
@@ -57,12 +57,12 @@ overrides — adjust the workspace config instead.
   whose stack size dwarfs the others should be boxed or refactored.
 - **`print_stdout` / `print_stderr`** are warn workspace-wide.
   Observability must go through `tracing`, not stdout/stderr. Crates
-  that legitimately print (the `logfwd` binary, benchmark harnesses,
+  that legitimately print (the `ffwd` binary, benchmark harnesses,
   the standalone eBPF sensor, the runtime CLI-bootstrap module) opt
   out with a file-level `#![allow(clippy::print_stdout, clippy::print_stderr)]`
   at the crate root plus a one-line comment explaining why.
 - **`missing_docs`** is warn at the crate root for stable-surface
-  crates (`logfwd-core`, `logfwd-types`). `logfwd-config` has ~280
+  crates (`ffwd-core`, `ffwd-types`). `ffwd-config` has ~280
   pre-existing schema-field gaps and is not yet gated on this; new
   public items must still carry doc comments by review.
 - **`clippy::await_holding_lock` and `clippy::await_holding_refcell_ref`**
@@ -120,16 +120,16 @@ Beyond clippy lints, the following Python guards run as part of
 
 | Guard | What it enforces |
 |---|---|
-| `scripts/check_no_box_dyn_error.py` | No `Box<dyn Error>` in any public signature outside the binary crate (`logfwd`) and bench/test/example paths. Library crates must expose `thiserror` enums. |
-| `scripts/check_no_panic_in_production.py` | No `panic!`/`todo!`/`unimplemented!` in production paths of `logfwd-runtime` and `logfwd-output`. Test modules and `#[test]` functions are exempt; genuinely unreachable invariants can use `// ALLOW-PANIC: <reason>`. |
-| `scripts/check_no_raw_payload_injection.py` | No source-metadata injection into raw payload bytes (see `CRATE_RULES.md` → `logfwd-io`). |
+| `scripts/check_no_box_dyn_error.py` | No `Box<dyn Error>` in any public signature outside the binary crate (`ffwd`) and bench/test/example paths. Library crates must expose `thiserror` enums. |
+| `scripts/check_no_panic_in_production.py` | No `panic!`/`todo!`/`unimplemented!` in production paths of `ffwd-runtime` and `ffwd-output`. Test modules and `#[test]` functions are exempt; genuinely unreachable invariants can use `// ALLOW-PANIC: <reason>`. |
+| `scripts/check_no_raw_payload_injection.py` | No source-metadata injection into raw payload bytes (see `CRATE_RULES.md` → `ffwd-io`). |
 
 ### Semantic lints (dylint)
 
 For invariants that require type resolution — catching `.clone()` on a
 heap type, detecting allocations inside a `#[hot_path]` function,
 verifying `.await` doesn't happen while holding a `Mutex` guard —
-clippy alone is insufficient. These live in `crates/logfwd-lints/` as
+clippy alone is insufficient. These live in `crates/ffwd-lints/` as
 a dylint library and are invoked via `just dylint`.
 
 | Lint | Attribute | Target | What it flags |
@@ -148,10 +148,10 @@ for stricter future enforcement (e.g., cancel-unsafe-future
 reachability).
 
 The dylint library lives in its own isolated workspace
-(`crates/logfwd-lints/` is excluded from the main workspace because it
+(`crates/ffwd-lints/` is excluded from the main workspace because it
 pins a specific rustc nightly and links against `rustc-private` crates).
-The attribute crate (`logfwd-lint-attrs/`) IS in the main workspace —
-it's a regular proc-macro crate. See `crates/logfwd-lints/README.md`
+The attribute crate (`ffwd-lint-attrs/`) IS in the main workspace —
+it's a regular proc-macro crate. See `crates/ffwd-lints/README.md`
 for installation details, known limitations on each lint, and the
 roadmap for additional lints (`#[checkpoint_ordered]`,
 `#[deterministic]`, `#[must_not_await_on(...)]`, plus a refinement of
@@ -186,7 +186,7 @@ roadmap for additional lints (`#[checkpoint_ordered]`,
 - **Typestate for state machines.** New state machines encode transitions
   in types (`Pipeline<Building>` → `Pipeline<Running>` → `Pipeline<Draining>`),
   not `bool` flags or string-valued `state` fields. Invalid transitions
-  should fail to compile, not at runtime. See `logfwd-types/src/pipeline/`
+  should fail to compile, not at runtime. See `ffwd-types/src/pipeline/`
   for the existing pattern.
 - **Smart constructors with private fields.** If a type has an invariant
   (non-empty, sorted, UTF-8, within range), keep its fields private and
@@ -213,8 +213,8 @@ roadmap for additional lints (`#[checkpoint_ordered]`,
 ## Error Handling
 
 - **Libraries return `thiserror` enums. The binary uses `anyhow`.** Every
-  crate except `logfwd` (the binary) returns structured `thiserror` error
-  types so callers can match on variants. The `logfwd` crate is allowed to
+  crate except `ffwd` (the binary) returns structured `thiserror` error
+  types so callers can match on variants. The `ffwd` crate is allowed to
   use `anyhow::Context` at the application shell to add diagnostic
   breadcrumbs as errors propagate to exit. **Never** expose
   `Box<dyn Error>` in a public library signature — it strips the caller's
@@ -267,13 +267,13 @@ Auto-fix hint: `clippy::manual_let_else` fires on the "old" idiom
 `cargo clippy --fix --workspace --allow-dirty`, then verify with
 `just lint`. (This lint is currently allowed workspace-wide because
 some call sites use `Err(e)` bindings that don't translate cleanly,
-and because the auto-fix does not apply inside `logfwd-core` where
+and because the auto-fix does not apply inside `ffwd-core` where
 changes must be re-verified through the Kani proof pipeline.)
 
 ## Unsafe Code
 
-- **`unsafe` is forbidden in `logfwd-core`** (`#![forbid(unsafe_code)]`)
-  and allowed sparingly in `logfwd-arrow` for SIMD. Other crates should
+- **`unsafe` is forbidden in `ffwd-core`** (`#![forbid(unsafe_code)]`)
+  and allowed sparingly in `ffwd-arrow` for SIMD. Other crates should
   avoid `unsafe` unless there is no safe alternative.
 - **Every `unsafe` block carries a `// SAFETY:` comment** naming the
   invariants that make the operation sound. `clippy::undocumented_unsafe_blocks`
@@ -285,7 +285,7 @@ changes must be re-verified through the Kani proof pipeline.)
   `unsafe fn` on a public surface.
 - **SIMD equivalence is a proof obligation, not a review opinion.** Any
   `unsafe` SIMD path must have a proptest showing it produces the same
-  output as the scalar fallback. See `CRATE_RULES.md` for `logfwd-arrow`.
+  output as the scalar fallback. See `CRATE_RULES.md` for `ffwd-arrow`.
 
 ## Hot Path Rules
 
@@ -302,12 +302,12 @@ The hot path is: reader → framer → scanner → builders → OTLP encoder →
   `dbg!` in production paths goes through code review specifically
   because it bypasses structured logging and cannot be filtered at runtime.
   `dbg!` is forbidden outright (`clippy::dbg_macro = deny`).
-- **Mark hot-path functions with `#[hot_path]` (from `logfwd-lint-attrs`).**
+- **Mark hot-path functions with `#[hot_path]` (from `ffwd-lint-attrs`).**
   The dylint lint `hot_path_no_alloc` flags heap allocations in the
   function body — `Box::new`, `Vec::new`/`with_capacity`, `String::new`/`from`,
   `.to_string()`, `.to_vec()`, `.to_owned()`, `.clone()` on heap types,
   `.collect()` into owned containers, `Arc::new`, `Rc::new`, `HashMap`/`HashSet`
-  allocation. Run via `just dylint`. See `crates/logfwd-lints/README.md`.
+  allocation. Run via `just dylint`. See `crates/ffwd-lints/README.md`.
   The attribute is a compile-time no-op; at runtime the function is
   identical to the un-annotated version.
 
@@ -333,7 +333,7 @@ Rules of thumb when designing a public (or `pub(crate)`) function or type:
   with 5+ optional fields should expose a builder, not a constructor
   taking `Option<T>`s.
 - **Doc comment with a working example** on every `pub` item in crates
-  with a stable API surface (`logfwd-core`, `logfwd-types`, `logfwd-config`).
+  with a stable API surface (`ffwd-core`, `ffwd-types`, `ffwd-config`).
   Examples compile as doc-tests — they are regression coverage.
 - **Prefer generics for static dispatch.** Reach for `&dyn Trait` only
   when heterogeneity genuinely requires it, or when monomorphization
@@ -344,7 +344,7 @@ Rules of thumb when designing a public (or `pub(crate)`) function or type:
 
 Output configuration has exactly one shape: the tagged enum
 `OutputConfigV2` (`#[serde(tag = "type", rename_all = "snake_case")]`) in
-`crates/logfwd-config/src/types.rs`. The flat `OutputConfig` struct and
+`crates/ffwd-config/src/types.rs`. The flat `OutputConfig` struct and
 its V2-bridge `From` impls have been removed — runtime code operates on
 `OutputConfigV2` directly via `name()` / `endpoint()` / `output_type()`
 helpers and the sink factory matches on variants.
@@ -356,7 +356,7 @@ helpers and the sink factory matches on variants.
 - **New output types are new V2 variants.** Add the variant struct,
   extend the V2 enum, extend the `name()` / `endpoint()` / `output_type()`
   match arms in `impl OutputConfigV2`, and add the sink construction
-  arm in `logfwd-output::factory::build_sink_factory`.
+  arm in `ffwd-output::factory::build_sink_factory`.
 - **No V1 fallback path.** There used to be a legacy flat-shape fallback
   deserializer; it is gone. If a new YAML shape has to be supported,
   extend V2 directly.
@@ -379,7 +379,7 @@ helpers and the sink factory matches on variants.
 - **One test per behavior**, not per function.
 - **Test names describe the scenario:** `empty_input_returns_none`, not `test_parse`.
 - **No `#[should_panic]`** — test the Result/Option return instead.
-- **Kani proofs** for pure logic in logfwd-core (see `dev-docs/DESIGN.md`).
+- **Kani proofs** for pure logic in ffwd-core (see `dev-docs/DESIGN.md`).
 - **proptest** for property-based testing of complex inputs.
 
 ## Git

@@ -11,16 +11,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CRATES = ROOT / "crates"
 NO_PERSISTENCE_ALLOWLIST = {
-    "crates/logfwd-core/src/reassembler.rs",
-    "crates/logfwd-core/src/scanner.rs",
-    "crates/logfwd-core/src/structural.rs",
-    "crates/logfwd-core/src/cri.rs",
-    "crates/logfwd-core/src/json_scanner.rs",
-    "crates/logfwd-core/src/otlp.rs",
-    "crates/logfwd-types/src/pipeline/lifecycle.rs",
-    "crates/logfwd-io/tests/it/checkpoint_state_machine.rs",
-    "crates/logfwd-io/tests/it/framed_state_machine.rs",
-    "crates/logfwd-io/tests/it/framed_buffered_equivalence.rs",
+    "crates/ffwd-core/src/reassembler.rs",
+    "crates/ffwd-core/src/scanner.rs",
+    "crates/ffwd-core/src/structural.rs",
+    "crates/ffwd-core/src/cri.rs",
+    "crates/ffwd-core/src/json_scanner.rs",
+    "crates/ffwd-core/src/otlp.rs",
+    "crates/ffwd-types/src/pipeline/lifecycle.rs",
+    "crates/ffwd-io/tests/it/checkpoint_state_machine.rs",
+    "crates/ffwd-io/tests/it/framed_state_machine.rs",
+    "crates/ffwd-io/tests/it/framed_buffered_equivalence.rs",
 }
 
 

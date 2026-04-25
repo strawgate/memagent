@@ -17,10 +17,10 @@ jobs:
       - uses: ./.github/actions/setup-rust
       - name: Run proptests with 100K cases
         run: |
-          cargo test -p logfwd-core --test it -- proptest
-          cargo test -p logfwd-io --test it -- proptest
-          cargo test -p logfwd-types -- proptest
-          cargo test -p logfwd-output -- proptest
+          cargo test -p ffwd-core --test it -- proptest
+          cargo test -p ffwd-io --test it -- proptest
+          cargo test -p ffwd-types -- proptest
+          cargo test -p ffwd-output -- proptest
         env:
           PROPTEST_CASES: "100000"
 
@@ -130,9 +130,9 @@ jobs:
           go-version-file: scripts/linearizability/go.mod
       - name: Replay-equivalence test lane
         run: |
-          cargo test -p logfwd --no-default-features --features turmoil --test turmoil_sim fault_scenario_sim::replay_equivalence_seed_supports_three_identical_replays -- --exact
-          cargo test -p logfwd --no-default-features --features turmoil --test turmoil_sim fault_scenario_sim::replay_equivalence_seed_matrix_keeps_history_equivalent -- --exact
-          cargo test -p logfwd --no-default-features --features turmoil --test turmoil_sim linearizability::porcupine_checker_accepts_runtime_history -- --exact
+          cargo test -p ffwd --no-default-features --features turmoil --test turmoil_sim fault_scenario_sim::replay_equivalence_seed_supports_three_identical_replays -- --exact
+          cargo test -p ffwd --no-default-features --features turmoil --test turmoil_sim fault_scenario_sim::replay_equivalence_seed_matrix_keeps_history_equivalent -- --exact
+          cargo test -p ffwd --no-default-features --features turmoil --test turmoil_sim linearizability::porcupine_checker_accepts_runtime_history -- --exact
 
   turmoil-seed-sweep:
     name: Turmoil seed sweep (1000 seeds, shard ${{ matrix.shard_index }}/4)
@@ -150,7 +150,7 @@ jobs:
         with:
           go-version-file: scripts/linearizability/go.mod
       - name: Build turmoil tests once
-        run: cargo test -p logfwd --no-default-features --features turmoil --test turmoil_sim --no-run
+        run: cargo test -p ffwd --no-default-features --features turmoil --test turmoil_sim --no-run
       - name: Run turmoil tests with shard-assigned seeds
         run: |
           TOTAL_SEEDS=1000
@@ -162,7 +162,7 @@ jobs:
           rm -f "$FAIL_SEEDS_FILE"
 
           # Find the compiled test binary (filter for test targets only)
-          BIN=$(cargo test -p logfwd --no-default-features --features turmoil --test turmoil_sim --no-run --message-format=json 2>/dev/null \
+          BIN=$(cargo test -p ffwd --no-default-features --features turmoil --test turmoil_sim --no-run --message-format=json 2>/dev/null \
             | jq -r 'select(.executable != null and (.target.kind // [] | index("test"))) | .executable' \
             | head -1)
           if [ -z "$BIN" ]; then
@@ -337,7 +337,7 @@ jobs:
         run: cargo +nightly install cargo-fuzz
       - name: Run fuzz targets
         run: |
-          cd crates/logfwd-core
+          cd crates/ffwd-core
           for target in $(cargo +nightly fuzz list 2>/dev/null); do
             echo "=== Fuzzing $target for ${{ matrix.duration }}s ==="
             cargo +nightly fuzz run "$target" -- -max_total_time=${{ matrix.duration }}

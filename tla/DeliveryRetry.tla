@@ -1,7 +1,7 @@
 ------------------------ MODULE DeliveryRetry ------------------------
 (*
  * Formal model of the worker delivery retry loop from
- * crates/logfwd-runtime/src/worker_pool/worker.rs (process_item).
+ * crates/ffwd-runtime/src/worker_pool/worker.rs (process_item).
  *
  * This spec proves the LIVENESS ASSUMPTION that PipelineMachine.tla
  * depends on: "every batch eventually terminalizes (reaches Ok or

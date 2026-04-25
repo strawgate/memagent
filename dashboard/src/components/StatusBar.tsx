@@ -43,7 +43,7 @@ export function StatusBar({
 
   return (
     <div class="bar">
-      <h1>logfwd</h1>
+      <h1>ffwd</h1>
       <div class={pillClass} title={statusReason || undefined}>
         <span class="dot" />
         <span>{pillText}</span>

@@ -80,7 +80,7 @@ function getScenarioTitle(sn) {
 }
 
 const AGENT_COLORS = {
-  'ff': '#2563eb', 'logfwd': '#2563eb', 'vector': '#7c3aed', 'fluent-bit': '#059669',
+  'ff': '#2563eb', 'ffwd': '#2563eb', 'vector': '#7c3aed', 'fluent-bit': '#059669',
   'filebeat': '#d97706', 'otelcol': '#dc2626', 'vlagent': '#64748b'
 };
 
@@ -245,17 +245,17 @@ async function main() {
       <canvas class="sparkline" id="spark-lps" width="120" height="36"></canvas>
     </div>`;
 
-  // Card 2: Best logfwd ratio where available
+  // Card 2: Best ffwd ratio where available
   let bestRatio = null;
   if (latestRun && latestRun.scenarios) {
     for (const sn of (latestRun.scenario_names || Object.keys(latestRun.scenarios))) {
       const sc = latestRun.scenarios[sn];
       const ffLps = averageLps(sc?.ff);
-      const logfwdLps = averageLps(sc?.logfwd);
-      const scenarioFfLps = ffLps > 0 ? ffLps : logfwdLps;
+      const ffwdLps = averageLps(sc?.ffwd);
+      const scenarioFfLps = ffLps > 0 ? ffLps : ffwdLps;
       if (!(scenarioFfLps > 0)) continue;
       for (const agent of Object.keys(sc)) {
-        if (agent === 'ff' || agent === 'logfwd') continue;
+        if (agent === 'ff' || agent === 'ffwd') continue;
         const competitorLps = averageLps(sc[agent]) || 0;
         if (!(competitorLps > 0)) continue;
         const ratio = scenarioFfLps / competitorLps;

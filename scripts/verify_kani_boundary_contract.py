@@ -45,7 +45,7 @@ def rust_files_with_kani() -> set[str]:
     result: set[str] = set()
     for path in (ROOT / "crates").rglob("*.rs"):
         rel = path.relative_to(ROOT).as_posix()
-        if rel.startswith("crates/logfwd-core/"):
+        if rel.startswith("crates/ffwd-core/"):
             continue
         text = path.read_text(encoding="utf-8")
         if has_kani_cfg(text) or "#[kani::proof]" in text:
@@ -129,14 +129,14 @@ class VerifyKaniBoundaryContractTests(unittest.TestCase):
     def test_rust_files_with_kani_detects_inner_cfg_only_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            kani_file = root / "crates" / "logfwd-io" / "src" / "tail" / "verification.rs"
+            kani_file = root / "crates" / "ffwd-io" / "src" / "tail" / "verification.rs"
             kani_file.parent.mkdir(parents=True, exist_ok=True)
             kani_file.write_text("#![cfg(kani)]\n", encoding="utf-8")
 
             with mock.patch.object(sys.modules[__name__], "ROOT", root):
                 self.assertEqual(
                     rust_files_with_kani(),
-                    {"crates/logfwd-io/src/tail/verification.rs"},
+                    {"crates/ffwd-io/src/tail/verification.rs"},
                 )
 
 

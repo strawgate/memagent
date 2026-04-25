@@ -1,7 +1,7 @@
 ------------------------ MODULE PipelineMachine ------------------------
 (*
  * Formal model of PipelineMachine<S, C> from
- * crates/logfwd-core/src/pipeline/lifecycle.rs
+ * crates/ffwd-core/src/pipeline/lifecycle.rs
  *
  * Two invariants that Kani (bounded model checker) cannot express:
  *

@@ -32,7 +32,7 @@ const stages: Stage[] = [
       {
         id: 'file', label: 'File',
         detail: 'Tail files matching glob patterns with position tracking across restarts. Detects rotation via inode/device identity, drains old files before switching.',
-        why: 'Never loses data. Checkpoints survive crashes via atomic write + fsync. File identity tracking (device + inode + fingerprint) means logfwd follows the real file through renames, rotations, and truncations — not just the path.',
+        why: 'Never loses data. Checkpoints survive crashes via atomic write + fsync. File identity tracking (device + inode + fingerprint) means ffwd follows the real file through renames, rotations, and truncations — not just the path.',
         flow: ['Glob Discovery', 'File Watcher', 'Read Loop', 'Budget Control', 'EOF Detection'],
         notes: 'kqueue/inotify + polling hybrid. Adaptive fast-poll on budget hit. LRU eviction at 1024 open files. Checkpoint via atomic JSON write + fsync.',
       },
@@ -51,7 +51,7 @@ const stages: Stage[] = [
       {
         id: 'otlp-in', label: 'OTLP',
         detail: 'Receive OpenTelemetry log records over HTTP. Decodes protobuf and JSON payloads directly into Arrow RecordBatches — bypasses the scanner.',
-        why: 'Use logfwd as an OTLP relay or aggregator. Because the input produces structured Arrow data directly, there is no parsing overhead — just decode the protobuf envelope and convert. Resource attributes, trace context, and severity are all preserved.',
+        why: 'Use ffwd as an OTLP relay or aggregator. Because the input produces structured Arrow data directly, there is no parsing overhead — just decode the protobuf envelope and convert. Resource attributes, trace context, and severity are all preserved.',
         flow: ['HTTP Server', 'Proto/JSON Decode', 'Resource Flatten', 'Arrow Convert'],
         notes: 'Structured input: produces RecordBatch directly, not raw bytes. Resource attributes flatten under canonical resource.attributes.* columns. Bounded channel to pipeline.',
       },
@@ -98,21 +98,21 @@ const stages: Stage[] = [
       {
         id: 'simd-index', label: 'Structural Index',
         detail: 'One vectorized pass over the entire buffer using platform-native SIMD. Classifies 10 structural characters simultaneously in 64-byte blocks.',
-        why: 'This is why logfwd is fast. Instead of parsing JSON byte-by-byte, SIMD instructions process 16-32 bytes in a single CPU cycle. One pass over the buffer produces bitmasks that make every subsequent string lookup O(1) — just a trailing_zeros instruction. The same technique powers simdjson. logfwd uses AVX2 on Intel/AMD, NEON on ARM (Apple Silicon, Graviton).',
+        why: 'This is why ffwd is fast. Instead of parsing JSON byte-by-byte, SIMD instructions process 16-32 bytes in a single CPU cycle. One pass over the buffer produces bitmasks that make every subsequent string lookup O(1) — just a trailing_zeros instruction. The same technique powers simdjson. ffwd uses AVX2 on Intel/AMD, NEON on ARM (Apple Silicon, Graviton).',
         flow: ['64-byte Block Load', 'SIMD Compare', 'Escape Parity', 'Quote Mask', 'Bitmask Output'],
         notes: 'AVX2/SSE2 on x86_64, NEON on aarch64 via wide crate. Output: real_quotes + in_string bitmasks. O(1) string boundary lookup via trailing_zeros.',
       },
       {
         id: 'field-extract', label: 'Field Extraction',
         detail: 'Scalar state machine walks top-level JSON objects using pre-computed bitmasks. Resolves field names to column indices once per batch via HashMap.',
-        why: 'Field pushdown is the key optimization here. logfwd analyzes your SQL query before scanning and only extracts the columns you reference. If your query uses 3 of 20 fields, the scanner skips the other 17 — giving you 2-3x throughput on wide data for free.',
+        why: 'Field pushdown is the key optimization here. ffwd analyzes your SQL query before scanning and only extracts the columns you reference. If your query uses 3 of 20 fields, the scanner skips the other 17 — giving you 2-3x throughput on wide data for free.',
         flow: ['Find Opening {', 'Key Resolve', 'Value Type Detect', 'Append to Builder'],
         notes: 'Field pushdown: QueryAnalyzer extracts referenced columns from SQL. Scanner skips unwanted fields for 2-3x throughput on wide data.',
       },
       {
         id: 'batch-builder', label: 'Batch Builder',
         detail: 'Deferred builder pattern: collects (row, offset, len) views during scan, bulk-builds Arrow columns at finish. Zero-copy StringViewArray shares the input buffer.',
-        why: 'Apache Arrow is the secret weapon. By building columnar RecordBatches, logfwd gets DataFusion SQL execution for free — the same query engine that powers Apache Spark and InfluxDB. StringViewArray means string data is never copied: 16-byte views point directly into the input buffer. This is why logfwd uses ~6 MB of RAM to process millions of log lines.',
+        why: 'Apache Arrow is the secret weapon. By building columnar RecordBatches, ffwd gets DataFusion SQL execution for free — the same query engine that powers Apache Spark and InfluxDB. StringViewArray means string data is never copied: 16-byte views point directly into the input buffer. This is why ffwd uses ~6 MB of RAM to process millions of log lines.',
         flow: ['Accumulate Views', 'Type Resolution', 'Null Padding', 'finish_batch()', 'RecordBatch'],
         notes: 'scan() produces StringViewArray (zero-copy via Bytes refcount). scan_detached() produces StringArray (single bulk copy). Resource metadata injected as columns.',
       },
@@ -128,7 +128,7 @@ const stages: Stage[] = [
       {
         id: 'datafusion', label: 'DataFusion Engine',
         detail: 'Each batch cycle registers source RecordBatches as partitions of a "logs" MemTable. Schema changes detected via hash — context rebuilt only when needed.',
-        why: 'Why SQL instead of a custom DSL? Because you already know SQL. DataFusion is a production-grade query engine (used in InfluxDB, Comet, and Ballista) that gives logfwd full SQL support — SELECT, WHERE, GROUP BY, JOINs, window functions, subqueries — without inventing a new language. Your team can write log filters on day one.',
+        why: 'Why SQL instead of a custom DSL? Because you already know SQL. DataFusion is a production-grade query engine (used in InfluxDB, Comet, and Ballista) that gives ffwd full SQL support — SELECT, WHERE, GROUP BY, JOINs, window functions, subqueries — without inventing a new language. Your team can write log filters on day one.',
         flow: ['Schema Hash Check', 'MemTable Register', 'SQL Parse + Plan', 'Execute', 'Collect Batches'],
         notes: 'Lazy SessionContext creation. Full SQL: SELECT, WHERE, GROUP BY, HAVING, JOINs, subqueries, window functions. Enrichment tables registered per batch.',
       },
@@ -158,7 +158,7 @@ const stages: Stage[] = [
       {
         id: 'otlp-out', label: 'OTLP',
         detail: 'Encodes log records as OTLP protobuf with 3-phase encoding: encode LogRecords, group by resource/scope, write final protobuf with computed sizes.',
-        why: 'OTLP is the standard. By encoding directly to protobuf with zstd compression, logfwd produces payloads that are 5-10x smaller than JSON. Resource grouping means pods from the same deployment share metadata in a single ResourceLogs envelope — further reducing wire size.',
+        why: 'OTLP is the standard. By encoding directly to protobuf with zstd compression, ffwd produces payloads that are 5-10x smaller than JSON. Resource grouping means pods from the same deployment share metadata in a single ResourceLogs envelope — further reducing wire size.',
         flow: ['Row Encode', 'Resource Group', 'Size Compute', 'Proto Serialize', 'Compress + Send'],
         notes: 'Groups rows by resource.attributes.* columns into ResourceLogs. Two encoders: handwritten (full) and generated fast path. zstd/gzip compression. HTTP and gRPC protocols.',
       },

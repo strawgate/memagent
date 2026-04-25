@@ -85,9 +85,9 @@ if [[ "$(status_of bpftool_installed)" == "1" ]]; then
         record_check "bpffs_mounted_after_probe" is_bpffs_mounted || true
         record_cmd \
             "bpftool_map_create" \
-            sudo bpftool map create /sys/fs/bpf/logfwd_ci_probe_map type hash key 4 value 8 entries 16 name logfwd_ci_probe_map \
+            sudo bpftool map create /sys/fs/bpf/ffwd_ci_probe_map type hash key 4 value 8 entries 16 name ffwd_ci_probe_map \
             || true
-        sudo rm -f /sys/fs/bpf/logfwd_ci_probe_map >/dev/null 2>&1 || true
+        sudo rm -f /sys/fs/bpf/ffwd_ci_probe_map >/dev/null 2>&1 || true
     fi
 fi
 

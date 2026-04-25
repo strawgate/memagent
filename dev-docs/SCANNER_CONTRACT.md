@@ -43,7 +43,7 @@ is explicitly enabled.
   performs a safe `from_utf8` check before scanning and returns a descriptive
   scanner error on failure. It has a small throughput cost and is disabled by
   default.
-- The fuzz target (`crates/logfwd-core/fuzz/fuzz_targets/scanner.rs`) guards
+- The fuzz target (`crates/ffwd-core/fuzz/fuzz_targets/scanner.rs`) guards
   against UTF-8 violations for arbitrary byte sequences.
 - Upstream components (CRI parser, file tailer) do not currently validate
   UTF-8; callers that control raw byte sources are responsible for ensuring

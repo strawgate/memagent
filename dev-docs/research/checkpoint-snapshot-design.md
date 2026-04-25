@@ -34,7 +34,7 @@ benefit for our output types.
 All fingerprint and offset values use newtypes to prevent mixing up two `u64`s:
 
 ```rust
-// In logfwd-io (I/O-layer identity)
+// In ffwd-io (I/O-layer identity)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FileFingerprint(pub u64);
 
@@ -42,7 +42,7 @@ pub struct FileFingerprint(pub u64);
 pub struct ByteOffset(pub u64);
 ```
 
-`SourceId(u64)` in logfwd-core is the pipeline-level source identity.
+`SourceId(u64)` in ffwd-core is the pipeline-level source identity.
 `FileFingerprint` converts to `SourceId` via `From` impl at the boundary.
 They are NOT the same type — `SourceId` is generic (could be Kafka topic
 hash), `FileFingerprint` is file-specific.
@@ -79,7 +79,7 @@ message wastes space and muddies the API.
 /// Maps source identities to metadata needed for checkpoint persistence.
 /// Generic: K=FileFingerprint for files, K=TopicPartition for Kafka, etc.
 ///
-/// Lives in logfwd-core so it can be Kani-proven.
+/// Lives in ffwd-core so it can be Kani-proven.
 pub struct SourceRegistry<K: Eq + Hash, M> {
     entries: HashMap<K, SourceEntry<M>>,
 }
@@ -331,7 +331,7 @@ pub trait InputSource: Send {
     
     /// Return checkpoint data for all active sources.
     /// Default: empty (push sources, generators).
-    /// Uses FileFingerprint/ByteOffset newtypes from logfwd-io.
+    /// Uses FileFingerprint/ByteOffset newtypes from ffwd-io.
     fn checkpoint_data(&self) -> Vec<(FileFingerprint, ByteOffset)> {
         vec![]
     }
@@ -346,7 +346,7 @@ pub trait InputSource: Send {
     // NOTE: These use FileFingerprint (I/O-layer type), not SourceId
     // (pipeline-layer type). The conversion happens at the pipeline
     // boundary when creating BatchTickets. This keeps the InputSource
-    // trait independent of logfwd-core.
+    // trait independent of ffwd-core.
 }
 ```
 
@@ -389,7 +389,7 @@ impl FileTailer {
 }
 ```
 
-## SourceRegistry Design (logfwd-core)
+## SourceRegistry Design (ffwd-core)
 
 ```rust
 /// Generic source identity registry with lifecycle tracking.
@@ -548,9 +548,9 @@ where the file grew between the original fingerprint and the restart.
 
 | File | Change |
 |------|--------|
-| `crates/logfwd-core/src/pipeline/registry.rs` | New: SourceRegistry generic type + Kani proofs |
-| `crates/logfwd-io/src/tail.rs` | Add `file_offsets()`, `file_paths()`, FileFingerprint, ByteOffset |
-| `crates/logfwd-io/src/input.rs` | Add `checkpoint_data()`, `source_paths()` to InputSource trait; impl on FileInput |
-| `crates/logfwd-io/src/framed.rs` | Delegate `checkpoint_data()`, `source_paths()` to inner |
-| `crates/logfwd/src/pipeline.rs` | ChannelMsg enum, SourceRegistry, main loop, flush_batch, drain loop |
-| `crates/logfwd/Cargo.toml` | Add logfwd-core dependency |
+| `crates/ffwd-core/src/pipeline/registry.rs` | New: SourceRegistry generic type + Kani proofs |
+| `crates/ffwd-io/src/tail.rs` | Add `file_offsets()`, `file_paths()`, FileFingerprint, ByteOffset |
+| `crates/ffwd-io/src/input.rs` | Add `checkpoint_data()`, `source_paths()` to InputSource trait; impl on FileInput |
+| `crates/ffwd-io/src/framed.rs` | Delegate `checkpoint_data()`, `source_paths()` to inner |
+| `crates/ffwd/src/pipeline.rs` | ChannelMsg enum, SourceRegistry, main loop, flush_batch, drain loop |
+| `crates/ffwd/Cargo.toml` | Add ffwd-core dependency |

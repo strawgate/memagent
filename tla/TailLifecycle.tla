@@ -2,7 +2,7 @@
 EXTENDS Naturals
 
 \* Minimal control-plane model for the tail EOF + error-backoff reducers.
-\* This mirrors the pure reducers in `crates/logfwd-io/src/tail/state.rs`.
+\* This mirrors the pure reducers in `crates/ffwd-io/src/tail/state.rs`.
 
 CONSTANTS
     Threshold,       \* EOF idle-poll threshold (expected: 2)

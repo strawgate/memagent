@@ -1,0 +1,87 @@
+[package]
+name = "ffwd-runtime"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[package.metadata.cargo-machete]
+ignored = ["turmoil", "flate2"] # flate2 is optional (cpu-profiling feature)
+
+[features]
+default = ["datafusion"]
+turmoil = ["dep:turmoil"]
+loom-tests = []
+internal-failpoints = ["dep:fail", "fail/failpoints"]
+datafusion = ["dep:ffwd-transform"]
+dhat-heap = ["dep:dhat"]
+cpu-profiling = ["dep:pprof", "dep:flate2"]
+otlp-research = ["ffwd-config/otlp-research", "ffwd-io/otlp-research"]
+s3 = ["ffwd-io/s3"]
+
+[dependencies]
+arrow = { workspace = true }
+backon = { workspace = true }
+bytes = { workspace = true }
+dhat = { version = "0.3", optional = true }
+fail = { workspace = true, optional = true }
+ffwd-arrow = { version = "0.1.0", path = "../ffwd-arrow" }
+ffwd-config = { version = "0.1.0", path = "../ffwd-config" }
+ffwd-core = { version = "0.1.0", path = "../ffwd-core" }
+ffwd-diagnostics = { version = "0.1.0", path = "../ffwd-diagnostics" }
+ffwd-io = { version = "0.1.0", path = "../ffwd-io" }
+ffwd-lint-attrs = { version = "0.1.0", path = "../ffwd-lint-attrs" }
+ffwd-output = { version = "0.1.0", path = "../ffwd-output" }
+ffwd-transform = { version = "0.1.0", path = "../ffwd-transform", optional = true }
+ffwd-types = { version = "0.1.0", path = "../ffwd-types" }
+flate2 = { version = "1", optional = true }
+futures-util = { workspace = true }
+libc = "0.2"
+memchr = "2"
+opentelemetry = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+pprof = { version = "0.15", features = [
+    "flamegraph",
+    "prost-codec",
+], optional = true }
+smallvec = { workspace = true }
+thiserror = { workspace = true }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "signal",
+    "time",
+    "sync",
+] }
+tokio-util = { version = "0.7" }
+tracing = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+tracing-subscriber = { workspace = true }
+turmoil = { workspace = true, features = [
+    "unstable-barriers",
+], optional = true }
+# HTTP client for the live enrichment processor (sync, no async runtime needed).
+ureq = { workspace = true }
+# CSV parsing for the blocklist processor.
+csv = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
+
+[dev-dependencies]
+arrow = { workspace = true }
+bytes = { workspace = true }
+ffwd-test-utils = { version = "0.1.0", path = "../ffwd-test-utils" }
+loom = "0.7"
+proptest = "1.11.0"
+serial_test = "3.4.0"
+tempfile = "3"
+tiny_http = "0.12"
+turmoil = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,5 +1,7 @@
-input:
-  type: generator
-output:
-  type: tcp
-  endpoint: 127.0.0.1:15140
+pipelines:
+  default:
+    inputs:
+      - type: generator
+    outputs:
+      - type: tcp
+        endpoint: 127.0.0.1:15140

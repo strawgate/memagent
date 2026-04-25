@@ -1,9 +1,11 @@
-input:
-  type: generator
-output:
-  type: elasticsearch
-  endpoint: http://127.0.0.1:9200
-  index: logfwd-bench
-  request_mode: streaming
+pipelines:
+  default:
+    inputs:
+      - type: generator
+    outputs:
+      - type: elasticsearch
+        endpoint: http://127.0.0.1:9200
+        index: ffwd-bench
+        request_mode: streaming
 server:
   diagnostics: 127.0.0.1:9090

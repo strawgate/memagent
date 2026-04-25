@@ -19,7 +19,7 @@ The default rule remains:
 - keep SQL unsurprising: SQL sees ordinary Arrow columns and `SELECT *`
   returns the table schema as-is;
 - use `source_metadata: fastforward` for the cheap internal `__source_id`
-  handle, and use public styles (`ecs`/`beats`, `otel`, `vector`) when metadata
+  handle, and use public styles (`ecs`, `otel`, `vector`) when metadata
   should be materialized as normal columns;
 - drop known FastForward internal fields such as `__source_id` at user-facing
   output boundaries unless SQL aliases them to public names.
@@ -37,7 +37,7 @@ PR #2317 landed the sidecar spine:
 - `source_metadata: fastforward` materializes `__source_id` as nullable
   `UInt64`.
 - Public styles materialize source paths as normal columns: `file.path` for
-  ECS/Beats, `log.file.path` for OTel, and `file` for Vector.
+  ECS, `log.file.path` for OTel, and `file` for Vector.
 - Public source path styles are accepted only for inputs that expose path
   snapshots. File tailing exposes filesystem paths. S3 exposes object keys when
   a public style is configured. This guard avoids replacing a payload
@@ -78,7 +78,7 @@ still thin. The hot path currently pays for:
 
 ## Benchmark Coverage Added
 
-`crates/logfwd-bench/benches/source_metadata.rs` adds four groups:
+`crates/ffwd-bench/benches/source_metadata.rs` adds four groups:
 
 - `source_metadata_attach`: isolated column attachment for 50k rows, 1/30/300
   sources, and contiguous/32-row/round-robin spans.
@@ -104,7 +104,7 @@ For quick CPU/allocation iteration without Criterion's full bench-package
 linking cost, use:
 
 ```bash
-cargo run -p logfwd-bench --release --features bench-tools --bin source_metadata_profile -- \
+cargo run -p ffwd-bench --release --features bench-tools --bin source_metadata_profile -- \
   --rows 50000 --sources 300 --iterations 200
 ```
 
@@ -232,7 +232,7 @@ discovery and network source lifecycle events.
 ## Implementation Backlog
 
 1. Run and commit source metadata Criterion baselines on current `main`.
-2. Extract the production attach helper from runtime into `logfwd-arrow` or a
+2. Extract the production attach helper from runtime into `ffwd-arrow` or a
    small shared module so benchmarks can call the real implementation instead
    of mirroring the algorithm.
 3. Add `SourceMetadataEntry` and `InputSource::source_metadata_snapshot()`.

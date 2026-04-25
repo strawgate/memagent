@@ -1,0 +1,15 @@
+[package]
+name = "ffwd-kani"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Shared oracle and reference implementations for Kani formal verification proofs."
+
+[lib]
+doctest = false
+
+[dependencies]
+
+[lints]
+workspace = true

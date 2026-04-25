@@ -1,287 +1,287 @@
 version = 1
 
 [[seams]]
-path = "crates/logfwd-arrow/src/streaming_builder/verification.rs"
+path = "crates/ffwd-arrow/src/streaming_builder/verification.rs"
 status = "required"
 reason = "Pure StructArray conflict-column assembly invariants are already Kani-proved here."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-arrow/src/streaming_builder/mod.rs"
+path = "crates/ffwd-arrow/src/streaming_builder/mod.rs"
 status = "recommended"
 reason = "Contains cfg(kani) type aliases supporting proofs in verification.rs; no proof harnesses here."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-output/src/elasticsearch/mod.rs"
+path = "crates/ffwd-output/src/elasticsearch/mod.rs"
 status = "recommended"
 reason = "Module shell declares cfg(kani) submodule; proofs live in kani_proofs.rs."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-arrow/src/conflict_schema.rs"
+path = "crates/ffwd-arrow/src/conflict_schema.rs"
 status = "recommended"
 reason = "Conflict-struct detection and row-level precedence selection are bounded pure seams; full Arrow batch normalization remains too dynamic for required Kani."
 issue = 1485
 
 [[seams]]
-path = "crates/logfwd-types/src/pipeline/batch.rs"
+path = "crates/ffwd-types/src/pipeline/batch.rs"
 status = "required"
-reason = "Typestate batch transitions are a core local proof seam outside logfwd-core."
+reason = "Typestate batch transitions are a core local proof seam outside ffwd-core."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-types/src/pipeline/lifecycle.rs"
+path = "crates/ffwd-types/src/pipeline/lifecycle.rs"
 status = "required"
 reason = "Pipeline lifecycle transition rules are locally Kani-proved here."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-types/src/pipeline/registry.rs"
+path = "crates/ffwd-types/src/pipeline/registry.rs"
 status = "required"
 reason = "Registry ordering and apply-ack helpers are bounded pure logic with existing proofs."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-types/src/diagnostics.rs"
+path = "crates/ffwd-types/src/diagnostics.rs"
 status = "recommended"
 reason = "Contains cfg(kani) stubs for atomic counter operations (inc_send, send_ns_total, send_count) that Kani cannot model; no proof harnesses, only Kani-compatible no-op implementations."
 issue = 2486
 
 [[seams]]
-path = "crates/logfwd-types/src/diagnostics/health.rs"
+path = "crates/ffwd-types/src/diagnostics/health.rs"
 status = "required"
 reason = "Shared control-plane health lattice is an isolated pure seam and should stay Kani-covered."
 issue = 1437
 
 [[seams]]
-path = "crates/logfwd-io/src/format.rs"
+path = "crates/ffwd-io/src/format.rs"
 status = "required"
 reason = "Local CRI message extraction, sidecar metadata, and mode dispatch helpers are already Kani-targeted."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-diagnostics/src/stderr_capture.rs"
+path = "crates/ffwd-diagnostics/src/stderr_capture.rs"
 status = "required"
 reason = "Pure escaping helpers are already Kani-targeted here."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-lint-attrs/src/lib.rs"
+path = "crates/ffwd-lint-attrs/src/lib.rs"
 status = "recommended"
 reason = "Proc-macro support crate emits cfg(kani) proof-linkage assertions but does not itself host bounded runtime proof harnesses."
 issue = 2457
 
 [[seams]]
-path = "crates/logfwd-io/src/receiver_health.rs"
+path = "crates/ffwd-io/src/receiver_health.rs"
 status = "required"
 reason = "Standalone receiver lifecycle reduction is now an isolated pure seam and should stay Kani-covered."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-io/src/polling_input_health.rs"
+path = "crates/ffwd-io/src/polling_input_health.rs"
 status = "required"
 reason = "Polling input source-origin lifecycle reduction is an isolated local seam for tail, TCP, and UDP health."
 issue = 1415
 
 [[seams]]
-path = "crates/logfwd-diagnostics/src/diagnostics/policy.rs"
+path = "crates/ffwd-diagnostics/src/diagnostics/policy.rs"
 status = "required"
 reason = "Control-plane readiness and component-health labeling must stay aligned with shared health semantics."
 issue = 1306
 
 [[seams]]
-path = "crates/logfwd-io/src/otlp_receiver.rs"
+path = "crates/ffwd-io/src/otlp_receiver.rs"
 status = "recommended"
 reason = "Post-split module shell still hosts HTTP/runtime orchestration; pure protojson parsing and hex-encoding proof seams now live in otlp_receiver/convert.rs."
 issue = 1484
 
 [[seams]]
-path = "crates/logfwd-io/src/otlp_receiver/convert.rs"
+path = "crates/ffwd-io/src/otlp_receiver/convert.rs"
 status = "recommended"
 reason = "Structured conversion and protojson numeric normalization helpers are isolated pure seams inside OTLP receiver internals."
 issue = 1484
 
 [[seams]]
-path = "crates/logfwd-io/src/tail/verification.rs"
+path = "crates/ffwd-io/src/tail/verification.rs"
 status = "required"
 reason = "Pure tail reducers (`eof_model_transition`, `backoff_transition`) are local proof seams despite living in an IO crate."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-io/src/tail/mod.rs"
+path = "crates/ffwd-io/src/tail/mod.rs"
 status = "recommended"
 reason = "Module shell gates tail-specific verification under #[cfg(kani)] and should stay aligned with the verification seam."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-io/src/input.rs"
+path = "crates/ffwd-io/src/input.rs"
 status = "recommended"
 reason = "CRI metadata sidecar row-alignment helpers are bounded local state transitions inside the input abstraction."
 
 [[seams]]
-path = "crates/logfwd-io/src/tcp_input.rs"
+path = "crates/ffwd-io/src/tcp_input.rs"
 status = "recommended"
 reason = "Per-client bounded-read stop policy is extracted as a local pure seam inside the TCP shell."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-io/src/tcp_input/verification.rs"
+path = "crates/ffwd-io/src/tcp_input/verification.rs"
 status = "required"
 reason = "Per-client bounded-read stop policy proofs now live in the split TCP verification module."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-io/src/udp_input.rs"
+path = "crates/ffwd-io/src/udp_input.rs"
 status = "recommended"
 reason = "Per-poll UDP bounded-drain stop policy is an isolated pure seam in an otherwise IO-heavy module."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-io/src/s3_input/mod.rs"
+path = "crates/ffwd-io/src/s3_input/mod.rs"
 status = "exempt"
 reason = "S3 input is an async/network orchestration shell; source metadata snapshot behavior is stateful IO glue covered by unit and integration tests rather than a bounded pure Kani seam."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-output/src/elasticsearch/kani_proofs.rs"
+path = "crates/ffwd-output/src/elasticsearch/kani_proofs.rs"
 status = "required"
 reason = "Local response classification helpers already carry Kani proofs."
 issue = 1314
 
 
 [[seams]]
-path = "crates/logfwd-output/src/lib.rs"
+path = "crates/ffwd-output/src/lib.rs"
 status = "required"
 reason = "Conflict schema helpers and variant ordering are bounded pure logic with existing proofs."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-output/src/sink.rs"
+path = "crates/ffwd-output/src/sink.rs"
 status = "required"
 reason = "SendResult aggregation and invariants are Kani-covered and should remain explicit."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-output/src/sink/health.rs"
+path = "crates/ffwd-output/src/sink/health.rs"
 status = "required"
 reason = "Output lifecycle reduction and fanout health aggregation are isolated local proof seams."
 issue = 1439
 
 [[seams]]
-path = "crates/logfwd-runtime/src/worker_pool/dispatch.rs"
+path = "crates/ffwd-runtime/src/worker_pool/dispatch.rs"
 status = "required"
 reason = "Worker dispatch helpers are isolated in this module and remain bounded local proof seams."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-runtime/src/pipeline/checkpoint_policy.rs"
+path = "crates/ffwd-runtime/src/pipeline/checkpoint_policy.rs"
 status = "required"
 reason = "The typed delivery outcome -> checkpoint disposition compatibility mapping is a local pure seam."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-runtime/src/pipeline/buffered_input_policy.rs"
+path = "crates/ffwd-runtime/src/pipeline/buffered_input_policy.rs"
 status = "required"
 reason = "Shared-buffer shutdown repoll and large-first-chunk flush policy is a local pure seam extracted from the async io worker."
 issue = 2539
 
 [[seams]]
-path = "crates/logfwd-runtime/src/pipeline/checkpoint_io.rs"
+path = "crates/ffwd-runtime/src/pipeline/checkpoint_io.rs"
 status = "recommended"
 reason = "Final checkpoint flush retry-window policy is an isolated local seam and should remain explicitly verified."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-runtime/src/pipeline/input_poll.rs"
+path = "crates/ffwd-runtime/src/pipeline/input_poll.rs"
 status = "recommended"
 reason = "Turmoil input-loop flush predicate is a local pure seam within the async shell and should remain proof-backed."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-runtime/src/worker_pool/health.rs"
+path = "crates/ffwd-runtime/src/worker_pool/health.rs"
 status = "required"
 reason = "Pool-level health insertion and aggregation policy is isolated here and should remain Kani-covered."
 issue = 1314
 
 [[seams]]
-path = "crates/logfwd-diagnostics/src/diagnostics/server.rs"
+path = "crates/ffwd-diagnostics/src/diagnostics/server.rs"
 status = "exempt"
 reason = "Still mixes HTTP shell code, JSON formatting, and runtime snapshot assembly; pure policy extraction is tracked separately."
 issue = 1438
 
 [[seams]]
-path = "crates/logfwd-output/src/file_sink.rs"
+path = "crates/ffwd-output/src/file_sink.rs"
 status = "exempt"
 reason = "IO-heavy sink implementation; proof-worthy helpers should be extracted before Kani is required."
 issue = 1313
 
 [[seams]]
-path = "crates/logfwd-runtime/src/pipeline/mod.rs"
+path = "crates/ffwd-runtime/src/pipeline/mod.rs"
 status = "exempt"
 reason = "Async orchestration shell remains mixed; local proof seams are being extracted incrementally."
 issue = 1449
 
 [[seams]]
-path = "crates/logfwd-runtime/src/pipeline/health.rs"
+path = "crates/ffwd-runtime/src/pipeline/health.rs"
 status = "required"
 reason = "Pipeline input-loop health transitions are an isolated local reducer with bounded Kani invariants."
 issue = 1440
 
 [[seams]]
-path = "crates/logfwd-arrow/src/lib.rs"
+path = "crates/ffwd-arrow/src/lib.rs"
 status = "required"
 reason = "check_dup_bits bitmask logic is a bounded pure seam with oracle-verified Kani proofs."
 issue = 2072
 
 [[seams]]
-path = "crates/logfwd-arrow/src/columnar/accumulator.rs"
+path = "crates/ffwd-arrow/src/columnar/accumulator.rs"
 status = "required"
 reason = "make_string_view u128 packing and buffer selection are bounded pure seams with oracle-verified Kani proofs."
 issue = 2072
 
 [[seams]]
-path = "crates/logfwd-arrow/src/columnar/row_protocol.rs"
+path = "crates/ffwd-arrow/src/columnar/row_protocol.rs"
 status = "required"
 reason = "RowLifecycle state machine transitions are bounded pure seams with symbolic action sequence proofs."
 issue = 2072
 
 [[seams]]
-path = "crates/logfwd-arrow/src/columnar/builder.rs"
+path = "crates/ffwd-arrow/src/columnar/builder.rs"
 status = "recommended"
 reason = "Generated-string offset accounting and lowercase hex emission are bounded pure seams inside the broader builder shell."
 
 [[seams]]
-path = "crates/logfwd-kani/src/lib.rs"
+path = "crates/ffwd-kani/src/lib.rs"
 status = "recommended"
 reason = "Crate root module shell; declares oracle submodules. No proof harnesses here."
 
 [[seams]]
-path = "crates/logfwd-kani/src/hex.rs"
+path = "crates/ffwd-kani/src/hex.rs"
 status = "required"
 reason = "Centralized hex encode/decode oracle with roundtrip and valid-range proofs."
 
 [[seams]]
-path = "crates/logfwd-kani/src/numeric.rs"
+path = "crates/ffwd-kani/src/numeric.rs"
 status = "required"
 reason = "Centralized integer parsing oracle with no-panic and sign-consistency proofs."
 
 [[seams]]
-path = "crates/logfwd-kani/src/datetime.rs"
+path = "crates/ffwd-kani/src/datetime.rs"
 status = "required"
 reason = "JDN days-from-epoch oracle with epoch-zero and monotonicity proofs."
 
 [[seams]]
-path = "crates/logfwd-kani/src/bytes.rs"
+path = "crates/ffwd-kani/src/bytes.rs"
 status = "required"
 reason = "Byte comparison, quote-escape bitmask, prefix-xor, and ASCII printability oracles with contract proofs."
 
 [[seams]]
-path = "crates/logfwd-kani/src/proto.rs"
+path = "crates/ffwd-kani/src/proto.rs"
 status = "required"
 reason = "Protobuf varint length, tag size, and bytes-field total size oracles with bounded proofs."
 
 [[seams]]
-path = "crates/logfwd-kani/src/iter.rs"
+path = "crates/ffwd-kani/src/iter.rs"
 status = "required"
 reason = "Byte search and whitespace skip oracles with contract proofs for memchr-equivalent operations."

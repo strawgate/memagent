@@ -3,13 +3,13 @@ version: '3.8'
 services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.16.0
-    container_name: logfwd-elasticsearch
+    container_name: ffwd-elasticsearch
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
       - ES_JAVA_OPTS=-Xms1g -Xmx1g
-      - cluster.name=logfwd-cluster
-      - node.name=logfwd-node-1
+      - cluster.name=ffwd-cluster
+      - node.name=ffwd-node-1
     ports:
       - "9200:9200"
       - "9300:9300"

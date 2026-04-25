@@ -1,52 +1,52 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/logfwd-config",
-    "crates/logfwd-runtime",
-    "crates/logfwd-types",
-    "crates/logfwd-diagnostics",
-    "crates/logfwd-core",
-    "crates/logfwd-arrow",
-    "crates/logfwd-transform",
-    "crates/logfwd-io",
-    "crates/logfwd-proto-build",
-    "crates/logfwd-otap-proto",
-    "crates/logfwd-output",
-    "crates/logfwd",
-    "crates/logfwd-bench",
-    "crates/logfwd-test-utils",
-    "crates/logfwd-kani",
-    "crates/logfwd-lint-attrs",
-    "crates/logfwd-ebpf-proto",
-    "crates/logfwd-ebpf-proto/sensor-ebpf",
-    "crates/logfwd-ebpf-proto/sensor-ebpf/sensor-ebpf-common",
-    "crates/logfwd-config-wasm",
+    "crates/ffwd-config",
+    "crates/ffwd-runtime",
+    "crates/ffwd-types",
+    "crates/ffwd-diagnostics",
+    "crates/ffwd-core",
+    "crates/ffwd-arrow",
+    "crates/ffwd-transform",
+    "crates/ffwd-io",
+    "crates/ffwd-proto-build",
+    "crates/ffwd-otap-proto",
+    "crates/ffwd-output",
+    "crates/ffwd",
+    "crates/ffwd-bench",
+    "crates/ffwd-test-utils",
+    "crates/ffwd-kani",
+    "crates/ffwd-lint-attrs",
+    "crates/ffwd-ebpf-proto",
+    "crates/ffwd-ebpf-proto/sensor-ebpf",
+    "crates/ffwd-ebpf-proto/sensor-ebpf/sensor-ebpf-common",
+    "crates/ffwd-config-wasm",
     "xtask",
 ]
 # sensor-ebpf-kern requires nightly + bpfel-unknown-none target (eBPF bytecode).
 # It is intentionally excluded from the workspace.
 exclude = [
-    "crates/logfwd-ebpf-proto/sensor-ebpf/sensor-ebpf-kern",
-    # logfwd-lints pins a specific rustc nightly and links against
+    "crates/ffwd-ebpf-proto/sensor-ebpf/sensor-ebpf-kern",
+    # ffwd-lints pins a specific rustc nightly and links against
     # rustc-private crates. It is invoked via `cargo dylint`, not the
     # regular workspace build.
-    "crates/logfwd-lints",
+    "crates/ffwd-lints",
 ]
 # default-members: crates that compile without datafusion (~30s vs ~3min).
-# Bare `cargo check/clippy` uses these. Use `--workspace` or `-p logfwd`
-# to include logfwd-transform (datafusion) and the binary crate.
+# Bare `cargo check/clippy` uses these. Use `--workspace` or `-p ffwd`
+# to include ffwd-transform (datafusion) and the binary crate.
 # CI and `just ci-all` always use --workspace.
 default-members = [
-    "crates/logfwd-config",
-    "crates/logfwd-types",
-    "crates/logfwd-diagnostics",
-    "crates/logfwd-core",
-    "crates/logfwd-kani",
-    "crates/logfwd-lint-attrs",
-    "crates/logfwd-arrow",
-    "crates/logfwd-io",
-    "crates/logfwd-output",
-    "crates/logfwd-test-utils",
+    "crates/ffwd-config",
+    "crates/ffwd-types",
+    "crates/ffwd-diagnostics",
+    "crates/ffwd-core",
+    "crates/ffwd-kani",
+    "crates/ffwd-lint-attrs",
+    "crates/ffwd-arrow",
+    "crates/ffwd-io",
+    "crates/ffwd-output",
+    "crates/ffwd-test-utils",
 ]
 
 [workspace.package]

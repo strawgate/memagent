@@ -4,19 +4,19 @@ This folder contains 20 starter configurations for common collection targets (Re
 
 ## How to use
 
-1. Copy the closest file to your environment, e.g. `cp examples/use-cases/redis-to-otlp.yaml logfwd.yaml`.
+1. Copy the closest file to your environment, e.g. `cp examples/use-cases/redis-to-otlp.yaml ffwd.yaml`.
 2. Edit input paths, output endpoints, and credentials.
 3. Validate before running:
 
 ```bash
-ff validate --config logfwd.yaml
+ff validate --config ffwd.yaml
 ```
 
 If you want to inspect expansion and normalization before editing host-specific
 paths, run:
 
 ```bash
-ff effective-config --config logfwd.yaml
+ff effective-config --config ffwd.yaml
 ```
 
 ## Included examples
