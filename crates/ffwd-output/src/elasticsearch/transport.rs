@@ -62,12 +62,7 @@ impl ElasticsearchSink {
         }
 
         tracing::Span::current().record("req_bytes", body_len as u64);
-        let req = if self.config.compress {
-            tracing::Span::current().record("cmp_bytes", body.len() as u64);
-            req.header("Content-Encoding", "gzip").body(body)
-        } else {
-            req.body(body)
-        };
+        let req = req.body(body);
 
         let t0 = std::time::Instant::now();
         let response = match req.send().await {
