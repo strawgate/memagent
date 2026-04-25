@@ -24,7 +24,7 @@ docker run -d \
   --name ff \
   -v /var/log:/var/log:ro \
   -v ./config.yaml:/etc/ff/config.yaml:ro \
-  -v ff-data:/var/lib/ff \
+  -v ff-data:/var/lib/ffwd \
   -p 9090:9090 \
   --cpus 1.0 \
   --memory 256m \
@@ -38,7 +38,7 @@ docker run -d \
 |------|---------|
 | `-v /var/log:/var/log:ro` | Gives FastForward read-only access to host log files |
 | `-v ./config.yaml:/etc/ff/config.yaml:ro` | Injects your pipeline configuration (read-only) |
-| `-v ff-data:/var/lib/ff` | Persists checkpoint data between container restarts |
+| `-v ff-data:/var/lib/ffwd` | Persists checkpoint data between container restarts |
 | `-p 9090:9090` | Exposes the diagnostics/admin API on the host |
 | `--cpus 1.0` | Limits the container to one CPU core |
 | `--memory 256m` | Hard memory cap; the OOM killer fires if exceeded |
@@ -46,7 +46,7 @@ docker run -d \
 ## Checkpoint persistence
 
 :::tip[Always mount a checkpoint volume]
-Without a persistent volume for `/var/lib/ff`, FastForward loses its file-read
+Without a persistent volume for `/var/lib/ffwd`, FastForward loses its file-read
 position on every container restart. This causes **duplicate log delivery**
 (re-reading from the beginning) or **data loss** (if the output has
 already acknowledged earlier batches). A Docker named volume or a host-path
@@ -55,17 +55,17 @@ bind mount eliminates both problems.
 
 ```bash
 # Named volume (recommended — Docker manages the lifecycle)
--v ff-data:/var/lib/ff
+-v ff-data:/var/lib/ffwd
 
 # Host-path bind mount (useful when you need direct access to checkpoint files)
--v /opt/ff/data:/var/lib/ff
+-v /opt/ffwd/data:/var/lib/ffwd
 ```
 
 Your configuration must reference the same directory:
 
 ```yaml
 storage:
-  data_dir: /var/lib/ff
+  data_dir: /var/lib/ffwd
 ```
 
 ## Resource constraints
@@ -99,7 +99,7 @@ docker run -d \
   -e OTEL_TOKEN=my-secret-token \
   -v /var/log:/var/log:ro \
   -v ./config.yaml:/etc/ff/config.yaml:ro \
-  -v ff-data:/var/lib/ff \
+  -v ff-data:/var/lib/ffwd \
   -p 9090:9090 \
   --cpus 1.0 \
   --memory 256m \
@@ -127,7 +127,7 @@ to publish the listener ports.
 docker run -d \
   --name ff \
   -v ./config.yaml:/etc/ff/config.yaml:ro \
-  -v ff-data:/var/lib/ff \
+  -v ff-data:/var/lib/ffwd \
   -p 9090:9090 \
   -p 5140:5140/tcp \
   -p 5140:5140/udp \
@@ -174,7 +174,7 @@ services:
     volumes:
       - /var/log:/var/log:ro
       - ./config.yaml:/etc/ff/config.yaml:ro
-      - ff-data:/var/lib/ff
+      - ff-data:/var/lib/ffwd
     ports:
       - "9090:9090"
     environment:
@@ -243,7 +243,7 @@ docker run -d \
   --name ff \
   -v /var/log:/var/log:ro \
   -v ./config.last-known-good.yaml:/etc/ff/config.yaml:ro \
-  -v ff-data:/var/lib/ff \
+  -v ff-data:/var/lib/ffwd \
   -p 9090:9090 \
   ghcr.io/strawgate/fastforward:<known-good-tag> \
   run --config /etc/ff/config.yaml
