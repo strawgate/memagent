@@ -27,6 +27,10 @@ env:
   LOGFWD_DISABLE_DEFAULT_CHECKPOINTS: "1"
   TOKIO_WORKER_THREADS: "4"
   RAYON_NUM_THREADS: "4"
+  # Disable sccache in CI — config.toml enables it for local dev builds.
+  # This must remain at workflow level so Kani/Miri jobs (which skip
+  # setup-rust) also get the override.
+  RUSTC_WRAPPER: ""
 
 jobs:
   # -------------------------------------------------------------------------
