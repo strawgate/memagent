@@ -514,50 +514,7 @@ impl Config {
                                 )));
                             }
                             if let Some(tls) = &t.tls {
-                                let cert_file = tls
-                                    .cert_file
-                                    .as_deref()
-                                    .map(str::trim)
-                                    .filter(|v| !v.is_empty());
-                                let key_file = tls
-                                    .key_file
-                                    .as_deref()
-                                    .map(str::trim)
-                                    .filter(|v| !v.is_empty());
-                                let client_ca_file = match tls.client_ca_file.as_deref() {
-                                    Some(path) => {
-                                        let path = path.trim();
-                                        if path.is_empty() {
-                                            return Err(ConfigError::Validation(format!(
-                                                "pipeline '{name}' input '{label}': tcp tls client_ca_file must not be empty"
-                                            )));
-                                        }
-                                        Some(path)
-                                    }
-                                    None => None,
-                                };
-
-                                if tls.require_client_auth && client_ca_file.is_none() {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': tcp tls require_client_auth requires tls.client_ca_file"
-                                    )));
-                                }
-                                if client_ca_file.is_some() && !tls.require_client_auth {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': tcp tls client_ca_file requires tls.require_client_auth: true"
-                                    )));
-                                }
-
-                                if cert_file.is_none() || key_file.is_none() {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': tcp tls requires both tls.cert_file and tls.key_file"
-                                    )));
-                                }
-                            }
-                            if t.max_clients == Some(0) {
-                                return Err(ConfigError::Validation(format!(
-                                    "pipeline '{name}' input '{label}': max_clients cannot be 0"
-                                )));
+                                validate_server_tls(name, &label, "tcp", tls)?;
                             }
                             track_listen_addr_uniqueness(
                                 &mut seen_listen_addrs,
@@ -581,45 +538,7 @@ impl Config {
                             }
 
                             if let Some(tls) = &o.tls {
-                                let cert_file = tls
-                                    .cert_file
-                                    .as_deref()
-                                    .map(str::trim)
-                                    .filter(|v| !v.is_empty());
-                                let key_file = tls
-                                    .key_file
-                                    .as_deref()
-                                    .map(str::trim)
-                                    .filter(|v| !v.is_empty());
-                                let client_ca_file = match tls.client_ca_file.as_deref() {
-                                    Some(path) => {
-                                        let path = path.trim();
-                                        if path.is_empty() {
-                                            return Err(ConfigError::Validation(format!(
-                                                "pipeline '{name}' input '{label}': otlp tls client_ca_file must not be empty"
-                                            )));
-                                        }
-                                        Some(path)
-                                    }
-                                    None => None,
-                                };
-
-                                if tls.require_client_auth && client_ca_file.is_none() {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': otlp tls require_client_auth requires tls.client_ca_file"
-                                    )));
-                                }
-                                if client_ca_file.is_some() && !tls.require_client_auth {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': otlp tls client_ca_file requires tls.require_client_auth: true"
-                                    )));
-                                }
-
-                                if cert_file.is_none() || key_file.is_none() {
-                                    return Err(ConfigError::Validation(format!(
-                                        "pipeline '{name}' input '{label}': otlp tls requires both tls.cert_file and tls.key_file"
-                                    )));
-                                }
+                                validate_server_tls(name, &label, "otlp", tls)?;
                             }
 
                             track_listen_addr_uniqueness(
@@ -1658,6 +1577,55 @@ fn validate_sensor_event_type_list(
 /// Validate that a bind address is a parseable `host:port` socket address.
 fn validate_bind_addr(addr: &str) -> Result<(), ConfigError> {
     validate_host_port(addr)
+}
+
+/// Validate server-side TLS configuration (cert/key pairs and mutual auth).
+fn validate_server_tls(
+    pipeline_name: &str,
+    input_label: &str,
+    protocol: &str,
+    tls: &crate::shared::TlsServerConfig,
+) -> Result<(), ConfigError> {
+    let cert_file = tls
+        .cert_file
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    let key_file = tls
+        .key_file
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty());
+    let client_ca_file = match tls.client_ca_file.as_deref() {
+        Some(path) => {
+            let path = path.trim();
+            if path.is_empty() {
+                return Err(ConfigError::Validation(format!(
+                    "pipeline '{pipeline_name}' input '{input_label}': {protocol} tls client_ca_file must not be empty"
+                )));
+            }
+            Some(path)
+        }
+        None => None,
+    };
+
+    if tls.require_client_auth && client_ca_file.is_none() {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' input '{input_label}': {protocol} tls require_client_auth requires tls.client_ca_file"
+        )));
+    }
+    if client_ca_file.is_some() && !tls.require_client_auth {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' input '{input_label}': {protocol} tls client_ca_file requires tls.require_client_auth: true"
+        )));
+    }
+
+    if cert_file.is_none() || key_file.is_none() {
+        return Err(ConfigError::Validation(format!(
+            "pipeline '{pipeline_name}' input '{input_label}': {protocol} tls requires both tls.cert_file and tls.key_file"
+        )));
+    }
+    Ok(())
 }
 
 /// Validate that a string has a valid `host:port` format where port is a u16.
