@@ -1,8 +1,10 @@
-input:
-  type: generator
-output:
-  type: elasticsearch
-  endpoint: http://127.0.0.1:9200
-  index: ffwd-bench
+pipelines:
+  default:
+    inputs:
+      - type: generator
+    outputs:
+      - type: elasticsearch
+        endpoint: http://127.0.0.1:9200
+        index: ffwd-bench
 server:
   diagnostics: 127.0.0.1:9090
