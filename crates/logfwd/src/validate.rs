@@ -423,9 +423,21 @@ fn validate_pipeline_read_only(
                     );
                     enrichment_tables.push(table);
                 }
-                EnrichmentConfig::HostInfo(_) => {
-                    enrichment_tables
-                        .push(Arc::new(logfwd::transform::enrichment::HostInfoTable::new()));
+                EnrichmentConfig::HostInfo(cfg) => {
+                    let style = match cfg.style {
+                        logfwd_config::HostInfoStyle::Raw => {
+                            logfwd::transform::enrichment::HostInfoStyle::Raw
+                        }
+                        logfwd_config::HostInfoStyle::Ecs => {
+                            logfwd::transform::enrichment::HostInfoStyle::Ecs
+                        }
+                        logfwd_config::HostInfoStyle::Otel => {
+                            logfwd::transform::enrichment::HostInfoStyle::Otel
+                        }
+                    };
+                    enrichment_tables.push(Arc::new(
+                        logfwd::transform::enrichment::HostInfoTable::with_style(style),
+                    ));
                 }
                 EnrichmentConfig::K8sPath(cfg) => {
                     enrichment_tables.push(Arc::new(
