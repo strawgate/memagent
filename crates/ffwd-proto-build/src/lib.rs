@@ -6,6 +6,7 @@
 use std::path::Path;
 
 /// Compile one or more proto files with vendored `protoc`.
+#[allow(clippy::expect_used)]
 pub fn compile_with_vendored_protoc(
     protos: &[impl AsRef<Path>],
     includes: &[impl AsRef<Path>],
