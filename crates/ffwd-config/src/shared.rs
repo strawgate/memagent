@@ -84,6 +84,7 @@ pub struct BatchConfig {
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_field_names)]
 pub struct RotationConfig {
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub max_megabytes: Option<usize>,

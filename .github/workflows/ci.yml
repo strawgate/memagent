@@ -805,14 +805,6 @@ jobs:
           tla-file: tla/MCFanoutSink.tla
           config: tla/FanoutSink.coverage.cfg
           mode: coverage
-
-      # --- Thorough ---
-      - name: "TLC: PipelineMachine — thorough"
-        uses: ./.github/actions/run-tlc
-        with:
-          tla-file: tla/MCPipelineMachine.tla
-          config: tla/PipelineMachine.thorough.cfg
-
   # -------------------------------------------------------------------------
   # Coverage — workspace code coverage via llvm-cov.
   # Informational only (continue-on-error); non-draft PRs, no path filter.

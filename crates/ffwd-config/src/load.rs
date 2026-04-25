@@ -1,10 +1,6 @@
 use crate::env::expand_env_vars;
-use crate::serde_helpers::{
-    deserialize_option_strict_string, deserialize_string_map_strict_values,
-};
 use crate::types::{
-    Config, ConfigError, EnrichmentConfig, InputConfig, InputTypeConfig, OutputConfigV2,
-    PipelineConfig, ServerConfig, StorageConfig,
+    Config, ConfigError, InputTypeConfig, PipelineConfig, ServerConfig, StorageConfig,
 };
 use config as config_rs;
 use serde::Deserialize;
@@ -16,14 +12,6 @@ use std::path::Path;
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawConfig {
-    input: Option<InputConfig>,
-    #[serde(default, deserialize_with = "deserialize_option_strict_string")]
-    transform: Option<String>,
-    output: Option<OutputConfigV2>,
-    #[serde(default)]
-    enrichment: Vec<EnrichmentConfig>,
-    #[serde(default, deserialize_with = "deserialize_string_map_strict_values")]
-    resource_attrs: HashMap<String, String>,
     pipelines: Option<HashMap<String, PipelineConfig>>,
     #[serde(default)]
     server: ServerConfig,
@@ -40,8 +28,8 @@ impl Config {
     }
 
     /// Parse configuration from a YAML string.
-    pub fn load_str(yaml: &str) -> Result<Self, ConfigError> {
-        Self::load_str_with_base_path(yaml, None)
+    pub fn load_str(yaml: impl AsRef<str>) -> Result<Self, ConfigError> {
+        Self::load_str_with_base_path(yaml.as_ref(), None)
     }
 
     /// Parse configuration from YAML with a base path for relative-path validation.
@@ -69,68 +57,9 @@ impl Config {
     }
 
     fn from_raw(raw: RawConfig, base_path: Option<&Path>) -> Result<Self, ConfigError> {
-        let pipelines = match (raw.pipelines, raw.input, raw.output) {
-            (Some(p), None, None) => {
-                if !raw.enrichment.is_empty() {
-                    return Err(ConfigError::Validation(
-                        "top-level `enrichment` is not supported when using `pipelines:` form \
-                         — move enrichment configuration inside each pipeline"
-                            .into(),
-                    ));
-                }
-                if !raw.resource_attrs.is_empty() {
-                    return Err(ConfigError::Validation(
-                        "top-level `resource_attrs` cannot be used with `pipelines:`; \
-                         move resource_attrs into each pipeline"
-                            .into(),
-                    ));
-                }
-                if raw.transform.is_some() {
-                    return Err(ConfigError::Validation(
-                        "top-level `transform` cannot be used with `pipelines:`; \
-                         move transform SQL into each pipeline"
-                            .into(),
-                    ));
-                }
-                p
-            }
-            (None, Some(input), Some(output)) => {
-                let pipeline = PipelineConfig {
-                    inputs: vec![input],
-                    transform: raw.transform,
-                    outputs: vec![output],
-                    enrichment: raw.enrichment,
-                    resource_attrs: raw.resource_attrs,
-                    workers: None,
-                    batch_target_bytes: None,
-                    batch_timeout_ms: None,
-                    poll_interval_ms: None,
-                };
-                let mut map = HashMap::new();
-                map.insert("default".to_string(), pipeline);
-                map
-            }
-            (Some(_), Some(_), _) | (Some(_), _, Some(_)) => {
-                return Err(ConfigError::Validation(
-                    "cannot mix top-level input/output with pipelines".into(),
-                ));
-            }
-            (None, None, None) => {
-                return Err(ConfigError::Validation(
-                    "config must define either input/output or pipelines".into(),
-                ));
-            }
-            (None, Some(_), None) => {
-                return Err(ConfigError::Validation(
-                    "output is required when input is specified".into(),
-                ));
-            }
-            (None, None, Some(_)) => {
-                return Err(ConfigError::Validation(
-                    "input is required when output is specified".into(),
-                ));
-            }
-        };
+        let pipelines = raw.pipelines.ok_or_else(|| {
+            ConfigError::Validation("config must define top-level `pipelines`".into())
+        })?;
 
         let mut cfg = Config {
             pipelines,

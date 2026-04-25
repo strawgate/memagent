@@ -111,17 +111,10 @@ fn test_transform_filter_all_rows_does_not_crash() {
     // Write data that will be filtered by the transform
     ffwd_test_utils::generate_json_lines(&log_path, 50, "filter-test");
 
-    let yaml = format!(
-        r#"
-input:
-  type: file
-  path: {}
-  format: json
-transform: "SELECT * FROM logs WHERE level = 'NONEXISTENT'"
-output:
-  type: "null"
-"#,
-        log_path.display()
+    let yaml = single_pipeline_yaml_with_transform(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        Some("\"SELECT * FROM logs WHERE upper(level) = 'NONEXISTENT'\""),
+        "type: \"null\"",
     );
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];

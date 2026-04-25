@@ -83,7 +83,7 @@ tla/
   MCPipelineMachine.tla         — TLC config: symmetry sets, model constants
   PipelineMachine.cfg           — safety model (~10.8M distinct states locally)
   PipelineMachine.liveness.cfg  — liveness model (smaller constants, no SYMMETRY)
-  PipelineMachine.thorough.cfg  — PR-CI thorough safety model (3 sources, 3 batches)
+  PipelineMachine.thorough.cfg  — optional local thorough safety model (3 sources, 3 batches)
   PipelineMachine.nightly.thorough.cfg — nightly deep safety model (3 sources, 4 batches)
   PipelineMachine.coverage.cfg  — reachability / vacuity guards
 
@@ -177,7 +177,8 @@ impossible.
 
 ```bash
 java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.thorough.cfg
-# PR CI default thorough depth: Sources={"s1","s2","s3"}, MaxBatchesPerSource=3
+# Local thorough depth: Sources={"s1","s2","s3"}, MaxBatchesPerSource=3
+# PR CI intentionally skips thorough configs; nightly owns scheduled deep runs.
 ```
 
 **Model 5 — Nightly deep safety sweep (slowest):**

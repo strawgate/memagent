@@ -19,7 +19,7 @@ The default rule remains:
 - keep SQL unsurprising: SQL sees ordinary Arrow columns and `SELECT *`
   returns the table schema as-is;
 - use `source_metadata: fastforward` for the cheap internal `__source_id`
-  handle, and use public styles (`ecs`/`beats`, `otel`, `vector`) when metadata
+  handle, and use public styles (`ecs`, `otel`, `vector`) when metadata
   should be materialized as normal columns;
 - drop known FastForward internal fields such as `__source_id` at user-facing
   output boundaries unless SQL aliases them to public names.
@@ -37,7 +37,7 @@ PR #2317 landed the sidecar spine:
 - `source_metadata: fastforward` materializes `__source_id` as nullable
   `UInt64`.
 - Public styles materialize source paths as normal columns: `file.path` for
-  ECS/Beats, `log.file.path` for OTel, and `file` for Vector.
+  ECS, `log.file.path` for OTel, and `file` for Vector.
 - Public source path styles are accepted only for inputs that expose path
   snapshots. File tailing exposes filesystem paths. S3 exposes object keys when
   a public style is configured. This guard avoids replacing a payload

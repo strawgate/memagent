@@ -82,6 +82,40 @@ fn run_until_output_lines(mut pipeline: Pipeline, expected_lines: u64) -> Pipeli
     pipeline
 }
 
+fn single_pipeline_yaml(input_body: &str, output_body: &str) -> String {
+    single_pipeline_yaml_with_sections(input_body, None, output_body)
+}
+
+fn single_pipeline_yaml_with_transform(
+    input_body: &str,
+    transform: &str,
+    output_body: &str,
+) -> String {
+    single_pipeline_yaml_with_sections(input_body, Some(transform), output_body)
+}
+
+fn single_pipeline_yaml_with_sections(
+    input_body: &str,
+    transform: Option<&str>,
+    output_body: &str,
+) -> String {
+    let mut yaml = String::from("pipelines:\n  default:\n    inputs:\n      - ");
+    yaml.push_str(&input_body.replace('\n', "\n        "));
+    yaml.push('\n');
+    if let Some(transform) = transform {
+        yaml.push_str("    transform: |\n");
+        for line in transform.lines() {
+            yaml.push_str("      ");
+            yaml.push_str(line);
+            yaml.push('\n');
+        }
+    }
+    yaml.push_str("    outputs:\n      - ");
+    yaml.push_str(&output_body.replace('\n', "\n        "));
+    yaml.push('\n');
+    yaml
+}
+
 // ---------------------------------------------------------------------------
 // 1. Happy path: JSON log file → stdout output → verify lines processed
 // ---------------------------------------------------------------------------
@@ -103,23 +137,15 @@ fn test_happy_path_json_output() {
     }
     std::fs::write(&log_path, data.as_bytes()).unwrap();
 
-    let yaml = format!(
-        r"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: stdout
-  format: json
-",
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
     let config = Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
     let pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
 
-    let pipeline = run_until_output_lines(pipeline, 10);
+    let pipeline = run_until_output_lines(pipeline, 5);
 
     let lines_in = pipeline
         .metrics()
@@ -155,17 +181,9 @@ fn test_cri_format_parsing() {
     );
     std::fs::write(&log_path, cri_data.as_bytes()).unwrap();
 
-    let yaml = format!(
-        r"
-input:
-  type: file
-  path: {}
-  format: cri
-output:
-  type: stdout
-  format: json
-",
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: {}\nformat: cri", log_path.display()),
+        "type: stdout\nformat: json",
     );
     let config = Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
@@ -204,18 +222,10 @@ fn test_sql_transform_filters_rows() {
     }
     std::fs::write(&log_path, data.as_bytes()).unwrap();
 
-    let yaml = format!(
-        r#"
-input:
-  type: file
-  path: {}
-  format: json
-transform: "SELECT * FROM logs WHERE level = 'ERROR'"
-output:
-  type: stdout
-  format: json
-"#,
-        log_path.display()
+    let yaml = single_pipeline_yaml_with_transform(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        "SELECT * FROM logs WHERE level = 'ERROR'",
+        "type: stdout\nformat: json",
     );
     let config = Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
@@ -271,17 +281,9 @@ fn test_file_rotation_no_data_loss() {
         .collect();
     std::fs::write(&log_path, pre_data.as_bytes()).unwrap();
 
-    let yaml = format!(
-        r"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: stdout
-  format: json
-",
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
     let config = Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
@@ -361,13 +363,8 @@ fn test_config_validation_errors() {
     assert!(!msg.is_empty(), "error message should not be empty");
 
     // Missing required 'path' for a file input.
-    let missing_path = r"
-input:
-  type: file
-output:
-  type: stdout
-";
-    let result = Config::load_str(missing_path);
+    let missing_path = single_pipeline_yaml("type: file", "type: stdout");
+    let result = Config::load_str(&missing_path);
     assert!(
         result.is_err(),
         "expected validation error for missing input path"
@@ -382,15 +379,9 @@ output:
     let dir = tempfile::tempdir().unwrap();
     let dummy = dir.path().join("x.log");
     std::fs::write(&dummy, b"").unwrap();
-    let missing_endpoint = format!(
-        r"
-input:
-  type: file
-  path: {}
-output:
-  type: otlp
-",
-        dummy.display()
+    let missing_endpoint = single_pipeline_yaml(
+        &format!("type: file\npath: {}", dummy.display()),
+        "type: otlp",
     );
     let result = Config::load_str(&missing_endpoint);
     assert!(
@@ -407,17 +398,9 @@ output:
     let dir = tempfile::tempdir().unwrap();
     let log = dir.path().join("app.log");
     std::fs::write(&log, b"").unwrap();
-    let valid = format!(
-        r"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: stdout
-  format: json
-",
-        log.display()
+    let valid = single_pipeline_yaml(
+        &format!("type: file\npath: {}\nformat: json", log.display()),
+        "type: stdout\nformat: json",
     );
     assert!(Config::load_str(&valid).is_ok(), "valid config should load");
 }

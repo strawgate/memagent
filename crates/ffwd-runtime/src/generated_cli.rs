@@ -67,10 +67,7 @@ pub fn resolve_blast_output_config(
     auth_bearer_token: Option<&str>,
     auth_header: &[String],
 ) -> Result<OutputConfigV2, String> {
-    if matches!(
-        output_type,
-        OutputType::Http | OutputType::Parquet | OutputType::File
-    ) {
+    if matches!(output_type, OutputType::Http | OutputType::File) {
         return Err(format!("unsupported blast destination '{output_type}'"));
     }
 
@@ -312,7 +309,7 @@ mod tests {
 
     #[test]
     fn resolve_blast_output_config_rejects_unimplemented_destinations() {
-        for output_type in [OutputType::Http, OutputType::Parquet, OutputType::File] {
+        for output_type in [OutputType::Http, OutputType::File] {
             let err =
                 resolve_blast_output_config(output_type.clone(), Some("http://example"), None, &[])
                     .expect_err("unimplemented blast destination should be rejected");

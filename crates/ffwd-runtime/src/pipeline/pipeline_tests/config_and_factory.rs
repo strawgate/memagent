@@ -92,17 +92,9 @@ fn test_pipeline_from_config() {
     let log_path = dir.path().join("test.log");
     std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").unwrap();
 
-    let yaml = format!(
-        r"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: stdout
-  format: json
-",
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
@@ -116,18 +108,10 @@ fn test_pipeline_from_config_with_transform() {
     let log_path = dir.path().join("test.log");
     std::fs::write(&log_path, b"").unwrap();
 
-    let yaml = format!(
-        r#"
-input:
-  type: file
-  path: {}
-  format: json
-transform: "SELECT * FROM logs WHERE level = 'ERROR'"
-output:
-  type: stdout
-  format: json
-"#,
-        log_path.display()
+    let yaml = single_pipeline_yaml_with_transform(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        Some("\"SELECT * FROM logs WHERE level = 'ERROR'\""),
+        "type: stdout\nformat: json",
     );
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
@@ -241,17 +225,9 @@ fn run_rejects_zero_batch_timeout() {
     let log_path = dir.path().join("test.log");
     std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").unwrap();
 
-    let yaml = format!(
-        r"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: stdout
-  format: json
-",
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
@@ -274,17 +250,9 @@ fn run_rejects_zero_batch_target_bytes() {
     let log_path = dir.path().join("test.log");
     std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").unwrap();
 
-    let yaml = format!(
-        r"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: stdout
-  format: json
-",
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
@@ -303,23 +271,23 @@ output:
 
 #[test]
 fn test_pipeline_from_config_generator_record_profile() {
-    let yaml = r#"
-input:
-  type: generator
-  generator:
-    events_per_sec: 25000
-    batch_size: 1024
-    profile: record
-    attributes:
-      benchmark_id: run-123
-      pod_name: emitter-0
-      stream_id: emitter-0
-    sequence:
-      field: seq
-    event_created_unix_nano_field: event_created_unix_nano
-output:
-  type: "null"
-"#;
+    let yaml = single_pipeline_yaml(
+        r#"
+type: generator
+generator:
+  events_per_sec: 25000
+  batch_size: 1024
+  profile: record
+  attributes:
+    benchmark_id: run-123
+    pod_name: emitter-0
+    stream_id: emitter-0
+  sequence:
+    field: seq
+  event_created_unix_nano_field: event_created_unix_nano
+"#,
+        r#"type: "null""#,
+    );
     let config = ffwd_config::Config::load_str(yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
     let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None)
@@ -381,19 +349,9 @@ fn test_pipeline_from_config_file_output() {
     let output_path = dir.path().join("capture.ndjson");
     std::fs::write(&log_path, b"{\"level\":\"INFO\"}\n").unwrap();
 
-    let yaml = format!(
-        r"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: file
-  path: {}
-  format: json
-",
-        log_path.display(),
-        output_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        &format!("type: file\npath: {}\nformat: json", output_path.display()),
     );
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];

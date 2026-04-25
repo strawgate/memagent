@@ -13,17 +13,9 @@ fn test_pipeline_with_processor() {
     }
     std::fs::write(&log_path, data.as_bytes()).unwrap();
 
-    let yaml = format!(
-        r"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: stdout
-  format: json
-",
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
@@ -138,17 +130,9 @@ fn test_pipeline_run_one_batch() {
     }
     std::fs::write(&log_path, data.as_bytes()).unwrap();
 
-    let yaml = format!(
-        r"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: stdout
-  format: json
-",
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
@@ -204,17 +188,9 @@ fn test_pipeline_flush_on_shutdown() {
     }
     std::fs::write(&log_path, data.as_bytes()).unwrap();
 
-    let yaml = format!(
-        r"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: stdout
-  format: json
-",
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
@@ -257,21 +233,21 @@ fn test_pipeline_transform_error_skips_batch_continues() {
     // SQL references a column that will never be present. Use generator
     // input so this test only exercises pipeline transform behavior and is
     // not sensitive to file-tail timing under heavy coverage.
-    let yaml = r#"
-input:
-  type: generator
-  generator:
-    events_per_sec: 10000
-    batch_size: 64
-    profile: record
-    attributes:
-      benchmark_id: run-123
-      pod_name: emitter-0
-      stream_id: emitter-0
-transform: "SELECT nonexistent_col FROM logs"
-output:
-  type: "null"
-"#;
+    let yaml = single_pipeline_yaml_with_transform(
+        r#"
+type: generator
+generator:
+  events_per_sec: 10000
+  batch_size: 64
+  profile: record
+  attributes:
+    benchmark_id: run-123
+    pod_name: emitter-0
+    stream_id: emitter-0
+"#,
+        Some("\"SELECT nonexistent_col FROM logs\""),
+        r#"type: "null""#,
+    );
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
     let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
@@ -331,17 +307,9 @@ async fn test_async_pipeline_end_to_end() {
     }
     std::fs::write(&log_path, data.as_bytes()).unwrap();
 
-    let yaml = format!(
-        r#"
-input:
-  type: file
-  path: "{}"
-  format: json
-output:
-  type: stdout
-  format: json
-"#,
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: \"{}\"\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
 
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
@@ -393,17 +361,9 @@ async fn test_async_pipeline_shutdown_drains_data() {
     }
     std::fs::write(&log_path, data.as_bytes()).unwrap();
 
-    let yaml = format!(
-        r#"
-input:
-  type: file
-  path: "{}"
-  format: json
-output:
-  type: stdout
-  format: json
-"#,
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: \"{}\"\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
 
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
@@ -457,17 +417,9 @@ async fn test_async_shutdown_does_not_deadlock_on_full_channel() {
     }
     std::fs::write(&log_path, data.as_bytes()).unwrap();
 
-    let yaml = format!(
-        r#"
-input:
-  type: file
-  path: "{}"
-  format: json
-output:
-  type: stdout
-  format: json
-"#,
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: \"{}\"\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
 
     let config = ffwd_config::Config::load_str(&yaml).unwrap();

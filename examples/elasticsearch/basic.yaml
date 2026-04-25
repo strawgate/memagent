@@ -1,9 +1,10 @@
-input:
-  type: file
-  path: /var/log/app/*.log
-  format: json
-
-output:
-  type: elasticsearch
-  endpoint: http://localhost:9200
-  index: logs
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /var/log/app/*.log
+        format: json
+    outputs:
+      - type: elasticsearch
+        endpoint: http://localhost:9200
+        index: logs

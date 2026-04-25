@@ -613,8 +613,12 @@ pub(super) fn process_io_events(
                 }
             }
             InputEvent::Batch {
-                batch, source_id, ..
+                batch,
+                source_id,
+                accounted_bytes,
             } => {
+                input.stats.inc_lines(batch.num_rows() as u64);
+                input.stats.inc_bytes(accounted_bytes);
                 if !flush_buf(
                     &mut input.buf,
                     &mut input.row_origins,

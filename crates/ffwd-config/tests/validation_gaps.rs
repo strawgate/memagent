@@ -1,6 +1,8 @@
 use ffwd_config::Config;
 use std::ffi::OsString;
 use std::fs;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -23,10 +25,15 @@ impl EnvVarGuard {
 
 impl Drop for EnvVarGuard {
     fn drop(&mut self) {
-        // SAFETY: tests that mutate process environment hold ENV_LOCK.
         match &self.previous {
-            Some(val) => unsafe { std::env::set_var(self.key, val) },
-            None => unsafe { std::env::remove_var(self.key) },
+            Some(val) => {
+                // SAFETY: tests that mutate process environment hold ENV_LOCK.
+                unsafe { std::env::set_var(self.key, val) };
+            }
+            None => {
+                // SAFETY: tests that mutate process environment hold ENV_LOCK.
+                unsafe { std::env::remove_var(self.key) };
+            }
         }
     }
 }
@@ -43,15 +50,70 @@ fn unique_temp_dir(prefix: &str) -> PathBuf {
     std::env::temp_dir().join(format!("ffwd-{prefix}-{nanos}-{}", std::process::id()))
 }
 
+fn single_pipeline_yaml(input_body: &str, output_body: &str) -> String {
+    single_pipeline_yaml_with_sections(input_body, None, output_body, None)
+}
+
+fn single_pipeline_yaml_with_pipeline_extra(
+    input_body: &str,
+    output_body: &str,
+    pipeline_extra: &str,
+) -> String {
+    single_pipeline_yaml_with_sections(input_body, None, output_body, Some(pipeline_extra))
+}
+
+fn single_pipeline_yaml_with_sections(
+    input_body: &str,
+    transform: Option<&str>,
+    output_body: &str,
+    pipeline_extra: Option<&str>,
+) -> String {
+    let mut yaml = String::from("pipelines:\n  default:\n    inputs:\n");
+    push_block_sequence(&mut yaml, 6, input_body);
+    if let Some(transform) = transform {
+        yaml.push_str("    transform: |\n");
+        for line in transform.lines() {
+            yaml.push_str("      ");
+            yaml.push_str(line);
+            yaml.push('\n');
+        }
+    }
+    yaml.push_str("    outputs:\n");
+    push_block_sequence(&mut yaml, 6, output_body);
+    if let Some(extra) = pipeline_extra {
+        for line in extra.lines().filter(|line| !line.trim().is_empty()) {
+            yaml.push_str("    ");
+            yaml.push_str(line);
+            yaml.push('\n');
+        }
+    }
+    yaml
+}
+
+fn push_block_sequence(yaml: &mut String, indent: usize, body: &str) {
+    let prefix = " ".repeat(indent);
+    let rest_prefix = " ".repeat(indent + 2);
+    for (idx, line) in body
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .enumerate()
+    {
+        if idx == 0 {
+            yaml.push_str(&prefix);
+            yaml.push_str("- ");
+            yaml.push_str(line.trim_start());
+            yaml.push('\n');
+        } else {
+            yaml.push_str(&rest_prefix);
+            yaml.push_str(line);
+            yaml.push('\n');
+        }
+    }
+}
+
 #[test]
 fn config_deserialization_error_includes_simple_layout_field_path() {
-    let yaml = r"
-input:
-  type: generator
-output:
-  type: stdout
-  batch_size: not-a-number
-";
+    let yaml = single_pipeline_yaml("type: generator", "type: stdout\nbatch_size: not-a-number");
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -96,13 +158,7 @@ pipelines:
 
 #[test]
 fn raw_yaml_number_for_string_field_is_rejected() {
-    let yaml = r"
-input:
-  type: file
-  path: 123
-output:
-  type: stdout
-";
+    let yaml = single_pipeline_yaml("type: file\npath: 123", "type: stdout");
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -117,15 +173,10 @@ output:
 
 #[test]
 fn raw_yaml_bool_for_string_field_is_rejected() {
-    let yaml = r"
-input:
-  type: http
-  listen: 127.0.0.1:8080
-  http:
-    path: true
-output:
-  type: stdout
-";
+    let yaml = single_pipeline_yaml(
+        "type: http\nlisten: 127.0.0.1:8080\nhttp:\n  path: true",
+        "type: stdout",
+    );
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -186,15 +237,10 @@ pipelines:
 
 #[test]
 fn raw_yaml_number_for_bool_field_is_rejected() {
-    let yaml = r"
-input:
-  type: http
-  listen: 127.0.0.1:8080
-  http:
-    strict_path: 1
-output:
-  type: stdout
-";
+    let yaml = single_pipeline_yaml(
+        "type: http\nlisten: 127.0.0.1:8080\nhttp:\n  strict_path: 1",
+        "type: stdout",
+    );
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -211,10 +257,12 @@ output:
 fn top_level_dotted_yaml_key_is_rejected_as_unknown_field() {
     let yaml = r"
 server.log_level: debug
-input:
-  type: generator
-output:
-  type: stdout
+pipelines:
+  default:
+    inputs:
+      - type: generator
+    outputs:
+      - type: stdout
 ";
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
@@ -230,18 +278,10 @@ output:
 
 #[test]
 fn generator_attribute_scalar_types_are_preserved() {
-    let yaml = r#"
-input:
-  type: generator
-  generator:
-    profile: record
-    attributes:
-      count: 7
-      enabled: true
-      label: "7"
-output:
-  type: stdout
-"#;
+    let yaml = single_pipeline_yaml(
+        "type: generator\ngenerator:\n  profile: record\n  attributes:\n    count: 7\n    enabled: true\n    label: \"7\"",
+        "type: stdout",
+    );
 
     let config = Config::load_str(yaml).expect("generator attributes should parse");
     let input = &config.pipelines["default"].inputs[0];
@@ -275,17 +315,10 @@ fn env_generator_attribute_values_remain_strings() {
     let _count = EnvVarGuard::set("LOGFWD_ISSUE_1855_GENERATOR_COUNT", "7");
     let _enabled = EnvVarGuard::set("LOGFWD_ISSUE_1855_GENERATOR_ENABLED", "true");
 
-    let yaml = r"
-input:
-  type: generator
-  generator:
-    profile: record
-    attributes:
-      count: ${LOGFWD_ISSUE_1855_GENERATOR_COUNT}
-      enabled: ${LOGFWD_ISSUE_1855_GENERATOR_ENABLED}
-output:
-  type: stdout
-";
+    let yaml = single_pipeline_yaml(
+        "type: generator\ngenerator:\n  profile: record\n  attributes:\n    count: ${LOGFWD_ISSUE_1855_GENERATOR_COUNT}\n    enabled: ${LOGFWD_ISSUE_1855_GENERATOR_ENABLED}",
+        "type: stdout",
+    );
 
     let config = Config::load_str(yaml).expect("generator attributes should parse");
     let input = &config.pipelines["default"].inputs[0];
@@ -314,13 +347,7 @@ fn env_expansion_preserves_yaml_hash_content() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855", "/var/log/my app #1.log");
 
-    let yaml = r"
-input:
-  type: file
-  path: ${LOGFWD_ISSUE_1855}
-output:
-  type: stdout
-";
+    let yaml = single_pipeline_yaml("type: file\npath: ${LOGFWD_ISSUE_1855}", "type: stdout");
 
     let config = Config::load_str(yaml).expect("config should parse after env expansion");
     let input = &config.pipelines["default"].inputs[0];
@@ -337,16 +364,13 @@ fn effective_yaml_preserves_yaml_hash_content() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_EFFECTIVE", "/var/log/my app #1.log");
 
-    let yaml = r"
-input:
-  type: file
-  path: ${LOGFWD_ISSUE_1855_EFFECTIVE}
-output:
-  type: stdout
-";
+    let yaml = single_pipeline_yaml(
+        "type: file\npath: ${LOGFWD_ISSUE_1855_EFFECTIVE}",
+        "type: stdout",
+    );
 
     let expanded =
-        Config::expand_env_yaml_str(yaml).expect("YAML-aware env expansion should succeed");
+        Config::expand_env_yaml_str(&yaml).expect("YAML-aware env expansion should succeed");
     assert!(
         expanded.contains("#1.log"),
         "expanded YAML should preserve hash content: {expanded}"
@@ -395,15 +419,10 @@ fn env_bool_string_is_parsed_by_typed_schema() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_STRICT_PATH", "false");
 
-    let yaml = r"
-input:
-  type: http
-  listen: 127.0.0.1:8080
-  http:
-    strict_path: ${LOGFWD_ISSUE_1855_STRICT_PATH}
-output:
-  type: stdout
-";
+    let yaml = single_pipeline_yaml(
+        "type: http\nlisten: 127.0.0.1:8080\nhttp:\n  strict_path: ${LOGFWD_ISSUE_1855_STRICT_PATH}",
+        "type: stdout",
+    );
 
     let config = Config::load_str(yaml).expect("config should parse env-backed bool");
     let input = &config.pipelines["default"].inputs[0];
@@ -422,15 +441,10 @@ fn env_bool_string_is_parsed_by_shared_tls_schema() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_TLS_SKIP_VERIFY", "true");
 
-    let yaml = r"
-input:
-  type: generator
-output:
-  type: otlp
-  endpoint: http://127.0.0.1:4318
-  tls:
-    insecure_skip_verify: ${LOGFWD_ISSUE_1855_TLS_SKIP_VERIFY}
-";
+    let yaml = single_pipeline_yaml(
+        "type: generator",
+        "type: otlp\nendpoint: http://127.0.0.1:4318\ntls:\n  insecure_skip_verify: ${LOGFWD_ISSUE_1855_TLS_SKIP_VERIFY}",
+    );
 
     let config = Config::load_str(yaml).expect("config should parse env-backed TLS bool");
     let ffwd_config::OutputConfigV2::Otlp(output) = &config.pipelines["default"].outputs[0] else {
@@ -446,13 +460,10 @@ fn quoted_env_expansion_preserves_string_scalars() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_QUOTED_PATH", "1234");
 
-    let yaml = r#"
-input:
-  type: file
-  path: "${LOGFWD_ISSUE_1855_QUOTED_PATH}"
-output:
-  type: stdout
-"#;
+    let yaml = single_pipeline_yaml(
+        "type: file\npath: \"${LOGFWD_ISSUE_1855_QUOTED_PATH}\"",
+        "type: stdout",
+    );
 
     let config = Config::load_str(yaml).expect("quoted env-backed string should parse");
     let input = &config.pipelines["default"].inputs[0];
@@ -469,13 +480,10 @@ fn tagged_quoted_env_expansion_preserves_string_scalars() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_TAGGED_PATH", "true");
 
-    let yaml = r#"
-input:
-  type: file
-  path: !!str "${LOGFWD_ISSUE_1855_TAGGED_PATH}"
-output:
-  type: stdout
-"#;
+    let yaml = single_pipeline_yaml(
+        "type: file\npath: !!str \"${LOGFWD_ISSUE_1855_TAGGED_PATH}\"",
+        "type: stdout",
+    );
 
     let config = Config::load_str(yaml).expect("tagged quoted env-backed string should parse");
     let input = &config.pipelines["default"].inputs[0];
@@ -494,13 +502,10 @@ fn tagged_unquoted_env_expansion_preserves_string_scalars() {
 
     // Env substitution already produces string data; the explicit string tag
     // should preserve that behavior.
-    let yaml = r"
-input:
-  type: file
-  path: !str ${LOGFWD_ISSUE_1855_TAGGED_UNQUOTED}
-output:
-  type: stdout
-";
+    let yaml = single_pipeline_yaml(
+        "type: file\npath: !str ${LOGFWD_ISSUE_1855_TAGGED_UNQUOTED}",
+        "type: stdout",
+    );
 
     let config = Config::load_str(yaml).expect("tagged unquoted env-backed string should parse");
     let input = &config.pipelines["default"].inputs[0];
@@ -514,13 +519,7 @@ output:
 
 #[test]
 fn explicit_string_yaml_tag_preserves_string_field() {
-    let yaml = r"
-input:
-  type: file
-  path: !!str 123
-output:
-  type: stdout
-";
+    let yaml = single_pipeline_yaml("type: file\npath: !!str 123", "type: stdout");
 
     let config = Config::load_str(yaml).expect("explicit string tag should parse as string");
     let input = &config.pipelines["default"].inputs[0];
@@ -534,13 +533,7 @@ output:
 
 #[test]
 fn non_string_core_yaml_tag_for_string_field_is_rejected() {
-    let yaml = r#"
-input:
-  type: file
-  path: !!int "123"
-output:
-  type: stdout
-"#;
+    let yaml = single_pipeline_yaml("type: file\npath: !!int \"123\"", "type: stdout");
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -555,13 +548,7 @@ output:
 
 #[test]
 fn custom_yaml_tag_for_string_field_is_rejected() {
-    let yaml = r#"
-input:
-  type: file
-  path: !custom "123"
-output:
-  type: stdout
-"#;
+    let yaml = single_pipeline_yaml("type: file\npath: !custom \"123\"", "type: stdout");
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -572,14 +559,11 @@ output:
 
 #[test]
 fn custom_yaml_tag_for_mapping_key_is_rejected() {
-    let yaml = r"
-input:
-  type: generator
-output:
-  type: stdout
-resource_attrs:
-  !custom key: value
-";
+    let yaml = single_pipeline_yaml_with_pipeline_extra(
+        "type: generator",
+        "type: stdout",
+        "resource_attrs:\n  !custom key: value",
+    );
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -593,13 +577,10 @@ fn anchored_quoted_env_expansion_preserves_string_scalars() {
     let _env_lock = env_lock();
     let _env = EnvVarGuard::set("LOGFWD_ISSUE_1855_ANCHORED_PATH", "true");
 
-    let yaml = r#"
-input:
-  type: file
-  path: &path "${LOGFWD_ISSUE_1855_ANCHORED_PATH}"
-output:
-  type: stdout
-"#;
+    let yaml = single_pipeline_yaml(
+        "type: file\npath: &path \"${LOGFWD_ISSUE_1855_ANCHORED_PATH}\"",
+        "type: stdout",
+    );
 
     let config = Config::load_str(yaml).expect("anchored quoted env-backed string should parse");
     let input = &config.pipelines["default"].inputs[0];
@@ -639,13 +620,7 @@ pipelines:
 
 #[test]
 fn plain_scalar_apostrophe_is_not_treated_as_quote_boundary() {
-    let yaml = r"
-input:
-  type: file
-  path: /var/log/it's.log
-output:
-  type: stdout
-";
+    let yaml = single_pipeline_yaml("type: file\npath: /var/log/it's.log", "type: stdout");
 
     let config = Config::load_str(yaml).expect("plain scalar apostrophe should parse");
     let input = &config.pipelines["default"].inputs[0];
@@ -943,7 +918,7 @@ pipelines:
 }
 
 #[test]
-fn issue_1862_accept_tcp_udp_output_formats() {
+fn issue_1862_reject_tcp_udp_output_formats() {
     let yaml = r"
 pipelines:
   test:
@@ -954,7 +929,12 @@ pipelines:
         endpoint: localhost:9001
         format: json
 ";
-    let _cfg = Config::load_str(yaml).expect("should accept format on tcp");
+
+    let err = Config::load_str(yaml).unwrap_err().to_string();
+    assert!(
+        err.contains("unknown field") && err.contains("format"),
+        "tcp output should reject format at parse time: {err}"
+    );
 }
 
 #[test]
@@ -1003,14 +983,10 @@ pipelines:
 
 #[test]
 fn issue_2349_reject_null_output_endpoint() {
-    let yaml = r#"
-input:
-  type: file
-  path: /tmp/x.log
-output:
-  type: "null"
-  endpoint: https://collector:4318
-"#;
+    let yaml = single_pipeline_yaml(
+        "type: file\npath: /tmp/x.log",
+        "type: \"null\"\nendpoint: https://collector:4318",
+    );
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -1056,7 +1032,7 @@ pipelines:
         out_path.display()
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("file output parent directory") && err.contains("is not usable"),
         "unexpected error: {err}"
@@ -1108,7 +1084,7 @@ pipelines:
         out_path.display()
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("file output parent") && err.contains("is not a directory"),
         "unexpected error: {err}"
@@ -1144,7 +1120,7 @@ pipelines:
         out_path.display()
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("file output parent") && err.contains("read-only"),
         "unexpected error: {err}"
@@ -1180,7 +1156,7 @@ pipelines:
         out_path.display()
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("file output path") && err.contains("read-only"),
         "unexpected error: {err}"
@@ -1190,6 +1166,9 @@ pipelines:
     let mut writable_perms = fs::metadata(&out_path)
         .expect("file metadata should be readable")
         .permissions();
+    #[cfg(unix)]
+    writable_perms.set_mode(0o644);
+    #[cfg(not(unix))]
     writable_perms.set_readonly(false);
     fs::set_permissions(&out_path, writable_perms).expect("permissions reset should succeed");
     fs::remove_dir_all(&dir).expect("temp dir cleanup should succeed");
@@ -1213,7 +1192,7 @@ pipelines:
         out_path.display()
     );
 
-    let err = Config::load_str(&yaml).unwrap_err().to_string();
+    let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
         err.contains("file output path") && err.contains("is a directory"),
         "unexpected error: {err}"
@@ -1240,7 +1219,7 @@ pipelines:
         out_path.display()
     );
 
-    Config::load_str(&yaml).expect("writable output parent should validate");
+    Config::load_str(yaml).expect("writable output parent should validate");
 
     fs::remove_dir_all(&dir).expect("temp dir cleanup should succeed");
 }
@@ -1300,29 +1279,17 @@ pipelines:
 
 #[test]
 fn issue_1958_generator_record_profile_preserves_null_attribute_values() {
-    let yaml = r"
-input:
-  type: generator
-  generator:
-    profile: record
-    attributes:
-      deleted_at: null
-output:
-  type: stdout
-";
+    let yaml = single_pipeline_yaml(
+        "type: generator\ngenerator:\n  profile: record\n  attributes:\n    deleted_at: null",
+        "type: stdout",
+    );
 
     Config::load_str(yaml).expect("generator null attributes should remain supported");
 }
 
 #[test]
 fn issue_2060_reject_unmatched_opening_bracket_in_host_port() {
-    let yaml = r"
-input:
-  type: udp
-  listen: foo[bar:4317
-output:
-  type: stdout
-";
+    let yaml = single_pipeline_yaml("type: udp\nlisten: foo[bar:4317", "type: stdout");
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(err.contains("unmatched '['"), "unexpected error: {err}");
@@ -1330,14 +1297,10 @@ output:
 
 #[test]
 fn issue_2062_reject_sensor_max_rows_per_poll_zero() {
-    let yaml = r"
-input:
-  type: host_metrics
-  sensor:
-    max_rows_per_poll: 0
-output:
-  type: stdout
-";
+    let yaml = single_pipeline_yaml(
+        "type: host_metrics\nsensor:\n  max_rows_per_poll: 0",
+        "type: stdout",
+    );
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(
@@ -1348,14 +1311,10 @@ output:
 
 #[test]
 fn issue_2178_reject_otlp_max_recv_message_size_bytes_zero() {
-    let yaml = r"
-input:
-  type: otlp
-  listen: 127.0.0.1:4318
-  max_recv_message_size_bytes: 0
-output:
-  type: stdout
-";
+    let yaml = single_pipeline_yaml(
+        "type: otlp\nlisten: 127.0.0.1:4318\nmax_recv_message_size_bytes: 0",
+        "type: stdout",
+    );
 
     let err = Config::load_str(yaml).unwrap_err().to_string();
     assert!(

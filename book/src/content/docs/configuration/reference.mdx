@@ -3,17 +3,14 @@ title: "Configuration Reference"
 description: "Complete YAML reference for all FastForward settings"
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
-
 FastForward commands that operate on pipeline config (for example `run`, `validate`, `dry-run`, and `effective-config`) accept a YAML file via `--config <config.yaml>`.
 `ff send` accepts a destination-only config with top-level `output`, injects stdin as the input, drains the output, and exits.
 
 ## Overview
 
-FastForward supports two layout styles:
-
-- **Simple** — single pipeline with top-level `input`, `transform`, and `output` keys.
-- **Advanced** — multiple named pipelines under a `pipelines` map.
+FastForward pipeline configs use a top-level `pipelines` map. Each named
+pipeline defines `inputs`, optional `transform`, optional `enrichment`,
+optional `resource_attrs`, and `outputs`.
 
 Environment variables are expanded using `${VAR}` syntax anywhere in the file.
 If a variable is not set, config loading fails fast with a validation error.
@@ -28,63 +25,31 @@ outputs, and config-only surfaces should link back here.
 
 ## Config layout
 
-<Tabs>
-  <TabItem label="Simple">
-    A single pipeline with top-level `input`, `transform`, and `output` keys:
+```yaml
+pipelines:
+  errors:
+    inputs:
+      - name: pod_logs
+        type: file
+        path: /var/log/pods/**/*.log
+        format: cri
+    transform: SELECT * FROM logs WHERE level = 'ERROR'
+    outputs:
+      - type: otlp
+        endpoint: http://otel-collector:4318/v1/logs
 
-    ```yaml
-    input:
-      type: file
-      path: /var/log/app/*.log
-      format: json
+  debug:
+    inputs:
+      - type: file
+        path: /var/log/pods/**/*.log
+        format: cri
+    outputs:
+      - type: stdout
+        format: json
 
-    transform: SELECT level, message, status FROM logs WHERE status >= 400
-
-    output:
-      type: otlp
-      endpoint: http://otel-collector:4318/v1/logs
-      compression: zstd
-
-    server:
-      diagnostics: 0.0.0.0:9090
-      log_level: info
-    ```
-  </TabItem>
-  <TabItem label="Advanced (multi-pipeline)">
-    Multiple named pipelines under a `pipelines` map:
-
-    ```yaml
-    pipelines:
-      errors:
-        inputs:
-          - name: pod_logs
-            type: file
-            path: /var/log/pods/**/*.log
-            format: cri
-        transform: SELECT * FROM logs WHERE level = 'ERROR'
-        outputs:
-          - type: otlp
-            endpoint: http://otel-collector:4318/v1/logs
-
-      debug:
-        inputs:
-          - type: file
-            path: /var/log/pods/**/*.log
-            format: cri
-        outputs:
-          - type: stdout
-            format: json
-
-    server:
-      diagnostics: 0.0.0.0:9090
-    ```
-  </TabItem>
-</Tabs>
-
-:::caution
-The two layouts cannot be mixed: specifying both `input`/`output` at the top level and
-a `pipelines` map is a validation error.
-:::
+server:
+  diagnostics: 0.0.0.0:9090
+```
 
 ---
 
@@ -100,7 +65,7 @@ YAML sequence for multiple inputs.
 | `type` | string | Yes | Input type. See [Input types](#input-types). |
 | `name` | string | No | Friendly name shown in diagnostics. |
 | `format` | string | No | Log format. See [Formats](#formats). Defaults to `auto`. |
-| `source_metadata` | string | No | Source metadata style. Defaults to `none`. Use `fastforward` for internal `__source_id`, `ecs`/`beats` for public ECS columns such as `file.path`, `otel` for public OpenTelemetry columns such as `log.file.path`, or `vector` for public Vector-style columns such as `file`. Public source path styles require inputs that expose source path snapshots. File inputs expose filesystem paths; S3 inputs expose object keys. |
+| `source_metadata` | string | No | Source metadata style. Defaults to `none`. Use `fastforward` for internal `__source_id`, `ecs` for public ECS columns such as `file.path`, `otel` for public OpenTelemetry columns such as `log.file.path`, or `vector` for public Vector-style columns such as `file`. Public source path styles require inputs that expose source path snapshots. File inputs expose filesystem paths; S3 inputs expose object keys. |
 
 ### `file` input
 
@@ -109,12 +74,6 @@ Tail one or more log files that match a glob pattern.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `path` | string | Yes | Glob pattern, e.g. `/var/log/pods/**/*.log`. |
-| `start_at` | string | No | `beginning` or `end` to control where tailing starts. |
-| `encoding` | string | No | Log encoding format. |
-| `follow_symlinks` | boolean | No | Whether to follow symbolic links. |
-| `ignore_older_secs` | integer | No | Ignore files older than this duration (in seconds). |
-| `multiline` | object | No | Multiline configuration (`start_pattern`, `mode`, `timeout_ms`). |
-| `max_line_bytes` | integer | No | Maximum bytes to read for a single log line. |
 | `poll_interval_ms` | integer | No | How often to poll the file when tailing, in milliseconds (default: 50). |
 | `read_buf_size` | integer | No | Buffer size for file reads in bytes (default: 262144, max: 4194304). |
 | `per_file_read_budget_bytes` | integer | No | Maximum bytes read per file per poll (default: 262144). |
@@ -148,10 +107,10 @@ Read objects from AWS S3 or an S3-compatible endpoint. The S3 input can poll
 | `s3.max_concurrent_fetches` | integer | No | Maximum concurrent range GETs per object. Defaults to 16. |
 | `s3.max_concurrent_objects` | integer | No | Maximum objects fetched at once. Defaults to 4. |
 | `s3.visibility_timeout_secs` | integer | No | SQS visibility timeout. Defaults to 300 and must be at least 30. |
-| `s3.compression` | string | No | Compression override: `auto`, `gzip`, `zstd`, `snappy`, or `none`. Defaults to `auto`. |
+| `s3.compression` | enum | No | Compression override: `auto`, `gzip`, `zstd`, `snappy`, or `none`. Defaults to `auto`. |
 | `s3.poll_interval_ms` | integer | No | Prefix polling interval in milliseconds. Defaults to 5000. |
 
-When `source_metadata` is `ecs`, `beats`, `otel`, or `vector`, S3 exposes the
+When `source_metadata` is `ecs`, `otel`, or `vector`, S3 exposes the
 object key as the source path value for each row. `fastforward` only attaches
 the internal `__source_id`, and `none` attaches no source metadata.
 
@@ -329,28 +288,29 @@ input:
   type: windows_ebpf_sensor
 ```
 
-Compatibility note: legacy names `linux_sensor_beta`, `macos_sensor_beta`,
-`windows_sensor_beta`, plus the legacy `sensor_beta:` block, are still
-accepted as aliases for backward compatibility.
-
-
 ### `macos_log` input
 
-Reads the macOS Unified Log (`OSLog`) using a background `log stream --style ndjson` process. Yields structured JSON objects natively representing OSLog entries. Requires macOS 11+.
-
-```yaml
-inputs:
-  - type: macos_log
-    level: default     # Filter level (e.g. debug, info, default)
-    subsystem: com.apple.authd # Optional subsystem predicate
-    process: sudo      # Optional process predicate
-```
+Read macOS unified log entries by running `log stream`. This input is only
+available on macOS and emits structured rows parsed from the command output.
 
 | Field | Type | Required | Description |
-|---|---|---|---|
-| `level` | `string` | No | Maps to `log stream --level`. Filters events below this level. |
-| `subsystem` | `string` | No | Predicate filter for a specific subsystem. |
-| `process` | `string` | No | Predicate filter for a specific process (by name or PID). |
+|-------|------|----------|-------------|
+| `macos_log.level` | string | No | Optional log level filter. Must not be empty when set. |
+| `macos_log.subsystem` | string | No | Optional subsystem filter. Must not be empty when set. |
+| `macos_log.process` | string | No | Optional process filter. Must not be empty when set. |
+
+```yaml
+pipelines:
+  default:
+    inputs:
+      - type: macos_log
+        macos_log:
+          level: info
+          subsystem: com.example.app
+    outputs:
+      - type: stdout
+        format: json
+```
 
 ### `host_metrics` input
 
@@ -422,6 +382,7 @@ Behavior:
 | `http` | Implemented | Receive newline-delimited payloads via HTTP `POST`. |
 | `linux_ebpf_sensor` | Implemented | Linux eBPF sensor input (Arrow-native control + signal rows). |
 | `macos_es_sensor` | Implemented | macOS EndpointSecurity sensor input (Arrow-native control + signal rows). |
+| `macos_log` | Implemented | Read macOS unified log entries from the `log stream` command. |
 | `windows_ebpf_sensor` | Implemented | Windows eBPF sensor input (Arrow-native control + signal rows). |
 | `journald` | Beta | Read structured journal entries from systemd journald. |
 | `host_metrics` | Implemented | Host metrics input — process snapshots, CPU, memory, network stats via sysinfo (Arrow-native). |
@@ -469,28 +430,40 @@ Send log records as OTLP protobuf to an OpenTelemetry collector.
 | `compression` | enum | No | none | `zstd`, `gzip`, or `none` for the request body. Invalid values are rejected while parsing config. |
 
 ```yaml
-output:
-  type: otlp
-  endpoint: http://otel-collector:4317
-  protocol: grpc
-  compression: zstd
+pipelines:
+  default:
+    inputs:
+      - type: stdin
+        format: json
+    outputs:
+      - type: otlp
+        endpoint: http://otel-collector:4317
+        protocol: grpc
+        compression: zstd
 ```
 
-### `http` output *(not yet supported)*
+### `http` output
 
-Reserved for newline-delimited JSON over HTTP POST. Config parsing recognizes
-the type, but config validation currently rejects it until runtime support
-lands.
+Send newline-delimited JSON rows to an HTTP endpoint with optional request-body
+compression and auth headers.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Full URL, e.g. `http://ingest.example.com/logs`. |
-| `compression` | enum | No | `zstd`, `gzip`, or `none`. Invalid values are rejected while parsing config. |
+| `format` | enum | No | Must be `json` when set. |
+| `compression` | enum | No | `zstd`, `gzip`, or `none`. |
+| `auth` | object | No | Optional bearer token or custom headers for HTTP auth. |
 
 ```yaml
-output:
-  type: http
-  endpoint: http://ingest.example.com/logs
+pipelines:
+  default:
+    inputs:
+      - type: stdin
+        format: json
+    outputs:
+      - type: http
+        endpoint: https://ingest.example.com/logs
+        compression: zstd
 ```
 
 ### `stdout` output
@@ -534,7 +507,9 @@ output:
     bearer_token: "${ES_TOKEN}"
 ```
 
-
+`retry_attempts`, `retry_initial_backoff_ms`, `retry_max_backoff_ms`, `batch_size`, and
+`batch_timeout_ms` are currently rejected for Elasticsearch outputs because per-output
+retry/batch controls are not wired into the Elasticsearch sink yet.
 
 ### `loki` output
 
@@ -549,9 +524,6 @@ Push to Grafana Loki.
 | `static_labels` | map[string,string] | No | Static labels applied to every pushed log stream. Keys and values must be non-empty. |
 | `label_columns` | array[string] | No | Additional log columns to promote as Loki labels. |
 | `auth` | object | No | Optional bearer token or custom headers for HTTP auth. |
-| `compression` | string | No | Compression format (`snappy`, `gzip`, `zstd`, `none`). |
-| `retry` | object | No | Optional retry controls (`max_attempts`, `initial_backoff_secs`, `max_backoff_secs`). |
-| `batch` | object | No | Optional batch controls (`max_bytes`, `max_events`, `timeout_secs`). |
 
 ```yaml
 output:
@@ -566,7 +538,11 @@ output:
     bearer_token: "${LOKI_TOKEN}"
 ```
 
+`compression` is not supported for Loki outputs.
 
+`retry_attempts`, `retry_initial_backoff_ms`, `retry_max_backoff_ms`, `batch_size`, and
+`batch_timeout_ms` are currently rejected for Loki outputs because the Loki sink does not
+implement per-output retry/batch controls yet.
 
 ### `file` output
 
@@ -576,10 +552,6 @@ Write records to a file.
 |-------|------|----------|-------------|
 | `path` | string | Yes | Destination file path. Parent directory must already exist and be writable. |
 | `format` | string | No | `json` for NDJSON output, or `text` to write raw lines. |
-| `compression` | string | No | Compression format (`gzip`, `zstd`, `none`). |
-| `rotation` | object | No | Optional rotation settings (`max_megabytes`, `max_days`, `max_backups`). |
-| `delimiter` | string | No | Custom delimiter for log lines. |
-| `path_template` | string | No | Template for generating output paths dynamically. |
 
 ```yaml
 output:
@@ -595,15 +567,10 @@ Send newline-delimited JSON records to a TCP endpoint.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Host:port destination (for example `tcp.example.com:9000`). |
-| `encoding` | string | No | Log format encoding (`json`, `text`, `ndjson`). |
-| `framing` | string | No | Framing format. Alias for `format`. |
-| `tls` | object | No | Optional TLS client configuration (`ca_file`, `cert_file`, `key_file`, `insecure_skip_verify`). |
-| `keepalive` | object | No | Optional network keepalive configuration (`enabled`, `time_secs`). |
-| `timeout_secs` | integer | No | Connection and send timeout in seconds. |
-| `retry` | object | No | Optional retry controls (`max_attempts`, `initial_backoff_secs`, `max_backoff_secs`). |
-| `batch` | object | No | Optional batch controls (`max_bytes`, `max_events`, `timeout_secs`). |
 
-
+TCP output currently emits newline-delimited JSON. `encoding`, `framing`, `tls`,
+`keepalive`, `timeout_secs`, `retry`, and `batch` are rejected until the sink
+runtime implements them.
 
 ### `udp` output
 
@@ -612,21 +579,10 @@ Send newline-delimited JSON records as UDP datagrams.
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `endpoint` | string | Yes | Host:port destination (for example `udp.example.com:514`). |
-| `encoding` | string | No | Log format encoding (`json`, `text`, `ndjson`). |
-| `max_datagram_size_bytes` | integer | No | Maximum allowed size of UDP datagram payload in bytes. |
 
-
-
-### `parquet` output *(not yet supported)*
-
-Write records to Parquet files.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `path` | string | Yes | Destination file path. |
-| `compression` | string | No | Optional compression format. |
-| `batch` | object | No | Optional batch controls (`max_bytes`, `max_events`, `timeout_secs`). |
-| `retry` | object | No | Optional retry controls (`max_attempts`, `initial_backoff_secs`, `max_backoff_secs`). |
+UDP output currently emits newline-delimited JSON using the built-in datagram
+size. `encoding` and `max_datagram_size_bytes` are rejected until the sink
+runtime implements them.
 
 ### `null` output
 
@@ -648,7 +604,7 @@ output:
 | Value | Status | Description |
 |-------|--------|-------------|
 | `otlp` | Implemented | OTLP protobuf over HTTP or gRPC. |
-| `http` | Not yet supported | Reserved for newline-delimited JSON over HTTP POST. |
+| `http` | Implemented | POST newline-delimited JSON rows to an HTTP endpoint. |
 | `stdout` | Implemented | Print to stdout (JSON, console, or text). |
 | `elasticsearch` | Implemented | Elasticsearch Bulk API with index/compression/request-mode controls. |
 | `loki` | Implemented | Grafana Loki push API with label grouping. |
@@ -657,7 +613,6 @@ output:
 | `tcp` | Implemented | Send records to a TCP endpoint. |
 | `udp` | Implemented | Send records to a UDP endpoint. |
 | `arrow_ipc` | Implemented | Send Arrow IPC payloads to an HTTP endpoint. |
-| `parquet` | Not yet supported | Reserved for Parquet file output. |
 {/* END GENERATED: output-types */}
 
 ---
@@ -710,7 +665,7 @@ Special columns attached by the runtime after scan, plus format-derived columns:
 |--------|------|-------------|
 | `body` | string | Original input line (when input line capture is enabled, e.g. `line_field: body`, or when a non-JSON CRI line is wrapped for scanner safety). |
 | `__source_id` | uint64 | FastForward internal row-level source identity when `source_metadata: fastforward` is set. SQL can reference it, but user-facing sinks drop this internal column unless SQL aliases it to a public name. |
-| `file.path` | string | ECS/Beats-style source file path when `source_metadata: ecs` or `source_metadata: beats` is set. Quote it in SQL as `"file.path"`. |
+| `file.path` | string | ECS-style source file path when `source_metadata: ecs` is set. Quote it in SQL as `"file.path"`. |
 | `log.file.path` | string | OpenTelemetry-style source file path when `source_metadata: otel` is set. Quote it in SQL as `"log.file.path"`. |
 | `file` | string | Vector-style source file path when `source_metadata: vector` is set. |
 | `_timestamp` | string | Timestamp from the CRI header as an RFC 3339 string (CRI inputs only). |

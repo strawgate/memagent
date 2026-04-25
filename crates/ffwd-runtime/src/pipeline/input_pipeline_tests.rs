@@ -1458,10 +1458,12 @@ fn manager_spawns_and_joins_with_empty_inputs() {
     // We test this through the pipeline's run path with a generator
     // that immediately shuts down.
     let yaml = r"
-input:
-  type: generator
-output:
-  type: 'null'
+pipelines:
+  default:
+    inputs:
+      - type: generator
+    outputs:
+      - type: 'null'
 ";
     let config = ffwd_config::Config::load_str(yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];
@@ -1503,13 +1505,15 @@ fn split_pipeline_processes_file_with_sql_filter() {
 
     let yaml = format!(
         r#"
-input:
-  type: file
-  path: {}
-  format: json
-transform: "SELECT * FROM logs WHERE level = 'INFO'"
-output:
-  type: 'null'
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: {}
+        format: json
+    transform: "SELECT * FROM logs WHERE level = 'INFO'"
+    outputs:
+      - type: 'null'
 "#,
         log_path.display()
     );
@@ -1679,15 +1683,17 @@ fn split_pipeline_records_adaptive_fast_repolls() {
 
     let yaml = format!(
         r#"
-input:
-  type: file
-  path: {}
-  format: json
-  poll_interval_ms: 200
-  per_file_read_budget_bytes: 64
-  adaptive_fast_polls_max: 4
-output:
-  type: 'null'
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: {}
+        format: json
+        poll_interval_ms: 200
+        per_file_read_budget_bytes: 64
+        adaptive_fast_polls_max: 4
+    outputs:
+      - type: 'null'
 "#,
         log_path.display()
     );
@@ -1755,13 +1761,15 @@ fn split_pipeline_shutdown_flushes_file_remainder_before_idle_eof() {
 
     let yaml = format!(
         r#"
-input:
-  type: file
-  path: {}
-  format: json
-  poll_interval_ms: 60000
-output:
-  type: 'null'
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: {}
+        format: json
+        poll_interval_ms: 60000
+    outputs:
+      - type: 'null'
 "#,
         log_path.display()
     );
@@ -1813,13 +1821,15 @@ fn split_pipeline_transform_error_drops_batch() {
     // SQL references a column that doesn't exist -> DataFusion error.
     let yaml = format!(
         r#"
-input:
-  type: file
-  path: {}
-  format: json
-transform: "SELECT nonexistent_col FROM logs"
-output:
-  type: 'null'
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: {}
+        format: json
+    transform: "SELECT nonexistent_col FROM logs"
+    outputs:
+      - type: 'null'
 "#,
         log_path.display()
     );
@@ -1880,12 +1890,14 @@ fn split_pipeline_processor_transient_error_continues() {
 
     let yaml = format!(
         r#"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: 'null'
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: {}
+        format: json
+    outputs:
+      - type: 'null'
 "#,
         log_path.display()
     );

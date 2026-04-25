@@ -1,13 +1,9 @@
 //! YAML configuration parser for ffwd.
 //!
-//! Supports two layout styles:
-//!
-//! - **Simple** (single pipeline): top-level `input`, `transform`, `output`.
-//! - **Advanced** (multiple pipelines): top-level `pipelines` map.
+//! First-party examples and generated configs use a top-level `pipelines` map.
 //!
 //! Environment variables in values are expanded using `${VAR}` syntax.
 
-mod compat;
 /// Shared metadata for config starter templates and generated reference tables.
 ///
 /// # Examples
@@ -44,7 +40,7 @@ pub use types::{
     HttpTypeConfig, InputConfig, InputType, InputTypeConfig, JournaldBackendConfig,
     JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sPathConfig,
     LokiOutputConfig, NullOutputConfig, OtlpOutputConfig, OtlpProtobufDecodeModeConfig,
-    OtlpProtocol, OtlpTypeConfig, OutputConfigV2, OutputType, ParquetOutputConfig, PipelineConfig,
+    OtlpProtocol, OtlpTypeConfig, OutputConfigV2, OutputType, PipelineConfig, S3CompressionConfig,
     S3InputConfig, S3TypeConfig, SensorTypeConfig, ServerConfig, SourceMetadataStyle,
     StaticEnrichmentConfig, StdoutOutputConfig, StorageConfig, TcpOutputConfig, TcpTypeConfig,
     UdpOutputConfig, UdpTypeConfig,
@@ -55,6 +51,8 @@ pub use validate::validate_host_port;
 // Tests
 // ---------------------------------------------------------------------------
 
+#[cfg(test)]
+mod test_yaml;
 #[cfg(test)]
 mod tests_config_parsing;
 #[cfg(test)]

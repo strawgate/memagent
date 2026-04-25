@@ -45,22 +45,41 @@ pub(crate) fn build_stdin_send_config_yaml(
 
     merge_send_resource_attrs(mapping, service, resources)?;
 
-    if has_outputs {
-        rewrite_send_config_with_outputs(mapping, input);
-    } else {
-        mapping.insert(yaml_string("input"), serde_yaml_ng::Value::Mapping(input));
-    }
+    rewrite_send_config_as_pipeline(mapping, input)?;
 
     serde_yaml_ng::to_string(&value).map_err(|e| CliError::Config(e.to_string()))
 }
 
-fn rewrite_send_config_with_outputs(
+fn rewrite_send_config_as_pipeline(
     mapping: &mut serde_yaml_ng::Mapping,
     input: serde_yaml_ng::Mapping,
-) {
-    let outputs = mapping
-        .remove(yaml_string("outputs"))
-        .expect("internal invariant violated: `ff send` rewrite requires top-level `outputs`");
+) -> Result<(), CliError> {
+    let outputs = match (
+        mapping.remove(yaml_string("output")),
+        mapping.remove(yaml_string("outputs")),
+    ) {
+        (Some(output), None) => serde_yaml_ng::Value::Sequence(vec![output]),
+        (None, Some(outputs)) => {
+            if outputs.is_sequence() {
+                outputs
+            } else {
+                // Normalize mapping-form `outputs:` into a one-element sequence
+                serde_yaml_ng::Value::Sequence(vec![outputs])
+            }
+        }
+        (Some(_), Some(_)) => {
+            return Err(CliError::Config(
+                "`ff send` destination config must define only one of top-level `output` or `outputs`"
+                    .to_owned(),
+            ));
+        }
+        (None, None) => {
+            return Err(CliError::Config(
+                "`ff send` destination config must define top-level `output` or `outputs`"
+                    .to_owned(),
+            ));
+        }
+    };
 
     let mut pipeline = serde_yaml_ng::Mapping::new();
     pipeline.insert(
@@ -84,6 +103,7 @@ fn rewrite_send_config_with_outputs(
         yaml_string("pipelines"),
         serde_yaml_ng::Value::Mapping(pipelines),
     );
+    Ok(())
 }
 
 fn merge_send_resource_attrs(
@@ -246,6 +266,20 @@ outputs:
             }
             other => panic!("expected one static enrichment config, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn stdin_send_config_normalizes_mapping_form_outputs() {
+        let yaml = r"
+outputs:
+  type: stdout
+";
+        let generated = build_stdin_send_config_yaml(yaml, None, None, &[])
+            .expect("mapping-form outputs should be accepted");
+        let config =
+            logfwd_config::Config::load_str(&generated).expect("generated config should parse");
+        let pipeline = &config.pipelines["default"];
+        assert_eq!(pipeline.outputs.len(), 1);
     }
 
     #[test]

@@ -14,17 +14,9 @@ async fn test_async_shutdown_with_frozen_output() {
     }
     std::fs::write(&log_path, data.as_bytes()).unwrap();
 
-    let yaml = format!(
-        r#"
-input:
-  type: file
-  path: "{}"
-  format: json
-output:
-  type: stdout
-  format: json
-"#,
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: \"{}\"\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
 
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
@@ -78,17 +70,9 @@ async fn test_async_slow_output_flush_by_timeout() {
     }
     std::fs::write(&log_path, data.as_bytes()).unwrap();
 
-    let yaml = format!(
-        r#"
-input:
-  type: file
-  path: "{}"
-  format: json
-output:
-  type: stdout
-  format: json
-"#,
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: \"{}\"\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
 
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
@@ -152,17 +136,9 @@ async fn test_async_frozen_output_tracks_metrics() {
     }
     std::fs::write(&log_path, data.as_bytes()).unwrap();
 
-    let yaml = format!(
-        r#"
-input:
-  type: file
-  path: "{}"
-  format: json
-output:
-  type: stdout
-  format: json
-"#,
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: \"{}\"\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
 
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
@@ -232,17 +208,9 @@ async fn test_async_concurrent_write_and_shutdown() {
     }
     std::fs::write(&log_path, initial.as_bytes()).unwrap();
 
-    let yaml = format!(
-        r#"
-input:
-  type: file
-  path: "{}"
-  format: json
-output:
-  type: stdout
-  format: json
-"#,
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: \"{}\"\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
 
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
@@ -287,16 +255,9 @@ output:
 
 /// Helper: build a pipeline from a log file path with a custom async sink.
 fn pipeline_with_sink(log_path: &std::path::Path, sink: Box<dyn Sink>) -> Pipeline {
-    let yaml = format!(
-        r#"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: "null"
-"#,
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        "type: \"null\"",
     );
     let config = ffwd_config::Config::load_str(&yaml).unwrap();
     let pipe_cfg = &config.pipelines["default"];

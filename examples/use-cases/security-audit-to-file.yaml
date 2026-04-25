@@ -2,17 +2,17 @@
 # Use case: Security audit logs to file
 # Replace paths/endpoints with values for your environment.
 
-input:
-  type: file
-  path: /var/log/audit/audit.log
-  format: raw
-
-transform: |
-  SELECT * FROM logs
-
-output:
-  type: file
-  path: ./security-audit.ndjson
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /var/log/audit/audit.log
+        format: raw
+    transform: |
+      SELECT * FROM logs
+    outputs:
+      - type: file
+        path: ./security-audit.ndjson
 
 # Optional: diagnostics
 # server:

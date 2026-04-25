@@ -23,6 +23,14 @@ fn test_meter() -> opentelemetry::metrics::Meter {
     opentelemetry::global::meter("test")
 }
 
+fn single_pipeline_yaml(input_body: &str, output_body: &str) -> String {
+    format!(
+        "pipelines:\n  default:\n    inputs:\n      - {}\n    outputs:\n      - {}\n",
+        input_body.replace('\n', "\n        "),
+        output_body.replace('\n', "\n        "),
+    )
+}
+
 /// Full pipeline allocation profile test.
 ///
 /// Writes data to a file, runs the complete pipeline (file → scan →
@@ -41,16 +49,9 @@ fn pipeline_allocations_stable_across_batches() {
     // fixed startup costs (tokio, DataFusion, OTel: ~10-15MB).
     ffwd_test_utils::generate_json_lines(&log_path, 50_000, "alloc-test");
 
-    let yaml = format!(
-        r#"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: "null"
-"#,
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        "type: \"null\"",
     );
 
     let config = Config::load_str(&yaml).unwrap();

@@ -2,18 +2,18 @@
 # Use case: TCP raw line logs to Elasticsearch
 # Replace paths/endpoints with values for your environment.
 
-input:
-  type: tcp
-  listen: 0.0.0.0:1514
-  format: raw
-
-transform: |
-  SELECT * FROM logs
-
-output:
-  type: elasticsearch
-  endpoint: https://elasticsearch:9200
-  index: syslog
+pipelines:
+  default:
+    inputs:
+      - type: tcp
+        listen: 0.0.0.0:1514
+        format: raw
+    transform: |
+      SELECT * FROM logs
+    outputs:
+      - type: elasticsearch
+        endpoint: https://elasticsearch:9200
+        index: syslog
 
 # Optional: diagnostics
 # server:

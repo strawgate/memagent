@@ -37,6 +37,40 @@ fn wait_timeout() -> Duration {
     Duration::from_secs(60)
 }
 
+fn single_pipeline_yaml(input_body: &str, output_body: &str) -> String {
+    single_pipeline_yaml_with_sections(input_body, None, output_body)
+}
+
+fn single_pipeline_yaml_with_transform(
+    input_body: &str,
+    transform: &str,
+    output_body: &str,
+) -> String {
+    single_pipeline_yaml_with_sections(input_body, Some(transform), output_body)
+}
+
+fn single_pipeline_yaml_with_sections(
+    input_body: &str,
+    transform: Option<&str>,
+    output_body: &str,
+) -> String {
+    let mut yaml = String::from("pipelines:\n  default:\n    inputs:\n      - ");
+    yaml.push_str(&input_body.replace('\n', "\n        "));
+    yaml.push('\n');
+    if let Some(transform) = transform {
+        yaml.push_str("    transform: |\n");
+        for line in transform.lines() {
+            yaml.push_str("      ");
+            yaml.push_str(line);
+            yaml.push('\n');
+        }
+    }
+    yaml.push_str("    outputs:\n      - ");
+    yaml.push_str(&output_body.replace('\n', "\n        "));
+    yaml.push('\n');
+    yaml
+}
+
 // ---------------------------------------------------------------------------
 // CaptureSink (thread-safe, usable from integration tests)
 // ---------------------------------------------------------------------------
@@ -310,17 +344,9 @@ fn compliance_happy_path() {
 
     generate_json_lines(&log_path, count, "src1");
 
-    let yaml = format!(
-        r"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: stdout
-  format: json
-",
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
 
     let batches = run_compliance_pipeline(&yaml, count, wait_timeout());
@@ -389,18 +415,10 @@ fn compliance_transform_filter() {
 
     generate_json_lines(&log_path, count, "src1");
 
-    let yaml = format!(
-        r#"
-input:
-  type: file
-  path: {}
-  format: json
-transform: "SELECT * FROM logs WHERE level = 'ERROR'"
-output:
-  type: stdout
-  format: json
-"#,
-        log_path.display()
+    let yaml = single_pipeline_yaml_with_transform(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        "SELECT * FROM logs WHERE level = 'ERROR'",
+        "type: stdout\nformat: json",
     );
 
     // The WHERE filter halves the output: only odd sequence_ids pass.
@@ -518,17 +536,9 @@ fn compliance_large_batch() {
 
     generate_json_lines(&log_path, count, "src1");
 
-    let yaml = format!(
-        r"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: stdout
-  format: json
-",
-        log_path.display()
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: {}\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
     );
 
     let batches = run_compliance_pipeline(&yaml, count, Duration::from_secs(30));

@@ -80,7 +80,7 @@ pub struct BuilderFieldDoc {
 ///     label: "TCP listener (JSON)",
 ///     description: "Accept newline-delimited JSON logs over TCP.",
 ///     support: SupportLevel::Stable,
-///     snippet: "input:\\n  type: tcp\\n  listen: 0.0.0.0:9000\\n",
+///     snippet: "type: tcp\\nlisten: 0.0.0.0:9000\\n",
 ///     fields: &fields,
 /// };
 /// assert_eq!(template.type_tag, "tcp");
@@ -99,7 +99,7 @@ pub struct TemplateDoc {
     pub description: &'static str,
     /// Public support level for the underlying config surface.
     pub support: SupportLevel,
-    /// YAML starter snippet.
+    /// YAML starter snippet for one pipeline item body.
     pub snippet: &'static str,
     /// Small editable subset exposed by the docs builder UI.
     pub fields: &'static [BuilderFieldDoc],
@@ -146,7 +146,7 @@ pub const INPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "File (JSON logs)",
         description: "Tail JSON log files on disk.",
         support: SupportLevel::Stable,
-        snippet: "input:\n  type: file\n  path: /var/log/app/*.json\n  format: json\n",
+        snippet: "type: file\npath: /var/log/app/*.json\nformat: json\n",
         fields: &[
             BuilderFieldDoc {
                 key: "path",
@@ -171,7 +171,7 @@ pub const INPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "File (Kubernetes CRI)",
         description: "Tail Kubernetes container logs from node filesystems.",
         support: SupportLevel::Stable,
-        snippet: "input:\n  type: file\n  path: /var/log/containers/*.log\n  format: cri\n",
+        snippet: "type: file\npath: /var/log/containers/*.log\nformat: cri\n",
         fields: &[BuilderFieldDoc {
             key: "path",
             label: "Path",
@@ -187,7 +187,7 @@ pub const INPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "File (raw lines)",
         description: "Tail plain-text log files, one event per line.",
         support: SupportLevel::Stable,
-        snippet: "input:\n  type: file\n  path: /var/log/app/*.log\n  format: raw\n",
+        snippet: "type: file\npath: /var/log/app/*.log\nformat: raw\n",
         fields: &[
             BuilderFieldDoc {
                 key: "path",
@@ -212,7 +212,7 @@ pub const INPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "UDP listener",
         description: "Receive raw log lines over UDP (e.g. syslog).",
         support: SupportLevel::Stable,
-        snippet: "input:\n  type: udp\n  listen: 0.0.0.0:5514\n  format: raw\n",
+        snippet: "type: udp\nlisten: 0.0.0.0:5514\nformat: raw\n",
         fields: &[
             BuilderFieldDoc {
                 key: "listen",
@@ -237,7 +237,7 @@ pub const INPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "TCP listener (JSON)",
         description: "Accept newline-delimited JSON logs over TCP.",
         support: SupportLevel::Stable,
-        snippet: "input:\n  type: tcp\n  listen: 0.0.0.0:9000\n  format: json\n",
+        snippet: "type: tcp\nlisten: 0.0.0.0:9000\nformat: json\n",
         fields: &[
             BuilderFieldDoc {
                 key: "listen",
@@ -262,7 +262,7 @@ pub const INPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "OTLP receiver",
         description: "Receive logs via OpenTelemetry Protocol (OTLP/HTTP).",
         support: SupportLevel::Stable,
-        snippet: "input:\n  type: otlp\n  listen: 0.0.0.0:4318\n",
+        snippet: "type: otlp\nlisten: 0.0.0.0:4318\n",
         fields: &[BuilderFieldDoc {
             key: "listen",
             label: "Listen",
@@ -278,7 +278,7 @@ pub const INPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "HTTP endpoint (JSON)",
         description: "Accept JSON log batches over HTTP POST.",
         support: SupportLevel::Stable,
-        snippet: "input:\n  type: http\n  listen: 0.0.0.0:8080\n",
+        snippet: "type: http\nlisten: 0.0.0.0:8080\n",
         fields: &[BuilderFieldDoc {
             key: "listen",
             label: "Listen",
@@ -294,7 +294,7 @@ pub const INPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "systemd journald",
         description: "Read logs from the systemd journal.",
         support: SupportLevel::Beta,
-        snippet: "input:\n  type: journald\n",
+        snippet: "type: journald\n",
         fields: &[],
     },
     TemplateDoc {
@@ -304,7 +304,7 @@ pub const INPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "Generator",
         description: "Synthetic log generator for testing and benchmarking.",
         support: SupportLevel::Stable,
-        snippet: "input:\n  type: generator\n  generator:\n    events_per_sec: 1000\n    complexity: simple\n",
+        snippet: "type: generator\ngenerator:\n  events_per_sec: 1000\n  complexity: simple\n",
         fields: &[
             BuilderFieldDoc {
                 key: "events_per_sec",
@@ -341,7 +341,7 @@ pub const OUTPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "OTLP collector",
         description: "Send logs to an OpenTelemetry collector via OTLP/HTTP.",
         support: SupportLevel::Stable,
-        snippet: "output:\n  type: otlp\n  endpoint: http://localhost:4318/v1/logs\n  compression: none\n",
+        snippet: "type: otlp\nendpoint: http://localhost:4318/v1/logs\ncompression: none\n",
         fields: &[
             BuilderFieldDoc {
                 key: "endpoint",
@@ -366,7 +366,7 @@ pub const OUTPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "Elasticsearch",
         description: "Index logs in Elasticsearch.",
         support: SupportLevel::Stable,
-        snippet: "output:\n  type: elasticsearch\n  endpoint: http://localhost:9200\n  index: logs\n  compression: none\n",
+        snippet: "type: elasticsearch\nendpoint: http://localhost:9200\nindex: logs\ncompression: none\n",
         fields: &[
             BuilderFieldDoc {
                 key: "endpoint",
@@ -398,7 +398,7 @@ pub const OUTPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "Grafana Loki",
         description: "Push logs to Grafana Loki.",
         support: SupportLevel::Stable,
-        snippet: "output:\n  type: loki\n  endpoint: http://localhost:3100\n  static_labels:\n    service: myapp\n  label_columns:\n    - level\n",
+        snippet: "type: loki\nendpoint: http://localhost:3100\nstatic_labels:\n  service: myapp\nlabel_columns:\n  - level\n",
         fields: &[
             BuilderFieldDoc {
                 key: "endpoint",
@@ -423,7 +423,7 @@ pub const OUTPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "NDJSON file",
         description: "Write logs as newline-delimited JSON to a file.",
         support: SupportLevel::Stable,
-        snippet: "output:\n  type: file\n  path: ./out.ndjson\n",
+        snippet: "type: file\npath: ./out.ndjson\n",
         fields: &[BuilderFieldDoc {
             key: "path",
             label: "Path",
@@ -439,7 +439,7 @@ pub const OUTPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "stdout",
         description: "Print logs to the terminal. Great for testing.",
         support: SupportLevel::Stable,
-        snippet: "output:\n  type: stdout\n",
+        snippet: "type: stdout\n",
         fields: &[],
     },
     TemplateDoc {
@@ -449,7 +449,7 @@ pub const OUTPUT_TEMPLATES: &[TemplateDoc] = &[
         label: "null sink",
         description: "Discard all logs. Useful for benchmarking.",
         support: SupportLevel::Stable,
-        snippet: "output:\n  type: \"null\"\n",
+        snippet: "type: \"null\"\n",
         fields: &[],
     },
 ];
@@ -515,6 +515,11 @@ pub const INPUT_TYPE_DOCS: &[ComponentTypeDoc] = &[
         description: "macOS EndpointSecurity sensor input (Arrow-native control + signal rows).",
     },
     ComponentTypeDoc {
+        type_tag: "macos_log",
+        support: SupportLevel::Stable,
+        description: "Read macOS unified log entries from the `log stream` command.",
+    },
+    ComponentTypeDoc {
         type_tag: "windows_ebpf_sensor",
         support: SupportLevel::Stable,
         description: "Windows eBPF sensor input (Arrow-native control + signal rows).",
@@ -553,8 +558,8 @@ pub const OUTPUT_TYPE_DOCS: &[ComponentTypeDoc] = &[
     },
     ComponentTypeDoc {
         type_tag: "http",
-        support: SupportLevel::NotYetSupported,
-        description: "Reserved for newline-delimited JSON over HTTP POST.",
+        support: SupportLevel::Stable,
+        description: "POST newline-delimited JSON rows to an HTTP endpoint.",
     },
     ComponentTypeDoc {
         type_tag: "stdout",
@@ -595,11 +600,6 @@ pub const OUTPUT_TYPE_DOCS: &[ComponentTypeDoc] = &[
         type_tag: "arrow_ipc",
         support: SupportLevel::Stable,
         description: "Send Arrow IPC payloads to an HTTP endpoint.",
-    },
-    ComponentTypeDoc {
-        type_tag: "parquet",
-        support: SupportLevel::NotYetSupported,
-        description: "Reserved for Parquet file output.",
     },
 ];
 
@@ -786,10 +786,10 @@ mod tests {
         let start = document
             .find(&begin)
             .unwrap_or_else(|| panic!("missing {begin} marker in {path}"));
-        let end_index = document[start..]
-            .find(&end)
-            .map(|offset| start + offset)
-            .unwrap_or_else(|| panic!("missing {end} marker in {path}"));
+        let end_index = document[start..].find(&end).map_or_else(
+            || panic!("missing {end} marker in {path}"),
+            |offset| start + offset,
+        );
         let actual = document[start + begin.len()..end_index]
             .trim_matches('\n')
             .trim();

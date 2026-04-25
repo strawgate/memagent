@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::test_yaml::{append_root_sections, single_pipeline_yaml};
     use crate::*;
 
     // -----------------------------------------------------------------------
@@ -10,15 +11,10 @@ mod tests {
 
     #[test]
     fn valid_diagnostics_address_accepted() {
-        let yaml = r"
-input:
-  type: file
-  path: /tmp/x.log
-output:
-  type: stdout
-server:
-  diagnostics: 127.0.0.1:9090
-";
+        let yaml = append_root_sections(
+            single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: stdout"),
+            "server:\n  diagnostics: 127.0.0.1:9090\n",
+        );
         Config::load_str(yaml).expect("valid diagnostics address");
     }
 
@@ -26,15 +22,10 @@ server:
     fn invalid_diagnostics_address_rejected_at_validate() {
         // Before the fix, an invalid server.diagnostics address would pass
         // `validate` and only fail at runtime when the server tried to bind.
-        let yaml = r"
-input:
-  type: file
-  path: /tmp/x.log
-output:
-  type: stdout
-server:
-  diagnostics: not-an-address
-";
+        let yaml = append_root_sections(
+            single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: stdout"),
+            "server:\n  diagnostics: not-an-address\n",
+        );
         let err = Config::load_str(yaml).unwrap_err();
         let msg = err.to_string();
         assert!(
@@ -61,12 +52,7 @@ output:
 server:
   diagnostics: ${LOGFWD_DIAG_ADDR}
 ";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("LOGFWD_DIAG_ADDR"),
-            "error should mention the variable name: {msg}"
-        );
+        assert_config_err!(yaml, "LOGFWD_DIAG_ADDR");
     }
 
     // -----------------------------------------------------------------------
@@ -76,34 +62,21 @@ server:
     #[test]
     fn log_level_valid_values_accepted() {
         for level in ["trace", "debug", "info", "warn", "error", "INFO", "Warn"] {
-            let yaml = format!(
-                "input:\n  type: file\n  path: /tmp/x.log\noutput:\n  type: stdout\nserver:\n  log_level: {level}\n"
+            let yaml = append_root_sections(
+                single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: stdout"),
+                &format!("server:\n  log_level: {level}\n"),
             );
-            Config::load_str(&yaml)
+            Config::load_str(yaml)
                 .unwrap_or_else(|e| panic!("log_level '{level}' should be valid: {e}"));
         }
     }
 
     #[test]
     fn log_level_invalid_value_rejected() {
-        let yaml = r"
-input:
-  type: file
-  path: /tmp/x.log
-output:
-  type: stdout
-server:
-  log_level: inof
-";
-        let err = Config::load_str(yaml).unwrap_err();
-        let msg = err.to_string();
-        assert!(
-            msg.contains("log_level"),
-            "expected 'log_level' in error: {msg}"
+        let yaml = append_root_sections(
+            single_pipeline_yaml("type: file\npath: /tmp/x.log", "type: stdout"),
+            "server:\n  log_level: inof\n",
         );
-        assert!(
-            msg.contains("not a recognised log level"),
-            "expected 'not a recognised log level' in error: {msg}"
-        );
+        assert_config_err!(yaml, "log_level", "not a recognised log level");
     }
 }

@@ -27,7 +27,7 @@ where
 
     // Build a no-op meter for validation (no OTel export needed).
     let meter_provider = opentelemetry_sdk::metrics::SdkMeterProvider::builder().build();
-    let meter = meter_provider.meter("ffwd");
+    let meter = meter_provider.meter("logfwd");
 
     let mut errors = 0;
     for (name, pipe_cfg) in &config.pipelines {
@@ -503,6 +503,7 @@ fn validate_pipeline_read_only(
                         ffwd::transform::enrichment::K8sClusterInfoTable::new(),
                     ));
                 }
+                _ => return Err("unsupported enrichment type".to_owned()),
             }
         }
 
@@ -512,7 +513,7 @@ fn validate_pipeline_read_only(
     #[cfg(not(feature = "datafusion"))]
     if !config.enrichment.is_empty() {
         return Err(
-            "pipeline enrichment requires DataFusion. Build default/full ffwd \
+            "pipeline enrichment requires DataFusion. Build default/full logfwd \
              (or add `--features datafusion`)"
                 .to_owned(),
         );
@@ -667,6 +668,67 @@ pub(crate) fn replace_env_placeholders_for_example_validation(input: &str) -> St
 mod tests {
     use super::*;
 
+    fn single_pipeline_yaml(input_body: &str, output_body: &str) -> String {
+        single_pipeline_yaml_with_sections(input_body, None, output_body, None)
+    }
+
+    fn single_pipeline_yaml_with_transform(
+        input_body: &str,
+        transform: &str,
+        output_body: &str,
+    ) -> String {
+        single_pipeline_yaml_with_sections(input_body, Some(transform), output_body, None)
+    }
+
+    fn single_pipeline_yaml_with_sections(
+        input_body: &str,
+        transform: Option<&str>,
+        output_body: &str,
+        pipeline_extra: Option<&str>,
+    ) -> String {
+        let mut yaml = String::from("pipelines:\n  default:\n    inputs:\n");
+        push_block_sequence(&mut yaml, 6, input_body);
+        if let Some(transform) = transform {
+            yaml.push_str("    transform: |\n");
+            for line in transform.lines() {
+                yaml.push_str("      ");
+                yaml.push_str(line);
+                yaml.push('\n');
+            }
+        }
+        yaml.push_str("    outputs:\n");
+        push_block_sequence(&mut yaml, 6, output_body);
+        if let Some(extra) = pipeline_extra {
+            for line in extra.lines().filter(|line| !line.trim().is_empty()) {
+                yaml.push_str("    ");
+                yaml.push_str(line);
+                yaml.push('\n');
+            }
+        }
+        yaml
+    }
+
+    fn push_block_sequence(yaml: &mut String, indent: usize, body: &str) {
+        let prefix = " ".repeat(indent);
+        let rest_prefix = " ".repeat(indent + 2);
+        for (idx, line) in body
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .enumerate()
+        {
+            if idx == 0 {
+                yaml.push_str(&prefix);
+                yaml.push_str("- ");
+                yaml.push_str(line.trim_start());
+                yaml.push('\n');
+            } else {
+                yaml.push_str(&rest_prefix);
+                yaml.push_str(line);
+                yaml.push('\n');
+            }
+        }
+    }
+
     #[test]
     fn validate_input_format_read_only_accepts_stdin_auto() {
         validate_input_format_read_only(
@@ -679,29 +741,19 @@ mod tests {
 
     #[test]
     fn validate_pipelines_read_only_rejects_otlp_raw() {
-        let yaml = r#"
-input:
-  type: otlp
-  listen: 127.0.0.1:4318
-  format: raw
-output:
-  type: "null"
-"#;
-        let config = ffwd_config::Config::load_str(yaml).expect("config should parse");
+        let yaml = single_pipeline_yaml(
+            "type: otlp\nlisten: 127.0.0.1:4318\nformat: raw",
+            "type: \"null\"",
+        );
+        let config = ffwd_config::Config::load_str(&yaml).expect("config should parse");
         let result = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(matches!(result, Err(CliError::Config(_))));
     }
 
     #[test]
     fn validate_pipelines_read_only_rejects_sensor_format() {
-        let yaml = r#"
-input:
-  type: linux_ebpf_sensor
-  format: raw
-output:
-  type: "null"
-"#;
-        let err = ffwd_config::Config::load_str(yaml)
+        let yaml = single_pipeline_yaml("type: linux_ebpf_sensor\nformat: raw", "type: \"null\"");
+        let err = ffwd_config::Config::load_str(&yaml)
             .expect_err("sensor format should fail config validation");
         assert!(
             err.to_string()
@@ -712,32 +764,24 @@ output:
 
     #[test]
     fn validate_pipelines_read_only_accepts_arrow_native_sensor() {
-        let yaml = r#"
-input:
-  type: linux_ebpf_sensor
-  sensor:
-    poll_interval_ms: 1000
-output:
-  type: "null"
-"#;
-        let config = ffwd_config::Config::load_str(yaml).expect("config should parse");
+        let yaml = single_pipeline_yaml(
+            "type: linux_ebpf_sensor\nsensor:\n  poll_interval_ms: 1000",
+            "type: \"null\"",
+        );
+        let config = ffwd_config::Config::load_str(&yaml).expect("config should parse");
         validate_pipelines_read_only(&config, None, |_name| {}, |_err| {})
             .expect("sensor input without format should validate");
     }
 
     #[test]
     fn generated_wizard_config_is_validated_before_write() {
-        let output_path = std::path::Path::new("ffwd.generated.yaml");
-        let invalid_yaml = r#"
-input:
-  type: otlp
-  listen: 127.0.0.1:4318
-output:
-  type: "null"
-transform: |
-  SELECT level AS x, msg AS x FROM logs
-"#;
-        let err = validate_generated_config_read_only(invalid_yaml, output_path)
+        let output_path = std::path::Path::new("logfwd.generated.yaml");
+        let invalid_yaml = single_pipeline_yaml_with_transform(
+            "type: otlp\nlisten: 127.0.0.1:4318",
+            "SELECT level AS x, msg AS x FROM logs",
+            "type: \"null\"",
+        );
+        let err = validate_generated_config_read_only(&invalid_yaml, output_path)
             .expect_err("invalid generated config should fail validation");
         assert!(
             err.to_string()
@@ -748,16 +792,12 @@ transform: |
 
     #[test]
     fn effective_config_validation_matches_runtime_sql_planning_errors() {
-        let yaml = r#"
-input:
-  type: otlp
-  listen: 127.0.0.1:4318
-output:
-  type: "null"
-transform: |
-  SELECT level AS x, msg AS x FROM logs
-"#;
-        let config = ffwd_config::Config::load_str(yaml).expect("config should parse");
+        let yaml = single_pipeline_yaml_with_transform(
+            "type: otlp\nlisten: 127.0.0.1:4318",
+            "SELECT level AS x, msg AS x FROM logs",
+            "type: \"null\"",
+        );
+        let config = ffwd_config::Config::load_str(&yaml).expect("config should parse");
         let runtime = validate_pipelines(&config, true, None);
         let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(
@@ -772,15 +812,12 @@ transform: |
 
     #[test]
     fn issue_1955_dry_run_rejects_unknown_generator_logs_column() {
-        let yaml = r#"
-input:
-  type: generator
-output:
-  type: "null"
-transform: |
-  SELECT missing_column FROM logs
-"#;
-        let config = ffwd_config::Config::load_str(yaml).expect("config should parse");
+        let yaml = single_pipeline_yaml_with_transform(
+            "type: generator",
+            "SELECT missing_column FROM logs",
+            "type: \"null\"",
+        );
+        let config = ffwd_config::Config::load_str(&yaml).expect("config should parse");
         let runtime = validate_pipelines(&config, true, None);
         let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(
@@ -795,15 +832,12 @@ transform: |
 
     #[test]
     fn issue_1955_dry_run_accepts_mixed_case_generator_logs_columns() {
-        let yaml = r#"
-input:
-  type: generator
-output:
-  type: "null"
-transform: |
-  SELECT Level FROM logs
-"#;
-        let config = ffwd_config::Config::load_str(yaml).expect("config should parse");
+        let yaml = single_pipeline_yaml_with_transform(
+            "type: generator",
+            "SELECT Level FROM logs",
+            "type: \"null\"",
+        );
+        let config = ffwd_config::Config::load_str(&yaml).expect("config should parse");
         let runtime = validate_pipelines(&config, true, None);
         let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(
@@ -818,15 +852,12 @@ transform: |
 
     #[test]
     fn issue_1955_dry_run_rejects_generator_message_source_parts() {
-        let yaml = r#"
-input:
-  type: generator
-output:
-  type: "null"
-transform: |
-  SELECT method FROM logs
-"#;
-        let config = ffwd_config::Config::load_str(yaml).expect("config should parse");
+        let yaml = single_pipeline_yaml_with_transform(
+            "type: generator",
+            "SELECT method FROM logs",
+            "type: \"null\"",
+        );
+        let config = ffwd_config::Config::load_str(&yaml).expect("config should parse");
         let runtime = validate_pipelines(&config, true, None);
         let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(
@@ -841,20 +872,15 @@ transform: |
 
     #[test]
     fn issue_1955_dry_run_skips_strict_check_when_enrichment_tables_are_present() {
-        let yaml = r#"
-input:
-  type: generator
-output:
-  type: "null"
-enrichment:
-  - type: static
-    table_name: labels
-    labels:
-      environment: production
-transform: |
-  SELECT labels.environment FROM logs CROSS JOIN labels
-"#;
-        let config = ffwd_config::Config::load_str(yaml).expect("config should parse");
+        let yaml = single_pipeline_yaml_with_sections(
+            "type: generator",
+            Some("SELECT labels.environment FROM logs CROSS JOIN labels"),
+            "type: \"null\"",
+            Some(
+                "enrichment:\n  - type: static\n    table_name: labels\n    labels:\n      environment: production",
+            ),
+        );
+        let config = ffwd_config::Config::load_str(&yaml).expect("config should parse");
         let runtime = validate_pipelines(&config, true, None);
         let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(
@@ -869,17 +895,12 @@ transform: |
 
     #[test]
     fn issue_1955_dry_run_skips_strict_check_for_complex_generator_logs() {
-        let yaml = r#"
-input:
-  type: generator
-  generator:
-    complexity: complex
-output:
-  type: "null"
-transform: |
-  SELECT bytes_in FROM logs
-"#;
-        let config = ffwd_config::Config::load_str(yaml).expect("config should parse");
+        let yaml = single_pipeline_yaml_with_transform(
+            "type: generator\ngenerator:\n  complexity: complex",
+            "SELECT bytes_in FROM logs",
+            "type: \"null\"",
+        );
+        let config = ffwd_config::Config::load_str(&yaml).expect("config should parse");
         let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(
             read_only.is_ok(),
@@ -889,17 +910,12 @@ transform: |
 
     #[test]
     fn issue_1955_dry_run_rejects_unknown_cri_internal_column() {
-        let yaml = r#"
-input:
-  type: file
-  path: /var/log/*.log
-  format: cri
-output:
-  type: "null"
-transform: |
-  SELECT _timestampp FROM logs
-"#;
-        let config = ffwd_config::Config::load_str(yaml).expect("config should parse");
+        let yaml = single_pipeline_yaml_with_transform(
+            "type: file\npath: /var/log/*.log\nformat: cri",
+            "SELECT _timestampp FROM logs",
+            "type: \"null\"",
+        );
+        let config = ffwd_config::Config::load_str(&yaml).expect("config should parse");
         let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(
             read_only.is_err(),
@@ -909,17 +925,12 @@ transform: |
 
     #[test]
     fn issue_1955_dry_run_accepts_valid_cri_columns() {
-        let yaml = r#"
-input:
-  type: file
-  path: /var/log/*.log
-  format: cri
-output:
-  type: "null"
-transform: |
-  SELECT _timestamp, _stream, body FROM logs
-"#;
-        let config = ffwd_config::Config::load_str(yaml).expect("config should parse");
+        let yaml = single_pipeline_yaml_with_transform(
+            "type: file\npath: /var/log/*.log\nformat: cri",
+            "SELECT _timestamp, _stream, body FROM logs",
+            "type: \"null\"",
+        );
+        let config = ffwd_config::Config::load_str(&yaml).expect("config should parse");
         let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(
             read_only.is_ok(),
@@ -929,17 +940,12 @@ transform: |
 
     #[test]
     fn issue_1955_dry_run_accepts_cri_user_json_columns() {
-        let yaml = r#"
-input:
-  type: file
-  path: /var/log/*.log
-  format: cri
-output:
-  type: "null"
-transform: |
-  SELECT level, msg, custom_field FROM logs
-"#;
-        let config = ffwd_config::Config::load_str(yaml).expect("config should parse");
+        let yaml = single_pipeline_yaml_with_transform(
+            "type: file\npath: /var/log/*.log\nformat: cri",
+            "SELECT level, msg, custom_field FROM logs",
+            "type: \"null\"",
+        );
+        let config = ffwd_config::Config::load_str(&yaml).expect("config should parse");
         let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(
             read_only.is_ok(),
@@ -949,17 +955,12 @@ transform: |
 
     #[test]
     fn issue_1955_dry_run_allows_json_format_any_columns() {
-        let yaml = r#"
-input:
-  type: file
-  path: /var/log/*.log
-  format: json
-output:
-  type: "null"
-transform: |
-  SELECT custom_field FROM logs
-"#;
-        let config = ffwd_config::Config::load_str(yaml).expect("config should parse");
+        let yaml = single_pipeline_yaml_with_transform(
+            "type: file\npath: /var/log/*.log\nformat: json",
+            "SELECT custom_field FROM logs",
+            "type: \"null\"",
+        );
+        let config = ffwd_config::Config::load_str(&yaml).expect("config should parse");
         let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(
             read_only.is_ok(),
@@ -969,22 +970,15 @@ transform: |
 
     #[test]
     fn issue_1955_dry_run_skips_cri_check_when_enrichment_present() {
-        let yaml = r#"
-input:
-  type: file
-  path: /var/log/*.log
-  format: cri
-output:
-  type: "null"
-enrichment:
-  - type: static
-    table_name: labels
-    labels:
-      environment: production
-transform: |
-  SELECT _unknown_col FROM logs CROSS JOIN labels
-"#;
-        let config = ffwd_config::Config::load_str(yaml).expect("config should parse");
+        let yaml = single_pipeline_yaml_with_sections(
+            "type: file\npath: /var/log/*.log\nformat: cri",
+            Some("SELECT _unknown_col FROM logs CROSS JOIN labels"),
+            "type: \"null\"",
+            Some(
+                "enrichment:\n  - type: static\n    table_name: labels\n    labels:\n      environment: production",
+            ),
+        );
+        let config = ffwd_config::Config::load_str(&yaml).expect("config should parse");
         let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(
             read_only.is_ok(),
@@ -994,16 +988,12 @@ transform: |
 
     #[test]
     fn issue_1955_dry_run_skips_cri_check_for_auto_format() {
-        let yaml = r#"
-input:
-  type: file
-  path: /var/log/*.log
-output:
-  type: "null"
-transform: |
-  SELECT _unknown_col FROM logs
-"#;
-        let config = ffwd_config::Config::load_str(yaml).expect("config should parse");
+        let yaml = single_pipeline_yaml_with_transform(
+            "type: file\npath: /var/log/*.log",
+            "SELECT _unknown_col FROM logs",
+            "type: \"null\"",
+        );
+        let config = ffwd_config::Config::load_str(&yaml).expect("config should parse");
         let read_only = validate_pipelines_read_only(&config, None, |_name| {}, |_err| {});
         assert!(
             read_only.is_ok(),

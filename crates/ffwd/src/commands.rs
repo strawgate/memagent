@@ -354,21 +354,23 @@ fn cmd_init() -> Result<(), CliError> {
 # source/destination — see the examples at https://github.com/strawgate/fastforward/tree/main/examples/use-cases/
 # Or run `ff wizard` for an interactive setup.
 
-# Tail a JSON log file and stream new lines as they appear.
-input:
-  type: file
-  path: ./sample.json
-  format: json
+pipelines:
+  default:
+    # Tail a JSON log file and stream new lines as they appear.
+    inputs:
+      - type: file
+        path: ./sample.json
+        format: json
 
-# SQL transform (optional) — filter, reshape, or enrich logs.
-# Remove this section to forward all logs unmodified.
-transform: |
-  SELECT * FROM logs
-  WHERE level IN ('WARN', 'ERROR')
+    # SQL transform (optional) — filter, reshape, or enrich logs.
+    # Remove this section to forward all logs unmodified.
+    transform: |
+      SELECT * FROM logs
+      WHERE level IN ('WARN', 'ERROR')
 
-# Print matching logs to the terminal so you can see results immediately.
-output:
-  type: stdout
+    # Print matching logs to the terminal so you can see results immediately.
+    outputs:
+      - type: stdout
 
 # Optional: expose a diagnostics dashboard on http://127.0.0.1:9191
 # server:
@@ -933,11 +935,13 @@ mod tests {
         let mut file = tempfile::NamedTempFile::new().expect("temp config");
         writeln!(
             file,
-            r#"input:
-  type: otlp
-  listen: 127.0.0.1:{port}
-output:
-  type: "null"
+            r#"pipelines:
+  default:
+    inputs:
+      - type: otlp
+        listen: 127.0.0.1:{port}
+    outputs:
+      - type: "null"
 "#
         )
         .expect("write config");
@@ -976,10 +980,47 @@ output:
             output,
             "SELECT * FROM logs WHERE level='ERROR'",
         );
-        assert!(cfg.contains("input:"));
-        assert!(cfg.contains("output:"));
-        assert!(cfg.contains("transform: |"));
+        assert!(cfg.contains("pipelines:"));
+        assert!(cfg.contains("inputs:"));
+        assert!(cfg.contains("outputs:"));
+        assert!(cfg.contains("    transform: |"));
         assert!(cfg.contains("WHERE level='ERROR'"));
+    }
+
+    #[test]
+    fn wizard_use_case_renders_pipelines_only() {
+        use crate::config_templates;
+        let use_case = &config_templates::USE_CASE_TEMPLATES[0];
+        let cfg = config_templates::render_use_case(use_case, use_case.transform);
+        assert!(cfg.contains("pipelines:"));
+        assert!(cfg.contains("inputs:"));
+        assert!(cfg.contains("outputs:"));
+        assert!(!cfg.contains("\ninput:\n"));
+        assert!(!cfg.contains("\noutput:\n"));
+    }
+
+    #[test]
+    fn wizard_loki_templates_preserve_nested_yaml() {
+        use crate::config_templates;
+
+        let input = &config_templates::INPUT_TEMPLATES[0];
+        let output = config_templates::OUTPUT_TEMPLATES
+            .iter()
+            .find(|template| template.id == "loki")
+            .expect("loki output template");
+        let cfg = config_templates::render_config(input, output, "SELECT * FROM logs");
+        assert!(cfg.contains("        static_labels:\n          service: myapp"));
+        assert!(cfg.contains("        label_columns:\n          - level"));
+        logfwd_config::Config::load_str(&cfg).expect("rendered loki template should parse");
+
+        let use_case = config_templates::USE_CASE_TEMPLATES
+            .iter()
+            .find(|template| template.id == "nginx_access_to_loki")
+            .expect("loki use-case template");
+        let cfg = config_templates::render_use_case(use_case, use_case.transform);
+        assert!(cfg.contains("        static_labels:\n          app: nginx"));
+        assert!(cfg.contains("        label_columns:\n          - status"));
+        logfwd_config::Config::load_str(&cfg).expect("rendered loki use case should parse");
     }
 
     #[test]

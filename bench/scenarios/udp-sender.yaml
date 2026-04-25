@@ -1,5 +1,7 @@
-input:
-  type: generator
-output:
-  type: udp
-  endpoint: 127.0.0.1:15514
+pipelines:
+  default:
+    inputs:
+      - type: generator
+    outputs:
+      - type: udp
+        endpoint: 127.0.0.1:15514

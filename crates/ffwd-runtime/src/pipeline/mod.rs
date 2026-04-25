@@ -75,6 +75,7 @@ fn source_metadata_style_source_path(style: ffwd_config::SourceMetadataStyle) ->
         ffwd_config::SourceMetadataStyle::None | ffwd_config::SourceMetadataStyle::Fastforward => {
             SourcePathColumn::None
         }
+        _ => SourcePathColumn::None,
     }
 }
 
@@ -97,14 +98,7 @@ fn scan_maybe_blocking(
     scanner: &mut Scanner,
     buf: Bytes,
 ) -> Result<RecordBatch, arrow::error::ArrowError> {
-    #[cfg(feature = "turmoil")]
-    {
-        scanner.scan(buf)
-    }
-    #[cfg(not(feature = "turmoil"))]
-    {
-        tokio::task::block_in_place(|| scanner.scan(buf))
-    }
+    scanner.scan(buf)
 }
 
 // ---------------------------------------------------------------------------
@@ -365,32 +359,8 @@ impl Pipeline {
     /// and the provided sink.
     #[cfg(feature = "turmoil")]
     pub fn for_simulation(name: &str, sink: Box<dyn ffwd_output::Sink>) -> Self {
-        let meter = opentelemetry::global::meter("test");
-        let metrics = Arc::new(PipelineMetrics::new(name, "SELECT * FROM logs", &meter));
         let factory = Arc::new(OnceAsyncFactory::new(name.to_string(), sink));
-        let pool = OutputWorkerPool::new(factory, 1, Duration::MAX, Arc::clone(&metrics));
-
-        // Start with empty inputs and input_transforms so that each with_input()
-        // call adds exactly one entry to both, keeping input_index in sync with
-        // the transform and accumulator vectors in run_async.
-        Pipeline {
-            name: name.to_string(),
-            inputs: vec![],
-            input_transforms: vec![],
-            processors: vec![],
-            pool,
-            metrics,
-            batch_target_bytes: 64 * 1024,
-            batch_timeout: Duration::from_millis(50),
-            poll_interval: Duration::from_millis(5),
-            resource_attrs: Arc::from([]),
-            machine: Some(PipelineMachine::new().start()),
-            checkpoint_store: None,
-            held_tickets: Vec::new(),
-            last_checkpoint_flush: tokio::time::Instant::now(),
-            checkpoint_flush_interval: build::DEFAULT_CHECKPOINT_FLUSH_INTERVAL,
-            pool_drain_timeout: Duration::from_secs(60),
-        }
+        Self::for_simulation_with_factory(name, factory, 1)
     }
 
     /// Create a pipeline for simulation testing with a custom sink factory

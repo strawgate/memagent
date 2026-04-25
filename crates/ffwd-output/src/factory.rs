@@ -351,9 +351,6 @@ pub fn build_sink_factory(
             )))
         }
         OutputConfigV2::Null(_) => Ok(Arc::new(NullSinkFactory::new(name.to_string(), stats))),
-        OutputConfigV2::Parquet(_) => Err(OutputError::Construction(format!(
-            "output '{name}': type Parquet not yet supported"
-        ))),
         _ => Err(OutputError::Construction(format!(
             "output '{name}': unknown output type"
         ))),

@@ -57,12 +57,14 @@ impl SourceState {
     }
 }
 
-/// Wraps a raw [`InputSource`] with newline framing and format processing.
+/// Wraps an [`InputSource`] with newline framing and format processing.
 ///
 /// The inner source provides raw bytes (from file, TCP, UDP, etc.). This
 /// wrapper splits on newlines, manages partial-line remainders across polls,
 /// and runs format-specific processing (CRI extraction, passthrough, etc.).
-/// The output is scanner-ready bytes.
+/// The output is scanner-ready bytes. Structured batch events are forwarded by
+/// the allocation-owning [`InputSource::poll`] path; the shared-buffer
+/// [`InputSource::poll_into`] path remains byte-only.
 ///
 /// All per-source state (remainder, format, checkpoint tracker) is keyed by
 /// `Option<SourceId>` so that interleaved data from multiple sources never
@@ -444,12 +446,12 @@ impl FramedInput {
         Ok(result_events)
     }
 
-    fn process_raw_events(&mut self, raw_events: Vec<InputEvent>) -> io::Result<Vec<InputEvent>> {
+    fn process_raw_events(&mut self, raw_events: Vec<InputEvent>) -> Vec<InputEvent> {
         self.last_raw_had_payload = raw_events
             .iter()
             .any(|event| matches!(event, InputEvent::Data { .. } | InputEvent::Batch { .. }));
         if raw_events.is_empty() {
-            return Ok(vec![]);
+            return vec![];
         }
 
         let mut result_events: Vec<InputEvent> = Vec::new();
@@ -715,10 +717,18 @@ impl FramedInput {
                         self.sources.remove(&key);
                     }
                 }
-                InputEvent::Batch { .. } => {
-                    return Err(Self::unsupported_structured_event_error(
-                        "InputEvent::Batch",
-                    ));
+                InputEvent::Batch {
+                    batch,
+                    source_id,
+                    accounted_bytes,
+                } => {
+                    self.stats.inc_lines(batch.num_rows() as u64);
+                    self.stats.inc_bytes(accounted_bytes);
+                    result_events.push(InputEvent::Batch {
+                        batch,
+                        source_id,
+                        accounted_bytes: 0,
+                    });
                 }
                 // Rotation/truncation: clear framing state + forward event.
                 //
@@ -813,14 +823,14 @@ impl FramedInput {
             }
         }
 
-        Ok(result_events)
+        result_events
     }
 }
 
 impl InputSource for FramedInput {
     fn poll(&mut self) -> io::Result<Vec<InputEvent>> {
         let raw_events = self.inner.poll()?;
-        self.process_raw_events(raw_events)
+        Ok(self.process_raw_events(raw_events))
     }
 
     fn poll_into(&mut self, dst: &mut BytesMut) -> io::Result<Option<Vec<FramedReadEvent>>> {
@@ -830,7 +840,7 @@ impl InputSource for FramedInput {
 
     fn poll_shutdown(&mut self) -> io::Result<Vec<InputEvent>> {
         let raw_events = self.inner.poll_shutdown()?;
-        self.process_raw_events(raw_events)
+        Ok(self.process_raw_events(raw_events))
     }
 
     fn poll_shutdown_into(
@@ -1526,7 +1536,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_events_from_inner_source_are_rejected() {
+    fn batch_events_from_inner_source_are_forwarded() {
         let stats = make_stats();
         let batch = make_batch();
         let source = MockSource::new(vec![vec![InputEvent::Batch {
@@ -1540,11 +1550,22 @@ mod tests {
             Arc::clone(&stats),
         );
 
-        let err = match framed.poll() {
-            Ok(_) => panic!("structured event should be rejected"),
-            Err(err) => err,
-        };
-        assert!(err.to_string().contains("InputEvent::Batch"));
+        let events = framed.poll().expect("structured event should be forwarded");
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            InputEvent::Batch {
+                batch,
+                source_id,
+                accounted_bytes,
+            } => {
+                assert_eq!(batch.num_rows(), 2);
+                assert_eq!(*source_id, None);
+                assert_eq!(*accounted_bytes, 0);
+            }
+            _ => panic!("expected batch event"),
+        }
+        assert_eq!(stats.lines(), 2);
+        assert_eq!(stats.bytes(), 1234);
     }
 
     #[test]

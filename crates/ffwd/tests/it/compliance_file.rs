@@ -42,16 +42,18 @@ fn build_pipeline(yaml: &str) -> Pipeline {
 
 /// Build a simple pipeline config YAML for a single file input.
 fn file_pipeline_yaml(log_path: &std::path::Path) -> String {
+    let log_path = log_path.display().to_string().replace('\'', "''");
     format!(
         r#"
-input:
-  type: file
-  path: {}
-  format: json
-output:
-  type: "null"
-"#,
-        log_path.display()
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: '{log_path}'
+        format: json
+    outputs:
+      - type: "null"
+"#
     )
 }
 
@@ -133,17 +135,19 @@ fn wait_for_ready_lines(
 /// Uses a short `glob_rescan_interval_ms` so tests don't wait 5 seconds for
 /// the default rescan timer to fire.
 fn glob_pipeline_yaml(pattern: &str) -> String {
+    let pattern = pattern.replace('\'', "''");
     format!(
         r#"
-input:
-  type: file
-  path: "{}"
-  format: json
-  glob_rescan_interval_ms: 50
-output:
-  type: "null"
-"#,
-        pattern
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: '{pattern}'
+        format: json
+        glob_rescan_interval_ms: 50
+    outputs:
+      - type: "null"
+"#
     )
 }
 

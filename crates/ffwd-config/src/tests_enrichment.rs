@@ -3,6 +3,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::test_yaml::single_pipeline_yaml_with_extra;
     use crate::*;
     use std::fs;
 
@@ -232,7 +233,7 @@ pipelines:
             "pipelines:\n  app:\n    inputs:\n      - type: file\n        path: /tmp/x.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: csv\n        table_name: assets\n        path: {}\n",
             tmp.display()
         );
-        let cfg = Config::load_str(&yaml).expect("csv enrichment should parse");
+        let cfg = Config::load_str(yaml).expect("csv enrichment should parse");
         let pipe = &cfg.pipelines["app"];
         assert_eq!(pipe.enrichment.len(), 1);
         match &pipe.enrichment[0] {
@@ -254,7 +255,7 @@ pipelines:
             "pipelines:\n  app:\n    inputs:\n      - type: file\n        path: /tmp/x.log\n    outputs:\n      - type: stdout\n    enrichment:\n      - type: jsonl\n        table_name: ip_owners\n        path: {}\n",
             tmp.display()
         );
-        let cfg = Config::load_str(&yaml).expect("jsonl enrichment should parse");
+        let cfg = Config::load_str(yaml).expect("jsonl enrichment should parse");
         let pipe = &cfg.pipelines["app"];
         assert_eq!(pipe.enrichment.len(), 1);
         match &pipe.enrichment[0] {
@@ -271,16 +272,11 @@ pipelines:
     fn enrichment_simple_form_preserved() {
         // Enrichment in simple form should be wired into the default pipeline,
         // not silently dropped (#540).
-        let yaml = r"
-input:
-  type: file
-  path: /tmp/x.log
-output:
-  type: stdout
-enrichment:
-  - type: host_info
-  - type: k8s_path
-";
+        let yaml = single_pipeline_yaml_with_extra(
+            "type: file\npath: /tmp/x.log",
+            "type: stdout",
+            "enrichment:\n  - type: host_info\n  - type: k8s_path",
+        );
         let cfg = Config::load_str(yaml).expect("simple form with enrichment should parse");
         let pipe = &cfg.pipelines["default"];
         assert_eq!(

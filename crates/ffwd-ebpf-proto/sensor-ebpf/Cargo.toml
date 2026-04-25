@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 publish = false
 
-[dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
 aya = { workspace = true }
 libc = { workspace = true }
 sensor-ebpf-common = { path = "sensor-ebpf-common", version = "0.1.0", features = [
