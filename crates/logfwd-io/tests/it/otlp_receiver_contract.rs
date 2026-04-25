@@ -8,8 +8,6 @@ use std::time::{Duration, Instant};
 
 use arrow::array::{Array, BooleanArray, Float64Array, Int64Array, StringArray};
 use arrow::record_batch::RecordBatch;
-use logfwd_io::format::FormatDecoder;
-use logfwd_io::framed::FramedInput;
 use logfwd_io::input::{InputEvent, InputSource};
 use logfwd_io::otlp_receiver::OtlpReceiverInput;
 use logfwd_types::diagnostics::ComponentStats;
@@ -62,16 +60,11 @@ fn send_status(url: &str, body: &[u8], content_type: &str, content_encoding: Opt
     }
 }
 
-fn make_framed_otlp_input(stats: Arc<ComponentStats>) -> (FramedInput, String) {
+fn make_otlp_input(stats: Arc<ComponentStats>) -> (OtlpReceiverInput, String) {
     let receiver = OtlpReceiverInput::new_with_stats("contract", "127.0.0.1:0", Arc::clone(&stats))
         .expect("receiver should start");
     let url = format!("http://{}/v1/logs", receiver.local_addr());
-    let framed = FramedInput::new(
-        Box::new(receiver),
-        FormatDecoder::passthrough_json(Arc::clone(&stats)),
-        stats,
-    );
-    (framed, url)
+    (receiver, url)
 }
 
 fn poll_until_events(input: &mut dyn InputSource, timeout: Duration) -> Vec<InputEvent> {
@@ -94,22 +87,39 @@ fn assert_accounted_bytes_for_payload(
     content_encoding: Option<&str>,
 ) {
     let stats = Arc::new(ComponentStats::new());
-    let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats));
+    let mut receiver =
+        OtlpReceiverInput::new_with_stats("contract", "127.0.0.1:0", Arc::clone(&stats))
+            .expect("receiver should start");
+    let url = format!("http://{}/v1/logs", receiver.local_addr());
 
     let status = send_status(&url, body, content_type, content_encoding);
     assert_eq!(status, 200, "request should succeed");
 
-    let events = poll_until_events(&mut input, Duration::from_secs(2));
+    let events = poll_until_events(&mut receiver, Duration::from_secs(2));
     assert!(
         !events.is_empty(),
         "receiver should emit at least one event"
     );
+
+    let mut total_accounted: u64 = 0;
+    let mut total_rows: u64 = 0;
+    for event in &events {
+        if let InputEvent::Batch {
+            batch,
+            accounted_bytes,
+            ..
+        } = event
+        {
+            total_accounted += accounted_bytes;
+            total_rows += batch.num_rows() as u64;
+        }
+    }
     assert_eq!(
-        stats.bytes(),
+        total_accounted,
         body.len() as u64,
         "receiver should charge the accepted request-body size at the input boundary"
     );
-    assert_eq!(stats.lines(), 1, "one OTLP request should yield one row");
+    assert_eq!(total_rows, 1, "one OTLP request should yield one row");
 }
 
 fn semantic_request() -> ExportLogsServiceRequest {
@@ -354,7 +364,7 @@ fn otlp_receiver_accounts_input_bytes() {
     let expected_bytes = protobuf_body.len() as u64;
 
     let stats = Arc::new(ComponentStats::new());
-    let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats));
+    let (mut input, url) = make_otlp_input(Arc::clone(&stats));
 
     let status = send_status(&url, &protobuf_body, "application/x-protobuf", None);
     assert_eq!(status, 200, "request should succeed");
@@ -367,10 +377,22 @@ fn otlp_receiver_accounts_input_bytes() {
         "should emit one-row batch"
     );
 
-    assert_eq!(stats.lines(), 1, "should account one input row");
+    let mut total_accounted: u64 = 0;
+    let mut total_rows: u64 = 0;
+    for event in &events {
+        if let InputEvent::Batch {
+            batch,
+            accounted_bytes,
+            ..
+        } = event
+        {
+            total_accounted += accounted_bytes;
+            total_rows += batch.num_rows() as u64;
+        }
+    }
+    assert_eq!(total_rows, 1, "should account one input row");
     assert_eq!(
-        stats.bytes(),
-        expected_bytes,
+        total_accounted, expected_bytes,
         "should account the accepted protobuf payload bytes"
     );
     assert_eq!(
@@ -388,7 +410,7 @@ fn otlp_receiver_accounts_input_bytes() {
 #[test]
 fn otlp_receiver_rejections_increment_parse_errors() {
     let stats = Arc::new(ComponentStats::new());
-    let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats));
+    let (mut input, url) = make_otlp_input(Arc::clone(&stats));
 
     let status = send_status(&url, b"not valid protobuf", "application/x-protobuf", None);
     assert_eq!(status, 400, "invalid protobuf must be rejected");
@@ -416,7 +438,7 @@ fn otlp_receiver_rejections_increment_parse_errors() {
 #[test]
 fn otlp_receiver_transport_rejections_increment_errors() {
     let stats = Arc::new(ComponentStats::new());
-    let (mut input, url) = make_framed_otlp_input(Arc::clone(&stats));
+    let (mut input, url) = make_otlp_input(Arc::clone(&stats));
 
     let status = send_status(
         &url,

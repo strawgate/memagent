@@ -4,6 +4,7 @@ use crate::serde_helpers::{
 };
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::fmt;
 
 /// Supported on-disk GeoIP database formats.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -39,10 +40,43 @@ pub struct StaticEnrichmentConfig {
     pub labels: HashMap<String, String>,
 }
 
+/// Controls the column-naming convention for host metadata enrichment.
+///
+/// `raw` (default) uses short internal names (`hostname`, `os_type`, etc.).
+/// `ecs`/`beats` emits ECS `host.*` / `host.os.*` names.
+/// `otel` emits OpenTelemetry semantic-convention names (`host.name`,
+/// `os.type`, etc.).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HostInfoStyle {
+    /// Short internal names: `hostname`, `os_type`, `os_arch`, etc.
+    #[default]
+    Raw,
+    /// ECS / Beats field names: `host.hostname`, `host.os.type`, etc.
+    #[serde(alias = "beats")]
+    Ecs,
+    /// OpenTelemetry semantic conventions: `host.name`, `os.type`, etc.
+    Otel,
+}
+
+impl fmt::Display for HostInfoStyle {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Raw => f.write_str("raw"),
+            Self::Ecs => f.write_str("ecs"),
+            Self::Otel => f.write_str("otel"),
+        }
+    }
+}
+
 /// Host metadata enrichment with built-in fields.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct HostInfoConfig {}
+pub struct HostInfoConfig {
+    /// Column-naming convention for the host metadata enrichment table.
+    #[serde(default)]
+    pub style: HostInfoStyle,
+}
 
 /// Kubernetes pod metadata parsed from container log paths.
 #[derive(Debug, Clone, Deserialize)]

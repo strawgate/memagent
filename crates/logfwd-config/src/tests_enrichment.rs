@@ -135,6 +135,75 @@ pipelines:
     }
 
     #[test]
+    fn enrichment_host_info_style_ecs() {
+        let yaml = r"
+pipelines:
+  app:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: host_info
+        style: ecs
+";
+        let cfg = Config::load_str(yaml).expect("host_info ecs style should parse");
+        let pipe = &cfg.pipelines["app"];
+        if let EnrichmentConfig::HostInfo(ref hi) = pipe.enrichment[0] {
+            assert_eq!(hi.style, HostInfoStyle::Ecs);
+        } else {
+            panic!("expected HostInfo enrichment");
+        }
+    }
+
+    #[test]
+    fn enrichment_host_info_style_beats_alias() {
+        let yaml = r"
+pipelines:
+  app:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: host_info
+        style: beats
+";
+        let cfg = Config::load_str(yaml).expect("host_info beats alias should parse");
+        let pipe = &cfg.pipelines["app"];
+        if let EnrichmentConfig::HostInfo(ref hi) = pipe.enrichment[0] {
+            assert_eq!(hi.style, HostInfoStyle::Ecs);
+        } else {
+            panic!("expected HostInfo enrichment");
+        }
+    }
+
+    #[test]
+    fn enrichment_host_info_style_otel() {
+        let yaml = r"
+pipelines:
+  app:
+    inputs:
+      - type: file
+        path: /tmp/x.log
+    outputs:
+      - type: stdout
+    enrichment:
+      - type: host_info
+        style: otel
+";
+        let cfg = Config::load_str(yaml).expect("host_info otel style should parse");
+        let pipe = &cfg.pipelines["app"];
+        if let EnrichmentConfig::HostInfo(ref hi) = pipe.enrichment[0] {
+            assert_eq!(hi.style, HostInfoStyle::Otel);
+        } else {
+            panic!("expected HostInfo enrichment");
+        }
+    }
+
+    #[test]
     fn enrichment_k8s_path_config_accepted() {
         let yaml = r"
 pipelines:

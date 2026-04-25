@@ -36,14 +36,14 @@ pub use types::{
     FileOutputConfig, FileTypeConfig, Format, GeneratorAttributeValueConfig,
     GeneratorComplexityConfig, GeneratorInputConfig, GeneratorProfileConfig,
     GeneratorSequenceConfig, GeneratorTypeConfig, GeoDatabaseConfig, GeoDatabaseFormat,
-    HostInfoConfig, HostMetricsInputConfig, HttpInputConfig, HttpMethodConfig, HttpOutputConfig,
-    HttpTypeConfig, InputConfig, InputType, InputTypeConfig, JournaldBackendConfig,
-    JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig, K8sPathConfig,
-    LokiOutputConfig, NullOutputConfig, OtlpOutputConfig, OtlpProtobufDecodeModeConfig,
-    OtlpProtocol, OtlpTypeConfig, OutputConfigV2, OutputType, PipelineConfig, S3CompressionConfig,
-    S3InputConfig, S3TypeConfig, SensorTypeConfig, ServerConfig, SourceMetadataStyle,
-    StaticEnrichmentConfig, StdoutOutputConfig, StorageConfig, TcpOutputConfig, TcpTypeConfig,
-    UdpOutputConfig, UdpTypeConfig,
+    HostInfoConfig, HostInfoStyle, HostMetricsInputConfig, HttpInputConfig, HttpMethodConfig,
+    HttpOutputConfig, HttpTypeConfig, InputConfig, InputType, InputTypeConfig,
+    JournaldBackendConfig, JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig,
+    K8sPathConfig, LokiOutputConfig, NullOutputConfig, OtlpOutputConfig,
+    OtlpProtobufDecodeModeConfig, OtlpProtocol, OtlpTypeConfig, OutputConfigV2, OutputType,
+    PipelineConfig, S3CompressionConfig, S3InputConfig, S3TypeConfig, SensorTypeConfig,
+    ServerConfig, SourceMetadataStyle, StaticEnrichmentConfig, StdoutOutputConfig, StorageConfig,
+    TcpOutputConfig, TcpTypeConfig, UdpOutputConfig, UdpTypeConfig,
 };
 pub use validate::validate_host_port;
 

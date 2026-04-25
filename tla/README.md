@@ -515,7 +515,7 @@ when a retry re-sent data to children that had already accepted it.
 | `FinalizedReachable` | Reachability | Finalized phase is reachable |
 | `ChildOkOccurs` | Reachability | at least one child succeeds |
 | `ChildRejectedOccurs` | Reachability | at least one child rejects |
-| `PartialSuccessReachable` | Reachability | mixed Ok+Rejected with Rejected result is reachable |
+| `MixedRejectedReachable` | Reachability | mixed Ok+Rejected with Rejected result is reachable |
 | `AllRejectedReachable` | Reachability | all-rejected result is reachable |
 | `AllOkReachable` | Reachability | all-ok result is reachable |
 | `RetryNeededReachable` | Reachability | RetryNeeded result is reachable |

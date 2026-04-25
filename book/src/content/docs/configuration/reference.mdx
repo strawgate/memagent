@@ -749,14 +749,36 @@ enrichment:
 
 System host metadata, resolved once at startup. Fixed table name: `host_info`.
 
-| Column | Description |
-|--------|-------------|
-| `hostname` | System hostname. |
-| `os_type` | Operating system (`linux`, `macos`, `windows`). |
-| `os_arch` | CPU architecture (`x86_64`, `aarch64`, etc.). |
+Extended fields are sourced from `/etc/os-release`, `/proc/sys/kernel/osrelease`,
+`/etc/machine-id`, and `/proc/sys/kernel/random/boot_id` on Linux; they degrade
+to empty strings on other platforms.
+
+| Field | Description |
+|-------|-------------|
+| `style` | Column naming convention: `raw` (default), `ecs` / `beats`, or `otel`. |
+
+```yaml
+enrichment:
+  - type: host_info
+    style: ecs          # Use ECS/Beats dotted column names
+```
+
+**Column names by style:**
+
+| Semantic | `raw` (default) | `ecs` / `beats` | `otel` |
+|----------|-----------------|-----------------|--------|
+| hostname | `hostname` | `host.hostname` | `host.name` |
+| OS type | `os_type` | `host.os.type` | `os.type` |
+| architecture | `os_arch` | `host.architecture` | `host.arch` |
+| OS name | `os_name` | `host.os.name` | `os.name` |
+| OS family | `os_family` | `host.os.family` | `os.family` |
+| OS version | `os_version` | `host.os.version` | `os.version` |
+| kernel | `os_kernel` | `host.os.kernel` | `os.kernel` |
+| machine id | `host_id` | `host.id` | `host.id` |
+| boot id | `boot_id` | `host.boot.id` | `host.boot.id` |
 
 ```sql
-SELECT l.*, h.hostname, h.os_type
+SELECT l.*, h.hostname, h.os_type, h.os_name, h.os_kernel
 FROM logs l CROSS JOIN host_info h
 ```
 
