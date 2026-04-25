@@ -83,6 +83,12 @@ impl ScanConfig {
 
 /// Parse a byte slice as a signed 64-bit integer.
 /// Returns None on overflow or non-digit bytes.
+///
+/// No Kani contract needed: the function handles all inputs gracefully via
+/// checked_mul/checked_add. The only precondition would be "bytes is not
+/// empty", but returning None on empty is the intended behavior — expressing
+/// this as a #[requires] would force every caller to guard against empty
+/// input even though the function already does the right thing.
 #[inline(always)]
 pub fn parse_int_fast(bytes: &[u8]) -> Option<i64> {
     if bytes.is_empty() {
@@ -119,6 +125,10 @@ pub fn parse_int_fast(bytes: &[u8]) -> Option<i64> {
 }
 
 /// Parse a byte slice as f64 using the standard library.
+///
+/// No Kani contract needed: returns None on invalid UTF-8 or unparseable content.
+/// The function is total over byte slices (always produces a result) — no
+/// meaningful precondition exists that would reduce proof burden.
 #[inline(always)]
 pub fn parse_float_fast(bytes: &[u8]) -> Option<f64> {
     let s = core::str::from_utf8(bytes).ok()?;

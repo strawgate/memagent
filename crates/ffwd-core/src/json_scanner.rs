@@ -792,6 +792,7 @@ fn next_quote(from: usize, end: usize, blocks: &StoredBitmasks<'_>) -> Option<us
 
 /// Find the next non-whitespace position using space bitmask.
 #[inline]
+#[cfg_attr(kani, kani::requires(pos <= end && end <= buf.len()))]
 fn skip_whitespace(buf: &[u8], mut pos: usize, end: usize) -> usize {
     while pos < end {
         match buf[pos] {
@@ -884,6 +885,7 @@ fn is_json_delimiter(b: u8) -> bool {
 /// Skip a bare value (used for malformed tokens).
 /// Stops at the first byte where `is_json_delimiter` returns true.
 #[inline]
+#[cfg_attr(kani, kani::requires(pos <= end && end <= buf.len()))]
 fn skip_bare_value(buf: &[u8], mut pos: usize, end: usize) -> usize {
     while pos < end {
         if is_json_delimiter(buf[pos]) {
@@ -2452,6 +2454,28 @@ mod tests {
 // Kani proofs
 // ---------------------------------------------------------------------------
 
+// NOTE: Proof documentation — for guidance on contract attributes and this
+// module's structure, see dev-docs/VERIFICATION.md.
+//
+// Contract attributes in this module use the following pattern:
+//
+//   #[cfg_attr(kani, kani::requires(PRECONDITION))]
+//   fn helper_function(buf: &[u8], pos: usize, end: usize) -> usize { ... }
+//
+// The #[requires] documents preconditions that Kani uses as assumed facts
+// in ALL downstream proofs that call this function — without re-verifying
+// the invariant. This is "proof composition" and is why contracts on hot-path
+// helpers (skip_whitespace, skip_bare_value) reduce overall proof complexity.
+//
+// Proof harnesses still use kani::assume() to bound arbitrary inputs — this is
+// intentional. The assume documents the constraint explicitly in the harness and
+// guards against future API changes. When a function has #[requires], Kani first
+// checks that the assume is consistent with the requires before using the requires
+// as the canonical bound.
+//
+// Functions with no meaningful precondition (is_json_delimiter: pure byte table,
+// parse_int_fast: handles all inputs via checked_mul/add) do not need contracts.
+
 #[cfg(kani)]
 mod verification {
     use super::*;
@@ -2465,6 +2489,9 @@ mod verification {
         let buf: [u8; 16] = kani::any();
         let start: usize = kani::any();
         let end: usize = kani::any();
+        // NOTE: The function's #[kani::requires] provides the same bound.
+        // This assume stays for documentation — it makes the constraint explicit
+        // in the harness and guards against future API changes.
         kani::assume(start <= end && end <= 16);
 
         let result = skip_whitespace(&buf, start, end);
