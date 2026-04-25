@@ -189,8 +189,8 @@ impl Pipeline {
 /// Scan + SQL transform accumulated bytes into a `ProcessedBatch`.
 ///
 /// Used by the turmoil async input loop. On scan/transform error,
-/// returns a sentinel empty-batch message carrying the checkpoints
-/// so the pipeline can reject those offsets.
+/// returns `None` and leaves checkpoints unsubmitted so the source
+/// will replay those offsets on restart.
 #[cfg(feature = "turmoil")]
 pub(super) async fn scan_and_transform_for_send(
     input: &mut IngestState,

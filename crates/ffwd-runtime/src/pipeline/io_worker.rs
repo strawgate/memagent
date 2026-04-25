@@ -505,12 +505,12 @@ fn flush_bytes_direct(
 }
 
 // ---------------------------------------------------------------------------
-// process_io_events
+// process_ingest_events
 // ---------------------------------------------------------------------------
 
 #[cfg(not(feature = "turmoil"))]
 #[allow(clippy::too_many_arguments)]
-pub(super) fn process_io_events(
+pub(super) fn process_ingest_events(
     input: &mut IngestState,
     input_name: &Arc<str>,
     events: Vec<SourceEvent>,
@@ -888,7 +888,7 @@ pub(super) fn io_worker_loop(
                                 input.source.is_finished(),
                                 cadence.signal.had_data,
                             );
-                            if !process_io_events(
+                            if !process_ingest_events(
                                 &mut input,
                                 &input_name,
                                 events,
@@ -1018,7 +1018,7 @@ pub(super) fn io_worker_loop(
                         metrics.inc_cadence_idle_sleep();
                         std::thread::sleep(poll_interval);
                     }
-                } else if !process_io_events(
+                } else if !process_ingest_events(
                     &mut input,
                     &input_name,
                     events,
