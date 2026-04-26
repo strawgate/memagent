@@ -188,7 +188,7 @@ pub fn encode_bytes_field(buf: &mut Vec<u8>, field_number: u32, data: &[u8]) {
 /// Wire type 2 = length-delimited. Used as a building block by
 /// `bytes_field_total_size`.
 #[inline(always)]
-#[verified(kani = "verify_tag_size")]
+#[verified(kani = "verify_tag_size_vs_oracle")]
 pub const fn tag_size(field_number: u32) -> usize {
     varint_len(((field_number as u64) << 3) | 2)
 }
@@ -196,7 +196,7 @@ pub const fn tag_size(field_number: u32) -> usize {
 /// Compute the total encoded size of a length-delimited field
 /// (tag varint + length varint + data), without writing anything.
 #[inline(always)]
-#[verified(kani = "verify_bytes_field_total_size")]
+#[verified(kani = "verify_bytes_field_total_size_vs_oracle")]
 pub const fn bytes_field_total_size(field_number: u32, data_len: usize) -> usize {
     tag_size(field_number) + varint_len(data_len as u64) + data_len
 }
@@ -211,7 +211,7 @@ pub const fn bytes_field_size(field_number: u32, data_len: usize) -> usize {
 /// Write a fixed32 field (tag + 4 bytes little-endian).
 /// Used for LogRecord field 8 (`flags`), wire type 5.
 #[inline(always)]
-#[allow_unproven]
+#[verified(kani = "verify_encode_fixed32")]
 pub fn encode_fixed32(buf: &mut Vec<u8>, field_number: u32, value: u32) {
     encode_tag(buf, field_number, 5); // wire type 5 = 32-bit fixed
     buf.extend_from_slice(&value.to_le_bytes());
@@ -248,7 +248,7 @@ pub fn decode_varint(buf: &[u8], pos: usize) -> Result<(u64, usize), &'static st
 }
 
 /// Decode a protobuf tag into `(field_number, wire_type, new_pos)`.
-#[allow_unproven]
+#[verified(kani = "verify_decode_tag_vs_oracle")]
 #[trust_boundary]
 pub fn decode_tag(buf: &[u8], pos: usize) -> Result<(u32, u8, usize), &'static str> {
     let (tag, new_pos) = decode_varint(buf, pos)?;
@@ -259,7 +259,7 @@ pub fn decode_tag(buf: &[u8], pos: usize) -> Result<(u32, u8, usize), &'static s
 
 /// Skip a protobuf field value based on its wire type. Returns the new
 /// position after the field value.
-#[allow_unproven]
+#[verified(kani = "verify_skip_field_vs_oracle")]
 #[trust_boundary]
 pub fn skip_field(buf: &[u8], wire_type: u8, pos: usize) -> Result<usize, &'static str> {
     match wire_type {
@@ -270,10 +270,11 @@ pub fn skip_field(buf: &[u8], wire_type: u8, pos: usize) -> Result<usize, &'stat
         }
         1 => {
             // 64-bit fixed.
-            if pos + 8 > buf.len() {
+            let end = pos.checked_add(8).ok_or("skip: truncated fixed64")?;
+            if end > buf.len() {
                 return Err("skip: truncated fixed64");
             }
-            Ok(pos + 8)
+            Ok(end)
         }
         2 => {
             // Length-delimited.
@@ -289,10 +290,11 @@ pub fn skip_field(buf: &[u8], wire_type: u8, pos: usize) -> Result<usize, &'stat
         }
         5 => {
             // 32-bit fixed.
-            if pos + 4 > buf.len() {
+            let end = pos.checked_add(4).ok_or("skip: truncated fixed32")?;
+            if end > buf.len() {
                 return Err("skip: truncated fixed32");
             }
-            Ok(pos + 4)
+            Ok(end)
         }
         _ => Err("skip: unsupported wire type"),
     }
@@ -414,7 +416,7 @@ fn eq_ignore_case_match(a: &[u8], b: &[u8]) -> bool {
 
 /// Case-insensitive 3-byte comparison.
 #[inline(always)]
-#[allow_unproven]
+#[verified(kani = "verify_eq_ignore_case_3_no_false_positives_err")]
 fn eq_ignore_case_3(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20 && a[1] | 0x20 == b[1] | 0x20 && a[2] | 0x20 == b[2] | 0x20
 }
@@ -1213,7 +1215,7 @@ mod tests {
 mod verification {
     use super::*;
     use alloc::{vec, vec::Vec};
-    use ffwd_kani::proto::decode_varint_oracle;
+    use ffwd_kani::proto::{decode_tag_oracle, decode_varint_oracle, skip_field_oracle};
 
     // NOTE: encode_varint and encode_tag take `&mut Vec<u8>` and return `()`.
     // In our current Kani version/configuration used in CI, the contract system
@@ -1623,6 +1625,37 @@ mod verification {
         assert!(decoded == value, "fixed64 value mismatch");
     }
 
+    /// Prove encode_fixed32 produces exactly tag + 4 LE bytes.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    pub(super) fn verify_encode_fixed32() {
+        let field_number: u32 = kani::any();
+        let value: u32 = kani::any();
+        kani::assume(field_number > 0 && field_number <= 1000);
+
+        let mut buf = Vec::with_capacity(14);
+        encode_fixed32(&mut buf, field_number, value);
+
+        // Tag + 4 bytes
+        let tag_val = ((field_number as u64) << 3) | 5;
+        let tag_len = varint_len(tag_val);
+        assert!(buf.len() == tag_len + 4, "fixed32 size wrong");
+
+        // Verify tag bytes encode correct field_number + wire_type
+        let mut tag_buf = Vec::new();
+        encode_varint(&mut tag_buf, tag_val);
+        let mut i = 0;
+        while i < tag_len {
+            assert!(buf[i] == tag_buf[i], "tag byte mismatch");
+            i += 1;
+        }
+
+        // Last 4 bytes are the value in little-endian
+        let val_bytes = &buf[tag_len..];
+        let decoded = u32::from_le_bytes(val_bytes.try_into().unwrap());
+        assert!(decoded == value, "fixed32 value mismatch");
+    }
+
     /// Prove encode_varint_field produces tag + varint value of the predicted size.
     ///
     /// Byte-level correctness of the individual tag and value encodings is already
@@ -1781,6 +1814,17 @@ mod verification {
         // Day 32
         let ts = b"2024-01-32T10:30:00Z";
         assert!(parse_timestamp_nanos(ts) == None);
+    }
+
+    /// Prove eq_ignore_case_3 agrees with eq_ignore_case_match for ERR.
+    #[kani::proof]
+    #[kani::unwind(4)] // eq_ignore_case_match: Zip over 3-byte slice + 1 terminator
+    pub(super) fn verify_eq_ignore_case_3_no_false_positives_err() {
+        let input: [u8; 3] = kani::any();
+        let target = b"ERR";
+        if eq_ignore_case_3(&input, target) {
+            assert!(eq_ignore_case_match(&input, target));
+        }
     }
 
     /// Prove eq_ignore_case_4 agrees with eq_ignore_case_match for INFO.
@@ -2153,6 +2197,64 @@ mod verification {
                 assert_eq!(prod_pos, pos + ora_pos, "pos mismatch");
                 kani::cover!(ora_val < 128, "single-byte result");
                 kani::cover!(ora_val >= 128, "multi-byte result");
+            }
+        }
+    }
+
+    /// Oracle equivalence: `decode_tag` matches `ffwd_kani::proto::decode_tag_oracle`
+    /// for all bounded byte inputs.
+    #[kani::proof]
+    #[kani::unwind(22)]
+    pub(super) fn verify_decode_tag_vs_oracle() {
+        let data: [u8; 20] = kani::any();
+        let pos: usize = kani::any_where(|&p| p < data.len());
+
+        let ora_result = decode_tag_oracle(&data, pos);
+        let prod_result = decode_tag(&data, pos);
+
+        match ora_result {
+            None => {
+                assert!(prod_result.is_err());
+            }
+            Some((ora_fn, ora_wt, ora_pos)) => {
+                assert!(prod_result.is_ok());
+                let (prod_fn, prod_wt, prod_pos) = prod_result.unwrap();
+                assert_eq!(prod_fn, ora_fn);
+                assert_eq!(prod_wt, ora_wt);
+                assert_eq!(prod_pos, ora_pos);
+                kani::cover!(ora_fn <= 15, "single-byte tag reachable");
+                kani::cover!(ora_fn > 15, "multi-byte tag reachable");
+            }
+        }
+    }
+
+    /// Oracle equivalence: `skip_field` matches `ffwd_kani::proto::skip_field_oracle`
+    /// for all bounded byte inputs and valid wire types.
+    #[kani::proof]
+    #[kani::unwind(22)]
+    pub(super) fn verify_skip_field_vs_oracle() {
+        let data: [u8; 32] = kani::any();
+        let wire_type: u8 = kani::any();
+        let pos: usize = kani::any_where(|&p| p < data.len());
+
+        // Only test supported wire types to avoid oracle/prod both returning None
+        // for the same "unsupported wire type" reason
+        kani::assume(matches!(wire_type, 0 | 1 | 2 | 5));
+
+        let ora_result = skip_field_oracle(&data, wire_type, pos);
+        let prod_result = skip_field(&data, wire_type, pos);
+
+        match ora_result {
+            None => {
+                assert!(prod_result.is_err());
+            }
+            Some(ora_end) => {
+                assert!(prod_result.is_ok());
+                assert_eq!(prod_result.unwrap(), ora_end);
+                kani::cover!(wire_type == 0, "varint wire type reachable");
+                kani::cover!(wire_type == 1, "fixed64 wire type reachable");
+                kani::cover!(wire_type == 2, "length-delimited wire type reachable");
+                kani::cover!(wire_type == 5, "fixed32 wire type reachable");
             }
         }
     }
