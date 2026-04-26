@@ -92,7 +92,11 @@ impl ScanConfig {
 #[inline(always)]
 pub fn parse_int_fast(bytes: &[u8]) -> Option<i64> {
     let (&first, rest) = bytes.split_first()?;
-    let (neg, digits) = if first == b'-' { (true, rest) } else { (false, bytes) };
+    let (neg, digits) = if first == b'-' {
+        (true, rest)
+    } else {
+        (false, bytes)
+    };
     if digits.is_empty() {
         return None;
     }

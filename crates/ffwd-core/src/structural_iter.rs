@@ -122,7 +122,9 @@ impl<'a> StructuralIter<'a> {
             block
         } else {
             let mut padded = [b' '; 64];
-            if let Some(src) = self.buf.get(self.block_offset..self.block_offset + remaining)
+            if let Some(src) = self
+                .buf
+                .get(self.block_offset..self.block_offset + remaining)
                 && let Some(dst) = padded.get_mut(..src.len())
             {
                 dst.copy_from_slice(src);
