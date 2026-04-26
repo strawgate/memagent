@@ -223,13 +223,12 @@ pub(super) async fn scan_and_transform_for_send(
     }
 
     let t1 = tokio::time::Instant::now();
-    let result = match transform.transform.execute(batch).await {
+    let result = match transform.transform.execute_async(batch).await {
         Ok(r) => r,
         Err(e) => {
             metrics.inc_transform_error();
             metrics.inc_dropped_batch();
             tracing::warn!(input = transform.input_name.as_str(), error = %e, "transform error");
-            // Checkpoints dropped — at-least-once: data re-read on restart.
             return None;
         }
     };
@@ -264,16 +263,12 @@ pub(super) async fn transform_direct_batch_for_send(
     }
 
     let t0 = tokio::time::Instant::now();
-    let result = match transform.transform.execute(batch).await {
+    let result = match transform.transform.execute_async(batch).await {
         Ok(r) => r,
         Err(e) => {
             metrics.inc_transform_error();
             metrics.inc_dropped_batch();
-            tracing::warn!(
-                input = transform.input_name.as_str(),
-                error = %e,
-                "transform error"
-            );
+            tracing::warn!(input = transform.input_name.as_str(), error = %e, "transform error");
             return None;
         }
     };

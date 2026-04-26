@@ -27,12 +27,8 @@ use super::source_metadata::{cri_metadata_for_batch, source_metadata_for_batch};
 /// Run the CPU worker loop for one input.
 ///
 /// Receives raw bytes from the I/O worker, scans them into Arrow RecordBatches,
-/// runs the per-input SQL transform, and sends `ProcessedBatch` to the
-/// pipeline's main select loop.
-///
-/// Creates a lightweight tokio current-thread runtime for DataFusion SQL
-/// execution (which is async internally). The runtime is created once and
-/// reused for all batches.
+/// runs the per-input SQL transform via `execute_async` with a reused runtime,
+/// and sends `ProcessedBatch` to the pipeline's main select loop.
 #[cfg(not(feature = "turmoil"))]
 pub(super) fn cpu_worker_loop(
     mut rx: mpsc::Receiver<IoWorkItem>,
@@ -154,7 +150,7 @@ pub(super) fn cpu_worker_loop(
         }
 
         let t1 = Instant::now();
-        let result = match rt.block_on(transform.transform.execute(batch)) {
+        let result = match rt.block_on(transform.transform.execute_async(batch)) {
             Ok(r) => {
                 consecutive_transform_errors = 0;
                 r

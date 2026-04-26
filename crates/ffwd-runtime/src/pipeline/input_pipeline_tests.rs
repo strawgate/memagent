@@ -302,8 +302,10 @@ fn append_cri_metadata_for_data_pads_prior_and_later_rows() {
     assert!(buffered.spans[2].values.is_none());
 }
 
+#[cfg(feature = "datafusion")]
 #[test]
 fn cri_metadata_columns_are_queryable_before_sql() {
+    use crate::transform::SqlTransform;
     let mut transform =
         SqlTransform::new("SELECT _timestamp, _stream, msg FROM logs").expect("sql");
     let mut scanner = Scanner::new(transform.scan_config());
@@ -314,12 +316,8 @@ fn cri_metadata_columns_are_queryable_before_sql() {
     metadata.append_value(b"2024-01-15T10:30:00Z", b"stdout");
     let attached = cri_metadata_for_batch(scanned, Some(metadata)).expect("attach");
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    let result = rt
-        .block_on(transform.execute(attached))
+    let result = transform
+        .execute_blocking(attached)
         .expect("transform should see CRI metadata");
 
     let timestamp = result
@@ -1299,8 +1297,10 @@ fn source_metadata_attach_rejects_row_count_mismatch() {
     assert!(err.to_string().contains("row count mismatch"));
 }
 
+#[cfg(feature = "datafusion")]
 #[test]
 fn public_source_path_attached_before_sql_is_queryable() {
+    use crate::transform::SqlTransform;
     let mut transform = SqlTransform::new(r#"SELECT "file.path", msg FROM logs"#).expect("sql");
     let mut scanner = Scanner::new(transform.scan_config());
     let scanned = scanner
@@ -1324,12 +1324,8 @@ fn public_source_path_attached_before_sql_is_queryable() {
     )
     .expect("attach");
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    let result = rt
-        .block_on(transform.execute(attached))
+    let result = transform
+        .execute_blocking(attached)
         .expect("transform should see source path");
     let source_path = result
         .column_by_name(field_names::ECS_FILE_PATH)
@@ -1340,8 +1336,10 @@ fn public_source_path_attached_before_sql_is_queryable() {
     assert_eq!(source_path.value(0), "/var/log/pods/ns_pod_uid/c/0.log");
 }
 
+#[cfg(feature = "datafusion")]
 #[test]
 fn select_star_includes_public_source_metadata_style_columns() {
+    use crate::transform::SqlTransform;
     let mut transform = SqlTransform::new(r#"SELECT * FROM logs"#).expect("sql");
     let mut scanner = Scanner::new(transform.scan_config());
     let scanned = scanner
@@ -1365,12 +1363,8 @@ fn select_star_includes_public_source_metadata_style_columns() {
     )
     .expect("attach");
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    let result = rt
-        .block_on(transform.execute(attached))
+    let result = transform
+        .execute_blocking(attached)
         .expect("transform should preserve source metadata columns");
 
     assert_eq!(result.num_rows(), 1);
@@ -1378,8 +1372,10 @@ fn select_star_includes_public_source_metadata_style_columns() {
     assert!(result.column_by_name("msg").is_some());
 }
 
+#[cfg(feature = "datafusion")]
 #[test]
 fn select_star_does_not_attach_source_metadata() {
+    use crate::transform::SqlTransform;
     let mut transform = SqlTransform::new("SELECT * FROM logs").expect("sql");
     let mut scanner = Scanner::new(transform.scan_config());
     let scanned = scanner
@@ -1400,19 +1396,17 @@ fn select_star_does_not_attach_source_metadata() {
     )
     .expect("attach");
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    let result = rt
-        .block_on(transform.execute(attached))
+    let result = transform
+        .execute_blocking(attached)
         .expect("transform should keep wildcard projection narrow");
 
     assert!(result.column_by_name(field_names::SOURCE_ID).is_none());
 }
 
+#[cfg(feature = "datafusion")]
 #[test]
 fn explicit_projection_preserves_new_source_metadata_columns() {
+    use crate::transform::SqlTransform;
     let mut transform = SqlTransform::new("SELECT msg, __source_id FROM logs").expect("sql");
     let mut scanner = Scanner::new(transform.scan_config());
     let scanned = scanner
@@ -1434,12 +1428,8 @@ fn explicit_projection_preserves_new_source_metadata_columns() {
     )
     .expect("attach");
 
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("runtime");
-    let result = rt
-        .block_on(transform.execute(attached))
+    let result = transform
+        .execute_blocking(attached)
         .expect("transform should preserve explicit source metadata");
 
     let source_id = result

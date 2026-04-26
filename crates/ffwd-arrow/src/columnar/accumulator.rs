@@ -500,6 +500,7 @@ pub struct FinalizationMode {
 /// (row, field), so `facts.len() == num_rows ∧ last == num_rows - 1` is
 /// sufficient.  When dedup is disabled duplicate writes are possible, breaking
 /// the pigeonhole premise, so we conservatively return false.
+#[allow(clippy::indexing_slicing)]
 fn is_dense<T>(facts: &[(u32, T)], num_rows: usize, dedup: bool) -> bool {
     dedup
         && facts.len() == num_rows
@@ -518,6 +519,7 @@ fn is_dense<T>(facts: &[(u32, T)], num_rows: usize, dedup: bool) -> bool {
 ///
 /// Returns `(values, dense)`. Callers use `dense` to decide whether a
 /// validity bitmap is needed.
+#[allow(clippy::indexing_slicing)]
 fn scatter_values<T: Default + Copy>(
     facts: &[(u32, T)],
     num_rows: usize,

@@ -188,7 +188,7 @@ pub fn encode_bytes_field(buf: &mut Vec<u8>, field_number: u32, data: &[u8]) {
 /// Wire type 2 = length-delimited. Used as a building block by
 /// `bytes_field_total_size`.
 #[inline(always)]
-#[verified(kani = "verify_tag_size")]
+#[verified(kani = "verify_tag_size_vs_oracle")]
 pub const fn tag_size(field_number: u32) -> usize {
     varint_len(((field_number as u64) << 3) | 2)
 }
@@ -196,7 +196,7 @@ pub const fn tag_size(field_number: u32) -> usize {
 /// Compute the total encoded size of a length-delimited field
 /// (tag varint + length varint + data), without writing anything.
 #[inline(always)]
-#[verified(kani = "verify_bytes_field_total_size")]
+#[verified(kani = "verify_bytes_field_total_size_vs_oracle")]
 pub const fn bytes_field_total_size(field_number: u32, data_len: usize) -> usize {
     tag_size(field_number) + varint_len(data_len as u64) + data_len
 }

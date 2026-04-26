@@ -370,6 +370,7 @@ impl ColumnarBatchBuilder {
     /// silently ignored and the dedup slot is NOT consumed — a subsequent
     /// correct-type write to the same field will still succeed.
     #[inline]
+    #[allow(clippy::indexing_slicing)]
     pub fn write_i64(&mut self, handle: FieldHandle, value: i64) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
@@ -384,6 +385,7 @@ impl ColumnarBatchBuilder {
 
     /// Write an f64 value for the given field in the current row.
     #[inline]
+    #[allow(clippy::indexing_slicing)]
     pub fn write_f64(&mut self, handle: FieldHandle, value: f64) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
@@ -398,6 +400,7 @@ impl ColumnarBatchBuilder {
 
     /// Write a bool value for the given field in the current row.
     #[inline]
+    #[allow(clippy::indexing_slicing)]
     pub fn write_bool(&mut self, handle: FieldHandle, value: bool) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
@@ -421,6 +424,7 @@ impl ColumnarBatchBuilder {
     ///
     /// Returns `Err` if the string buffer would exceed u32 addressable range.
     #[inline]
+    #[allow(clippy::indexing_slicing)]
     pub fn write_str(&mut self, handle: FieldHandle, value: &str) -> Result<(), BuilderError> {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
@@ -444,6 +448,7 @@ impl ColumnarBatchBuilder {
     /// Write a `StringRef` directly (for zero-copy producers that already
     /// have offsets into an input buffer).
     #[inline]
+    #[allow(clippy::indexing_slicing)]
     pub fn write_str_ref(&mut self, handle: FieldHandle, sref: StringRef) {
         debug_assert_eq!(self.lifecycle.state(), BuilderState::InRow);
         debug_assert!(handle.index() < self.columns.len());
@@ -467,6 +472,7 @@ impl ColumnarBatchBuilder {
     ///
     /// Returns `Err` if the string buffer would exceed u32 addressable range.
     #[inline]
+    #[allow(clippy::indexing_slicing)]
     pub fn write_str_bytes(
         &mut self,
         handle: FieldHandle,
@@ -502,6 +508,7 @@ impl ColumnarBatchBuilder {
     /// exceed `u32::MAX`, or if extending the generated string buffer would
     /// overflow addressable `usize` space.
     #[inline]
+    #[allow(clippy::indexing_slicing)]
     pub fn write_hex_bytes_lower(
         &mut self,
         handle: FieldHandle,
@@ -538,6 +545,7 @@ impl ColumnarBatchBuilder {
     /// Returns `BuilderError::StringBufferOverflow` if the value is not within
     /// the original buffer bounds or the offset exceeds `u32::MAX`.
     #[inline]
+    #[allow(clippy::indexing_slicing)]
     pub fn write_input_ref(
         &mut self,
         handle: FieldHandle,

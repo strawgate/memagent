@@ -22,6 +22,7 @@ impl StreamingBuilder {
     /// shares the input buffer via Bytes reference counting (zero-copy).
     /// When decoded strings exist, the original and decoded buffers are exposed
     /// as separate Arrow StringView blocks to avoid copying the whole input.
+    #[allow(clippy::indexing_slicing)]
     pub fn finish_batch(&mut self) -> Result<RecordBatch, ArrowError> {
         debug_assert_eq!(
             self.lifecycle.state(),
@@ -348,6 +349,7 @@ impl StreamingBuilder {
     /// This is the optimal persistence path: zero-copy scan speed during
     /// parsing, single bulk copy during finalization, and the resulting
     /// `StringArray` compresses efficiently via IPC zstd.
+    #[allow(clippy::indexing_slicing)]
     pub fn finish_batch_detached(&mut self) -> Result<RecordBatch, ArrowError> {
         debug_assert_eq!(
             self.lifecycle.state(),
