@@ -1391,3 +1391,35 @@ fn issue_2178_reject_otlp_max_recv_message_size_bytes_zero() {
         "unexpected error: {err}"
     );
 }
+
+#[test]
+fn issue_2578_accept_loki_full_push_path_endpoint() {
+    let yaml = r"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+    outputs:
+      - type: loki
+        endpoint: http://localhost:3100/loki/api/v1/push
+";
+    Config::load_str(yaml).expect("full push path in endpoint should be accepted (normalized by output)");
+}
+
+#[test]
+fn issue_2578_accept_loki_full_push_path_with_trailing_slash() {
+    let yaml = r"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+    outputs:
+      - type: loki
+        endpoint: http://localhost:3100/loki/api/v1/push/
+";
+    Config::load_str(yaml).expect("push path with trailing slash should be accepted (normalized by output)");
+}
