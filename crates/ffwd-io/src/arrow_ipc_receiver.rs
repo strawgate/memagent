@@ -11,8 +11,6 @@
 //! `application/vnd.apache.arrow.stream+lz4` (lz4 compressed).
 //! Also supports `Content-Encoding: zstd` and `Content-Encoding: lz4` headers.
 
-#![allow(clippy::indexing_slicing)]
-
 use std::io;
 use std::io::Read as _;
 use std::sync::mpsc;
@@ -359,12 +357,14 @@ fn decompress_zstd(body: &[u8], max_message_size_bytes: usize) -> Result<Vec<u8>
 /// size against `max_message_size_bytes` *before* calling it to prevent a
 /// forged prefix from triggering an unbounded allocation (DoS vector).
 fn decompress_lz4(body: &[u8], max_message_size_bytes: usize) -> Result<Vec<u8>, InputError> {
-    if body.len() < 4 {
+    let &[a, b, c, d] = body.get(..4).ok_or_else(|| {
+        InputError::Receiver("lz4 decompression failed: missing size prefix".to_string())
+    })? else {
         return Err(InputError::Receiver(
             "lz4 decompression failed: missing size prefix".to_string(),
         ));
-    }
-    let declared_len = u32::from_le_bytes([body[0], body[1], body[2], body[3]]) as usize;
+    };
+    let declared_len = u32::from_le_bytes([a, b, c, d]) as usize;
     if declared_len > max_message_size_bytes {
         return Err(InputError::Receiver(
             "decompressed payload too large".to_string(),
