@@ -27,12 +27,8 @@ use super::source_metadata::{cri_metadata_for_batch, source_metadata_for_batch};
 /// Run the CPU worker loop for one input.
 ///
 /// Receives raw bytes from the I/O worker, scans them into Arrow RecordBatches,
-/// runs the per-input SQL transform, and sends `ProcessedBatch` to the
-/// pipeline's main select loop.
-///
-/// Creates a lightweight tokio current-thread runtime for DataFusion SQL
-/// execution (which is async internally). The runtime is created once and
-/// reused for all batches.
+/// runs the per-input SQL transform via `execute_blocking`, and sends
+/// `ProcessedBatch` to the pipeline's main select loop.
 #[cfg(not(feature = "turmoil"))]
 pub(super) fn cpu_worker_loop(
     mut rx: mpsc::Receiver<IoWorkItem>,
