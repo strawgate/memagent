@@ -507,7 +507,8 @@ impl LokiSink {
         payload: String,
         row_count: u64,
     ) -> io::Result<super::sink::SendResult> {
-        let url = format!("{}/loki/api/v1/push", self.config.endpoint);
+        let base = self.config.endpoint.trim_end_matches("/loki/api/v1/push");
+        let url = format!("{base}/loki/api/v1/push");
         let byte_len = payload.len() as u64;
 
         let mut req = self
@@ -2043,6 +2044,39 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].0, metadata.observed_time_ns);
         assert_eq!(entries[1].0, metadata.observed_time_ns);
+    }
+}
+
+#[cfg(test)]
+mod loki_endpoint_normalization {
+
+    fn normalize_endpoint(endpoint: &str) -> String {
+        endpoint
+            .trim_end_matches('/')
+            .trim_end_matches("/loki/api/v1/push")
+            .to_string()
+    }
+
+    #[test]
+    fn endpoint_with_push_path_normalized() {
+        assert_eq!(
+            normalize_endpoint("http://localhost:3100/loki/api/v1/push"),
+            "http://localhost:3100"
+        );
+        assert_eq!(
+            normalize_endpoint("http://localhost:3100/loki/api/v1/push/"),
+            "http://localhost:3100"
+        );
+    }
+
+    #[test]
+    fn endpoint_without_push_path_unchanged() {
+        assert_eq!(normalize_endpoint("http://localhost:3100"), "http://localhost:3100");
+        assert_eq!(normalize_endpoint("http://localhost:3100/"), "http://localhost:3100");
+        assert_eq!(
+            normalize_endpoint("http://localhost:3100/loki/api/v1"),
+            "http://localhost:3100/loki/api/v1"
+        );
     }
 }
 
