@@ -119,6 +119,12 @@ pub fn prefix_xor_oracle(mut bitmask: u64) -> u64 {
 ///
 /// Contract: output length is bounded by input length times 6 (worst case:
 /// each byte becomes \u00XX = 6 bytes).
+///
+/// # Oracle Design Note
+/// This is a "golden copy" — structurally identical to `json_escape_bytes`
+/// in `ffwd-core::cri`. This pattern provides no-panic and capacity-bound
+/// verification, but shared logic bugs would escape detection. An independent
+/// spec-table or algorithm-variant oracle could catch shared bugs.
 #[cfg_attr(kani, kani::ensures(|result: &Vec<u8>| {
     result.len() <= src.len().saturating_mul(6)
 }))]

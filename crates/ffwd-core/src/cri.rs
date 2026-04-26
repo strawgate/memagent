@@ -1229,6 +1229,11 @@ mod verification {
 
     /// Oracle equivalence: `json_escape_bytes` matches `ffwd_kani::bytes::json_escape_oracle`
     /// for all byte-slice inputs of length at most 16.
+    ///
+    /// # Oracle Design Note
+    /// The oracle is a golden copy (see `ffwd_kani::bytes::json_escape_oracle` docs).
+    /// This proof provides no-panic and output-bound guarantees, but would not detect
+    /// shared logic bugs in both implementations.
     #[kani::proof]
     #[kani::unwind(100)]
     pub(super) fn verify_json_escape_bytes_vs_oracle() {
