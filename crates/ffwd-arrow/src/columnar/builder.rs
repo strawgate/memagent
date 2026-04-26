@@ -654,7 +654,6 @@ impl ColumnarBatchBuilder {
     }
 
     /// Core materialization — shared by all finalization paths.
-    #[allow(clippy::indexing_slicing)]
     fn materialize_all(
         &self,
         num_rows: usize,
@@ -664,7 +663,11 @@ impl ColumnarBatchBuilder {
         let mut arrays = Vec::with_capacity(self.plan.len());
 
         for (handle, name, _field_mode) in self.plan.fields() {
-            let col = &self.columns[handle.index()];
+            let col = self.columns.get(handle.index()).ok_or_else(|| {
+                BuilderError::Arrow(ArrowError::InvalidArgumentError(
+                    "columnar plan/storage invariant violated".to_string(),
+                ))
+            })?;
             match col.materialize(name, num_rows, mode.clone(), self.dedup_enabled)? {
                 Some((field, array)) => {
                     schema_fields.push(field);
