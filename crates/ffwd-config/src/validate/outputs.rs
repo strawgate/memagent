@@ -3,7 +3,7 @@ use crate::types::{
 };
 use std::collections::HashMap;
 
-use super::common::validation_message;
+use super::common::{sanitize_identifier, validation_message};
 use super::endpoints::{validate_endpoint_url, validate_host_port};
 
 fn validate_url_output_endpoint(
@@ -93,22 +93,6 @@ fn validate_elasticsearch_index(
     Ok(())
 }
 
-/// Sanitize a Loki label name the same way the Loki runtime does: replace
-/// any character that is not `[a-zA-Z0-9_]` (or not `[a-zA-Z_]` at position 0)
-/// with `_`.
-fn sanitize_loki_label_name(name: &str) -> String {
-    let mut out = String::with_capacity(name.len().max(1));
-    for (idx, ch) in name.chars().enumerate() {
-        let valid = if idx == 0 {
-            ch.is_ascii_alphabetic() || ch == '_'
-        } else {
-            ch.is_ascii_alphanumeric() || ch == '_'
-        };
-        out.push(if valid { ch } else { '_' });
-    }
-    if out.is_empty() { "_".to_string() } else { out }
-}
-
 fn validate_loki_labels(
     pipeline_name: &str,
     label: &str,
@@ -129,7 +113,7 @@ fn validate_loki_labels(
     if let Some(static_labels) = static_labels {
         let mut seen: HashMap<String, &str> = HashMap::new();
         for key in static_labels.keys() {
-            let sanitized = sanitize_loki_label_name(key);
+            let sanitized = sanitize_identifier(key);
             if let Some(existing) = seen.get(&sanitized) {
                 return Err(ConfigError::Validation(format!(
                     "pipeline '{pipeline_name}' output '{label}': loki static_labels key '{key}' sanitizes to '{sanitized}' which collides with existing key '{existing}'"
@@ -143,7 +127,7 @@ fn validate_loki_labels(
     if let Some(label_columns) = label_columns {
         let mut seen: HashMap<String, &str> = HashMap::new();
         for col in label_columns {
-            let sanitized = sanitize_loki_label_name(col);
+            let sanitized = sanitize_identifier(col);
             if let Some(existing) = seen.get(&sanitized) {
                 return Err(ConfigError::Validation(format!(
                     "pipeline '{pipeline_name}' output '{label}': loki label_columns entry '{col}' sanitizes to '{sanitized}' which collides with existing entry '{existing}'"
@@ -158,13 +142,13 @@ fn validate_loki_labels(
     if let (Some(static_labels), Some(label_columns)) = (static_labels, label_columns) {
         let mut sanitized_static: HashMap<String, &str> = HashMap::new();
         for key in static_labels.keys() {
-            sanitized_static.insert(sanitize_loki_label_name(key), key.as_str());
+            sanitized_static.insert(sanitize_identifier(key), key.as_str());
         }
         if let Some(conflict) = label_columns
             .iter()
-            .find(|col| sanitized_static.contains_key(&sanitize_loki_label_name(col)))
+            .find(|col| sanitized_static.contains_key(&sanitize_identifier(col)))
         {
-            let sanitized = sanitize_loki_label_name(conflict);
+            let sanitized = sanitize_identifier(conflict);
             let static_key = sanitized_static
                 .get(&sanitized)
                 .copied()
