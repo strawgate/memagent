@@ -188,7 +188,7 @@ pub fn encode_bytes_field(buf: &mut Vec<u8>, field_number: u32, data: &[u8]) {
 /// Wire type 2 = length-delimited. Used as a building block by
 /// `bytes_field_total_size`.
 #[inline(always)]
-#[verified(kani = "verify_tag_size")]
+#[verified(kani = "verify_tag_size_vs_oracle")]
 pub const fn tag_size(field_number: u32) -> usize {
     varint_len(((field_number as u64) << 3) | 2)
 }
@@ -196,7 +196,7 @@ pub const fn tag_size(field_number: u32) -> usize {
 /// Compute the total encoded size of a length-delimited field
 /// (tag varint + length varint + data), without writing anything.
 #[inline(always)]
-#[verified(kani = "verify_bytes_field_total_size")]
+#[verified(kani = "verify_bytes_field_total_size_vs_oracle")]
 pub const fn bytes_field_total_size(field_number: u32, data_len: usize) -> usize {
     tag_size(field_number) + varint_len(data_len as u64) + data_len
 }
@@ -1264,6 +1264,11 @@ mod verification {
     pub(super) fn verify_tag_size_vs_oracle() {
         let field_number: u32 = kani::any();
         kani::assume(field_number > 0 && field_number <= 0x1FFFFFFF);
+        kani::cover!(field_number == 1, "min valid protobuf field number");
+        kani::cover!(
+            field_number == 0x1FFFFFFF,
+            "max valid protobuf field number"
+        );
         assert_eq!(
             tag_size(field_number),
             ffwd_kani::proto::tag_size_oracle(field_number),
@@ -1279,6 +1284,8 @@ mod verification {
         let field_number: u32 = kani::any();
         let data_len: usize = kani::any();
         kani::assume(field_number > 0 && field_number <= 0x1FFFFFFF);
+        kani::cover!(data_len == 0, "empty payload reachable");
+        kani::cover!(data_len > 0, "non-empty payload reachable");
         assert_eq!(
             bytes_field_total_size(field_number, data_len),
             ffwd_kani::proto::bytes_field_total_size_oracle(field_number, data_len),

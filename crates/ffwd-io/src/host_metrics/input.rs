@@ -8,7 +8,7 @@ impl HostMetricsInput {
         cfg: HostMetricsConfig,
     ) -> io::Result<Self> {
         let name = name.into();
-        let host_platform = current_host_platform().as_str().ok_or_else(|| {
+        let host_platform = detect_host_platform().as_str().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::Unsupported,
                 "platform sensor inputs are unsupported on this host",
