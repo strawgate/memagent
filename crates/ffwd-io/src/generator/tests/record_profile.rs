@@ -194,7 +194,7 @@ fn epoch_ms_to_parts_matches_chrono() {
 
     let max_ms = 7_258_118_400_000_i64;
     proptest!(|(ms in 0_i64..max_ms)| {
-        let (year, month, day, hour, min, sec, millis) = epoch_ms_to_parts(ms);
+        let (year, month, day, hour, min, sec, millis) = convert_epoch_ms_to_parts(ms);
         let dt = DateTime::from_timestamp_millis(ms).unwrap();
         prop_assert_eq!(year, dt.year());
         prop_assert_eq!(month, dt.month());
@@ -213,7 +213,7 @@ fn epoch_ms_to_parts_negative_matches_chrono() {
 
     let min_ms = -2_208_988_800_000_i64;
     proptest!(|(ms in min_ms..0_i64)| {
-        let (year, month, day, hour, min, sec, millis) = epoch_ms_to_parts(ms);
+        let (year, month, day, hour, min, sec, millis) = convert_epoch_ms_to_parts(ms);
         let dt = DateTime::from_timestamp_millis(ms).unwrap();
         prop_assert_eq!(year, dt.year());
         prop_assert_eq!(month, dt.month());
@@ -230,8 +230,8 @@ fn civil_days_roundtrip() {
     use proptest::prelude::*;
 
     proptest!(|(y in 1_i32..3000, m in 1_u32..=12, d in 1_u32..=28)| {
-        let days = days_from_civil(y, m, d);
-        let (y2, m2, d2) = civil_from_days(days);
+        let days = compute_days_from_civil(y, m, d);
+        let (y2, m2, d2) = compute_civil_from_days(days);
         prop_assert_eq!((y, m, d), (y2, m2, d2));
     });
 }
@@ -250,7 +250,7 @@ fn parse_iso8601_roundtrip_proptest() {
     )| {
         let input = format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z");
         let ms = parse_iso8601_to_epoch_ms(&input).unwrap();
-        let (y2, m2, d2, h2, mi2, s2, ms2) = epoch_ms_to_parts(ms);
+        let (y2, m2, d2, h2, mi2, s2, ms2) = convert_epoch_ms_to_parts(ms);
         prop_assert_eq!((y, m, d, h, mi, s, 0_u32), (y2, m2, d2, h2, mi2, s2, ms2));
     });
 }

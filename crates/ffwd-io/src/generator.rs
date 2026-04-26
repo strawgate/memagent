@@ -3,8 +3,11 @@
 //! Produces JSON log lines at a configurable rate. Used for benchmarking
 //! and testing pipelines without external data sources.
 
+include!("generator/config.rs");
 include!("generator/types.rs");
+include!("generator/timestamp.rs");
 include!("generator/logs.rs");
+include!("generator/arrow.rs");
 include!("generator/input.rs");
 include!("generator/encoding.rs");
 

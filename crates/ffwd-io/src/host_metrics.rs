@@ -10,6 +10,7 @@ include!("host_metrics/types.rs");
 include!("host_metrics/control.rs");
 include!("host_metrics/collection.rs");
 include!("host_metrics/batch.rs");
+include!("host_metrics/platform.rs");
 include!("host_metrics/input.rs");
 include!("host_metrics/schema.rs");
 

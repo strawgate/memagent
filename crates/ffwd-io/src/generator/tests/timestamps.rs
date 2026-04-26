@@ -246,15 +246,18 @@ fn custom_start_timestamp() {
 
 #[test]
 fn epoch_ms_to_parts_known_values() {
-    let (y, mo, d, h, mi, s, ms) = epoch_ms_to_parts(1_705_276_800_000);
+    let (y, mo, d, h, mi, s, ms) = convert_epoch_ms_to_parts(1_705_276_800_000);
     assert_eq!((y, mo, d, h, mi, s, ms), (2024, 1, 15, 0, 0, 0, 0));
 
-    let (y, mo, d, h, mi, s, ms) = epoch_ms_to_parts(0);
+    let (y, mo, d, h, mi, s, ms) = convert_epoch_ms_to_parts(0);
     assert_eq!((y, mo, d, h, mi, s, ms), (1970, 1, 1, 0, 0, 0, 0));
 
-    let leap_ms =
-        days_from_civil(2000, 2, 29) * 86_400_000 + 23 * 3_600_000 + 59 * 60_000 + 59 * 1000 + 999;
-    let (y, mo, d, h, mi, s, ms) = epoch_ms_to_parts(leap_ms);
+    let leap_ms = compute_days_from_civil(2000, 2, 29) * 86_400_000
+        + 23 * 3_600_000
+        + 59 * 60_000
+        + 59 * 1000
+        + 999;
+    let (y, mo, d, h, mi, s, ms) = convert_epoch_ms_to_parts(leap_ms);
     assert_eq!((y, mo, d, h, mi, s, ms), (2000, 2, 29, 23, 59, 59, 999));
 }
 

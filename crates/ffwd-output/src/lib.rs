@@ -7,6 +7,7 @@ mod json_lines;
 mod null;
 mod otap_sink;
 mod otlp_sink;
+pub(crate) mod retry_writer;
 pub mod sink;
 mod stdout;
 mod tcp_sink;
