@@ -181,7 +181,16 @@ where
         }
     }
 
-    Ok(())
+    // Flush to ensure all bytes reach the peer for buffered writers.
+    // For non-buffered writers (e.g. TcpStream), flush() is a no-op.
+    match tokio::time::timeout_at(deadline, stream.flush()).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(e),
+        Err(_) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "flush deadline exceeded",
+        )),
+    }
 }
 
 #[cfg(test)]

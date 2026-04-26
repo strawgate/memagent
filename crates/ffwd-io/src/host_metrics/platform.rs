@@ -39,7 +39,7 @@ pub fn os_vec_to_string(values: &[std::ffi::OsString]) -> String {
 }
 
 /// Return the current wall-clock time as nanoseconds since the Unix epoch.
-pub fn now_unix_nano() -> u64 {
+pub fn get_unix_nanos_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -47,7 +47,7 @@ pub fn now_unix_nano() -> u64 {
 }
 
 /// Detect the host operating system at compile time and return the corresponding [`HostPlatform`].
-pub fn current_host_platform() -> HostPlatform {
+pub fn detect_host_platform() -> HostPlatform {
     if cfg!(target_os = "linux") {
         HostPlatform::Linux
     } else if cfg!(target_os = "macos") {
