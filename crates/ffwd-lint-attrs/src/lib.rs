@@ -115,7 +115,6 @@ pub fn owned_by_actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
     prepend_marker("__ffwd_owned_by_actor__", item)
 }
 
-#[allow(clippy::expect_used)]
 fn prepend_marker(marker: &str, item: TokenStream) -> TokenStream {
     let attr: TokenStream = match format!("#[doc = \"{marker}\"]").parse() {
         Ok(t) => t,
