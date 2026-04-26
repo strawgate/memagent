@@ -499,8 +499,8 @@ impl Pipeline {
             }
 
             #[cfg(not(feature = "datafusion"))]
-            let transform = crate::transform::create_transform(input_sql)
-                .map_err(|e| e.to_string())?;
+            let transform =
+                crate::transform::create_transform(input_sql).map_err(|e| e.to_string())?;
 
             // Build the transform into a trait object.
             #[cfg(feature = "datafusion")]

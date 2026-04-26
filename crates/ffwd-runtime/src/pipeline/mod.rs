@@ -43,7 +43,7 @@ use ffwd_arrow::Scanner;
 #[cfg(test)]
 use self::checkpoint_policy::TicketDisposition;
 use crate::processor::Processor;
-use crate::transform::{create_transform, Transform};
+use crate::transform::{Transform, create_transform};
 #[cfg(test)]
 use crate::worker_pool::AckItem;
 use crate::worker_pool::OutputWorkerPool;
@@ -237,8 +237,8 @@ impl Pipeline {
         });
         // Keep input_transforms in sync: one transform per input.
         while self.input_transforms.len() < self.inputs.len() {
-            let transform = create_transform("SELECT * FROM logs")
-                .expect("default passthrough SQL");
+            let transform =
+                create_transform("SELECT * FROM logs").expect("default passthrough SQL");
             let scanner = Scanner::new(transform.scan_config());
             self.input_transforms.push(SourcePipeline {
                 scanner,
