@@ -120,7 +120,6 @@ impl ScanPredicate {
     /// Returns `None` if the entire predicate references the field.
     /// For AND chains, strips only the matching conjuncts and returns
     /// the remainder (or None if all stripped).
-    #[allow(clippy::expect_used)]
     pub fn strip_field(self, field_name: &str) -> Option<Self> {
         if !self.references_field(field_name.as_bytes()) {
             return Some(self);
@@ -133,7 +132,7 @@ impl ScanPredicate {
                     .collect();
                 match remaining.len() {
                     0 => None,
-                    1 => Some(remaining.into_iter().next().expect("len checked")),
+                    1 => remaining.into_iter().next(),
                     _ => Some(ScanPredicate::And(remaining)),
                 }
             }
