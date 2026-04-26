@@ -117,9 +117,10 @@ pub fn owned_by_actor(_attr: TokenStream, item: TokenStream) -> TokenStream {
 
 #[allow(clippy::expect_used)]
 fn prepend_marker(marker: &str, item: TokenStream) -> TokenStream {
-    let attr: TokenStream = format!("#[doc = \"{marker}\"]")
-        .parse()
-        .expect("valid marker attribute");
+    let attr: TokenStream = match format!("#[doc = \"{marker}\"]").parse() {
+        Ok(t) => t,
+        Err(_) => unreachable!("hardcoded doc attribute format is valid"),
+    };
     let mut out = attr;
     out.extend(item);
     out
