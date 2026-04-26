@@ -28,6 +28,7 @@ use paths::{
 };
 use sensors::{is_sensor_family_supported, validate_sensor_event_type_filters};
 
+pub use common::sanitize_identifier;
 pub use endpoints::validate_host_port;
 
 impl Config {
