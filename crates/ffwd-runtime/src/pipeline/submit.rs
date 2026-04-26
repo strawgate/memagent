@@ -223,7 +223,7 @@ pub(super) async fn scan_and_transform_for_send(
     }
 
     let t1 = tokio::time::Instant::now();
-    let result = match transform.transform.execute(batch).await {
+    let result = match transform.transform.execute_blocking(batch) {
         Ok(r) => r,
         Err(e) => {
             metrics.inc_transform_error();
@@ -264,7 +264,7 @@ pub(super) async fn transform_direct_batch_for_send(
     }
 
     let t0 = tokio::time::Instant::now();
-    let result = match transform.transform.execute(batch).await {
+    let result = match transform.transform.execute_blocking(batch) {
         Ok(r) => r,
         Err(e) => {
             metrics.inc_transform_error();

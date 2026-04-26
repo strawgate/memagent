@@ -40,21 +40,6 @@ pub(super) fn cpu_worker_loop(
     mut transform: SourcePipeline,
     metrics: Arc<PipelineMetrics>,
 ) {
-    let rt = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(rt) => rt,
-        Err(e) => {
-            tracing::error!(
-                input = transform.input_name.as_str(),
-                error = %e,
-                "cpu_worker: failed to create tokio runtime — input disabled"
-            );
-            return;
-        }
-    };
-
     /// After this many consecutive transform errors with no successes, escalate
     /// to ERROR with guidance — the SQL likely references columns the input
     /// format does not produce.
@@ -154,7 +139,7 @@ pub(super) fn cpu_worker_loop(
         }
 
         let t1 = Instant::now();
-        let result = match rt.block_on(transform.transform.execute(batch)) {
+        let result = match transform.transform.execute_blocking(batch) {
             Ok(r) => {
                 consecutive_transform_errors = 0;
                 r

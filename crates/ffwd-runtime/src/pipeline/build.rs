@@ -481,10 +481,9 @@ impl Pipeline {
             // Determine the SQL for this input: per-input > pipeline-level > passthrough.
             let input_sql = input_cfg.sql.as_deref().unwrap_or(pipeline_sql);
 
-            let transform =
-                crate::transform::SqlTransform::new(input_sql).map_err(|e| e.to_string())?;
             #[cfg(feature = "datafusion")]
-            let mut transform = transform;
+            let mut transform = crate::transform::ConfiguredSqlTransform::new(input_sql)
+                .map_err(|e| e.to_string())?;
 
             // Wire up shared enrichment sources to this transform.
             #[cfg(feature = "datafusion")]
@@ -499,7 +498,20 @@ impl Pipeline {
                 }
             }
 
+            #[cfg(not(feature = "datafusion"))]
+            let transform = crate::transform::create_transform(input_sql)
+                .map_err(|e| e.to_string())?;
+
+            #[cfg(feature = "datafusion")]
+            let explicit_source_metadata_plan = transform.explicit_source_metadata_plan();
+            #[cfg(not(feature = "datafusion"))]
+            let explicit_source_metadata_plan = transform.explicit_source_metadata_plan();
+
+            #[cfg(feature = "datafusion")]
             let mut scan_config = transform.scan_config();
+            #[cfg(not(feature = "datafusion"))]
+            let mut scan_config = transform.scan_config();
+
             // Raw format sends plain text directly to the scanner, so capture
             // the original line in the canonical body field for downstream SQL
             // and sinks. Auto mode wraps plain-text fallback into JSON.
@@ -507,8 +519,9 @@ impl Pipeline {
                 scan_config.line_field_name = Some(field_names::BODY.to_string());
             }
             let scanner = ffwd_arrow::scanner::Scanner::new(scan_config);
-            let explicit_source_metadata_plan =
-                transform.analyzer().explicit_source_metadata_plan();
+
+            #[cfg(feature = "datafusion")]
+            let transform = transform.build().map_err(|e| e.to_string())?;
             if explicit_source_metadata_plan.has_any()
                 && input_cfg.source_metadata == SourceMetadataStyle::None
             {

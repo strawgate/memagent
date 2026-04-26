@@ -43,7 +43,7 @@ use ffwd_arrow::Scanner;
 #[cfg(test)]
 use self::checkpoint_policy::TicketDisposition;
 use crate::processor::Processor;
-use crate::transform::SqlTransform;
+use crate::transform::{create_transform, Transform};
 #[cfg(test)]
 use crate::worker_pool::AckItem;
 use crate::worker_pool::OutputWorkerPool;
@@ -127,11 +127,11 @@ pub(crate) struct ProcessedBatch {
 /// Per-input scanning + SQL transform pair.
 ///
 /// Each input gets its own `Scanner` (driven by `ScanConfig` derived from
-/// its SQL) and `SqlTransform`. This enables per-input field extraction,
+/// its SQL) and `Box<dyn Transform>`. This enables per-input field extraction,
 /// filtering, and schema reshaping with natural predicate pushdown.
 struct SourcePipeline {
     scanner: Scanner,
-    transform: SqlTransform,
+    transform: Box<dyn Transform>,
     input_name: String,
     #[cfg_attr(feature = "turmoil", allow(dead_code))]
     source_metadata_plan: SourceMetadataPlan,
@@ -222,7 +222,7 @@ impl Pipeline {
 
     /// Add an input source for testing. Bypasses config-based input construction.
     ///
-    /// Each new input gets its own passthrough `Scanner + SqlTransform` pair
+    /// Each new input gets its own passthrough `Scanner + Transform` pair
     /// (`SELECT * FROM logs`) to keep `input_transforms` in sync with `inputs`.
     #[must_use]
     pub fn with_input(mut self, name: &str, source: Box<dyn InputSource>) -> Self {
@@ -237,8 +237,8 @@ impl Pipeline {
         });
         // Keep input_transforms in sync: one transform per input.
         while self.input_transforms.len() < self.inputs.len() {
-            let transform =
-                SqlTransform::new("SELECT * FROM logs").expect("default passthrough SQL");
+            let transform = create_transform("SELECT * FROM logs")
+                .expect("default passthrough SQL");
             let scanner = Scanner::new(transform.scan_config());
             self.input_transforms.push(SourcePipeline {
                 scanner,
