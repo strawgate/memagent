@@ -78,7 +78,7 @@ pub fn decode_varint_oracle(data: &[u8]) -> Option<(u64, usize)> {
     }
 }))]
 pub fn decode_tag_oracle(buf: &[u8], pos: usize) -> Option<(u32, u8, usize)> {
-    let (tag, rel_pos) = decode_varint_oracle(&buf[pos..])?;
+    let (tag, rel_pos) = decode_varint_oracle(buf.get(pos..)?)?;
     let field_number = (tag >> 3) as u32;
     let wire_type = (tag & 0x07) as u8;
     let abs_pos = pos.checked_add(rel_pos)?;
@@ -99,7 +99,7 @@ pub fn skip_field_oracle(buf: &[u8], wire_type: u8, pos: usize) -> Option<usize>
     match wire_type {
         0 => {
             // Varint.
-            let (_, rel_pos) = decode_varint_oracle(&buf[pos..])?;
+            let (_, rel_pos) = decode_varint_oracle(buf.get(pos..)?)?;
             let abs_pos = pos.checked_add(rel_pos)?;
             Some(abs_pos)
         }
@@ -113,7 +113,7 @@ pub fn skip_field_oracle(buf: &[u8], wire_type: u8, pos: usize) -> Option<usize>
         }
         2 => {
             // Length-delimited.
-            let (len, rel_pos) = decode_varint_oracle(&buf[pos..])?;
+            let (len, rel_pos) = decode_varint_oracle(buf.get(pos..)?)?;
             let len_usize = usize::try_from(len).ok()?;
             let abs_after_varint = pos.checked_add(rel_pos)?;
             let end = abs_after_varint.checked_add(len_usize)?;

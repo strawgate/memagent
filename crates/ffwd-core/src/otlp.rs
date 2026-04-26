@@ -1602,7 +1602,7 @@ mod verification {
         let value: u64 = kani::any();
         kani::assume(field_number > 0 && field_number <= 1000);
 
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(14);
         encode_fixed64(&mut buf, field_number, value);
 
         // Tag + 8 bytes
@@ -1611,7 +1611,7 @@ mod verification {
         assert!(buf.len() == tag_len + 8, "fixed64 size wrong");
 
         // Verify tag bytes encode correct field_number + wire_type
-        let mut tag_buf = Vec::new();
+        let mut tag_buf = Vec::with_capacity(10);
         encode_varint(&mut tag_buf, tag_val);
         let mut i = 0;
         while i < tag_len {
@@ -1642,7 +1642,7 @@ mod verification {
         assert!(buf.len() == tag_len + 4, "fixed32 size wrong");
 
         // Verify tag bytes encode correct field_number + wire_type
-        let mut tag_buf = Vec::new();
+        let mut tag_buf = Vec::with_capacity(10);
         encode_varint(&mut tag_buf, tag_val);
         let mut i = 0;
         while i < tag_len {
