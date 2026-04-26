@@ -206,8 +206,9 @@ pub fn encode_fixed32(buf: &mut Vec<u8>, field_number: u32, value: u32) {
 /// Decode a varint from `buf` starting at `pos`.
 ///
 /// Returns `(value, new_pos)` or an error string if the input is truncated
-/// or the varint exceeds 10 bytes.
-#[allow_unproven]
+/// or the varint exceeds 10 bytes. The 10th byte must carry a payload
+/// of at most 1 to avoid u64 overflow.
+#[verified(kani = "verify_decode_varint_vs_oracle")]
 #[trust_boundary]
 pub fn decode_varint(buf: &[u8], pos: usize) -> Result<(u64, usize), &'static str> {
     let mut value: u64 = 0;
@@ -224,7 +225,7 @@ pub fn decode_varint(buf: &[u8], pos: usize) -> Result<(u64, usize), &'static st
             return Ok((value, i));
         }
         shift += 7;
-        if shift >= 64 {
+        if shift >= 64 || (shift == 63 && byte & 0x7F > 1) {
             return Err("varint: too many bytes");
         }
     }
@@ -428,7 +429,7 @@ fn eq_ignore_case_5(a: &[u8], b: &[u8]) -> bool {
 
 /// Case-insensitive 6-byte comparison.
 #[inline(always)]
-#[allow_unproven]
+#[verified(kani = "verify_eq_ignore_case_6_no_false_positives_notice")]
 fn eq_ignore_case_6(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20
         && a[1] | 0x20 == b[1] | 0x20
@@ -440,7 +441,7 @@ fn eq_ignore_case_6(a: &[u8], b: &[u8]) -> bool {
 
 /// Case-insensitive 7-byte comparison.
 #[inline(always)]
-#[allow_unproven]
+#[verified(kani = "verify_eq_ignore_case_7_no_false_positives_warning")]
 fn eq_ignore_case_7(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20
         && a[1] | 0x20 == b[1] | 0x20
@@ -453,7 +454,7 @@ fn eq_ignore_case_7(a: &[u8], b: &[u8]) -> bool {
 
 /// Case-insensitive 8-byte comparison.
 #[inline(always)]
-#[allow_unproven]
+#[verified(kani = "verify_eq_ignore_case_8_no_false_positives_critical")]
 fn eq_ignore_case_8(a: &[u8], b: &[u8]) -> bool {
     a[0] | 0x20 == b[0] | 0x20
         && a[1] | 0x20 == b[1] | 0x20
@@ -1196,6 +1197,7 @@ mod tests {
 mod verification {
     use super::*;
     use alloc::{vec, vec::Vec};
+    use ffwd_kani::proto::decode_varint_oracle;
 
     // NOTE: encode_varint and encode_tag take `&mut Vec<u8>` and return `()`.
     // In our current Kani version/configuration used in CI, the contract system
@@ -1753,6 +1755,39 @@ mod verification {
         }
     }
 
+    /// Prove eq_ignore_case_6 agrees with eq_ignore_case_match for NOTICE.
+    #[kani::proof]
+    #[kani::unwind(7)] // eq_ignore_case_match: Zip over 6-byte slice + 1 terminator
+    pub(super) fn verify_eq_ignore_case_6_no_false_positives_notice() {
+        let input: [u8; 6] = kani::any();
+        let target = b"NOTICE";
+        if eq_ignore_case_6(&input, target) {
+            assert!(eq_ignore_case_match(&input, target));
+        }
+    }
+
+    /// Prove eq_ignore_case_7 agrees with eq_ignore_case_match for WARNING.
+    #[kani::proof]
+    #[kani::unwind(8)] // eq_ignore_case_match: Zip over 7-byte slice + 1 terminator
+    pub(super) fn verify_eq_ignore_case_7_no_false_positives_warning() {
+        let input: [u8; 7] = kani::any();
+        let target = b"WARNING";
+        if eq_ignore_case_7(&input, target) {
+            assert!(eq_ignore_case_match(&input, target));
+        }
+    }
+
+    /// Prove eq_ignore_case_8 agrees with eq_ignore_case_match for CRITICAL.
+    #[kani::proof]
+    #[kani::unwind(9)] // eq_ignore_case_match: Zip over 8-byte slice + 1 terminator
+    pub(super) fn verify_eq_ignore_case_8_no_false_positives_critical() {
+        let input: [u8; 8] = kani::any();
+        let target = b"CRITICAL";
+        if eq_ignore_case_8(&input, target) {
+            assert!(eq_ignore_case_match(&input, target));
+        }
+    }
+
     /// Prove hex_decode roundtrip: for any 16-byte array, hex-encoding then
     /// decoding yields the original bytes.
     #[kani::proof]
@@ -2028,5 +2063,35 @@ mod verification {
 
         kani::cover!(data_len == 0, "empty payload");
         kani::cover!(data_len > 0, "non-empty payload");
+    }
+
+    /// Oracle equivalence: `decode_varint` matches `ffwd_kani::proto::decode_varint_oracle`
+    /// for all bounded byte inputs (up to 10 bytes).
+    ///
+    /// Both return `None`/`Err` for malformed varints and `Some`/`Ok` with the same
+    /// `(value, new_pos)` for well-formed varints.
+    #[kani::proof]
+    #[kani::unwind(22)]
+    pub(super) fn verify_decode_varint_vs_oracle() {
+        let data: [u8; 10] = kani::any();
+        let pos: usize = kani::any_where(|&p| p <= 10);
+
+        let ora_result = decode_varint_oracle(&data[pos..]);
+        let prod_result = decode_varint(&data, pos);
+
+        match ora_result {
+            None => {
+                assert!(prod_result.is_err(), "oracle None → prod Err");
+            }
+            Some((ora_val, ora_pos)) => {
+                assert!(prod_result.is_ok(), "oracle Some → prod Ok");
+                let (prod_val, prod_pos) = prod_result.unwrap();
+                assert_eq!(prod_val, ora_val, "value mismatch");
+                // prod_pos is absolute (from original data), ora_pos is relative to sliced data
+                assert_eq!(prod_pos, pos + ora_pos, "pos mismatch");
+                kani::cover!(ora_val < 128, "single-byte result");
+                kani::cover!(ora_val >= 128, "multi-byte result");
+            }
+        }
     }
 }
