@@ -190,7 +190,7 @@ Non-core Kani scope is explicitly tracked in:
 
 Status values in the contract:
 
-- `required` — this seam must include in-file Kani harnesses (`#[cfg(kani)]` + `#[kani::proof]`)
+- `required` — this seam must include in-file Kani harnesses (`#[cfg(kani)]` + `#[kani::proof]` or `#[kani::proof_for_contract]`)
 - `recommended` — pure seam where Kani is encouraged, but not a hard gate
 - `exempt` — intentionally not a Kani target, usually because the file is async/IO-heavy or still mixes shell code with policy
 
@@ -250,9 +250,12 @@ Every Kani proof MUST:
 1. Use `#[cfg(kani)]` for proof modules; use `#[cfg_attr(kani, kani::requires(...))]` /
    `#[cfg_attr(kani, kani::ensures(...))]` for function contracts on production code
 2. Follow naming: `verify_<function>_<property>`
-3. Add `#[kani::unwind(N)]` for any loops (N = max iterations + 1 or 2)
+3. Add `#[kani::unwind(N)]` for any loops (N = max iterations + 1 or 2);
+   use `#[kani::unwind(0)]` for loop-free proofs
 4. Use appropriate input sizes (8–32 bytes for parsing, full range for bitmasks)
 5. Add `kani::cover!()` to guard against vacuous proofs
+6. For files listed in `kani-boundary-contract.toml` with status `required`,
+   `#[kani::proof_for_contract]` also satisfies the proof marker requirement
 
 ### Best practices
 
