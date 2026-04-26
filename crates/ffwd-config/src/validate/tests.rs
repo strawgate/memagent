@@ -871,7 +871,10 @@ fn sanitize_identifier_preserves_valid_identifiers() {
     assert_eq!(sanitize_identifier("snake_case"), "snake_case");
     assert_eq!(sanitize_identifier("UPPER_CASE"), "UPPER_CASE");
     assert_eq!(sanitize_identifier("mixed123"), "mixed123");
-    assert_eq!(sanitize_identifier("_leading_underscore"), "_leading_underscore");
+    assert_eq!(
+        sanitize_identifier("_leading_underscore"),
+        "_leading_underscore"
+    );
 }
 
 #[test]
