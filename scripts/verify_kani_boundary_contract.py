@@ -48,7 +48,7 @@ def rust_files_with_kani() -> set[str]:
         if rel.startswith("crates/ffwd-core/"):
             continue
         text = path.read_text(encoding="utf-8")
-        if has_kani_cfg(text) or "#[kani::proof]" in text:
+        if has_kani_cfg(text) or "#[kani::proof]" in text or "#[kani::proof_for_contract" in text:
             result.add(rel)
     return result
 
@@ -89,7 +89,7 @@ def validate() -> list[str]:
 
         text = file_path.read_text(encoding="utf-8")
         has_kani_cfg_marker = has_kani_cfg(text)
-        has_kani_proof = "#[kani::proof]" in text
+        has_kani_proof = "#[kani::proof]" in text or "#[kani::proof_for_contract" in text
 
         if status == "required":
             if not has_kani_cfg_marker:

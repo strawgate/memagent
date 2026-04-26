@@ -193,6 +193,7 @@ For fundamental oracles and assertions used across multiple crates, use the
 `ffwd-kani` crate. Key exports:
 
 - **`ffwd_kani::bytes::assert_bytes_eq`**: bounded loop-based slice comparison
+- **`ffwd_kani::bytes::eq_ignore_case_match`**: case-insensitive variable-length ASCII comparison — oracle for `ffwd_core::otlp::eq_ignore_case_match`
 - **`ffwd_kani::bytes::compute_real_quotes_oracle`**: reference quote-escape bitmask
 - **`ffwd_kani::bytes::prefix_xor_oracle`**: reference running XOR
 - **`ffwd_kani::datetime::jdn_days_from_epoch`**: Julian Day Number oracle
@@ -200,8 +201,9 @@ For fundamental oracles and assertions used across multiple crates, use the
 - **`ffwd_kani::hex::hex_decode_oracle`**: hex decode reference implementation
 - **`ffwd_kani::iter::find_byte`**: linear-scan byte search oracle
 - **`ffwd_kani::numeric::parse_int_oracle`**: i128-accumulator integer parser
-- **`ffwd_kani::proto::varint_len_oracle`**: varint encoded length predictor
-- **`ffwd_kani::proto::bytes_field_total_size_oracle`**: protobuf field size predictor
+- **`ffwd_kani::proto::varint_len_oracle`**: varint encoded length predictor — oracle for `ffwd_core::otlp::varint_len`
+- **`ffwd_kani::proto::tag_size_oracle`**: protobuf tag size predictor — oracle for `ffwd_core::otlp::tag_size`
+- **`ffwd_kani::proto::bytes_field_total_size_oracle`**: protobuf field size predictor — oracle for `ffwd_core::otlp::bytes_field_total_size`
 
 Add `ffwd-kani` as a dependency:
 

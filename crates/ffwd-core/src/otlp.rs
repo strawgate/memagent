@@ -183,13 +183,29 @@ pub fn encode_bytes_field(buf: &mut Vec<u8>, field_number: u32, data: &[u8]) {
     buf.extend_from_slice(data);
 }
 
+/// Compute the encoded size of a protobuf tag (`field_number << 3 | 2`).
+///
+/// Wire type 2 = length-delimited. Used as a building block by
+/// `bytes_field_total_size`.
+#[inline(always)]
+#[verified(kani = "verify_tag_size")]
+pub const fn tag_size(field_number: u32) -> usize {
+    varint_len(((field_number as u64) << 3) | 2)
+}
+
+/// Compute the total encoded size of a length-delimited field
+/// (tag varint + length varint + data), without writing anything.
+#[inline(always)]
+#[verified(kani = "verify_bytes_field_total_size")]
+pub const fn bytes_field_total_size(field_number: u32, data_len: usize) -> usize {
+    tag_size(field_number) + varint_len(data_len as u64) + data_len
+}
+
 /// Compute the encoded size of a length-delimited field (without writing).
 #[inline(always)]
 #[verified(kani = "verify_bytes_field_size")]
 pub const fn bytes_field_size(field_number: u32, data_len: usize) -> usize {
-    let tag_size = varint_len(((field_number as u64) << 3) | 2);
-    let len_size = varint_len(data_len as u64);
-    tag_size + len_size + data_len
+    bytes_field_total_size(field_number, data_len)
 }
 
 /// Write a fixed32 field (tag + 4 bytes little-endian).
@@ -1221,6 +1237,52 @@ mod verification {
         assert!(
             buf.len() == varint_len(value),
             "varint_len disagrees with encode_varint"
+        );
+    }
+
+    /// Oracle equivalence: varint_len matches varint_len_oracle for ALL u64 values.
+    ///
+    /// Two different algorithms are compared: the production `varint_len` uses
+    /// a match-with-ranges, while `varint_len_oracle` uses a count-the-shifts loop.
+    /// This proof guarantees they produce identical results for all 2^64 inputs.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    #[kani::solver(kissat)]
+    pub(super) fn verify_varint_len_vs_oracle() {
+        let value: u64 = kani::any();
+        assert_eq!(
+            varint_len(value),
+            ffwd_kani::proto::varint_len_oracle(value),
+            "varint_len disagrees with varint_len_oracle"
+        );
+    }
+
+    /// Oracle equivalence: tag_size matches tag_size_oracle for all field numbers.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    #[kani::solver(kissat)]
+    pub(super) fn verify_tag_size_vs_oracle() {
+        let field_number: u32 = kani::any();
+        kani::assume(field_number > 0 && field_number <= 0x1FFFFFFF);
+        assert_eq!(
+            tag_size(field_number),
+            ffwd_kani::proto::tag_size_oracle(field_number),
+            "tag_size disagrees with tag_size_oracle"
+        );
+    }
+
+    /// Oracle equivalence: bytes_field_total_size matches bytes_field_total_size_oracle.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    #[kani::solver(kissat)]
+    pub(super) fn verify_bytes_field_total_size_vs_oracle() {
+        let field_number: u32 = kani::any();
+        let data_len: usize = kani::any();
+        kani::assume(field_number > 0 && field_number <= 0x1FFFFFFF);
+        assert_eq!(
+            bytes_field_total_size(field_number, data_len),
+            ffwd_kani::proto::bytes_field_total_size_oracle(field_number, data_len),
+            "bytes_field_total_size disagrees with oracle"
         );
     }
 
