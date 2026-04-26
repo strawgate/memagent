@@ -224,7 +224,7 @@ pub fn decode_varint(buf: &[u8], pos: usize) -> Result<(u64, usize), &'static st
             return Ok((value, i));
         }
         shift += 7;
-        if shift >= 64 {
+        if shift >= 64 || (shift == 63 && byte & 0x7F > 1) {
             return Err("varint: too many bytes");
         }
     }
