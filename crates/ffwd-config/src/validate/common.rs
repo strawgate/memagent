@@ -1,3 +1,5 @@
+// xtask-verify: allow(pub_module_needs_tests) // sanitize_identifier tested via validate/tests.rs
+
 use crate::types::{ConfigError, OutputConfigV2};
 
 pub(super) const MAX_READ_BUF_SIZE: usize = 4_194_304;

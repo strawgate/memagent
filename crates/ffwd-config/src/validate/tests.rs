@@ -1,6 +1,7 @@
 use crate::types::Config;
 
 use super::{is_glob_match_possible, validate_endpoint_url, validate_host_port};
+use crate::validate::sanitize_identifier;
 
 fn host_port_error(addr: &str) -> String {
     validate_host_port(addr).unwrap_err().to_string()
@@ -860,4 +861,46 @@ pipelines:
         err.contains("client_ca_file must not be empty"),
         "expected blank client CA rejection, got: {err}"
     );
+}
+
+#[test]
+fn sanitize_identifier_preserves_valid_identifiers() {
+    assert_eq!(sanitize_identifier("foo"), "foo");
+    assert_eq!(sanitize_identifier("_private"), "_private");
+    assert_eq!(sanitize_identifier("camelCase"), "camelCase");
+    assert_eq!(sanitize_identifier("snake_case"), "snake_case");
+    assert_eq!(sanitize_identifier("UPPER_CASE"), "UPPER_CASE");
+    assert_eq!(sanitize_identifier("mixed123"), "mixed123");
+    assert_eq!(sanitize_identifier("_leading_underscore"), "_leading_underscore");
+}
+
+#[test]
+fn sanitize_identifier_replaces_invalid_chars_with_underscore() {
+    assert_eq!(sanitize_identifier("foo-bar"), "foo_bar");
+    assert_eq!(sanitize_identifier("foo.bar"), "foo_bar");
+    assert_eq!(sanitize_identifier("foo bar"), "foo_bar");
+    assert_eq!(sanitize_identifier("foo:bar"), "foo_bar");
+    assert_eq!(sanitize_identifier("foo#1"), "foo_1");
+    assert_eq!(sanitize_identifier("foo!bar"), "foo_bar");
+    assert_eq!(sanitize_identifier("foo@bar"), "foo_bar");
+    assert_eq!(sanitize_identifier("123abc"), "_23abc");
+}
+
+#[test]
+fn sanitize_identifier_first_char_must_be_alphabetic_or_underscore() {
+    assert_eq!(sanitize_identifier("123"), "_23");
+    assert_eq!(sanitize_identifier("1abc"), "_abc");
+    assert_eq!(sanitize_identifier("1"), "_");
+    assert_eq!(sanitize_identifier("!abc"), "_abc");
+}
+
+#[test]
+fn sanitize_identifier_empty_returns_underscore() {
+    assert_eq!(sanitize_identifier(""), "_");
+}
+
+#[test]
+fn sanitize_identifier_preserves_all_underscores() {
+    assert_eq!(sanitize_identifier("__"), "__");
+    assert_eq!(sanitize_identifier("_foo_bar_baz_"), "_foo_bar_baz_");
 }
