@@ -1,5 +1,7 @@
 //! Tests for the streaming zero-copy Arrow RecordBatch builder.
 
+#![allow(clippy::indexing_slicing)]
+
 #[cfg(test)]
 mod tests {
     use super::super::*;

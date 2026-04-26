@@ -30,6 +30,7 @@ Rules and constraints for each crate. Enforced by CI, not just convention.
 | Rule | Enforcement |
 |------|-------------|
 | unsafe allowed (SIMD only) | Code review. SIMD impls only. |
+| `#![deny(clippy::indexing_slicing)]` at crate root | `#![deny]` in lib.rs. Hot-path SIMD and batch builder functions use `#[allow]` for internally-controlled indexing. Non-SIMD external data paths should use `.get()` where feasible. |
 | Implements core's ScanBuilder + CharDetector traits | Compilation |
 | proptest: SIMD output == scalar output | CI test suite |
 | Deps: core + arrow + bytes | Cargo.toml |
