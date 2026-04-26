@@ -1,3 +1,5 @@
+#![allow(clippy::indexing_slicing)]
+
 //! High-performance S3 (and S3-compatible) object storage input.
 //!
 //! # Discovery modes
