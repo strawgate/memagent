@@ -500,11 +500,10 @@ pub struct FinalizationMode {
 /// (row, field), so `facts.len() == num_rows ∧ last == num_rows - 1` is
 /// sufficient.  When dedup is disabled duplicate writes are possible, breaking
 /// the pigeonhole premise, so we conservatively return false.
-#[allow(clippy::indexing_slicing)]
 fn is_dense<T>(facts: &[(u32, T)], num_rows: usize, dedup: bool) -> bool {
     dedup
         && facts.len() == num_rows
-        && (num_rows == 0 || facts[num_rows - 1].0 as usize == num_rows - 1)
+        && (num_rows == 0 || facts.get(num_rows - 1).is_some_and(|f| f.0 as usize == num_rows - 1))
 }
 
 // ---------------------------------------------------------------------------
@@ -519,7 +518,6 @@ fn is_dense<T>(facts: &[(u32, T)], num_rows: usize, dedup: bool) -> bool {
 ///
 /// Returns `(values, dense)`. Callers use `dense` to decide whether a
 /// validity bitmap is needed.
-#[allow(clippy::indexing_slicing)]
 fn scatter_values<T: Default + Copy>(
     facts: &[(u32, T)],
     num_rows: usize,
@@ -529,17 +527,19 @@ fn scatter_values<T: Default + Copy>(
     let mut values = vec![T::default(); num_rows];
     if dense {
         debug_assert!(
-            facts.is_empty() || facts[0].0 == 0,
+            facts.first().is_none_or(|f| f.0 == 0),
             "dense path requires consecutive rows starting at 0"
         );
         for (i, &(_, v)) in facts.iter().enumerate() {
-            values[i] = v;
+            if let Some(slot) = values.get_mut(i) {
+                *slot = v;
+            }
         }
     } else {
         for &(row, v) in facts {
             let r = row as usize;
-            if r < num_rows {
-                values[r] = v;
+            if let Some(slot) = values.get_mut(r) {
+                *slot = v;
             }
         }
     }
@@ -551,14 +551,13 @@ fn scatter_values<T: Default + Copy>(
 /// Returns raw bytes where bit `i` is **set** (1) iff row `i` is valid
 /// (has at least one fact). This follows Arrow convention: 1 = valid, 0 = null.
 /// Arrow-free — just a `Vec<u8>` that callers wrap in `NullBuffer`.
-#[allow(clippy::indexing_slicing)]
 fn validity_bitmap_bits<T>(facts: &[(u32, T)], num_rows: usize) -> Vec<u8> {
     let byte_len = num_rows.div_ceil(8);
     let mut bits = vec![0u8; byte_len];
     for &(row, _) in facts {
         let r = row as usize;
-        if r < num_rows {
-            bits[r >> 3] |= 1 << (r & 7);
+        if r < num_rows && let Some(byte) = bits.get_mut(r >> 3) {
+            *byte |= 1 << (r & 7);
         }
     }
     bits
@@ -589,7 +588,6 @@ fn build_int64(facts: &[(u32, i64)], num_rows: usize, dedup: bool) -> (ArrayRef,
     )
 }
 
-#[allow(clippy::indexing_slicing)]
 fn build_float64(facts: &[(u32, f64)], num_rows: usize, dedup: bool) -> (ArrayRef, DataType) {
     let (values, dense) = scatter_values(facts, num_rows, dedup);
     let nulls = if dense {
@@ -603,7 +601,6 @@ fn build_float64(facts: &[(u32, f64)], num_rows: usize, dedup: bool) -> (ArrayRe
     )
 }
 
-#[allow(clippy::indexing_slicing)]
 fn build_bool(facts: &[(u32, bool)], num_rows: usize, dedup: bool) -> (ArrayRef, DataType) {
     let (values, dense) = scatter_values(facts, num_rows, dedup);
     let nulls = if dense {

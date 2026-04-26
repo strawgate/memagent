@@ -1,7 +1,6 @@
 // Arrow batch generation helpers for benchmarking.
 // xtask-verify: allow(pub_module_needs_tests) // generate_arrow_batch tested via generator/tests/basic.rs
 
-#[allow(clippy::indexing_slicing)]
 fn write_json_u64_field(out: &mut Vec<u8>, key: &str, value: u64, first: &mut bool) {
     if !*first {
         out.push(b',');

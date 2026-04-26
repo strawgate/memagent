@@ -217,7 +217,6 @@ impl StreamingBuilder {
     /// Asserts that `buf.len()` fits in a u32, because string-view
     /// offsets are stored as u32. Buffers larger than 4 GiB would produce
     /// silently truncated offsets without this guard.
-    #[allow(clippy::indexing_slicing)]
     pub fn begin_batch(&mut self, buf: bytes::Bytes) {
         debug_assert!(
             matches!(
@@ -237,8 +236,10 @@ impl StreamingBuilder {
         // Only clear the slots that were active in the previous batch.
         // This preserves the inner-Vec capacity of each FieldColumns for
         // hot-path reuse while still bounding memory under key churn.
-        for fc in &mut self.fields[..self.num_active] {
-            fc.clear();
+        for i in 0..self.num_active {
+            if let Some(fc) = self.fields.get_mut(i) {
+                fc.clear();
+            }
         }
         // Discard all name→index mappings so resolve_field rebuilds them from
         // scratch.  Combined with resetting num_active, this prevents the
@@ -262,7 +263,6 @@ impl StreamingBuilder {
     }
 
     #[inline]
-    #[allow(clippy::indexing_slicing)]
     pub fn resolve_field(&mut self, key: &[u8]) -> usize {
         debug_assert!(
             self.lifecycle.state() == BuilderState::InBatch
@@ -273,11 +273,9 @@ impl StreamingBuilder {
             return idx;
         }
         let idx = self.num_active;
-        if idx < self.fields.len() {
-            // Reuse an existing slot — its data was cleared in begin_batch.
-            // Only the name needs updating.
-            self.fields[idx].name.clear();
-            self.fields[idx].name.extend_from_slice(key);
+        if let Some(field) = self.fields.get_mut(idx) {
+            field.name.clear();
+            field.name.extend_from_slice(key);
         } else {
             self.fields.push(FieldColumns::new(key));
         }

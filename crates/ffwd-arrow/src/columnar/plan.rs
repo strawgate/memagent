@@ -202,13 +202,11 @@ impl BatchPlan {
     /// names are re-resolved from scratch each batch — matching
     /// `StreamingBuilder`'s `field_index.clear()` behavior. Without this,
     /// dynamic fields accumulate unboundedly across batches.
-    #[allow(clippy::indexing_slicing)]
     pub fn reset_dynamic(&mut self) {
-        // Remove dynamic entries from the name index.
-        for entry in &self.fields[self.num_planned..] {
+        let (_, dynamic_fields) = self.fields.split_at(self.num_planned);
+        for entry in dynamic_fields {
             self.index.remove(&entry.name);
         }
-        // Truncate the field list to planned-only.
         self.fields.truncate(self.num_planned);
     }
 
@@ -221,25 +219,30 @@ impl BatchPlan {
     /// Planned fields must be declared before any dynamic fields are
     /// resolved. They form a stable prefix of the field list that
     /// `reset_dynamic` preserves.
-    #[allow(clippy::indexing_slicing)]
     pub fn declare_planned(
         &mut self,
         name: &str,
         kind: FieldKind,
     ) -> Result<FieldHandle, PlanError> {
         if let Some(&handle) = self.index.get(name) {
-            let entry = &self.fields[handle.index()];
-            match &entry.mode {
-                FieldSchemaMode::Planned(existing_kind) if *existing_kind == kind => Ok(handle),
-                FieldSchemaMode::Planned(existing_kind) => Err(PlanError::KindMismatch {
+            if let Some(entry) = self.fields.get(handle.index()) {
+                match &entry.mode {
+                    FieldSchemaMode::Planned(existing_kind) if *existing_kind == kind => Ok(handle),
+                    FieldSchemaMode::Planned(existing_kind) => Err(PlanError::KindMismatch {
+                        field: name.to_string(),
+                        declared: *existing_kind,
+                        requested: kind,
+                    }),
+                    FieldSchemaMode::Dynamic { .. } => Err(PlanError::ModeMismatch {
+                        field: name.to_string(),
+                        reason: "field already exists as dynamic",
+                    }),
+                }
+            } else {
+                Err(PlanError::ModeMismatch {
                     field: name.to_string(),
-                    declared: *existing_kind,
-                    requested: kind,
-                }),
-                FieldSchemaMode::Dynamic { .. } => Err(PlanError::ModeMismatch {
-                    field: name.to_string(),
-                    reason: "field already exists as dynamic",
-                }),
+                    reason: "field handle index out of bounds",
+                })
             }
         } else {
             if self.fields.len() != self.num_planned {
@@ -267,23 +270,23 @@ impl BatchPlan {
     /// For dynamic fields, the observed kind is accumulated (for conflict
     /// detection). For planned fields, the handle is returned as-is — the
     /// Dynamic accumulator in the builder handles type mixing uniformly.
-    #[allow(clippy::indexing_slicing)]
     pub fn resolve_dynamic(
         &mut self,
         name: &str,
         kind: FieldKind,
     ) -> Result<FieldHandle, PlanError> {
         if let Some(&handle) = self.index.get(name) {
-            let entry = &mut self.fields[handle.index()];
-            match &mut entry.mode {
-                FieldSchemaMode::Dynamic { .. } => {
-                    entry.mode.observe(kind);
-                }
-                FieldSchemaMode::Planned(_) => {
-                    // Pre-registered fields accept dynamic resolution: the
-                    // underlying Dynamic accumulator handles all types, and
-                    // dedup ensures first-write-wins when canonical and
-                    // attribute names collide.
+            if let Some(entry) = self.fields.get_mut(handle.index()) {
+                match &mut entry.mode {
+                    FieldSchemaMode::Dynamic { .. } => {
+                        entry.mode.observe(kind);
+                    }
+                    FieldSchemaMode::Planned(_) => {
+                        // Pre-registered fields accept dynamic resolution: the
+                        // underlying Dynamic accumulator handles all types, and
+                        // dedup ensures first-write-wins when canonical and
+                        // attribute names collide.
+                    }
                 }
             }
             Ok(handle)

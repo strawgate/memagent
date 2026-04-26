@@ -744,7 +744,6 @@ fn scatter_resource_attrs(
     }
 }
 
-#[allow(clippy::indexing_slicing)]
 fn collect_resource_template_values<T: Clone>(
     values: &[Option<T>],
     resource_ids: &UInt32Array,
@@ -755,8 +754,8 @@ fn collect_resource_template_values<T: Clone>(
         let rid = resource_ids.value(row);
         if let std::collections::hash_map::Entry::Vacant(e) = map.entry(rid) {
             let rid_row = rid as usize;
-            if rid_row < num_rows {
-                e.insert(values[rid_row].clone());
+            if let Some(v) = values.get(rid_row) {
+                e.insert(v.clone());
             }
         }
     }
@@ -858,7 +857,6 @@ fn scatter_scope_attrs(
     }
 }
 
-#[allow(clippy::indexing_slicing)]
 pub(super) fn collect_template_values_by_id<T: Clone>(
     values: &[Option<T>],
     ids: &UInt32Array,
@@ -869,8 +867,8 @@ pub(super) fn collect_template_values_by_id<T: Clone>(
         let id = ids.value(row);
         if let std::collections::hash_map::Entry::Vacant(e) = map.entry(id) {
             let template_row = id as usize;
-            if template_row < values.len() {
-                e.insert(values[template_row].clone());
+            if let Some(v) = values.get(template_row) {
+                e.insert(v.clone());
             }
         }
     }
