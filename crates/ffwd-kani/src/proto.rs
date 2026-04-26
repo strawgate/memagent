@@ -67,6 +67,70 @@ pub fn decode_varint_oracle(data: &[u8]) -> Option<(u64, usize)> {
     }
 }
 
+/// Oracle for `decode_tag`: decodes a protobuf tag into `(field_number, wire_type, new_pos)`.
+///
+/// A protobuf tag is a varint encoding `field_number << 3 | wire_type`.
+/// Returns `None` if the varint decode fails.
+#[cfg_attr(kani, kani::ensures(|result: &Option<(u32, u8, usize)>| {
+    match result {
+        Some((_fn, wt, new_pos)) => *wt <= 7 && *new_pos >= 1,
+        None => true,
+    }
+}))]
+pub fn decode_tag_oracle(buf: &[u8], pos: usize) -> Option<(u32, u8, usize)> {
+    let (tag, new_pos) = decode_varint_oracle(&buf[pos..])?;
+    let field_number = (tag >> 3) as u32;
+    let wire_type = (tag & 0x07) as u8;
+    Some((field_number, wire_type, new_pos))
+}
+
+/// Oracle for `skip_field`: skips a protobuf field value based on its wire type.
+///
+/// Returns `None` if the buffer is too short, the varint decode fails,
+/// or the wire type is unsupported.
+#[cfg_attr(kani, kani::ensures(|result: &Option<usize>| {
+    match result {
+        Some(end) => *end >= 1,
+        None => true,
+    }
+}))]
+pub fn skip_field_oracle(buf: &[u8], wire_type: u8, pos: usize) -> Option<usize> {
+    match wire_type {
+        0 => {
+            // Varint.
+            let (_, new_pos) = decode_varint_oracle(&buf[pos..])?;
+            Some(new_pos)
+        }
+        1 => {
+            // 64-bit fixed.
+            let end = pos.checked_add(8)?;
+            if end > buf.len() {
+                return None;
+            }
+            Some(end)
+        }
+        2 => {
+            // Length-delimited.
+            let (len, new_pos) = decode_varint_oracle(&buf[pos..])?;
+            let len_usize = usize::try_from(len).ok()?;
+            let end = new_pos.checked_add(len_usize)?;
+            if end > buf.len() {
+                return None;
+            }
+            Some(end)
+        }
+        5 => {
+            // 32-bit fixed.
+            let end = pos.checked_add(4)?;
+            if end > buf.len() {
+                return None;
+            }
+            Some(end)
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -146,6 +210,68 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn decode_tag_oracle_single_byte() {
+        // Field 1, wire type 2 (length-delimited): (1 << 3) | 2 = 10 = 0x0A
+        assert_eq!(decode_tag_oracle(&[0x0A], 0), Some((1, 2, 1)));
+    }
+
+    #[test]
+    fn decode_tag_oracle_multi_byte() {
+        // Field 16, wire type 0: (16 << 3) | 0 = 128 = 0x80 0x01
+        assert_eq!(decode_tag_oracle(&[0x80, 0x01], 0), Some((16, 0, 2)));
+    }
+
+    #[test]
+    fn decode_tag_oracle_truncated() {
+        assert_eq!(decode_tag_oracle(&[], 0), None);
+    }
+
+    #[test]
+    fn skip_field_varint() {
+        // Wire type 0, value 300: continuation needed
+        assert_eq!(skip_field_oracle(&[0xAC, 0x02], 0, 0), Some(2));
+    }
+
+    #[test]
+    fn skip_field_fixed64() {
+        // Wire type 1, 8 bytes
+        let buf = [0u8; 16];
+        assert_eq!(skip_field_oracle(&buf, 1, 0), Some(8));
+    }
+
+    #[test]
+    fn skip_field_length_delimited() {
+        // Wire type 2, 3 bytes of data
+        // Length varint = 3 (0x03), then 3 bytes
+        assert_eq!(skip_field_oracle(&[0x03, 0x41, 0x42, 0x43], 2, 0), Some(4));
+    }
+
+    #[test]
+    fn skip_field_fixed32() {
+        // Wire type 5, 4 bytes
+        let buf = [0u8; 16];
+        assert_eq!(skip_field_oracle(&buf, 5, 0), Some(4));
+    }
+
+    #[test]
+    fn skip_field_unsupported_wire_type() {
+        assert_eq!(skip_field_oracle(&[0x00], 3, 0), None);
+        assert_eq!(skip_field_oracle(&[0x00], 4, 0), None);
+        assert_eq!(skip_field_oracle(&[0x00], 6, 0), None);
+        assert_eq!(skip_field_oracle(&[0x00], 7, 0), None);
+    }
+
+    #[test]
+    fn skip_field_truncated() {
+        // Fixed64 but buffer too short
+        assert_eq!(skip_field_oracle(&[0x00; 5], 1, 0), None);
+        // Fixed32 but buffer too short
+        assert_eq!(skip_field_oracle(&[0x00; 3], 5, 0), None);
+        // Length-delimited truncated
+        assert_eq!(skip_field_oracle(&[0x05], 2, 0), None);
+    }
 }
 #[cfg(kani)]
 mod verification {
@@ -189,5 +315,26 @@ mod verification {
         let res = decode_varint_oracle(&data[..len]);
         kani::cover!(res.is_some(), "successful decode reachable");
         kani::cover!(res.is_none(), "error decode reachable");
+    }
+
+    #[kani::proof_for_contract(decode_tag_oracle)]
+    #[kani::unwind(22)]
+    fn verify_decode_tag_oracle_contract() {
+        let buf: [u8; 20] = kani::any();
+        let pos: usize = kani::any_where(|&p| p < buf.len());
+        let res = decode_tag_oracle(&buf, pos);
+        kani::cover!(res.is_some(), "successful decode reachable");
+        kani::cover!(res.is_none(), "decode error reachable");
+    }
+
+    #[kani::proof_for_contract(skip_field_oracle)]
+    #[kani::unwind(22)]
+    fn verify_skip_field_oracle_contract() {
+        let buf: [u8; 20] = kani::any();
+        let wire_type: u8 = kani::any();
+        let pos: usize = kani::any_where(|&p| p < buf.len());
+        let res = skip_field_oracle(&buf, wire_type, pos);
+        kani::cover!(res.is_some(), "successful skip reachable");
+        kani::cover!(res.is_none(), "skip error reachable");
     }
 }
