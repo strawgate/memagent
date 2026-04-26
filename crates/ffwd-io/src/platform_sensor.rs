@@ -9,6 +9,7 @@
 // Ring buffer events are 8-byte aligned by the kernel, so casting from *const u8
 // to a repr(C) struct pointer is safe despite clippy's alignment warning.
 #![allow(clippy::cast_ptr_alignment)]
+#![allow(clippy::indexing_slicing)]
 
 use std::io;
 use std::net::Ipv4Addr;
