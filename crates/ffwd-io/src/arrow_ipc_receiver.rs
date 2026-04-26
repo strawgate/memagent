@@ -357,9 +357,7 @@ fn decompress_zstd(body: &[u8], max_message_size_bytes: usize) -> Result<Vec<u8>
 /// size against `max_message_size_bytes` *before* calling it to prevent a
 /// forged prefix from triggering an unbounded allocation (DoS vector).
 fn decompress_lz4(body: &[u8], max_message_size_bytes: usize) -> Result<Vec<u8>, InputError> {
-    let &[a, b, c, d] = body.get(..4).ok_or_else(|| {
-        InputError::Receiver("lz4 decompression failed: missing size prefix".to_string())
-    })? else {
+    let Some(&[a, b, c, d]) = body.get(..4) else {
         return Err(InputError::Receiver(
             "lz4 decompression failed: missing size prefix".to_string(),
         ));

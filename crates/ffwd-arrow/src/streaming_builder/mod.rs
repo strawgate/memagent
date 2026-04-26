@@ -53,7 +53,6 @@ fn new_emitted_name_set() -> EmittedNameSet {
     EmittedNameSet::new()
 }
 
-#[allow(clippy::indexing_slicing)]
 pub(crate) fn append_string_view(
     builder: &mut StringViewBuilder,
     original_block: u32,
