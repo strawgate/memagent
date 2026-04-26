@@ -1,5 +1,8 @@
 //! Byte-level comparison and bitmask helpers for Kani proofs.
 
+extern crate alloc;
+use alloc::vec::Vec;
+
 /// Bounded byte-by-byte equality assertion suitable for Kani proofs.
 ///
 /// Unlike `assert_eq!` on slices (which may use formatting that Kani cannot
@@ -109,6 +112,40 @@ pub fn prefix_xor_oracle(mut bitmask: u64) -> u64 {
     bitmask
 }
 
+/// Oracle for `json_escape_bytes`: appends JSON-escaped `src` to `dst`.
+///
+/// RFC 8259 §7 mandates escaping: " (U+0022), \ (U+005C),
+/// and control characters (U+0000–U+001F, U+007F).
+///
+/// Contract: output length is bounded by input length times 6 (worst case:
+/// each byte becomes \u00XX = 6 bytes).
+#[cfg_attr(kani, kani::ensures(|result: &Vec<u8>| {
+    result.capacity() <= src.len().saturating_mul(6)
+}))]
+pub fn json_escape_oracle(src: &[u8]) -> Vec<u8> {
+    let mut dst = Vec::with_capacity(src.len());
+    for &b in src {
+        match b {
+            b'"' => dst.extend_from_slice(b"\\\""),
+            b'\\' => dst.extend_from_slice(b"\\\\"),
+            0x08 => dst.extend_from_slice(b"\\b"),
+            b'\t' => dst.extend_from_slice(b"\\t"),
+            b'\n' => dst.extend_from_slice(b"\\n"),
+            0x0C => dst.extend_from_slice(b"\\f"),
+            b'\r' => dst.extend_from_slice(b"\\r"),
+            0x00..=0x1F | 0x7F => {
+                dst.extend_from_slice(b"\\u00");
+                let hi = (b >> 4) & 0x0F;
+                let lo = b & 0x0F;
+                dst.push(if hi < 10 { b'0' + hi } else { b'a' + hi - 10 });
+                dst.push(if lo < 10 { b'0' + lo } else { b'a' + lo - 10 });
+            }
+            _ => dst.push(b),
+        }
+    }
+    dst
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,18 +186,19 @@ mod verification {
     use super::*;
 
     #[kani::proof_for_contract(eq_ignore_case_match)]
+    #[kani::unwind(22)]
     fn verify_eq_ignore_case_match_contract() {
         let a: [u8; 4] = kani::any();
         let b: [u8; 4] = kani::any();
-        let len_a: usize = kani::any();
-        let len_b: usize = kani::any();
-        kani::assume(len_a <= 4 && len_b <= 4);
+        let len_a: usize = kani::any_where(|&l| l <= 4);
+        let len_b: usize = kani::any_where(|&l| l <= 4);
         let res = eq_ignore_case_match(&a[..len_a], &b[..len_b]);
         kani::cover!(res, "match reachable");
         kani::cover!(!res && len_a == len_b, "mismatch same length reachable");
     }
 
     #[kani::proof_for_contract(is_ascii_printable)]
+    #[kani::unwind(0)]
     fn verify_is_ascii_printable_contract() {
         let b: u8 = kani::any();
         let res = is_ascii_printable(b);
@@ -199,5 +237,27 @@ mod verification {
         let res = prefix_xor_oracle(bitmask);
         kani::cover!(res != 0 && bitmask != 0, "non-zero result");
         kani::cover!(res == 0 && bitmask == 0, "zero result");
+    }
+
+    #[kani::proof_for_contract(json_escape_oracle)]
+    #[kani::unwind(22)]
+    fn verify_json_escape_oracle_contract() {
+        let src: [u8; 16] = kani::any();
+        let len: usize = kani::any_where(|&l| l <= 16);
+        let _result = json_escape_oracle(&src[..len]);
+        kani::cover!(
+            _result.capacity() <= len.saturating_mul(6),
+            "capacity bound"
+        );
+    }
+
+    #[kani::proof]
+    #[kani::unwind(22)]
+    fn verify_json_escape_oracle_no_panic() {
+        let src: [u8; 16] = kani::any();
+        let len: usize = kani::any_where(|&l| l <= 16);
+        let result = json_escape_oracle(&src[..len]);
+        kani::cover!(result.len() > len, "expansion reachable");
+        kani::cover!(result.len() == len, "no-op reachable");
     }
 }

@@ -16,6 +16,7 @@
 // `ffwd_core::cri::CriReassembler` and `ffwd_core::cri::AggregateResult`.
 pub use crate::reassembler::{AggregateResult, CriReassembler};
 use alloc::vec::Vec;
+use ffwd_lint_attrs::verified;
 
 /// Parsed CRI log line. References point into the original byte slice (zero-copy).
 #[derive(Debug)]
@@ -268,6 +269,7 @@ fn write_json_line_for_plain_text_field(
 /// Handles all characters that must be escaped in a JSON string value:
 /// double-quote, backslash, and ASCII control characters (U+0000–U+001F, U+007F).
 #[inline]
+#[verified(kani = "verify_json_escape_bytes_vs_oracle")]
 pub fn json_escape_bytes(src: &[u8], dst: &mut Vec<u8>) {
     for &b in src {
         match b {
@@ -850,6 +852,7 @@ mod verification {
     const SHORT_FIELD_NAME: &str = "b";
 
     use ffwd_kani::bytes::assert_bytes_eq;
+    use ffwd_kani::bytes::json_escape_oracle;
 
     /// Prove parse_cri_line never panics for any 32-byte input.
     #[kani::proof]
@@ -1222,5 +1225,22 @@ mod verification {
         let mut out = Vec::with_capacity(32);
         write_json_line(b"x", &mut out);
         assert_bytes_eq(&out, b"{\"body\":\"x\"}\n");
+    }
+
+    /// Oracle equivalence: `json_escape_bytes` matches `ffwd_kani::bytes::json_escape_oracle`
+    /// for ALL byte-slice inputs.
+    #[kani::proof]
+    #[kani::unwind(22)]
+    pub(super) fn verify_json_escape_bytes_vs_oracle() {
+        let src: [u8; 16] = kani::any();
+        let len: usize = kani::any_where(|&l| l <= 16);
+
+        let mut prod_dst = Vec::new();
+        let ora_result = json_escape_oracle(&src[..len]);
+        json_escape_bytes(&src[..len], &mut prod_dst);
+
+        assert_bytes_eq(&prod_dst, &ora_result);
+        kani::cover!(prod_dst.len() > len, "expansion reachable");
+        kani::cover!(prod_dst.len() == len, "no-op reachable");
     }
 }

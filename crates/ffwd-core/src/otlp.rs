@@ -207,7 +207,7 @@ pub fn encode_fixed32(buf: &mut Vec<u8>, field_number: u32, value: u32) {
 ///
 /// Returns `(value, new_pos)` or an error string if the input is truncated
 /// or the varint exceeds 10 bytes.
-#[allow_unproven]
+#[verified(kani = "verify_decode_varint_vs_oracle")]
 #[trust_boundary]
 pub fn decode_varint(buf: &[u8], pos: usize) -> Result<(u64, usize), &'static str> {
     let mut value: u64 = 0;
@@ -1196,6 +1196,7 @@ mod tests {
 mod verification {
     use super::*;
     use alloc::{vec, vec::Vec};
+    use ffwd_kani::proto::decode_varint_oracle;
 
     // NOTE: encode_varint and encode_tag take `&mut Vec<u8>` and return `()`.
     // In our current Kani version/configuration used in CI, the contract system
@@ -2028,5 +2029,34 @@ mod verification {
 
         kani::cover!(data_len == 0, "empty payload");
         kani::cover!(data_len > 0, "non-empty payload");
+    }
+
+    /// Oracle equivalence: `decode_varint` matches `ffwd_kani::proto::decode_varint_oracle`
+    /// for all bounded byte inputs (up to 10 bytes).
+    ///
+    /// Both return `None`/`Err` for malformed varints and `Some`/`Ok` with the same
+    /// `(value, new_pos)` for well-formed varints.
+    #[kani::proof]
+    #[kani::unwind(22)]
+    pub(super) fn verify_decode_varint_vs_oracle() {
+        let data: [u8; 10] = kani::any();
+        let pos: usize = kani::any_where(|&p| p <= 10);
+
+        let ora_result = decode_varint_oracle(&data[pos..]);
+        let prod_result = decode_varint(&data, pos);
+
+        match ora_result {
+            None => {
+                assert!(prod_result.is_err(), "oracle None → prod Err");
+            }
+            Some((ora_val, ora_pos)) => {
+                assert!(prod_result.is_ok(), "oracle Some → prod Ok");
+                let (prod_val, prod_pos) = prod_result.unwrap();
+                assert_eq!(prod_val, ora_val, "value mismatch");
+                assert_eq!(prod_pos, ora_pos, "pos mismatch");
+                kani::cover!(ora_val < 128, "single-byte result");
+                kani::cover!(ora_val >= 128, "multi-byte result");
+            }
+        }
     }
 }
