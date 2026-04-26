@@ -261,6 +261,7 @@ impl StreamingBuilder {
     }
 
     #[inline]
+    #[allow(clippy::indexing_slicing)]
     pub fn resolve_field(&mut self, key: &[u8]) -> usize {
         debug_assert!(
             self.lifecycle.state() == BuilderState::InBatch
@@ -311,6 +312,7 @@ impl StreamingBuilder {
     }
 
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_str_by_idx(&mut self, idx: usize, value: &[u8]) {
         debug_assert_eq!(
             self.lifecycle.state(),
@@ -342,6 +344,7 @@ impl StreamingBuilder {
     }
 
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_validated_str_by_idx(&mut self, idx: usize, value: &[u8]) {
         self.append_str_by_idx(idx, value);
     }
@@ -353,6 +356,7 @@ impl StreamingBuilder {
     /// offset shifted by `buf.len()` so that `finish_batch` can select the
     /// decoded Arrow StringView block without copying the original input.
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_decoded_str_by_idx(&mut self, idx: usize, value: &[u8]) {
         debug_assert_eq!(
             self.lifecycle.state(),
@@ -395,6 +399,7 @@ impl StreamingBuilder {
     /// Inner append path shared by `append_decoded_str_by_idx` (post-validation)
     /// and `append_prevalidated_str_by_idx` (type-guaranteed UTF-8).
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     fn append_decoded_str_inner(&mut self, idx: usize, value: &[u8]) {
         let Ok(len) = u32::try_from(value.len()) else {
             return;
@@ -426,11 +431,13 @@ impl StreamingBuilder {
     }
 
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_validated_decoded_str_by_idx(&mut self, idx: usize, value: &[u8]) {
         self.append_decoded_str_by_idx(idx, value);
     }
 
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_int_by_idx(&mut self, idx: usize, value: &[u8]) {
         debug_assert_eq!(
             self.lifecycle.state(),
@@ -475,6 +482,7 @@ impl StreamingBuilder {
     }
 
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_float_by_idx(&mut self, idx: usize, value: &[u8]) {
         debug_assert_eq!(
             self.lifecycle.state(),
@@ -565,6 +573,7 @@ impl StreamingBuilder {
     /// first call has effect. This maintains the invariant that `line_views`
     /// has exactly one entry per row when `line_capture` is enabled.
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_line(&mut self, line: &[u8]) {
         debug_assert_eq!(
             self.lifecycle.state(),

@@ -202,6 +202,7 @@ impl BatchPlan {
     /// names are re-resolved from scratch each batch — matching
     /// `StreamingBuilder`'s `field_index.clear()` behavior. Without this,
     /// dynamic fields accumulate unboundedly across batches.
+    #[allow(clippy::indexing_slicing)]
     pub fn reset_dynamic(&mut self) {
         // Remove dynamic entries from the name index.
         for entry in &self.fields[self.num_planned..] {
@@ -220,6 +221,7 @@ impl BatchPlan {
     /// Planned fields must be declared before any dynamic fields are
     /// resolved. They form a stable prefix of the field list that
     /// `reset_dynamic` preserves.
+    #[allow(clippy::indexing_slicing)]
     pub fn declare_planned(
         &mut self,
         name: &str,
@@ -265,6 +267,7 @@ impl BatchPlan {
     /// For dynamic fields, the observed kind is accumulated (for conflict
     /// detection). For planned fields, the handle is returned as-is — the
     /// Dynamic accumulator in the builder handles type mixing uniformly.
+    #[allow(clippy::indexing_slicing)]
     pub fn resolve_dynamic(
         &mut self,
         name: &str,
