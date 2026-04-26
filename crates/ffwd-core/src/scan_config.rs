@@ -90,22 +90,15 @@ impl ScanConfig {
 /// this as a `#[requires]` would force every caller to guard against empty
 /// input even though the function already does the right thing.
 #[inline(always)]
-#[allow(clippy::indexing_slicing)]
 pub fn parse_int_fast(bytes: &[u8]) -> Option<i64> {
-    if bytes.is_empty() {
-        return None;
-    }
-    let (neg, start) = if bytes[0] == b'-' {
-        (true, 1)
-    } else {
-        (false, 0)
-    };
-    if start >= bytes.len() {
+    let (&first, rest) = bytes.split_first()?;
+    let (neg, digits) = if first == b'-' { (true, rest) } else { (false, bytes) };
+    if digits.is_empty() {
         return None;
     }
     let mut acc: i64 = 0;
     if neg {
-        for &b in &bytes[start..] {
+        for &b in digits {
             if !b.is_ascii_digit() {
                 return None;
             }
@@ -114,7 +107,7 @@ pub fn parse_int_fast(bytes: &[u8]) -> Option<i64> {
         }
         Some(acc)
     } else {
-        for &b in &bytes[start..] {
+        for &b in digits {
             if !b.is_ascii_digit() {
                 return None;
             }

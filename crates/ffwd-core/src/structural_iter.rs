@@ -107,21 +107,26 @@ impl<'a> StructuralIter<'a> {
     }
 
     /// Load and process the block at the given index.
-    #[allow(clippy::indexing_slicing)]
     fn load_block(&mut self, idx: usize) {
         self.block_idx = idx;
         self.block_offset = idx * 64;
-        let remaining = self.len - self.block_offset;
+        let remaining = self.len.saturating_sub(self.block_offset);
         let block_len = remaining.min(64);
 
         let block: [u8; 64] = if remaining >= 64 {
             debug_assert!(remaining >= 64);
             let mut block = [0u8; 64];
-            block.copy_from_slice(&self.buf[self.block_offset..self.block_offset + 64]);
+            if let Some(src) = self.buf.get(self.block_offset..self.block_offset + 64) {
+                block.copy_from_slice(src);
+            }
             block
         } else {
             let mut padded = [b' '; 64];
-            padded[..remaining].copy_from_slice(&self.buf[self.block_offset..]);
+            if let Some(src) = self.buf.get(self.block_offset..self.block_offset + remaining)
+                && let Some(dst) = padded.get_mut(..src.len())
+            {
+                dst.copy_from_slice(src);
+            }
             padded
         };
 
@@ -199,7 +204,6 @@ impl<'a> StructuralIter<'a> {
     ///
     /// Uses the space bitmask — O(1) per block, no byte scanning.
     #[inline]
-    #[allow(clippy::indexing_slicing)]
     pub fn next_non_space(&self, from: usize) -> usize {
         if from >= self.len {
             return self.len;
@@ -228,9 +232,10 @@ impl<'a> StructuralIter<'a> {
         // Fallback: byte scan (for positions in blocks we haven't loaded)
         let mut pos = from;
         while pos < self.len {
-            match self.buf[pos] {
-                b' ' => pos += 1,
-                _ => return pos,
+            match self.buf.get(pos) {
+                Some(b' ') => pos += 1,
+                Some(_) => return pos,
+                None => break,
             }
         }
         pos
