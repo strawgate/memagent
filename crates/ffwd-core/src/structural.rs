@@ -290,6 +290,7 @@ fn cmp4(c0: u8x16, c1: u8x16, c2: u8x16, c3: u8x16, needle: u8) -> u64 {
 /// then runs 10 comparisons against the loaded data. u8x16 maps to a single
 /// native register on both NEON (128-bit) and SSE2 (128-bit). The `wide`
 /// crate handles platform dispatch at compile time.
+#[allow(clippy::expect_used)]
 pub fn find_structural_chars(block: &[u8; 64]) -> RawBlockMasks {
     let c0 = u8x16::new(block[0..16].try_into().expect("block is 64 bytes"));
     let c1 = u8x16::new(block[16..32].try_into().expect("block is 64 bytes"));

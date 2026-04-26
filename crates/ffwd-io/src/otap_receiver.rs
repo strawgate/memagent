@@ -8,6 +8,8 @@
 //! The protobuf is hand-decoded (no tonic codegen) following the same pattern
 //! as `otlp_receiver.rs`. Responds with a hand-encoded `BatchStatus` protobuf.
 
+#![allow(clippy::indexing_slicing)]
+
 use std::io;
 use std::sync::mpsc;
 use std::sync::{

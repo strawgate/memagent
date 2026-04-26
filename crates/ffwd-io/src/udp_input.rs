@@ -1,6 +1,8 @@
 //! UDP input source. Listens on a UDP socket and produces one SourceEvent
 //! per received datagram (or batch of datagrams).
 
+#![allow(clippy::indexing_slicing)]
+
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;

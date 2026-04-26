@@ -9,6 +9,8 @@
 //! interleaved data from multiple files (or TCP connections) never
 //! cross-contaminates partial lines or CRI P/F aggregation state.
 
+#![allow(clippy::indexing_slicing)]
+
 use bytes::{Bytes, BytesMut};
 
 use crate::filter_hints::FilterHints;

@@ -1,3 +1,5 @@
+#![allow(clippy::indexing_slicing)]
+
 use arrow::record_batch::RecordBatch;
 use base64::Engine as _;
 use bytes::Bytes;

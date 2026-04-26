@@ -5,6 +5,8 @@
 //! and framing, allowing any transport (file, TCP, UDP) to use any format
 //! (JSON, CRI, Raw) via composition.
 
+#![allow(clippy::indexing_slicing)]
+
 use crate::input::CriMetadata;
 use bytes::{BufMut, BytesMut};
 use ffwd_core::cri::parse_cri_line;

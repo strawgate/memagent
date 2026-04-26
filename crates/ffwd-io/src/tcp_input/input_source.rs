@@ -1,3 +1,4 @@
+#[allow(clippy::indexing_slicing)]
 impl InputSource for TcpInput {
     fn poll(&mut self) -> io::Result<Vec<SourceEvent>> {
         let mut under_pressure = false;

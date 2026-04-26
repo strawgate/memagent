@@ -1,3 +1,5 @@
+#![allow(clippy::indexing_slicing)]
+
 //! Experimental OTLP logs wire projection into Arrow.
 //!
 //! This module decodes the common OTLP logs protobuf shape directly into

@@ -1,3 +1,5 @@
+#![deny(clippy::indexing_slicing)]
+
 //! Arrow integration layer for ffwd.
 //!
 //! Implements ffwd-core's `ScanBuilder` trait using Apache Arrow types.

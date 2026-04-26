@@ -1,3 +1,5 @@
+#![allow(clippy::indexing_slicing)]
+
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;

@@ -217,6 +217,7 @@ impl StreamingBuilder {
     /// Asserts that `buf.len()` fits in a u32, because string-view
     /// offsets are stored as u32. Buffers larger than 4 GiB would produce
     /// silently truncated offsets without this guard.
+    #[allow(clippy::indexing_slicing)]
     pub fn begin_batch(&mut self, buf: bytes::Bytes) {
         debug_assert!(
             matches!(
@@ -261,6 +262,7 @@ impl StreamingBuilder {
     }
 
     #[inline]
+    #[allow(clippy::indexing_slicing)]
     pub fn resolve_field(&mut self, key: &[u8]) -> usize {
         debug_assert!(
             self.lifecycle.state() == BuilderState::InBatch
@@ -311,6 +313,7 @@ impl StreamingBuilder {
     }
 
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_str_by_idx(&mut self, idx: usize, value: &[u8]) {
         debug_assert_eq!(
             self.lifecycle.state(),
@@ -353,6 +356,7 @@ impl StreamingBuilder {
     /// offset shifted by `buf.len()` so that `finish_batch` can select the
     /// decoded Arrow StringView block without copying the original input.
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_decoded_str_by_idx(&mut self, idx: usize, value: &[u8]) {
         debug_assert_eq!(
             self.lifecycle.state(),
@@ -377,6 +381,7 @@ impl StreamingBuilder {
     /// **Caller contract**: `value` must be valid UTF-8. Violating this produces
     /// corrupt Arrow arrays (undefined behaviour in downstream consumers).
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_prevalidated_str_by_idx(&mut self, idx: usize, value: &str) {
         debug_assert_eq!(
             self.lifecycle.state(),
@@ -395,6 +400,7 @@ impl StreamingBuilder {
     /// Inner append path shared by `append_decoded_str_by_idx` (post-validation)
     /// and `append_prevalidated_str_by_idx` (type-guaranteed UTF-8).
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     fn append_decoded_str_inner(&mut self, idx: usize, value: &[u8]) {
         let Ok(len) = u32::try_from(value.len()) else {
             return;
@@ -431,6 +437,7 @@ impl StreamingBuilder {
     }
 
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_int_by_idx(&mut self, idx: usize, value: &[u8]) {
         debug_assert_eq!(
             self.lifecycle.state(),
@@ -454,6 +461,7 @@ impl StreamingBuilder {
     }
 
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_i64_value_by_idx(&mut self, idx: usize, value: i64) {
         debug_assert_eq!(
             self.lifecycle.state(),
@@ -475,6 +483,7 @@ impl StreamingBuilder {
     }
 
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_float_by_idx(&mut self, idx: usize, value: &[u8]) {
         debug_assert_eq!(
             self.lifecycle.state(),
@@ -498,6 +507,7 @@ impl StreamingBuilder {
     }
 
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_f64_value_by_idx(&mut self, idx: usize, value: f64) {
         debug_assert_eq!(
             self.lifecycle.state(),
@@ -519,6 +529,7 @@ impl StreamingBuilder {
     }
 
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_bool_by_idx(&mut self, idx: usize, value: bool) {
         debug_assert_eq!(
             self.lifecycle.state(),
@@ -540,6 +551,7 @@ impl StreamingBuilder {
     }
 
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_null_by_idx(&mut self, idx: usize) {
         debug_assert_eq!(
             self.lifecycle.state(),
@@ -565,6 +577,7 @@ impl StreamingBuilder {
     /// first call has effect. This maintains the invariant that `line_views`
     /// has exactly one entry per row when `line_capture` is enabled.
     #[inline(always)]
+    #[allow(clippy::indexing_slicing)]
     pub fn append_line(&mut self, line: &[u8]) {
         debug_assert_eq!(
             self.lifecycle.state(),

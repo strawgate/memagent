@@ -11,6 +11,8 @@
 //! Missing footer = incomplete segment (crashed mid-write). Invalid footer
 //! = corrupt segment. Both are deleted during recovery.
 
+#![allow(clippy::indexing_slicing)]
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};

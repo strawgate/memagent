@@ -64,25 +64,11 @@ fn pick_conflict_value_source(
 }
 
 fn conflict_child_kind(name: &str) -> Option<ConflictValueSource> {
-    let bytes = name.as_bytes();
-    match bytes.len() {
-        3 if bytes[0] == b'i' && bytes[1] == b'n' && bytes[2] == b't' => {
-            Some(ConflictValueSource::Int)
-        }
-        3 if bytes[0] == b's' && bytes[1] == b't' && bytes[2] == b'r' => {
-            Some(ConflictValueSource::Str)
-        }
-        4 if bytes[0] == b'b' && bytes[1] == b'o' && bytes[2] == b'o' && bytes[3] == b'l' => {
-            Some(ConflictValueSource::Bool)
-        }
-        5 if bytes[0] == b'f'
-            && bytes[1] == b'l'
-            && bytes[2] == b'o'
-            && bytes[3] == b'a'
-            && bytes[4] == b't' =>
-        {
-            Some(ConflictValueSource::Float)
-        }
+    match name.as_bytes() {
+        b"int" => Some(ConflictValueSource::Int),
+        b"str" => Some(ConflictValueSource::Str),
+        b"bool" => Some(ConflictValueSource::Bool),
+        b"float" => Some(ConflictValueSource::Float),
         _ => None,
     }
 }

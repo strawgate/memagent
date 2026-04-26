@@ -91,20 +91,18 @@ impl ScanConfig {
 /// input even though the function already does the right thing.
 #[inline(always)]
 pub fn parse_int_fast(bytes: &[u8]) -> Option<i64> {
-    if bytes.is_empty() {
-        return None;
-    }
-    let (neg, start) = if bytes[0] == b'-' {
-        (true, 1)
+    let (&first, rest) = bytes.split_first()?;
+    let (neg, digits) = if first == b'-' {
+        (true, rest)
     } else {
-        (false, 0)
+        (false, bytes)
     };
-    if start >= bytes.len() {
+    if digits.is_empty() {
         return None;
     }
     let mut acc: i64 = 0;
     if neg {
-        for &b in &bytes[start..] {
+        for &b in digits {
             if !b.is_ascii_digit() {
                 return None;
             }
@@ -113,7 +111,7 @@ pub fn parse_int_fast(bytes: &[u8]) -> Option<i64> {
         }
         Some(acc)
     } else {
-        for &b in &bytes[start..] {
+        for &b in digits {
             if !b.is_ascii_digit() {
                 return None;
             }

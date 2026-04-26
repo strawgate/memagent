@@ -1,3 +1,4 @@
+#![allow(clippy::indexing_slicing)]
 //! Reference numeric parsing implementations.
 
 /// Reference integer parser using `i128` accumulator to detect overflow.

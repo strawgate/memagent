@@ -96,6 +96,7 @@ impl CriReassembler {
     /// Returns [`AggregateResult::Truncated`] instead of
     /// [`AggregateResult::Complete`] when any chunk in the current P/F
     /// sequence exceeded `max_message_size`. Callers should log a warning.
+    #[allow(clippy::indexing_slicing)]
     pub fn feed<'a>(&'a mut self, message: &'a [u8], is_full: bool) -> AggregateResult<'a> {
         if is_full {
             if self.pending.is_empty() {
@@ -174,6 +175,7 @@ impl CriReassembler {
     /// (timestamp + stream + flag) plus the message to be buffered. Using only
     /// `max_message_size` would truncate the raw line before the header is fully
     /// received, turning a valid split line into a parse error.
+    #[allow(clippy::indexing_slicing)]
     pub(crate) fn push_line_fragment(&mut self, bytes: &[u8]) {
         let remaining = self
             .raw_line_fragment_limit()

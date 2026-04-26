@@ -131,6 +131,7 @@ impl TypedColumn {
 /// 3. Maps well-known LOGS fields back: time_unix_nano → `_timestamp`,
 ///    severity_text → `level`, body_str → `message`.
 /// 4. Combines into a single flat `RecordBatch`.
+#[allow(clippy::indexing_slicing)]
 pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
     let num_rows = star.logs.num_rows();
 
@@ -459,6 +460,7 @@ pub fn star_to_flat(star: &StarSchema) -> Result<RecordBatch, ArrowError> {
 /// Existing columns listed in `protected_existing_cols` are canonical fact
 /// columns; attrs with the same flat name are skipped because flat batches
 /// cannot represent duplicate column names.
+#[allow(clippy::indexing_slicing)]
 fn unpivot_attrs_to_flat(
     attrs_batch: &RecordBatch,
     flat_cols: &mut Vec<(String, TypedColumn)>,
@@ -660,6 +662,7 @@ fn unpivot_attrs_to_flat(
 /// After `unpivot_attrs_to_flat`, resource attrs are only populated at the
 /// row index matching the parent_id. This function copies those values to
 /// every row whose resource_id matches.
+#[allow(clippy::indexing_slicing)]
 fn scatter_resource_attrs(
     flat_cols: &mut [(String, TypedColumn)],
     col_index: &HashMap<String, usize>,
@@ -741,6 +744,7 @@ fn scatter_resource_attrs(
     }
 }
 
+#[allow(clippy::indexing_slicing)]
 fn collect_resource_template_values<T: Clone>(
     values: &[Option<T>],
     resource_ids: &UInt32Array,
@@ -761,6 +765,7 @@ fn collect_resource_template_values<T: Clone>(
 
 /// Scatter scope attribute values from template rows (indexed by scope_id) to
 /// all rows that share the same scope_id.
+#[allow(clippy::indexing_slicing)]
 fn scatter_scope_attrs(
     flat_cols: &mut [(String, TypedColumn)],
     col_index: &HashMap<String, usize>,
@@ -853,6 +858,7 @@ fn scatter_scope_attrs(
     }
 }
 
+#[allow(clippy::indexing_slicing)]
 pub(super) fn collect_template_values_by_id<T: Clone>(
     values: &[Option<T>],
     ids: &UInt32Array,

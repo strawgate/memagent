@@ -8,6 +8,7 @@
 #![warn(missing_docs)]
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::panic)]
+#![deny(clippy::indexing_slicing)]
 
 extern crate alloc;
 
