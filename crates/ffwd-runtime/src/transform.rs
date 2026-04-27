@@ -361,7 +361,10 @@ mod tests {
 
         let mut transform = create_transform("SELECT * FROM logs").expect("create_transform");
         let result = transform.execute_blocking(batch);
-        assert!(result.is_ok(), "execute_blocking through dyn Transform should work");
+        assert!(
+            result.is_ok(),
+            "execute_blocking through dyn Transform should work"
+        );
         assert_eq!(result.unwrap().num_rows(), 3);
     }
 }
