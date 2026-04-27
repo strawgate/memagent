@@ -181,8 +181,10 @@ pub trait ScanBuilder {
     fn end_row(&mut self);
     fn resolve_field(&mut self, key: &[u8]) -> usize;
     fn append_str_by_idx(&mut self, idx: usize, value: &[u8]);
+    fn append_decoded_str_by_idx(&mut self, idx: usize, value: &[u8]);
     fn append_int_by_idx(&mut self, idx: usize, value: &[u8]);
     fn append_float_by_idx(&mut self, idx: usize, value: &[u8]);
+    fn append_bool_by_idx(&mut self, idx: usize, value: bool);
     fn append_null_by_idx(&mut self, idx: usize);
     fn append_line(&mut self, line: &[u8]);
 }

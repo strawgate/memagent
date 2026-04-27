@@ -101,7 +101,7 @@ valid:
   same semantic field as `time_unix_nano`. Both map to `timestamp`, but
   `time_unix_nano` is not itself an accepted HTTP/JSON key.
 - `severityText` -> `level`
-- `body` -> `message`
+- `body` -> `body`
 - `traceId` -> `trace_id`
 - `spanId` -> `span_id`
 - resource attributes stay flattened as top-level JSON keys
@@ -147,9 +147,9 @@ The OTLP sink accepts a `RecordBatch` and emits a valid
 
 The sink resolves semantic roles by column meaning, not by suffix tricks:
 
-- timestamp role: `timestamp | time | ts`
+- timestamp role: `timestamp | time | ts | @timestamp | _timestamp`
 - severity role: `level | severity | log_level | loglevel | lvl`
-- body role: `message | msg | _msg | body`
+- body role: `body | message | msg | _msg`
 - trace role: `trace_id`
 - span role: `span_id`
 - flags role: `flags | trace_flags`

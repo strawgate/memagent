@@ -31,12 +31,11 @@ scanner entrypoints are called.
 The scanner assumes that **all input bytes are valid UTF-8** unless validation
 is explicitly enabled.
 
-- The Arrow builder path validates or lossy-converts most externally supplied
-  bytes: field names use `String::from_utf8_lossy`, scanned string values are
-  validated before Arrow append, and line capture falls back to lossy
-  conversion. Internal builder paths can still call `from_utf8_unchecked` from
-  `finish_batch()` for bytes that bypass scanner validation, so callers that
-  accept arbitrary raw bytes must not rely on invalid UTF-8 being harmless.
+- The Arrow builder path performs checked UTF-8 conversions for all externally
+  supplied bytes: field names use `String::from_utf8_lossy` and scanned string
+  values are validated via `std::str::from_utf8` (or similar checked paths)
+  before Arrow append. Previous internal shortcuts that bypassed validation
+  were removed to ensure safety even when callers supply arbitrary raw bytes.
 - JSON object keys are unescaped before `wanted_fields` matching and field
   resolution, so a key like `{"a\u002eb": ...}` is surfaced as field `a.b`.
 - For production validation set `ScanConfig::validate_utf8 = true`.  This
@@ -135,9 +134,9 @@ When a JSON object contains the same key more than once, **first-writer-wins**:
 only the first occurrence is stored; subsequent occurrences are silently
 ignored.
 
-This guarantee holds for the first 63 fields in a row.  For fields 64 and
+This guarantee holds for the first 64 fields in a row.  For fields 65 and
 beyond the duplicate-key detection bitmask is exhausted and a duplicate key
-*may* overwrite the first occurrence.  In practice, log lines rarely exceed 63
+*may* overwrite the first occurrence.  In practice, log lines rarely exceed 64
 fields.
 
 ### Integers vs. floats

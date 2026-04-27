@@ -427,7 +427,22 @@ Send log records as OTLP protobuf to an OpenTelemetry collector.
 |-------|------|----------|---------|-------------|
 | `endpoint` | string | Yes | — | Full collector URL, e.g. `http://otel-collector:4317` (gRPC) or `http://otel-collector:4318/v1/logs` (HTTP). |
 | `protocol` | enum | No | `http` | `http` or `grpc`. Invalid values are rejected while parsing config. |
-| `compression` | enum | No | none | `zstd`, `gzip`, or `none` for the request body. Invalid values are rejected while parsing config. |
+| `compression` | enum | No | `none` | `zstd`, `gzip`, or `none` for the request body. Invalid values are rejected while parsing config. |
+| `auth` | object | No | — | Optional bearer token or custom headers for HTTP auth. |
+| `tls` | object | No | — | Optional TLS client options (`ca_file`, `cert_file`, `key_file`, `insecure_skip_verify`) for HTTPS endpoints. |
+| `headers` | map[string,string] | No | — | Additional static HTTP headers to send with every export request. |
+| `retry_attempts` | integer | No | — | Maximum export retry attempts. |
+| `retry_initial_backoff_ms` | integer | No | — | Initial backoff delay in milliseconds. |
+| `retry_max_backoff_ms` | integer | No | — | Maximum backoff delay in milliseconds. |
+| `request_timeout_ms` | integer | No | — | Export request timeout in milliseconds. |
+| `batch_size` | integer | No | — | Maximum rows per OTLP request. |
+| `batch_timeout_ms` | integer | No | — | Maximum time to buffer rows before exporting. |
+
+:::note
+Per-output retry and batch controls (`retry_attempts`, `batch_size`, etc.) are
+supported in `otlp` output config but are currently handled by the pipeline
+runner rather than the OTLP sink directly.
+:::
 
 ```yaml
 pipelines:
@@ -493,6 +508,8 @@ Ship to Elasticsearch via the Bulk API.
 | `request_timeout_ms` | integer | No | `30000` | HTTP request timeout in milliseconds. Must be >= 1 when set. |
 | `tls` | object | No | — | Optional TLS client options (`ca_file`, `cert_file`, `key_file`, `insecure_skip_verify`) for HTTPS endpoints. |
 | `auth` | object | No | — | Optional bearer token or custom headers for HTTP auth. |
+| `retry` | object | No | — | Optional retry configuration (`max_attempts`, `initial_backoff_secs`, `max_backoff_secs`). |
+| `batch` | object | No | — | Optional batching configuration (`max_bytes`, `max_events`, `timeout_secs`). |
 
 Bulk payloads are split before they exceed `5242880` bytes (5 MiB). That limit is internal and is not a YAML field.
 
@@ -507,9 +524,10 @@ output:
     bearer_token: "${ES_TOKEN}"
 ```
 
-`retry_attempts`, `retry_initial_backoff_ms`, `retry_max_backoff_ms`, `batch_size`, and
-`batch_timeout_ms` are currently rejected for Elasticsearch outputs because per-output
-retry/batch controls are not wired into the Elasticsearch sink yet.
+:::note
+Nested `retry` and `batch` configuration objects are accepted by Elasticsearch
+and Loki outputs but are not yet wired into the sink implementations.
+:::
 
 ### `loki` output
 
@@ -524,6 +542,8 @@ Push to Grafana Loki.
 | `static_labels` | map[string,string] | No | Static labels applied to every pushed log stream. Keys and values must be non-empty. |
 | `label_columns` | array[string] | No | Additional log columns to promote as Loki labels. |
 | `auth` | object | No | Optional bearer token or custom headers for HTTP auth. |
+| `retry` | object | No | Optional retry configuration (`max_attempts`, `initial_backoff_secs`, `max_backoff_secs`). |
+| `batch` | object | No | Optional batching configuration (`max_bytes`, `max_events`, `timeout_secs`). |
 
 ```yaml
 output:
@@ -539,10 +559,6 @@ output:
 ```
 
 `compression` is not supported for Loki outputs.
-
-`retry_attempts`, `retry_initial_backoff_ms`, `retry_max_backoff_ms`, `batch_size`, and
-`batch_timeout_ms` are currently rejected for Loki outputs because the Loki sink does not
-implement per-output retry/batch controls yet.
 
 ### `file` output
 

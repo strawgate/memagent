@@ -29,16 +29,15 @@ Optional but recommended:
 
 | Tool | Purpose | Install |
 |------|---------|---------|
-| [mise](https://mise.jdx.dev) | Manages all tool versions from `mise.toml` | [mise.jdx.dev](https://mise.jdx.dev/getting-started.html) |
 | [taplo](https://taplo.tamasfe.dev) | TOML linting (`just toml-check`) | `cargo install taplo-cli` |
 | [cargo-deny](https://embarkstudios.github.io/cargo-deny/) | License/advisory audit (`just deny`) | `cargo install cargo-deny` |
-| [Node.js](https://nodejs.org) 22+ | Dashboard build (`just dashboard`) | via mise, nvm, or nodejs.org |
+| [Node.js](https://nodejs.org) 22+ | Dashboard build (`just dashboard`) | via nvm or nodejs.org |
 | [Docker](https://www.docker.com) | Local services (`docker-compose.dev.yml`) | docker.com |
 | [sccache](https://github.com/mozilla/sccache) | Compile caching | `cargo install sccache --locked` |
 | [OpenJDK](https://openjdk.org) | Run TLC model checks (`just tlc-tail`) | `brew install openjdk` (macOS) |
 | Miri nightly components | Local UB checks (`just miri`) | `just miri-setup` |
 
-All tool versions are declared in `mise.toml`. If you have [mise](https://mise.jdx.dev) installed, `mise install` sets everything up automatically. Otherwise, install the tools listed above manually.
+Install the tools listed above manually.
 
 ## Setup
 
@@ -351,9 +350,13 @@ The simdjson `prefix_xor` algorithm detects escaped quotes by computing backslas
 
 Our implementation iterates each backslash: mark next byte as escaped, skip escaped backslashes. Fast because most JSON has zero or few backslashes. The carry between 64-byte blocks must be handled.
 
-### The scanner assumes UTF-8 input
+### The scanner assume valid UTF-8 input
 
-`from_utf8_unchecked` throughout the scanner and builders. JSON is UTF-8 by spec, so this holds in practice. But the scanner does NOT validate — non-UTF-8 input is UB. The fuzz target guards against this; production code currently doesn't. See issue #76.
+Previous versions of the scanner used `from_utf8_unchecked`, but all builder
+paths now use checked conversions (e.g., `String::from_utf8_lossy` for field
+names and checked `std::str::from_utf8` for values) to ensure safety. Input
+is still expected to be UTF-8 by spec, and the fuzz target guards against
+regressions in non-UTF-8 handling.
 
 ### HashMap field lookup was 60% of total scan time
 

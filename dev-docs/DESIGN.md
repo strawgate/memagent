@@ -105,10 +105,12 @@ clear-lowest-bit. This is the proven simdjson architecture.
 
 ### Scalar SIMD fallback in ffwd-core
 
-`#![forbid(unsafe_code)]` is in core. SIMD intrinsics require unsafe. Solution: core has a
-safe scalar `find_structural_chars_scalar` that is the Kani-provable specification. SIMD
-impls live in ffwd-arrow behind a `CharDetector` trait. proptest verifies SIMD matches
-scalar for random inputs.
+`#![forbid(unsafe_code)]` is in core. Portable SIMD is provided by the `wide` crate,
+which exposes a safe API for vectorized operations. Core has a safe scalar
+`find_structural_chars_scalar` that is the Kani-provable specification.
+`find_structural_chars` uses `wide` to provide portable SIMD across NEON,
+AVX2, and SSE2 within the safe-code boundaries of core. proptest verifies
+SIMD matches scalar for random inputs.
 
 ### Pipeline state machine over linear BatchToken
 
