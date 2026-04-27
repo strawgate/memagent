@@ -9,8 +9,8 @@
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::panic)]
 // Byte-level indexing is provably safe via Kani loop invariants. Using .get() would
-// require Option handling, adding branches in the hot path. SIMD block processing
-// (json_scanner, otlp) and CRI/JSON parsers use provably-bounded loops.
+// add branches in the hot path. Phase 2 (work-unit #2626) adds per-site #[allow] with
+// invariant comments. Phase 3 escalates indexing_slicing to deny.
 #![allow(clippy::indexing_slicing, clippy::expect_used)]
 
 extern crate alloc;

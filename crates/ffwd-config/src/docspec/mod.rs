@@ -131,7 +131,6 @@ pub struct ComponentTypeDoc {
 
 /// An end-to-end starter scenario combining an input, output, and optional transform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct UseCaseDoc {
     pub id: &'static str,
     pub title: &'static str,
