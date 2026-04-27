@@ -19,7 +19,7 @@ arrow = { workspace = true }
 arrow-json = { workspace = true }
 bytes = "1"
 chrono = { version = "0.4.44", default-features = false }
-criterion = { version = "0.7", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 ffwd-arrow = { version = "0.1.0", path = "../ffwd-arrow" }
 ffwd-test-utils = { version = "0.1.0", path = "../ffwd-test-utils" }
 memmap2 = "0.9"
