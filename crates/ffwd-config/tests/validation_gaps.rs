@@ -1,4 +1,4 @@
-use ffwd_config::Config;
+use ffwd_config::{Config, OutputConfigV2};
 use std::ffi::OsString;
 use std::fs;
 #[cfg(unix)]
@@ -1424,4 +1424,123 @@ pipelines:
 ";
     Config::load_str(yaml)
         .expect("push path with trailing slash should be accepted (normalized by output)");
+}
+
+#[test]
+fn issue_2584_retry_max_attempts_rejects_negative_values() {
+    let configs: &[(&str, &str)] = &[
+        (
+            "elasticsearch",
+            r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+    outputs:
+      - type: elasticsearch
+        endpoint: http://localhost:9200
+        retry:
+          max_attempts: -1
+"#,
+        ),
+        (
+            "loki",
+            r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+    outputs:
+      - type: loki
+        endpoint: http://localhost:3100
+        retry:
+          max_attempts: -100
+"#,
+        ),
+    ];
+
+    for (sink_name, yaml) in configs {
+        let result = Config::load_str(yaml);
+        assert!(
+            result.is_err(),
+            "{sink_name} with negative max_attempts should be rejected, but got Ok"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("invalid value") || err_msg.contains("max_attempts"),
+            "{sink_name} error should indicate invalid value for max_attempts, got: {err_msg}"
+        );
+    }
+}
+
+#[test]
+fn issue_2584_retry_max_attempts_accepts_positive_values() {
+    let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+    outputs:
+      - type: elasticsearch
+        endpoint: http://localhost:9200
+        retry:
+          max_attempts: 3
+"#;
+    let config =
+        Config::load_str(yaml).expect("elasticsearch with max_attempts=3 should be accepted");
+    let output = config
+        .pipelines
+        .get("test")
+        .expect("pipeline 'test' should exist")
+        .outputs
+        .first()
+        .expect("output #0 should exist");
+    let OutputConfigV2::Elasticsearch(es) = output else {
+        panic!("output #0 should be Elasticsearch");
+    };
+    assert_eq!(
+        es.retry.as_ref().and_then(|r| r.max_attempts),
+        Some(3),
+        "elasticsearch retry.max_attempts should be Some(3)"
+    );
+}
+
+#[test]
+fn issue_2584_retry_max_attempts_accepts_zero() {
+    let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+    outputs:
+      - type: elasticsearch
+        endpoint: http://localhost:9200
+        retry:
+          max_attempts: 0
+"#;
+    let config =
+        Config::load_str(yaml).expect("elasticsearch with max_attempts=0 should be accepted");
+    let output = config
+        .pipelines
+        .get("test")
+        .expect("pipeline 'test' should exist")
+        .outputs
+        .first()
+        .expect("output #0 should exist");
+    let OutputConfigV2::Elasticsearch(es) = output else {
+        panic!("output #0 should be Elasticsearch");
+    };
+    assert_eq!(
+        es.retry.as_ref().and_then(|r| r.max_attempts),
+        Some(0),
+        "elasticsearch retry.max_attempts should be Some(0)"
+    );
 }

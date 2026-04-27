@@ -48,7 +48,7 @@ const CLI_AFTER_HELP: &str = r"Examples:
   ff blackhole
   ff blast --destination otlp --endpoint http://127.0.0.1:4318/v1/logs
   ff devour --mode otlp --listen 127.0.0.1:4318
-  ff generate-json 10000 test.json
+  ff generate-json 10000 logs.json
   ff wizard
   ff completions bash
 

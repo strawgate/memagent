@@ -59,8 +59,11 @@ pub struct TlsServerConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct RetryConfig {
+    /// Maximum retry attempts for the sink.
+    /// `None` uses the sink default.
+    /// `Some(0)` means no retry limit.
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
-    pub max_attempts: Option<i32>,
+    pub max_attempts: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub initial_backoff_secs: Option<PositiveSecs>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]

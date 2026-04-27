@@ -31,8 +31,8 @@ Optional but recommended:
 |------|---------|---------|
 | [taplo](https://taplo.tamasfe.dev) | TOML linting (`just toml-check`) | `cargo install taplo-cli` |
 | [cargo-deny](https://embarkstudios.github.io/cargo-deny/) | License/advisory audit (`just deny`) | `cargo install cargo-deny` |
-| [Node.js](https://nodejs.org) 22+ | Dashboard build (`just dashboard`) | via nvm or nodejs.org |
-| [Docker](https://www.docker.com) | Local services (`docker-compose.dev.yml`) | docker.com |
+| [Node.js](https://nodejs.org) 22+ | Dashboard build (`just dashboard`) | via mise, nvm, or nodejs.org |
+| [Docker](https://www.docker.com) | Local Elasticsearch for `just bench-es` | docker.com |
 | [sccache](https://github.com/mozilla/sccache) | Compile caching | `cargo install sccache --locked` |
 | [OpenJDK](https://openjdk.org) | Run TLC model checks (`just tlc-tail`) | `brew install openjdk` (macOS) |
 | Miri nightly components | Local UB checks (`just miri`) | `just miri-setup` |
@@ -52,17 +52,23 @@ just ci        # fast lint + test (~30s)
 
 ### Local services (optional)
 
-Some benchmarks and examples need Elasticsearch or an OTLP receiver:
+Some benchmarks and examples need Elasticsearch:
 
 ```bash
-docker compose -f docker-compose.dev.yml up -d   # start services
-docker compose -f docker-compose.dev.yml down     # stop
+docker compose -f examples/elasticsearch/docker-compose.yml up -d   # start
+docker compose -f examples/elasticsearch/docker-compose.yml down     # stop
+```
+
+For OTLP end-to-end testing, start the built-in blackhole receiver yourself:
+
+```bash
+ff devour   # listens on 127.0.0.1:4318
 ```
 
 | Service | URL | Used by |
 |---------|-----|---------|
 | Elasticsearch | `http://localhost:9200` | `just bench-es`, `examples/elasticsearch/` |
-| OTLP blackhole | `http://localhost:4318` | OTLP end-to-end tests |
+| OTLP blackhole | `http://localhost:4318` | `just bench-otlp`, `just profile-otlp-local` |
 
 ## Workspace layout
 

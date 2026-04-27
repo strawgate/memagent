@@ -131,7 +131,8 @@ just lint         # Fast lint gate
 just lint-all     # Full lint gate
 just clippy       # Clippy with -D warnings (same as CI default tier)
 just fmt          # Format code
-just bench        # Criterion benchmarks
+just bench        # Tier 1 Criterion benchmarks (~30s: pipeline, output_encode, full_chain)
+just bench-full  # Full criterion suite (~2–5min, excludes elasticsearch_arrow)
 just kani         # Run Kani proofs (requires: cargo install --locked kani-verifier && cargo kani setup)
 cargo test -p ffwd-core  # Fast single-crate iteration
 ```

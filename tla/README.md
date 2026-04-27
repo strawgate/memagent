@@ -4,24 +4,31 @@ Formal models for the ffwd pipeline design. These specs capture
 properties that Kani (bounded model checker) cannot express — temporal
 logic, liveness, and protocol-level design invariants.
 
-## Contributor Quickstart (CI parity)
+## Contributor Quickstart
 
-Run these TLC commands locally for parity with CI coverage:
+Run `just tlc-tail` for the TailLifecycle model (fast CI gate). The `just tlc` recipe auto-downloads `tla2tools.jar` to `.tools/`, finds your Java runtime, and runs from the `tla/` directory.
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.liveness.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCShutdownProtocol.tla -config tla/ShutdownProtocol.liveness.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.liveness.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCWorkerPoolDispatch.tla -config tla/WorkerPoolDispatch.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCWorkerPoolDispatch.tla -config tla/WorkerPoolDispatch.liveness.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCFanoutSink.tla -config tla/FanoutSink.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCFanoutSink.tla -config tla/FanoutSink.liveness.cfg
+just tlc-tail                              # TailLifecycle (fast CI)
+just tla-setup                             # download jar without running a model
 ```
+
+For all other specs, the general form is `just tlc <model_file> <config_file>`:
+
+```bash
+# PipelineMachine
+just tlc MCPipelineMachine.tla PipelineMachine.cfg
+just tlc MCPipelineMachine.tla PipelineMachine.liveness.cfg
+
+# All other specs use the same pattern (model MC file + config):
+just tlc MCShutdownProtocol.tla ShutdownProtocol.cfg
+just tlc MCPipelineBatch.tla PipelineBatch.cfg
+just tlc MCDeliveryRetry.tla DeliveryRetry.cfg
+just tlc MCWorkerPoolDispatch.tla WorkerPoolDispatch.cfg
+just tlc MCFanoutSink.tla FanoutSink.cfg
+```
+
+See individual spec sections below for the complete list of model/config combinations.
 
 ## PipelineMachine.tla
 
@@ -130,7 +137,7 @@ tla/
 **Model 1 — Safety (normal + ForceStop paths):**
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg
+just tlc MCPipelineMachine.tla PipelineMachine.cfg
 # Sources={"s1","s2"}, MaxBatchesPerSource=3, MaxNonTerminalHolds=1
 # ~10.8M distinct states locally with one TLC worker, < 10 min. Checks all
 # INVARIANTS + temporal action properties.
@@ -139,7 +146,7 @@ java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/P
 **Model 2 — Liveness (smaller constants, no SYMMETRY):**
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.liveness.cfg
+just tlc MCPipelineMachine.tla PipelineMachine.liveness.cfg
 # Sources={"s1","s2"}, MaxBatchesPerSource=2, MaxNonTerminalHolds=1
 # ~77K distinct states locally with one TLC worker, < 5 min. Checks drain,
 # terminalization, held-release, and stopped-stability liveness.
@@ -156,7 +163,7 @@ java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/P
 **Model 3 — Coverage / reachability (vacuity guards):**
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.coverage.cfg
+just tlc MCPipelineMachine.tla PipelineMachine.coverage.cfg
 # TLC will report INVARIANT VIOLATIONS for BeginDrainReachable, StopReachable,
 # AckOccurs, RejectOccurs, HoldOccurs, RetryOccurs, PanicHoldOccurs,
 # CheckpointAdvances, ForcedReachable, AbandonOccurs, HeldAbandonOccurs —
@@ -176,7 +183,7 @@ impossible.
 **Model 4 — Thorough safety sweep (optional, slower):**
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.thorough.cfg
+just tlc MCPipelineMachine.tla PipelineMachine.thorough.cfg
 # Local thorough depth: Sources={"s1","s2","s3"}, MaxBatchesPerSource=3
 # PR CI intentionally skips thorough configs; nightly owns scheduled deep runs.
 ```
@@ -184,7 +191,7 @@ java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/P
 **Model 5 — Nightly deep safety sweep (slowest):**
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.nightly.thorough.cfg
+just tlc MCPipelineMachine.tla PipelineMachine.nightly.thorough.cfg
 # Nightly CI depth: Sources={"s1","s2","s3"}, MaxBatchesPerSource=4
 ```
 
@@ -195,19 +202,27 @@ and the invariant was trivially satisfied.
 
 ### Running TLC
 
+The `just tlc` recipe handles Java detection and `.tools/tla2tools.jar`
+auto-download. Run from the repo root:
+
 ```bash
-# CLI (requires tla2tools.jar)
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg
-
-# With coverage stats (verify every action fires):
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineMachine.tla -config tla/PipelineMachine.cfg -coverage 1
-
-# Via TLA+ Toolbox:
-# File -> Open Spec -> MCPipelineMachine.tla
-# TLC Model Checker -> New Model -> Load from PipelineMachine.cfg
+just tlc-tail                              # TailLifecycle shortcut
+just tlc <model_file> <config_file>        # General form (from tla/ directory)
+just tla-setup                            # download jar without running a model
 ```
 
----
+Raw form (for Toolbox or CI script usage):
+
+```bash
+cd tla
+java -cp ../.tools/tla2tools.jar tlc2.TLC <model_file> -config <config_file>
+```
+
+Coverage (run from repo root, paths are relative to repo root):
+
+```bash
+python3 scripts/verify_tla_coverage.py --jar .tools/tla2tools.jar --tla-file tla/<model_file> --config tla/<config_file>
+```
 
 ## ShutdownProtocol.tla
 
@@ -292,12 +307,11 @@ ack/reject handling at the batching seam.
 Run:
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.liveness.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCPipelineBatch.tla -config tla/PipelineBatch.coverage.cfg
+just tlc MCPipelineBatch.tla PipelineBatch.cfg
+just tlc MCPipelineBatch.tla PipelineBatch.liveness.cfg
+just tlc MCPipelineBatch.tla PipelineBatch.coverage.cfg
 ```
 
----
 
 ## DeliveryRetry.tla
 
@@ -352,9 +366,9 @@ or Cancel (shutdown). Liveness depends on sink recovery OR shutdown cancellation
 ### Run
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.liveness.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCDeliveryRetry.tla -config tla/DeliveryRetry.coverage.cfg
+just tlc MCDeliveryRetry.tla DeliveryRetry.cfg
+just tlc MCDeliveryRetry.tla DeliveryRetry.liveness.cfg
+just tlc MCDeliveryRetry.tla DeliveryRetry.coverage.cfg
 ```
 
 ### Key design: retry forever, terminate on cancel
@@ -458,9 +472,9 @@ algorithm is worker-count-independent so small values suffice.
 ### Run
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCWorkerPoolDispatch.tla -config tla/WorkerPoolDispatch.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCWorkerPoolDispatch.tla -config tla/WorkerPoolDispatch.liveness.cfg
-python3 scripts/verify_tla_coverage.py --jar /path/to/tla2tools.jar --tla-file tla/MCWorkerPoolDispatch.tla --config tla/WorkerPoolDispatch.coverage.cfg
+just tlc MCWorkerPoolDispatch.tla WorkerPoolDispatch.cfg
+just tlc MCWorkerPoolDispatch.tla WorkerPoolDispatch.liveness.cfg
+python3 scripts/verify_tla_coverage.py --jar .tools/tla2tools.jar --tla-file tla/MCWorkerPoolDispatch.tla --config tla/WorkerPoolDispatch.coverage.cfg
 ```
 
 ### Key design: MRU dispatch with spawn-or-wait
@@ -527,9 +541,9 @@ when a retry re-sent data to children that had already accepted it.
 ### Run
 
 ```bash
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCFanoutSink.tla -config tla/FanoutSink.cfg
-java -cp /path/to/tla2tools.jar tlc2.TLC tla/MCFanoutSink.tla -config tla/FanoutSink.liveness.cfg
-python3 scripts/verify_tla_coverage.py --jar /path/to/tla2tools.jar --tla-file tla/MCFanoutSink.tla --config tla/FanoutSink.coverage.cfg
+just tlc MCFanoutSink.tla FanoutSink.cfg
+just tlc MCFanoutSink.tla FanoutSink.liveness.cfg
+python3 scripts/verify_tla_coverage.py --jar .tools/tla2tools.jar --tla-file tla/MCFanoutSink.tla --config tla/FanoutSink.coverage.cfg
 ```
 
 ### Key design: per-child state tracking across retries
