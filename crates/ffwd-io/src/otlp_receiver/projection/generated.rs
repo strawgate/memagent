@@ -844,7 +844,7 @@ pub(super) fn decode_any_value_wire(value: &[u8]) -> Result<Option<WireAny<'_>>,
 ///
 /// Note: production code now uses `wire::decode_kv_inline` for performance.
 /// This function is retained as the reference implementation for tests.
-#[allow(dead_code)]
+#[cfg(test)]
 pub(super) fn decode_key_value_wire(
     kv: &[u8],
 ) -> Result<Option<(&[u8], WireAny<'_>)>, ProjectionError> {
