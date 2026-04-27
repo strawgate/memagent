@@ -46,6 +46,7 @@ use arrow::array::AsArray;
 use arrow::datatypes::DataType;
 use arrow::record_batch::RecordBatch;
 
+use ffwd_config::validate::sanitize_identifier;
 use ffwd_core::otlp::parse_timestamp_nanos;
 use ffwd_types::diagnostics::ComponentStats;
 use ffwd_types::field_names;
@@ -68,25 +69,12 @@ type StreamMap = HashMap<StreamLabels, (String, Vec<LokiEntry>)>;
 
 type SharedTimestampState = Arc<Mutex<HashMap<StreamLabels, u64>>>;
 
-fn sanitize_loki_label_name(name: &str) -> String {
-    let mut out = String::with_capacity(name.len().max(1));
-    for (idx, ch) in name.chars().enumerate() {
-        let valid = if idx == 0 {
-            ch.is_ascii_alphabetic() || ch == '_'
-        } else {
-            ch.is_ascii_alphanumeric() || ch == '_'
-        };
-        out.push(if valid { ch } else { '_' });
-    }
-    if out.is_empty() { "_".to_string() } else { out }
-}
-
 fn sanitize_static_labels(static_labels: &[(String, String)]) -> io::Result<Vec<(String, String)>> {
     let mut sanitized = Vec::with_capacity(static_labels.len());
     let mut sanitized_sources: HashMap<String, String> =
         HashMap::with_capacity(static_labels.len());
     for (key, value) in static_labels {
-        let sanitized_key = sanitize_loki_label_name(key);
+        let sanitized_key = sanitize_identifier(key);
         if let Some(existing) = sanitized_sources.get(&sanitized_key) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -281,17 +269,12 @@ impl LokiSink {
             .config
             .static_labels
             .iter()
-            .map(|(key, _)| {
-                (
-                    sanitize_loki_label_name(key),
-                    format!("static label '{key}'"),
-                )
-            })
+            .map(|(key, _)| (sanitize_identifier(key), format!("static label '{key}'")))
             .collect();
         let mut label_col_infos: Vec<(String, &super::ColInfo)> = Vec::new();
         for label_col in &self.config.label_columns {
             if let Some(ci) = cols.iter().find(|c| &c.field_name == label_col) {
-                let sanitized = sanitize_loki_label_name(label_col);
+                let sanitized = sanitize_identifier(label_col);
                 if let Some(existing) = sanitized_label_sources.get(&sanitized) {
                     // Collision: two sources sanitize to the same key. Keep the
                     // first one and warn — erroring would make config validity
@@ -524,7 +507,8 @@ impl LokiSink {
         payload: String,
         row_count: u64,
     ) -> io::Result<super::sink::SendResult> {
-        let url = format!("{}/loki/api/v1/push", self.config.endpoint);
+        let base = self.config.endpoint.trim_end_matches("/loki/api/v1/push");
+        let url = format!("{base}/loki/api/v1/push");
         let byte_len = payload.len() as u64;
 
         let mut req = self
@@ -1250,13 +1234,13 @@ mod tests {
 
     #[test]
     fn test_label_sanitization() {
-        assert_eq!(sanitize_loki_label_name("valid_label_1"), "valid_label_1");
-        assert_eq!(sanitize_loki_label_name("my.label.name"), "my_label_name");
-        assert_eq!(sanitize_loki_label_name("1invalid_start"), "_invalid_start");
-        assert_eq!(sanitize_loki_label_name("a-b*c/d"), "a_b_c_d");
+        assert_eq!(sanitize_identifier("valid_label_1"), "valid_label_1");
+        assert_eq!(sanitize_identifier("my.label.name"), "my_label_name");
+        assert_eq!(sanitize_identifier("1invalid_start"), "_invalid_start");
+        assert_eq!(sanitize_identifier("a-b*c/d"), "a_b_c_d");
         // Empty input must produce a valid label name, not an empty string which
         // Loki would reject (labels must match ^[a-zA-Z_][a-zA-Z0-9_]*$).
-        assert_eq!(sanitize_loki_label_name(""), "_");
+        assert_eq!(sanitize_identifier(""), "_");
     }
 
     /// Regression test for #1670: canonical "timestamp" column must be used as
@@ -1430,17 +1414,11 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_loki_label_name_rewrites_invalid_chars() {
-        assert_eq!(sanitize_loki_label_name("service.name"), "service_name");
-        assert_eq!(
-            sanitize_loki_label_name("http.status_code"),
-            "http_status_code"
-        );
-        assert_eq!(
-            sanitize_loki_label_name("9invalid-prefix"),
-            "_invalid_prefix"
-        );
-        assert_eq!(sanitize_loki_label_name(""), "_");
+    fn sanitize_identifier_rewrites_invalid_chars() {
+        assert_eq!(sanitize_identifier("service.name"), "service_name");
+        assert_eq!(sanitize_identifier("http.status_code"), "http_status_code");
+        assert_eq!(sanitize_identifier("9invalid-prefix"), "_invalid_prefix");
+        assert_eq!(sanitize_identifier(""), "_");
     }
 
     #[test]
@@ -2066,6 +2044,45 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].0, metadata.observed_time_ns);
         assert_eq!(entries[1].0, metadata.observed_time_ns);
+    }
+}
+
+#[cfg(test)]
+mod loki_endpoint_normalization {
+
+    fn normalize_endpoint(endpoint: &str) -> String {
+        endpoint
+            .trim_end_matches('/')
+            .trim_end_matches("/loki/api/v1/push")
+            .to_string()
+    }
+
+    #[test]
+    fn endpoint_with_push_path_normalized() {
+        assert_eq!(
+            normalize_endpoint("http://localhost:3100/loki/api/v1/push"),
+            "http://localhost:3100"
+        );
+        assert_eq!(
+            normalize_endpoint("http://localhost:3100/loki/api/v1/push/"),
+            "http://localhost:3100"
+        );
+    }
+
+    #[test]
+    fn endpoint_without_push_path_unchanged() {
+        assert_eq!(
+            normalize_endpoint("http://localhost:3100"),
+            "http://localhost:3100"
+        );
+        assert_eq!(
+            normalize_endpoint("http://localhost:3100/"),
+            "http://localhost:3100"
+        );
+        assert_eq!(
+            normalize_endpoint("http://localhost:3100/loki/api/v1"),
+            "http://localhost:3100/loki/api/v1"
+        );
     }
 }
 

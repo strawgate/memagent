@@ -20,7 +20,7 @@ mod load;
 mod serde_helpers;
 mod shared;
 mod types;
-mod validate;
+pub mod validate;
 
 pub use serde_helpers::{PositiveMillis, PositiveSecs};
 
@@ -45,7 +45,7 @@ pub use types::{
     ServerConfig, SourceMetadataStyle, StaticEnrichmentConfig, StdoutOutputConfig, StorageConfig,
     TcpOutputConfig, TcpTypeConfig, UdpOutputConfig, UdpTypeConfig,
 };
-pub use validate::validate_host_port;
+pub use validate::{sanitize_identifier, validate_host_port};
 
 // ---------------------------------------------------------------------------
 // Tests
