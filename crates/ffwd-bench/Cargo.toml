@@ -124,6 +124,10 @@ harness = false
 name = "generator_arrow_vs_json"
 harness = false
 
+[[bench]]
+name = "hot_path_kernels"
+harness = false
+
 [[bin]]
 name = "ffwd-bench"
 path = "src/main.rs"
