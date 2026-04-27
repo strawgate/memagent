@@ -159,7 +159,31 @@ fn skip_group(input: &mut &[u8], start_field: u32) -> Result<(), ProjectionError
     Err(ProjectionError::Invalid("unterminated protobuf group"))
 }
 
+/// Decode a protobuf varint from `input`, advancing the slice.
+///
+/// Hot-path-optimized for the common case: most OTLP varints encode small
+/// tag numbers (≤127, one byte) or short field lengths (≤127, one byte).
+/// We try a one-byte fast path first, then fall back to the standard 10-byte
+/// loop. samply showed `read_varint` was ~12% of wide-10k self-time before
+/// this fast path; the one-byte branch handles ~95% of varints with a single
+/// byte load and a single branch.
+#[inline]
 pub(super) fn read_varint(input: &mut &[u8]) -> Result<u64, ProjectionError> {
+    // Fast path: 1-byte varint (top bit clear).
+    if let Some((&first, rest)) = input.split_first()
+        && first < 0x80
+    {
+        *input = rest;
+        return Ok(u64::from(first));
+    }
+    read_varint_multibyte(input)
+}
+
+/// Slow path: 2-to-10 byte varints. Kept as a separate function so the
+/// fast path inlines without bloating callers.
+#[inline(never)]
+#[cold]
+fn read_varint_multibyte(input: &mut &[u8]) -> Result<u64, ProjectionError> {
     let mut result = 0u64;
     for index in 0..10 {
         let Some((&byte, rest)) = input.split_first() else {
@@ -177,7 +201,51 @@ pub(super) fn read_varint(input: &mut &[u8]) -> Result<u64, ProjectionError> {
     Err(ProjectionError::Invalid("varint overflow"))
 }
 
+/// Validate that `bytes` is valid UTF-8.
+///
+/// Hot-path-optimized for the common case: most OTLP attribute keys and
+/// values are pure ASCII (a strict subset of UTF-8). We scan for any byte
+/// with the high bit set using u64 chunks; if none are found, the input
+/// is ASCII and trivially valid. We only fall through to `simdutf8` on the
+/// rare non-ASCII case.
+///
+/// Why not just call simdutf8 directly: simdutf8's SIMD path activates at
+/// 64 bytes; below that it falls back to the scalar `core::str::from_utf8`,
+/// which dominated wide-10k self-time (~15%) before this fast path. OTLP
+/// attribute strings are almost always shorter than 64 bytes.
+#[inline]
 pub(super) fn require_utf8<'a>(
+    bytes: &'a [u8],
+    context: &'static str,
+) -> Result<&'a [u8], ProjectionError> {
+    const HIGH_BITS: u64 = 0x8080_8080_8080_8080;
+    let mut i = 0;
+    let n = bytes.len();
+    // 8-byte chunks: a single u64 mask catches any non-ASCII byte.
+    while i + 8 <= n {
+        // SAFETY: bounds-checked by the loop condition.
+        let chunk_bytes: [u8; 8] = bytes[i..i + 8].try_into().unwrap();
+        let chunk = u64::from_ne_bytes(chunk_bytes);
+        if chunk & HIGH_BITS != 0 {
+            return require_utf8_full(bytes, context);
+        }
+        i += 8;
+    }
+    // Tail: ≤7 bytes. Byte-wise high-bit check.
+    while i < n {
+        if bytes[i] >= 0x80 {
+            return require_utf8_full(bytes, context);
+        }
+        i += 1;
+    }
+    Ok(bytes)
+}
+
+/// Full UTF-8 validation. Used by `require_utf8` only when the ASCII fast
+/// path detects a high-bit byte.
+#[inline(never)]
+#[cold]
+fn require_utf8_full<'a>(
     bytes: &'a [u8],
     context: &'static str,
 ) -> Result<&'a [u8], ProjectionError> {

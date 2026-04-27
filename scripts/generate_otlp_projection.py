@@ -427,13 +427,23 @@ def render_key_value_decoder(spec: dict) -> str:
     fields = {field["name"]: field for field in message_fields(spec, "KeyValue")}
     key_number = fields["key"]["number"]
     value_number = fields["value"]["number"]
-    return f"""pub(super) fn decode_key_value_wire(kv: &[u8]) -> Result<Option<(&[u8], WireAny<'_>)>, ProjectionError> {{
+    return f"""/// Decode a `KeyValue` record into raw key bytes and a typed value.
+///
+/// The key bytes are returned **unvalidated**. Callers must run UTF-8
+/// validation before using the key as a `&str`. Two known callers:
+///
+/// * `decode::resolve_record_attr_field` — validates only on attribute
+///   position-cache miss; cache hits are byte-equal to a previously
+///   validated key, so re-validation is redundant.
+/// * `decode::collect_resource_attrs` — validates eagerly because there
+///   is no per-position cache for resource attrs.
+pub(super) fn decode_key_value_wire(kv: &[u8]) -> Result<Option<(&[u8], WireAny<'_>)>, ProjectionError> {{
     let mut key = &[][..];
     let mut value = None;
     super::for_each_field(kv, |field, field_value| {{
         match (field, field_value) {{
             ({key_number}, WireField::Len(bytes)) => {{
-                key = super::require_utf8(bytes, "invalid UTF-8 attribute key")?;
+                key = bytes;
             }}
             ({key_number}, _) => {{
                 return Err(ProjectionError::Invalid("invalid wire type for KeyValue.key"));
@@ -855,6 +865,21 @@ pub(super) fn decode_log_record_fields<'a>(
                     "invalid wire type for LogRecord.attributes",
                 ));
             }
+            (__LOG_DROPPED_ATTRS_FIELD__, WireField::Varint(_)) => {}
+            (__LOG_DROPPED_ATTRS_FIELD__, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.dropped_attributes_count",
+                ));
+            }
+            (__LOG_EVENT_NAME_FIELD__, WireField::Len(value)) if !value.is_empty() => {
+                super::require_utf8(value, "invalid UTF-8 LogRecord.event_name")?;
+            }
+            (__LOG_EVENT_NAME_FIELD__, WireField::Len(_)) => {}
+            (__LOG_EVENT_NAME_FIELD__, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for LogRecord.event_name",
+                ));
+            }
             _ => {}
         }
         Ok(())
@@ -871,7 +896,9 @@ pub(super) fn decode_log_record_fields<'a>(
         "__LOG_TRACE_ID_FIELD__", str(log_record["trace_id"]["number"])
     ).replace("__LOG_SPAN_ID_FIELD__", str(log_record["span_id"]["number"])).replace(
         "__LOG_FLAGS_FIELD__", str(log_record["flags"]["number"])
-    ).replace("__LOG_ATTRS_FIELD__", str(log_record["attributes"]["number"]))
+    ).replace("__LOG_ATTRS_FIELD__", str(log_record["attributes"]["number"])).replace(
+        "__LOG_DROPPED_ATTRS_FIELD__", str(log_record["dropped_attributes_count"]["number"])
+    ).replace("__LOG_EVENT_NAME_FIELD__", str(log_record["event_name"]["number"]))
 
 
 def render_len_field_visitors(spec: dict) -> str:

@@ -257,8 +257,16 @@ fn run_with_flamegraph(
     iterations: usize,
     path: &PathBuf,
 ) -> ProfileResult {
+    // 5 kHz: tighter confidence intervals for short hot leaves than the prior
+    // 1 kHz default. Note that increasing Hz does not fix attribution bias
+    // from inlining — for that, prefer Instruments (`Time Profiler`) or
+    // `samply`, which keep inlined-frame info via DWARF.
+    let frequency: i32 = std::env::var("FFWD_PPROF_HZ")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5_000);
     let guard = pprof::ProfilerGuardBuilder::default()
-        .frequency(1_000)
+        .frequency(frequency)
         .blocklist(&["libc", "libgcc", "pthread"])
         .build()
         .expect("pprof guard");
