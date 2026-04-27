@@ -277,6 +277,264 @@ pub(super) fn subslice_range(
     Ok((child_start - parent_start, child.len()))
 }
 
+/// Inline decode of a protobuf `KeyValue` message (fields 1=key, 2=value).
+///
+/// Avoids the generic `for_each_field` closure dispatch for both the KeyValue
+/// and the nested AnyValue. A KeyValue is always two LEN-typed fields with
+/// small field numbers (tags 0x0a and 0x12); AnyValue is a oneof with fields
+/// 1-7. We parse both directly, eliminating two levels of closure dispatch
+/// that cost ~11% self-time on wide-10k.
+///
+/// The key bytes are returned **unvalidated** (same contract as the
+/// closure-based `decode_key_value_wire`).
+#[inline]
+pub(super) fn decode_kv_inline<'a>(
+    mut input: &'a [u8],
+) -> Result<Option<(&'a [u8], WireAny<'a>)>, ProjectionError> {
+    let mut key: &[u8] = &[];
+    let mut value: Option<WireAny<'a>> = None;
+
+    while !input.is_empty() {
+        let tag = read_varint(&mut input)?;
+        let field = (tag >> 3) as u32;
+        let wire_type = (tag & 0x07) as u8;
+
+        match (field, wire_type) {
+            // field 1, wire type 2 (LEN) = key
+            (1, 2) => {
+                let len = usize::try_from(read_varint(&mut input)?)
+                    .map_err(|_e| ProjectionError::Invalid("protobuf length exceeds usize"))?;
+                if input.len() < len {
+                    return Err(ProjectionError::Invalid("truncated KeyValue.key"));
+                }
+                let (bytes, rest) = input.split_at(len);
+                input = rest;
+                key = bytes;
+            }
+            // field 2, wire type 2 (LEN) = value (AnyValue submessage)
+            (2, 2) => {
+                let len = usize::try_from(read_varint(&mut input)?)
+                    .map_err(|_e| ProjectionError::Invalid("protobuf length exceeds usize"))?;
+                if input.len() < len {
+                    return Err(ProjectionError::Invalid("truncated KeyValue.value"));
+                }
+                let (bytes, rest) = input.split_at(len);
+                input = rest;
+                if let Some(decoded) = decode_any_value_inline(bytes)? {
+                    value = Some(decoded);
+                }
+            }
+            // Unexpected wire type for field 1
+            (1, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for KeyValue.key",
+                ));
+            }
+            // Unexpected wire type for field 2
+            (2, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for KeyValue.value",
+                ));
+            }
+            // Unknown fields: skip
+            (_, 0) => {
+                let _ = read_varint(&mut input)?;
+            }
+            (_, 1) => {
+                if input.len() < 8 {
+                    return Err(ProjectionError::Invalid("truncated fixed64 in KeyValue"));
+                }
+                input = &input[8..];
+            }
+            (_, 2) => {
+                let len = usize::try_from(read_varint(&mut input)?)
+                    .map_err(|_e| ProjectionError::Invalid("protobuf length exceeds usize"))?;
+                if input.len() < len {
+                    return Err(ProjectionError::Invalid("truncated LEN in KeyValue"));
+                }
+                input = &input[len..];
+            }
+            (_, 3) => {
+                skip_group(&mut input, field)?;
+            }
+            (_, 4) => {
+                return Err(ProjectionError::Invalid("unexpected end group in KeyValue"));
+            }
+            (_, 5) => {
+                if input.len() < 4 {
+                    return Err(ProjectionError::Invalid("truncated fixed32 in KeyValue"));
+                }
+                input = &input[4..];
+            }
+            _ => {
+                return Err(ProjectionError::Invalid("invalid wire type in KeyValue"));
+            }
+        }
+    }
+
+    Ok(value.map(|v| (key, v)))
+}
+
+/// Inline decode of a protobuf `AnyValue` oneof message.
+///
+/// Parses fields from the AnyValue without closure dispatch. AnyValue has
+/// fields 1-7 (string, bool, int, double, array, kvlist, bytes) where the
+/// last-written field wins. On the hot path this is typically a single field
+/// per message, so we get one tag decode + one value decode.
+#[inline]
+fn decode_any_value_inline<'a>(
+    mut input: &'a [u8],
+) -> Result<Option<WireAny<'a>>, ProjectionError> {
+    let mut out: Option<WireAny<'a>> = None;
+
+    while !input.is_empty() {
+        let tag = read_varint(&mut input)?;
+        let field = (tag >> 3) as u32;
+        let wire_type = (tag & 0x07) as u8;
+
+        match (field, wire_type) {
+            // field 1: string_value (LEN)
+            (1, 2) => {
+                let len = usize::try_from(read_varint(&mut input)?)
+                    .map_err(|_e| ProjectionError::Invalid("protobuf length exceeds usize"))?;
+                if input.len() < len {
+                    return Err(ProjectionError::Invalid("truncated AnyValue.string_value"));
+                }
+                let (bytes, rest) = input.split_at(len);
+                input = rest;
+                out = Some(WireAny::String(require_utf8(
+                    bytes,
+                    "invalid UTF-8 AnyValue string",
+                )?));
+            }
+            (1, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for AnyValue.string_value",
+                ));
+            }
+            // field 2: bool_value (varint)
+            (2, 0) => {
+                let v = read_varint(&mut input)?;
+                out = Some(WireAny::Bool(v != 0));
+            }
+            (2, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for AnyValue.bool_value",
+                ));
+            }
+            // field 3: int_value (varint)
+            (3, 0) => {
+                let v = read_varint(&mut input)?;
+                out = Some(WireAny::Int(v as i64));
+            }
+            (3, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for AnyValue.int_value",
+                ));
+            }
+            // field 4: double_value (fixed64)
+            (4, 1) => {
+                if input.len() < 8 {
+                    return Err(ProjectionError::Invalid("truncated AnyValue.double_value"));
+                }
+                let (bytes, rest) = input.split_at(8);
+                input = rest;
+                let v =
+                    u64::from_le_bytes(bytes.try_into().expect("split_at(8) guarantees 8 bytes"));
+                out = Some(WireAny::Double(f64::from_bits(v)));
+            }
+            (4, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for AnyValue.double_value",
+                ));
+            }
+            // field 5: array_value (LEN)
+            (5, 2) => {
+                let len = usize::try_from(read_varint(&mut input)?)
+                    .map_err(|_e| ProjectionError::Invalid("protobuf length exceeds usize"))?;
+                if input.len() < len {
+                    return Err(ProjectionError::Invalid("truncated AnyValue.array_value"));
+                }
+                let (bytes, rest) = input.split_at(len);
+                input = rest;
+                out = Some(WireAny::ArrayRaw(bytes));
+            }
+            (5, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for AnyValue.array_value",
+                ));
+            }
+            // field 6: kvlist_value (LEN)
+            (6, 2) => {
+                let len = usize::try_from(read_varint(&mut input)?)
+                    .map_err(|_e| ProjectionError::Invalid("protobuf length exceeds usize"))?;
+                if input.len() < len {
+                    return Err(ProjectionError::Invalid("truncated AnyValue.kvlist_value"));
+                }
+                let (bytes, rest) = input.split_at(len);
+                input = rest;
+                out = Some(WireAny::KvListRaw(bytes));
+            }
+            (6, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for AnyValue.kvlist_value",
+                ));
+            }
+            // field 7: bytes_value (LEN)
+            (7, 2) => {
+                let len = usize::try_from(read_varint(&mut input)?)
+                    .map_err(|_e| ProjectionError::Invalid("protobuf length exceeds usize"))?;
+                if input.len() < len {
+                    return Err(ProjectionError::Invalid("truncated AnyValue.bytes_value"));
+                }
+                let (bytes, rest) = input.split_at(len);
+                input = rest;
+                out = Some(WireAny::Bytes(bytes));
+            }
+            (7, _) => {
+                return Err(ProjectionError::Invalid(
+                    "invalid wire type for AnyValue.bytes_value",
+                ));
+            }
+            // Unknown fields: skip
+            (_, 0) => {
+                let _ = read_varint(&mut input)?;
+            }
+            (_, 1) => {
+                if input.len() < 8 {
+                    return Err(ProjectionError::Invalid("truncated fixed64 in AnyValue"));
+                }
+                input = &input[8..];
+            }
+            (_, 2) => {
+                let len = usize::try_from(read_varint(&mut input)?)
+                    .map_err(|_e| ProjectionError::Invalid("protobuf length exceeds usize"))?;
+                if input.len() < len {
+                    return Err(ProjectionError::Invalid("truncated LEN in AnyValue"));
+                }
+                input = &input[len..];
+            }
+            (_, 3) => {
+                skip_group(&mut input, field)?;
+            }
+            (_, 4) => {
+                return Err(ProjectionError::Invalid("unexpected end group in AnyValue"));
+            }
+            (_, 5) => {
+                if input.len() < 4 {
+                    return Err(ProjectionError::Invalid("truncated fixed32 in AnyValue"));
+                }
+                input = &input[4..];
+            }
+            _ => {
+                return Err(ProjectionError::Invalid("invalid wire type in AnyValue"));
+            }
+        }
+    }
+
+    Ok(out)
+}
+
 #[derive(Default)]
 pub(super) struct WireScratch {
     pub(super) decimal: Vec<u8>,
@@ -289,5 +547,7 @@ pub(super) struct WireScratch {
 #[derive(Default)]
 pub(super) struct AttrFieldCache {
     pub(super) key: Vec<u8>,
+    /// Cached key length for fast rejection before memcmp.
+    pub(super) key_len: u32,
     pub(super) handle: Option<FieldHandle>,
 }

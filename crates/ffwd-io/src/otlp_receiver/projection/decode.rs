@@ -90,8 +90,8 @@ fn collect_resource_attrs<'a>(
     resource: &'a [u8],
 ) -> Result<(), ProjectionError> {
     generated::for_each_resource_attribute(resource, |attr| {
-        if let Some((key, value)) = generated::decode_key_value_wire(attr)? {
-            // `decode_key_value_wire` returns the key unvalidated; resource
+        if let Some((key, value)) = super::wire::decode_kv_inline(attr)? {
+            // `decode_kv_inline` returns the key unvalidated; resource
             // attrs have no per-position cache so we have no memo to lean on.
             // Validate eagerly. The cost is small (handful of attrs per batch)
             // and the alternative — building a `&str` from concatenated bytes
@@ -207,7 +207,7 @@ fn decode_log_record_wire(
     for attr_idx in 0..scratch.attr_ranges.len() {
         let (start, len) = scratch.attr_ranges[attr_idx];
         let attr = &log_record[start..start + len];
-        if let Some((key, value)) = generated::decode_key_value_wire(attr)? {
+        if let Some((key, value)) = super::wire::decode_kv_inline(attr)? {
             let handle = resolve_record_attr_field(
                 builder,
                 &mut scratch.attr_field_cache,
@@ -236,8 +236,13 @@ fn decode_log_record_wire(
 /// validating UTF-8 only on the cache-miss branch, before storing the key.
 /// On a cache hit (byte-equal key), the new bytes are valid UTF-8 by
 /// transitivity (UTF-8 is a deterministic property of bytes), so we skip
-/// re-validation. `decode_key_value_wire` deliberately leaves the key bytes
+/// re-validation. `decode_kv_inline` deliberately leaves the key bytes
 /// unvalidated so this memo can pay off.
+///
+/// # Cache-hit fast path
+///
+/// We check `key_len` first (a u32 compare) to reject mismatches before
+/// the full `memcmp`, then only proceed to byte equality on length match.
 fn resolve_record_attr_field(
     builder: &mut ColumnarBatchBuilder,
     cache: &mut Vec<AttrFieldCache>,
@@ -245,12 +250,12 @@ fn resolve_record_attr_field(
     key: &[u8],
     value: &WireAny<'_>,
 ) -> Result<FieldHandle, ProjectionError> {
+    let key_len = key.len() as u32;
     if let Some(cached) = cache.get(position)
+        && cached.key_len == key_len
         && cached.key.as_slice() == key
         && let Some(handle) = cached.handle
     {
-        // Cache hit: cached.key was validated UTF-8 when first inserted, and
-        // byte-equal new bytes are therefore also valid UTF-8.
         return Ok(handle);
     }
 
@@ -263,10 +268,12 @@ fn resolve_record_attr_field(
     if let Some(cached) = cache.get_mut(position) {
         cached.key.clear();
         cached.key.extend_from_slice(key);
+        cached.key_len = key_len;
         cached.handle = Some(handle);
     } else {
         cache.push(AttrFieldCache {
             key: key.to_vec(),
+            key_len,
             handle: Some(handle),
         });
     }

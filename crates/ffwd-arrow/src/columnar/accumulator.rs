@@ -752,6 +752,8 @@ fn build_string_view_trusted(
     //    spells out the boundary obligation.
     //  - Arrow's `force_validate` feature flag re-enables validation here
     //    when set (see `new_unchecked` impl).
+    // SAFETY: invariants validated above — views match num_rows, buffer offsets
+    // are bounds-checked by make_string_view, UTF-8 is the trusted-path contract.
     let array =
         unsafe { StringViewArray::new_unchecked(ScalarBuffer::from(views), buffers, nulls) };
     Ok((Arc::new(array), DataType::Utf8View))
