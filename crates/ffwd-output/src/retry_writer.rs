@@ -108,11 +108,26 @@ where
             let deadline = Instant::now() + timeout;
 
             if self.inner.is_none() {
-                let writer = tokio::time::timeout_at(deadline, (self.connect)())
-                    .await
-                    .map_err(|_elapsed| {
-                        io::Error::new(io::ErrorKind::TimedOut, "connect deadline exceeded")
-                    })??;
+                let writer = match tokio::time::timeout_at(deadline, (self.connect)()).await {
+                    Ok(Ok(w)) => w,
+                    Ok(Err(e)) => {
+                        last_error = Some(e);
+                        if attempt == 1 {
+                            break;
+                        }
+                        continue;
+                    }
+                    Err(_elapsed) => {
+                        last_error = Some(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "connect deadline exceeded",
+                        ));
+                        if attempt == 1 {
+                            break;
+                        }
+                        continue;
+                    }
+                };
                 self.inner = Some(writer);
             }
 
@@ -447,5 +462,41 @@ mod tests {
             .await
             .expect_err("should fail when retry connect fails");
         assert_eq!(err.kind(), io::ErrorKind::ConnectionRefused);
+    }
+
+    #[tokio::test]
+    async fn retry_writer_retries_transient_connect_failure() {
+        // First connect fails, second succeeds. Write should succeed.
+        let received = Arc::new(Mutex::new(Vec::new()));
+        let writer = ScriptedWriter::new(vec![ScriptStep::Write(5)], Arc::clone(&received));
+
+        let connect_calls = Arc::new(Mutex::new(0u32));
+        let connect_calls_clone = Arc::clone(&connect_calls);
+        let writer = Arc::new(Mutex::new(Some(writer)));
+
+        let mut retry: RetryWriter<ScriptedWriter, _> = RetryWriter::new(move || {
+            let mut calls = connect_calls_clone.lock().unwrap();
+            *calls += 1;
+            let call = *calls;
+            let writer = Arc::clone(&writer);
+            async move {
+                if call == 1 {
+                    Err(io::Error::new(
+                        io::ErrorKind::ConnectionRefused,
+                        "transient failure",
+                    ))
+                } else {
+                    Ok(writer.lock().unwrap().take().unwrap())
+                }
+            }
+        });
+
+        retry
+            .write_all_with_retry(b"hello")
+            .await
+            .expect("should succeed after transient connect failure");
+
+        assert_eq!(&*received.lock().unwrap(), &b"hello"[..5]);
+        assert_eq!(*connect_calls.lock().unwrap(), 2, "should have tried twice");
     }
 }

@@ -57,6 +57,9 @@ impl ElasticsearchSink {
             .client
             .post(&self.config.bulk_url)
             .header("Content-Type", "application/x-ndjson");
+        if self.config.compress {
+            req = req.header("Content-Encoding", "gzip");
+        }
         for (k, v) in &self.config.headers {
             req = req.header(k.clone(), v.clone());
         }

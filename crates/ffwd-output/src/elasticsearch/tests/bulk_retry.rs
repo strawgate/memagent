@@ -302,3 +302,59 @@ fn bulk_all_permanent_returns_rejected() {
         "error should report count: {err}"
     );
 }
+
+#[tokio::test]
+async fn bulk_send_with_gzip_sets_content_encoding_header() {
+    use crate::sink::Sink;
+
+    let mut server = mockito::Server::new_async().await;
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("msg", DataType::Utf8, false)])),
+        vec![Arc::new(StringArray::from(vec!["hello"]))],
+    )
+    .expect("test batch should be valid");
+    let metadata = zero_metadata();
+
+    // Create a config with compress: true
+    let escaped_index = serde_json::to_string("logs").expect("test index");
+    let config = Arc::new(ElasticsearchConfig {
+        endpoint: server.url(),
+        headers: Vec::new(),
+        compress: true,
+        request_mode: ElasticsearchRequestMode::Buffered,
+        max_bulk_bytes: usize::MAX,
+        stream_chunk_bytes: 64 * 1024,
+        bulk_url: format!(
+            "{}/_bulk?filter_path=errors,took,items.*.error,items.*.status",
+            server.url()
+        ),
+        action_bytes: format!("{{\"index\":{{\"_index\":{escaped_index}}}}}\n")
+            .into_bytes()
+            .into_boxed_slice(),
+    });
+
+    let mock = server
+        .mock("POST", "/_bulk")
+        .match_query(mockito::Matcher::Any)
+        .match_header("Content-Encoding", "gzip")
+        .with_status(200)
+        .with_body(r#"{"took":1,"errors":false,"items":[{"index":{"status":201}}]}"#)
+        .expect(1)
+        .create_async()
+        .await;
+
+    let mut sink = ElasticsearchSink::new(
+        "test".to_string(),
+        config,
+        reqwest::Client::new(),
+        Arc::new(ComponentStats::default()),
+    );
+
+    let result = sink.send_batch(&batch, &metadata).await;
+    assert!(
+        matches!(result, crate::sink::SendResult::Ok),
+        "gzip send should succeed, got {result:?}"
+    );
+
+    mock.assert_async().await;
+}
