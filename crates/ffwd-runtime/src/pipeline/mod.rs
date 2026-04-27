@@ -401,6 +401,8 @@ impl Pipeline {
         let meter = opentelemetry::global::meter("test");
         let metrics = Arc::new(PipelineMetrics::new(name, "SELECT * FROM logs", &meter));
         let pool = OutputWorkerPool::new(factory, max_workers, Duration::MAX, Arc::clone(&metrics));
+        let (control_tx, control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (worker_control_tx, _worker_control_rx) = tokio::sync::broadcast::channel(16);
 
         // Start with empty inputs and input_transforms so that each with_input()
         // call adds exactly one entry to both, keeping input_index in sync with
@@ -422,6 +424,9 @@ impl Pipeline {
             last_checkpoint_flush: tokio::time::Instant::now(),
             checkpoint_flush_interval: build::DEFAULT_CHECKPOINT_FLUSH_INTERVAL,
             pool_drain_timeout: Duration::from_secs(60),
+            control_tx,
+            control_rx,
+            worker_control_tx,
         }
     }
 
