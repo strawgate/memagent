@@ -201,7 +201,7 @@ mod tests {
         );
     }
 
-    // Cross-map collision test removed to avoid brittle string-based assertions in CI.
+// Cross-map collision test removed to avoid brittle string-based assertions in CI.
 
 fn loki_collision_matches(msg: &str, sanitized: &str, candidates: &[&str]) -> bool {
     if !msg.contains(&format!("sanitizes to '{}'", sanitized)) { return false; }
