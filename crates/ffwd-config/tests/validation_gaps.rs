@@ -1425,3 +1425,75 @@ pipelines:
     Config::load_str(yaml)
         .expect("push path with trailing slash should be accepted (normalized by output)");
 }
+
+#[test]
+fn issue_2584_retry_max_attempts_rejects_negative_values() {
+    for max_attempts in [-1, -100] {
+        let yaml = format!(
+            r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+    outputs:
+      - type: elasticsearch
+        endpoint: http://localhost:9200
+        retry:
+          max_attempts: {max_attempts}
+"#,
+        );
+        let result = Config::load_str(&yaml);
+        assert!(
+            result.is_err(),
+            "elasticsearch with max_attempts={max_attempts} should be rejected, but got Ok"
+        );
+    }
+}
+
+#[test]
+fn issue_2584_retry_max_attempts_accepts_positive_values() {
+    let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+    outputs:
+      - type: elasticsearch
+        endpoint: http://localhost:9200
+        retry:
+          max_attempts: 3
+"#;
+    let result = Config::load_str(yaml);
+    assert!(
+        result.is_ok(),
+        "elasticsearch with max_attempts=3 should be accepted, but got: {:?}",
+        result
+    );
+}
+
+#[test]
+fn issue_2584_retry_max_attempts_accepts_zero() {
+    let yaml = r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+    outputs:
+      - type: elasticsearch
+        endpoint: http://localhost:9200
+        retry:
+          max_attempts: 0
+"#;
+    let result = Config::load_str(yaml);
+    assert!(
+        result.is_ok(),
+        "elasticsearch with max_attempts=0 should be accepted (zero means no retry limit), but got: {:?}",
+        result
+    );
+}

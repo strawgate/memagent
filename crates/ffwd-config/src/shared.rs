@@ -60,7 +60,7 @@ pub struct TlsServerConfig {
 #[serde(deny_unknown_fields)]
 pub struct RetryConfig {
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
-    pub max_attempts: Option<i32>,
+    pub max_attempts: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
     pub initial_backoff_secs: Option<PositiveSecs>,
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
