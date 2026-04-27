@@ -195,18 +195,25 @@ mod tests {
             .expect_err("loki static_labels sanitization collision should fail");
         let msg = err.to_string();
         // Deterministic: ensure we report a collision without depending on exact wording
-        assert!(msg.contains("sanitizes to 'foo_bar'") && msg.contains("collides"), "unexpected error: {msg}");
+        assert!(
+            msg.contains("sanitizes to 'foo_bar'") && msg.contains("collides"),
+            "unexpected error: {msg}"
+        );
     }
 
     // Cross-map collision test removed to avoid brittle string-based assertions in CI.
 
-fn loki_collision_matches(msg: &str, sanitized: &str, candidates: &[&str]) -> bool {
-    if !msg.contains(&format!("sanitizes to '{}'", sanitized)) { return false; }
-    for c in candidates {
-        if msg.contains(&format!("collides with existing key '{}'", c)) { return true; }
+    fn loki_collision_matches(msg: &str, sanitized: &str, candidates: &[&str]) -> bool {
+        if !msg.contains(&format!("sanitizes to '{}'", sanitized)) {
+            return false;
+        }
+        for c in candidates {
+            if msg.contains(&format!("collides with existing key '{}'", c)) {
+                return true;
+            }
+        }
+        false
     }
-    false
-}
 
     #[test]
     fn loki_duplicate_static_labels_keys_collision() {
@@ -218,7 +225,10 @@ fn loki_collision_matches(msg: &str, sanitized: &str, candidates: &[&str]) -> bo
         let err =
             Config::load_str(yaml).expect_err("duplicate static_labels keys collision should fail");
         let msg = err.to_string();
-        assert!(loki_collision_matches(&msg, "foo_bar", &["foo-bar", "foo_bar"]), "unexpected error: {msg}");
+        assert!(
+            loki_collision_matches(&msg, "foo_bar", &["foo-bar", "foo_bar"]),
+            "unexpected error: {msg}"
+        );
     }
 
     #[test]

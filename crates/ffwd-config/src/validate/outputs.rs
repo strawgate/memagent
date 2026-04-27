@@ -109,14 +109,13 @@ fn validate_loki_labels(
         }
     }
 
-    // Detect intra-map collisions within static_labels after sanitization.
+    // Detect intra-map collisions within static_labels after sanitization deterministically.
     if let Some(static_labels) = static_labels {
-        // Use deterministic order: collect keys and sort to avoid HashMap nondeterminism.
+        // Deterministic path: sort keys to make collision detection stable.
         let mut keys: Vec<String> = static_labels.keys().cloned().collect();
         keys.sort();
-        // Store original keys by value to avoid lifetime issues with &str from local vec.
         let mut seen: HashMap<String, String> = HashMap::new();
-        for key in keys.iter() {
+        for key in &keys {
             let sanitized = sanitize_identifier(key);
             if let Some(existing) = seen.get(&sanitized) {
                 return Err(ConfigError::Validation(format!(
