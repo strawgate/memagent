@@ -76,6 +76,7 @@ impl InputPipelineManager {
         transforms: Vec<SourcePipeline>,
         pipeline_tx: mpsc::Sender<super::ProcessedBatch>,
         metrics: Arc<PipelineMetrics>,
+        worker_control_tx: tokio::sync::broadcast::Sender<super::ControlMessage>,
         shutdown: CancellationToken,
         batch_target_bytes: usize,
         batch_timeout: Duration,
@@ -98,6 +99,7 @@ impl InputPipelineManager {
             let input_name: Arc<str> = Arc::from(transform.input_name.as_str());
 
             // Spawn I/O worker.
+            let control_rx = worker_control_tx.subscribe();
             let shutdown_io = shutdown.clone();
             let metrics_io = Arc::clone(&metrics);
             io_handles.push(std::thread::spawn(move || {
@@ -106,6 +108,7 @@ impl InputPipelineManager {
                     input_name,
                     io_tx,
                     metrics_io,
+                    control_rx,
                     shutdown_io,
                     batch_target_bytes,
                     batch_timeout,

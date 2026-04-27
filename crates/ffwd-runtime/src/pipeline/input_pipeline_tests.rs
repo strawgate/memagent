@@ -27,6 +27,12 @@ use ffwd_types::pipeline::SourceId;
 // These test the full split pipeline via from_config + run, so they
 // don't need direct access to private types.
 
+fn make_dummy_control_rx() -> tokio::sync::broadcast::Receiver<crate::pipeline::ControlMessage> {
+    let (tx, rx) = tokio::sync::broadcast::channel(16);
+    drop(tx);
+    rx
+}
+
 #[test]
 fn shutdown_repoll_continues_for_payload_without_matching_eof() {
     let events = vec![
@@ -769,6 +775,7 @@ fn io_worker_uses_configured_input_name_for_source_metadata() {
             Arc::from("configured-input"),
             tx,
             metrics,
+            make_dummy_control_rx(),
             worker_shutdown,
             1,
             Duration::from_secs(60),
@@ -823,6 +830,7 @@ fn io_worker_counts_split_line_origin_once() {
             Arc::from("configured-input"),
             tx,
             metrics,
+            make_dummy_control_rx(),
             worker_shutdown,
             usize::MAX,
             Duration::ZERO,
@@ -879,6 +887,7 @@ fn io_worker_attaches_source_metadata_to_batch_event() {
             Arc::from("configured-input"),
             tx,
             metrics,
+            make_dummy_control_rx(),
             worker_shutdown,
             usize::MAX,
             Duration::from_secs(60),
@@ -938,6 +947,7 @@ fn io_worker_shutdown_drains_buffered_source_metadata() {
             Arc::from("configured-input"),
             tx,
             metrics,
+            make_dummy_control_rx(),
             worker_shutdown,
             usize::MAX,
             Duration::from_secs(60),
@@ -996,6 +1006,7 @@ fn io_worker_shutdown_repolls_until_source_finishes() {
             Arc::from("configured-input"),
             tx,
             metrics,
+            make_dummy_control_rx(),
             worker_shutdown,
             usize::MAX,
             Duration::from_secs(60),
@@ -1058,6 +1069,7 @@ fn io_worker_extends_existing_buffer_via_poll_into_path() {
             Arc::from("configured-input"),
             tx,
             metrics,
+            make_dummy_control_rx(),
             shutdown,
             usize::MAX,
             Duration::from_secs(60),
@@ -1105,6 +1117,7 @@ fn io_worker_uses_poll_into_path_with_empty_buffer() {
             Arc::from("configured-input"),
             tx,
             metrics,
+            make_dummy_control_rx(),
             shutdown,
             usize::MAX,
             Duration::from_secs(60),
@@ -1150,6 +1163,7 @@ fn io_worker_flushes_large_shared_buffer_chunk_without_waiting_for_timeout() {
             Arc::from("configured-input"),
             tx,
             metrics,
+            make_dummy_control_rx(),
             worker_shutdown,
             usize::MAX,
             Duration::from_secs(60),

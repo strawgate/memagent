@@ -10,6 +10,7 @@ use super::checkpoint_io::flush_checkpoint_with_retry;
 use super::checkpoint_policy::{TicketDisposition, default_ticket_disposition};
 use super::internal_faults;
 use super::{Pipeline, ProcessedBatch, now_nanos};
+use crate::pipeline::ControlMessage;
 use crate::worker_pool::AckItem;
 use ffwd_io::checkpoint::SourceCheckpoint;
 use ffwd_output::BatchMetadata;
@@ -91,6 +92,7 @@ impl Pipeline {
                 transforms,
                 tx.clone(),
                 Arc::clone(&self.metrics),
+                self.worker_control_tx.clone(),
                 shutdown.clone(),
                 batch_target,
                 batch_timeout,
@@ -148,6 +150,41 @@ impl Pipeline {
 
                 () = shutdown.cancelled() => {
                     break;
+                }
+
+                // Handle control messages: these are prioritized over data messages
+                // to ensure shutdown and drain commands are processed promptly.
+                msg = self.control_rx.recv() => {
+                    match msg {
+                        Some(ControlMessage::Shutdown) => {
+                            tracing::debug!("received shutdown control message");
+                            let _ = self.worker_control_tx.send(ControlMessage::Shutdown);
+                            shutdown.cancel();
+                            // Forced shutdown: skip channel drain, drop rx so producers unblock.
+                            should_drain_input_channel = false;
+                            break;
+                        }
+                        Some(ControlMessage::DrainIngress) => {
+                            tracing::debug!("received drain ingress control message");
+                            let _ = self.worker_control_tx.send(ControlMessage::DrainIngress);
+                            // TODO(#233): stop accepting new input but finish in-flight batches.
+                            should_drain_input_channel = false;
+                        }
+                        Some(ControlMessage::Flush) => {
+                            tracing::debug!("received flush control message");
+                            let _ = self.worker_control_tx.send(ControlMessage::Flush);
+                            self.flush_checkpoints().await;
+                        }
+                        Some(ControlMessage::Reconfigure) => {
+                            tracing::debug!("received reconfigure control message");
+                            let _ = self.worker_control_tx.send(ControlMessage::Reconfigure);
+                            // TODO(#233): reload config and apply changes without restart.
+                        }
+                        None => {
+                            tracing::debug!("control channel closed");
+                            break;
+                        }
+                    }
                 }
 
                 msg = rx.recv() => {
