@@ -93,10 +93,14 @@ impl MetricBuffer {
         let p = Point { t, v };
 
         // Always push to tier 0 (highest resolution).
-        self.tiers[0].push(p);
-        self.tiers[0].trim(t);
+        #[allow(clippy::indexing_slicing)]
+        {
+            self.tiers[0].push(p);
+            self.tiers[0].trim(t);
+        }
 
         // Downsample to lower tiers if enough time has passed.
+        #[allow(clippy::indexing_slicing)]
         for i in 1..self.tiers.len() {
             let interval = self.tiers[i].interval_secs;
             let should_push = match self.tiers[i].last_time() {

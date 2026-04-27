@@ -90,16 +90,15 @@ pub(super) fn validate_log_level(level: &str) -> Result<(), ConfigError> {
     }
 }
 
-#[allow(clippy::indexing_slicing)]
 pub(super) fn validate_iso8601_timestamp(s: &str) -> Result<(), ConfigError> {
     let b = s.as_bytes();
     if b.len() != 20
-        || b[4] != b'-'
-        || b[7] != b'-'
-        || b[10] != b'T'
-        || b[13] != b':'
-        || b[16] != b':'
-        || b[19] != b'Z'
+        || b.get(4).copied() != Some(b'-')
+        || b.get(7).copied() != Some(b'-')
+        || b.get(10).copied() != Some(b'T')
+        || b.get(13).copied() != Some(b':')
+        || b.get(16).copied() != Some(b':')
+        || b.get(19).copied() != Some(b'Z')
     {
         return Err(validation_error(format!(
             "must be \"now\" or YYYY-MM-DDTHH:MM:SSZ format, got {s:?}"
@@ -108,6 +107,7 @@ pub(super) fn validate_iso8601_timestamp(s: &str) -> Result<(), ConfigError> {
     let digits = |off: usize, n: usize| -> Result<u32, ConfigError> {
         let mut v = 0u32;
         for i in 0..n {
+            #[allow(clippy::indexing_slicing)]
             let c = b[off + i];
             if !c.is_ascii_digit() {
                 return Err(validation_error(format!("non-digit character in {s:?}")));

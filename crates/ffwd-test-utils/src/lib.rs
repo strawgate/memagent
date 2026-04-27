@@ -3,7 +3,8 @@
 //! Provides reusable proptest strategies for JSON generation, test sink
 //! implementations, and common helpers used across multiple test suites.
 
-#![allow(clippy::indexing_slicing, clippy::expect_used)]
+// Test utilities: standard test patterns with expect/unwrap on infallible operations.
+#![allow(clippy::indexing_slicing, clippy::expect_used, clippy::unwrap_used)]
 
 pub mod arrow;
 pub mod json;
@@ -47,7 +48,6 @@ pub fn test_meter() -> opentelemetry::metrics::Meter {
 
 /// Write `count` NDJSON lines to `path`, each with a monotonically increasing
 /// `sequence_id` (starting from 0) and the given `source_id`.
-#[allow(clippy::unwrap_used)]
 pub fn generate_json_lines(path: &Path, count: usize, source_id: &str) {
     let mut data = String::with_capacity(count * 120);
     for i in 0..count {

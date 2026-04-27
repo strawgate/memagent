@@ -3,6 +3,9 @@
 //! Takes a user's SQL string, analyzes it at startup, compiles a DataFusion
 //! execution plan, and executes it against Arrow RecordBatches from the scanner.
 
+// SQL transform: provably-bounded indexing in UDF helpers and column access.
+#![allow(clippy::indexing_slicing, clippy::expect_used)]
+
 pub mod enrichment;
 pub mod error;
 pub mod udf;

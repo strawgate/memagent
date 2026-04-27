@@ -1,4 +1,4 @@
-// IO hot path uses byte-level indexing and expect() on provably-present values.
+// IO hot path: provably-bounded indexing in file tailing and packet handling.
 #![allow(clippy::indexing_slicing, clippy::expect_used)]
 
 pub mod atomic_write;

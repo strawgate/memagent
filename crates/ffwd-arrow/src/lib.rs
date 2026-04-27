@@ -4,9 +4,8 @@
 //! Contains `StreamingBuilder` (zero-copy hot path) and the `Scanner`
 //! wrapper type that produces `RecordBatch`.
 
-// Byte-parsing and array indexing in the hot path uses slicing patterns that
-// clippy flags as potentially panicking. These are provably safe because
-// bounds are checked before each slice.
+// Arrow hot path: provably-bounded indexing in RecordBatch builders and
+// schema resolution. proptest verifies SIMD equivalence.
 #![allow(clippy::indexing_slicing, clippy::expect_used)]
 
 /// Columnar batch builder for structured producers (OTLP, CSV).

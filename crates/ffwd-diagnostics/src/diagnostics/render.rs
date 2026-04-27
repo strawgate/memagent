@@ -12,6 +12,7 @@ pub(super) fn esc(s: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\x00'..='\x1f' => {
                 use std::fmt::Write;
+                #[allow(clippy::expect_used)]
                 write!(out, "\\u{:04x}", c as u32).expect("write to String is infallible");
             }
             _ => out.push(c),

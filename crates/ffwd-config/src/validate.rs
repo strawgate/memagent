@@ -34,7 +34,6 @@ pub use common::validate_host_port;
 
 impl Config {
     /// Validate the loaded configuration using a base path for relative paths.
-    #[allow(clippy::indexing_slicing, clippy::expect_used)]
     pub fn validate_with_base_path(&self, base_path: Option<&Path>) -> Result<(), ConfigError> {
         validate_server_config(&self.server)?;
         validate_storage_config(&self.storage)?;
@@ -52,7 +51,8 @@ impl Config {
         let mut pipeline_names: Vec<&str> = self.pipelines.keys().map(String::as_str).collect();
         pipeline_names.sort_unstable();
         for name in pipeline_names {
-            let pipe = &self.pipelines[name];
+            #[allow(clippy::unwrap_used, clippy::get_unwrap)]
+            let pipe = self.pipelines.get(name).unwrap();
             let result = validate_pipeline(
                 name,
                 pipe,
@@ -72,10 +72,8 @@ impl Config {
             Ok(())
         } else if all_errors.len() == 1 {
             Err(ConfigError::Validation(
-                all_errors
-                    .into_iter()
-                    .next()
-                    .expect("guarded by len == 1 check"),
+                #[allow(clippy::unwrap_used)]
+                all_errors.into_iter().next().unwrap(),
             ))
         } else {
             Err(ConfigError::Validation(format!(
