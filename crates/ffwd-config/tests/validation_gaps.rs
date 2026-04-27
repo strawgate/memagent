@@ -1,4 +1,4 @@
-use ffwd_config::Config;
+use ffwd_config::{Config, OutputConfigV2};
 use std::ffi::OsString;
 use std::fs;
 #[cfg(unix)]
@@ -1467,11 +1467,19 @@ pipelines:
         retry:
           max_attempts: 3
 "#;
-    let result = Config::load_str(yaml);
-    assert!(
-        result.is_ok(),
-        "elasticsearch with max_attempts=3 should be accepted, but got: {:?}",
-        result
+    let config = Config::load_str(yaml)
+        .expect("elasticsearch with max_attempts=3 should be accepted");
+    let output = config.pipelines.get("test")
+        .expect("pipeline 'test' should exist")
+        .outputs.first()
+        .expect("output #0 should exist");
+    let OutputConfigV2::Elasticsearch(es) = output else {
+        panic!("output #0 should be Elasticsearch");
+    };
+    assert_eq!(
+        es.retry.as_ref().and_then(|r| r.max_attempts),
+        Some(3),
+        "elasticsearch retry.max_attempts should be Some(3)"
     );
 }
 
@@ -1490,10 +1498,18 @@ pipelines:
         retry:
           max_attempts: 0
 "#;
-    let result = Config::load_str(yaml);
-    assert!(
-        result.is_ok(),
-        "elasticsearch with max_attempts=0 should be accepted (zero means no retry limit), but got: {:?}",
-        result
+    let config = Config::load_str(yaml)
+        .expect("elasticsearch with max_attempts=0 should be accepted");
+    let output = config.pipelines.get("test")
+        .expect("pipeline 'test' should exist")
+        .outputs.first()
+        .expect("output #0 should exist");
+    let OutputConfigV2::Elasticsearch(es) = output else {
+        panic!("output #0 should be Elasticsearch");
+    };
+    assert_eq!(
+        es.retry.as_ref().and_then(|r| r.max_attempts),
+        Some(0),
+        "elasticsearch retry.max_attempts should be Some(0)"
     );
 }
