@@ -41,7 +41,7 @@ pub fn generate_arrow_batch(
     let mut msg_buf = Vec::with_capacity(64);
 
     for i in 0..n {
-        let counter = start_counter.wrapping_add(i as u64);
+        let counter = start_counter.saturating_add(i as u64);
         let Some(fields) =
             compute_log_fields(counter, timestamp_config, GeneratorComplexity::Simple, None)
         else {
@@ -67,7 +67,7 @@ pub fn generate_arrow_batch(
         duration_builder.append_value(fields.duration_ms as i64);
 
         // request_id: stack-based hex formatting
-        write_hex16_into(&mut hex_buf, fields.request_id);
+        write_hex16(&mut hex_buf, fields.request_id);
         append_utf8_or_null(&mut rid_builder, &hex_buf);
 
         service_builder.append_value(fields.service);
@@ -104,17 +104,5 @@ fn append_utf8_or_null(builder: &mut StringBuilder, bytes: &[u8]) {
     match std::str::from_utf8(bytes) {
         Ok(value) => builder.append_value(value),
         Err(_) => builder.append_null(),
-    }
-}
-
-/// Write a u64 as 16 zero-padded lowercase hex digits into a fixed buffer.
-fn write_hex16_into(out: &mut [u8; 16], val: u64) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut v = val;
-    let mut i = 15_i32;
-    while i >= 0 {
-        out[i as usize] = HEX[(v & 0xf) as usize];
-        v >>= 4;
-        i -= 1;
     }
 }
