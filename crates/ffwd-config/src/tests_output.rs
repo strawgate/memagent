@@ -182,6 +182,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn loki_static_labels_sanitization_collision_detected() {
+        // Regression test for detecting Loki static label key collisions.
+        // If two keys sanitize to the same identifier, validation must reject
+        // the config to avoid ambiguous label keys.
+        let yaml = single_pipeline_yaml(
+            "type: file\npath: /tmp/x.log",
+            "type: loki\nendpoint: http://localhost:3100\nstatic_labels:\n  foo-bar: value1\n  foo_bar: value2",
+        );
+        let err = Config::load_str(yaml)
+            .expect_err("loki static_labels sanitization collision should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("sanitizes to 'foo_bar'")
+                && (msg.contains("collides with existing key 'foo-bar'")
+                    || msg.contains("collides with existing key 'foo_bar'")),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn loki_empty_static_label_key_rejected() {
+        let yaml = single_pipeline_yaml(
+            "type: file\npath: /tmp/x.log",
+            "type: loki\nendpoint: http://localhost:3100\nstatic_labels:\n  \"\": value\n",
+        );
+        let err = Config::load_str(yaml).expect_err("empty static_labels key should be rejected");
+        assert!(
+            err.to_string()
+                .contains("static_labels' keys and values must not be empty"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn loki_whitespace_static_label_key_rejected() {
+        let yaml = single_pipeline_yaml(
+            "type: file\npath: /tmp/x.log",
+            "type: loki\nendpoint: http://localhost:3100\nstatic_labels:\n  \"   \": value\n",
+        );
+        let err =
+            Config::load_str(yaml).expect_err("whitespace static_labels key should be rejected");
+        assert!(
+            err.to_string()
+                .contains("static_labels' keys and values must not be empty"),
+            "unexpected error: {err}"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Auth tests
     // -----------------------------------------------------------------------

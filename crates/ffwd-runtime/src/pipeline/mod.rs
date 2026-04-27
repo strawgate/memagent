@@ -42,6 +42,7 @@ use ffwd_arrow::Scanner;
 
 #[cfg(test)]
 use self::checkpoint_policy::TicketDisposition;
+use crate::pipeline::checkpoint_io::flush_checkpoint_with_retry;
 use crate::processor::Processor;
 use crate::transform::{Transform, create_transform};
 #[cfg(test)]
@@ -164,6 +165,26 @@ struct IngestState {
     stats: Arc<ComponentStats>,
 }
 
+/// Control messages for coordinating pipeline shutdown and behavior.
+///
+/// Used by the control channel to send typed messages between pipeline components
+/// instead of relying on CancellationToken or implicit channel closure.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum ControlMessage {
+    /// Graceful shutdown: stop accepting new data, cancel workers, drain processors.
+    Shutdown,
+    /// Intended to stop new ingress while allowing in-flight data to finish.
+    /// Current status: staged placeholder (logs only).
+    DrainIngress,
+    /// Trigger checkpoint persistence via the pipeline's [`flush_checkpoints()`][Pipeline::flush_checkpoints] method.
+    /// Current status: flushes checkpoint store only; does not evacuate I/O or worker buffers.
+    Flush,
+    /// Intended hot-reload hook.
+    /// Current status: staged placeholder (logs only).
+    Reconfigure,
+}
+
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
@@ -206,6 +227,15 @@ pub struct Pipeline {
     checkpoint_flush_interval: Duration,
     /// Maximum time to wait for worker-pool graceful drain during shutdown.
     pool_drain_timeout: Duration,
+    /// Control channel for sending shutdown and control messages to the pipeline.
+    /// Used for typed shutdown coordination instead of CancellationToken.
+    control_tx: tokio::sync::mpsc::UnboundedSender<ControlMessage>,
+    /// Control channel for receiving shutdown and control messages in the pipeline loop.
+    control_rx: tokio::sync::mpsc::UnboundedReceiver<ControlMessage>,
+    /// Broadcast channel sender for workers (I/O, CPU).
+    /// Workers subscribe to receive all control messages.
+    /// Uses tokio::sync::broadcast for true broadcast semantics.
+    worker_control_tx: tokio::sync::broadcast::Sender<ControlMessage>,
 }
 
 impl Pipeline {
@@ -375,6 +405,8 @@ impl Pipeline {
         let meter = opentelemetry::global::meter("test");
         let metrics = Arc::new(PipelineMetrics::new(name, "SELECT * FROM logs", &meter));
         let pool = OutputWorkerPool::new(factory, max_workers, Duration::MAX, Arc::clone(&metrics));
+        let (control_tx, control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (worker_control_tx, _worker_control_rx) = tokio::sync::broadcast::channel(16);
 
         // Start with empty inputs and input_transforms so that each with_input()
         // call adds exactly one entry to both, keeping input_index in sync with
@@ -396,6 +428,9 @@ impl Pipeline {
             last_checkpoint_flush: tokio::time::Instant::now(),
             checkpoint_flush_interval: build::DEFAULT_CHECKPOINT_FLUSH_INTERVAL,
             pool_drain_timeout: Duration::from_secs(60),
+            control_tx,
+            control_rx,
+            worker_control_tx,
         }
     }
 
@@ -407,10 +442,46 @@ impl Pipeline {
         self.machine.as_ref().map_or(0, |m| m.in_flight_count())
     }
 
+    /// Returns a clone of the control channel sender.
+    ///
+    /// External callers can use this to send [`ControlMessage`]s to the pipeline's
+    /// control loop. The pipeline loop prioritizes control messages over data,
+    /// ensuring shutdown and drain commands are processed promptly.
+    ///
+    /// Note: [`ControlMessage::Shutdown`] is functional.
+    /// [`ControlMessage::Flush`] triggers checkpoint-store flush only.
+    /// [`ControlMessage::DrainIngress`] and [`ControlMessage::Reconfigure`]
+    /// are currently staged placeholders.
+    pub fn clone_control_sender(&self) -> tokio::sync::mpsc::UnboundedSender<ControlMessage> {
+        self.control_tx.clone()
+    }
+
+    /// Returns a clone of the control channel sender.
+    ///
+    /// Alias for [`clone_control_sender`][Pipeline::clone_control_sender].
+    #[deprecated(since = "0.1.0", note = "use clone_control_sender() instead")]
+    pub fn control_tx(&self) -> tokio::sync::mpsc::UnboundedSender<ControlMessage> {
+        self.clone_control_sender()
+    }
+
     /// Override the checkpoint flush interval (default 5s). For testing
     /// checkpoint persistence timing without waiting real seconds.
     pub fn set_checkpoint_flush_interval(&mut self, interval: Duration) {
         self.checkpoint_flush_interval = interval;
+    }
+
+    /// Persists in-memory checkpoints to durable storage.
+    ///
+    /// This is a fire-and-forget operation that:
+    /// - Persists in-memory checkpoints via `checkpoint_store`
+    /// - Retries up to 3 times via `flush_checkpoint_with_retry`, then swallows errors
+    ///
+    /// It does NOT flush in-flight pipeline batches or evacuate buffers.
+    /// Callers should not rely on this for durability guarantees or synchronous confirmation.
+    pub async fn flush_checkpoints(&mut self) {
+        if let Some(ref mut store) = self.checkpoint_store {
+            flush_checkpoint_with_retry(store.as_mut()).await;
+        }
     }
 }
 

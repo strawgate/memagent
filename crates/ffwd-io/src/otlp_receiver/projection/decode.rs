@@ -90,7 +90,13 @@ fn collect_resource_attrs<'a>(
     resource: &'a [u8],
 ) -> Result<(), ProjectionError> {
     generated::for_each_resource_attribute(resource, |attr| {
-        if let Some((key, value)) = generated::decode_key_value_wire(attr)? {
+        if let Some((key, value)) = super::wire::decode_kv_inline(attr)? {
+            // `decode_kv_inline` returns the key unvalidated; resource
+            // attrs have no per-position cache so we have no memo to lean on.
+            // Validate eagerly. The cost is small (handful of attrs per batch)
+            // and the alternative — building a `&str` from concatenated bytes
+            // via `from_utf8_unchecked` — would require a non-load-bearing
+            // unsafe block to save one simdutf8 pass.
             scratch.resource_key.clear();
             scratch
                 .resource_key
@@ -99,8 +105,8 @@ fn collect_resource_attrs<'a>(
                 .resource_key
                 .extend_from_slice(resource_prefix.as_bytes());
             scratch.resource_key.extend_from_slice(key);
-            let key_str = std::str::from_utf8(&scratch.resource_key)
-                .expect("resource prefix + validated UTF-8 key must be valid UTF-8");
+            let key_str = simdutf8::basic::from_utf8(&scratch.resource_key)
+                .map_err(|_e| ProjectionError::Invalid("invalid UTF-8 resource attribute key"))?;
             let handle = builder
                 .resolve_dynamic(key_str, generated::wire_any_field_kind(&value))
                 .map_err(|e| ProjectionError::Batch(format!("resolve resource attr: {e}")))?;
@@ -201,7 +207,7 @@ fn decode_log_record_wire(
     for attr_idx in 0..scratch.attr_ranges.len() {
         let (start, len) = scratch.attr_ranges[attr_idx];
         let attr = &log_record[start..start + len];
-        if let Some((key, value)) = generated::decode_key_value_wire(attr)? {
+        if let Some((key, value)) = super::wire::decode_kv_inline(attr)? {
             let handle = resolve_record_attr_field(
                 builder,
                 &mut scratch.attr_field_cache,
@@ -221,6 +227,22 @@ fn decode_log_record_wire(
     Ok(())
 }
 
+/// Resolve a per-record attribute key to a `FieldHandle`, using the
+/// per-position cache to amortize repeated work across rows.
+///
+/// # Cache invariant
+///
+/// `cache[position].key` is **always valid UTF-8**. We establish this by
+/// validating UTF-8 only on the cache-miss branch, before storing the key.
+/// On a cache hit (byte-equal key), the new bytes are valid UTF-8 by
+/// transitivity (UTF-8 is a deterministic property of bytes), so we skip
+/// re-validation. `decode_kv_inline` deliberately leaves the key bytes
+/// unvalidated so this memo can pay off.
+///
+/// # Cache-hit fast path
+///
+/// We check `key_len` first (a u32 compare) to reject mismatches before
+/// the full `memcmp`, then only proceed to byte equality on length match.
 fn resolve_record_attr_field(
     builder: &mut ColumnarBatchBuilder,
     cache: &mut Vec<AttrFieldCache>,
@@ -228,24 +250,30 @@ fn resolve_record_attr_field(
     key: &[u8],
     value: &WireAny<'_>,
 ) -> Result<FieldHandle, ProjectionError> {
+    let key_len = key.len() as u32;
     if let Some(cached) = cache.get(position)
+        && cached.key_len == key_len
         && cached.key.as_slice() == key
         && let Some(handle) = cached.handle
     {
         return Ok(handle);
     }
 
-    let key_str = std::str::from_utf8(key).expect("attribute key already validated as UTF-8");
+    // Cache miss: validate now so the cache invariant is maintained.
+    let key_str = simdutf8::basic::from_utf8(key)
+        .map_err(|_e| ProjectionError::Invalid("invalid UTF-8 attribute key"))?;
     let handle = builder
         .resolve_dynamic(key_str, generated::wire_any_field_kind(value))
         .map_err(|e| ProjectionError::Batch(format!("resolve attr field: {e}")))?;
     if let Some(cached) = cache.get_mut(position) {
         cached.key.clear();
         cached.key.extend_from_slice(key);
+        cached.key_len = key_len;
         cached.handle = Some(handle);
     } else {
         cache.push(AttrFieldCache {
             key: key.to_vec(),
+            key_len,
             handle: Some(handle),
         });
     }

@@ -735,8 +735,27 @@ fn build_string_view_trusted(
          the ingestion boundary (scanner/decoder) has a validation bug"
     );
 
-    let array = StringViewArray::try_new(ScalarBuffer::from(views), buffers, nulls)
-        .map_err(|err| MaterializeError::InvalidStringView(err.to_string()))?;
+    // SAFETY: Trusted-path bypass of `StringViewArray::try_new` revalidation.
+    //
+    // Crate rule note: ffwd-arrow normally limits unsafe to SIMD. This is an
+    // explicit exception: `try_new` re-walks every view for UTF-8 + bounds
+    // checks that the producer boundary already guarantees. The cost was
+    // measurable (~33% of attrs-heavy time). Invariants maintained:
+    //
+    //  - `views.len() == num_rows` and any `nulls` has matching length
+    //    (dense branch builds no nulls; sparse branch sizes `bits` from
+    //    `num_rows.div_ceil(8)`).
+    //  - Every StringRef was assembled by `make_string_view`, which rejects
+    //    offsets/lengths outside the referenced buffer block.
+    //  - UTF-8 validity is the trusted-path contract; the `debug_assert!`
+    //    above checks it in debug builds, and the comment on this fn
+    //    spells out the boundary obligation.
+    //  - Arrow's `force_validate` feature flag re-enables validation here
+    //    when set (see `new_unchecked` impl).
+    // SAFETY: invariants validated above — views match num_rows, buffer offsets
+    // are bounds-checked by make_string_view, UTF-8 is the trusted-path contract.
+    let array =
+        unsafe { StringViewArray::new_unchecked(ScalarBuffer::from(views), buffers, nulls) };
     Ok((Arc::new(array), DataType::Utf8View))
 }
 

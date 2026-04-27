@@ -837,6 +837,14 @@ pub(super) fn decode_any_value_wire(value: &[u8]) -> Result<Option<WireAny<'_>>,
     Ok(out)
 }
 
+/// Decode a `KeyValue` record into raw key bytes and a typed value.
+///
+/// The key bytes are returned **unvalidated**. Callers must run UTF-8
+/// validation before using the key as a `&str`.
+///
+/// Note: production code now uses `wire::decode_kv_inline` for performance.
+/// This function is retained as the reference implementation for tests.
+#[cfg(test)]
 pub(super) fn decode_key_value_wire(
     kv: &[u8],
 ) -> Result<Option<(&[u8], WireAny<'_>)>, ProjectionError> {
@@ -845,7 +853,7 @@ pub(super) fn decode_key_value_wire(
     super::for_each_field(kv, |field, field_value| {
         match (field, field_value) {
             (1, WireField::Len(bytes)) => {
-                key = super::require_utf8(bytes, "invalid UTF-8 attribute key")?;
+                key = bytes;
             }
             (1, _) => {
                 return Err(ProjectionError::Invalid(
