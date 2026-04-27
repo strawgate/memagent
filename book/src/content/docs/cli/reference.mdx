@@ -96,7 +96,7 @@ In non-interactive mode `--destination` is required. In an interactive terminal,
 
 | Option | Description |
 |--------|-------------|
-| `--destination` | **Required.** Sink type: `otlp`, `elasticsearch`, `loki`, `arrow_ipc`, `udp`, `tcp`, `null` |
+| `--destination` | Sink type (required in non-interactive mode, prompted otherwise): `otlp`, `elasticsearch` (aliases: `elasticsearch_otlp`, `elasticsearch_bulk`), `loki`, `arrow_ipc`, `udp`, `tcp`, `null` |
 | `--endpoint` | Destination URL/address (required for all destinations except `null`) |
 | `--workers` | Worker threads (default: `2`) |
 | `--batch-lines` | Lines per batch (default: `5000`) |
@@ -111,7 +111,7 @@ Runs a built-in receiver that accepts incoming log traffic and drops it. Use thi
 ```bash
 ff devour                          # defaults to OTLP mode on 127.0.0.1:4318
 ff devour --mode tcp --listen 127.0.0.1:15140
-ff devour --mode elasticsearch --listen 127.0.0.1:9200
+ff devour --mode elasticsearch_bulk --listen 127.0.0.1:9200
 ```
 
 Unlike `blast`, `devour` does **not** require `--destination` — it accepts multiple built-in receiver modes.

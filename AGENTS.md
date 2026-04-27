@@ -237,6 +237,8 @@ Component labels use `component:` prefix (e.g., `component:processor/scanner`). 
 - **Find what SQL UDFs exist:** `crates/ffwd-transform/src/udf/` for `json()`, `json_int()`, `json_float()`, `regexp_extract()`, `grok()`, `geo_lookup()`, `hash()` (internal), and `crates/ffwd-transform/src/cast_udf.rs` for `int()` / `float()` — all are custom `ScalarUDFImpl` implementations registered on the DataFusion context.
 - **Find config schema:** `book/src/content/docs/configuration/reference.mdx` — all YAML fields, input/output types.
 - **Find example configs:** `examples/use-cases/` — 20 common patterns.
+- **Review active work/priorities:** open GitHub issues and PRs (`gh issue list --state open`, `gh pr list --state open`).
+- **Find library-specific patterns:** `dev-docs/references/` — Arrow, DataFusion, Tokio, OTLP, Kani.
 - **Find CLI reference:** `book/src/content/docs/cli/reference.mdx` — all `ff` subcommands with options.
 - **Start quickly:** `ff init` creates a starter `ffwd.yaml`; `ff wizard` is an interactive alternative.
 - **Find verification status:** `dev-docs/VERIFICATION.md` — per-module proof status.

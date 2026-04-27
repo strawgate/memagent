@@ -13,7 +13,7 @@ just tlc-tail                              # TailLifecycle (fast CI)
 just tla-setup                             # download jar without running a model
 ```
 
-For all other specs, the general form is `just tlc <model_file> <config_file>`:
+For all other specs, the general form is `just tlc <model_file> <config_file>` (run from the repo root):
 
 ```bash
 # PipelineMachine
