@@ -170,6 +170,7 @@ struct IngestState {
 /// Used by the control channel to send typed messages between pipeline components
 /// instead of relying on CancellationToken or implicit channel closure.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ControlMessage {
     /// Graceful shutdown: stop accepting new data, drain processors, close exporters.
     Shutdown,
