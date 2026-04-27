@@ -1428,8 +1428,9 @@ pipelines:
 
 #[test]
 fn issue_2584_retry_max_attempts_rejects_negative_values() {
-    for max_attempts in [-1, -100] {
-        let yaml = format!(
+    let configs: &[(&str, &str)] = &[
+        (
+            "elasticsearch",
             r#"
 pipelines:
   test:
@@ -1441,13 +1442,37 @@ pipelines:
       - type: elasticsearch
         endpoint: http://localhost:9200
         retry:
-          max_attempts: {max_attempts}
+          max_attempts: -1
 "#,
-        );
-        let result = Config::load_str(&yaml);
+        ),
+        (
+            "loki",
+            r#"
+pipelines:
+  test:
+    inputs:
+      - type: generator
+        generator:
+          profile: record
+    outputs:
+      - type: loki
+        endpoint: http://localhost:3100
+        retry:
+          max_attempts: -100
+"#,
+        ),
+    ];
+
+    for (sink_name, yaml) in configs {
+        let result = Config::load_str(yaml);
         assert!(
             result.is_err(),
-            "elasticsearch with max_attempts={max_attempts} should be rejected, but got Ok"
+            "{sink_name} with negative max_attempts should be rejected, but got Ok"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("invalid value") || err_msg.contains("max_attempts"),
+            "{sink_name} error should indicate invalid value for max_attempts, got: {err_msg}"
         );
     }
 }
@@ -1467,11 +1492,14 @@ pipelines:
         retry:
           max_attempts: 3
 "#;
-    let config = Config::load_str(yaml)
-        .expect("elasticsearch with max_attempts=3 should be accepted");
-    let output = config.pipelines.get("test")
+    let config =
+        Config::load_str(yaml).expect("elasticsearch with max_attempts=3 should be accepted");
+    let output = config
+        .pipelines
+        .get("test")
         .expect("pipeline 'test' should exist")
-        .outputs.first()
+        .outputs
+        .first()
         .expect("output #0 should exist");
     let OutputConfigV2::Elasticsearch(es) = output else {
         panic!("output #0 should be Elasticsearch");
@@ -1498,11 +1526,14 @@ pipelines:
         retry:
           max_attempts: 0
 "#;
-    let config = Config::load_str(yaml)
-        .expect("elasticsearch with max_attempts=0 should be accepted");
-    let output = config.pipelines.get("test")
+    let config =
+        Config::load_str(yaml).expect("elasticsearch with max_attempts=0 should be accepted");
+    let output = config
+        .pipelines
+        .get("test")
         .expect("pipeline 'test' should exist")
-        .outputs.first()
+        .outputs
+        .first()
         .expect("output #0 should exist");
     let OutputConfigV2::Elasticsearch(es) = output else {
         panic!("output #0 should be Elasticsearch");
