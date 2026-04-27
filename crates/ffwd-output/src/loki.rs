@@ -2071,8 +2071,14 @@ mod loki_endpoint_normalization {
 
     #[test]
     fn endpoint_without_push_path_unchanged() {
-        assert_eq!(normalize_endpoint("http://localhost:3100"), "http://localhost:3100");
-        assert_eq!(normalize_endpoint("http://localhost:3100/"), "http://localhost:3100");
+        assert_eq!(
+            normalize_endpoint("http://localhost:3100"),
+            "http://localhost:3100"
+        );
+        assert_eq!(
+            normalize_endpoint("http://localhost:3100/"),
+            "http://localhost:3100"
+        );
         assert_eq!(
             normalize_endpoint("http://localhost:3100/loki/api/v1"),
             "http://localhost:3100/loki/api/v1"

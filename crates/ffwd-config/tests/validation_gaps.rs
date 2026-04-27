@@ -1405,7 +1405,8 @@ pipelines:
       - type: loki
         endpoint: http://localhost:3100/loki/api/v1/push
 ";
-    Config::load_str(yaml).expect("full push path in endpoint should be accepted (normalized by output)");
+    Config::load_str(yaml)
+        .expect("full push path in endpoint should be accepted (normalized by output)");
 }
 
 #[test]
@@ -1421,5 +1422,6 @@ pipelines:
       - type: loki
         endpoint: http://localhost:3100/loki/api/v1/push/
 ";
-    Config::load_str(yaml).expect("push path with trailing slash should be accepted (normalized by output)");
+    Config::load_str(yaml)
+        .expect("push path with trailing slash should be accepted (normalized by output)");
 }

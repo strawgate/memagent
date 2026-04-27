@@ -155,7 +155,11 @@ export function App() {
       output_bytes: val("ffwd.output_bytes"),
       output_errors: val("ffwd.output_errors"),
       batches: val("ffwd.batches"),
-      scan_sec: (sumAll("ffwd_stage_scan_nanos") + sumAll("ffwd_stage_transform_nanos") + sumAll("ffwd_stage_output_nanos")) / 1e9,
+      scan_sec:
+        (sumAll("ffwd_stage_scan_nanos") +
+          sumAll("ffwd_stage_transform_nanos") +
+          sumAll("ffwd_stage_output_nanos")) /
+        1e9,
       transform_sec: 0,
       output_sec: 0,
       backpressure_stalls: val("ffwd.backpressure_stalls"),
