@@ -34,6 +34,7 @@ fuzz_target!(|data: &[u8]| {
         extract_all: true,
         line_field_name: Some("body".to_string()),
         validate_utf8: false,
+        row_predicate: None,
     };
     let mut scanner_line = Scanner::new(config_line);
     if let Ok(batch_line) = scanner_line.scan(bytes::Bytes::copy_from_slice(data)) {
@@ -50,6 +51,7 @@ fuzz_target!(|data: &[u8]| {
         extract_all: true,
         line_field_name: None,
         validate_utf8: false,
+        row_predicate: None,
     };
     let mut scanner = Scanner::new(config);
     let Ok(batch) = scanner.scan(bytes::Bytes::copy_from_slice(data)) else { return; };
@@ -70,6 +72,7 @@ fuzz_target!(|data: &[u8]| {
         extract_all: false,
         line_field_name: None,
         validate_utf8: false,
+        row_predicate: None,
     };
     let mut scanner2 = Scanner::new(config2);
     let Ok(batch2) = scanner2.scan(bytes::Bytes::copy_from_slice(data)) else { return; };
@@ -83,6 +86,7 @@ fuzz_target!(|data: &[u8]| {
         extract_all: true,
         line_field_name: Some("body".to_string()),
         validate_utf8: true,
+        row_predicate: None,
     };
     let mut scanner_line_v = Scanner::new(config_line_v);
     if let Ok(batch_line_v) = scanner_line_v.scan(bytes::Bytes::copy_from_slice(data)) {
@@ -95,6 +99,7 @@ fuzz_target!(|data: &[u8]| {
         extract_all: true,
         line_field_name: None,
         validate_utf8: true,
+        row_predicate: None,
     };
     let mut scanner_v = Scanner::new(config_v);
     if let Ok(batch_v) = scanner_v.scan(bytes::Bytes::copy_from_slice(data)) {
@@ -116,6 +121,7 @@ fuzz_target!(|data: &[u8]| {
         extract_all: false,
         line_field_name: None,
         validate_utf8: true,
+        row_predicate: None,
     };
     let mut scanner2_v = Scanner::new(config2_v);
     if let Ok(batch2_v) = scanner2_v.scan(bytes::Bytes::copy_from_slice(data)) {
