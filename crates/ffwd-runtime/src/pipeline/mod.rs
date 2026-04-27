@@ -177,7 +177,7 @@ pub enum ControlMessage {
     /// Intended to stop new ingress while allowing in-flight data to finish.
     /// Current status: staged placeholder (logs only).
     DrainIngress,
-    /// Trigger checkpoint persistence via the pipeline's [`flush()`][Pipeline::flush] method.
+    /// Trigger checkpoint persistence via the pipeline's [`flush_checkpoints()`][Pipeline::flush_checkpoints] method.
     /// Current status: flushes checkpoint store only; does not evacuate I/O or worker buffers.
     Flush,
     /// Intended hot-reload hook.
