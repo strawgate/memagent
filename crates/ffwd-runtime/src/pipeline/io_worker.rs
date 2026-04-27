@@ -816,20 +816,34 @@ pub(super) fn io_worker_loop(
 
     'io_loop: loop {
         // Check for control messages (non-blocking)
-        while let Ok(msg) = control_rx.try_recv() {
-            match msg {
-                super::ControlMessage::Shutdown => {
-                    tracing::debug!(input = %input_name, "io_worker: received shutdown control, entering drain mode");
-                    shutdown.cancel();
+        loop {
+            match control_rx.try_recv() {
+                Ok(msg) => {
+                    match msg {
+                        super::ControlMessage::Shutdown => {
+                            tracing::debug!(input = %input_name, "io_worker: received shutdown control, entering drain mode");
+                            shutdown.cancel();
+                        }
+                        super::ControlMessage::DrainIngress => {
+                            tracing::debug!(input = %input_name, "io_worker: received drain ingress control");
+                        }
+                        super::ControlMessage::Flush => {
+                            tracing::debug!(input = %input_name, "io_worker: received flush control");
+                        }
+                        super::ControlMessage::Reconfigure => {
+                            tracing::debug!(input = %input_name, "io_worker: received reconfigure control");
+                        }
+                    }
                 }
-                super::ControlMessage::DrainIngress => {
-                    tracing::debug!(input = %input_name, "io_worker: received drain ingress control");
+                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                    tracing::warn!(input = %input_name, lagged_messages = n, "io_worker: control channel lagged, skipping messages");
                 }
-                super::ControlMessage::Flush => {
-                    tracing::debug!(input = %input_name, "io_worker: received flush control");
+                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                    tracing::debug!(input = %input_name, "io_worker: control channel closed, skipping control message processing");
+                    break;
                 }
-                super::ControlMessage::Reconfigure => {
-                    tracing::debug!(input = %input_name, "io_worker: received reconfigure control");
+                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                    break;
                 }
             }
         }

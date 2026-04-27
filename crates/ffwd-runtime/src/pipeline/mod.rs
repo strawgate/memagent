@@ -444,7 +444,14 @@ impl Pipeline {
         self.checkpoint_flush_interval = interval;
     }
 
-    /// Flush all buffered data through the pipeline.
+    /// Persists in-memory checkpoints to durable storage.
+    ///
+    /// This is a fire-and-forget operation that:
+    /// - Persists in-memory checkpoints via `checkpoint_store`
+    /// - Retries up to 3 times via `flush_checkpoint_with_retry`, then swallows errors
+    ///
+    /// It does NOT flush in-flight pipeline batches or evacuate buffers.
+    /// Callers should not rely on this for durability guarantees or synchronous confirmation.
     pub async fn flush(&mut self) {
         if let Some(ref mut store) = self.checkpoint_store {
             flush_checkpoint_with_retry(store.as_mut()).await;
