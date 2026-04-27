@@ -14,6 +14,7 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY .cargo/ .cargo/
 COPY crates/ crates/
+COPY xtask/ xtask/
 RUN --mount=type=cache,target=/src/target \
     --mount=type=cache,target=/usr/local/cargo/registry \
     CARGO_BUILD_RUSTC_WRAPPER="" \
