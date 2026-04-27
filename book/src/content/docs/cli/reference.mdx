@@ -20,36 +20,6 @@ The `--config` flag is optional. FastForward will automatically discover configu
 4. `~/.config/ffwd/config.yaml`
 5. `/etc/ffwd/config.yaml`
 
-## ff blast
-
-Blasts generated synthetic log data into a destination sink to test throughput and network performance. This command uses the same core pipeline runtime but bypasses reading from disk or the network.
-
-```bash
-ff blast --destination otlp --endpoint http://127.0.0.1:4318/v1/logs
-```
-
-| Option | Description |
-|--------|-------------|
-| `--destination` | The sink type (e.g., `otlp`, `elasticsearch_otlp`, `arrow_ipc`, `null`) |
-| `--endpoint` | Destination endpoint URL (required for network destinations) |
-| `--workers` | Number of worker threads (default: 2) |
-| `--batch-lines` | Lines generated per batch (default: 5000) |
-| `--duration-secs` | Optional duration in seconds before stopping automatically |
-
-## ff devour
-
-Starts a built-in 'blackhole' receiver that accepts incoming log traffic and drops it. Used for isolating sender performance issues and testing upstream clients.
-
-```bash
-ff devour --mode otlp --listen 127.0.0.1:4318
-```
-
-| Option | Description |
-|--------|-------------|
-| `--mode` | The receiver type (e.g., `otlp`, `elasticsearch`) (default: `otlp`) |
-| `--listen` | Bind address (default: `127.0.0.1:4318` for OTLP) |
-| `--duration-secs` | Optional duration in seconds before stopping automatically |
-
 ## ff validate
 
 Parses and validates the YAML configuration file and its schema without starting any pipeline components.
@@ -58,12 +28,26 @@ Parses and validates the YAML configuration file and its schema without starting
 ff validate --config pipeline.yaml
 ```
 
+On success, `validate` exits with code `0` and prints:
+
+```
+  ready: default
+config ok: 1 pipeline(s)
+```
+
 ## ff dry-run
 
-Builds all pipeline objects (inputs, SQL transforms, and outputs) without starting active IO workers. This is stricter than `validate` because it compiles SQL queries against the Arrow schema, catching column name typos or type mismatches.
+Builds all pipeline objects (inputs, SQL transforms, and outputs) without starting active IO workers. `dry-run` runs the same validation path as `validate` — both build full pipelines and compile SQL queries against the Arrow schema to catch column name typos or type mismatches. The only difference is the success label: `dry run ok` instead of `config ok`.
 
 ```bash
 ff dry-run --config pipeline.yaml
+```
+
+On success, prints:
+
+```
+  ready: default
+dry run ok: 1 pipeline(s)
 ```
 
 ## ff send
@@ -76,5 +60,154 @@ cat app.log | ff send --config destination.yaml --format json
 
 | Option | Description |
 |--------|-------------|
-| `--format` | The log format (e.g., json, cri) |
-| `--service` | The service name to attach to logs |
+| `--config` | Destination YAML config file |
+| `--format` | Input format: `auto`, `cri`, `json`, `raw` (default: `auto`) |
+| `--service` | Set `service.name` on emitted records |
+| `--resource` | Add or override a resource attribute, repeatable: `--resource key=value` |
+
+See [Inputs](/configuration/inputs/) for stdin and piping patterns.
+
+## ff generate-json
+
+Generates synthetic JSON log lines for testing. Creates a file with stable, parseable records that exercise all column types.
+
+```bash
+ff generate-json 10000 logs.json
+```
+
+This creates 10,000 JSON log lines with fields: `timestamp`, `level`, `message`, `duration_ms`, `request_id`, `service`, `status`.
+
+| Option | Description |
+|--------|-------------|
+| `NUM_LINES` | Number of log lines to generate |
+| `OUTPUT_FILE` | Path to write the generated file |
+
+## ff blast
+
+Blasts generated synthetic log data into a destination sink to test throughput and network performance. This command uses the same core pipeline runtime but bypasses reading from disk or the network.
+
+```bash
+ff blast --destination otlp --endpoint http://127.0.0.1:4318/v1/logs
+```
+
+:::note
+In non-interactive mode `--destination` is required. In an interactive terminal, `blast` prompts for the destination if omitted.
+:::
+
+| Option | Description |
+|--------|-------------|
+| `--destination` | Sink type (required in non-interactive mode, prompted otherwise): `otlp`, `elasticsearch` (aliases: `elasticsearch_otlp`, `elasticsearch_bulk`), `loki`, `arrow_ipc`, `udp`, `tcp`, `null` |
+| `--endpoint` | Destination URL/address (required for all destinations except `null`) |
+| `--workers` | Worker threads (default: `2`) |
+| `--batch-lines` | Lines per batch (default: `5000`) |
+| `--duration-secs` | Stop automatically after N seconds (default: run until stopped) |
+| `--auth-bearer-token` | Bearer token auth header |
+| `--auth-header` | Extra header, repeatable: `--auth-header 'Authorization=ApiKey xyz'` |
+
+## ff devour
+
+Runs a built-in receiver that accepts incoming log traffic and drops it. Use this to isolate sender performance or test upstream clients in isolation.
+
+```bash
+ff devour                          # defaults to OTLP mode on 127.0.0.1:4318
+ff devour --mode tcp --listen 127.0.0.1:15140
+ff devour --mode elasticsearch_bulk --listen 127.0.0.1:9200
+```
+
+Unlike `blast`, `devour` does **not** require `--destination` — it accepts multiple built-in receiver modes.
+
+| Option | Description |
+|--------|-------------|
+| `--mode` | Receiver type: `otlp` (default), `http`, `elasticsearch_bulk`, `tcp`, `udp` |
+| `--listen` | Bind address (default depends on mode: OTLP → `127.0.0.1:4318`) |
+| `--duration-secs` | Stop automatically after N seconds (default: run until stopped) |
+
+## ff blackhole
+
+A convenience alias for `devour --mode otlp` with no other arguments.
+
+```bash
+ff blackhole                      # listens on 127.0.0.1:4318
+ff blackhole 0.0.0.0:14318       # custom bind address
+```
+
+`blackhole` and `devour` both accept the same OTLP mode defaults. Use whichever reads more naturally in your workflow.
+
+## ff effective-config
+
+Validates the config, expands environment variable placeholders, redacts secrets, and prints the final YAML. Use this to inspect how your config looks after expansion before deploying.
+
+```bash
+ff effective-config --config pipeline.yaml
+```
+
+## ff init
+
+Creates a starter `ffwd.yaml` in the current directory with a basic file → stdout pipeline.
+
+```bash
+ff init
+```
+
+The generated config includes comments pointing to the next steps. Refuses to overwrite an existing file.
+
+## ff wizard
+
+Interactive step-by-step config builder. Choose a use-case preset or assemble your own input and output.
+
+```bash
+ff wizard
+```
+
+`wizard` requires an interactive terminal (stdin and stdout must both be TTYs). It validates the generated config before writing, so bad column names or type mismatches are caught before you run.
+
+## ff completions
+
+Print shell completion scripts.
+
+```bash
+ff completions bash
+ff completions zsh
+ff completions fish
+ff completions powershell
+ff completions nushell
+```
+
+Redirect output into the appropriate location for your shell, e.g.:
+
+```bash
+ff completions bash >> ~/.bashrc
+```
+
+## Config file format
+
+All pipeline commands (`run`, `validate`, `dry-run`, `effective-config`) accept the same YAML config format:
+
+```yaml
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: ./logs.json
+        format: json
+    transform: |
+      SELECT * FROM logs WHERE level = 'ERROR'
+    outputs:
+      - type: stdout
+        format: console
+
+server:
+  diagnostics: 127.0.0.1:9090
+  log_level: info
+```
+
+See the [YAML configuration reference](/configuration/reference/) for all available input, transform, and output options.
+
+## Global options
+
+```bash
+ff --version     # Print version and exit
+ff --help        # Show top-level help and exit
+```
+
+Run `ff <command> --help` for subcommand-specific options.

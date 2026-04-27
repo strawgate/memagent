@@ -239,5 +239,7 @@ Component labels use `component:` prefix (e.g., `component:processor/scanner`). 
 - **Find example configs:** `examples/use-cases/` — 20 common patterns.
 - **Review active work/priorities:** open GitHub issues and PRs (`gh issue list --state open`, `gh pr list --state open`).
 - **Find library-specific patterns:** `dev-docs/references/` — Arrow, DataFusion, Tokio, OTLP, Kani.
+- **Find CLI reference:** `book/src/content/docs/cli/reference.mdx` — all `ff` subcommands with options.
+- **Start quickly:** `ff init` creates a starter `ffwd.yaml`; `ff wizard` is an interactive alternative.
 - **Find verification status:** `dev-docs/VERIFICATION.md` — per-module proof status.
 - **Find what breaks together:** `dev-docs/CHANGE_MAP.md` — co-change requirements.

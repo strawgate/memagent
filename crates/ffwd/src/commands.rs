@@ -346,9 +346,9 @@ fn cmd_init() -> Result<(), CliError> {
 # Docs: https://github.com/strawgate/fastforward
 
 # ── Quick start ─────────────────────────────────────────────
-# 1. Generate sample data:  ff generate-json 10000 sample.json
-# 2. Validate this config:  ff validate --config ffwd.yaml
-# 3. Run the pipeline:      ff run --config ffwd.yaml
+# 1. Generate test data:   ff generate-json 10000 logs.json
+# 2. Validate this config: ff validate --config ffwd.yaml
+# 3. Run the pipeline:     ff run --config ffwd.yaml
 #
 # For production, change the input path and output to your real
 # source/destination — see the examples at https://github.com/strawgate/fastforward/tree/main/examples/use-cases/
@@ -359,7 +359,7 @@ pipelines:
     # Tail a JSON log file and stream new lines as they appear.
     inputs:
       - type: file
-        path: ./sample.json
+        path: ./logs.json
         format: json
 
     # SQL transform (optional) — filter, reshape, or enrich logs.
@@ -396,12 +396,12 @@ pipelines:
     eprintln!();
     eprintln!("{}Try it now:{}", bold(), reset());
     eprintln!(
-        "  ff generate-json 10000 sample.json   {}# create sample data{}",
+        "  ff generate-json 10000 logs.json    {}# create sample data{}",
         dim(),
         reset()
     );
     eprintln!(
-        "  ff run --config ffwd.yaml           {}# run the pipeline{}",
+        "  ff run --config ffwd.yaml          {}# run the pipeline{}",
         dim(),
         reset()
     );
