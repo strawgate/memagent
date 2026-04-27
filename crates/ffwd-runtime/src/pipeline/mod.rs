@@ -172,13 +172,16 @@ struct IngestState {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum ControlMessage {
-    /// Graceful shutdown: stop accepting new data, drain processors, close exporters.
+    /// Graceful shutdown: stop accepting new data, cancel workers, drain processors.
     Shutdown,
-    /// Stop receivers but let in-flight data finish processing.
+    /// Intended to stop new ingress while allowing in-flight data to finish.
+    /// Current status: staged placeholder (logs only).
     DrainIngress,
-    /// Force flush all buffers now.
+    /// Trigger checkpoint persistence via the pipeline's [`flush()`][Pipeline::flush] method.
+    /// Current status: flushes checkpoint store only; does not evacuate I/O or worker buffers.
     Flush,
-    /// Hot reload configuration (future feature).
+    /// Intended hot-reload hook.
+    /// Current status: staged placeholder (logs only).
     Reconfigure,
 }
 
@@ -445,11 +448,20 @@ impl Pipeline {
     /// control loop. The pipeline loop prioritizes control messages over data,
     /// ensuring shutdown and drain commands are processed promptly.
     ///
-    /// Note: Only [`ControlMessage::Shutdown`] is currently functional;
-    /// [`ControlMessage::DrainIngress`], [`ControlMessage::Flush`], and
-    /// [`ControlMessage::Reconfigure`] log only and do not trigger pipeline actions.
-    pub fn control_tx(&self) -> tokio::sync::mpsc::UnboundedSender<ControlMessage> {
+    /// Note: [`ControlMessage::Shutdown`] is functional.
+    /// [`ControlMessage::Flush`] triggers checkpoint-store flush only.
+    /// [`ControlMessage::DrainIngress`] and [`ControlMessage::Reconfigure`]
+    /// are currently staged placeholders.
+    pub fn clone_control_sender(&self) -> tokio::sync::mpsc::UnboundedSender<ControlMessage> {
         self.control_tx.clone()
+    }
+
+    /// Returns a clone of the control channel sender.
+    ///
+    /// Alias for [`clone_control_sender`][Pipeline::clone_control_sender].
+    #[deprecated(since = "0.1.0", note = "use clone_control_sender() instead")]
+    pub fn control_tx(&self) -> tokio::sync::mpsc::UnboundedSender<ControlMessage> {
+        self.clone_control_sender()
     }
 
     /// Override the checkpoint flush interval (default 5s). For testing

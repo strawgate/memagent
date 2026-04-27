@@ -813,36 +813,40 @@ pub(super) fn io_worker_loop(
     let mut adaptive_poll =
         AdaptivePollController::new(input.source.get_cadence().adaptive_fast_polls_max);
     let safe_batch_target_bytes = batch_target_bytes.max(1);
+    let mut control_channel_closed = false;
 
     'io_loop: loop {
         // Check for control messages (non-blocking)
-        loop {
-            match control_rx.try_recv() {
-                Ok(msg) => match msg {
-                    super::ControlMessage::Shutdown => {
-                        tracing::debug!(input = %input_name, "io_worker: received shutdown control, entering drain mode");
-                        shutdown.cancel();
+        if !control_channel_closed {
+            loop {
+                match control_rx.try_recv() {
+                    Ok(msg) => match msg {
+                        super::ControlMessage::Shutdown => {
+                            tracing::debug!(input = %input_name, "io_worker: received shutdown control, entering drain mode");
+                            shutdown.cancel();
+                        }
+                        super::ControlMessage::DrainIngress => {
+                            tracing::debug!(input = %input_name, "io_worker: received drain ingress control");
+                        }
+                        super::ControlMessage::Flush => {
+                            tracing::debug!(input = %input_name, "io_worker: received flush control");
+                        }
+                        super::ControlMessage::Reconfigure => {
+                            tracing::debug!(input = %input_name, "io_worker: received reconfigure control");
+                        }
+                    },
+                    Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
+                        tracing::warn!(input = %input_name, lagged_messages = n, "io_worker: control channel lagged, skipping messages");
+                        continue;
                     }
-                    super::ControlMessage::DrainIngress => {
-                        tracing::debug!(input = %input_name, "io_worker: received drain ingress control");
+                    Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                        tracing::debug!(input = %input_name, "io_worker: control channel closed, skipping control message processing");
+                        control_channel_closed = true;
+                        break;
                     }
-                    super::ControlMessage::Flush => {
-                        tracing::debug!(input = %input_name, "io_worker: received flush control");
+                    Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
+                        break;
                     }
-                    super::ControlMessage::Reconfigure => {
-                        tracing::debug!(input = %input_name, "io_worker: received reconfigure control");
-                    }
-                },
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
-                    tracing::warn!(input = %input_name, lagged_messages = n, "io_worker: control channel lagged, skipping messages");
-                    continue;
-                }
-                Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
-                    tracing::debug!(input = %input_name, "io_worker: control channel closed, skipping control message processing");
-                    break;
-                }
-                Err(tokio::sync::broadcast::error::TryRecvError::Empty) => {
-                    break;
                 }
             }
         }
