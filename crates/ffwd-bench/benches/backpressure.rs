@@ -249,7 +249,7 @@ fn bench_backpressure_narrow(c: &mut Criterion) {
     let mut group = c.benchmark_group("backpressure_narrow");
 
     let n = 10_000;
-    let data = generators::gen_production_mixed(n, 42);
+    let data = generators::gen_narrow(n, 42);
     let data_bytes = Bytes::from(data);
 
     group.throughput(Throughput::Bytes(data_bytes.len() as u64));
