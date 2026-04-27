@@ -635,6 +635,7 @@ impl Pipeline {
         );
 
         let (control_tx, control_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (worker_control_tx, _worker_control_rx) = tokio::sync::broadcast::channel(16);
 
         Ok(Pipeline {
             name: name.to_string(),
@@ -661,6 +662,7 @@ impl Pipeline {
             pool_drain_timeout: DEFAULT_POOL_DRAIN_TIMEOUT,
             control_tx,
             control_rx,
+            worker_control_tx,
         })
     }
 }

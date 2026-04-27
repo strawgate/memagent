@@ -798,6 +798,7 @@ pub(super) fn io_worker_loop(
     input_name: Arc<str>,
     tx: mpsc::Sender<IoWorkItem>,
     metrics: Arc<PipelineMetrics>,
+    mut control_rx: tokio::sync::broadcast::Receiver<super::ControlMessage>,
     shutdown: CancellationToken,
     batch_target_bytes: usize,
     batch_timeout: Duration,
@@ -814,6 +815,25 @@ pub(super) fn io_worker_loop(
     let safe_batch_target_bytes = batch_target_bytes.max(1);
 
     'io_loop: loop {
+        // Check for control messages (non-blocking)
+        while let Ok(msg) = control_rx.try_recv() {
+            match msg {
+                super::ControlMessage::Shutdown => {
+                    tracing::debug!(input = %input_name, "io_worker: received shutdown control, entering drain mode");
+                    shutdown.cancel();
+                }
+                super::ControlMessage::DrainIngress => {
+                    tracing::debug!(input = %input_name, "io_worker: received drain ingress control");
+                }
+                super::ControlMessage::Flush => {
+                    tracing::debug!(input = %input_name, "io_worker: received flush control");
+                }
+                super::ControlMessage::Reconfigure => {
+                    tracing::debug!(input = %input_name, "io_worker: received reconfigure control");
+                }
+            }
+        }
+
         if shutdown.is_cancelled() {
             input.stats.set_health(reduce_component_health(
                 input.stats.health(),

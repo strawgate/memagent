@@ -42,12 +42,12 @@ use ffwd_arrow::Scanner;
 
 #[cfg(test)]
 use self::checkpoint_policy::TicketDisposition;
+use crate::pipeline::checkpoint_io::flush_checkpoint_with_retry;
 use crate::processor::Processor;
 use crate::transform::{Transform, create_transform};
 #[cfg(test)]
 use crate::worker_pool::AckItem;
 use crate::worker_pool::OutputWorkerPool;
-use crate::pipeline::checkpoint_io::flush_checkpoint_with_retry;
 use ffwd_diagnostics::diagnostics::{ComponentHealth, ComponentStats, PipelineMetrics};
 use ffwd_io::checkpoint::CheckpointStore;
 #[cfg(test)]
@@ -169,7 +169,7 @@ struct IngestState {
 ///
 /// Used by the control channel to send typed messages between pipeline components
 /// instead of relying on CancellationToken or implicit channel closure.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ControlMessage {
     /// Graceful shutdown: stop accepting new data, drain processors, close exporters.
     Shutdown,
@@ -228,6 +228,10 @@ pub struct Pipeline {
     control_tx: tokio::sync::mpsc::UnboundedSender<ControlMessage>,
     /// Control channel for receiving shutdown and control messages in the pipeline loop.
     control_rx: tokio::sync::mpsc::UnboundedReceiver<ControlMessage>,
+    /// Broadcast channel sender for workers (I/O, CPU).
+    /// Workers subscribe to receive all control messages.
+    /// Uses tokio::sync::broadcast for true broadcast semantics.
+    worker_control_tx: tokio::sync::broadcast::Sender<ControlMessage>,
 }
 
 impl Pipeline {
