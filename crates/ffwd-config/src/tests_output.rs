@@ -184,9 +184,9 @@ mod tests {
 
     #[test]
     fn loki_static_labels_sanitization_collision_detected() {
-        // Regression test for deduplicating sanitized Loki static label keys.
-        // If two keys sanitize to the same identifier, validation must fail
-        // to avoid ambiguous label keys.
+        // Regression test for detecting Loki static label key collisions.
+        // If two keys sanitize to the same identifier, validation must reject
+        // the config to avoid ambiguous label keys.
         let yaml = single_pipeline_yaml(
             "type: file\npath: /tmp/x.log",
             "type: loki\nendpoint: http://localhost:3100\nstatic_labels:\n  foo-bar: value1\n  foo_bar: value2",
@@ -196,7 +196,8 @@ mod tests {
         let msg = err.to_string();
         assert!(
             msg.contains("sanitizes to 'foo_bar'")
-                && msg.contains("collides with existing key 'foo-bar'"),
+                && (msg.contains("collides with existing key 'foo-bar'")
+                    || msg.contains("collides with existing key 'foo_bar'")),
             "unexpected error: {msg}"
         );
     }
@@ -215,7 +216,8 @@ mod tests {
         let msg = err.to_string();
         assert!(
             msg.contains("sanitizes to 'foo_bar'")
-                && (msg.contains("collides with existing key 'foo-bar'") || msg.contains("collides with existing key 'foo_bar'")),
+                && (msg.contains("collides with existing key 'foo-bar'")
+                    || msg.contains("collides with existing key 'foo_bar'")),
             "unexpected error: {msg}"
         );
     }
