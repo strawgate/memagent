@@ -191,10 +191,12 @@ mod tests {
             "type: file\npath: /tmp/x.log",
             "type: loki\nendpoint: http://localhost:3100\nstatic_labels:\n  foo-bar: value1\n  foo_bar: value2",
         );
-        let err = Config::load_str(yaml).expect_err("loki static_labels sanitization collision should fail");
+        let err = Config::load_str(yaml)
+            .expect_err("loki static_labels sanitization collision should fail");
         let msg = err.to_string();
         assert!(
-            msg.contains("sanitizes to 'foo_bar'") && msg.contains("collides with existing key 'foo-bar'"),
+            msg.contains("sanitizes to 'foo_bar'")
+                && msg.contains("collides with existing key 'foo-bar'"),
             "unexpected error: {msg}"
         );
     }
