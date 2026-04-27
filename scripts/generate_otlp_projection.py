@@ -428,16 +428,14 @@ def render_key_value_decoder(spec: dict) -> str:
     key_number = fields["key"]["number"]
     value_number = fields["value"]["number"]
     return f"""/// Decode a `KeyValue` record into raw key bytes and a typed value.
-///
-/// The key bytes are returned **unvalidated**. Callers must run UTF-8
-/// validation before using the key as a `&str`. Two known callers:
-///
-/// * `decode::resolve_record_attr_field` — validates only on attribute
-///   position-cache miss; cache hits are byte-equal to a previously
-///   validated key, so re-validation is redundant.
-/// * `decode::collect_resource_attrs` — validates eagerly because there
-///   is no per-position cache for resource attrs.
-pub(super) fn decode_key_value_wire(kv: &[u8]) -> Result<Option<(&[u8], WireAny<'_>)>, ProjectionError> {{
+    ///
+    /// The key bytes are returned **unvalidated**. Callers must run UTF-8
+    /// validation before using the key as a `&str`.
+    ///
+    /// Note: production code now uses `wire::decode_kv_inline` for performance.
+    /// This function is retained as the reference implementation for tests.
+    #[cfg(test)]
+    pub(super) fn decode_key_value_wire(kv: &[u8]) -> Result<Option<(&[u8], WireAny<'_>)>, ProjectionError> {{
     let mut key = &[][..];
     let mut value = None;
     super::for_each_field(kv, |field, field_value| {{

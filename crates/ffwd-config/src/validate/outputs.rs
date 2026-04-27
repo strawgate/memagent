@@ -111,17 +111,19 @@ fn validate_loki_labels(
         }
     }
 
-    // Detect intra-map collisions within static_labels after sanitization.
+    // Detect intra-map collisions within static_labels after sanitization deterministically.
     if let Some(static_labels) = static_labels {
+        let mut keys: Vec<&String> = static_labels.keys().collect();
+        keys.sort();
         let mut seen: HashMap<String, &str> = HashMap::new();
-        for key in static_labels.keys() {
+        for key in &keys {
             let sanitized = sanitize_identifier(key);
             if let Some(existing) = seen.get(&sanitized) {
                 return Err(ConfigError::Validation(format!(
                     "pipeline '{pipeline_name}' output '{label}': loki static_labels key '{key}' sanitizes to '{sanitized}' which collides with existing key '{existing}'"
                 )));
             }
-            seen.insert(sanitized, key.as_str());
+            seen.insert(sanitized, key);
         }
     }
 
