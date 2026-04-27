@@ -236,6 +236,17 @@ pub struct HostMetricsConfig {
     /// growth when hosts expose very large process tables. `None` uses the
     /// runtime default of 1024 rows per poll.
     pub max_process_rows_per_poll: Option<NonZeroUsize>,
+    /// List of network interfaces to include. `None` means include all.
+    ///
+    /// Applied before `exclude`. If both include and exclude are set,
+    /// an interface must match include to be considered, then excluded if
+    /// it also matches exclude.
+    pub network_include_interfaces: Option<Vec<String>>,
+    /// List of network interfaces to exclude. `None` means exclude none.
+    ///
+    /// Applied after `include`. If an interface matches both include and
+    /// exclude, it is excluded.
+    pub network_exclude_interfaces: Option<Vec<String>>,
 }
 
 impl Default for HostMetricsConfig {
@@ -248,6 +259,8 @@ impl Default for HostMetricsConfig {
             emit_signal_rows: true,
             max_rows_per_poll: 256,
             max_process_rows_per_poll: None,
+            network_include_interfaces: None,
+            network_exclude_interfaces: None,
         }
     }
 }

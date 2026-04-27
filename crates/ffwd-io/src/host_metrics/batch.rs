@@ -38,8 +38,15 @@ impl HostMetricsCommon {
         control: &ControlState,
         out: &mut Vec<SensorRow>,
         limit: usize,
+        config: &HostMetricsConfig,
     ) -> usize {
         let mut ifaces: Vec<_> = self.networks.iter().collect();
+        if let Some(include) = config.network_include_interfaces.as_ref() {
+            ifaces.retain(|(name, _)| include.iter().any(|iface| iface == *name));
+        }
+        if let Some(exclude) = config.network_exclude_interfaces.as_ref() {
+            ifaces.retain(|(name, _)| !exclude.iter().any(|iface| iface == *name));
+        }
         ifaces.sort_unstable_by_key(|(a, _)| *a);
 
         let mut emitted = 0usize;

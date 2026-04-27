@@ -31,6 +31,7 @@ const DEFAULT_GENERATOR_BATCH_SIZE: usize = 1000;
 // ── Platform-sensor defaults ───────────────────────────────────────────
 const DEFAULT_SENSOR_POLL_INTERVAL_MS: u64 = 10_000;
 const DEFAULT_SENSOR_CONTROL_RELOAD_INTERVAL_MS: u64 = 1_000;
+const DEFAULT_MAX_PROCESS_ROWS_PER_POLL: usize = 1024;
 
 /// Build a format processor from the config format.
 fn make_format(
@@ -796,7 +797,11 @@ fn build_host_metrics_config(
             .unwrap_or(256),
         max_process_rows_per_poll: cfg
             .and_then(|c| c.max_process_rows_per_poll)
+            .filter(|&n| n > 0)
+            .or(Some(DEFAULT_MAX_PROCESS_ROWS_PER_POLL))
             .and_then(std::num::NonZeroUsize::new),
+        network_include_interfaces: cfg.and_then(|c| c.network_include_interfaces.clone()),
+        network_exclude_interfaces: cfg.and_then(|c| c.network_exclude_interfaces.clone()),
     }
 }
 
@@ -1116,7 +1121,10 @@ mod tests {
     fn build_host_metrics_config_uses_defaults() {
         let cfg = build_host_metrics_config(None);
         assert_eq!(cfg.max_rows_per_poll, 256);
-        assert_eq!(cfg.max_process_rows_per_poll, None);
+        assert_eq!(
+            cfg.max_process_rows_per_poll,
+            Some(std::num::NonZeroUsize::new(DEFAULT_MAX_PROCESS_ROWS_PER_POLL).unwrap())
+        );
     }
 
     #[test]
@@ -1128,7 +1136,25 @@ mod tests {
         };
         let cfg = build_host_metrics_config(Some(&input));
         assert_eq!(cfg.max_rows_per_poll, 256);
-        assert_eq!(cfg.max_process_rows_per_poll, None);
+        assert_eq!(
+            cfg.max_process_rows_per_poll,
+            Some(std::num::NonZeroUsize::new(DEFAULT_MAX_PROCESS_ROWS_PER_POLL).unwrap())
+        );
+    }
+
+    #[test]
+    fn build_host_metrics_config_wires_network_filters() {
+        let input = HostMetricsInputConfig {
+            network_include_interfaces: Some(vec!["eth0".to_string()]),
+            network_exclude_interfaces: Some(vec!["lo".to_string()]),
+            ..HostMetricsInputConfig::default()
+        };
+        let cfg = build_host_metrics_config(Some(&input));
+        assert_eq!(
+            cfg.network_include_interfaces,
+            Some(vec!["eth0".to_string()])
+        );
+        assert_eq!(cfg.network_exclude_interfaces, Some(vec!["lo".to_string()]));
     }
 
     #[test]

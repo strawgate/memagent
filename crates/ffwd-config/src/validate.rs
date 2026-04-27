@@ -16,10 +16,11 @@ use crate::types::{
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use common::{MAX_READ_BUF_SIZE, output_label, output_path_for_feedback_loop, validation_message};
-use endpoints::{
-    validate_bind_addr, validate_endpoint_url, validate_iso8601_timestamp, validate_log_level,
+use common::{
+    MAX_READ_BUF_SIZE, output_label, output_path_for_feedback_loop, validate_bind_addr,
+    validation_message,
 };
+use endpoints::{validate_endpoint_url, validate_iso8601_timestamp, validate_log_level};
 use listeners::{normalize_unit_name, sensor_supported_families_csv, track_listen_addr_uniqueness};
 use outputs::validate_output_config;
 use paths::{
@@ -29,7 +30,7 @@ use paths::{
 use sensors::{is_sensor_family_supported, validate_sensor_event_type_filters};
 
 pub use common::sanitize_identifier;
-pub use endpoints::validate_host_port;
+pub use common::validate_host_port;
 
 impl Config {
     /// Validate the loaded configuration using a base path for relative paths.

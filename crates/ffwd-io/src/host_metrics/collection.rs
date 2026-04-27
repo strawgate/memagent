@@ -222,6 +222,7 @@ impl HostMetricsCommon {
                     poll_count,
                     family_idx,
                 ),
+                &self.cfg,
             );
             family_idx += 1;
         }
