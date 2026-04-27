@@ -182,6 +182,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn loki_static_labels_sanitization_collision_detected() {
+        // Regression test for deduplicating sanitized Loki static label keys.
+        // If two keys sanitize to the same identifier, validation must fail
+        // to avoid ambiguous label keys.
+        let yaml = single_pipeline_yaml(
+            "type: file\npath: /tmp/x.log",
+            "type: loki\nendpoint: http://localhost:3100\nstatic_labels:\n  foo-bar: value1\n  foo_bar: value2",
+        );
+        let err = Config::load_str(yaml).expect_err("loki static_labels sanitization collision should fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("sanitizes to 'foo_bar'") && msg.contains("collides with existing key 'foo-bar'"),
+            "unexpected error: {msg}"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Auth tests
     // -----------------------------------------------------------------------
