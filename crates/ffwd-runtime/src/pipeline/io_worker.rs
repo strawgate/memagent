@@ -837,7 +837,6 @@ pub(super) fn io_worker_loop(
                     },
                     Err(tokio::sync::broadcast::error::TryRecvError::Lagged(n)) => {
                         tracing::warn!(input = %input_name, lagged_messages = n, "io_worker: control channel lagged, skipping messages");
-                        continue;
                     }
                     Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
                         tracing::debug!(input = %input_name, "io_worker: control channel closed, skipping control message processing");
