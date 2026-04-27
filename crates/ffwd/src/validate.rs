@@ -167,13 +167,18 @@ pub(crate) fn validate_generated_config_read_only(
 
 fn validate_transform_probe_read_only(
     transform: &mut ffwd::transform::SqlTransform,
+    source_metadata: ffwd_config::SourceMetadataStyle,
 ) -> Result<(), String> {
-    use arrow::array::{ArrayRef, StringArray};
+    use arrow::array::{ArrayRef, StringArray, StringViewArray, UInt64Array};
     use arrow::datatypes::{DataType, Field, Schema};
     use arrow::record_batch::RecordBatch;
+    use ffwd_config::SourceMetadataStyle;
+    use ffwd_types::field_names::{ECS_FILE_PATH, OTEL_LOG_FILE_PATH, SOURCE_ID, VECTOR_FILE};
 
     let scan_config = transform.scan_config();
-    let fields: Vec<Field> = if scan_config.extract_all || scan_config.wanted_fields.is_empty() {
+
+    let mut fields: Vec<Field> = if scan_config.extract_all || scan_config.wanted_fields.is_empty()
+    {
         vec![
             Field::new("body", DataType::Utf8, true),
             Field::new("level", DataType::Utf8, true),
@@ -187,11 +192,34 @@ fn validate_transform_probe_read_only(
             .collect()
     };
 
-    let schema = Arc::new(Schema::new(fields.clone()));
-    let arrays: Vec<ArrayRef> = fields
+    let mut arrays: Vec<ArrayRef> = fields
         .iter()
         .map(|_| Arc::new(StringArray::from(vec![Some("x")])) as ArrayRef)
         .collect();
+
+    if source_metadata == SourceMetadataStyle::Fastforward {
+        fields.push(Field::new(SOURCE_ID, DataType::UInt64, true));
+        arrays.push(Arc::new(UInt64Array::from(vec![Some(1u64)])) as ArrayRef);
+    }
+
+    match source_metadata {
+        SourceMetadataStyle::Ecs => {
+            fields.push(Field::new(ECS_FILE_PATH, DataType::Utf8View, true));
+            arrays.push(Arc::new(StringViewArray::from(vec![Some("/test/path.log")])) as ArrayRef);
+        }
+        SourceMetadataStyle::Otel => {
+            fields.push(Field::new(OTEL_LOG_FILE_PATH, DataType::Utf8View, true));
+            arrays.push(Arc::new(StringViewArray::from(vec![Some("/test/path.log")])) as ArrayRef);
+        }
+        SourceMetadataStyle::Vector => {
+            fields.push(Field::new(VECTOR_FILE, DataType::Utf8View, true));
+            arrays.push(Arc::new(StringViewArray::from(vec![Some("/test/path.log")])) as ArrayRef);
+        }
+        SourceMetadataStyle::None | SourceMetadataStyle::Fastforward => {}
+        _ => {}
+    }
+
+    let schema = Arc::new(Schema::new(fields));
     let batch = RecordBatch::try_new(schema, arrays)
         .map_err(|e| format!("failed to build probe batch: {e}"))?;
     transform
@@ -214,6 +242,22 @@ const GENERATOR_LOGS_SIMPLE_COLUMNS: &[&str] = &[
 /// `_stream`) plus the plain-text fallback field (`body`).
 const CRI_INTERNAL_COLUMNS: &[&str] = &["_timestamp", "_stream", "body"];
 
+/// CRI columns when source_metadata is fastforward.
+/// Uses `__source_id` from `ffwd_types::field_names::SOURCE_ID`.
+const CRI_WITH_FASTFORWARD: &[&str] = &["_timestamp", "_stream", "body", "__source_id"];
+
+/// CRI columns when source_metadata is ecs.
+/// Uses `file.path` from `ffwd_types::field_names::ECS_FILE_PATH`.
+const CRI_WITH_ECS: &[&str] = &["_timestamp", "_stream", "body", "file.path"];
+
+/// CRI columns when source_metadata is otel.
+/// Uses `log.file.path` from `ffwd_types::field_names::OTEL_LOG_FILE_PATH`.
+const CRI_WITH_OTEL: &[&str] = &["_timestamp", "_stream", "body", "log.file.path"];
+
+/// CRI columns when source_metadata is vector.
+/// Uses `file` from `ffwd_types::field_names::VECTOR_FILE`.
+const CRI_WITH_VECTOR: &[&str] = &["_timestamp", "_stream", "body", "file"];
+
 /// Describes how strictly column validation should be applied.
 enum KnownColumnsMode {
     /// All columns in the input are known — any column not in the list is
@@ -227,7 +271,10 @@ enum KnownColumnsMode {
 }
 
 fn known_input_columns_read_only(input_cfg: &ffwd_config::InputConfig) -> Option<KnownColumnsMode> {
-    use ffwd_config::{Format, GeneratorComplexityConfig, GeneratorProfileConfig, InputTypeConfig};
+    use ffwd_config::{
+        Format, GeneratorComplexityConfig, GeneratorProfileConfig, InputTypeConfig,
+        SourceMetadataStyle,
+    };
 
     match &input_cfg.type_config {
         // Generator logs/simple has a stable built-in schema. Other profiles
@@ -251,14 +298,30 @@ fn known_input_columns_read_only(input_cfg: &ffwd_config::InputConfig) -> Option
         }
         // File/stdin inputs with an explicit CRI format have known internal
         // columns attached from the CRI sidecar. JSON body keys are dynamic,
-        // so we only validate `_`-prefixed names.
+        // so we only validate `_`-prefixed names. Include source metadata columns
+        // based on configured style.
         InputTypeConfig::File(_) | InputTypeConfig::Stdin(_) => {
-            match input_cfg.format.as_ref() {
-                Some(Format::Cri) => Some(KnownColumnsMode::InternalOnly(CRI_INTERNAL_COLUMNS)),
-                // JSON and raw formats have fully dynamic schemas — no
-                // internal columns to validate.
-                _ => None,
-            }
+            let (base_cols, style) = match input_cfg.format.as_ref() {
+                Some(Format::Cri) => (CRI_INTERNAL_COLUMNS, input_cfg.source_metadata),
+                _ => (&[][..], SourceMetadataStyle::None),
+            };
+
+            let mode = match style {
+                SourceMetadataStyle::None => {
+                    if base_cols.is_empty() {
+                        return None;
+                    }
+                    KnownColumnsMode::InternalOnly(base_cols)
+                }
+                SourceMetadataStyle::Fastforward => {
+                    KnownColumnsMode::InternalOnly(CRI_WITH_FASTFORWARD)
+                }
+                SourceMetadataStyle::Ecs => KnownColumnsMode::InternalOnly(CRI_WITH_ECS),
+                SourceMetadataStyle::Otel => KnownColumnsMode::InternalOnly(CRI_WITH_OTEL),
+                SourceMetadataStyle::Vector => KnownColumnsMode::InternalOnly(CRI_WITH_VECTOR),
+                _ => return None,
+            };
+            Some(mode)
         }
         _ => None,
     }
@@ -580,7 +643,7 @@ fn validate_pipeline_read_only(
                     .map_err(|e| format!("input '{input_name}': enrichment error: {e}"))?;
             }
         }
-        validate_transform_probe_read_only(&mut transform)
+        validate_transform_probe_read_only(&mut transform, input_cfg.source_metadata)
             .map_err(|e| format!("input '{input_name}': {e}"))?;
     }
 
@@ -1078,5 +1141,61 @@ mod tests {
             "yaml examples must parse and validate read-only:\n{}",
             failures.join("\n")
         );
+    }
+
+    #[test]
+    fn probe_includes_source_metadata_columns() {
+        use ffwd_config::SourceMetadataStyle;
+
+        let styles_and_expected_columns: &[(SourceMetadataStyle, &[&str])] = &[
+            (SourceMetadataStyle::None, &[]),
+            (SourceMetadataStyle::Fastforward, &["__source_id"]),
+            (SourceMetadataStyle::Ecs, &["file.path"]),
+            (SourceMetadataStyle::Otel, &["log.file.path"]),
+            (SourceMetadataStyle::Vector, &["file"]),
+        ];
+
+        for (style, expected_columns) in styles_and_expected_columns {
+            let yaml = format!(
+                r#"
+pipelines:
+  test:
+    inputs:
+      - type: file
+        path: /tmp/logs.json
+        format: cri
+        source_metadata: {}
+    outputs:
+      - type: stdout
+"#,
+                match style {
+                    SourceMetadataStyle::None => "none",
+                    SourceMetadataStyle::Fastforward => "fastforward",
+                    SourceMetadataStyle::Ecs => "ecs",
+                    SourceMetadataStyle::Otel => "otel",
+                    SourceMetadataStyle::Vector => "vector",
+                    _ => "none",
+                }
+            );
+
+            let config = ffwd_config::Config::load_str(&yaml).expect("valid config");
+            let mut failures = Vec::new();
+
+            validate_pipelines_read_only(
+                &config,
+                None,
+                |_name| {},
+                |err| {
+                    failures.push(err.to_string());
+                },
+            );
+
+            assert!(
+                failures.is_empty(),
+                "source_metadata {:?} failed validation: {:?}",
+                style,
+                failures
+            );
+        }
     }
 }
