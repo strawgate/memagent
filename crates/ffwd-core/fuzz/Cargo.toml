@@ -8,7 +8,7 @@ edition = "2021"
 cargo-fuzz = true
 
 [dependencies]
-arrow = { version = "54", default-features = false }
+arrow = { version = "58", default-features = false }
 bytes = "1"
 ffwd-arrow = { path = "../../ffwd-arrow" }
 ffwd-core = { path = ".." }

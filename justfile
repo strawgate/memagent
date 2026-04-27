@@ -524,6 +524,21 @@ bench-ceiling:
 bench-full:
     cargo bench -p ffwd-bench --bench pipeline --bench output_encode --bench full_chain --bench builder_compare --bench batch_formation --bench file_io --bench throughput_ceiling
 
+# Backpressure benchmarks: measures pipeline throughput degradation under output latency.
+# See backpressure.rs for baseline workflow (save/compare).
+bench-backpressure:
+    cargo bench -p ffwd-bench --bench backpressure
+
+# Save initial backpressure baseline (run once after merging or major changes):
+#   just bench-backpressure-save
+# Then compare in subsequent runs:
+#   just bench-backpressure-compare
+bench-backpressure-save:
+    cargo bench -p ffwd-bench --bench backpressure --save-baseline initial
+
+bench-backpressure-compare:
+    cargo bench -p ffwd-bench --bench backpressure --baseline initial
+
 # Run system-level benchmarks (pipeline, contention, backpressure — requires running services)
 bench-system:
     @echo "System-level benchmarks: pipeline end-to-end with real I/O"
