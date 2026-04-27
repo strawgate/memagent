@@ -17,6 +17,7 @@ targets = [
     "fuzz_scanner_sink",
     "fuzz_scanner_transform",
     "fuzz_cri",
+    "fuzz_udf",
 ]
 
 [crates.ffwd_io_fuzz]

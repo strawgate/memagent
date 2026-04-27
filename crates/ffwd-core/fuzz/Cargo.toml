@@ -59,3 +59,8 @@ doc = false
 name = "fuzz_cri"
 path = "fuzz_targets/cri.rs"
 doc = false
+
+[[bin]]
+name = "fuzz_udf"
+path = "fuzz_targets/fuzz_udf.rs"
+doc = false

@@ -7,7 +7,7 @@
 //! panic inside DataFusion. Errors (returned as `Err(String)`) are expected
 //! and acceptable — only panics are failures.
 //!
-//! Note: `SqlTransform::execute` creates a single-threaded tokio runtime
+//! Note: `SqlTransform::execute_blocking` creates a temporary tokio runtime
 //! internally, making this target slower than the pure scanner targets.
 //! Run it with a reduced corpus or a time limit, e.g.:
 //!
@@ -16,10 +16,10 @@
 //! ```
 
 #![no_main]
-use libfuzzer_sys::fuzz_target;
-use ffwd_core::scan_config::ScanConfig;
 use ffwd_arrow::scanner::Scanner;
+use ffwd_core::scan_config::ScanConfig;
 use ffwd_transform::SqlTransform;
+use libfuzzer_sys::fuzz_target;
 
 fn run_transform(data: &[u8], validate_utf8: bool) {
     let mut scanner = Scanner::new(ScanConfig {
@@ -27,13 +27,17 @@ fn run_transform(data: &[u8], validate_utf8: bool) {
         extract_all: true,
         line_field_name: None,
         validate_utf8,
+        row_predicate: None,
     });
-    let Ok(batch) = scanner.scan_detached(bytes::Bytes::copy_from_slice(data)) else { return; };
+    let Ok(batch) = scanner.scan_detached(bytes::Bytes::copy_from_slice(data)) else {
+        return;
+    };
 
     // SELECT * passes every column through DataFusion unchanged.
     if let Ok(mut transform) = SqlTransform::new("SELECT * FROM logs") {
+        // `execute_blocking` creates a temporary tokio runtime if needed.
         // Errors are fine; panics are not.
-        let _ = transform.execute(batch);
+        let _ = transform.execute_blocking(batch);
     }
 }
 
