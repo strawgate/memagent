@@ -18,7 +18,7 @@
 //! # Usage
 //!
 //! ```rust,ignore
-//! let sink = PipelinedSink::new(serializer, writer, PipelineConfig::default());
+//! let sink = PipelinedSink::new(serializer, writer, stats, PipelineConfig::default())?;
 //! // sink implements Sink trait — use it in the worker pool as normal
 //! ```
 
@@ -148,13 +148,20 @@ impl<S: BatchSerializer> PipelinedSink<S> {
     /// Create a new pipelined sink.
     ///
     /// Spawns a dedicated OS thread for the writer immediately.
-    /// Returns an error if the thread cannot be spawned.
+    /// Returns an error if the thread cannot be spawned or config is invalid.
     pub fn new(
         serializer: S,
         writer: impl BatchWriter,
         stats: Arc<ComponentStats>,
         config: PipelineConfig,
     ) -> io::Result<Self> {
+        if config.num_buffers == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "PipelineConfig::num_buffers must be >= 1",
+            ));
+        }
+
         let (filled_tx, filled_rx) = mpsc::sync_channel::<WriterMsg>(config.num_buffers);
         let (empty_tx, empty_rx) = mpsc::sync_channel::<Vec<u8>>(config.num_buffers);
         let (error_tx, error_rx) = mpsc::sync_channel::<WriteError>(config.num_buffers);
@@ -396,10 +403,16 @@ impl FileWriter {
     /// Create a new file writer, applying platform-specific hints.
     pub fn new(file: std::fs::File) -> Self {
         Self::apply_platform_hints(&file);
+
+        // Initialize bytes_written to the current file position so that
+        // FADV_DONTNEED offsets are correct when appending to existing files.
+        #[cfg(target_os = "linux")]
+        let bytes_written = file.metadata().map(|m| m.len()).unwrap_or(0);
+
         Self {
             file,
             #[cfg(target_os = "linux")]
-            bytes_written: 0,
+            bytes_written,
         }
     }
 

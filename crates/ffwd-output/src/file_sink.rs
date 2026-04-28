@@ -17,8 +17,8 @@ use ffwd_types::field_names;
 /// Append-only file sink with pipelined serialization and I/O.
 ///
 /// Serialization (JSON/text) runs on the tokio worker thread while a dedicated
-/// OS writer thread handles file I/O. This overlaps CPU and I/O for ~40% higher
-/// sustained throughput at volume.
+/// OS writer thread handles file I/O. This overlaps CPU and I/O for ~21% higher
+/// sustained throughput at volume (benchmarked on Apple M4).
 ///
 /// Uses the same row serialization logic as `StdoutSink` so `stdout` and
 /// `file` stay behaviorally aligned.
