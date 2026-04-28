@@ -338,22 +338,144 @@ fn writer_thread_loop(
 // FileWriter
 // ---------------------------------------------------------------------------
 
+/// Pre-allocation chunk size: 64 MB.
+///
+/// When the file is opened (or needs more space), we ask the OS to reserve
+/// this much contiguous space.  This avoids per-write metadata updates on
+/// ext4/xfs/APFS that slow down sequential extending writes.
+const PREALLOC_BYTES: i64 = 64 * 1024 * 1024;
+
 /// A [`BatchWriter`] that writes to a file using blocking std::fs I/O.
+///
+/// Applies platform-specific optimizations on construction:
+///
+/// | Platform | Optimization |
+/// |----------|-------------|
+/// | Linux | `fallocate` pre-allocation, `POSIX_FADV_DONTNEED` after writes |
+/// | macOS | `F_PREALLOCATE`, `F_NOCACHE` (bypass UBC for written pages) |
+/// | Windows | (standard `write_all` — no extra APIs yet) |
 pub struct FileWriter {
     file: std::fs::File,
+    /// Cumulative bytes written — used for `FADV_DONTNEED` offset tracking.
+    #[cfg(target_os = "linux")]
+    bytes_written: u64,
 }
 
 impl FileWriter {
-    /// Create a new file writer from a std::fs::File.
+    /// Create a new file writer, applying platform-specific hints.
     pub fn new(file: std::fs::File) -> Self {
-        Self { file }
+        Self::apply_platform_hints(&file);
+        Self {
+            file,
+            #[cfg(target_os = "linux")]
+            bytes_written: 0,
+        }
+    }
+
+    /// Apply one-time platform-specific optimizations to the file descriptor.
+    fn apply_platform_hints(file: &std::fs::File) {
+        #[cfg(target_os = "linux")]
+        Self::apply_linux_hints(file);
+        #[cfg(target_os = "macos")]
+        Self::apply_macos_hints(file);
+    }
+
+    /// Linux: pre-allocate space with `fallocate` and set sequential advice.
+    #[cfg(target_os = "linux")]
+    fn apply_linux_hints(file: &std::fs::File) {
+        use std::os::unix::io::AsRawFd;
+        let fd = file.as_raw_fd();
+
+        // Pre-allocate disk space to avoid metadata updates on every
+        // extending write.  KEEP_SIZE means the visible file size is not
+        // changed — only the underlying blocks are reserved.
+        // SAFETY: fd is valid (owned by `file`), flags and offsets are correct.
+        // fallocate failure is benign (returns -1, we ignore).
+        unsafe {
+            let _ = libc::fallocate(fd, libc::FALLOC_FL_KEEP_SIZE, 0, PREALLOC_BYTES);
+        }
+
+        // Tell the kernel we're doing sequential writes so it can optimize
+        // read-ahead and page cache management.
+        // SAFETY: fd is valid (owned by `file`), POSIX_FADV_SEQUENTIAL is an
+        // advisory hint that cannot cause UB regardless of return value.
+        unsafe {
+            let _ = libc::posix_fadvise(fd, 0, 0, libc::POSIX_FADV_SEQUENTIAL);
+        }
+    }
+
+    /// macOS: set `F_NOCACHE` and pre-allocate with `F_PREALLOCATE`.
+    #[cfg(target_os = "macos")]
+    fn apply_macos_hints(file: &std::fs::File) {
+        use std::os::unix::io::AsRawFd;
+        let fd = file.as_raw_fd();
+
+        // F_NOCACHE: bypass the Unified Buffer Cache for this fd.
+        // Written pages won't linger in memory — good for a forwarder that
+        // produces write-only data consumers won't re-read via this fd.
+        // SAFETY: fd is valid (owned by `file`), F_NOCACHE with arg=1 is a
+        // hint that cannot cause UB regardless of return value.
+        unsafe {
+            let _ = libc::fcntl(fd, libc::F_NOCACHE, 1i32);
+        }
+
+        // F_PREALLOCATE: reserve contiguous disk space.
+        // This is macOS's equivalent of Linux fallocate — it avoids
+        // fragmentation and repeated metadata updates during sequential
+        // extending writes.
+        // SAFETY: fd is valid (owned by `file`), fstore_t is zero-initialized
+        // then fully populated.  fcntl(F_PREALLOCATE) reads the struct by
+        // pointer and never writes through it.
+        unsafe {
+            let mut store: libc::fstore_t = std::mem::zeroed();
+            store.fst_flags = libc::F_ALLOCATECONTIG;
+            store.fst_posmode = libc::F_PEOFPOSMODE;
+            store.fst_offset = 0;
+            store.fst_length = PREALLOC_BYTES;
+            let ret = libc::fcntl(fd, libc::F_PREALLOCATE, &store);
+            if ret == -1 {
+                // Contiguous allocation failed — retry allowing fragments.
+                store.fst_flags = libc::F_ALLOCATEALL;
+                let _ = libc::fcntl(fd, libc::F_PREALLOCATE, &store);
+            }
+        }
+    }
+
+    /// Linux: advise the kernel to drop page cache for already-written data.
+    ///
+    /// This prevents the forwarder from bloating the host's page cache with
+    /// write-only log data that will never be re-read by this process.
+    #[cfg(target_os = "linux")]
+    fn advise_dontneed(&self, offset: u64, len: u64) {
+        use std::os::unix::io::AsRawFd;
+        let fd = self.file.as_raw_fd();
+        // SAFETY: fd is valid (owned by `self.file`), offset and len describe
+        // already-written data, POSIX_FADV_DONTNEED is an advisory hint.
+        unsafe {
+            let _ = libc::posix_fadvise(
+                fd,
+                offset as libc::off_t,
+                len as libc::off_t,
+                libc::POSIX_FADV_DONTNEED,
+            );
+        }
     }
 }
 
 impl BatchWriter for FileWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<()> {
         use std::io::Write;
-        self.file.write_all(buf)
+        self.file.write_all(buf)?;
+
+        // Tell the OS to drop the pages we just wrote — we won't re-read them.
+        #[cfg(target_os = "linux")]
+        {
+            let offset = self.bytes_written;
+            self.bytes_written += buf.len() as u64;
+            self.advise_dontneed(offset, buf.len() as u64);
+        }
+
+        Ok(())
     }
 
     fn flush(&mut self) -> io::Result<()> {

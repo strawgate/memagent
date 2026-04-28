@@ -16,6 +16,7 @@ ffwd-core = { version = "0.1.0", path = "../ffwd-core" }
 ffwd-otap-proto = { version = "0.1.0", path = "../ffwd-otap-proto" }
 ffwd-types = { version = "0.1.0", path = "../ffwd-types" }
 flate2 = "1"
+libc = { workspace = true }
 httpdate = "1"
 itoa = "1"
 memchr = "2"
