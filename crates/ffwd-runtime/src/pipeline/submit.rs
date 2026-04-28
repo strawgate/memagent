@@ -152,11 +152,11 @@ impl Pipeline {
         // Track in-flight before yielding to pool submission so ack handling
         // cannot observe a finished batch without a corresponding increment.
         //
-        // NOTE: inflight_batches is decremented in apply_pool_ack (run.rs:366).
-        // Early-return paths (Hold, PermanentError, ZeroRow, Reject, Fatal,
-        // failpoint) never call pool.submit, so apply_pool_ack is never reached
-        // for those batches and the counter is not decremented. This causes
-        // metric drift; see issue #2475 sub-item.
+        // NOTE: early-return paths above (Hold, PermanentError, ZeroRow, Reject,
+        // Fatal, failpoint) all exit before this increment, so they never touch
+        // inflight_batches. Metric drift can only occur if a batch that reaches
+        // pool.submit below fails to subsequently call apply_pool_ack (the
+        // decrement in run.rs); see issue #2475 sub-item.
         self.metrics
             .inflight_batches
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);

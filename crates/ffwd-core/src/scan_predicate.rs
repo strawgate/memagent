@@ -132,8 +132,7 @@ impl ScanPredicate {
                     .collect();
                 match remaining.len() {
                     0 => None,
-                    // Invariant: `remaining.len() == 1` guarantees exactly one element in the iterator.
-                    1 => Some(remaining.into_iter().next().expect("len checked")),
+                    1 => remaining.into_iter().next(),
                     _ => Some(ScanPredicate::And(remaining)),
                 }
             }
