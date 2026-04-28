@@ -87,24 +87,15 @@ fn first_escape_pos(bytes: &[u8]) -> usize {
         buf.copy_from_slice(&bytes[i..i + 8]);
         let chunk = u64::from_le_bytes(buf);
 
-        // Detect bytes < 0x20 (control characters):
-        // A byte < 0x20 means the high 3 bits of the byte are 000.
-        // We check: NOT(byte | 0x1F) has its high bit set iff byte < 0x20.
-        // Simplified: (0x80 - (byte & 0x7F)) & !byte & 0x80 per lane.
-        // Actually, simplest correct approach: for each byte b,
-        // b < 0x20 iff (b - 1) & !b & 0x80 is true... but that doesn't work for 0.
-        // Use: subtract 0x20 from each byte, then check if it borrowed (underflowed).
-        //
-        // Detect byte == X: XOR with broadcast X, then check for zero bytes.
-        // Zero-byte detection: (v - 0x0101...) & !v & 0x8080... != 0
+        // SWAR formulas used below:
+        //   has_byte_lt(v, N) = ((v - ones*N) & ~v & lo_mask) != 0
+        //   has_byte_eq(v, X) = has_zero_byte(v ^ ones*X)
+        //   has_zero_byte(v)  = ((v - ones) & ~v & lo_mask) != 0
 
         let lo_mask = 0x8080_8080_8080_8080u64;
         let ones = 0x0101_0101_0101_0101u64;
 
-        // Check for control chars (< 0x20):
-        // For unsigned subtraction: if any byte < 0x20, then (byte - 0x20) wraps.
-        // We detect this via: has_value_lt(chunk, 0x20)
-        // = ((chunk - ones * 0x20) & !chunk & lo_mask) != 0
+        // Check for control chars (< 0x20): has_byte_lt(chunk, 0x20)
         let ctrl = (chunk.wrapping_sub(ones.wrapping_mul(0x20))) & !chunk & lo_mask;
 
         // Check for '"' (0x22): XOR with broadcast 0x22, detect zero bytes
@@ -642,6 +633,8 @@ pub fn write_batch_json_resolved(
     }
     Ok(num_rows)
 }
+
+/// Write a single row as a JSON object into `out`.
 ///
 /// For fields backed by struct conflict columns or multiple flat typed columns,
 /// the first non-null variant (by `json_variants` ordering) is used. If all
