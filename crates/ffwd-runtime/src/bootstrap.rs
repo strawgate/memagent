@@ -57,6 +57,8 @@ pub struct RunOptions<'a> {
     pub json_logs_for_stderr: bool,
     /// Optional auto-shutdown duration for benchmarking helpers.
     pub auto_shutdown_after: Option<Duration>,
+    /// Watch config file for changes and auto-reload.
+    pub watch_config: bool,
 }
 
 #[allow(clippy::ignored_unit_patterns, clippy::needless_continue)]
@@ -182,6 +184,60 @@ pub async fn run_pipelines(
         });
     }
 
+    // File watcher: monitor config file for changes and trigger reload.
+    if options.watch_config {
+        let config_path = PathBuf::from(options.config_path);
+        let reload_tx_for_watcher = reload_tx.clone();
+        let shutdown_for_watcher = shutdown.clone();
+        std::thread::Builder::new()
+            .name("config-watcher".into())
+            .spawn(move || {
+                use notify::{RecursiveMode, Watcher, recommended_watcher};
+                let (tx, rx) = std::sync::mpsc::channel();
+                let mut watcher = match recommended_watcher(move |res| {
+                    let _ = tx.send(res);
+                }) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        tracing::error!(error = %e, "config watcher: failed to create");
+                        return;
+                    }
+                };
+                if let Err(e) = watcher.watch(&config_path, RecursiveMode::NonRecursive) {
+                    tracing::error!(error = %e, path = %config_path.display(), "config watcher: failed to watch");
+                    return;
+                }
+                tracing::info!(path = %config_path.display(), "config watcher: watching for changes");
+                loop {
+                    if shutdown_for_watcher.is_cancelled() {
+                        break;
+                    }
+                    match rx.recv_timeout(Duration::from_millis(500)) {
+                        Ok(Ok(event)) => {
+                            if event.kind.is_modify() || event.kind.is_create() {
+                                // Debounce: wait for writes to settle.
+                                std::thread::sleep(Duration::from_millis(500));
+                                // Drain any additional events that arrived during debounce.
+                                while rx.try_recv().is_ok() {}
+                                tracing::info!("config watcher: file changed, triggering reload");
+                                let _ = reload_tx_for_watcher.try_send(());
+                            }
+                        }
+                        Ok(Err(e)) => {
+                            tracing::warn!(error = %e, "config watcher: watch error");
+                        }
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                    }
+                }
+            })
+            .map_err(|e| {
+                RuntimeError::Io(io::Error::other(format!(
+                    "failed to spawn config-watcher: {e}"
+                )))
+            })?;
+    }
+
     let meter_provider = build_meter_provider(&config, use_color)?;
     let meter = meter_provider.meter("ffwd");
 
@@ -258,6 +314,7 @@ pub async fn run_pipelines(
         if first_run && let Some(ref addr) = current_config.server.diagnostics {
             let mut server = ffwd_diagnostics::diagnostics::DiagnosticsServer::new(addr);
             server.set_config(options.config_path, options.config_yaml);
+            server.set_reload_trigger(reload_tx.clone());
             let expose_config = std::env::var("FFWD_UNSAFE_EXPOSE_CONFIG")
                 .or_else(|_| {
                     std::env::var("LOGFWD_UNSAFE_EXPOSE_CONFIG").inspect(|_| {

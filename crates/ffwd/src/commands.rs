@@ -23,17 +23,20 @@ use crate::validate::{
 
 pub(crate) async fn run_command(command: Commands) -> Result<(), CliError> {
     match command {
-        Commands::Run { config } => {
+        Commands::Run {
+            config,
+            watch_config,
+        } => {
             let config_path = resolve_config_path(config.as_deref())?;
-            cmd_run(&config_path, false, false).await
+            cmd_run(&config_path, false, false, watch_config).await
         }
         Commands::Validate { config } => {
             let config_path = resolve_config_path(config.as_deref())?;
-            cmd_run(&config_path, true, false).await
+            cmd_run(&config_path, true, false, false).await
         }
         Commands::DryRun { config } => {
             let config_path = resolve_config_path(config.as_deref())?;
-            cmd_run(&config_path, false, true).await
+            cmd_run(&config_path, false, true, false).await
         }
         Commands::Send(args) => cmd_send(args).await,
         Commands::Blast(args) => cmd_blast(args).await,
@@ -57,7 +60,12 @@ pub(crate) async fn run_command(command: Commands) -> Result<(), CliError> {
 // Individual commands
 // ---------------------------------------------------------------------------
 
-async fn cmd_run(config_path: &str, validate_only: bool, dry_run: bool) -> Result<(), CliError> {
+async fn cmd_run(
+    config_path: &str,
+    validate_only: bool,
+    dry_run: bool,
+    watch_config: bool,
+) -> Result<(), CliError> {
     let config_yaml = std::fs::read_to_string(config_path)
         .map_err(|e| CliError::Config(format!("cannot read {config_path}: {e}")))?;
     let base_path = std::path::Path::new(config_path).parent();
@@ -73,7 +81,15 @@ async fn cmd_run(config_path: &str, validate_only: bool, dry_run: bool) -> Resul
         return validate_pipelines(&config, dry_run, base_path);
     }
 
-    run_pipelines(config, base_path, config_path, &config_yaml, None).await
+    run_pipelines(
+        config,
+        base_path,
+        config_path,
+        &config_yaml,
+        None,
+        watch_config,
+    )
+    .await
 }
 
 async fn cmd_send(args: SendArgs) -> Result<(), CliError> {
@@ -97,7 +113,7 @@ async fn cmd_send(args: SendArgs) -> Result<(), CliError> {
     let config = ffwd_config::Config::load_str_with_base_path(&runnable_yaml, base_path)
         .map_err(|e| CliError::Config(e.to_string()))?;
 
-    run_pipelines(config, base_path, &config_path, &runnable_yaml, None).await
+    run_pipelines(config, base_path, &config_path, &runnable_yaml, None, false).await
 }
 
 async fn cmd_blast(mut args: BlastArgs) -> Result<(), CliError> {
@@ -156,6 +172,7 @@ async fn cmd_blast(mut args: BlastArgs) -> Result<(), CliError> {
         "<blast-generated>",
         &generated.yaml,
         auto_shutdown_after,
+        false,
     )
     .await
 }
@@ -203,6 +220,7 @@ async fn cmd_devour(args: DevourArgs) -> Result<(), CliError> {
         "<devour-generated>",
         &generated.yaml,
         auto_shutdown_after,
+        false,
     )
     .await
 }
@@ -730,6 +748,7 @@ pub(crate) async fn run_pipelines(
     config_path: &str,
     config_yaml: &str,
     auto_shutdown_after: Option<Duration>,
+    watch_config: bool,
 ) -> Result<(), CliError> {
     ffwd_runtime::bootstrap::run_pipelines(
         config,
@@ -741,6 +760,7 @@ pub(crate) async fn run_pipelines(
             use_color: use_color(),
             json_logs_for_stderr: use_json_logs_for_stderr(io::stderr().is_terminal()),
             auto_shutdown_after,
+            watch_config,
         },
     )
     .await

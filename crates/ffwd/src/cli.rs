@@ -337,6 +337,10 @@ pub(crate) enum Commands {
             help = "Path to YAML config file"
         )]
         config: Option<String>,
+
+        /// Watch config file for changes and reload automatically.
+        #[arg(short = 'w', long = "watch-config")]
+        watch_config: bool,
     },
     /// Validate config and exit.
     Validate {

@@ -41,6 +41,7 @@ flate2 = { version = "1", optional = true }
 futures-util = { workspace = true }
 libc = "0.2"
 memchr = "2"
+notify = "8"
 opentelemetry = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }

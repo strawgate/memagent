@@ -2211,6 +2211,7 @@ dependencies = [
  "libc",
  "loom",
  "memchr",
+ "notify",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",

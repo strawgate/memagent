@@ -7,7 +7,7 @@ use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json};
-use axum::routing::get;
+use axum::routing::{get, post};
 use serde_json::json;
 use tokio::sync::{broadcast, oneshot};
 
@@ -136,6 +136,7 @@ struct DiagnosticsState {
     trace_buf: Option<crate::span_exporter::SpanBuffer>,
     telemetry: crate::telemetry_buffer::TelemetryBuffers,
     telemetry_tx: broadcast::Sender<String>,
+    reload_trigger: Option<tokio::sync::mpsc::Sender<()>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +182,8 @@ pub struct DiagnosticsServer {
     trace_buf: Option<crate::span_exporter::SpanBuffer>,
     /// OTLP JSON telemetry buffers for the dashboard.
     telemetry: crate::telemetry_buffer::TelemetryBuffers,
+    /// Optional channel to trigger a config reload from the HTTP endpoint.
+    reload_trigger: Option<tokio::sync::mpsc::Sender<()>>,
 }
 
 impl DiagnosticsServer {
@@ -197,6 +200,7 @@ impl DiagnosticsServer {
             history: Arc::new(crate::metric_history::MetricHistory::new()),
             trace_buf: None,
             telemetry: crate::telemetry_buffer::TelemetryBuffers::new(),
+            reload_trigger: None,
         }
     }
 
@@ -221,6 +225,12 @@ impl DiagnosticsServer {
 
     pub fn add_pipeline(&mut self, metrics: Arc<PipelineMetrics>) {
         self.pipelines.push(metrics);
+    }
+
+    /// Set the reload trigger channel so `POST /api/v1/reload` can request a
+    /// config reload.
+    pub fn set_reload_trigger(&mut self, tx: tokio::sync::mpsc::Sender<()>) {
+        self.reload_trigger = Some(tx);
     }
 
     /// Register a callback that returns allocator memory statistics.
@@ -271,6 +281,7 @@ impl DiagnosticsServer {
             trace_buf: self.trace_buf,
             telemetry: self.telemetry,
             telemetry_tx,
+            reload_trigger: self.reload_trigger,
         });
 
         let app = axum::Router::new()
@@ -287,6 +298,7 @@ impl DiagnosticsServer {
             .route("/admin/v1/telemetry/metrics", get(serve_telemetry_metrics))
             .route("/admin/v1/telemetry/traces", get(serve_telemetry_traces))
             .route("/admin/v1/telemetry/logs", get(serve_telemetry_logs))
+            .route("/api/v1/reload", post(serve_reload))
             .fallback(|| async { (StatusCode::NOT_FOUND, "not found") })
             .with_state(Arc::clone(&state));
 
@@ -1009,6 +1021,21 @@ async fn serve_telemetry_logs(State(state): State<Arc<DiagnosticsState>>) -> imp
     let logs = state.telemetry.logs.snapshot();
     let body = crate::telemetry_buffer::logs_to_otlp_json(&logs);
     ([("content-type", "application/json")], body)
+}
+
+async fn serve_reload(State(state): State<Arc<DiagnosticsState>>) -> impl IntoResponse {
+    match state.reload_trigger.as_ref() {
+        None => (StatusCode::SERVICE_UNAVAILABLE, "reload not configured"),
+        Some(tx) => match tx.try_send(()) {
+            Ok(()) => (StatusCode::ACCEPTED, "reload triggered"),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(())) => {
+                (StatusCode::TOO_MANY_REQUESTS, "reload already in progress")
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(())) => {
+                (StatusCode::INTERNAL_SERVER_ERROR, "reload channel closed")
+            }
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2663,5 +2690,110 @@ output:
                 "expected 404 for {path}, got {status} body={body}"
             );
         }
+    }
+
+    /// HTTP POST helper that returns both status code and response body.
+    fn http_post_with_body(port: u16, path: &str) -> (u16, String) {
+        use std::io::Write;
+        use std::net::TcpStream;
+
+        let addr = format!("127.0.0.1:{port}");
+        let mut stream = None;
+        for _ in 0..20 {
+            match TcpStream::connect(&addr) {
+                Ok(s) => {
+                    stream = Some(s);
+                    break;
+                }
+                Err(_) => thread::sleep(std::time::Duration::from_millis(50)),
+            }
+        }
+        let mut stream = stream.unwrap_or_else(|| {
+            panic!("connect failed after retries to {addr}");
+        });
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .ok();
+        let req = format!(
+            "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(req.as_bytes()).unwrap();
+
+        let mut buf = Vec::new();
+        let _ = stream.read_to_end(&mut buf);
+        let text = String::from_utf8_lossy(&buf).to_string();
+
+        let status = text
+            .lines()
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(0);
+
+        let body = text.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+        (status, body)
+    }
+
+    #[test]
+    fn reload_endpoint_returns_accepted_when_trigger_configured() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);
+        let mut server = DiagnosticsServer::new("127.0.0.1:0");
+        server.set_reload_trigger(tx);
+        let (handle, addr) = server.start().unwrap();
+        let port = addr.port();
+
+        let (status, body) = http_post_with_body(port, "/api/v1/reload");
+        assert_eq!(
+            status, 202,
+            "expected 202 Accepted, got {status} body={body}"
+        );
+        assert_eq!(body, "reload triggered");
+
+        // Verify the channel received the signal.
+        assert!(
+            rx.try_recv().is_ok(),
+            "reload trigger channel should have received a message"
+        );
+
+        drop(handle);
+    }
+
+    #[test]
+    fn reload_endpoint_returns_503_when_no_trigger_configured() {
+        let server = DiagnosticsServer::new("127.0.0.1:0");
+        let (handle, addr) = server.start().unwrap();
+        let port = addr.port();
+
+        let (status, body) = http_post_with_body(port, "/api/v1/reload");
+        assert_eq!(
+            status, 503,
+            "expected 503 Service Unavailable, got {status} body={body}"
+        );
+        assert_eq!(body, "reload not configured");
+
+        drop(handle);
+    }
+
+    #[test]
+    fn reload_endpoint_returns_429_when_channel_full() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<()>(1);
+        let mut server = DiagnosticsServer::new("127.0.0.1:0");
+        server.set_reload_trigger(tx);
+        let (handle, addr) = server.start().unwrap();
+        let port = addr.port();
+
+        // First request fills the channel.
+        let (status, _) = http_post_with_body(port, "/api/v1/reload");
+        assert_eq!(status, 202);
+
+        // Second request should get 429 since channel is full (capacity=1, not drained).
+        let (status, body) = http_post_with_body(port, "/api/v1/reload");
+        assert_eq!(
+            status, 429,
+            "expected 429 Too Many Requests, got {status} body={body}"
+        );
+        assert_eq!(body, "reload already in progress");
+
+        drop(handle);
     }
 }
