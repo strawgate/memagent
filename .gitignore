@@ -30,6 +30,8 @@ error.log
 # Research intermediate artifacts (cloud task diffs, extracts)
 **/cloud-artifacts/
 .codex/
+.pr-events/
+.pr-pilot/
 scripts/__pycache__/
 
 # TLC model checker scratch artifacts (traces, states/)

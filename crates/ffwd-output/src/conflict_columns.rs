@@ -368,11 +368,16 @@ impl ResolvedCol<'_> {
                 let len = typed.len();
                 nulls.map_or(len, |nulls| len.min(nulls.len()))
             }
-            ResolvedCol::Multi { variants, .. } => variants
-                .iter()
-                .map(ResolvedVariant::row_limit)
-                .min()
-                .unwrap_or(0),
+            ResolvedCol::Multi { variants, .. } => {
+                // Defensive default: an empty variant set yields 0 so callers like
+                // write_batch_json_resolved reject non-zero num_rows rather than
+                // treating a malformed resolved column as unbounded.
+                variants
+                    .iter()
+                    .map(ResolvedVariant::row_limit)
+                    .min()
+                    .unwrap_or(0)
+            }
         }
     }
 }
