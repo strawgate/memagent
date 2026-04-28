@@ -4,6 +4,7 @@
 //!
 //! Environment variables in values are expanded using `${VAR}` syntax.
 
+pub mod diff;
 /// Shared metadata for config starter templates and generated reference tables.
 ///
 /// # Examples
@@ -23,6 +24,8 @@ mod types;
 pub mod validate;
 
 pub use serde_helpers::{PositiveMillis, PositiveSecs};
+
+pub use diff::ConfigDiff;
 
 #[cfg(test)]
 pub(crate) use env::expand_env_vars;

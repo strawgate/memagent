@@ -80,7 +80,7 @@ pub struct GeneratorTimestampConfig {
     pub step_ms: Option<i64>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct HttpInputConfig {
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
@@ -101,7 +101,7 @@ pub struct HttpInputConfig {
     pub response_body: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct GeneratorInputConfig {
     #[serde(default, deserialize_with = "deserialize_option_from_string_or_value")]
@@ -129,7 +129,7 @@ pub struct GeneratorInputConfig {
 }
 
 /// Host metrics configuration.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct HostMetricsInputConfig {
     /// Sensor sample cadence. Defaults to 10_000 when omitted.
@@ -205,7 +205,7 @@ pub struct HostMetricsInputConfig {
 }
 
 /// Journald (systemd journal) input configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JournaldInputConfig {
     /// Systemd units to include. If empty, all units are collected.
@@ -292,7 +292,7 @@ impl Default for JournaldInputConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct InputConfig {
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub name: Option<String>,
@@ -322,7 +322,7 @@ impl InputConfig {
 /// Serde tags on `"type"` and uses `deny_unknown_fields` on each variant
 /// struct, so a YAML like `type: file` with an `listen:` key is rejected
 /// at parse time instead of silently ignored.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InputTypeConfig {
     File(FileTypeConfig),
@@ -373,7 +373,7 @@ impl InputTypeConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FileTypeConfig {
     #[serde(deserialize_with = "deserialize_strict_string")]
@@ -408,7 +408,7 @@ pub struct FileTypeConfig {
     pub max_line_bytes: Option<usize>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UdpTypeConfig {
     #[serde(deserialize_with = "deserialize_strict_string")]
@@ -419,7 +419,7 @@ pub struct UdpTypeConfig {
     pub so_rcvbuf: Option<usize>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TcpTypeConfig {
     #[serde(deserialize_with = "deserialize_strict_string")]
@@ -434,7 +434,7 @@ pub struct TcpTypeConfig {
     pub read_timeout_ms: Option<PositiveMillis>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OtlpTypeConfig {
     #[serde(deserialize_with = "deserialize_strict_string")]
@@ -451,7 +451,7 @@ pub struct OtlpTypeConfig {
     pub grpc_max_concurrent_streams: Option<u32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HttpTypeConfig {
     #[serde(deserialize_with = "deserialize_strict_string")]
@@ -464,18 +464,18 @@ pub struct HttpTypeConfig {
 ///
 /// Stdin input has no input-specific fields; unknown fields are rejected so
 /// file-tail options such as `path` do not silently apply to command input.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct StdinTypeConfig {}
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct GeneratorTypeConfig {
     #[serde(default)]
     pub generator: Option<GeneratorInputConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct SensorTypeConfig {
     #[serde(default)]
@@ -483,7 +483,7 @@ pub struct SensorTypeConfig {
 }
 
 /// Tagged-union wrapper for macOS OSLog input configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MacosLogTypeConfig {
     #[serde(default)]
@@ -501,7 +501,7 @@ pub struct MacosLogInputConfig {
     pub process: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ArrowIpcTypeConfig {
     #[serde(deserialize_with = "deserialize_strict_string")]
@@ -512,7 +512,7 @@ pub struct ArrowIpcTypeConfig {
     pub max_message_size_bytes: Option<usize>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct JournaldTypeConfig {
     #[serde(default)]
@@ -520,7 +520,7 @@ pub struct JournaldTypeConfig {
 }
 
 /// Tagged-union wrapper for S3 input configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct S3TypeConfig {
     /// S3-specific input settings (bucket, region, credentials, tuning).
@@ -545,7 +545,7 @@ pub enum S3CompressionConfig {
 }
 
 /// Configuration for the S3 (and S3-compatible) object storage input.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct S3InputConfig {
     /// S3 bucket name.

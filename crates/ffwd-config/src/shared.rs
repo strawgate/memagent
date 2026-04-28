@@ -37,7 +37,7 @@ pub struct TlsClientConfig {
 ///
 /// Used by TCP, OTLP, and other input sources that listen on a port and
 /// accept TLS connections from clients.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct TlsServerConfig {
     /// Path to server certificate file.

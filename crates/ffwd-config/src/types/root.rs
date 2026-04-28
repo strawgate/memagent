@@ -7,7 +7,7 @@ use std::collections::HashMap;
 
 use super::{EnrichmentConfig, InputConfig, OutputConfigV2};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PipelineConfig {
     #[serde(default)]
@@ -31,7 +31,7 @@ pub struct PipelineConfig {
     pub poll_interval_ms: Option<PositiveMillis>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
@@ -46,14 +46,14 @@ pub struct ServerConfig {
     pub traces_endpoint: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct StorageConfig {
     #[serde(default, deserialize_with = "deserialize_option_strict_string")]
     pub data_dir: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub pipelines: HashMap<String, PipelineConfig>,
     pub server: ServerConfig,

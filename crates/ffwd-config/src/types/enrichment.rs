@@ -20,7 +20,7 @@ pub enum GeoDatabaseFormat {
 }
 
 /// GeoIP database enrichment source.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GeoDatabaseConfig {
     pub format: GeoDatabaseFormat,
@@ -31,7 +31,7 @@ pub struct GeoDatabaseConfig {
 }
 
 /// Static labels exposed as a one-row enrichment table.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StaticEnrichmentConfig {
     #[serde(deserialize_with = "deserialize_strict_string")]
@@ -70,7 +70,7 @@ impl fmt::Display for HostInfoStyle {
 }
 
 /// Host metadata enrichment with built-in fields.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostInfoConfig {
     /// Column-naming convention for the host metadata enrichment table.
@@ -79,7 +79,7 @@ pub struct HostInfoConfig {
 }
 
 /// Kubernetes pod metadata parsed from container log paths.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct K8sPathConfig {
     #[serde(
@@ -94,7 +94,7 @@ fn default_k8s_table_name() -> String {
 }
 
 /// CSV-backed enrichment table loaded from disk.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CsvEnrichmentConfig {
     #[serde(deserialize_with = "deserialize_strict_string")]
@@ -108,7 +108,7 @@ pub struct CsvEnrichmentConfig {
 }
 
 /// JSON Lines-backed enrichment table loaded from disk.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct JsonlEnrichmentConfig {
     #[serde(deserialize_with = "deserialize_strict_string")]
@@ -124,7 +124,7 @@ pub struct JsonlEnrichmentConfig {
 /// Enriches logs with a single-row table populated from environment variables
 /// whose names begin with `prefix`.  The prefix is stripped and the remainder
 /// lower-cased to form column names.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvVarsEnrichmentConfig {
     #[serde(deserialize_with = "deserialize_strict_string")]
@@ -135,12 +135,12 @@ pub struct EnvVarsEnrichmentConfig {
 }
 
 /// Agent self-metadata enrichment: `agent_name`, `agent_version`, `pid`, `start_time`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProcessInfoConfig {}
 
 /// Parse a KEY=value properties file into a one-row enrichment table.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct KvFileEnrichmentConfig {
     #[serde(deserialize_with = "deserialize_strict_string")]
@@ -153,22 +153,22 @@ pub struct KvFileEnrichmentConfig {
 }
 
 /// Network interface metadata: `hostname`, `primary_ipv4`, `primary_ipv6`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkInfoConfig {}
 
 /// Container runtime detection: `container_id`, `container_runtime`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerInfoConfig {}
 
 /// Kubernetes cluster metadata from the downward API: `node_name`, `cluster_name`, etc.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct K8sClusterInfoConfig {}
 
 /// Tagged enrichment configuration for pipeline lookup tables.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum EnrichmentConfig {
