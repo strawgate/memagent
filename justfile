@@ -524,6 +524,90 @@ bench-ceiling:
 bench-full:
     cargo bench -p ffwd-bench --bench pipeline --bench output_encode --bench full_chain --bench builder_compare --bench batch_formation --bench file_io --bench throughput_ceiling
 
+# Backpressure benchmarks: measures pipeline throughput degradation under output latency.
+# See backpressure.rs for baseline workflow (save/compare).
+bench-backpressure:
+    cargo bench -p ffwd-bench --bench backpressure
+
+# Save initial backpressure baseline (run once after merging or major changes):
+#   just bench-backpressure-save
+# Then compare in subsequent runs:
+#   just bench-backpressure-compare
+bench-backpressure-save:
+    cargo bench -p ffwd-bench --bench backpressure --save-baseline initial
+
+bench-backpressure-compare:
+    cargo bench -p ffwd-bench --bench backpressure --baseline initial
+
+# ---------------------------------------------------------------------------
+# Fuzzing (requires: cargo +nightly fuzz)
+# ---------------------------------------------------------------------------
+
+# List all available fuzz targets in both fuzz crates.
+fuzz-list:
+    @echo "ffwd-core fuzz targets:"
+    @ls crates/ffwd-core/fuzz/fuzz_targets/
+    @echo ""
+    @echo "ffwd-io fuzz targets:"
+    @ls crates/ffwd-io/fuzz/fuzz_targets/
+
+# Run a fuzz target indefinitely (Ctrl+C to stop).
+# Use: just fuzz ffwd-core fuzz_scanner
+#      just fuzz ffwd-io fuzz_decompress
+fuzz crate target:
+    cd crates/{{crate}}/fuzz && cargo +nightly fuzz run {{target}}
+
+# Run a fuzz target with a time limit.
+# Use: just fuzz-time ffwd-core fuzz_udf 60
+fuzz-time crate target seconds="60":
+    cd crates/{{crate}}/fuzz && cargo +nightly fuzz run {{target}} -- -max_total_time={{seconds}}
+
+# PR smoke test: all targets, 10s each (~2.5 min wall).
+# This is the target invoked by the fuzz-pr GitHub Actions job.
+fuzz-pr:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd "{{justfile_directory()}}"
+
+    echo "==> Building all ffwd-core fuzz targets"
+    cd crates/ffwd-core/fuzz
+    for TARGET in fuzz_scanner fuzz_zero_copy_scanner fuzz_scanner_consistency \
+                 fuzz_structural_streaming fuzz_cri fuzz_pipe_event \
+                 fuzz_scanner_transform fuzz_udf fuzz_scanner_sink; do
+        cargo +nightly fuzz build "$TARGET"
+    done
+    cd "{{justfile_directory()}}"
+
+    echo "==> Building all ffwd-io fuzz targets"
+    cd crates/ffwd-io/fuzz
+    for TARGET in fuzz_otlp_protobuf_decode fuzz_otlp_json_decode fuzz_decompress \
+                 fuzz_arrow_ipc_decode fuzz_otap_decode fuzz_protojson_numbers; do
+        cargo +nightly fuzz build "$TARGET"
+    done
+    cd "{{justfile_directory()}}"
+
+    echo ""
+    echo "==> Running PR smoke: ffwd-core (9 targets × 10s)"
+    cd crates/ffwd-core/fuzz
+    for TARGET in fuzz_scanner fuzz_zero_copy_scanner fuzz_scanner_consistency \
+                 fuzz_structural_streaming fuzz_cri fuzz_pipe_event \
+                 fuzz_scanner_transform fuzz_udf fuzz_scanner_sink; do
+        echo "    $TARGET (10s)"
+        timeout 15 cargo +nightly fuzz run "$TARGET" -- -max_total_time=10 || true
+    done
+    cd "{{justfile_directory()}}"
+
+    echo ""
+    echo "==> Running PR smoke: ffwd-io (6 targets × 10s)"
+    cd crates/ffwd-io/fuzz
+    for TARGET in fuzz_otlp_protobuf_decode fuzz_otlp_json_decode fuzz_decompress \
+                 fuzz_arrow_ipc_decode fuzz_otap_decode fuzz_protojson_numbers; do
+        echo "    $TARGET (10s)"
+        timeout 15 cargo +nightly fuzz run "$TARGET" -- -max_total_time=10 || true
+    done
+    cd "{{justfile_directory()}}"
+    echo "==> fuzz-pr complete"
+
 # Run system-level benchmarks (pipeline, contention, backpressure — requires running services)
 bench-system:
     @echo "System-level benchmarks: pipeline end-to-end with real I/O"

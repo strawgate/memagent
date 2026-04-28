@@ -1,0 +1,135 @@
+name: Fuzz nightly
+
+on:
+  schedule:
+    - cron: '0 4 * * *'  # 4am UTC daily
+  workflow_dispatch:
+    inputs:
+      duration-hours:
+        description: 'Fuzz duration per target (hours, default 2)'
+        required: false
+        default: '2'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz-nightly-core:
+    name: Fuzz nightly (ffwd-core)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          rustflags: -C instrument-coverage
+
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz
+
+      - name: Download previous corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: fuzz-corpus-ffwd-core
+          path: crates/ffwd-core/fuzz/corpus/
+        continue-on-error: true
+
+      - name: Build fuzz targets
+        run: |
+          cd crates/ffwd-core/fuzz
+          for TARGET in fuzz_scanner fuzz_zero_copy_scanner fuzz_scanner_consistency \
+                       fuzz_structural_streaming fuzz_cri fuzz_pipe_event \
+                       fuzz_scanner_transform fuzz_udf fuzz_scanner_sink; do
+            cargo +nightly fuzz build "$TARGET"
+          done
+
+      - name: Run long fuzz
+        env:
+          DURATION_HOURS: ${{ inputs.duration-hours || '2' }}
+        run: |
+          DURATION_SECS=$(( ${DURATION_HOURS} * 3600 ))
+          cd crates/ffwd-core/fuzz
+          for TARGET in fuzz_scanner fuzz_zero_copy_scanner fuzz_scanner_consistency \
+                       fuzz_structural_streaming fuzz_cri fuzz_pipe_event \
+                       fuzz_scanner_transform fuzz_udf fuzz_scanner_sink; do
+            echo "==> $TARGET (${DURATION_SECS}s)"
+            timeout $(( DURATION_SECS + 30 )) \
+              cargo +nightly fuzz run "$TARGET" \
+              -- -max_total_time="${DURATION_SECS}" || true
+          done
+
+      - name: Upload corpus
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-ffwd-core
+          path: crates/ffwd-core/fuzz/corpus/
+          retention-days: 7
+
+      - name: Upload artifacts on crash
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-ffwd-core
+          path: crates/ffwd-core/fuzz/artifacts/
+          retention-days: 30
+
+  fuzz-nightly-io:
+    name: Fuzz nightly (ffwd-io)
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: ./.github/actions/setup-rust
+        with:
+          rustflags: -C instrument-coverage
+
+      - name: Install cargo-fuzz
+        run: cargo +nightly install cargo-fuzz
+
+      - name: Download previous corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: fuzz-corpus-ffwd-io
+          path: crates/ffwd-io/fuzz/corpus/
+        continue-on-error: true
+
+      - name: Build fuzz targets
+        run: |
+          cd crates/ffwd-io/fuzz
+          for TARGET in fuzz_otlp_protobuf_decode fuzz_otlp_json_decode fuzz_decompress \
+                       fuzz_arrow_ipc_decode fuzz_otap_decode fuzz_protojson_numbers; do
+            cargo +nightly fuzz build "$TARGET"
+          done
+
+      - name: Run long fuzz
+        env:
+          DURATION_HOURS: ${{ inputs.duration-hours || '2' }}
+        run: |
+          DURATION_SECS=$(( ${DURATION_HOURS} * 3600 ))
+          cd crates/ffwd-io/fuzz
+          for TARGET in fuzz_otlp_protobuf_decode fuzz_otlp_json_decode fuzz_decompress \
+                       fuzz_arrow_ipc_decode fuzz_otap_decode fuzz_protojson_numbers; do
+            echo "==> $TARGET (${DURATION_SECS}s)"
+            timeout $(( DURATION_SECS + 30 )) \
+              cargo +nightly fuzz run "$TARGET" \
+              -- -max_total_time="${DURATION_SECS}" || true
+          done
+
+      - name: Upload corpus
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-corpus-ffwd-io
+          path: crates/ffwd-io/fuzz/corpus/
+          retention-days: 7
+
+      - name: Upload artifacts on crash
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-ffwd-io
+          path: crates/ffwd-io/fuzz/artifacts/
+          retention-days: 30

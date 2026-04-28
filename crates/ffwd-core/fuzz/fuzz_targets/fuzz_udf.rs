@@ -8,10 +8,32 @@
 //! The scanner is configured with `line_field_name = "body"` so all queries
 //! referencing the `body` column are valid and UDF code paths are exercised.
 //!
-//! Run with:
-//! ```
+//! **Corpus:** Edge-case samples are in `corpus/fuzz_udf/` and cover:
+//! - Empty objects and arrays
+//! - Deeply nested JSON
+//! - Missing/null fields
+//! - Numeric edge cases (MAX_i64, float overflow, subnormals)
+//! - Unicode strings (including emoji)
+//! - Escaped characters and quotes in strings
+//! - Plain text (non-JSON) lines
+//! - Log-format lines (HTTP, logfmt)
+//!
+//! **Run with:**
+//! ```bash
+//! # Quick fuzz run (10 minutes)
 //! cargo +nightly fuzz run fuzz_udf -- -max_total_time=600
+//!
+//! # Continuous fuzzing (hours)
+//! cargo +nightly fuzz run fuzz_udf
+//!
+//! # With corpus exploration (thorough)
+//! cargo +nightly fuzz run fuzz_udf -- -fork=1 -max_total_time=3600
 //! ```
+//!
+//! **Exit codes:**
+//! - 0: No panics detected (normal)
+//! - 77: libfuzzer found a panic (regression — file issue)
+//! - 1: Other error
 
 #![no_main]
 
