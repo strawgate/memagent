@@ -6,6 +6,7 @@
 //! - **write_row_json/narrow/10k** — tight loop over 10K narrow rows (5 fields)
 //! - **write_row_json/wide/10k**   — tight loop over 10K wide rows (20 fields)
 //! - **write_row_json_resolved/narrow/10k** — pre-resolved columns, 10K narrow
+//! - **write_batch_json_resolved/narrow/10k** — batch-level with pre-reserve, 10K narrow
 //! - **write_batch_to/narrow/10k** — `StdoutSink::write_batch_to` JSON, 10K narrow rows
 //! - **write_batch_to/wide/10k**   — `StdoutSink::write_batch_to` JSON, 10K wide rows
 
@@ -14,8 +15,8 @@ use std::sync::Arc;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use ffwd_bench::generators;
 use ffwd_output::{
-    BatchMetadata, StdoutFormat, StdoutSink, build_col_infos, resolve_col_infos, write_row_json,
-    write_row_json_resolved,
+    StdoutFormat, StdoutSink, build_col_infos, resolve_col_infos, write_batch_json_resolved,
+    write_row_json, write_row_json_resolved,
 };
 use ffwd_types::diagnostics::ComponentStats;
 
@@ -82,6 +83,23 @@ fn bench_json_lines(c: &mut Criterion) {
                                 .expect("JSON serialization should not fail");
                             buf.push(b'\n');
                         }
+                        std::hint::black_box(&buf);
+                    });
+                },
+            );
+
+            // ── write_batch_json_resolved (batch-level with pre-reserve) ─
+            group.bench_with_input(
+                BenchmarkId::new("write_batch_json_resolved", &label),
+                batch,
+                |b, batch| {
+                    let cols = build_col_infos(batch);
+                    let resolved = resolve_col_infos(batch, &cols);
+                    let mut buf = Vec::with_capacity(*n * 300);
+                    b.iter(|| {
+                        buf.clear();
+                        write_batch_json_resolved(&resolved, batch.num_rows(), &mut buf)
+                            .expect("batch JSON should not fail");
                         std::hint::black_box(&buf);
                     });
                 },

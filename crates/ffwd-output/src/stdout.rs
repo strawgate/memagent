@@ -17,7 +17,7 @@ use arrow::util::display::array_value_to_string;
 
 use super::{
     BatchMetadata, ColVariant, build_col_infos, get_array, is_null, resolve_col_infos,
-    write_json_value, write_row_json_resolved,
+    write_batch_json_resolved, write_json_value, write_row_json_resolved,
 };
 
 // ---------------------------------------------------------------------------
@@ -144,9 +144,7 @@ impl StdoutSink {
             StdoutFormat::Json => {
                 let cols = build_col_infos(batch);
                 let resolved = resolve_col_infos(batch, &cols);
-                for row in 0..num_rows {
-                    write_row_json_resolved(row, &resolved, dest, true)?;
-                }
+                write_batch_json_resolved(&resolved, num_rows, dest)?;
                 num_rows
             }
             StdoutFormat::Console => {

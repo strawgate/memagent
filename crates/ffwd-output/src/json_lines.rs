@@ -12,7 +12,7 @@ use ffwd_types::diagnostics::ComponentStats;
 use crate::http_classify;
 use crate::sink::{SendResult, Sink, SinkFactory};
 
-use super::{Compression, build_col_infos, write_row_json};
+use super::{Compression, build_col_infos, resolve_col_infos, write_batch_json_resolved};
 
 // ---------------------------------------------------------------------------
 // JsonLinesSink
@@ -87,10 +87,9 @@ impl JsonLinesSink {
         }
 
         let cols = build_col_infos(batch);
-        for row in 0..num_rows {
-            write_row_json(batch, row, &cols, &mut self.batch_buf, true)?;
-        }
-        Ok(num_rows as u64)
+        let resolved = resolve_col_infos(batch, &cols);
+        let written = write_batch_json_resolved(&resolved, num_rows, &mut self.batch_buf)? as u64;
+        Ok(written)
     }
 
     async fn post_payload(&self, payload: Vec<u8>) -> io::Result<SendResult> {

@@ -62,7 +62,7 @@ pub(crate) use conflict_columns::{get_array, is_null};
 pub(crate) use conflict_columns::{is_conflict_struct, json_priority, str_priority, variant_dt};
 pub(crate) use metadata::build_auth_headers;
 pub(crate) use row_json::{coalesce_as_str, write_json_value};
-pub use row_json::{write_row_json, write_row_json_resolved};
+pub use row_json::{write_batch_json_resolved, write_row_json, write_row_json_resolved};
 
 // ---------------------------------------------------------------------------
 // HTTP retry helper
