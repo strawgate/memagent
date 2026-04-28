@@ -17,6 +17,8 @@ struct RawConfig {
     server: ServerConfig,
     #[serde(default)]
     storage: StorageConfig,
+    #[serde(default)]
+    opamp: Option<crate::types::OpampConfig>,
 }
 
 impl Config {
@@ -65,6 +67,7 @@ impl Config {
             pipelines,
             server: raw.server,
             storage: raw.storage,
+            opamp: raw.opamp,
         };
         cfg.normalize();
         cfg.validate_with_base_path(base_path)?;

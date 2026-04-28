@@ -58,4 +58,44 @@ pub struct Config {
     pub pipelines: HashMap<String, PipelineConfig>,
     pub server: ServerConfig,
     pub storage: StorageConfig,
+    pub opamp: Option<OpampConfig>,
+}
+
+/// OpAMP connection configuration for central management.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct OpampConfig {
+    /// OpAMP server endpoint (e.g., `http://localhost:4320/v1/opamp`).
+    pub endpoint: String,
+    /// Optional API key for authentication.
+    #[serde(default)]
+    pub api_key: Option<String>,
+    /// Instance UID — set to a fixed UUID, or "auto" (default) to generate and persist.
+    #[serde(default = "default_instance_uid")]
+    pub instance_uid: String,
+    /// Service name reported to the OpAMP server.
+    #[serde(default = "default_service_name")]
+    pub service_name: String,
+    /// Polling interval in seconds (default: 30).
+    #[serde(default = "default_poll_interval_secs")]
+    pub poll_interval_secs: u64,
+    /// Whether to accept remote configuration from the server (default: true).
+    #[serde(default = "default_accept_remote_config")]
+    pub accept_remote_config: bool,
+}
+
+fn default_instance_uid() -> String {
+    "auto".to_string()
+}
+
+fn default_service_name() -> String {
+    "ffwd".to_string()
+}
+
+fn default_poll_interval_secs() -> u64 {
+    30
+}
+
+fn default_accept_remote_config() -> bool {
+    true
 }

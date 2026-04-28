@@ -21,6 +21,7 @@ dhat-heap = ["dep:dhat"]
 cpu-profiling = ["dep:pprof", "dep:flate2"]
 otlp-research = ["ffwd-config/otlp-research", "ffwd-io/otlp-research"]
 s3 = ["ffwd-io/s3"]
+opamp = ["dep:ffwd-opamp"]
 
 [dependencies]
 arrow = { workspace = true }
@@ -34,6 +35,7 @@ ffwd-core = { version = "0.1.0", path = "../ffwd-core" }
 ffwd-diagnostics = { version = "0.1.0", path = "../ffwd-diagnostics" }
 ffwd-io = { version = "0.1.0", path = "../ffwd-io" }
 ffwd-lint-attrs = { version = "0.1.0", path = "../ffwd-lint-attrs" }
+ffwd-opamp = { version = "0.1.0", path = "../ffwd-opamp", optional = true }
 ffwd-output = { version = "0.1.0", path = "../ffwd-output" }
 ffwd-transform = { version = "0.1.0", path = "../ffwd-transform", optional = true }
 ffwd-types = { version = "0.1.0", path = "../ffwd-types" }

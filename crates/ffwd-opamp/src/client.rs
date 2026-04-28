@@ -24,6 +24,24 @@ struct SharedState {
     pending_remote_config: Option<String>,
 }
 
+/// A lightweight handle for updating OpAMP state from outside the client task.
+///
+/// Obtained via [`OpampClient::state_handle`] before calling [`OpampClient::run`].
+#[derive(Clone)]
+pub struct OpampStateHandle {
+    state: Arc<Mutex<SharedState>>,
+}
+
+impl OpampStateHandle {
+    /// Update the effective configuration reported to the OpAMP server.
+    pub fn set_effective_config(&self, yaml: &str) {
+        if let Ok(mut state) = self.state.lock() {
+            state.effective_config = yaml.to_string();
+            state.last_config_applied = true;
+        }
+    }
+}
+
 /// OpAMP client that connects to a server and manages remote configuration.
 ///
 /// # Usage
@@ -72,6 +90,15 @@ impl OpampClient {
         if let Ok(mut state) = self.state.lock() {
             state.effective_config = yaml.to_string();
             state.last_config_applied = true;
+        }
+    }
+
+    /// Get a lightweight handle for updating OpAMP state from outside the client task.
+    ///
+    /// Call this before [`OpampClient::run`] since `run` consumes `self`.
+    pub fn state_handle(&self) -> OpampStateHandle {
+        OpampStateHandle {
+            state: Arc::clone(&self.state),
         }
     }
 

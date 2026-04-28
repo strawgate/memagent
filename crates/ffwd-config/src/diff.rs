@@ -20,6 +20,8 @@ pub struct ConfigDiff {
     pub server_changed: bool,
     /// Whether the storage config block changed.
     pub storage_changed: bool,
+    /// Whether the OpAMP config block changed.
+    pub opamp_changed: bool,
 }
 
 impl ConfigDiff {
@@ -56,17 +58,19 @@ impl ConfigDiff {
             unchanged,
             server_changed: old.server != new.server,
             storage_changed: old.storage != new.storage,
+            opamp_changed: old.opamp != new.opamp,
         }
     }
 
     /// Returns `true` if the diff has no meaningful changes (all pipelines
-    /// unchanged and server/storage identical).
+    /// unchanged and server/storage/opamp identical).
     pub fn is_empty(&self) -> bool {
         self.added.is_empty()
             && self.removed.is_empty()
             && self.changed.is_empty()
             && !self.server_changed
             && !self.storage_changed
+            && !self.opamp_changed
     }
 
     /// Returns `true` if all changes can be applied via graceful reload
@@ -322,5 +326,70 @@ pipelines:
         let a = load(yaml);
         let b = load(yaml);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn opamp_change_detected() {
+        let old_yaml = "\
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+        format: json
+    outputs:
+      - type: stdout
+        format: json
+opamp:
+  endpoint: http://localhost:4320/v1/opamp";
+        let new_yaml = "\
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+        format: json
+    outputs:
+      - type: stdout
+        format: json
+opamp:
+  endpoint: http://other-server:4320/v1/opamp";
+        let old = load(old_yaml);
+        let new = load(new_yaml);
+        let diff = ConfigDiff::between(&old, &new);
+        assert!(diff.opamp_changed);
+        assert!(diff.is_reloadable());
+        assert_eq!(diff.unchanged, vec!["default"]);
+    }
+
+    #[test]
+    fn opamp_added_detected() {
+        let old_yaml = "\
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+        format: json
+    outputs:
+      - type: stdout
+        format: json";
+        let new_yaml = "\
+pipelines:
+  default:
+    inputs:
+      - type: file
+        path: /tmp/test.log
+        format: json
+    outputs:
+      - type: stdout
+        format: json
+opamp:
+  endpoint: http://localhost:4320/v1/opamp";
+        let old = load(old_yaml);
+        let new = load(new_yaml);
+        let diff = ConfigDiff::between(&old, &new);
+        assert!(diff.opamp_changed);
+        assert!(!diff.is_empty());
     }
 }

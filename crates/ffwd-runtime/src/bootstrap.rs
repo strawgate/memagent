@@ -241,6 +241,36 @@ pub async fn run_pipelines(
     let meter_provider = build_meter_provider(&config, use_color)?;
     let meter = meter_provider.meter("ffwd");
 
+    // ── OpAMP client (optional, feature-gated) ──
+    #[cfg(feature = "opamp")]
+    let opamp_client = if let Some(ref opamp_cfg) = config.opamp {
+        let identity = ffwd_opamp::AgentIdentity::resolve(
+            Some(&opamp_cfg.instance_uid),
+            configured_data_dir.as_deref(),
+            &opamp_cfg.service_name,
+            env!("CARGO_PKG_VERSION"),
+        );
+        let opamp_config = ffwd_opamp::OpampConfig {
+            endpoint: opamp_cfg.endpoint.clone(),
+            api_key: opamp_cfg.api_key.clone(),
+            poll_interval_secs: opamp_cfg.poll_interval_secs,
+            accept_remote_config: opamp_cfg.accept_remote_config,
+            ..Default::default()
+        };
+        let client = ffwd_opamp::OpampClient::new(opamp_config, identity, reload_tx.clone());
+        let shutdown_for_opamp = shutdown.clone();
+        let data_dir = configured_data_dir.clone();
+        let opamp_state = client.state_handle();
+        tokio::spawn(async move {
+            if let Err(e) = client.run(shutdown_for_opamp, data_dir.as_deref()).await {
+                tracing::error!(error = %e, "opamp: client exited with error");
+            }
+        });
+        Some(opamp_state)
+    } else {
+        None
+    };
+
     let trace_buf = ffwd_diagnostics::span_exporter::SpanBuffer::new();
     let tracer_provider = build_tracer_provider(trace_buf.clone(), &config, use_color)?;
     let tracer = tracer_provider.tracer("ffwd");
@@ -531,6 +561,12 @@ pub async fn run_pipelines(
             );
         }
         reload_success.add(1, &[]);
+
+        // Update OpAMP effective config after successful reload.
+        #[cfg(feature = "opamp")]
+        if let Some(ref state) = opamp_client {
+            state.set_effective_config(&new_yaml);
+        }
 
         current_config = new_config;
         // Loop back to rebuild pipelines with new config.

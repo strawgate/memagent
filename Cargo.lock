@@ -2264,6 +2264,7 @@ dependencies = [
  "ffwd-diagnostics",
  "ffwd-io",
  "ffwd-lint-attrs",
+ "ffwd-opamp",
  "ffwd-output",
  "ffwd-test-utils",
  "ffwd-transform",

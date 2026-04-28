@@ -26,6 +26,7 @@ mod error;
 mod identity;
 
 pub use client::OpampClient;
+pub use client::OpampStateHandle;
 pub use config::OpampConfig;
 pub use error::OpampError;
 pub use identity::AgentIdentity;
