@@ -47,6 +47,7 @@ pub(super) fn write_json_escaped_bytes(out: &mut Vec<u8>, value: &[u8]) {
     }
 }
 
+#[inline]
 pub(super) fn write_wire_str(
     builder: &mut ColumnarBatchBuilder,
     handle: FieldHandle,
@@ -65,6 +66,7 @@ pub(super) fn write_wire_str(
     Ok(())
 }
 
+#[inline]
 pub(super) fn write_hex_field(
     builder: &mut ColumnarBatchBuilder,
     handle: FieldHandle,

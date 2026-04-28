@@ -889,6 +889,7 @@ pub(super) fn wire_any_field_kind(value: &WireAny<'_>) -> FieldKind {
     }
 }
 
+#[inline]
 pub(super) fn write_wire_any(
     builder: &mut ColumnarBatchBuilder,
     handle: FieldHandle,
@@ -917,6 +918,7 @@ pub(super) fn write_wire_any(
     Ok(())
 }
 
+#[inline]
 pub(super) fn write_wire_any_as_string(
     builder: &mut ColumnarBatchBuilder,
     handle: FieldHandle,

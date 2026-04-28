@@ -428,14 +428,14 @@ def render_key_value_decoder(spec: dict) -> str:
     key_number = fields["key"]["number"]
     value_number = fields["value"]["number"]
     return f"""/// Decode a `KeyValue` record into raw key bytes and a typed value.
-    ///
-    /// The key bytes are returned **unvalidated**. Callers must run UTF-8
-    /// validation before using the key as a `&str`.
-    ///
-    /// Note: production code now uses `wire::decode_kv_inline` for performance.
-    /// This function is retained as the reference implementation for tests.
-    #[cfg(test)]
-    pub(super) fn decode_key_value_wire(kv: &[u8]) -> Result<Option<(&[u8], WireAny<'_>)>, ProjectionError> {{
+///
+/// The key bytes are returned **unvalidated**. Callers must run UTF-8
+/// validation before using the key as a `&str`.
+///
+/// Note: production code now uses `wire::decode_kv_inline` for performance.
+/// This function is retained as the reference implementation for tests.
+#[cfg(test)]
+pub(super) fn decode_key_value_wire(kv: &[u8]) -> Result<Option<(&[u8], WireAny<'_>)>, ProjectionError> {{
     let mut key = &[][..];
     let mut value = None;
     super::for_each_field(kv, |field, field_value| {{
@@ -1014,7 +1014,8 @@ def render_wire_any_appenders(spec: dict) -> str:
             f"expected={sorted(expected_kinds)} got={sorted(kinds)}"
         )
 
-    return """pub(super) fn write_wire_any(
+    return """#[inline]
+pub(super) fn write_wire_any(
     builder: &mut ColumnarBatchBuilder,
     handle: FieldHandle,
     value: WireAny<'_>,
@@ -1037,6 +1038,7 @@ def render_wire_any_appenders(spec: dict) -> str:
     Ok(())
 }
 
+#[inline]
 pub(super) fn write_wire_any_as_string(
     builder: &mut ColumnarBatchBuilder,
     handle: FieldHandle,
