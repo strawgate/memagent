@@ -1,6 +1,9 @@
 //! Output sink trait and implementations for serializing Arrow RecordBatches
 //! to various formats: stdout JSON/text, JSON lines over HTTP, OTLP protobuf.
 
+// Output hot path uses byte-level indexing and expect() on provably-present values.
+#![allow(clippy::indexing_slicing, clippy::expect_used)]
+
 mod arrow_ipc_sink;
 mod file_sink;
 mod json_lines;

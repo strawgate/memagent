@@ -34,6 +34,7 @@ pub use common::validate_host_port;
 
 impl Config {
     /// Validate the loaded configuration using a base path for relative paths.
+    #[allow(clippy::indexing_slicing, clippy::expect_used)]
     pub fn validate_with_base_path(&self, base_path: Option<&Path>) -> Result<(), ConfigError> {
         validate_server_config(&self.server)?;
         validate_storage_config(&self.storage)?;

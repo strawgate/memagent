@@ -1,3 +1,6 @@
+// IO hot path uses byte-level indexing and expect() on provably-present values.
+#![allow(clippy::indexing_slicing, clippy::expect_used)]
+
 pub mod atomic_write;
 pub(crate) mod background_http_task;
 /// Fixed-worker blocking stages for crate-internal CPU work.

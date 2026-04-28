@@ -90,6 +90,7 @@ pub(super) fn validate_log_level(level: &str) -> Result<(), ConfigError> {
     }
 }
 
+#[allow(clippy::indexing_slicing)]
 pub(super) fn validate_iso8601_timestamp(s: &str) -> Result<(), ConfigError> {
     let b = s.as_bytes();
     if b.len() != 20

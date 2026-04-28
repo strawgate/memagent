@@ -216,6 +216,10 @@ unneeded_field_pattern = "warn"
 empty_drop = "warn"
 unnecessary_safety_comment = "warn"
 unnecessary_safety_doc = "warn"
+# Catch panics, unwraps, and slicing in all code (including tests — use #[allow] in test modules).
+unwrap_used = "warn"
+expect_used = "warn"
+indexing_slicing = "warn"
 
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = [

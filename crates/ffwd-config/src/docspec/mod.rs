@@ -129,6 +129,18 @@ pub struct ComponentTypeDoc {
     pub description: &'static str,
 }
 
+/// An end-to-end starter scenario combining an input, output, and optional transform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UseCaseDoc {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    pub input_id: &'static str,
+    pub output_id: &'static str,
+    pub transform: &'static str,
+}
+
 /// Starter templates exposed for documented input configurations.
 ///
 /// # Examples
@@ -292,10 +304,60 @@ pub const INPUT_TEMPLATES: &[TemplateDoc] = &[
         type_tag: "journald",
         aliases: &[],
         label: "systemd journald",
-        description: "Read logs from the systemd journal.",
+        description: "Read structured journal entries from systemd journald.",
         support: SupportLevel::Beta,
         snippet: "type: journald\n",
-        fields: &[],
+        fields: &[
+            BuilderFieldDoc {
+                key: "include_units",
+                label: "Include units",
+                default_value: "",
+                placeholder: "nginx, redis",
+                options: &[],
+            },
+            BuilderFieldDoc {
+                key: "exclude_units",
+                label: "Exclude units",
+                default_value: "",
+                placeholder: "",
+                options: &[],
+            },
+            BuilderFieldDoc {
+                key: "priorities",
+                label: "Priorities",
+                default_value: "",
+                placeholder: "err, warning",
+                options: &[],
+            },
+            BuilderFieldDoc {
+                key: "cursor_path",
+                label: "Cursor path",
+                default_value: "",
+                placeholder: "/var/lib/ffwd/journald.cursor",
+                options: &[],
+            },
+            BuilderFieldDoc {
+                key: "current_boot_only",
+                label: "Current boot only",
+                default_value: "true",
+                placeholder: "true",
+                options: &["true", "false"],
+            },
+            BuilderFieldDoc {
+                key: "since_now",
+                label: "Since now",
+                default_value: "false",
+                placeholder: "false",
+                options: &["true", "false"],
+            },
+            BuilderFieldDoc {
+                key: "backend",
+                label: "Backend",
+                default_value: "auto",
+                placeholder: "auto",
+                options: &["auto", "native", "subprocess"],
+            },
+        ],
     },
     TemplateDoc {
         id: "generator",
@@ -453,6 +515,187 @@ pub const OUTPUT_TEMPLATES: &[TemplateDoc] = &[
         fields: &[],
     },
 ];
+
+/// Opinionated end-to-end starter scenarios for `ff wizard`.
+///
+/// Each entry references an input template and an output template by their
+/// stable identifiers (`input_id` / `output_id`).  The YAML snippets are
+/// resolved at render time by looking up the corresponding [`INPUT_TEMPLATES`]
+/// and [`OUTPUT_TEMPLATES`] entries.
+///
+/// This definition is shared between `ffwd-config` (runtime wizard), the
+/// WASM config builder, and the generated docs.  A compile-time check
+/// (`use_case_templates_valid`) ensures every `input_id` and `output_id`
+/// resolves to an existing template.
+pub const USE_CASE_TEMPLATES: &[UseCaseDoc] = &[
+    UseCaseDoc {
+        id: "redis_to_otlp",
+        title: "Redis logs to OTLP",
+        description: "Tails Redis JSON logs and sends to an OTLP collector.",
+        input_id: "file_json",
+        output_id: "otlp",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "postgresql_to_otlp",
+        title: "PostgreSQL logs to OTLP",
+        description: "Parses PostgreSQL JSON logs and ships to OTLP.",
+        input_id: "file_json",
+        output_id: "otlp",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "mysql_to_otlp",
+        title: "MySQL logs to OTLP",
+        description: "Tails MySQL JSON logs and forwards to OTLP.",
+        input_id: "file_json",
+        output_id: "otlp",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "mongodb_to_otlp",
+        title: "MongoDB logs to OTLP",
+        description: "Parses MongoDB JSON logs and forwards to OTLP.",
+        input_id: "file_json",
+        output_id: "otlp",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "kafka_to_otlp",
+        title: "Kafka logs to OTLP",
+        description: "Tails Kafka broker logs and forwards to OTLP.",
+        input_id: "file_raw",
+        output_id: "otlp",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "rabbitmq_to_otlp",
+        title: "RabbitMQ logs to OTLP",
+        description: "Tails RabbitMQ logs and forwards to OTLP.",
+        input_id: "file_raw",
+        output_id: "otlp",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "nginx_access_to_loki",
+        title: "Nginx access logs to Loki",
+        description: "Ingests Nginx access logs and sends to Loki with labels.",
+        input_id: "file_raw",
+        output_id: "loki",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "nginx_error_to_otlp",
+        title: "Nginx error logs to OTLP",
+        description: "Ingests Nginx error logs and forwards to OTLP.",
+        input_id: "file_raw",
+        output_id: "otlp",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "apache_to_elasticsearch",
+        title: "Apache logs to Elasticsearch",
+        description: "Ships Apache logs to Elasticsearch for search and dashboards.",
+        input_id: "file_raw",
+        output_id: "elasticsearch",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "systemd_journal_export_to_otlp",
+        title: "System logs (journal export) to OTLP",
+        description: "Reads journal-exported files and forwards to OTLP.",
+        input_id: "file_raw",
+        output_id: "otlp",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "auth_log_to_loki",
+        title: "Linux auth.log to Loki",
+        description: "Collects login/authentication events to Loki.",
+        input_id: "file_raw",
+        output_id: "loki",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "docker_json_to_otlp",
+        title: "Docker JSON logs to OTLP",
+        description: "Tails Docker's json-file logs and forwards to OTLP.",
+        input_id: "file_json",
+        output_id: "otlp",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "kubernetes_containers_to_otlp",
+        title: "Kubernetes container logs to OTLP",
+        description: "Reads CRI logs from Kubernetes nodes and forwards to OTLP.",
+        input_id: "file_cri",
+        output_id: "otlp",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "kubernetes_containers_to_loki",
+        title: "Kubernetes container logs to Loki",
+        description: "Reads CRI logs from Kubernetes nodes and ships to Loki.",
+        input_id: "file_cri",
+        output_id: "loki",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "syslog_udp_to_otlp",
+        title: "Network raw logs (UDP) to OTLP",
+        description: "Receives newline-delimited raw logs over UDP and forwards to OTLP.",
+        input_id: "udp_raw",
+        output_id: "otlp",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "syslog_tcp_to_elasticsearch",
+        title: "Network raw logs (TCP) to Elasticsearch",
+        description: "Receives newline-delimited raw logs over TCP and indexes them in Elasticsearch.",
+        input_id: "tcp_json",
+        output_id: "elasticsearch",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "otlp_in_to_loki",
+        title: "OTLP to Loki",
+        description: "Receives OTLP logs and forwards to Loki.",
+        input_id: "otlp_receiver",
+        output_id: "loki",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "otlp_in_to_elasticsearch",
+        title: "OTLP to Elasticsearch",
+        description: "Receives OTLP logs and indexes in Elasticsearch.",
+        input_id: "otlp_receiver",
+        output_id: "elasticsearch",
+        transform: "SELECT * FROM logs",
+    },
+    UseCaseDoc {
+        id: "app_json_errors_only",
+        title: "App JSON logs (errors only) to OTLP",
+        description: "Filters JSON app logs to warn/error before sending.",
+        input_id: "file_json",
+        output_id: "otlp",
+        transform: "SELECT * FROM logs WHERE level IN ('warn', 'error', 'WARN', 'ERROR')",
+    },
+    UseCaseDoc {
+        id: "security_audit_to_file",
+        title: "Security audit logs to local file",
+        description: "Collects audit logs and writes normalized NDJSON locally.",
+        input_id: "file_raw",
+        output_id: "file",
+        transform: "SELECT * FROM logs",
+    },
+];
+
+/// Look up a use-case preset by its stable identifier.
+///
+/// Returns `None` when `id` is not registered in [`USE_CASE_TEMPLATES`].
+pub fn use_case_template(id: &str) -> Option<&'static UseCaseDoc> {
+    USE_CASE_TEMPLATES.iter().find(|template| template.id == id)
+}
 
 /// Input component inventory used for generated support tables.
 ///
@@ -681,8 +924,8 @@ mod tests {
     use std::path::PathBuf;
 
     use super::{
-        INPUT_TEMPLATES, INPUT_TYPE_DOCS, OUTPUT_TEMPLATES, OUTPUT_TYPE_DOCS, input_template,
-        output_template, render_component_type_table,
+        INPUT_TEMPLATES, INPUT_TYPE_DOCS, OUTPUT_TEMPLATES, OUTPUT_TYPE_DOCS, USE_CASE_TEMPLATES,
+        input_template, output_template, render_component_type_table, use_case_template,
     };
 
     #[test]
@@ -714,6 +957,32 @@ mod tests {
     fn template_lookup_finds_known_templates() {
         assert!(input_template("file_json").is_some());
         assert!(output_template("stdout").is_some());
+    }
+
+    #[test]
+    fn use_case_templates_have_unique_ids() {
+        let mut ids: Vec<&str> = USE_CASE_TEMPLATES.iter().map(|t| t.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), USE_CASE_TEMPLATES.len());
+    }
+
+    #[test]
+    fn use_case_template_ids_resolve() {
+        for uc in USE_CASE_TEMPLATES {
+            assert!(
+                input_template(uc.input_id).is_some(),
+                "use case '{}' references unknown input_id '{}'",
+                uc.id,
+                uc.input_id
+            );
+            assert!(
+                output_template(uc.output_id).is_some(),
+                "use case '{}' references unknown output_id '{}'",
+                uc.id,
+                uc.output_id
+            );
+        }
     }
 
     #[test]

@@ -312,6 +312,41 @@ pipelines:
         format: json
 ```
 
+### `journald` input
+
+Read structured entries from the systemd journal using either the native `sd_journal`
+C API or a `journalctl` subprocess.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `journald.include_units` | list | No | Systemd units to include. Suffix `.service` automatically if omitted. |
+| `journald.exclude_units` | list | No | Systemd units to exclude. |
+| `journald.identifiers` | list | No | Syslog identifiers (`SYSLOG_IDENTIFIER=`) to include. |
+| `journald.priorities` | list | No | Priority/log levels to include (e.g. `0`, `3`, `info`, `err`). |
+| `journald.cursor_path` | string | No | Path to persist cursor for resume after restarts. |
+| `journald.include_boot_id` | bool | No | Include `_BOOT_ID` field (default: false). |
+| `journald.current_boot_only` | bool | No | Only include entries from the current boot (default: true). |
+| `journald.since_now` | bool | No | Only include entries appended after start (default: false). |
+| `journald.journalctl_path` | string | No | Path to `journalctl` binary. Defaults to `journalctl` on PATH. |
+| `journald.journal_directory` | string | No | Custom journal directory (`--directory=<path>`). |
+| `journald.journal_namespace` | string | No | Journal namespace (`--namespace=<ns>`). |
+| `journald.backend` | enum | No | `auto` (default), `native` (require sd_journal API), or `subprocess` (always use journalctl). |
+
+```yaml
+pipelines:
+  default:
+    inputs:
+      - type: journald
+        journald:
+          include_units:
+            - nginx
+            - redis
+          priorities:
+            - err
+            - warning
+          cursor_path: /var/lib/ffwd/journald.cursor
+```
+
 ### `host_metrics` input
 
 Host metrics input that collects process snapshots, CPU, memory, and network

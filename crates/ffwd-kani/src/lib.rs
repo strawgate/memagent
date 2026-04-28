@@ -22,7 +22,7 @@
 #![warn(missing_docs)]
 // Oracle functions are intentionally simple; some use manual loops for Kani
 // compatibility, leading to patterns clippy would normally flag.
-#![allow(clippy::manual_is_ascii_check)]
+#![allow(clippy::manual_is_ascii_check, clippy::indexing_slicing)]
 
 pub mod bytes;
 pub mod datetime;

@@ -3,6 +3,9 @@
 //! All types are `repr(C)` for stable ABI across the BPF↔userspace boundary.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+// eBPF shared types crate: indexing is intentional for wire-format parsing
+// and unwrap is used in infallible contexts.
+#![allow(clippy::indexing_slicing, clippy::unwrap_used)]
 
 #[cfg(feature = "std")]
 pub mod dns;

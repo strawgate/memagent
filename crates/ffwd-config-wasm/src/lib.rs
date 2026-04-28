@@ -2,60 +2,14 @@ use ffwd_config::{Config, docspec};
 use wasm_bindgen::prelude::*;
 
 // ── Template data ──────────────────────────────────────────────────────────
-// Shared input/output templates live in `ffwd-config::docspec`.
-
-#[derive(serde::Serialize)]
-struct UseCaseTemplate {
-    id: &'static str,
-    title: &'static str,
-    description: &'static str,
-    input_id: &'static str,
-    output_id: &'static str,
-    transform: &'static str,
-}
-
-const USE_CASE_TEMPLATES: &[UseCaseTemplate] = &[
-    UseCaseTemplate {
-        id: "k8s_to_otlp",
-        title: "Kubernetes → OTLP",
-        description: "Collect Kubernetes pod logs and ship to an OTLP collector.",
-        input_id: "file_cri",
-        output_id: "otlp",
-        transform: "SELECT * FROM logs",
-    },
-    UseCaseTemplate {
-        id: "nginx_to_loki",
-        title: "nginx → Loki",
-        description: "Tail nginx access logs and push to Grafana Loki.",
-        input_id: "file_json",
-        output_id: "loki",
-        transform: "SELECT * FROM logs WHERE status >= 400",
-    },
-    UseCaseTemplate {
-        id: "nginx_to_es",
-        title: "nginx → Elasticsearch",
-        description: "Index nginx access logs in Elasticsearch.",
-        input_id: "file_json",
-        output_id: "elasticsearch",
-        transform: "SELECT * FROM logs",
-    },
-    UseCaseTemplate {
-        id: "syslog_to_otlp",
-        title: "syslog UDP → OTLP",
-        description: "Receive syslog over UDP and forward to OTLP.",
-        input_id: "udp_raw",
-        output_id: "otlp",
-        transform: "SELECT * FROM logs",
-    },
-    UseCaseTemplate {
-        id: "otlp_passthrough",
-        title: "OTLP passthrough",
-        description: "Receive OTLP logs and re-emit to a downstream collector.",
-        input_id: "otlp_receiver",
-        output_id: "otlp",
-        transform: "SELECT * FROM logs",
-    },
-];
+// All template data lives in `ffwd-config::docspec`.  This module re-exports
+// from there to eliminate the risk of drift between the CLI wizard, the
+// browser-based config builder, and the generated docs.
+//
+// Use-case templates use `UseCaseDoc` from docspec (serialized as camelCase
+// JSON for the JS side).
+pub(crate) type UseCaseTemplate = docspec::UseCaseDoc;
+const USE_CASE_TEMPLATES: &[UseCaseTemplate] = docspec::USE_CASE_TEMPLATES;
 
 // ── WASM exports ───────────────────────────────────────────────────────────
 
