@@ -14,8 +14,8 @@ use std::sync::Arc;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use ffwd_bench::generators;
 use ffwd_output::{
-    BatchMetadata, StdoutFormat, StdoutSink, build_col_infos, resolve_col_infos, write_row_json,
-    write_row_json_resolved,
+    StdoutFormat, StdoutSink, build_col_infos, resolve_col_infos, write_batch_json_resolved,
+    write_row_json, write_row_json_resolved,
 };
 use ffwd_types::diagnostics::ComponentStats;
 
@@ -82,6 +82,23 @@ fn bench_json_lines(c: &mut Criterion) {
                                 .expect("JSON serialization should not fail");
                             buf.push(b'\n');
                         }
+                        std::hint::black_box(&buf);
+                    });
+                },
+            );
+
+            // ── write_batch_json_resolved (batch-level with pre-reserve) ─
+            group.bench_with_input(
+                BenchmarkId::new("write_batch_json_resolved", &label),
+                batch,
+                |b, batch| {
+                    let cols = build_col_infos(batch);
+                    let resolved = resolve_col_infos(batch, &cols);
+                    let mut buf = Vec::with_capacity(*n * 300);
+                    b.iter(|| {
+                        buf.clear();
+                        write_batch_json_resolved(&resolved, batch.num_rows(), &mut buf)
+                            .expect("batch JSON should not fail");
                         std::hint::black_box(&buf);
                     });
                 },
