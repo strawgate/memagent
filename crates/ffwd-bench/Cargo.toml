@@ -12,7 +12,9 @@ autobins = false
 # Enables helper/profiling binaries and their non-benchmark dependency graph.
 bench-tools = ["dep:parquet"]
 dhat-heap = ["dep:dhat"]
+io-bench = ["dep:ffwd-io", "ffwd-io/otlp-research"]
 otlp-profile-alloc = []
+s3-bench = ["io-bench", "ffwd-io/s3"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
@@ -26,10 +28,7 @@ dhat = { version = "0.3", optional = true }
 fastrand = "2"
 ffwd-arrow = { version = "0.1.0", path = "../ffwd-arrow" }
 ffwd-core = { version = "0.1.0", path = "../ffwd-core" }
-ffwd-io = { version = "0.1.0", path = "../ffwd-io", features = [
-    "otlp-research",
-    "s3",
-] }
+ffwd-io = { version = "0.1.0", path = "../ffwd-io", optional = true }
 ffwd-output = { version = "0.1.0", path = "../ffwd-output" }
 ffwd-transform = { version = "0.1.0", path = "../ffwd-transform" }
 ffwd-types = { version = "0.1.0", path = "../ffwd-types" }
@@ -47,7 +46,7 @@ serde_json = "1"
 stats_alloc = { workspace = true }
 tempfile = "3"
 tiny_http = "0.12"
-tokio = { version = "1", features = ["rt-multi-thread"] }
+tokio = { version = "1", features = ["rt-multi-thread", "fs", "io-util"] }
 
 # Research: library evaluation candidates
 async-compression = { version = "0.4", features = ["tokio", "zstd", "gzip"] }
@@ -71,6 +70,7 @@ harness = false
 [[bench]]
 name = "pipeline"
 harness = false
+required-features = ["io-bench"]
 
 [[bench]]
 name = "elasticsearch_arrow"
@@ -83,6 +83,7 @@ harness = false
 [[bench]]
 name = "output_encode"
 harness = false
+required-features = ["io-bench"]
 
 [[bench]]
 name = "otap_proto"
@@ -91,6 +92,7 @@ harness = false
 [[bench]]
 name = "otlp_io"
 harness = false
+required-features = ["io-bench"]
 
 [[bench]]
 name = "full_chain"
@@ -115,6 +117,7 @@ harness = false
 [[bench]]
 name = "s3_input"
 harness = false
+required-features = ["s3-bench"]
 
 [[bench]]
 name = "source_metadata"
@@ -123,6 +126,7 @@ harness = false
 [[bench]]
 name = "generator_arrow_vs_json"
 harness = false
+required-features = ["io-bench"]
 
 [[bench]]
 name = "hot_path_kernels"
@@ -161,11 +165,18 @@ test = false
 required-features = ["bench-tools"]
 
 [[bin]]
+name = "file_sink_compare"
+path = "src/bin/file_sink_compare.rs"
+bench = false
+test = false
+required-features = ["bench-tools"]
+
+[[bin]]
 name = "framed_input_profile"
 path = "src/bin/framed_input_profile.rs"
 bench = false
 test = false
-required-features = ["bench-tools"]
+required-features = ["bench-tools", "io-bench"]
 
 [[bin]]
 name = "generator_profile"
@@ -200,7 +211,7 @@ name = "otlp_e2e_profile"
 path = "src/bin/otlp_e2e_profile.rs"
 bench = false
 test = false
-required-features = ["bench-tools"]
+required-features = ["bench-tools", "io-bench"]
 
 [[bin]]
 name = "otlp_encode_profile"
@@ -214,7 +225,7 @@ name = "otlp_io_profile"
 path = "src/bin/otlp_io_profile.rs"
 bench = false
 test = false
-required-features = ["bench-tools"]
+required-features = ["bench-tools", "io-bench"]
 
 [[bin]]
 name = "source_metadata_profile"
@@ -228,7 +239,7 @@ name = "e2e_profile"
 path = "src/e2e_profile.rs"
 bench = false
 test = false
-required-features = ["bench-tools"]
+required-features = ["bench-tools", "io-bench"]
 
 [[bin]]
 name = "explore"

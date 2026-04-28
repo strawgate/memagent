@@ -10,6 +10,7 @@ mod json_lines;
 mod null;
 mod otap_sink;
 mod otlp_sink;
+pub mod pipelined;
 pub(crate) mod retry_writer;
 pub mod sink;
 mod stdout;
@@ -46,6 +47,9 @@ pub use otap_sink::{
     encode_batch_arrow_records_generated_fast,
 };
 pub use otlp_sink::{OtlpSink, OtlpSinkFactory};
+pub use pipelined::{
+    BatchSerializer, BatchWriter, FileWriter, JsonBatchSerializer, PipelineConfig, PipelinedSink,
+};
 pub use sink::{
     AsyncFanoutFactory, AsyncFanoutSink, OnceAsyncFactory, SendResult, Sink, SinkFactory,
 };
