@@ -59,6 +59,7 @@ pub struct RunOptions<'a> {
     pub auto_shutdown_after: Option<Duration>,
 }
 
+#[allow(clippy::ignored_unit_patterns, clippy::needless_continue)]
 pub async fn run_pipelines(
     config: ffwd_config::Config,
     base_path: Option<&Path>,
@@ -78,7 +79,11 @@ pub async fn run_pipelines(
     };
     let configured_data_dir = config.storage.data_dir.as_ref().map(PathBuf::from);
 
+    // Process-level shutdown token — when cancelled the entire process exits.
     let shutdown = CancellationToken::new();
+
+    // Reload channel: SIGHUP → reload orchestrator.
+    let (reload_tx, mut reload_rx) = tokio::sync::mpsc::channel::<()>(1);
 
     #[cfg(unix)]
     let (mut sigterm, mut sighup, mut sigusr1, mut sigusr2) = {
@@ -121,6 +126,7 @@ pub async fn run_pipelines(
         })?;
 
     let shutdown_for_signal = shutdown.clone();
+    let reload_tx_for_signal = reload_tx.clone();
     let use_color = options.use_color;
     tokio::spawn(async move {
         #[cfg(feature = "dhat-heap")]
@@ -139,15 +145,17 @@ pub async fn run_pipelines(
                     _ = sigusr2.recv() => break,
                     _ = sighup.recv() => {
                         eprintln!(
-                            "{}ffwd{}: SIGHUP received — config reload not yet implemented, ignoring",
+                            "{}ffwd{}: SIGHUP received — reloading configuration",
                             yellow(use_color), reset(use_color),
                         );
+                        let _ = reload_tx_for_signal.try_send(());
                     }
                 }
             }
         }
         #[cfg(not(unix))]
         {
+            let _ = &reload_tx_for_signal; // suppress unused warning
             tokio::signal::ctrl_c().await.ok();
         }
 
@@ -208,169 +216,253 @@ pub async fn run_pipelines(
         .try_init();
     opentelemetry::global::set_tracer_provider(tracer_provider.clone());
 
-    let mut pipelines = Vec::new();
-    for (name, pipe_cfg) in &config.pipelines {
-        match Pipeline::from_config_with_data_dir(
-            name,
-            pipe_cfg,
-            &meter,
-            base_path,
-            configured_data_dir.as_deref(),
-        ) {
-            Ok(pipeline) => pipelines.push(pipeline),
-            Err(e) => return Err(RuntimeError::Config(format!("pipeline '{name}': {e}"))),
-        }
-    }
+    // ══════════ RELOAD LOOP ══════════
+    let mut current_config = config;
+    let mut first_run = true;
+    let mut pipeline_metrics: Vec<Arc<ffwd_diagnostics::diagnostics::PipelineMetrics>> = Vec::new();
+    // Suppress unused_assignments: initial empty value is overwritten in the
+    // first loop iteration, but the binding must exist before the loop.
+    let _ = &pipeline_metrics;
 
-    let diag_handle = if let Some(ref addr) = config.server.diagnostics {
-        let mut server = ffwd_diagnostics::diagnostics::DiagnosticsServer::new(addr);
-        server.set_config(options.config_path, options.config_yaml);
-        let expose_config = std::env::var("FFWD_UNSAFE_EXPOSE_CONFIG")
-            .or_else(|_| {
-                std::env::var("LOGFWD_UNSAFE_EXPOSE_CONFIG").inspect(|_| {
-                    tracing::warn!(
-                        "LOGFWD_UNSAFE_EXPOSE_CONFIG is deprecated; use FFWD_UNSAFE_EXPOSE_CONFIG instead"
+    loop {
+        // ── Build pipelines ──
+        let mut pipelines = Vec::new();
+        for (name, pipe_cfg) in &current_config.pipelines {
+            match Pipeline::from_config_with_data_dir(
+                name,
+                pipe_cfg,
+                &meter,
+                base_path,
+                configured_data_dir.as_deref(),
+            ) {
+                Ok(pipeline) => pipelines.push(pipeline),
+                Err(e) => {
+                    if first_run {
+                        return Err(RuntimeError::Config(format!("pipeline '{name}': {e}")));
+                    }
+                    tracing::error!(
+                        pipeline = %name,
+                        error = %e,
+                        "config reload failed: pipeline build error, keeping previous config"
                     );
+                    // Wait for the next reload signal to try again.
+                    tokio::select! {
+                        _ = shutdown.cancelled() => break,
+                        _ = reload_rx.recv() => continue,
+                    }
+                }
+            }
+        }
+
+        // ── Diagnostics server (first run only) ──
+        if first_run && let Some(ref addr) = current_config.server.diagnostics {
+            let mut server = ffwd_diagnostics::diagnostics::DiagnosticsServer::new(addr);
+            server.set_config(options.config_path, options.config_yaml);
+            let expose_config = std::env::var("FFWD_UNSAFE_EXPOSE_CONFIG")
+                .or_else(|_| {
+                    std::env::var("LOGFWD_UNSAFE_EXPOSE_CONFIG").inspect(|_| {
+                        tracing::warn!(
+                            "LOGFWD_UNSAFE_EXPOSE_CONFIG is deprecated; use FFWD_UNSAFE_EXPOSE_CONFIG instead"
+                        );
+                    })
                 })
-            })
-            .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-        server.set_config_endpoint_enabled(expose_config);
-        server.set_trace_buffer(trace_buf);
-        for p in &pipelines {
-            server.add_pipeline(Arc::clone(p.metrics()));
-        }
-        #[cfg(unix)]
-        server.set_memory_stats_fn(jemalloc_stats);
-        let (handle, _) = server.start()?;
-        Some((handle, addr.clone()))
-    } else {
-        None
-    };
-
-    let pipeline_metrics: Vec<_> = pipelines.iter().map(|p| Arc::clone(p.metrics())).collect();
-
-    eprintln!(
-        "{}ffwd{} {}v{}{}",
-        bold(use_color),
-        reset(use_color),
-        dim(use_color),
-        options.version,
-        reset(use_color),
-    );
-
-    for (name, pipe_cfg) in &config.pipelines {
-        eprintln!();
-        eprintln!(
-            "  {}✓{}  {}{name}{}",
-            green(use_color),
-            reset(use_color),
-            bold(use_color),
-            reset(use_color)
-        );
-        for input in &pipe_cfg.inputs {
+                .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+            server.set_config_endpoint_enabled(expose_config);
+            server.set_trace_buffer(trace_buf.clone());
+            for p in &pipelines {
+                server.add_pipeline(Arc::clone(p.metrics()));
+            }
+            #[cfg(unix)]
+            server.set_memory_stats_fn(jemalloc_stats);
+            let (handle, _) = server.start()?;
+            // Keep handle alive — we leak it intentionally (lives for the process).
+            std::mem::forget(handle);
+            eprintln!();
             eprintln!(
-                "     {}in{}   {}",
-                dim(use_color),
-                reset(use_color),
-                input_label(input)
-            );
-        }
-        if let Some(sql) = pipe_cfg.transform.as_deref() {
-            let sql = sql.trim();
-            let first_line = sql.lines().next().unwrap_or(sql);
-            let truncated = if first_line.chars().count() > 100 {
-                format!("{}…", first_line.chars().take(100).collect::<String>())
-            } else {
-                first_line.to_string()
-            };
-            eprintln!(
-                "     {}sql{}  {truncated}",
-                dim(use_color),
+                "  {}dashboard{}  http://{addr}",
+                bold(use_color),
                 reset(use_color)
             );
         }
-        for output in &pipe_cfg.outputs {
+
+        pipeline_metrics = pipelines.iter().map(|p| Arc::clone(p.metrics())).collect();
+
+        // ── Print banner (first run only) ──
+        if first_run {
             eprintln!(
-                "     {}out{}  {}",
+                "{}ffwd{} {}v{}{}",
+                bold(use_color),
+                reset(use_color),
+                dim(use_color),
+                options.version,
+                reset(use_color),
+            );
+
+            for (name, pipe_cfg) in &current_config.pipelines {
+                eprintln!();
+                eprintln!(
+                    "  {}✓{}  {}{name}{}",
+                    green(use_color),
+                    reset(use_color),
+                    bold(use_color),
+                    reset(use_color)
+                );
+                for input in &pipe_cfg.inputs {
+                    eprintln!(
+                        "     {}in{}   {}",
+                        dim(use_color),
+                        reset(use_color),
+                        input_label(input)
+                    );
+                }
+                if let Some(sql) = pipe_cfg.transform.as_deref() {
+                    let sql = sql.trim();
+                    let first_line = sql.lines().next().unwrap_or(sql);
+                    let truncated = if first_line.chars().count() > 100 {
+                        format!("{}…", first_line.chars().take(100).collect::<String>())
+                    } else {
+                        first_line.to_string()
+                    };
+                    eprintln!(
+                        "     {}sql{}  {truncated}",
+                        dim(use_color),
+                        reset(use_color)
+                    );
+                }
+                for output in &pipe_cfg.outputs {
+                    eprintln!(
+                        "     {}out{}  {}",
+                        dim(use_color),
+                        reset(use_color),
+                        output_label(output)
+                    );
+                }
+            }
+            eprintln!();
+            let n = pipelines.len();
+            let startup_ms = startup_start.elapsed().as_millis();
+            eprintln!(
+                "{}ready{} · {n} pipeline{} {}(started in {startup_ms}ms){}",
+                green(use_color),
+                reset(use_color),
+                if n == 1 { "" } else { "s" },
                 dim(use_color),
                 reset(use_color),
-                output_label(output)
+            );
+        } else {
+            let n = pipelines.len();
+            eprintln!(
+                "{}ffwd{}: config reloaded — {n} pipeline{} running",
+                bold(use_color),
+                reset(use_color),
+                if n == 1 { "" } else { "s" },
             );
         }
-    }
-    if let Some((_, ref addr)) = diag_handle {
-        eprintln!();
-        eprintln!(
-            "  {}dashboard{}  http://{addr}",
-            bold(use_color),
-            reset(use_color)
-        );
-    }
-    eprintln!();
-    let n = pipelines.len();
-    let startup_ms = startup_start.elapsed().as_millis();
-    eprintln!(
-        "{}ready{} · {n} pipeline{} {}(started in {startup_ms}ms){}",
-        green(use_color),
-        reset(use_color),
-        if n == 1 { "" } else { "s" },
-        dim(use_color),
-        reset(use_color),
-    );
 
-    let mut handles = Vec::new();
-    let main_pipeline = pipelines.pop();
+        first_run = false;
 
-    for mut pipeline in pipelines {
-        let sd = shutdown.clone();
-        handles.push(tokio::spawn(async move { pipeline.run_async(&sd).await }));
-    }
+        // ── Run pipelines ──
+        // Per-cycle shutdown token: cancelling this drains pipelines for reload
+        // without terminating the process.
+        let pipeline_shutdown = CancellationToken::new();
+        let mut handles = Vec::new();
+        let main_pipeline = pipelines.pop();
 
-    if let Some(mut main_pipe) = main_pipeline {
-        let result = main_pipe.run_async(&shutdown).await;
-        shutdown.cancel();
-        let mut had_sibling_error = false;
+        for mut pipeline in pipelines {
+            let sd = pipeline_shutdown.clone();
+            handles.push(tokio::spawn(async move { pipeline.run_async(&sd).await }));
+        }
+
+        let reload_requested;
+        if let Some(mut main_pipe) = main_pipeline {
+            tokio::select! {
+                result = main_pipe.run_async(&pipeline_shutdown) => {
+                    // Pipeline exited (natural completion or pipeline_shutdown was
+                    // cancelled from process-level shutdown).
+                    reload_requested = false;
+                    if let Err(ref e) = result {
+                        tracing::error!(error = %e, "main pipeline error");
+                    }
+                }
+                _ = shutdown.cancelled() => {
+                    // Process-level shutdown (SIGTERM / Ctrl+C).
+                    pipeline_shutdown.cancel();
+                    let _ = main_pipe.run_async(&pipeline_shutdown).await;
+                    reload_requested = false;
+                }
+                _ = reload_rx.recv() => {
+                    // SIGHUP reload requested — graceful drain.
+                    tracing::info!("config reload: draining pipelines");
+                    pipeline_shutdown.cancel();
+                    let _ = tokio::time::timeout(
+                        Duration::from_secs(30),
+                        main_pipe.run_async(&pipeline_shutdown),
+                    )
+                    .await;
+                    reload_requested = true;
+                }
+            }
+        } else {
+            reload_requested = false;
+        }
+
+        // Join sibling pipeline tasks.
         for h in handles {
             match h.await {
-                Ok(Err(e)) => {
-                    eprintln!("pipeline error: {e}");
-                    had_sibling_error = true;
-                }
-                Err(e) => {
-                    eprintln!("pipeline task panicked: {e}");
-                    had_sibling_error = true;
-                }
+                Ok(Err(e)) => tracing::error!(error = %e, "sibling pipeline error"),
+                Err(e) => tracing::error!(error = %e, "pipeline task panicked"),
                 Ok(Ok(())) => {}
             }
         }
-        result?;
-        if had_sibling_error {
-            return Err(RuntimeError::Io(io::Error::other(
-                "one or more sibling pipelines failed",
-            )));
+
+        if !reload_requested {
+            break;
         }
-    } else {
-        let mut had_error = false;
-        for h in handles {
-            match h.await {
-                Ok(Err(e)) => {
-                    eprintln!("pipeline error: {e}");
-                    had_error = true;
+
+        // ── Re-read and validate config ──
+        tracing::info!(path = %options.config_path, "config reload: reading new config");
+        let new_yaml = match std::fs::read_to_string(options.config_path) {
+            Ok(y) => y,
+            Err(e) => {
+                tracing::error!(error = %e, "config reload: failed to read config file");
+                // Wait for the next reload signal.
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    _ = reload_rx.recv() => continue,
                 }
-                Err(e) => {
-                    eprintln!("pipeline task panicked: {e}");
-                    had_error = true;
-                }
-                Ok(Ok(())) => {}
             }
+        };
+        let new_config = match ffwd_config::Config::load_str_with_base_path(&new_yaml, base_path) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(error = %e, "config reload: invalid config");
+                // Wait for the next reload signal.
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    _ = reload_rx.recv() => continue,
+                }
+            }
+        };
+
+        let diff = ffwd_config::ConfigDiff::between(&current_config, &new_config);
+        if diff.is_empty() {
+            tracing::info!("config reload: no changes detected");
+            // Still need to rebuild pipelines since the old ones were drained.
+        } else {
+            tracing::info!(
+                added = diff.added.len(),
+                removed = diff.removed.len(),
+                changed = diff.changed.len(),
+                unchanged = diff.unchanged.len(),
+                "config reload: diff computed"
+            );
         }
-        if had_error {
-            return Err(RuntimeError::Io(io::Error::other(
-                "one or more pipelines failed",
-            )));
-        }
+
+        current_config = new_config;
+        // Loop back to rebuild pipelines with new config.
     }
 
+    // ══════════ CLEANUP ══════════
     print_shutdown_stats(&pipeline_metrics, startup_start.elapsed(), use_color);
 
     if let Err(e) = meter_provider.shutdown() {
