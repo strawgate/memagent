@@ -317,7 +317,8 @@ pub(super) fn append_data_row_origins(
 
     let mut line_start = 0usize;
     for newline in memchr::memchr_iter(b'\n', bytes) {
-        let segment_has_content = scanner_line_has_content(&bytes[line_start..newline]);
+        let segment = bytes.get(line_start..newline).unwrap_or_default();
+        let segment_has_content = scanner_line_has_content(segment);
         if let Some(pending) = pending_row_origin
             && pending.source_id != source_id
         {
@@ -340,7 +341,7 @@ pub(super) fn append_data_row_origins(
         line_start = newline + 1;
     }
 
-    let tail = &bytes[line_start..];
+    let tail = bytes.get(line_start..).unwrap_or_default();
     if !tail.is_empty() {
         let tail_has_content = scanner_line_has_content(tail);
         match pending_row_origin {
@@ -723,6 +724,11 @@ pub(super) fn process_buffered_events(
                 source_id,
                 cri_metadata,
             } => {
+                let Some(data_bytes) = input.buf.get(range.clone()) else {
+                    input.stats.inc_errors();
+                    tracing::warn!(?range, "framed input returned out-of-bounds data range");
+                    return false;
+                };
                 if source_metadata_plan.has_any() {
                     if source_metadata_plan.has_source_path() {
                         capture_source_path(
@@ -736,14 +742,19 @@ pub(super) fn process_buffered_events(
                         pending_row_origin,
                         source_id,
                         input_name,
-                        &input.buf[range.clone()],
+                        data_bytes,
                     );
                 }
+                let Some(prefix_bytes) = input.buf.get(..range.start) else {
+                    input.stats.inc_errors();
+                    tracing::warn!(?range, "framed input returned out-of-bounds prefix range");
+                    return false;
+                };
                 append_cri_metadata_for_data(
                     &mut input.cri_metadata,
                     cri_metadata,
-                    &input.buf[..range.start],
-                    &input.buf[range],
+                    prefix_bytes,
+                    data_bytes,
                 );
             }
             FramedReadEvent::Rotated { .. } => {

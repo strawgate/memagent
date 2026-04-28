@@ -105,10 +105,14 @@ pub fn cascading_flush(
     let mut all_output = SmallVec::new();
 
     for i in 0..processors.len() {
-        let mut emitted = processors[i].flush();
+        let (_, tail) = processors.split_at_mut(i);
+        let Some((processor, remaining)) = tail.split_first_mut() else {
+            continue;
+        };
+        let mut emitted = processor.flush();
 
         // Cascade through remaining processors
-        for processor in &mut processors[(i + 1)..] {
+        for processor in remaining {
             let mut next = SmallVec::new();
             for b in emitted {
                 match processor.process(b, meta) {

@@ -170,9 +170,21 @@ impl ScalarUDFImpl for RegexpExtractUdf {
             ));
         }
 
-        let input = &args.args[0];
-        let pattern = &args.args[1];
-        let group_idx = &args.args[2];
+        let input = args.args.first().ok_or_else(|| {
+            datafusion::error::DataFusionError::Execution(
+                "regexp_extract() expects an input argument".to_string(),
+            )
+        })?;
+        let pattern = args.args.get(1).ok_or_else(|| {
+            datafusion::error::DataFusionError::Execution(
+                "regexp_extract() expects a pattern argument".to_string(),
+            )
+        })?;
+        let group_idx = args.args.get(2).ok_or_else(|| {
+            datafusion::error::DataFusionError::Execution(
+                "regexp_extract() expects a group index argument".to_string(),
+            )
+        })?;
 
         // Extract the pattern string (must be a constant/scalar).
         let pattern_str = match pattern {

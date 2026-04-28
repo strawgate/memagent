@@ -91,7 +91,15 @@ pub fn get_output_snippet(id: &str) -> Option<String> {
 fn serde_wasm_bindgen_or_json<T: serde::Serialize + ?Sized>(value: &T) -> JsValue {
     // Serialize to JSON string then parse — avoids needing serde-wasm-bindgen.
     // All callers pass compile-time static data; serialization cannot fail.
+    #[expect(
+        clippy::expect_used,
+        reason = "static template data should always serialize to JSON"
+    )]
     let json = serde_json::to_string(value).expect("static template data serialization failed");
+    #[expect(
+        clippy::expect_used,
+        reason = "serde_json output should always parse as JavaScript JSON"
+    )]
     js_sys::JSON::parse(&json).expect("static template data produced invalid JSON")
 }
 

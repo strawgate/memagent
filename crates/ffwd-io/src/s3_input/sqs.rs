@@ -365,7 +365,30 @@ pub(super) fn extract_region_from_sqs_url(url: &str) -> Option<String> {
 
 fn parse_receive_messages_response(data: &Bytes) -> io::Result<Vec<SqsMessage>> {
     use quick_xml::Reader;
+    use quick_xml::escape::resolve_predefined_entity;
+    use quick_xml::events::BytesRef;
     use quick_xml::events::Event;
+
+    fn push_xml_reference(out: &mut String, reference: BytesRef<'_>) -> io::Result<()> {
+        if let Some(ch) = reference
+            .resolve_char_ref()
+            .map_err(|e| io::Error::other(format!("SQS XML character reference: {e}")))?
+        {
+            out.push(ch);
+            return Ok(());
+        }
+
+        let decoded = reference
+            .decode()
+            .map_err(|e| io::Error::other(format!("SQS XML reference decode: {e}")))?;
+        let Some(entity) = resolve_predefined_entity(decoded.as_ref()) else {
+            return Err(io::Error::other(format!(
+                "SQS XML unrecognized entity: &{decoded};"
+            )));
+        };
+        out.push_str(entity);
+        Ok(())
+    }
 
     let mut reader = Reader::from_reader(data.as_ref());
     reader.config_mut().trim_text(true);
@@ -375,6 +398,7 @@ fn parse_receive_messages_response(data: &Bytes) -> io::Result<Vec<SqsMessage>> 
     let mut receipt_handle = String::new();
     let mut body = String::new();
     let mut capture: Option<&'static str> = None;
+    let mut current_text = String::new();
 
     let mut buf = Vec::new();
     loop {
@@ -385,40 +409,57 @@ fn parse_receive_messages_response(data: &Bytes) -> io::Result<Vec<SqsMessage>> 
                     receipt_handle.clear();
                     body.clear();
                 }
-                b"ReceiptHandle" if in_message => capture = Some("receipt"),
-                b"Body" if in_message => capture = Some("body"),
+                b"ReceiptHandle" if in_message => {
+                    capture = Some("receipt");
+                    current_text.clear();
+                }
+                b"Body" if in_message => {
+                    capture = Some("body");
+                    current_text.clear();
+                }
                 _ => {}
             },
-            Ok(Event::Text(e)) => {
-                if let Some(field) = capture {
-                    let text = e
-                        .unescape()
-                        .map_err(|e| io::Error::other(format!("SQS XML unescape: {e}")))?;
-                    match field {
-                        "receipt" => receipt_handle = text.into_owned(),
-                        "body" => body = text.into_owned(),
-                        _ => {}
-                    }
+            Ok(Event::Text(e)) if capture.is_some() => {
+                let decoded = e
+                    .decode()
+                    .map_err(|e| io::Error::other(format!("SQS XML decode: {e}")))?;
+                current_text.push_str(decoded.as_ref());
+            }
+            Ok(Event::GeneralRef(e)) if capture.is_some() => {
+                push_xml_reference(&mut current_text, e)?;
+            }
+            Ok(Event::CData(e)) if capture.is_some() => {
+                current_text.push_str(&String::from_utf8_lossy(e.into_inner().as_ref()));
+            }
+            Ok(Event::End(e)) => match e.local_name().as_ref() {
+                b"ReceiptHandle" if capture == Some("receipt") => {
+                    receipt_handle.clone_from(&current_text);
                     capture = None;
+                    current_text.clear();
                 }
-            }
-            Ok(Event::CData(e)) if capture == Some("body") => {
-                body = String::from_utf8_lossy(e.into_inner().as_ref()).into_owned();
-                capture = None;
-            }
-            Ok(Event::End(e)) if e.local_name().as_ref() == b"Message" && in_message => {
-                in_message = false;
-                let records = parse_s3_event_body(&body);
-                // Always push the message even when records is empty.
-                // The discovery loop deletes non-actionable messages
-                // (test notifications, non-ObjectCreated events) by
-                // checking `records.is_empty()`.
-                messages.push(SqsMessage {
-                    receipt_handle: receipt_handle.clone(),
-                    records,
-                });
-                capture = None;
-            }
+                b"Body" if capture == Some("body") => {
+                    body.clone_from(&current_text);
+                    capture = None;
+                    current_text.clear();
+                }
+                b"Message" if in_message => {
+                    in_message = false;
+                    let records = parse_s3_event_body(&body);
+                    // Always push the message even when records is empty.
+                    // The discovery loop deletes non-actionable messages
+                    // (test notifications, non-ObjectCreated events) by
+                    // checking `records.is_empty()`.
+                    messages.push(SqsMessage {
+                        receipt_handle: receipt_handle.clone(),
+                        records,
+                    });
+                    receipt_handle.clear();
+                    body.clear();
+                    capture = None;
+                    current_text.clear();
+                }
+                _ => {}
+            },
             Ok(Event::Eof) => break,
             Err(e) => {
                 return Err(io::Error::other(format!("SQS XML parse: {e}")));
@@ -575,5 +616,26 @@ mod tests {
         let body = r#"{"Records":[{"eventName":"ObjectRemoved:Delete","s3":{"object":{"key":"k","size":0}}}]}"#;
         let records = parse_s3_event_body(body);
         assert!(records.is_empty());
+    }
+
+    #[test]
+    fn parse_receive_messages_response_preserves_entity_fragments() {
+        let xml = Bytes::from_static(
+            br#"<ReceiveMessageResponse>
+  <ReceiveMessageResult>
+    <Message>
+      <ReceiptHandle>rh&amp;&#49;</ReceiptHandle>
+      <Body>{&quot;Records&quot;:[{&quot;eventName&quot;:&quot;ObjectCreated:Put&quot;,&quot;s3&quot;:{&quot;object&quot;:{&quot;key&quot;:&quot;logs%2Fapp%26x.log&quot;,&quot;size&quot;:42}}}]}</Body>
+    </Message>
+  </ReceiveMessageResult>
+</ReceiveMessageResponse>"#,
+        );
+
+        let messages = parse_receive_messages_response(&xml).expect("parse ok");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].receipt_handle, "rh&1");
+        assert_eq!(messages[0].records.len(), 1);
+        assert_eq!(messages[0].records[0].key, "logs/app&x.log");
+        assert_eq!(messages[0].records[0].size, 42);
     }
 }

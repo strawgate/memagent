@@ -211,17 +211,27 @@ fn bench_backpressure_mixed(c: &mut Criterion) {
                     format!("d{delay_ms}_c{capacity}_p{producers}"),
                     format!("{delay_ms}_{capacity}_{producers}"),
                 );
-                group.bench_with_input(id, &(delay_ms, capacity, producers), |b, &(delay, capacity, producers)| {
-                    let bytes = data_bytes.clone();
-                    b.iter_custom(|iters| {
-                        let start = Instant::now();
-                        for _ in 0..iters {
-                            let result = run_backpressure_benchmark(delay, &bytes, capacity, producers, RUNTIME_SECS);
-                            std::hint::black_box(result);
-                        }
-                        start.elapsed()
-                    });
-                });
+                group.bench_with_input(
+                    id,
+                    &(delay_ms, capacity, producers),
+                    |b, &(delay, capacity, producers)| {
+                        let bytes = data_bytes.clone();
+                        b.iter_custom(|iters| {
+                            let start = Instant::now();
+                            for _ in 0..iters {
+                                let result = run_backpressure_benchmark(
+                                    delay,
+                                    &bytes,
+                                    capacity,
+                                    producers,
+                                    RUNTIME_SECS,
+                                );
+                                std::hint::black_box(result);
+                            }
+                            start.elapsed()
+                        });
+                    },
+                );
             }
         }
     }
@@ -230,14 +240,31 @@ fn bench_backpressure_mixed(c: &mut Criterion) {
         #[allow(clippy::print_stderr)]
         {
             eprintln!("\n=== Backpressure Summary (mixed, runtime: {RUNTIME_SECS}s) ===");
-            eprintln!("{:>8} {:>8} {:>8} {:>15} {:>12} {:>12} {:>12}", "Delay", "Cap", "Prods", "Lines/sec", "Stalls", "Batches", "Stall Rate");
+            eprintln!(
+                "{:>8} {:>8} {:>8} {:>15} {:>12} {:>12} {:>12}",
+                "Delay", "Cap", "Prods", "Lines/sec", "Stalls", "Batches", "Stall Rate"
+            );
             for &delay_ms in DELAYS_MS {
                 for &capacity in CHANNEL_CAPACITIES {
                     for &producers in PRODUCER_COUNTS {
                         let (lines_per_sec, stalls, batches_sent, stall_rate) =
-                            run_backpressure_benchmark(delay_ms, &data_bytes, capacity, producers, RUNTIME_SECS);
-                        eprintln!("{:>8} {:>8} {:>8} {:>15.0} {:>12} {:>12} {:>12.3}",
-                            format!("{delay_ms}ms"), capacity, producers, lines_per_sec, stalls, batches_sent, stall_rate);
+                            run_backpressure_benchmark(
+                                delay_ms,
+                                &data_bytes,
+                                capacity,
+                                producers,
+                                RUNTIME_SECS,
+                            );
+                        eprintln!(
+                            "{:>8} {:>8} {:>8} {:>15.0} {:>12} {:>12} {:>12.3}",
+                            format!("{delay_ms}ms"),
+                            capacity,
+                            producers,
+                            lines_per_sec,
+                            stalls,
+                            batches_sent,
+                            stall_rate
+                        );
                     }
                 }
             }
@@ -340,7 +367,8 @@ fn bench_backpressure_producers(c: &mut Criterion) {
             b.iter_custom(|iters| {
                 let start = Instant::now();
                 for _ in 0..iters {
-                    let result = run_backpressure_benchmark(50, &bytes, 16, producers, RUNTIME_SECS);
+                    let result =
+                        run_backpressure_benchmark(50, &bytes, 16, producers, RUNTIME_SECS);
                     std::hint::black_box(result);
                 }
                 start.elapsed()

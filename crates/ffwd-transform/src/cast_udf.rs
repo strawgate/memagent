@@ -76,7 +76,11 @@ impl ScalarUDFImpl for IntCastUdf {
         &self,
         args: ScalarFunctionArgs,
     ) -> datafusion::common::Result<ColumnarValue> {
-        let arg = &args.args[0];
+        let [arg] = args.args.as_slice() else {
+            return Err(datafusion::error::DataFusionError::Execution(
+                "int() expects exactly one argument".to_string(),
+            ));
+        };
         match arg {
             ColumnarValue::Array(array) => cast_or_passthrough_array(array, &DataType::Int64),
             ColumnarValue::Scalar(scalar @ datafusion::common::ScalarValue::Int64(_)) => {
@@ -134,7 +138,11 @@ impl ScalarUDFImpl for FloatCastUdf {
         &self,
         args: ScalarFunctionArgs,
     ) -> datafusion::common::Result<ColumnarValue> {
-        let arg = &args.args[0];
+        let [arg] = args.args.as_slice() else {
+            return Err(datafusion::error::DataFusionError::Execution(
+                "float() expects exactly one argument".to_string(),
+            ));
+        };
         match arg {
             ColumnarValue::Array(array) => cast_or_passthrough_array(array, &DataType::Float64),
             ColumnarValue::Scalar(scalar @ datafusion::common::ScalarValue::Float64(_)) => {

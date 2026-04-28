@@ -80,7 +80,9 @@ impl QueryAnalyzer {
             ));
         }
 
-        let stmt = &statements[0];
+        let stmt = statements
+            .first()
+            .ok_or_else(|| TransformError::Sql("Expected exactly one SQL statement".to_string()))?;
         let mut referenced_columns = HashSet::new();
         let mut uses_select_star = false;
         let mut except_fields = Vec::new();
@@ -412,7 +414,7 @@ fn extract_pushable_predicates(expr: &SqlExpr, hints: &mut ffwd_types::filter_hi
         }
         // severity <= N, severity < N, severity = N
         SqlExpr::BinaryOp { left, op, right } => {
-            if let Some(col) = expr_as_column(left) {
+            if let Some(col) = expr_as_bare_column(left) {
                 let col_base = strip_type_suffix(&col);
                 if let Some(val) = expr_as_u8_literal(right) {
                     match (col_base.as_str(), op) {
@@ -433,7 +435,7 @@ fn extract_pushable_predicates(expr: &SqlExpr, hints: &mut ffwd_types::filter_hi
                 }
             }
             // Also handle N <= severity (reversed operand order)
-            if let Some(col) = expr_as_column(right) {
+            if let Some(col) = expr_as_bare_column(right) {
                 let col_base = strip_type_suffix(&col);
                 if let Some(val) = expr_as_u8_literal(left) {
                     match (col_base.as_str(), op) {
@@ -454,7 +456,7 @@ fn extract_pushable_predicates(expr: &SqlExpr, hints: &mut ffwd_types::filter_hi
             list,
             negated: false,
         } => {
-            if let Some(col) = expr_as_column(expr) {
+            if let Some(col) = expr_as_bare_column(expr) {
                 let col_base = strip_type_suffix(&col);
                 if col_base == "facility" {
                     let vals: Vec<u8> = list.iter().filter_map(expr_as_u8_literal).collect();
@@ -483,18 +485,6 @@ fn tighten_facilities(slot: &mut Option<Vec<u8>>, candidate: Vec<u8>) {
     match slot {
         Some(current) => current.retain(|f| candidate.contains(f)),
         None => *slot = Some(candidate),
-    }
-}
-
-/// Extract column name from an identifier expression.
-///
-/// For general column-reference collection, qualified identifiers like
-/// `logs.level` are accepted (the last part is the column name).
-fn expr_as_column(expr: &SqlExpr) -> Option<String> {
-    match expr {
-        SqlExpr::Identifier(ident) => Some(ident.value.clone()),
-        SqlExpr::CompoundIdentifier(parts) => parts.last().map(|ident| ident.value.clone()),
-        _ => None,
     }
 }
 

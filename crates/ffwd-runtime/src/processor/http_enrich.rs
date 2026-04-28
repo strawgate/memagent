@@ -180,9 +180,11 @@ impl HttpEnrichProcessor {
 
         // If more cacheable results than capacity, only keep the newest ones.
         let cacheable = if cacheable.len() > self.config.max_entries {
-            &cacheable[cacheable.len() - self.config.max_entries..]
+            cacheable
+                .get(cacheable.len() - self.config.max_entries..)
+                .unwrap_or_default()
         } else {
-            &cacheable[..]
+            cacheable.as_slice()
         };
 
         // Count only net-new keys (not already in cache) for eviction sizing.
@@ -315,7 +317,9 @@ impl HttpEnrichProcessor {
                 }
 
                 // Check this chunk's results only for missing keys (panicked threads).
-                let chunk_result_keys: HashSet<&str> = all_results[results_before..]
+                let chunk_result_keys: HashSet<&str> = all_results
+                    .get(results_before..)
+                    .unwrap_or_default()
                     .iter()
                     .map(|(k, _)| k.as_str())
                     .collect();

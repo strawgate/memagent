@@ -38,7 +38,7 @@ impl Pipeline {
         }
         builder
             .build()
-            .expect("failed to create tokio runtime")
+            .map_err(|e| io::Error::other(format!("failed to create tokio runtime: {e}")))?
             .block_on(self.run_async(shutdown))
     }
 
