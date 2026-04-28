@@ -2,8 +2,14 @@
 //!
 //! All generators accept a `seed` parameter for reproducible output. Given the
 //! same `(count, seed)` pair, every call returns byte-identical results.
-#![allow(clippy::print_stdout, clippy::print_stderr)]
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::print_stderr,
+    clippy::print_stdout
+)]
 // Bench harnesses print reports to stdout/stderr.
+// Synthetic data generators use fixed non-empty lookup tables and modulo indexes.
 
 use std::sync::Arc;
 

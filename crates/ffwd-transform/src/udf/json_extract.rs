@@ -144,7 +144,11 @@ fn coerce_to_string_array(arr: &dyn Array) -> Result<StringArray, DataFusionErro
         Arc::new(
             arr.as_any()
                 .downcast_ref::<StringArray>()
-                .expect("already checked Utf8")
+                .ok_or_else(|| {
+                    DataFusionError::Execution(
+                        "array declared as Utf8 did not downcast to StringArray".to_string(),
+                    )
+                })?
                 .clone(),
         ) as _
     } else {
@@ -154,7 +158,9 @@ fn coerce_to_string_array(arr: &dyn Array) -> Result<StringArray, DataFusionErro
     Ok(coerced
         .as_any()
         .downcast_ref::<StringArray>()
-        .expect("cast to Utf8 must yield StringArray")
+        .ok_or_else(|| {
+            DataFusionError::Execution("cast to Utf8 did not yield StringArray".to_string())
+        })?
         .clone())
 }
 
@@ -217,7 +223,10 @@ impl ScalarUDFImpl for JsonExtractUdf {
         }
 
         // --- arg 0: the raw column (coerce to StringArray) ---
-        let raw_array = match &args.args[0] {
+        let raw_arg = args.args.first().ok_or_else(|| {
+            DataFusionError::Execution(format!("{udf_name}() expects a raw column argument"))
+        })?;
+        let raw_array = match raw_arg {
             ColumnarValue::Array(a) => coerce_to_string_array(a.as_ref())?,
             ColumnarValue::Scalar(_) => {
                 return Err(DataFusionError::Internal(format!(
@@ -227,7 +236,10 @@ impl ScalarUDFImpl for JsonExtractUdf {
         };
 
         // --- arg 1: field name (constant string) ---
-        let key = match &args.args[1] {
+        let key_arg = args.args.get(1).ok_or_else(|| {
+            DataFusionError::Execution(format!("{udf_name}() expects a field name argument"))
+        })?;
+        let key = match key_arg {
             ColumnarValue::Scalar(ScalarValue::Utf8(Some(k)))
             | ColumnarValue::Scalar(ScalarValue::Utf8View(Some(k))) => k.as_str(),
             _ => {
@@ -318,7 +330,11 @@ impl ScalarUDFImpl for JsonExtractUdf {
                 .column(idx)
                 .as_any()
                 .downcast_ref::<StructArray>()
-                .expect("column declared as Struct must downcast to StructArray");
+                .ok_or_else(|| {
+                    DataFusionError::Execution(
+                        "column declared as Struct did not downcast to StructArray".to_string(),
+                    )
+                })?;
             let field_dt = batch.schema().field(idx).data_type().clone();
             let child_fields = match &field_dt {
                 DataType::Struct(f) => f.clone(),

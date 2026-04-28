@@ -435,7 +435,9 @@ fn cmd_wizard() -> Result<(), CliError> {
         let labels: Vec<&str> = USE_CASE_TEMPLATES.iter().map(|t| t.title).collect();
         let descs: Vec<&str> = USE_CASE_TEMPLATES.iter().map(|t| t.description).collect();
         let uc_idx = prompt_select_described("Pick a scenario:", &labels, &descs)?;
-        let uc = &USE_CASE_TEMPLATES[uc_idx];
+        let uc = USE_CASE_TEMPLATES.get(uc_idx).ok_or_else(|| {
+            CliError::Config(format!("selected use-case index {uc_idx} is invalid"))
+        })?;
         println!("{}selected{}: {}", green(), reset(), uc.title);
         println!();
         let sql = prompt_text(
@@ -472,8 +474,12 @@ fn cmd_wizard() -> Result<(), CliError> {
             sql.trim()
         };
 
-        let input = &INPUT_TEMPLATES[input_idx];
-        let output = &OUTPUT_TEMPLATES[output_idx];
+        let input = INPUT_TEMPLATES.get(input_idx).ok_or_else(|| {
+            CliError::Config(format!("selected input index {input_idx} is invalid"))
+        })?;
+        let output = OUTPUT_TEMPLATES.get(output_idx).ok_or_else(|| {
+            CliError::Config(format!("selected output index {output_idx} is invalid"))
+        })?;
         render_config(input, output, sql)
     };
 
@@ -1025,8 +1031,8 @@ mod tests {
             .find(|template| template.id == "nginx_access_to_loki")
             .expect("loki use-case template");
         let cfg = config_templates::render_use_case(use_case, use_case.transform);
-        assert!(cfg.contains("        static_labels:\n          app: nginx"));
-        assert!(cfg.contains("        label_columns:\n          - status"));
+        assert!(cfg.contains("        static_labels:\n          service: myapp"));
+        assert!(cfg.contains("        label_columns:\n          - level"));
         ffwd_config::Config::load_str(&cfg).expect("rendered loki use case should parse");
     }
 

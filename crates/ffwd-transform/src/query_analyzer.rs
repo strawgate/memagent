@@ -80,7 +80,9 @@ impl QueryAnalyzer {
             ));
         }
 
-        let stmt = &statements[0];
+        let stmt = statements
+            .first()
+            .ok_or_else(|| TransformError::Sql("Expected exactly one SQL statement".to_string()))?;
         let mut referenced_columns = HashSet::new();
         let mut uses_select_star = false;
         let mut except_fields = Vec::new();

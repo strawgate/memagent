@@ -87,7 +87,10 @@ impl OutputWorkerPool {
         let mut i = 0;
         while i < self.workers.len() {
             // Try to send without blocking.
-            match self.workers[i].tx.try_send(msg) {
+            let Some(tx) = self.workers.get(i).map(|worker| worker.tx.clone()) else {
+                break;
+            };
+            match tx.try_send(msg) {
                 Ok(()) => {
                     // Promote this worker to front (MRU).
                     self.workers.swap(0, i);

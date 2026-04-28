@@ -404,7 +404,7 @@ fn check_unsafe_needs_safety_comment(
             }
             let start = idx.saturating_sub(6);
             let mut ok = false;
-            for ctx in &lines[start..=idx] {
+            for ctx in lines.get(start..=idx).unwrap_or_default() {
                 if ctx.contains("SAFETY:") {
                     ok = true;
                     break;

@@ -174,11 +174,13 @@ impl CsvRangeDatabase {
 
         // Reject overlapping ranges — they cause ambiguous lookups with binary search.
         for pair in ranges.windows(2) {
-            if pair[0].end >= pair[1].start {
+            if let [first, second] = pair
+                && first.end >= second.start
+            {
                 return Err(TransformError::Enrichment(format!(
                     "CSV geo database contains overlapping IP ranges: range ending at {} overlaps range starting at {}",
-                    u128_to_ip_string(pair[0].end),
-                    u128_to_ip_string(pair[1].start),
+                    u128_to_ip_string(first.end),
+                    u128_to_ip_string(second.start),
                 )));
             }
         }
@@ -219,7 +221,7 @@ impl GeoDatabase for CsvRangeDatabase {
             .partition_point(|e| e.start <= key)
             .checked_sub(1)?;
 
-        let entry = &self.ranges[idx];
+        let entry = self.ranges.get(idx)?;
         (entry.end >= key).then(|| entry.result.clone())
     }
 }

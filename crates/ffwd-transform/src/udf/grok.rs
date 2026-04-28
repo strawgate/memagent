@@ -250,7 +250,7 @@ impl ScalarUDFImpl for GrokUdf {
                 datafusion::common::ScalarValue::Utf8(Some(pattern_str))
                 | datafusion::common::ScalarValue::Utf8View(Some(pattern_str))
                 | datafusion::common::ScalarValue::LargeUtf8(Some(pattern_str)),
-            ) = args.scalar_arguments[1]
+            ) = args.scalar_arguments.get(1).and_then(Option::as_ref)
             && let Ok(compiled) = compile_grok(pattern_str)
         {
             let fields: Vec<Field> = compiled
@@ -277,8 +277,16 @@ impl ScalarUDFImpl for GrokUdf {
             ));
         }
 
-        let input = &args.args[0];
-        let pattern = &args.args[1];
+        let input = args.args.first().ok_or_else(|| {
+            datafusion::error::DataFusionError::Execution(
+                "grok() expects an input argument".to_string(),
+            )
+        })?;
+        let pattern = args.args.get(1).ok_or_else(|| {
+            datafusion::error::DataFusionError::Execution(
+                "grok() expects a pattern argument".to_string(),
+            )
+        })?;
 
         // Extract pattern string.
         let pattern_str = match pattern {
@@ -339,10 +347,12 @@ impl ScalarUDFImpl for GrokUdf {
                             // pathological matches by logging when a match is slow.
                             match self.timed_match_against(&compiled, strings.value(row)) {
                                 Some(matches) => {
-                                    for (i, name) in compiled.field_names.iter().enumerate() {
+                                    for (builder, name) in
+                                        builders.iter_mut().zip(compiled.field_names.iter())
+                                    {
                                         match matches.get(name) {
-                                            Some(v) => builders[i].append_value(v),
-                                            None => builders[i].append_null(),
+                                            Some(v) => builder.append_value(v),
+                                            None => builder.append_null(),
                                         }
                                     }
                                 }
@@ -365,10 +375,12 @@ impl ScalarUDFImpl for GrokUdf {
                             }
                             match self.timed_match_against(&compiled, strings.value(row)) {
                                 Some(matches) => {
-                                    for (i, name) in compiled.field_names.iter().enumerate() {
+                                    for (builder, name) in
+                                        builders.iter_mut().zip(compiled.field_names.iter())
+                                    {
                                         match matches.get(name) {
-                                            Some(v) => builders[i].append_value(v),
-                                            None => builders[i].append_null(),
+                                            Some(v) => builder.append_value(v),
+                                            None => builder.append_null(),
                                         }
                                     }
                                 }
@@ -391,10 +403,12 @@ impl ScalarUDFImpl for GrokUdf {
                             }
                             match self.timed_match_against(&compiled, strings.value(row)) {
                                 Some(matches) => {
-                                    for (i, name) in compiled.field_names.iter().enumerate() {
+                                    for (builder, name) in
+                                        builders.iter_mut().zip(compiled.field_names.iter())
+                                    {
                                         match matches.get(name) {
-                                            Some(v) => builders[i].append_value(v),
-                                            None => builders[i].append_null(),
+                                            Some(v) => builder.append_value(v),
+                                            None => builder.append_null(),
                                         }
                                     }
                                 }

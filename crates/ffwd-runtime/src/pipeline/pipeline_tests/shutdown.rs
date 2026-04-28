@@ -92,6 +92,71 @@ async fn test_async_shutdown_drains_with_slow_output() {
     );
 }
 
+/// DrainIngress must not disable queued-input draining during a later shutdown.
+///
+/// Regression for #2716: the control-plane branch previously set
+/// `should_drain_input_channel = false` on DrainIngress, which caused a later
+/// shutdown to skip draining already queued batches.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_drain_ingress_keeps_later_shutdown_channel_drain_enabled() {
+    use std::sync::atomic::Ordering;
+
+    let dir = tempfile::tempdir().unwrap();
+    let log_path = dir.path().join("drain_ingress_then_shutdown.log");
+
+    let mut data = String::new();
+    for i in 0..120 {
+        data.push_str(&format!(r#"{{"msg":"drain-ingress {}"}}"#, i));
+        data.push('\n');
+    }
+    std::fs::write(&log_path, data.as_bytes()).unwrap();
+
+    let yaml = single_pipeline_yaml(
+        &format!("type: file\npath: \"{}\"\nformat: json", log_path.display()),
+        "type: stdout\nformat: json",
+    );
+
+    let config = ffwd_config::Config::load_str(&yaml).unwrap();
+    let pipe_cfg = &config.pipelines["default"];
+    let mut pipeline = Pipeline::from_config("default", pipe_cfg, &test_meter(), None).unwrap();
+    pipeline = pipeline.with_sink(Box::new(SlowSink {
+        delay: Duration::from_millis(30),
+    }));
+    // Encourage queue buildup so shutdown has buffered work to drain.
+    pipeline.batch_target_bytes = 64;
+    pipeline.batch_timeout = Duration::from_millis(10);
+
+    let control_tx = pipeline.clone_control_sender();
+    let metrics = Arc::clone(&pipeline.metrics);
+    let shutdown = CancellationToken::new();
+    let sd = shutdown.clone();
+
+    tokio::spawn(async move {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while metrics.transform_in.lines_total.load(Ordering::Relaxed) < 64 {
+            if tokio::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let _ = control_tx.send(ControlMessage::DrainIngress);
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        sd.cancel();
+    });
+
+    pipeline.run_async(&shutdown).await.unwrap();
+
+    let lines_out = pipeline
+        .metrics
+        .transform_out
+        .lines_total
+        .load(Ordering::Relaxed);
+    assert!(
+        lines_out >= 120,
+        "shutdown after drain-ingress should still process queued input, got {lines_out} output lines"
+    );
+}
+
 /// After all file data is read, shutdown must still drain everything.
 /// The file tailer keeps polling after EOF (it's a tailer, not a
 /// reader), so the pipeline only exits via shutdown signal.

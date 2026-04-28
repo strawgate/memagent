@@ -56,9 +56,22 @@ pub(super) fn run_processor_stage(
     }
 
     let batch = if results.len() == 1 {
-        results.into_iter().next().expect("checked len == 1")
+        let mut results = results.into_iter();
+        match results.next() {
+            Some(batch) => batch,
+            None => {
+                return ProcessorStageResult::Reject {
+                    reason: "processor chain produced no result batches".to_string(),
+                };
+            }
+        }
     } else {
-        match arrow::compute::concat_batches(&results[0].schema(), results.iter()) {
+        let Some(first) = results.first() else {
+            return ProcessorStageResult::Reject {
+                reason: "processor chain produced no result batches".to_string(),
+            };
+        };
+        match arrow::compute::concat_batches(&first.schema(), results.iter()) {
             Ok(batch) => batch,
             Err(e) => {
                 return ProcessorStageResult::Reject {

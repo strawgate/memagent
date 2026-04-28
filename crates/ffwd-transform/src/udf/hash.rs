@@ -111,7 +111,11 @@ impl ScalarUDFImpl for HashUdf {
             ));
         }
 
-        let arg = &args.args[0];
+        let arg = args.args.first().ok_or_else(|| {
+            datafusion::error::DataFusionError::Execution(
+                "hash() expects exactly one argument".to_string(),
+            )
+        })?;
         match arg {
             ColumnarValue::Array(array) => {
                 let dt = array.data_type();

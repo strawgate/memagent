@@ -584,7 +584,10 @@ impl Pipeline {
 
         // Build output sink factory → pool.
         let factory: Arc<dyn SinkFactory> = if config.outputs.len() == 1 {
-            let output_cfg = &config.outputs[0];
+            let output_cfg = config
+                .outputs
+                .first()
+                .ok_or_else(|| "pipeline must have at least one output".to_string())?;
             build_output_factory_from_config(0, output_cfg, base_path, &mut metrics)?
         } else {
             let mut factories: Vec<Arc<dyn SinkFactory>> = Vec::new();

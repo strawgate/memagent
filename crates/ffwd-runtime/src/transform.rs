@@ -271,6 +271,15 @@ pub use passthrough::PassthroughTransform;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow::array::Int32Array;
+    use arrow::datatypes::{DataType, Field, Schema};
+    use std::sync::Arc;
+
+    fn make_test_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))])
+            .expect("valid test batch")
+    }
 
     #[test]
     fn transform_error_new_creates_message_variant() {
@@ -282,6 +291,16 @@ mod tests {
     fn transform_error_display_formats_correctly() {
         let err = TransformError::Message("test error".to_string());
         assert!(err.to_string().contains("test error"));
+    }
+
+    #[tokio::test]
+    async fn create_transform_trait_object_executes_async() {
+        let mut transform = create_transform("SELECT * FROM logs").expect("create transform");
+        let result = transform
+            .execute_async(make_test_batch())
+            .await
+            .expect("execute transform");
+        assert_eq!(result.num_rows(), 3);
     }
 
     /// Tests for the `PassthroughTransform` — only compiled when DataFusion is absent.
@@ -312,20 +331,11 @@ mod tests {
 
         #[test]
         fn passthrough_execute_blocking_passes_batch_through() {
-            use arrow::array::Int32Array;
-            use arrow::datatypes::{DataType, Field, Schema};
-            use std::sync::Arc;
-
-            let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
-            let batch = arrow::record_batch::RecordBatch::try_new(
-                schema,
-                vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
-            )
-            .expect("valid test batch");
-
             let mut transform =
                 PassthroughTransform::new("SELECT * FROM logs").expect("passthrough sql");
-            let result = transform.execute_blocking(batch).expect("execute");
+            let result = transform
+                .execute_blocking(make_test_batch())
+                .expect("execute");
             assert_eq!(result.num_rows(), 3);
         }
 

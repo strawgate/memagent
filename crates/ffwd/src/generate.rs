@@ -93,12 +93,13 @@ pub(crate) fn generate_json_log_file(num_lines: usize, output: &str) -> io::Resu
 
     for i in 0..num_lines {
         let seq = i as u64;
-        let level = levels[i % 4];
-        let path = paths[i % 5];
+        let level = levels.get(i % levels.len()).copied().unwrap_or("INFO");
+        let path = paths.get(i % paths.len()).copied().unwrap_or("/health");
         let id = 10000 + (i * 7) % 90000;
         let dur = 1 + (i * 13) % 500;
         let rid = format!("{:016x}", seq.wrapping_mul(0x517cc1b727220a95));
-        let status = [200, 201, 400, 404, 500, 503][i % 6];
+        let statuses = [200, 201, 400, 404, 500, 503];
+        let status = statuses.get(i % statuses.len()).copied().unwrap_or(200);
         let ts = timestamp_parts_for_generated_log(seq);
 
         write!(
