@@ -3,32 +3,38 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#10243a">
-  <title>Development Metrics - Benchmark Dashboard</title>
+  <title>Development Metrics - FastForward Benchmarks</title>
   <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7"></script>
 </head>
 <body>
-<div class="container">
-  <div class="breadcrumb">
-    <a href="index.html">Dashboard</a><span class="sep">/</span>Development
-  </div>
-
-  <header class="hero">
-    <p class="eyebrow">development lane</p>
-    <h1>Development Metrics</h1>
-    <p class="lede">Watch resource curves and criterion drift so we can defend scanner and pipeline performance with real trend evidence.</p>
-    <div class="hero-tags">
-      <span>criterion drift</span><span>rate pressure</span><span>perf confidence</span>
-    </div>
+<div class="site-wrapper">
+  <header class="top-bar">
+    <a class="top-bar-brand" href="https://strawgate.github.io/fastforward/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+        <path d="M2 17l10 5 10-5"/>
+        <path d="M2 12l10 5 10-5"/>
+      </svg>
+      <span>FastForward</span>
+    </a>
+    <div class="top-bar-divider"></div>
+    <span class="top-bar-section">Benchmarks</span>
+    <nav class="top-bar-links">
+      <a href="index.html">Overview</a>
+      <a href="competitive.html">Competitive</a>
+      <a href="development.html" class="active">Development</a>
+      <a href="project-health.html">Project Health</a>
+    </nav>
   </header>
 
-  <nav class="nav-pills">
-    <a href="index.html">Overview</a>
-    <a href="competitive.html">Competitive</a>
-    <a href="development.html" class="active">Development</a>
-    <a href="project-health.html">Project Health</a>
-  </nav>
+  <main class="main-content">
+
+    <header class="hero">
+      <p class="hero-eyebrow">Development</p>
+      <h1>Development Metrics</h1>
+      <p class="hero-lede">Resource curves and criterion drift for scanner and pipeline performance.</p>
+    </header>
 
   <div id="loading" class="loading">Loading development data...</div>
   <div id="content" style="display:none">
@@ -384,5 +390,7 @@ async function main() {
 
 main();
 </script>
+</main>
+</div>
 </body>
 </html>

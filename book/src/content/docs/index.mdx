@@ -23,6 +23,11 @@ export const base = import.meta.env.BASE_URL.replace(/\/$/, '');
 
     <h2 class="home-col-title">Use It</h2>
 
+    <a class="home-link-card home-link-card--bench" href={`${base}/bench/`}>
+      <span class="home-link-label">Benchmarks</span>
+      <span class="home-link-desc" id="bench-hero-stat">Loading benchmark data…</span>
+    </a>
+
     <a class="home-link-card" href={`${base}/quick-start/`}>
       <span class="home-link-label">Quick Start</span>
       <span class="home-link-desc">Install, run your first pipeline, and ship logs in 15 minutes</span>
@@ -163,6 +168,12 @@ export const base = import.meta.env.BASE_URL.replace(/\/$/, '');
     line-height: 1.4;
   }
 
+  .home-link-card--bench {
+    background: color-mix(in srgb, var(--sl-color-accent) 8%, var(--sl-color-bg-sidebar));
+    border-color: color-mix(in srgb, var(--sl-color-accent) 30%, var(--sl-color-hairline));
+    margin-bottom: 0.5rem;
+  }
+
   .home-preview-card {
     display: flex;
     flex-direction: column;
@@ -196,3 +207,31 @@ export const base = import.meta.env.BASE_URL.replace(/\/$/, '');
     padding: 0.55rem 0.75rem 0.65rem;
   }
 `}</style>
+
+<script is:inline>
+(async function () {
+  const el = document.getElementById('bench-hero-stat');
+  if (!el) return;
+  try {
+    const res = await fetch(
+      'https://raw.githubusercontent.com/strawgate/fastforward-bench/bench-data/data/index.json'
+    );
+    if (!res.ok) throw new Error('not ok');
+    const index = await res.json();
+    const runs = index.runs || [];
+    if (!runs.length) {
+      el.textContent = 'No benchmark runs recorded yet';
+      return;
+    }
+    // runs are newest-first
+    const latest = runs[runs.length - 1];
+    const count = runs.length;
+    const date = latest.timestamp
+      ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(latest.timestamp))
+      : '';
+    el.textContent = count + ' runs recorded · last updated ' + date;
+  } catch {
+    if (el) el.textContent = 'Benchmark data unavailable';
+  }
+})();
+</script>

@@ -3,32 +3,38 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#10243a">
-  <title>Project Health - FastForward</title>
+  <title>Project Health - FastForward Benchmarks</title>
   <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7"></script>
 </head>
 <body>
-<div class="container">
-  <div class="breadcrumb">
-    <a href="index.html">Dashboard</a><span class="sep">/</span>Project Health
-  </div>
-
-  <header class="hero">
-    <p class="eyebrow">repository health</p>
-    <h1>Project Health</h1>
-    <p class="lede">Track FastForward’s repository signal over time: community adoption, backlog shape, delivery speed, CI stability, and codebase growth.</p>
-    <div class="hero-tags">
-      <span>octo11y metrics</span><span>bench-data history</span><span>repo trendlines</span>
-    </div>
+<div class="site-wrapper">
+  <header class="top-bar">
+    <a class="top-bar-brand" href="https://strawgate.github.io/fastforward/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+        <path d="M2 17l10 5 10-5"/>
+        <path d="M2 12l10 5 10-5"/>
+      </svg>
+      <span>FastForward</span>
+    </a>
+    <div class="top-bar-divider"></div>
+    <span class="top-bar-section">Benchmarks</span>
+    <nav class="top-bar-links">
+      <a href="index.html">Overview</a>
+      <a href="competitive.html">Competitive</a>
+      <a href="development.html">Development</a>
+      <a href="project-health.html" class="active">Project Health</a>
+    </nav>
   </header>
 
-  <nav class="nav-pills">
-    <a href="index.html">Overview</a>
-    <a href="competitive.html">Competitive</a>
-    <a href="development.html">Development</a>
-    <a href="project-health.html" class="active">Project Health</a>
-  </nav>
+  <main class="main-content">
+
+    <header class="hero">
+      <p class="hero-eyebrow">Project Health</p>
+      <h1>Project Health</h1>
+      <p class="hero-lede">Track FastForward's repository signal over time.</p>
+    </header>
 
   <div id="loading" class="loading">Loading project health data...</div>
   <div id="empty" class="empty-state" style="display:none">
@@ -480,5 +486,7 @@ async function main() {
 
 main();
 </script>
+</main>
+</div>
 </body>
 </html>

@@ -3,362 +3,254 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#10243a">
-  <title>Benchmark Dashboard</title>
+  <title>FastForward Benchmark Dashboard</title>
   <link rel="stylesheet" href="style.css">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7"></script>
 </head>
 <body>
-<div class="container">
-  <header class="hero">
-    <p class="eyebrow">ff benchmark suite</p>
-    <h1>Benchmark Control Room</h1>
-    <p class="lede">Track competitive throughput, development resource curves, and run-level details from nightly data in one view.</p>
-    <div class="hero-tags">
-      <span>benchkit powered</span><span>nightly telemetry</span><span>main branch signal</span>
-    </div>
+<div class="site-wrapper">
+
+  <header class="top-bar">
+    <a class="top-bar-brand" href="https://strawgate.github.io/fastforward/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+        <path d="M2 17l10 5 10-5"/>
+        <path d="M2 12l10 5 10-5"/>
+      </svg>
+      <span>FastForward</span>
+    </a>
+    <div class="top-bar-divider"></div>
+    <span class="top-bar-section">Benchmarks</span>
+    <nav class="top-bar-links">
+      <a href="index.html" class="active">Overview</a>
+      <a href="competitive.html">Competitive</a>
+      <a href="development.html">Development</a>
+      <a href="project-health.html">Project Health</a>
+    </nav>
   </header>
 
-  <nav class="nav-pills">
-    <a href="index.html" class="active">Overview</a>
-    <a href="competitive.html">Competitive</a>
-    <a href="development.html">Development</a>
-    <a href="project-health.html">Project Health</a>
-  </nav>
+  <main class="main-content">
 
-  <div id="loading" class="loading">Loading data...</div>
-  <div id="content" style="display:none">
+    <div class="hero">
+      <p class="hero-eyebrow">Benchmark Suite</p>
+      <h1>FastForward Benchmarks</h1>
+      <p class="hero-lede">Competitive throughput vs. other log collectors, plus development rate and criterion benchmarks from CI runs.</p>
 
-    <!-- Headline Cards -->
-    <div class="tracking-cards" id="headline-cards"></div>
-
-    <!-- Recent Competitive Results -->
-    <div class="section" id="competitive-section" style="display:none">
-      <h2>Recent Competitive Results</h2>
-      <div class="card">
-        <table id="competitive-table">
-          <thead><tr><th>Scenario</th></tr></thead>
-          <tbody></tbody>
-        </table>
+      <div id="hero-stats">
+        <p class="hero-pending">Loading…</p>
       </div>
     </div>
 
-    <!-- Recent Development Metrics -->
-    <div class="section" id="dev-section" style="display:none">
-      <h2>Recent Development Metrics</h2>
-      <div class="card">
-        <table id="dev-table">
-          <thead><tr><th>Benchmark</th><th class="numeric">Mean</th><th class="numeric">Throughput</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </div>
+    <div id="loading" class="loading">Fetching benchmark data…</div>
+    <div id="content" style="display:none">
 
-    <!-- All Runs -->
-    <div class="section" id="runs-section" style="display:none">
-      <h2>All Runs</h2>
-      <div class="card">
-        <table id="runs-table">
-          <thead><tr><th>ID</th><th>Type</th></tr></thead>
-          <tbody></tbody>
-        </table>
+      <!-- Competitive results -->
+      <div id="competitive-section" class="section" style="display:none">
+        <div class="section-header">
+          <h2>Competitive Results</h2>
+          <p>Throughput vs. open-source log collectors</p>
+        </div>
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Latest Run</span>
+            <code id="latest-run-id"></code>
+          </div>
+          <div class="card-body" style="overflow-x:auto;">
+            <table id="competitive-table">
+              <thead><tr><th>Scenario</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
       </div>
+
+      <!-- All runs -->
+      <div id="runs-section" class="section">
+        <div class="section-header">
+          <h2>All Runs</h2>
+          <p id="runs-count"></p>
+        </div>
+        <div class="card">
+          <div class="card-body" style="overflow-x:auto;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Run</th>
+                  <th>Branch / Ref</th>
+                  <th>Commit</th>
+                  <th>Type</th>
+                </tr>
+              </thead>
+              <tbody id="runs-table-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
     </div>
-  </div>
+  </main>
+
 </div>
 
 <script type="module">
-import { fetchBenchIndex, fetchBenchJson, fetchBenchRun } from "./o11y-client.js";
+import { fetchBenchIndex, fetchBenchJson } from "./o11y-client.js";
 
 const SCENARIO_NAMES = {
-  'passthrough': { title: 'Passthrough (No Transforms)', config: 'transform: "SELECT * FROM logs"' },
-  'json_parse': { title: 'JSON Parsing & Extraction', config: 'transform: "SELECT timestamp_str, level_str, message_str, duration_ms_int AS latency_ms, request_id_str, service_str FROM logs"' },
-  'filter': { title: 'Filtering (ERROR/WARN only)', config: 'transform: "SELECT * FROM logs WHERE level_str IN (\'WARN\', \'ERROR\')"' }
-};
-function getScenarioTitle(sn) {
-  return SCENARIO_NAMES[sn] ? SCENARIO_NAMES[sn].title : sn;
-}
-
-const AGENT_COLORS = {
-  'ff': '#2563eb', 'ffwd': '#2563eb', 'vector': '#7c3aed', 'fluent-bit': '#059669',
-  'filebeat': '#d97706', 'otelcol': '#dc2626', 'vlagent': '#64748b'
+  'passthrough': { title: 'Passthrough', config: 'transform: "SELECT * FROM logs"' },
+  'json_parse': { title: 'JSON Parsing', config: 'SELECT timestamp, level, message…' },
+  'filter': { title: 'Filtering (WARN/ERROR)', config: 'WHERE level IN (\'WARN\', \'ERROR\')' },
 };
 
-function formatLPS(n) {
-  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
-  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
-  return Math.round(n).toString();
+function fmt(ts) {
+  if (!ts) return '—';
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      month: 'short', day: 'numeric', year: 'numeric',
+      hour: '2-digit', minute: '2-digit'
+    }).format(new Date(ts));
+  } catch { return ts; }
 }
 
-function formatNs(ns) {
-  if (ns >= 1e9) return (ns / 1e9).toFixed(2) + 's';
-  if (ns >= 1e6) return (ns / 1e6).toFixed(2) + 'ms';
-  if (ns >= 1e3) return (ns / 1e3).toFixed(1) + 'us';
-  return Math.round(ns) + 'ns';
+function shortId(id) {
+  const s = String(id || '');
+  // fastforward-bench format: "24767474344-1--compose-bench-smoke-otlp-t1m-multi-logfwd"
+  // extract workflow run id (first segment)
+  const first = s.split('-')[0];
+  return first.length > 8 ? '#' + first.slice(-8) : '#' + first;
 }
 
-function averageLps(entry) {
-  if (!entry || typeof entry !== 'object') return null;
-  if (Number.isFinite(entry.avg_lps)) return Math.max(0, entry.avg_lps);
-  if (Array.isArray(entry.lps)) {
-    const values = entry.lps.filter((v) => Number.isFinite(v));
-    if (values.length > 0) return values.reduce((sum, v) => sum + v, 0) / values.length;
-  }
-  return null;
+function shortCommit(c) {
+  return String(c || '').slice(0, 7);
 }
 
-function normalizeRateMap(rateRun) {
-  if (!rateRun || typeof rateRun !== 'object') return {};
-  if (rateRun.rates && typeof rateRun.rates === 'object') return rateRun.rates;
-  const out = {};
-  if (Array.isArray(rateRun.results)) {
-    for (const row of rateRun.results) {
-      const eps = Number(row?.eps);
-      if (!Number.isFinite(eps)) continue;
-      out[String(Math.trunc(eps))] = {
-        rss_mb: Number.isFinite(row?.rss_mb) ? row.rss_mb : (Number.isFinite(row?.rss_kb) ? row.rss_kb / 1024 : null),
-        cpu_pct: Number.isFinite(row?.cpu_pct) ? row.cpu_pct : (Number.isFinite(row?.cpu_percent) ? row.cpu_percent : null),
-        actual_eps: Number.isFinite(row?.actual_eps) ? row.actual_eps : null,
-      };
-    }
-  }
-  return out;
-}
-
-function formatCriterionThroughput(entry) {
-  if (!entry || typeof entry !== 'object') return '--';
-  if (Number.isFinite(entry.thrpt_mib_s)) return entry.thrpt_mib_s.toFixed(1) + ' MiB/s';
-  if (Number.isFinite(entry.thrpt_melem_s)) return entry.thrpt_melem_s.toFixed(1) + ' Melem/s';
-  const meanNs = Number(entry.mean_ns);
-  const bytes = Number(entry.throughput?.Bytes);
-  const elems = Number(entry.throughput?.Elements);
-  if (Number.isFinite(meanNs) && meanNs > 0 && Number.isFinite(bytes)) {
-    const mibPerSec = (bytes / (meanNs / 1e9)) / (1024 * 1024);
-    return mibPerSec.toFixed(1) + ' MiB/s';
-  }
-  if (Number.isFinite(meanNs) && meanNs > 0 && Number.isFinite(elems)) {
-    const melemPerSec = (elems / (meanNs / 1e9)) / 1e6;
-    return melemPerSec.toFixed(1) + ' Melem/s';
-  }
-  return '--';
-}
-
-function isDark() {
-  return window.matchMedia('(prefers-color-scheme: dark)').matches;
-}
-
-function chartDefaults() {
-  const dark = isDark();
-  Chart.defaults.color = dark ? '#8b949e' : '#656d76';
-  Chart.defaults.borderColor = dark ? '#30363d' : '#d0d7de';
-}
-
-function drawSparkline(canvas, data, color) {
-  if (!canvas || !data || data.length === 0) return;
-  new Chart(canvas, {
-    type: 'line',
-    data: {
-      labels: data.map((_, i) => i),
-      datasets: [{ data, borderColor: color || '#2563eb', borderWidth: 1.5, pointRadius: 0, fill: false, tension: 0.3 }]
-    },
-    options: {
-      responsive: false, maintainAspectRatio: false,
-      plugins: { legend: { display: false }, tooltip: { enabled: false } },
-      scales: { x: { display: false }, y: { display: false } },
-      animation: false
-    }
-  });
-}
-
-function runId(entry) {
-  if (entry && typeof entry === 'object') return entry.id;
-  return entry;
+function runTypeFromId(id) {
+  const s = String(id || '');
+  if (s.includes('compose-bench')) return 'compose';
+  if (s.includes('kind-bench')) return 'kind';
+  return 'unknown';
 }
 
 async function main() {
-  chartDefaults();
   const index = await fetchBenchIndex();
+  const el = document.getElementById('loading');
+
   if (!index) {
-    document.getElementById('loading').textContent = 'No data available.';
+    el.className = 'empty-state';
+    el.textContent = 'No benchmark data available. Run a benchmark to populate results.';
     return;
   }
 
-  const runEntries = index.competitive_runs || index.runs || [];
-  // bench-data index is newest-first; normalize to oldest->newest for downstream logic
-  const runs = runEntries.map(runId).filter(Boolean).map(String).reverse();
-  const rateRuns = (index.rate_runs || []).map(runId).filter(Boolean).map(String);
-  const criterionRuns = (index.criterion_runs || []).map(runId).filter(Boolean).map(String);
-
-  // Load latest of each type
-  const latestRun = runs.length ? await fetchBenchRun(runs[runs.length - 1]) : null;
-  const latestRate = rateRuns.length ? await fetchBenchJson('rate-runs/' + rateRuns[rateRuns.length - 1] + '.json') : null;
-  const latestCriterion = criterionRuns.length ? await fetchBenchJson('criterion-runs/' + criterionRuns[criterionRuns.length - 1] + '.json') : null;
-
-  // Load a few recent runs for sparklines
-  const recentRunIds = runs.slice(-10);
-  const recentRuns = (await Promise.all(recentRunIds.map(id => fetchBenchRun(id)))).filter(Boolean);
-
-  document.getElementById('loading').style.display = 'none';
+  el.style.display = 'none';
   document.getElementById('content').style.display = '';
 
-  // Headline cards
-  const cardsEl = document.getElementById('headline-cards');
+  // Normalize fastforward-bench format: runs is an array of objects with {id, timestamp, commit, ref, benchmarks, metrics}
+  const rawRuns = index.runs || [];
+  const runs = rawRuns
+    .map(r => typeof r === 'string' ? { id: r } : r)
+    .filter(r => r.id);
 
-  // Card 1: Latest primary-scenario winner
-  let primaryWinner = null;
-  let primarySparkData = [];
-  if (latestRun && latestRun.scenarios) {
-    const firstScenario = latestRun.scenario_names?.[0] || Object.keys(latestRun.scenarios)[0];
-    const firstScenarioData = firstScenario ? latestRun.scenarios[firstScenario] : null;
-    if (firstScenarioData) {
-      let bestAgent = null;
-      let bestLps = 0;
-      for (const [agent, stats] of Object.entries(firstScenarioData)) {
-        const avg = averageLps(stats) || 0;
-        if (avg > bestLps) {
-          bestLps = avg;
-          bestAgent = agent;
+  // Hero stats
+  const heroEl = document.getElementById('hero-stats');
+  if (runs.length === 0) {
+    heroEl.innerHTML = '<p class="hero-pending">No benchmark runs recorded yet.</p>';
+  } else {
+    // latest run is the last one (runs are newest-first in index)
+    const latest = runs[runs.length - 1];
+    const count = runs.length;
+    heroEl.innerHTML = `
+      <div class="hero-stat-row">
+        <div class="hero-stat">
+          <span class="hero-stat-value">${count}</span>
+          <span class="hero-stat-label">Total runs</span>
+        </div>
+        <div class="hero-stat">
+          <span class="hero-stat-value mono">${shortId(latest.id)}</span>
+          <span class="hero-stat-label">Latest run</span>
+        </div>
+        <div class="hero-stat">
+          <span class="hero-stat-value mono" style="font-size:clamp(0.9rem,1.5vw,1.1rem);">${fmt(latest.timestamp)}</span>
+          <span class="hero-stat-label">Last updated</span>
+        </div>
+      </div>`;
+  }
+
+  // Runs table
+  const tbody = document.getElementById('runs-table-body');
+  document.getElementById('runs-count').textContent = `${runs.length} runs on bench-data`;
+  let rows = '';
+  for (const run of [...runs].reverse().slice(0, 100)) {
+    const rt = runTypeFromId(run.id);
+    const badgeClass = rt === 'compose' ? 'badge-competitive' : rt === 'kind' ? 'badge-rate' : '';
+    const refLabel = (run.ref || '').replace('refs/heads/', '');
+    rows += `<tr>
+      <td><a href="run.html?id=${encodeURIComponent(run.id)}">${shortId(run.id)}</a></td>
+      <td>${refLabel}</td>
+      <td><code>${shortCommit(run.commit)}</code></td>
+      <td><span class="badge ${badgeClass}">${rt}</span></td>
+    </tr>`;
+  }
+  tbody.innerHTML = rows || '<tr><td colspan="4" style="text-align:center;color:var(--ff-ink-muted);padding:1rem;">No runs recorded.</td></tr>';
+
+  // Competitive section — only if runs have scenarios/agents data
+  const latestRunId = runs.length ? runs[runs.length - 1].id : null;
+  if (latestRunId) {
+    const runData = await fetchBenchJson(`runs/${latestRunId}.json`);
+    if (runData && runData.scenarios && runData.agents) {
+      document.getElementById('latest-run-id').textContent = shortId(latestRunId);
+      renderCompetitive(runData);
+      document.getElementById('competitive-section').style.display = '';
+    }
+  }
+}
+
+function renderCompetitive(runData) {
+  const table = document.getElementById('competitive-table');
+  const thead = table.querySelector('thead tr');
+  const tbody = table.querySelector('tbody');
+
+  (runData.agents || []).forEach(a => {
+    thead.innerHTML += `<th class="numeric">${a}</th>`;
+  });
+
+  let rows = '';
+  for (const sn of (runData.scenario_names || Object.keys(runData.scenarios))) {
+    const sc = runData.scenarios[sn];
+    let bestAgent = null, bestLps = 0;
+    (runData.agents || []).forEach(a => {
+      const entry = sc?.[a];
+      let lps = null;
+      if (entry && typeof entry === 'object') {
+        if (Number.isFinite(entry.avg_lps)) lps = entry.avg_lps;
+        else if (Array.isArray(entry.lps)) {
+          const vals = entry.lps.filter(v => Number.isFinite(v));
+          if (vals.length) lps = vals.reduce((s, v) => s + v, 0) / vals.length;
         }
       }
-      if (bestAgent && bestLps > 0) {
-        primaryWinner = { agent: bestAgent, lps: bestLps, scenario: firstScenario };
-      }
-    }
-    // Sparkline from recent runs (winner of primary scenario per run)
-    for (const r of recentRuns) {
-      const sc = r.scenario_names?.[0] || Object.keys(r.scenarios || {})[0];
-      const scenarioData = sc ? r.scenarios?.[sc] : null;
-      if (!scenarioData) continue;
-      let bestLps = 0;
-      for (const stats of Object.values(scenarioData)) {
-        const avg = averageLps(stats) || 0;
-        if (avg > bestLps) bestLps = avg;
-      }
-      if (bestLps > 0) primarySparkData.push(bestLps);
-    }
-  }
-  cardsEl.innerHTML += `
-    <div class="tracking-card">
-      <span class="label">Primary Scenario Winner</span>
-      <span class="value">${primaryWinner ? formatLPS(primaryWinner.lps) : '--'}</span>
-      <span class="subtitle">${primaryWinner ? primaryWinner.agent + ' (' + getScenarioTitle(primaryWinner.scenario) + ')' : 'no recent competitive data'}</span>
-      <canvas class="sparkline" id="spark-lps" width="120" height="36"></canvas>
-    </div>`;
+      if (lps !== null && lps > bestLps) { bestLps = lps; bestAgent = a; }
+    });
 
-  // Card 2: Best ffwd ratio where available
-  let bestRatio = null;
-  if (latestRun && latestRun.scenarios) {
-    for (const sn of (latestRun.scenario_names || Object.keys(latestRun.scenarios))) {
-      const sc = latestRun.scenarios[sn];
-      const ffLps = averageLps(sc?.ff);
-      const ffwdLps = averageLps(sc?.ffwd);
-      const scenarioFfLps = ffLps > 0 ? ffLps : ffwdLps;
-      if (!(scenarioFfLps > 0)) continue;
-      for (const agent of Object.keys(sc)) {
-        if (agent === 'ff' || agent === 'ffwd') continue;
-        const competitorLps = averageLps(sc[agent]) || 0;
-        if (!(competitorLps > 0)) continue;
-        const ratio = scenarioFfLps / competitorLps;
-        if (!bestRatio || ratio > bestRatio.value) bestRatio = { value: ratio, vs: agent, scenario: sn };
-      }
-    }
-  }
-  cardsEl.innerHTML += `
-    <div class="tracking-card">
-      <span class="label">Best Competitive Ratio</span>
-      <span class="value">${bestRatio ? bestRatio.value.toFixed(1) + 'x' : '--'}</span>
-      <span class="subtitle">${bestRatio ? 'vs ' + bestRatio.vs + ' (' + getScenarioTitle(bestRatio.scenario) + ')' : 'no data'}</span>
-    </div>`;
-
-  // Card 3: RSS at 100K eps
-  let rss100k = null;
-  const rateMap = normalizeRateMap(latestRate);
-  if (rateMap["100000"]) {
-    rss100k = rateMap["100000"].rss_mb;
-  }
-  cardsEl.innerHTML += `
-    <div class="tracking-card">
-      <span class="label">RSS @ 100K eps</span>
-      <span class="value">${rss100k != null ? rss100k.toFixed(1) + ' MB' : '--'}</span>
-      <span class="subtitle">Memory usage at 100K events/sec</span>
-    </div>`;
-
-  // Draw sparklines after DOM update
-  if (primarySparkData.length > 1) drawSparkline(document.getElementById('spark-lps'), primarySparkData, '#2563eb');
-
-  // Recent competitive results table
-  if (latestRun && latestRun.scenarios) {
-    const section = document.getElementById('competitive-section');
-    section.style.display = '';
-    const table = document.getElementById('competitive-table');
-    const agents = latestRun.agents || [];
-    const thead = table.querySelector('thead tr');
-    agents.forEach(a => { thead.innerHTML += `<th class="numeric">${a}</th>`; });
-
-    const tbody = table.querySelector('tbody');
-    let rowsHtml = '';
-    for (const sn of (latestRun.scenario_names || Object.keys(latestRun.scenarios))) {
-      const sc = latestRun.scenarios[sn];
-      let bestAgent = null, bestLps = 0;
-      agents.forEach(a => {
-        const lps = averageLps(sc?.[a]) || 0;
-        if (lps > bestLps) {
-          bestLps = lps;
-          bestAgent = a;
+    let cells = `<td>${SCENARIO_NAMES[sn]?.title || sn}</td>`;
+    (runData.agents || []).forEach(a => {
+      const entry = sc?.[a];
+      let lps = null;
+      if (entry && typeof entry === 'object') {
+        if (Number.isFinite(entry.avg_lps)) lps = entry.avg_lps;
+        else if (Array.isArray(entry.lps)) {
+          const vals = entry.lps.filter(v => Number.isFinite(v));
+          if (vals.length) lps = vals.reduce((s, v) => s + v, 0) / vals.length;
         }
-      });
-
-      let row = `<td><a href="competitive.html">${getScenarioTitle(sn)}</a></td>`;
-      agents.forEach(a => {
-        const lps = averageLps(sc?.[a]);
-        const cls = a === bestAgent ? 'numeric winner' : 'numeric';
-        row += `<td class="${cls}">${lps != null ? formatLPS(lps) : '--'}</td>`;
-      });
-      rowsHtml += `<tr>${row}</tr>`;
-    }
-    tbody.innerHTML = rowsHtml;
+      }
+      const cls = a === bestAgent ? 'numeric winner' : 'numeric';
+      cells += `<td class="${cls}">${lps !== null ? fmtLPS(lps) : '—'}</td>`;
+    });
+    rows += `<tr>${cells}</tr>`;
   }
+  tbody.innerHTML = rows;
+}
 
-  // Recent development metrics
-  if (latestCriterion && latestCriterion.benchmarks) {
-    const section = document.getElementById('dev-section');
-    section.style.display = '';
-    const tbody = document.querySelector('#dev-table tbody');
-    const benchmarks = latestCriterion.benchmarks;
-    let rowsHtml = '';
-    for (const [name, data] of Object.entries(benchmarks).slice(0, 10)) {
-      const thrpt = formatCriterionThroughput(data);
-      rowsHtml += `<tr>
-        <td><a href="development.html">${name}</a></td>
-        <td class="numeric">${formatNs(data.mean_ns)}</td>
-        <td class="numeric">${thrpt}</td>
-      </tr>`;
-    }
-    tbody.innerHTML = rowsHtml;
-  }
-
-  // All runs list
-  const allRunIds = [...new Set([...runs, ...rateRuns, ...criterionRuns])];
-  if (allRunIds.length > 0) {
-    const section = document.getElementById('runs-section');
-    section.style.display = '';
-    const tbody = document.querySelector('#runs-table tbody');
-
-    // Show runs in reverse order (newest first)
-    let rowsHtml = '';
-    for (const id of [...allRunIds].reverse().slice(0, 50)) {
-      const types = [];
-      if (runs.includes(id)) types.push('competitive');
-      if (rateRuns.includes(id)) types.push('rate');
-      if (criterionRuns.includes(id)) types.push('criterion');
-
-      rowsHtml += `<tr>
-        <td><a href="run.html?id=${id}">#${id}</a></td>
-        <td>${types.map(t => '<span class="badge">' + t + '</span> ').join('')}</td>
-      </tr>`;
-    }
-    tbody.innerHTML = rowsHtml;
-  }
+function fmtLPS(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return Math.round(n).toString();
 }
 
 main();

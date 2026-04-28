@@ -73,6 +73,10 @@ export default defineConfig({
           label: "Troubleshooting",
           slug: "troubleshooting",
         },
+        {
+          label: "Benchmarks",
+          link: "/bench/",
+        },
       ],
     }),
   ],

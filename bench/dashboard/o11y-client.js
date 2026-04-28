@@ -8,7 +8,7 @@ import { trendChartDataset } from "https://cdn.jsdelivr.net/npm/@benchkit/adapte
 
 export const benchDataSource = {
   owner: "strawgate",
-  repo: "fastforward",
+  repo: "fastforward-bench",
   branch: "bench-data",
 };
 

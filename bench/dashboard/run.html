@@ -3,32 +3,38 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#10243a">
-  <title>Run Detail - Benchmark Dashboard</title>
+  <title>Run Detail - FastForward Benchmarks</title>
   <link rel="stylesheet" href="style.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7"></script>
 </head>
 <body>
-<div class="container">
-  <div class="breadcrumb">
-    <a href="index.html">Dashboard</a><span class="sep">/</span><span id="breadcrumb-title">Run</span>
-  </div>
-
-  <header class="hero">
-    <p class="eyebrow">run inspector</p>
-    <h1>Run Detail</h1>
-    <p class="lede">Deep-dive one benchmark run to compare per-scenario throughput and resource peaks across all configured collectors.</p>
-    <div class="hero-tags">
-      <span>single run forensics</span><span>scenario deltas</span><span>resource peaks</span>
-    </div>
+<div class="site-wrapper">
+  <header class="top-bar">
+    <a class="top-bar-brand" href="https://strawgate.github.io/fastforward/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+        <path d="M2 17l10 5 10-5"/>
+        <path d="M2 12l10 5 10-5"/>
+      </svg>
+      <span>FastForward</span>
+    </a>
+    <div class="top-bar-divider"></div>
+    <span class="top-bar-section">Benchmarks</span>
+    <nav class="top-bar-links">
+      <a href="index.html">Overview</a>
+      <a href="competitive.html">Competitive</a>
+      <a href="development.html">Development</a>
+      <a href="project-health.html">Project Health</a>
+    </nav>
   </header>
 
-  <nav class="nav-pills">
-    <a href="index.html">Overview</a>
-    <a href="competitive.html">Competitive</a>
-    <a href="development.html">Development</a>
-    <a href="project-health.html">Project Health</a>
-  </nav>
+  <main class="main-content">
+
+    <header class="hero">
+      <p class="hero-eyebrow">Run Inspector</p>
+      <h1>Run Detail</h1>
+      <p class="hero-lede">Deep-dive one benchmark run to compare per-scenario throughput and resource peaks across all configured collectors.</p>
+    </header>
 
   <div id="loading" class="loading">Loading run data...</div>
   <div id="content" style="display:none">
@@ -60,14 +66,17 @@
 
     <div class="section">
       <h2>Full Results</h2>
-      <div class="card table-card">
-        <table id="results-table">
-          <thead id="results-thead"></thead>
-          <tbody id="results-tbody"></tbody>
-        </table>
+      <div class="card">
+        <div class="card-body" style="overflow-x:auto;">
+          <table id="results-table">
+            <thead id="results-thead"></thead>
+            <tbody id="results-tbody"></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
+</main>
 </div>
 
 <script type="module">
@@ -346,5 +355,7 @@ async function main() {
 
 main();
 </script>
+</main>
+</div>
 </body>
 </html>
