@@ -291,6 +291,8 @@ fn cmp4(c0: u8x16, c1: u8x16, c2: u8x16, c3: u8x16, needle: u8) -> u64 {
 /// native register on both NEON (128-bit) and SSE2 (128-bit). The `wide`
 /// crate handles platform dispatch at compile time.
 pub fn find_structural_chars(block: &[u8; 64]) -> RawBlockMasks {
+    // Invariant: `block` is `&[u8; 64]` by function signature. Each slice is exactly 16 bytes,
+    // so `try_into()` to `[u8; 16]` always succeeds.
     let c0 = u8x16::new(block[0..16].try_into().expect("block is 64 bytes"));
     let c1 = u8x16::new(block[16..32].try_into().expect("block is 64 bytes"));
     let c2 = u8x16::new(block[32..48].try_into().expect("block is 64 bytes"));

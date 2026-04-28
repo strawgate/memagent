@@ -79,6 +79,9 @@ pub fn scan_streaming<B: ScanBuilder>(buf: &[u8], config: &ScanConfig, builder: 
         let remaining = len - offset;
         let block_len = remaining.min(64);
 
+        // Invariant: `remaining >= 64` means `buf[offset..offset + 64]` is exactly 64 bytes,
+        // so the `try_into()` to `[u8; 64]` always succeeds. The `else` branch handles the
+        // final partial block when `remaining < 64`.
         let block: [u8; 64] = if remaining >= 64 {
             buf[offset..offset + 64].try_into().expect("64-byte block")
         } else {
