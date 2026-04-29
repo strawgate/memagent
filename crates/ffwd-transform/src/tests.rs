@@ -56,6 +56,21 @@ fn make_source_metadata_batch() -> RecordBatch {
     RecordBatch::try_new(schema, vec![level, msg, source_id, source_path]).unwrap()
 }
 
+fn make_cri_metadata_batch() -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("msg", DataType::Utf8, true),
+        Field::new(field_names::TIMESTAMP_UNDERSCORE, DataType::Utf8, true),
+        Field::new(field_names::CRI_STREAM, DataType::Utf8, true),
+    ]));
+    let msg: ArrayRef = Arc::new(StringArray::from(vec![Some("started"), Some("failed")]));
+    let timestamp: ArrayRef = Arc::new(StringArray::from(vec![
+        Some("2024-01-15T10:30:00Z"),
+        Some("2024-01-15T10:30:01Z"),
+    ]));
+    let stream: ArrayRef = Arc::new(StringArray::from(vec![Some("stdout"), Some("stderr")]));
+    RecordBatch::try_new(schema, vec![msg, timestamp, stream]).unwrap()
+}
+
 fn assert_u64_column_value(batch: &RecordBatch, name: &str, row: usize, expected: u64) {
     let values = batch
         .column_by_name(name)
@@ -609,6 +624,45 @@ fn test_filter_hints_reversed_gt() {
     let a = QueryAnalyzer::new("SELECT * FROM logs WHERE 5 > severity").unwrap();
     let h = a.filter_hints();
     assert_eq!(h.max_severity, Some(4));
+}
+
+#[test]
+fn test_filter_hints_reversed_gte() {
+    // "4 >= severity" means severity <= 4
+    let a = QueryAnalyzer::new("SELECT * FROM logs WHERE 4 >= severity").unwrap();
+    let h = a.filter_hints();
+    assert_eq!(h.max_severity, Some(4));
+}
+
+#[test]
+fn test_filter_hints_reversed_lt_not_pushable() {
+    // "4 < severity" is a lower bound (severity > 4), not max_severity.
+    let a = QueryAnalyzer::new("SELECT * FROM logs WHERE 4 < severity").unwrap();
+    let h = a.filter_hints();
+    assert!(h.max_severity.is_none());
+}
+
+#[test]
+fn test_filter_hints_qualified_join_predicate_not_pushed() {
+    let a = QueryAnalyzer::new(
+        "SELECT * FROM logs l JOIN env e ON l.msg = e.msg WHERE e.severity <= 4",
+    )
+    .unwrap();
+    let h = a.filter_hints();
+    assert!(
+        h.max_severity.is_none(),
+        "qualified join predicate should not be pushed to log source"
+    );
+}
+
+#[test]
+fn test_filter_hints_qualified_logs_predicate_not_pushed_conservatively() {
+    let a = QueryAnalyzer::new("SELECT * FROM logs l WHERE l.severity <= 4").unwrap();
+    let h = a.filter_hints();
+    assert!(
+        h.max_severity.is_none(),
+        "qualified logs predicate should stay in residual SQL for conservative correctness"
+    );
 }
 
 #[test]
@@ -1289,6 +1343,38 @@ fn test_where_drops_all_rows_returns_correct_schema() {
     assert_eq!(result.num_columns(), 2, "output should have 2 columns");
     assert_eq!(result.schema().field(0).name(), "level");
     assert_eq!(result.schema().field(1).name(), "msg");
+}
+
+#[test]
+fn test_where_drops_all_rows_preserves_cri_sidecar_output_schema() {
+    let batch = make_cri_metadata_batch();
+    let mut transform =
+        SqlTransform::new("SELECT _timestamp, _stream, msg FROM logs WHERE msg = 'missing'")
+            .unwrap();
+    let result = transform.execute_blocking(batch).unwrap();
+
+    assert_eq!(result.num_rows(), 0, "no rows should match");
+    assert_eq!(result.num_columns(), 3);
+    assert_eq!(
+        result.schema().field(0).name(),
+        field_names::TIMESTAMP_UNDERSCORE
+    );
+    assert_eq!(result.schema().field(1).name(), field_names::CRI_STREAM);
+    assert_eq!(result.schema().field(2).name(), "msg");
+}
+
+#[test]
+fn test_where_drops_all_rows_preserves_source_sidecar_output_schema() {
+    let batch = make_source_metadata_batch();
+    let mut transform =
+        SqlTransform::new("SELECT __source_id, \"file.path\" FROM logs WHERE level = 'FATAL'")
+            .unwrap();
+    let result = transform.execute_blocking(batch).unwrap();
+
+    assert_eq!(result.num_rows(), 0, "no rows should match");
+    assert_eq!(result.num_columns(), 2);
+    assert_eq!(result.schema().field(0).name(), field_names::SOURCE_ID);
+    assert_eq!(result.schema().field(1).name(), "file.path");
 }
 
 #[test]
