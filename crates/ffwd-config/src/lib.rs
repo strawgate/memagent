@@ -26,7 +26,7 @@ pub mod validate;
 
 pub use serde_helpers::{PositiveMillis, PositiveSecs};
 
-/// Re-export of [`ConfigDiff`](diff::ConfigDiff) for computing pipeline-level
+/// Re-export of [`ConfigDiff`] for computing pipeline-level
 /// differences between two configurations during live reload.
 pub use diff::ConfigDiff;
 
