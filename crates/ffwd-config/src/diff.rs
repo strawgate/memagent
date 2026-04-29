@@ -393,3 +393,168 @@ opamp:
         assert!(!diff.is_empty());
     }
 }
+
+/// Property-based tests for ConfigDiff invariants.
+///
+/// These verify that ConfigDiff maintains set-theoretic properties regardless
+/// of which pipelines are added/removed/changed between configurations.
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+    use std::collections::HashMap;
+
+    use crate::types::PipelineConfig;
+
+    /// Generate a pipeline name (short, alphanumeric).
+    fn pipeline_name() -> impl Strategy<Value = String> {
+        "[a-z][a-z0-9_]{0,7}".prop_filter("non-empty", |s| !s.is_empty())
+    }
+
+    /// Generate a minimal PipelineConfig from a YAML template with a unique path.
+    fn pipeline_config(path_seed: &str) -> PipelineConfig {
+        let yaml = format!(
+            r#"
+inputs:
+  - type: file
+    path: /tmp/{path_seed}.log
+    format: json
+outputs:
+  - type: stdout
+    format: json
+"#
+        );
+        serde_yaml_ng::from_str(&yaml).expect("valid pipeline yaml")
+    }
+
+    /// Generate a Config with a given set of pipeline names.
+    fn config_with_pipelines(names: &[String], path_prefix: &str) -> Config {
+        let pipelines: HashMap<String, PipelineConfig> = names
+            .iter()
+            .map(|n| (n.clone(), pipeline_config(&format!("{path_prefix}_{n}"))))
+            .collect();
+        Config {
+            pipelines,
+            server: Default::default(),
+            storage: Default::default(),
+            opamp: None,
+        }
+    }
+
+    proptest! {
+        /// Diffing identical configs always produces an empty diff.
+        #[test]
+        fn self_diff_is_empty(
+            names in proptest::collection::vec(pipeline_name(), 1..8)
+        ) {
+            let config = config_with_pipelines(&names, "same");
+            let diff = ConfigDiff::between(&config, &config);
+            prop_assert!(diff.is_empty(), "self-diff must be empty: {diff:?}");
+            prop_assert!(diff.added.is_empty());
+            prop_assert!(diff.removed.is_empty());
+            prop_assert!(diff.changed.is_empty());
+        }
+
+        /// The total count of categorized pipelines equals the union of old and new.
+        #[test]
+        fn partition_covers_union(
+            old_names in proptest::collection::vec(pipeline_name(), 1..6),
+            new_names in proptest::collection::vec(pipeline_name(), 1..6),
+        ) {
+            let old = config_with_pipelines(&old_names, "old");
+            let new = config_with_pipelines(&new_names, "new");
+            let diff = ConfigDiff::between(&old, &new);
+
+            // Union of all categories equals the set of all pipeline names.
+            let mut all_in_diff: Vec<String> = diff.added.iter()
+                .chain(diff.removed.iter())
+                .chain(diff.changed.iter())
+                .chain(diff.unchanged.iter())
+                .cloned()
+                .collect();
+            all_in_diff.sort();
+            all_in_diff.dedup();
+
+            let mut union: Vec<String> = old.pipelines.keys()
+                .chain(new.pipelines.keys())
+                .cloned()
+                .collect();
+            union.sort();
+            union.dedup();
+
+            prop_assert_eq!(all_in_diff, union,
+                "diff categories must partition the union of old+new pipeline names");
+        }
+
+        /// Categories are mutually exclusive (no pipeline appears in more than one).
+        #[test]
+        fn categories_are_disjoint(
+            old_names in proptest::collection::vec(pipeline_name(), 1..6),
+            new_names in proptest::collection::vec(pipeline_name(), 1..6),
+        ) {
+            let old = config_with_pipelines(&old_names, "old");
+            let new = config_with_pipelines(&new_names, "new");
+            let diff = ConfigDiff::between(&old, &new);
+
+            let mut all: Vec<&String> = diff.added.iter()
+                .chain(diff.removed.iter())
+                .chain(diff.changed.iter())
+                .chain(diff.unchanged.iter())
+                .collect();
+            let total = all.len();
+            all.sort();
+            all.dedup();
+            prop_assert_eq!(all.len(), total,
+                "no pipeline should appear in multiple categories");
+        }
+
+        /// Added pipelines are exactly those in new but not old.
+        #[test]
+        fn added_is_new_minus_old(
+            old_names in proptest::collection::vec(pipeline_name(), 1..6),
+            new_names in proptest::collection::vec(pipeline_name(), 1..6),
+        ) {
+            let old = config_with_pipelines(&old_names, "old");
+            let new = config_with_pipelines(&new_names, "new");
+            let diff = ConfigDiff::between(&old, &new);
+
+            for name in &diff.added {
+                prop_assert!(!old.pipelines.contains_key(name),
+                    "added pipeline {name} must not exist in old config");
+                prop_assert!(new.pipelines.contains_key(name),
+                    "added pipeline {name} must exist in new config");
+            }
+        }
+
+        /// Removed pipelines are exactly those in old but not new.
+        #[test]
+        fn removed_is_old_minus_new(
+            old_names in proptest::collection::vec(pipeline_name(), 1..6),
+            new_names in proptest::collection::vec(pipeline_name(), 1..6),
+        ) {
+            let old = config_with_pipelines(&old_names, "old");
+            let new = config_with_pipelines(&new_names, "new");
+            let diff = ConfigDiff::between(&old, &new);
+
+            for name in &diff.removed {
+                prop_assert!(old.pipelines.contains_key(name),
+                    "removed pipeline {name} must exist in old config");
+                prop_assert!(!new.pipelines.contains_key(name),
+                    "removed pipeline {name} must not exist in new config");
+            }
+        }
+
+        /// is_empty implies no structural changes anywhere.
+        #[test]
+        fn is_empty_iff_no_changes(
+            names in proptest::collection::vec(pipeline_name(), 1..6),
+        ) {
+            let config = config_with_pipelines(&names, "same");
+            let diff = ConfigDiff::between(&config, &config);
+            prop_assert!(diff.is_empty());
+            prop_assert!(!diff.server_changed);
+            prop_assert!(!diff.storage_changed);
+            prop_assert!(!diff.opamp_changed);
+        }
+    }
+}

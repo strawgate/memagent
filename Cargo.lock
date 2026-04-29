@@ -2046,6 +2046,7 @@ name = "ffwd-config"
 version = "0.1.0"
 dependencies = [
  "config",
+ "proptest",
  "serde",
  "serde_yaml_ng",
  "thiserror 2.0.18",
