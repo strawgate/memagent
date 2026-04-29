@@ -127,7 +127,11 @@ impl ScalarUDFImpl for GeoLookupUdf {
             ));
         }
 
-        let input = &args.args[0];
+        let input = args.args.first().ok_or_else(|| {
+            datafusion::error::DataFusionError::Execution(
+                "geo_lookup() expects exactly one argument".to_string(),
+            )
+        })?;
 
         match input {
             ColumnarValue::Array(array) => {

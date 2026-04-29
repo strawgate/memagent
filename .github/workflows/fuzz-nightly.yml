@@ -23,11 +23,12 @@ jobs:
 
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
-        with:
-          rustflags: -C instrument-coverage
 
       - name: Install cargo-fuzz
         run: cargo +nightly install cargo-fuzz
+
+      - name: Enable coverage instrumentation
+        run: echo 'RUSTFLAGS=-C instrument-coverage' >> "$GITHUB_ENV"
 
       - name: Download previous corpus
         uses: actions/download-artifact@v4
@@ -49,7 +50,7 @@ jobs:
         env:
           DURATION_HOURS: ${{ inputs.duration-hours || '2' }}
         run: |
-          DURATION_SECS=$(( ${DURATION_HOURS} * 3600 ))
+          DURATION_SECS=$(( DURATION_HOURS * 3600 ))
           cd crates/ffwd-core/fuzz
           for TARGET in fuzz_scanner fuzz_zero_copy_scanner fuzz_scanner_consistency \
                        fuzz_structural_streaming fuzz_cri fuzz_pipe_event \
@@ -84,11 +85,12 @@ jobs:
 
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
-        with:
-          rustflags: -C instrument-coverage
 
       - name: Install cargo-fuzz
         run: cargo +nightly install cargo-fuzz
+
+      - name: Enable coverage instrumentation
+        run: echo 'RUSTFLAGS=-C instrument-coverage' >> "$GITHUB_ENV"
 
       - name: Download previous corpus
         uses: actions/download-artifact@v4
@@ -109,7 +111,7 @@ jobs:
         env:
           DURATION_HOURS: ${{ inputs.duration-hours || '2' }}
         run: |
-          DURATION_SECS=$(( ${DURATION_HOURS} * 3600 ))
+          DURATION_SECS=$(( DURATION_HOURS * 3600 ))
           cd crates/ffwd-io/fuzz
           for TARGET in fuzz_otlp_protobuf_decode fuzz_otlp_json_decode fuzz_decompress \
                        fuzz_arrow_ipc_decode fuzz_otap_decode fuzz_protojson_numbers; do

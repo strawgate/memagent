@@ -708,6 +708,13 @@ fn parse_list_objects_response(data: &[u8]) -> io::Result<(Vec<S3Object>, Option
     use quick_xml::Reader;
     use quick_xml::events::Event;
 
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum CaptureField {
+        Key,
+        Size,
+        NextToken,
+    }
+
     let mut reader = Reader::from_reader(data);
     reader.config_mut().trim_text(true);
 
@@ -717,7 +724,8 @@ fn parse_list_objects_response(data: &[u8]) -> io::Result<(Vec<S3Object>, Option
     let mut in_contents = false;
     let mut current_key = String::new();
     let mut current_size: u64 = 0;
-    let mut capture: Option<&'static str> = None; // which field we're reading
+    let mut capture: Option<CaptureField> = None;
+    let mut current_text = String::new();
 
     let mut buf = Vec::new();
     loop {
@@ -728,35 +736,58 @@ fn parse_list_objects_response(data: &[u8]) -> io::Result<(Vec<S3Object>, Option
                     current_key.clear();
                     current_size = 0;
                 }
-                b"Key" if in_contents => capture = Some("key"),
-                b"Size" if in_contents => capture = Some("size"),
-                b"NextContinuationToken" => capture = Some("next_token"),
+                b"Key" if in_contents => {
+                    capture = Some(CaptureField::Key);
+                    current_text.clear();
+                }
+                b"Size" if in_contents => {
+                    capture = Some(CaptureField::Size);
+                    current_text.clear();
+                }
+                b"NextContinuationToken" => {
+                    capture = Some(CaptureField::NextToken);
+                    current_text.clear();
+                }
                 _ => {}
             },
-            Ok(Event::Text(e)) => {
-                if let Some(field) = capture {
-                    let text = e
-                        .unescape()
-                        .map_err(|e| io::Error::other(format!("XML unescape: {e}")))?;
-                    match field {
-                        "key" => current_key = text.into_owned(),
-                        "size" => {
-                            current_size = text.parse::<u64>().unwrap_or(0);
-                        }
-                        "next_token" => next_token = Some(text.into_owned()),
-                        _ => {}
-                    }
+            Ok(Event::Text(e)) if capture.is_some() => {
+                let decoded = e
+                    .decode()
+                    .map_err(|e| io::Error::other(format!("XML decode: {e}")))?;
+                current_text.push_str(decoded.as_ref());
+            }
+            Ok(Event::GeneralRef(e)) if capture.is_some() => {
+                super::push_xml_reference(&mut current_text, e, "S3")?;
+            }
+            Ok(Event::End(e)) => match e.local_name().as_ref() {
+                b"Key" if capture == Some(CaptureField::Key) => {
+                    current_key = std::mem::take(&mut current_text);
                     capture = None;
                 }
-            }
-            Ok(Event::End(e)) if e.local_name().as_ref() == b"Contents" && in_contents => {
-                objects.push(S3Object {
-                    key: current_key.clone(),
-                    size: current_size,
-                });
-                in_contents = false;
-                capture = None;
-            }
+                b"Size" if capture == Some(CaptureField::Size) => {
+                    current_size = current_text.parse::<u64>().map_err(|e| {
+                        io::Error::other(format!(
+                            "S3 list XML parse: invalid object size {current_text:?}: {e}"
+                        ))
+                    })?;
+                    capture = None;
+                    current_text.clear();
+                }
+                b"NextContinuationToken" if capture == Some(CaptureField::NextToken) => {
+                    next_token = Some(std::mem::take(&mut current_text));
+                    capture = None;
+                }
+                b"Contents" if in_contents => {
+                    objects.push(S3Object {
+                        key: std::mem::take(&mut current_key),
+                        size: current_size,
+                    });
+                    in_contents = false;
+                    capture = None;
+                    current_text.clear();
+                }
+                _ => {}
+            },
             Ok(Event::Eof) => break,
             Err(e) => {
                 return Err(io::Error::other(format!("S3 list XML parse: {e}")));
@@ -924,5 +955,38 @@ mod tests {
         let (objects, token) = parse_list_objects_response(xml).expect("parse ok");
         assert_eq!(objects.len(), 1);
         assert_eq!(token.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn parse_list_objects_response_preserves_entity_fragments() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <NextContinuationToken>page&amp;&#50;</NextContinuationToken>
+  <Contents>
+    <Key>logs/a&amp;b&#x2F;c.log</Key>
+    <Size>10</Size>
+  </Contents>
+</ListBucketResult>"#;
+        let (objects, token) = parse_list_objects_response(xml).expect("parse ok");
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].key, "logs/a&b/c.log");
+        assert_eq!(objects[0].size, 10);
+        assert_eq!(token.as_deref(), Some("page&2"));
+    }
+
+    #[test]
+    fn parse_list_objects_response_rejects_invalid_size() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Contents>
+    <Key>logs/bad.log</Key>
+    <Size>not-a-number</Size>
+  </Contents>
+</ListBucketResult>"#;
+        let err = parse_list_objects_response(xml).expect_err("invalid size should fail");
+        assert!(
+            err.to_string().contains("invalid object size"),
+            "unexpected error: {err}"
+        );
     }
 }

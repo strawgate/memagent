@@ -19,11 +19,15 @@ impl OutputHealthTracker {
         aggregate_output_health(state.idle_health, state.worker_slots.values().copied())
     }
 
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, OutputHealthState> {
+        self.state.lock().unwrap_or_else(|poisoned| {
+            tracing::error!("worker_pool: recovering output health tracker after mutex poison");
+            poisoned.into_inner()
+        })
+    }
+
     fn insert_worker(&self, worker_id: usize, initial: ComponentHealth) -> ComponentHealth {
-        let mut state = self
-            .state
-            .lock()
-            .expect("output health tracker mutex poisoned during worker insertion");
+        let mut state = self.lock_state();
         state.idle_health = idle_health_after_worker_insert(state.idle_health);
         state.worker_slots.insert(worker_id, initial);
         let aggregate = Self::aggregate(&state);
@@ -36,10 +40,7 @@ impl OutputHealthTracker {
         worker_id: usize,
         event: OutputHealthEvent,
     ) -> ComponentHealth {
-        let mut state = self
-            .state
-            .lock()
-            .expect("output health tracker mutex poisoned during worker event");
+        let mut state = self.lock_state();
         let Some(current) = state.worker_slots.get(&worker_id).copied() else {
             let aggregate = Self::aggregate(&state);
             tracing::warn!(
@@ -57,10 +58,7 @@ impl OutputHealthTracker {
     }
 
     pub(super) fn remove_worker(&self, worker_id: usize) -> ComponentHealth {
-        let mut state = self
-            .state
-            .lock()
-            .expect("output health tracker mutex poisoned during worker removal");
+        let mut state = self.lock_state();
         state.worker_slots.remove(&worker_id);
         let aggregate = Self::aggregate(&state);
         self.publish(aggregate);
@@ -68,29 +66,18 @@ impl OutputHealthTracker {
     }
 
     fn has_active_workers(&self) -> bool {
-        !self
-            .state
-            .lock()
-            .expect("output health tracker mutex poisoned during worker liveness check")
-            .worker_slots
-            .is_empty()
+        !self.lock_state().worker_slots.is_empty()
     }
 
     fn set_pool_health(&self, health: ComponentHealth) {
-        let mut state = self
-            .state
-            .lock()
-            .expect("output health tracker mutex poisoned during pool health update");
+        let mut state = self.lock_state();
         state.idle_health = health;
         let aggregate = Self::aggregate(&state);
         self.publish(aggregate);
     }
 
     fn clear_workers_and_set_pool_health(&self, health: ComponentHealth) -> ComponentHealth {
-        let mut state = self
-            .state
-            .lock()
-            .expect("output health tracker mutex poisoned during forced worker clear");
+        let mut state = self.lock_state();
         state.worker_slots.clear();
         state.idle_health = health;
         let aggregate = Self::aggregate(&state);

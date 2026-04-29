@@ -847,6 +847,7 @@ pub(super) fn decode_any_value_wire(value: &[u8]) -> Result<Option<WireAny<'_>>,
 ///   validated key, so re-validation is redundant.
 /// * `decode::collect_resource_attrs` — validates eagerly because there
 ///   is no per-position cache for resource attrs.
+#[cfg(test)]
 pub(super) fn decode_key_value_wire(
     kv: &[u8],
 ) -> Result<Option<(&[u8], WireAny<'_>)>, ProjectionError> {

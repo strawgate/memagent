@@ -547,7 +547,7 @@ pub(crate) fn run() -> Result<(), Box<dyn std::error::Error>> {
                     let ev = unsafe { &*(ptr.cast::<DnsQueryEvent>()) };
                     counts.dns_query += 1;
                     let wire_len = (ev.qname_len as usize).min(MAX_DNS_NAME);
-                    let wire = &ev.qname[..wire_len];
+                    let wire = ev.qname.get(..wire_len).unwrap_or_default();
                     let (qname_opt, qtype_opt) = dns_wire_to_dotted(wire);
                     let qname = qname_opt.as_deref().unwrap_or("<undecoded>");
                     let qtype_str = match qtype_opt {
@@ -655,14 +655,14 @@ fn format_addr(addr: u32) -> Ipv4Addr {
 
 fn comm_str(comm: &[u8; COMM_SIZE]) -> &str {
     let end = comm.iter().position(|&b| b == 0).unwrap_or(COMM_SIZE);
-    std::str::from_utf8(&comm[..end]).unwrap_or("<invalid>")
+    std::str::from_utf8(comm.get(..end).unwrap_or_default()).unwrap_or("<invalid>")
 }
 
 fn safe_str(buf: &[u8], len: usize) -> &str {
     let end = len.min(buf.len());
-    let slice = &buf[..end];
+    let slice = buf.get(..end).unwrap_or_default();
     let nul = slice.iter().position(|&b| b == 0).unwrap_or(end);
-    std::str::from_utf8(&slice[..nul]).unwrap_or("<invalid>")
+    std::str::from_utf8(slice.get(..nul).unwrap_or_default()).unwrap_or("<invalid>")
 }
 
 // dns_wire_to_dotted is provided by sensor_ebpf_common::dns::dns_wire_to_dotted

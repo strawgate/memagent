@@ -66,8 +66,9 @@ where
         K: Borrow<Q>,
         Q: Eq + ?Sized,
     {
-        if let Some(idx) = self.lru.iter().position(|entry| entry.borrow() == key) {
-            let key = self.lru.remove(idx).expect("lru index must be valid");
+        if let Some(idx) = self.lru.iter().position(|entry| entry.borrow() == key)
+            && let Some(key) = self.lru.remove(idx)
+        {
             self.lru.push_back(key);
         }
     }

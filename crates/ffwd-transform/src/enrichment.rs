@@ -236,6 +236,10 @@ impl HostInfoTable {
             Field::new(cols.host_id, DataType::Utf8, false),
             Field::new(cols.boot_id, DataType::Utf8, false),
         ]));
+        #[expect(
+            clippy::expect_used,
+            reason = "host_info schema is constructed in lockstep"
+        )]
         let batch = RecordBatch::try_new(
             schema,
             vec![
@@ -461,6 +465,10 @@ fn build_k8s_batch(entries: &[K8sPodEntry]) -> RecordBatch {
     let uids: Vec<&str> = entries.iter().map(|e| e.pod_uid.as_str()).collect();
     let containers: Vec<&str> = entries.iter().map(|e| e.container_name.as_str()).collect();
 
+    #[expect(
+        clippy::expect_used,
+        reason = "k8s table schema is constructed in lockstep"
+    )]
     RecordBatch::try_new(
         schema,
         vec![
@@ -616,8 +624,18 @@ fn restore_csv_header_columns(
     for header in headers {
         match index_by_name.get(header.as_str()).copied() {
             Some(idx) => {
-                fields.push(Arc::clone(&schema.fields()[idx]));
-                arrays.push(Arc::clone(batch.column(idx)));
+                let field = schema.fields().get(idx).ok_or_else(|| {
+                    TransformError::Enrichment(format!(
+                        "CSV header '{header}' resolved to invalid column index {idx}"
+                    ))
+                })?;
+                let array = batch.columns().get(idx).ok_or_else(|| {
+                    TransformError::Enrichment(format!(
+                        "CSV header '{header}' resolved to missing batch column {idx}"
+                    ))
+                })?;
+                fields.push(Arc::clone(field));
+                arrays.push(Arc::clone(array));
             }
             None => {
                 fields.push(Arc::new(Field::new(header, DataType::Utf8View, true)));
@@ -1013,11 +1031,13 @@ impl EnvTable {
 
         // Reject duplicate column names after lowercase normalization (e.g.
         // FFWD_META_REGION and FFWD_META_region both present would collide).
-        for w in pairs.windows(2) {
-            if w[0].0 == w[1].0 {
+        for window in pairs.windows(2) {
+            if let [first, second] = window
+                && first.0 == second.0
+            {
                 return Err(TransformError::Enrichment(format!(
                     "EnvTable: duplicate column name '{}' after lowercasing (prefix '{prefix}')",
-                    w[0].0
+                    first.0
                 )));
             }
         }
@@ -1105,6 +1125,10 @@ impl ProcessInfoTable {
             Field::new("pid", DataType::Utf8, false),
             Field::new("start_time", DataType::Utf8, false),
         ]));
+        #[expect(
+            clippy::expect_used,
+            reason = "process_info schema is constructed in lockstep"
+        )]
         let batch = RecordBatch::try_new(
             schema,
             vec![
@@ -1246,10 +1270,12 @@ fn parse_kv_file(path: &Path) -> Result<Vec<(String, String)>, TransformError> {
     }
     pairs.sort_by(|a, b| a.0.cmp(&b.0));
     for window in pairs.windows(2) {
-        if window[0].0 == window[1].0 {
+        if let [first, second] = window
+            && first.0 == second.0
+        {
             return Err(TransformError::Enrichment(format!(
                 "duplicate key '{}' in '{}'",
-                window[0].0,
+                first.0,
                 path.display()
             )));
         }
@@ -1320,6 +1346,10 @@ impl NetworkInfoTable {
             Field::new("all_ipv4", DataType::Utf8, false),
             Field::new("all_ipv6", DataType::Utf8, false),
         ]));
+        #[expect(
+            clippy::expect_used,
+            reason = "network_info schema is constructed in lockstep"
+        )]
         let batch = RecordBatch::try_new(
             schema,
             vec![
@@ -1396,10 +1426,14 @@ fn discover_ipv6_from_proc() -> Vec<String> {
         if parts.len() < 4 {
             continue;
         }
-        let hex = parts[0];
-        let scope = parts[3];
+        let Some(hex) = parts.first() else {
+            continue;
+        };
+        let Some(scope) = parts.get(3) else {
+            continue;
+        };
         // Skip link-local (scope 20) and loopback (scope 10)
-        if scope == "20" || scope == "10" {
+        if *scope == "20" || *scope == "10" {
             continue;
         }
         if hex.len() == 32
@@ -1471,6 +1505,10 @@ impl ContainerInfoTable {
             Field::new("container_id", DataType::Utf8, false),
             Field::new("container_runtime", DataType::Utf8, false),
         ]));
+        #[expect(
+            clippy::expect_used,
+            reason = "container_info schema is constructed in lockstep"
+        )]
         let batch = RecordBatch::try_new(
             schema,
             vec![
@@ -1702,6 +1740,10 @@ impl K8sClusterInfoTable {
             Field::new("service_account", DataType::Utf8, false),
             Field::new("cluster_name", DataType::Utf8, false),
         ]));
+        #[expect(
+            clippy::expect_used,
+            reason = "k8s_cluster_info schema is constructed in lockstep"
+        )]
         let batch = RecordBatch::try_new(
             schema,
             vec![

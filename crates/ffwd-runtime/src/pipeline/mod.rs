@@ -174,14 +174,16 @@ struct IngestState {
 pub enum ControlMessage {
     /// Graceful shutdown: stop accepting new data, cancel workers, drain processors.
     Shutdown,
-    /// Intended to stop new ingress while allowing in-flight data to finish.
-    /// Current status: staged placeholder (logs only).
+    /// Forwarded to workers as a drain-ingress coordination signal.
+    ///
+    /// Current status: workers log this message and continue normal operation;
+    /// the pipeline keeps queued-input draining behavior unchanged.
     DrainIngress,
     /// Trigger checkpoint persistence via the pipeline's [`flush_checkpoints()`][Pipeline::flush_checkpoints] method.
     /// Current status: flushes checkpoint store only; does not evacuate I/O or worker buffers.
     Flush,
     /// Intended hot-reload hook.
-    /// Current status: staged placeholder (logs only).
+    /// Current status: forwarded to workers for observability/logging only.
     Reconfigure,
 }
 
@@ -267,8 +269,14 @@ impl Pipeline {
         });
         // Keep input_transforms in sync: one transform per input.
         while self.input_transforms.len() < self.inputs.len() {
-            let transform = create_transform("SELECT * FROM logs")
-                .expect("hardcoded passthrough 'SELECT * FROM logs' is always valid");
+            let Ok(transform) = create_transform("SELECT * FROM logs") else {
+                tracing::error!(
+                    input_name = name,
+                    "failed to build hardcoded passthrough transform for test input"
+                );
+                let _ = self.inputs.pop();
+                break;
+            };
             let scanner = Scanner::new(transform.scan_config());
             self.input_transforms.push(SourcePipeline {
                 scanner,
@@ -451,7 +459,8 @@ impl Pipeline {
     /// Note: [`ControlMessage::Shutdown`] is functional.
     /// [`ControlMessage::Flush`] triggers checkpoint-store flush only.
     /// [`ControlMessage::DrainIngress`] and [`ControlMessage::Reconfigure`]
-    /// are currently staged placeholders.
+    /// are forwarded to workers for observability/logging, but they do not
+    /// currently mutate worker behavior.
     pub fn clone_control_sender(&self) -> tokio::sync::mpsc::UnboundedSender<ControlMessage> {
         self.control_tx.clone()
     }

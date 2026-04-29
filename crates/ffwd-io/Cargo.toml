@@ -50,7 +50,8 @@ flate2 = "1"
 futures-util = { version = "0.3", optional = true }
 globset = { workspace = true }
 hex = { version = "0.4", optional = true }
-hmac = { version = "0.13", optional = true }
+# hmac 0.12 stays aligned with the digest 0.10 API used by the AWS SigV4 stack; do not re-upgrade to 0.13 without checking #2699.
+hmac = { version = "0.12", optional = true }
 http-body-util = "0.1"
 itoa = "1"
 libc = "0.2"

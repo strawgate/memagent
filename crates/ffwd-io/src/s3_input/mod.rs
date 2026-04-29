@@ -53,6 +53,31 @@ use client::S3Client;
 use decompress::{Compression, detect_compression};
 use sqs::SqsClient;
 
+fn push_xml_reference(
+    out: &mut String,
+    reference: quick_xml::events::BytesRef<'_>,
+    context: &str,
+) -> io::Result<()> {
+    if let Some(ch) = reference
+        .resolve_char_ref()
+        .map_err(|e| io::Error::other(format!("{context} XML character reference: {e}")))?
+    {
+        out.push(ch);
+        return Ok(());
+    }
+
+    let decoded = reference
+        .decode()
+        .map_err(|e| io::Error::other(format!("{context} XML reference decode: {e}")))?;
+    let Some(entity) = quick_xml::escape::resolve_predefined_entity(decoded.as_ref()) else {
+        return Err(io::Error::other(format!(
+            "{context} XML unrecognized entity: &{decoded};"
+        )));
+    };
+    out.push_str(entity);
+    Ok(())
+}
+
 // ── Constants ──────────────────────────────────────────────────────────────
 
 /// Bounded output channel capacity.  Each slot holds a ~256 KiB chunk.
