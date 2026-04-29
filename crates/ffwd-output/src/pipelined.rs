@@ -407,7 +407,7 @@ impl FileWriter {
         // Initialize bytes_written to the current file position so that
         // FADV_DONTNEED offsets are correct when appending to existing files.
         #[cfg(target_os = "linux")]
-        let bytes_written = file.metadata().map(|m| m.len()).unwrap_or(0);
+        let bytes_written = file.metadata().map_or(0, |m| m.len());
 
         Self {
             file,
