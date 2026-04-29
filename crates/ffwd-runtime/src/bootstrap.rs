@@ -736,8 +736,12 @@ pub async fn run_pipelines(
 
 /// Join sibling pipeline tasks with a 30s timeout each.
 ///
-/// Returns an error if any sibling times out (fatal). Collects but does not
-/// return non-fatal errors (those are handled by the caller via cycle_error).
+/// Sibling pipeline I/O errors are logged but intentionally not propagated —
+/// during a reload cycle, individual pipeline failures are expected (the
+/// pipelines are being torn down and rebuilt). Only join/panic failures and
+/// hard timeouts are considered fatal. The coordinator state machine decides
+/// whether the overall system should shut down based on the main pipeline's
+/// completion event.
 async fn join_siblings(
     handles: &mut Vec<tokio::task::JoinHandle<Result<(), io::Error>>>,
     reload_error: &opentelemetry::metrics::Counter<u64>,

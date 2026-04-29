@@ -148,8 +148,13 @@ impl ReloadCoordinator {
         if matches!(event, Event::ShutdownRequested)
             && !matches!(self.state, State::ShuttingDown { .. })
         {
+            // Only emit DrainPipelines if pipelines may be running.
+            let needs_drain = matches!(self.state, State::Running);
             self.state = State::ShuttingDown { error: None };
-            return vec![Effect::DrainPipelines, Effect::Shutdown];
+            if needs_drain {
+                return vec![Effect::DrainPipelines, Effect::Shutdown];
+            }
+            return vec![Effect::Shutdown];
         }
 
         match (&self.state, event) {
@@ -426,7 +431,8 @@ mod tests {
 
         let effects = c.step(Event::ShutdownRequested);
         assert!(c.is_terminal());
-        assert!(effects.iter().any(|e| matches!(e, Effect::DrainPipelines)));
+        // Draining state: pipelines are already being drained, no extra DrainPipelines.
+        assert!(!effects.iter().any(|e| matches!(e, Effect::DrainPipelines)));
         assert!(effects.iter().any(|e| matches!(e, Effect::Shutdown)));
     }
 
@@ -440,6 +446,8 @@ mod tests {
 
         let effects = c.step(Event::ShutdownRequested);
         assert!(c.is_terminal());
+        // Validating: no pipelines running, just Shutdown.
+        assert!(!effects.iter().any(|e| matches!(e, Effect::DrainPipelines)));
         assert!(effects.iter().any(|e| matches!(e, Effect::Shutdown)));
     }
 
@@ -454,6 +462,8 @@ mod tests {
 
         let effects = c.step(Event::ShutdownRequested);
         assert!(c.is_terminal());
+        // Building: no pipelines running yet, just Shutdown.
+        assert!(!effects.iter().any(|e| matches!(e, Effect::DrainPipelines)));
         assert!(effects.iter().any(|e| matches!(e, Effect::Shutdown)));
     }
 
@@ -464,6 +474,8 @@ mod tests {
 
         let effects = c.step(Event::ShutdownRequested);
         assert!(c.is_terminal());
+        // Starting: no pipelines running yet, just Shutdown.
+        assert!(!effects.iter().any(|e| matches!(e, Effect::DrainPipelines)));
         assert!(effects.iter().any(|e| matches!(e, Effect::Shutdown)));
     }
 
