@@ -2157,6 +2157,7 @@ dependencies = [
  "httpdate",
  "insta",
  "itoa",
+ "libc",
  "memchr",
  "mockito",
  "opentelemetry-proto",

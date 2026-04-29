@@ -1,5 +1,5 @@
 // xtask-verify: allow(pub_module_needs_tests) reason: integration coverage lives in otlp_sink/arrow sink tests; dedicated unit tests tracked separately
-use std::io;
+use std::{io, ptr};
 
 use arrow::array::{
     Array, AsArray, BinaryArray, FixedSizeBinaryArray, LargeBinaryArray, LargeStringArray,
@@ -121,6 +121,34 @@ fn first_escape_pos(bytes: &[u8]) -> usize {
     len
 }
 
+#[inline]
+fn append_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+    let len = out.len();
+    let new_len = len + bytes.len();
+    if new_len > out.capacity() {
+        out.reserve(new_len - len);
+    }
+    // SAFETY: we reserved sufficient tail capacity, then initialize exactly
+    // `bytes.len()` bytes before extending the vector length.
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), out.as_mut_ptr().add(len), bytes.len());
+        out.set_len(new_len);
+    }
+}
+
+#[inline]
+fn append_byte(out: &mut Vec<u8>, byte: u8) {
+    let len = out.len();
+    if len == out.capacity() {
+        out.reserve(1);
+    }
+    // SAFETY: reserve above guarantees one writable byte of spare capacity.
+    unsafe {
+        *out.as_mut_ptr().add(len) = byte;
+        out.set_len(len + 1);
+    }
+}
+
 /// Write a JSON string value with RFC 8259 escaping.
 ///
 /// **Hot path optimization**: most log field values (timestamps, service names,
@@ -139,22 +167,22 @@ pub(crate) fn write_json_string(out: &mut Vec<u8>, v: &str) -> io::Result<()> {
 
     if first_esc == bytes.len() {
         // Fast path: no escaping needed (vast majority of log field values).
-        // Single reserve + two extend_from_slice calls.
+        // Single reserve + two append operations.
         out.reserve(bytes.len() + 2);
-        out.push(b'"');
-        out.extend_from_slice(bytes);
-        out.push(b'"');
+        append_byte(out, b'"');
+        append_bytes(out, bytes);
+        append_byte(out, b'"');
         return Ok(());
     }
 
     // Slow path: has at least one byte needing escaping.
     // Reserve a reasonable estimate (original length + some overhead for escapes).
     out.reserve(bytes.len() + 8);
-    out.push(b'"');
+    append_byte(out, b'"');
 
     // Write the safe prefix before the first escape.
     if first_esc > 0 {
-        out.extend_from_slice(&bytes[..first_esc]);
+        append_bytes(out, &bytes[..first_esc]);
     }
 
     // Process from the first escape byte onward.
@@ -162,22 +190,25 @@ pub(crate) fn write_json_string(out: &mut Vec<u8>, v: &str) -> io::Result<()> {
     loop {
         // Emit the escape sequence for the current byte.
         match bytes[start] {
-            b'"' => out.extend_from_slice(b"\\\""),
-            b'\\' => out.extend_from_slice(b"\\\\"),
-            b'\n' => out.extend_from_slice(b"\\n"),
-            b'\r' => out.extend_from_slice(b"\\r"),
-            b'\t' => out.extend_from_slice(b"\\t"),
+            b'"' => append_bytes(out, b"\\\""),
+            b'\\' => append_bytes(out, b"\\\\"),
+            b'\n' => append_bytes(out, b"\\n"),
+            b'\r' => append_bytes(out, b"\\r"),
+            b'\t' => append_bytes(out, b"\\t"),
             b => {
                 // Control char → \u00XX. Avoid format_args! allocation.
                 const HEX: &[u8; 16] = b"0123456789abcdef";
-                out.extend_from_slice(&[
-                    b'\\',
-                    b'u',
-                    b'0',
-                    b'0',
-                    HEX[(b >> 4) as usize],
-                    HEX[(b & 0x0f) as usize],
-                ]);
+                append_bytes(
+                    out,
+                    &[
+                        b'\\',
+                        b'u',
+                        b'0',
+                        b'0',
+                        HEX[(b >> 4) as usize],
+                        HEX[(b & 0x0f) as usize],
+                    ],
+                );
             }
         }
         start += 1;
@@ -190,7 +221,7 @@ pub(crate) fn write_json_string(out: &mut Vec<u8>, v: &str) -> io::Result<()> {
         let remaining = &bytes[start..];
         let next_esc = first_escape_pos(remaining);
         if next_esc > 0 {
-            out.extend_from_slice(&remaining[..next_esc]);
+            append_bytes(out, &remaining[..next_esc]);
         }
         if next_esc == remaining.len() {
             break;
@@ -198,7 +229,7 @@ pub(crate) fn write_json_string(out: &mut Vec<u8>, v: &str) -> io::Result<()> {
         start += next_esc;
     }
 
-    out.push(b'"');
+    append_byte(out, b'"');
     Ok(())
 }
 
@@ -207,13 +238,13 @@ fn write_json_hex_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     // Reserve for surrounding quotes + "0x" prefix + 2 hex chars per byte.
     out.reserve(4 + bytes.len().saturating_mul(2));
-    out.push(b'"');
-    out.extend_from_slice(b"0x");
+    append_byte(out, b'"');
+    append_bytes(out, b"0x");
     for &b in bytes {
-        out.push(HEX[(b >> 4) as usize]);
-        out.push(HEX[(b & 0x0f) as usize]);
+        append_byte(out, HEX[(b >> 4) as usize]);
+        append_byte(out, HEX[(b & 0x0f) as usize]);
     }
-    out.push(b'"');
+    append_byte(out, b'"');
 }
 
 /// Write a single Arrow value as JSON, dispatching on the actual Arrow DataType.
@@ -449,71 +480,71 @@ pub(crate) fn write_typed_json_value(
 ) -> io::Result<()> {
     match typed {
         TypedArrayRef::Null => {
-            out.extend_from_slice(b"null");
+            append_bytes(out, b"null");
         }
         // SAFETY for all typed arms below: row < a.len() is guaranteed by the caller
         TypedArrayRef::Int8(a) => {
             // SAFETY: row < a.len() is guaranteed by the caller (see block comment above)
             let v = unsafe { a.value_unchecked(row) };
-            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+            append_bytes(out, itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::Int16(a) => {
             // SAFETY: row < a.len() is guaranteed by the caller (see block comment above)
             let v = unsafe { a.value_unchecked(row) };
-            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+            append_bytes(out, itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::Int32(a) => {
             // SAFETY: row < a.len() is guaranteed by the caller (see block comment above)
             let v = unsafe { a.value_unchecked(row) };
-            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+            append_bytes(out, itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::Int64(a) => {
             // SAFETY: row < a.len() is guaranteed by the caller (see block comment above)
             let v = unsafe { a.value_unchecked(row) };
-            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+            append_bytes(out, itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::UInt8(a) => {
             // SAFETY: row < a.len() is guaranteed by the caller (see block comment above)
             let v = unsafe { a.value_unchecked(row) };
-            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+            append_bytes(out, itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::UInt16(a) => {
             // SAFETY: row < a.len() is guaranteed by the caller (see block comment above)
             let v = unsafe { a.value_unchecked(row) };
-            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+            append_bytes(out, itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::UInt32(a) => {
             // SAFETY: row < a.len() is guaranteed by the caller (see block comment above)
             let v = unsafe { a.value_unchecked(row) };
-            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+            append_bytes(out, itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::UInt64(a) => {
             // SAFETY: row < a.len() is guaranteed by the caller (see block comment above)
             let v = unsafe { a.value_unchecked(row) };
-            out.extend_from_slice(itoa::Buffer::new().format(v).as_bytes());
+            append_bytes(out, itoa::Buffer::new().format(v).as_bytes());
         }
         TypedArrayRef::Float32(a) => {
             // SAFETY: row < a.len() is guaranteed by the caller (see block comment above)
             let v = unsafe { a.value_unchecked(row) };
             if v.is_finite() {
-                out.extend_from_slice(ryu::Buffer::new().format_finite(v).as_bytes());
+                append_bytes(out, ryu::Buffer::new().format_finite(v).as_bytes());
             } else {
-                out.extend_from_slice(b"null");
+                append_bytes(out, b"null");
             }
         }
         TypedArrayRef::Float64(a) => {
             // SAFETY: row < a.len() is guaranteed by the caller (see block comment above)
             let v = unsafe { a.value_unchecked(row) };
             if v.is_finite() {
-                out.extend_from_slice(ryu::Buffer::new().format_finite(v).as_bytes());
+                append_bytes(out, ryu::Buffer::new().format_finite(v).as_bytes());
             } else {
-                out.extend_from_slice(b"null");
+                append_bytes(out, b"null");
             }
         }
         TypedArrayRef::Boolean(a) => {
             // SAFETY: row < a.len() is guaranteed by the caller (see block comment above)
             let v = unsafe { a.value_unchecked(row) };
-            out.extend_from_slice(if v { b"true" } else { b"false" });
+            append_bytes(out, if v { b"true" } else { b"false" });
         }
         TypedArrayRef::Utf8(a) => {
             // SAFETY: row < a.len() is guaranteed by the caller (see block comment above)
@@ -528,24 +559,24 @@ pub(crate) fn write_typed_json_value(
             write_json_string(out, unsafe { a.value_unchecked(row) })?;
         }
         TypedArrayRef::Struct(a) => {
-            out.push(b'{');
+            append_byte(out, b'{');
             let fields = a.fields();
             let mut first = true;
             for field_idx in 0..a.num_columns() {
                 if !first {
-                    out.push(b',');
+                    append_byte(out, b',');
                 }
                 first = false;
                 write_json_string(out, fields[field_idx].name())?;
-                out.push(b':');
+                append_byte(out, b':');
                 let child = a.column(field_idx);
                 if child.is_null(row) {
-                    out.extend_from_slice(b"null");
+                    append_bytes(out, b"null");
                 } else {
                     write_json_value(child.as_ref(), row, out)?;
                 }
             }
-            out.push(b'}');
+            append_byte(out, b'}');
         }
         TypedArrayRef::Binary(a) => {
             // SAFETY: row < a.len() is guaranteed by the caller (see block comment above)
@@ -580,7 +611,7 @@ pub fn write_row_json_resolved(
     out: &mut Vec<u8>,
     newline: bool,
 ) -> io::Result<()> {
-    out.push(b'{');
+    append_byte(out, b'{');
     // key_json is `b',"fieldname":'`.  For the first non-null field we skip
     // the leading comma (offset 1); for subsequent fields we include it (offset 0).
     // This replaces N separate `push(b',')` calls with one extend_from_slice.
@@ -590,14 +621,14 @@ pub fn write_row_json_resolved(
             continue;
         };
 
-        out.extend_from_slice(&key_json[sep_skip..]);
+        append_bytes(out, &key_json[sep_skip..]);
         write_typed_json_value(typed, row, out)?;
         sep_skip = 0;
     }
     if newline {
-        out.extend_from_slice(b"}\n");
+        append_bytes(out, b"}\n");
     } else {
-        out.push(b'}');
+        append_byte(out, b'}');
     }
     Ok(())
 }

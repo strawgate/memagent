@@ -1,8 +1,19 @@
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 //! CPU and memory profiler for the file output hot path.
 //!
-//! Isolates the JSON serialization + file I/O cost of `FileSink` / `StdoutSink`
-//! so we can identify where cycles and allocations go.
+//! Isolates JSON serialization plus a **FileSink-like std::fs write path** so we
+//! can identify where cycles and allocations go.
+//!
+//! Important: this tool does **not** exercise the actual async `FileSink`
+//! implementation. Its "FULL" path models:
+//! - `StdoutSink::write_batch_to`
+//! - line counting with `memchr`
+//! - `std::fs::File::write_all`
+//! - a final `sync_data()` at the end of the run
+//!
+//! That makes it useful for splitting serialization vs write cost, but its
+//! "FULL" number is durability-sensitive and can diverge from steady-state
+//! `FileSink::send_batch` throughput.
 //!
 //! Modes:
 //!   - **cpu**: pprof flamegraph of `write_batch_to` + file I/O
@@ -166,7 +177,15 @@ fn run_breakdown(
     }
     let build_col_elapsed = start.elapsed();
 
-    // 2. write_row_json_resolved loop timing (with pre-built col_infos + resolve)
+    // 2. resolve_col_infos timing
+    let cols = build_col_infos(batch);
+    let start = Instant::now();
+    for _ in 0..num_batches {
+        let _resolved = std::hint::black_box(resolve_col_infos(batch, &cols));
+    }
+    let resolve_col_elapsed = start.elapsed();
+
+    // 3. write_row_json_resolved loop timing (with pre-built col_infos + resolve)
     let cols = build_col_infos(batch);
     let resolved = resolve_col_infos(batch, &cols);
     let start = Instant::now();
@@ -179,7 +198,7 @@ fn run_breakdown(
     }
     let json_elapsed = start.elapsed();
 
-    // 3. write_batch_to timing (includes build_col_infos + write_row_json)
+    // 4. write_batch_to timing (includes build_col_infos + resolve_col_infos + write_row_json)
     let start = Instant::now();
     for _ in 0..num_batches {
         buf.clear();
@@ -189,7 +208,7 @@ fn run_breakdown(
     }
     let batch_elapsed = start.elapsed();
 
-    // 4. memchr line counting timing
+    // 5. memchr line counting timing
     let start = Instant::now();
     for _ in 0..num_batches {
         // Re-serialize to have realistic data in buf
@@ -202,7 +221,7 @@ fn run_breakdown(
     // Subtract the batch_elapsed to isolate memchr cost
     let memchr_only = count_elapsed.saturating_sub(batch_elapsed);
 
-    // 5. File I/O timing (write_all to tmpfile)
+    // 6. File I/O timing (write_all to tmpfile)
     let tmp = tempfile::NamedTempFile::new().expect("tmpfile failed");
     let mut file = std::fs::OpenOptions::new()
         .append(true)
@@ -219,7 +238,7 @@ fn run_breakdown(
     file.sync_data().expect("sync_data failed");
     let io_elapsed = start.elapsed();
 
-    // 6. Full file output timing (serialize + write_all + line count)
+    // 7. Full std::fs write path timing (serialize + line count + write_all)
     let mut file2 = std::fs::OpenOptions::new()
         .append(true)
         .open(tmp.path())
@@ -243,11 +262,12 @@ fn run_breakdown(
     println!("|-------|-------|-----------|-----------|------------|");
     let stages: Vec<(&str, Duration)> = vec![
         ("build_col_infos", build_col_elapsed),
+        ("resolve_col_infos", resolve_col_elapsed),
         ("write_row_json_resolved (loop)", json_elapsed),
         ("write_batch_to (end-to-end)", batch_elapsed),
         ("memchr line count", memchr_only),
         ("file write_all + sync", io_elapsed),
-        ("FULL (serialize+count+IO)", full_elapsed),
+        ("FULL (serialize+count+std::fs IO)", full_elapsed),
     ];
     for (name, dur) in &stages {
         let pct = if full_elapsed.as_nanos() > 0 {
@@ -279,6 +299,10 @@ fn run_breakdown(
     println!(
         "  Serialization:     {:.1}% of total",
         batch_elapsed.as_nanos() as f64 / full_elapsed.as_nanos() as f64 * 100.0
+    );
+    println!(
+        "  resolve_col_infos: {:.1}% of serialization",
+        resolve_col_elapsed.as_nanos() as f64 / batch_elapsed.as_nanos() as f64 * 100.0
     );
     println!(
         "  File I/O:          {:.1}% of total",
@@ -335,7 +359,15 @@ fn run_alloc(
     }
     let col_stats = reg.change();
 
-    // 2. write_row_json_resolved with pre-built cols (buffer reuse)
+    // 2. resolve_col_infos allocations
+    let cols = build_col_infos(batch);
+    let reg = Region::new(&INSTRUMENTED_SYSTEM);
+    for _ in 0..num_batches {
+        let _resolved = std::hint::black_box(resolve_col_infos(batch, &cols));
+    }
+    let resolve_stats = reg.change();
+
+    // 3. write_row_json_resolved with pre-built cols (buffer reuse)
     let cols = build_col_infos(batch);
     let resolved = resolve_col_infos(batch, &cols);
     buf.clear();
@@ -349,7 +381,7 @@ fn run_alloc(
     }
     let json_stats = reg.change();
 
-    // 3. write_batch_to end-to-end
+    // 4. write_batch_to end-to-end
     let reg = Region::new(&INSTRUMENTED_SYSTEM);
     for _ in 0..num_batches {
         buf.clear();
@@ -358,7 +390,7 @@ fn run_alloc(
     }
     let batch_stats = reg.change();
 
-    // 4. Full FileSink-like path (serialize + line count + file write)
+    // 5. Full FileSink-like path (serialize + line count + file write)
     let tmp = tempfile::NamedTempFile::new().expect("tmpfile failed");
     let mut file = std::fs::OpenOptions::new()
         .append(true)
@@ -382,6 +414,7 @@ fn run_alloc(
 
     let stages = vec![
         ("build_col_infos", &col_stats),
+        ("resolve_col_infos", &resolve_stats),
         ("write_row_json_resolved (reuse buf)", &json_stats),
         ("write_batch_to", &batch_stats),
         ("FULL (ser+count+IO)", &full_stats),
@@ -540,6 +573,10 @@ fn main() {
         );
         eprintln!();
         eprintln!("Note: --mode alloc requires --features otlp-profile-alloc");
+        eprintln!(
+            "Note: FULL timing uses a std::fs write path with end-of-run sync_data(); \
+steady-state FileSink send_batch throughput can differ."
+        );
         return;
     }
 

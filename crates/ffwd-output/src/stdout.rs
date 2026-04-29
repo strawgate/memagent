@@ -78,6 +78,11 @@ impl StdoutSink {
         }
     }
 
+    /// Human-readable sink name (from config).
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     /// Write a batch into a `Vec<u8>` destination.
     ///
     /// All production callers (FileSink, StdoutSink::serialize_batch) pass

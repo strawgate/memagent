@@ -513,7 +513,7 @@ bench-pipelines seconds="10":
 
 # Run Tier 1 criterion benchmarks (fast, ~30s — composed functions, no heavy I/O)
 bench:
-    cargo bench -p ffwd-bench --bench pipeline --bench output_encode --bench full_chain
+    cargo bench -p ffwd-bench --features io-bench --bench pipeline --bench output_encode --bench full_chain
 
 # Run throughput ceiling benchmark (generator → scan → null, no transform)
 bench-ceiling:
@@ -522,7 +522,7 @@ bench-ceiling:
 # Run all criterion benchmarks (Tier 1 + Tier 2 — includes I/O and batch scaling, ~2-5min)
 # Excludes elasticsearch_arrow which requires a running ES instance.
 bench-full:
-    cargo bench -p ffwd-bench --bench pipeline --bench output_encode --bench full_chain --bench builder_compare --bench batch_formation --bench file_io --bench throughput_ceiling
+    cargo bench -p ffwd-bench --features io-bench --bench pipeline --bench output_encode --bench full_chain --bench builder_compare --bench batch_formation --bench file_io --bench throughput_ceiling
 
 # Backpressure benchmarks: measures pipeline throughput degradation under output latency.
 # See backpressure.rs for baseline workflow (save/compare).
@@ -673,11 +673,11 @@ profile-otlp-local lines="500000" seconds="6":
 
 # Run OTLP I/O Criterion benchmarks (stage-separated: parser, decode, encode, compression, e2e).
 bench-otlp-io *ARGS:
-    cargo bench -p ffwd-bench --bench otlp_io -- {{ARGS}}
+    cargo bench -p ffwd-bench --features io-bench --bench otlp_io -- {{ARGS}}
 
 # Run OTLP I/O benchmarks with fast local iteration settings.
 bench-otlp-io-fast *ARGS:
-    cargo bench -p ffwd-bench --bench otlp_io -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
+    cargo bench -p ffwd-bench --features io-bench --bench otlp_io -- --warm-up-time 1 --measurement-time 2 --sample-size 10 {{ARGS}}
 
 # Run source metadata attachment benchmarks.
 bench-source-metadata *ARGS:
