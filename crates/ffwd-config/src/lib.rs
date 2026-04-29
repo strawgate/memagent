@@ -23,6 +23,7 @@ mod serde_helpers;
 mod shared;
 mod types;
 pub mod validate;
+mod validated;
 
 pub use serde_helpers::{PositiveMillis, PositiveSecs};
 
@@ -52,6 +53,7 @@ pub use types::{
     TcpOutputConfig, TcpTypeConfig, UdpOutputConfig, UdpTypeConfig,
 };
 pub use validate::{sanitize_identifier, validate_host_port};
+pub use validated::ValidatedConfig;
 
 // ---------------------------------------------------------------------------
 // Tests

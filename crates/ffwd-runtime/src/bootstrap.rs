@@ -352,8 +352,7 @@ pub async fn run_pipelines(
         .build();
 
     let mut current_config = config;
-    let mut pending_config: Option<ffwd_config::Config> = None;
-    let mut pending_effective_yaml: Option<String> = None;
+    let mut pending: Option<ffwd_config::ValidatedConfig> = None;
     let mut pending_reload_attempt = false;
     let mut first_run = true;
     let mut pipeline_metrics: Vec<Arc<ffwd_diagnostics::diagnostics::PipelineMetrics>> = Vec::new();
@@ -363,9 +362,9 @@ pub async fn run_pipelines(
 
     'reload: loop {
         // ── Build pipelines ──
-        // Use pending_config if available (from a successful reload validation),
+        // Use pending config if available (from a successful reload validation),
         // otherwise use current_config (for first_run or retry after build failure).
-        let build_config = pending_config.as_ref().unwrap_or(&current_config);
+        let build_config = pending.as_ref().map_or(&current_config, |v| v.config());
         let build_data_dir = build_config.storage.data_dir.as_ref().map(PathBuf::from);
         let mut pipelines = Vec::new();
         for (name, pipe_cfg) in &build_config.pipelines {
@@ -388,8 +387,7 @@ pub async fn run_pipelines(
                     );
                     // Discard the failed config and revert to current_config for
                     // the next attempt — ensures we can rebuild working pipelines.
-                    pending_config = None;
-                    pending_effective_yaml = None;
+                    pending = None;
                     pending_reload_attempt = false;
                     reload_error.add(1, &[]);
                     continue 'reload;
@@ -397,20 +395,16 @@ pub async fn run_pipelines(
             }
         }
         // Pipeline build succeeded — commit the pending config.
-        if let Some(committed) = pending_config.take() {
-            current_config = committed;
+        if let Some(committed) = pending.take() {
             if pending_reload_attempt {
                 reload_success.add(1, &[]);
                 #[cfg(feature = "opamp")]
-                if let Some(new_yaml) = pending_effective_yaml.take()
-                    && let Some(ref state) = opamp_client
-                {
-                    state.set_effective_config(&new_yaml);
+                if let Some(ref state) = opamp_client {
+                    state.set_effective_config(committed.effective_yaml());
                 }
-                #[cfg(not(feature = "opamp"))]
-                let _ = pending_effective_yaml.take();
                 pending_reload_attempt = false;
             }
+            current_config = committed.into_config();
         }
 
         // ── Diagnostics server (first run only) ──
@@ -637,8 +631,8 @@ pub async fn run_pipelines(
                 continue;
             }
         };
-        let new_config = match ffwd_config::Config::load_str_with_base_path(&new_yaml, base_path) {
-            Ok(c) => c,
+        let validated = match ffwd_config::ValidatedConfig::from_yaml(&new_yaml, base_path) {
+            Ok(v) => v,
             Err(e) => {
                 reload_error.add(1, &[]);
                 tracing::error!(error = %e, "config reload: invalid config");
@@ -646,7 +640,7 @@ pub async fn run_pipelines(
             }
         };
 
-        let diff = ffwd_config::ConfigDiff::between(&current_config, &new_config);
+        let diff = ffwd_config::ConfigDiff::between(&current_config, validated.config());
         if diff.is_empty() {
             tracing::info!("config reload: no changes detected");
             // Still need to rebuild pipelines since the old ones were drained.
@@ -669,8 +663,7 @@ pub async fn run_pipelines(
             }
         }
 
-        pending_config = Some(new_config);
-        pending_effective_yaml = Some(new_yaml);
+        pending = Some(validated);
         pending_reload_attempt = true;
         // Loop back to rebuild pipelines with new config.
     }

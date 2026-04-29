@@ -327,13 +327,13 @@ impl ApiCallbacks for &mut OpampHandler {
 
         // Validate before writing.
         let base_path = self.remote_config_path.parent();
-        match ffwd_config::Config::load_str_with_base_path(&yaml, base_path) {
-            Ok(_) => {
+        match ffwd_config::ValidatedConfig::from_yaml(&yaml, base_path) {
+            Ok(validated) => {
                 // Atomic write: temp file → rename to target path so the bootstrap
                 // reload loop reads the new config when re-reading from disk.
                 let target = &self.remote_config_path;
                 let tmp_path = target.with_extension("yaml.tmp");
-                if let Err(e) = std::fs::write(&tmp_path, &yaml) {
+                if let Err(e) = std::fs::write(&tmp_path, validated.effective_yaml()) {
                     tracing::error!(
                         error = %e,
                         path = %tmp_path.display(),

@@ -36,14 +36,14 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
     // Parse config to extract opamp section.
     let config_yaml = std::fs::read_to_string(&config_path)
         .map_err(|e| CliError::Config(format!("cannot read {}: {e}", config_path.display())))?;
-    let config = ffwd_config::Config::load_str_with_base_path(&config_yaml, config_path.parent())
+    let validated = ffwd_config::ValidatedConfig::from_yaml(&config_yaml, config_path.parent())
         .map_err(|e| CliError::Config(e.to_string()))?;
 
-    let opamp_config = config.opamp.ok_or_else(|| {
+    let opamp_config = validated.config().opamp.clone().ok_or_else(|| {
         CliError::Config("supervised mode requires an `opamp:` section in config".to_string())
     })?;
 
-    let data_dir = config.storage.data_dir.as_deref().map(PathBuf::from);
+    let data_dir = validated.config().storage.data_dir.as_deref().map(PathBuf::from);
 
     tracing::info!(
         config = %config_path.display(),
@@ -333,29 +333,21 @@ async fn handle_remote_config(
     child: &mut tokio::process::Child,
     child_pid: u32,
 ) {
-    let new_yaml = match std::fs::read_to_string(remote_path) {
-        Ok(yaml) => yaml,
+    // Read and validate the remote config in one step.
+    let validated = match ffwd_config::ValidatedConfig::from_file(remote_path) {
+        Ok(v) => v,
         Err(e) => {
             tracing::error!(
                 error = %e,
                 path = %remote_path.display(),
-                "supervisor: failed to read remote config"
+                "supervisor: remote config failed to load or validate, skipping reload"
             );
             return;
         }
     };
 
-    // Validate the config before writing.
-    if let Err(e) = ffwd_config::Config::load_str_with_base_path(&new_yaml, config_path.parent()) {
-        tracing::error!(
-            error = %e,
-            "supervisor: remote config failed validation, skipping reload"
-        );
-        return;
-    }
-
     // Atomic write: write to temp file next to target, then rename.
-    if let Err(e) = atomic_write_config(config_path, &new_yaml) {
+    if let Err(e) = atomic_write_config(config_path, validated.effective_yaml()) {
         tracing::error!(
             error = %e,
             path = %config_path.display(),
@@ -375,7 +367,7 @@ async fn handle_remote_config(
     }
 
     if child_survives_reload_window(child).await {
-        state_handle.set_effective_config(&new_yaml);
+        state_handle.set_effective_config(validated.effective_yaml());
     } else {
         tracing::error!("supervisor: child exited during reload; effective config not updated");
     }
