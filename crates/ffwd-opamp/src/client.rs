@@ -142,9 +142,8 @@ impl OpampClient {
         let state = Arc::clone(&self.state);
         let accept_remote_config = self.config.accept_remote_config;
         let reload_tx = self.reload_tx.clone();
-        let remote_config_path = config_path
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Self::remote_config_path(data_dir));
+        let remote_config_path =
+            config_path.map_or_else(|| Self::remote_config_path(data_dir), PathBuf::from);
 
         // Create the OpAMP API callbacks handler.
         let mut handler = OpampHandler {

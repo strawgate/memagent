@@ -210,11 +210,10 @@ pub async fn run_pipelines(
                 // Watching the parent catches create/rename events on the target.
                 let watch_target = config_path
                     .parent()
-                    .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| PathBuf::from("."));
+                    .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
                 let config_filename = config_path
                     .file_name()
-                    .map(|n| n.to_os_string());
+                    .map(std::ffi::OsStr::to_os_string);
                 if let Err(e) = watcher.watch(&watch_target, RecursiveMode::NonRecursive) {
                     tracing::error!(error = %e, path = %watch_target.display(), "config watcher: failed to watch");
                     return;
@@ -227,9 +226,9 @@ pub async fn run_pipelines(
                     match rx.recv_timeout(Duration::from_millis(500)) {
                         Ok(Ok(event)) => {
                             // Filter: only trigger if the event involves our config file.
-                            let involves_config = config_filename.as_ref().map_or(true, |name| {
+                            let involves_config = config_filename.as_ref().is_none_or(|name| {
                                 event.paths.iter().any(|p| {
-                                    p.file_name().map_or(false, |n| n == name)
+                                    p.file_name().is_some_and(|n| n == name)
                                 })
                             });
                             if involves_config

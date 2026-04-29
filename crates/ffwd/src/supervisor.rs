@@ -51,9 +51,9 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
 
     // Set up signal handlers.
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|e| CliError::Runtime(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        .map_err(|e| CliError::Runtime(std::io::Error::other(e)))?;
     let mut sigint = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-        .map_err(|e| CliError::Runtime(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        .map_err(|e| CliError::Runtime(std::io::Error::other(e)))?;
 
     // Channel for OpAMP to notify us of new remote config.
     let (reload_tx, mut reload_rx) = mpsc::channel::<()>(4);
@@ -94,12 +94,9 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
     // Main supervisor loop: spawn child, handle events until child exits.
     'outer: loop {
         let mut child = spawn_child(&config_path_str)?;
-        let child_pid = child.id().ok_or_else(|| {
-            CliError::Runtime(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "failed to get child PID",
-            ))
-        })?;
+        let child_pid = child
+            .id()
+            .ok_or_else(|| CliError::Runtime(std::io::Error::other("failed to get child PID")))?;
         let spawn_time = tokio::time::Instant::now();
         tracing::info!(pid = child_pid, "supervisor: child started");
 
@@ -227,7 +224,6 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
                             tracing::error!(error = %e, "supervisor: failed to check child status");
                         }
                     }
-                    continue;
                 }
             }
         }
@@ -252,10 +248,9 @@ enum ChildExit {
 
 fn spawn_child(config_path: &str) -> Result<tokio::process::Child, CliError> {
     let exe = std::env::current_exe().map_err(|e| {
-        CliError::Runtime(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("cannot determine current executable: {e}"),
-        ))
+        CliError::Runtime(std::io::Error::other(format!(
+            "cannot determine current executable: {e}"
+        )))
     })?;
 
     tracing::debug!(exe = %exe.display(), config = config_path, "supervisor: spawning child");
@@ -267,10 +262,9 @@ fn spawn_child(config_path: &str) -> Result<tokio::process::Child, CliError> {
         .kill_on_drop(false)
         .spawn()
         .map_err(|e| {
-            CliError::Runtime(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("failed to spawn child process: {e}"),
-            ))
+            CliError::Runtime(std::io::Error::other(format!(
+                "failed to spawn child process: {e}"
+            )))
         })
 }
 
