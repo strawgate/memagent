@@ -483,8 +483,6 @@ impl PlatformSensorInput {
         };
 
         let mut total_drops = 0;
-        let cpus = aya::util::online_cpus()
-            .map_err(|e| io::Error::other(format!("failed to get online cpus: {e:?}")))?;
 
         // Sum drops across all CPUs, then zero them out so we only report deltas.
         if let Ok(per_cpu_values) = drops_array.get(&0, 0) {
@@ -496,12 +494,25 @@ impl PlatformSensorInput {
             if total_drops > 0 {
                 // Zero out the map to prevent overcounting on the next poll
                 use aya::maps::PerCpuValues;
-                let zero_vals: Vec<u64> = cpus.iter().map(|_| 0).collect();
-                let zero_per_cpu_values = PerCpuValues::try_from(zero_vals)
-                    .map_err(|e| io::Error::other(format!("failed to build DROPS reset: {e:?}")))?;
-                drops_array
-                    .set(0, zero_per_cpu_values, 0)
-                    .map_err(|e| io::Error::other(format!("failed to reset DROPS map: {e:?}")))?;
+                let zero_vals: Vec<u64> = per_cpu_values.iter().map(|_| 0).collect();
+                match PerCpuValues::try_from(zero_vals) {
+                    Ok(zero_per_cpu_values) => {
+                        if let Err(error) = drops_array.set(0, zero_per_cpu_values, 0) {
+                            tracing::warn!(
+                                total_drops,
+                                ?error,
+                                "failed to reset eBPF DROPS map after reporting drops"
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            total_drops,
+                            ?error,
+                            "failed to build eBPF DROPS reset values after reporting drops"
+                        );
+                    }
+                }
             }
         }
 
