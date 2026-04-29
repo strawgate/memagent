@@ -10,8 +10,10 @@ expected witness violation as success.
 from __future__ import annotations
 
 import argparse
+import os
 import pathlib
 import re
+import shutil
 import subprocess
 import tempfile
 from typing import Sequence
@@ -72,6 +74,36 @@ def parse_invariants(body_lines: Sequence[str]) -> list[str]:
     return invariants
 
 
+def find_java() -> str:
+    """Find a Java runtime, matching the repo's justfile fallback behavior."""
+    java_home = os.environ.get("JAVA_HOME")
+    candidates = [
+        os.environ.get("JAVA_BIN"),
+        os.path.join(java_home, "bin", "java") if java_home else None,
+        "/opt/homebrew/opt/openjdk/bin/java",
+        "/usr/local/opt/openjdk/bin/java",
+        "java",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        java_bin = shutil.which(candidate) if os.path.basename(candidate) == candidate else candidate
+        if not java_bin:
+            continue
+        if not os.path.exists(java_bin):
+            continue
+        proc = subprocess.run(
+            [java_bin, "-version"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if proc.returncode == 0:
+            return java_bin
+    raise RuntimeError(
+        "Java runtime not found. Install OpenJDK (e.g. 'brew install openjdk') or set JAVA_BIN."
+    )
+
+
 def run_one(jar: pathlib.Path, tla_file: pathlib.Path, cfg_lines: Sequence[str], invariant: str) -> None:
     before, _body, after = split_cfg_sections(cfg_lines)
     rendered = before + ["INVARIANTS", f"    {invariant}"] + after
@@ -81,8 +113,9 @@ def run_one(jar: pathlib.Path, tla_file: pathlib.Path, cfg_lines: Sequence[str],
         tmp_cfg = pathlib.Path(fh.name)
 
     try:
+        java_bin = find_java()
         cmd = [
-            "java",
+            java_bin,
             "-cp",
             str(jar),
             "tlc2.TLC",

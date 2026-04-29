@@ -13,7 +13,7 @@
  *   1. Send batch to sink
  *   2. On Ok: terminal success (Delivered)
  *   3. On Rejected: terminal permanent failure (Rejected)
- *   4. On IoError/RetryAfter/Timeout: exponential backoff, retry forever
+ *   4. On IoError/RetryAfter/Timeout: transient retry, retry forever
  *   5. On cancel (shutdown): terminal (PoolClosed)
  *
  * Key insight: the code deliberately retries FOREVER for transient
@@ -162,10 +162,13 @@ ReceiveRejected ==
     /\ outcome' = "Rejected"
     /\ UNCHANGED <<retryCount, backoffMs, cancelled, sinkState>>
 
-\* ReceiveTransient: transient failure, compute next backoff and wait.
+\* ReceiveTransient: transient failure, compute an abstract retry delay and wait.
 \* Maps to Ok(SendResult::IoError), Ok(SendResult::RetryAfter), and
 \* Err(_elapsed) (timeout) in process_item. All three follow the same
-\* pattern: increment retry count, compute backoff, sleep, loop.
+\* protocol pattern: increment retry count, sleep, loop. Timing details are
+\* intentionally abstracted here: IoError/timeout use exponential backoff,
+\* while RetryAfter uses the server-directed delay. Turmoil trace validators
+\* cover that concrete timing distinction.
 ReceiveTransient ==
     /\ state = "Sending"
     /\ sinkState = "Transient"
