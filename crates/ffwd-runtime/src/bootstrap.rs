@@ -203,8 +203,19 @@ pub async fn run_pipelines(
                         return;
                     }
                 };
-                if let Err(e) = watcher.watch(&config_path, RecursiveMode::NonRecursive) {
-                    tracing::error!(error = %e, path = %config_path.display(), "config watcher: failed to watch");
+                // Watch the parent directory instead of the file directly.
+                // On Linux (inotify), watching a file by path breaks after an
+                // atomic rename (temp → target) because inotify tracks inodes.
+                // Watching the parent catches create/rename events on the target.
+                let watch_target = config_path
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| PathBuf::from("."));
+                let config_filename = config_path
+                    .file_name()
+                    .map(|n| n.to_os_string());
+                if let Err(e) = watcher.watch(&watch_target, RecursiveMode::NonRecursive) {
+                    tracing::error!(error = %e, path = %watch_target.display(), "config watcher: failed to watch");
                     return;
                 }
                 tracing::info!(path = %config_path.display(), "config watcher: watching for changes");
@@ -214,7 +225,17 @@ pub async fn run_pipelines(
                     }
                     match rx.recv_timeout(Duration::from_millis(500)) {
                         Ok(Ok(event)) => {
-                            if event.kind.is_modify() || event.kind.is_create() {
+                            // Filter: only trigger if the event involves our config file.
+                            let involves_config = config_filename.as_ref().map_or(true, |name| {
+                                event.paths.iter().any(|p| {
+                                    p.file_name().map_or(false, |n| n == name)
+                                })
+                            });
+                            if involves_config
+                                && (event.kind.is_modify()
+                                    || event.kind.is_create()
+                                    || matches!(event.kind, notify::EventKind::Remove(_)))
+                            {
                                 // Debounce: wait for writes to settle.
                                 std::thread::sleep(Duration::from_millis(500));
                                 // Drain any additional events that arrived during debounce.
@@ -377,6 +398,9 @@ pub async fn run_pipelines(
             server.set_memory_stats_fn(jemalloc_stats);
             let (handle, _) = server.start()?;
             // Keep handle alive — we leak it intentionally (lives for the process).
+            // NOTE: After a config reload, the diagnostics server still holds references
+            // to old pipeline metrics. The dashboard may show stale data until the server
+            // is refactored to use ArcSwap or similar for live metric updates.
             std::mem::forget(handle);
             eprintln!();
             eprintln!(

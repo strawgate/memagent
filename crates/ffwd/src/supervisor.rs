@@ -74,16 +74,14 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
     state_handle.set_effective_config(&config_yaml);
 
     // Spawn OpAMP client task.
+    // In supervisor mode, the OpAMP client writes to the intermediate remote
+    // config file (NOT the main config path). handle_remote_config then reads
+    // from that file, validates, and does the atomic write + SIGHUP dance.
     let opamp_shutdown = shutdown.clone();
     let opamp_data_dir = data_dir.clone();
-    let opamp_config_target = config_path.clone();
     let opamp_handle = tokio::spawn(async move {
         if let Err(e) = opamp_client
-            .run(
-                opamp_shutdown,
-                opamp_data_dir.as_deref(),
-                Some(opamp_config_target.as_path()),
-            )
+            .run(opamp_shutdown, opamp_data_dir.as_deref(), None)
             .await
         {
             tracing::error!(error = %e, "supervisor: opamp client exited with error");
@@ -195,13 +193,40 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
                 }
                 ChildExit::Reload => {
                     // OpAMP pushed new config — validate, write, SIGHUP.
-                    handle_remote_config(
-                        &config_path,
-                        &state_handle,
-                        data_dir.as_deref(),
-                        child_pid,
-                    );
-                    // Continue inner loop — same child, just signalled it.
+                    // Guard: verify child is still alive before signaling.
+                    match child.try_wait() {
+                        Ok(Some(status)) => {
+                            // Child already exited — handle as a normal exit.
+                            let terminated_normally = status.success()
+                                || was_terminated_by(status, libc::SIGTERM)
+                                || was_terminated_by(status, libc::SIGINT);
+                            if terminated_normally {
+                                tracing::info!(
+                                    ?status,
+                                    "supervisor: child exited (discovered during reload)"
+                                );
+                                shutdown.cancel();
+                                break 'outer;
+                            }
+                            tracing::warn!(
+                                ?status,
+                                "supervisor: child crashed (discovered during reload)"
+                            );
+                            break; // Respawn via outer loop.
+                        }
+                        Ok(None) => {
+                            // Child still running — safe to signal.
+                            handle_remote_config(
+                                &config_path,
+                                &state_handle,
+                                data_dir.as_deref(),
+                                child_pid,
+                            );
+                        }
+                        Err(e) => {
+                            tracing::error!(error = %e, "supervisor: failed to check child status");
+                        }
+                    }
                     continue;
                 }
             }
