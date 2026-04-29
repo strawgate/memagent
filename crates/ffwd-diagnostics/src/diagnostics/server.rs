@@ -904,8 +904,10 @@ fn build_traces_body(state: &DiagnosticsState) -> String {
             }
         }
 
-        serde_json::to_string(&json!({ "traces": traces }))
-            .unwrap_or_else(|_| r#"{"traces":[]}"#.to_string())
+        serde_json::to_string(&json!({ "traces": traces })).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "failed to serialize traces diagnostics payload");
+            r#"{"traces":[]}"#.to_string()
+        })
     } else {
         r#"{"traces":[]}"#.to_string()
     }
@@ -920,7 +922,10 @@ fn build_logs_body_from_parts(lines: Vec<String>, capturing: bool) -> String {
         "lines": lines,
         "capturing": capturing,
     });
-    serde_json::to_string(&body).unwrap_or_else(|_| r#"{"lines":[],"capturing":false}"#.to_string())
+    serde_json::to_string(&body).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "failed to serialize logs diagnostics payload");
+        r#"{"lines":[],"capturing":false}"#.to_string()
+    })
 }
 
 // ---------------------------------------------------------------------------

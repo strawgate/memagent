@@ -365,29 +365,12 @@ pub(super) fn extract_region_from_sqs_url(url: &str) -> Option<String> {
 
 fn parse_receive_messages_response(data: &Bytes) -> io::Result<Vec<SqsMessage>> {
     use quick_xml::Reader;
-    use quick_xml::escape::resolve_predefined_entity;
-    use quick_xml::events::BytesRef;
     use quick_xml::events::Event;
 
-    fn push_xml_reference(out: &mut String, reference: BytesRef<'_>) -> io::Result<()> {
-        if let Some(ch) = reference
-            .resolve_char_ref()
-            .map_err(|e| io::Error::other(format!("SQS XML character reference: {e}")))?
-        {
-            out.push(ch);
-            return Ok(());
-        }
-
-        let decoded = reference
-            .decode()
-            .map_err(|e| io::Error::other(format!("SQS XML reference decode: {e}")))?;
-        let Some(entity) = resolve_predefined_entity(decoded.as_ref()) else {
-            return Err(io::Error::other(format!(
-                "SQS XML unrecognized entity: &{decoded};"
-            )));
-        };
-        out.push_str(entity);
-        Ok(())
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum CaptureField {
+        Receipt,
+        Body,
     }
 
     let mut reader = Reader::from_reader(data.as_ref());
@@ -397,7 +380,7 @@ fn parse_receive_messages_response(data: &Bytes) -> io::Result<Vec<SqsMessage>> 
     let mut in_message = false;
     let mut receipt_handle = String::new();
     let mut body = String::new();
-    let mut capture: Option<&'static str> = None;
+    let mut capture: Option<CaptureField> = None;
     let mut current_text = String::new();
 
     let mut buf = Vec::new();
@@ -410,11 +393,11 @@ fn parse_receive_messages_response(data: &Bytes) -> io::Result<Vec<SqsMessage>> 
                     body.clear();
                 }
                 b"ReceiptHandle" if in_message => {
-                    capture = Some("receipt");
+                    capture = Some(CaptureField::Receipt);
                     current_text.clear();
                 }
                 b"Body" if in_message => {
-                    capture = Some("body");
+                    capture = Some(CaptureField::Body);
                     current_text.clear();
                 }
                 _ => {}
@@ -426,17 +409,17 @@ fn parse_receive_messages_response(data: &Bytes) -> io::Result<Vec<SqsMessage>> 
                 current_text.push_str(decoded.as_ref());
             }
             Ok(Event::GeneralRef(e)) if capture.is_some() => {
-                push_xml_reference(&mut current_text, e)?;
+                super::push_xml_reference(&mut current_text, e, "SQS")?;
             }
             Ok(Event::CData(e)) if capture.is_some() => {
                 current_text.push_str(&String::from_utf8_lossy(e.into_inner().as_ref()));
             }
             Ok(Event::End(e)) => match e.local_name().as_ref() {
-                b"ReceiptHandle" if capture == Some("receipt") => {
+                b"ReceiptHandle" if capture == Some(CaptureField::Receipt) => {
                     receipt_handle = std::mem::take(&mut current_text);
                     capture = None;
                 }
-                b"Body" if capture == Some("body") => {
+                b"Body" if capture == Some(CaptureField::Body) => {
                     body = std::mem::take(&mut current_text);
                     capture = None;
                 }

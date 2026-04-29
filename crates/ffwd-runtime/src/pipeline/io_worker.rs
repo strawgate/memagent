@@ -726,8 +726,12 @@ pub(super) fn process_buffered_events(
             } => {
                 let Some(data_bytes) = input.buf.get(range.clone()) else {
                     input.stats.inc_errors();
-                    tracing::warn!(?range, "framed input returned out-of-bounds data range");
-                    return false;
+                    tracing::warn!(
+                        ?range,
+                        buf_len = input.buf.len(),
+                        "framed input returned out-of-bounds data range"
+                    );
+                    continue;
                 };
                 if source_metadata_plan.has_any() {
                     if source_metadata_plan.has_source_path() {
@@ -747,8 +751,12 @@ pub(super) fn process_buffered_events(
                 }
                 let Some(prefix_bytes) = input.buf.get(..range.start) else {
                     input.stats.inc_errors();
-                    tracing::warn!(?range, "framed input returned out-of-bounds prefix range");
-                    return false;
+                    tracing::warn!(
+                        ?range,
+                        buf_len = input.buf.len(),
+                        "framed input returned out-of-bounds prefix range"
+                    );
+                    continue;
                 };
                 append_cri_metadata_for_data(
                     &mut input.cri_metadata,

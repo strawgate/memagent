@@ -467,56 +467,63 @@ impl PlatformSensorInput {
         })
     }
 
-    /// Discover `task_struct.exit_code` offset from `/sys/kernel/btf/vmlinux`.
-    ///
-    /// Uses `pahole` (from the `dwarves` package) to introspect kernel BTF.
-    /// Returns the byte offset on success.
-    fn check_drops(ebpf: &mut Ebpf) -> u64 {
+    /// Read and reset the eBPF drop counter map.
+    fn check_drops(ebpf: &mut Ebpf) -> io::Result<u64> {
         let drops_map = match ebpf.map_mut("DROPS") {
             Some(map) => map,
-            None => return 0,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "DROPS map not found in eBPF binary",
+                ));
+            }
         };
 
         let mut drops_array = match aya::maps::PerCpuArray::<_, u64>::try_from(drops_map) {
             Ok(array) => array,
-            Err(_) => return 0,
+            Err(error) => {
+                return Err(io::Error::other(format!(
+                    "failed to interpret DROPS map as PerCpuArray<u64>: {error}"
+                )));
+            }
         };
 
         let mut total_drops = 0;
 
         // Sum drops across all CPUs, then zero them out so we only report deltas.
-        if let Ok(per_cpu_values) = drops_array.get(&0, 0) {
-            for val in per_cpu_values.iter() {
-                if *val > 0 {
-                    total_drops += val;
-                }
+        let per_cpu_values = drops_array
+            .get(&0, 0)
+            .map_err(|error| io::Error::other(format!("failed to read eBPF DROPS map: {error}")))?;
+        for val in per_cpu_values.iter() {
+            if *val > 0 {
+                total_drops += val;
             }
-            if total_drops > 0 {
-                // Zero out the map to prevent overcounting on the next poll
-                use aya::maps::PerCpuValues;
-                let zero_vals: Vec<u64> = per_cpu_values.iter().map(|_| 0).collect();
-                match PerCpuValues::try_from(zero_vals) {
-                    Ok(zero_per_cpu_values) => {
-                        if let Err(error) = drops_array.set(0, zero_per_cpu_values, 0) {
-                            tracing::warn!(
-                                total_drops,
-                                ?error,
-                                "failed to reset eBPF DROPS map after reporting drops"
-                            );
-                        }
-                    }
-                    Err(error) => {
+        }
+        if total_drops > 0 {
+            // Zero out the map to prevent overcounting on the next poll.
+            use aya::maps::PerCpuValues;
+            let zero_vals: Vec<u64> = per_cpu_values.iter().map(|_| 0).collect();
+            match PerCpuValues::try_from(zero_vals) {
+                Ok(zero_per_cpu_values) => {
+                    if let Err(error) = drops_array.set(0, zero_per_cpu_values, 0) {
                         tracing::warn!(
                             total_drops,
                             ?error,
-                            "failed to build eBPF DROPS reset values after reporting drops"
+                            "failed to reset eBPF DROPS map after reporting drops"
                         );
                     }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        total_drops,
+                        ?error,
+                        "failed to build eBPF DROPS reset values after reporting drops"
+                    );
                 }
             }
         }
 
-        total_drops
+        Ok(total_drops)
     }
 
     fn drain_events(
@@ -883,9 +890,13 @@ impl InputSource for PlatformSensorInput {
                 skipped_probes,
                 degraded_capabilities,
             } => {
-                let drops = Self::check_drops(&mut ebpf);
-                if drops > 0 {
-                    self.stats.inc_ebpf_drops(drops);
+                match Self::check_drops(&mut ebpf) {
+                    Ok(drops) if drops > 0 => self.stats.inc_ebpf_drops(drops),
+                    Ok(_) => {}
+                    Err(error) => tracing::warn!(
+                        ?error,
+                        "failed to read eBPF DROPS map; drop telemetry is unavailable"
+                    ),
                 }
                 let result = Self::drain_events(
                     &mut ebpf,
