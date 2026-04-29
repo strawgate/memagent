@@ -416,7 +416,7 @@ where
     match Cli::try_parse_from(args.clone()) {
         Ok(cli) => Ok(cli),
         Err(err) => {
-            if stdin_is_terminal || !should_retry_parse_as_send(err.kind()) {
+            if stdin_is_terminal || !should_retry_parse_as_send(err.kind(), &args) {
                 return Err(err);
             }
             Cli::try_parse_from(rewrite_args_as_send(args))
@@ -424,11 +424,13 @@ where
     }
 }
 
-fn should_retry_parse_as_send(kind: ErrorKind) -> bool {
-    matches!(
-        kind,
-        ErrorKind::UnknownArgument | ErrorKind::InvalidSubcommand
-    )
+fn should_retry_parse_as_send(kind: ErrorKind, args: &[OsString]) -> bool {
+    if !matches!(kind, ErrorKind::UnknownArgument) {
+        return false;
+    }
+
+    args.get(1)
+        .is_some_and(|arg| arg.to_string_lossy().starts_with('-'))
 }
 
 fn rewrite_args_as_send(args: Vec<OsString>) -> Vec<OsString> {
@@ -547,6 +549,32 @@ mod tests {
         let err = parse_cli_from(["ff", "--format", "raw"], true)
             .expect_err("interactive top-level send args should stay invalid");
         assert!(matches!(err.kind(), ErrorKind::UnknownArgument));
+    }
+
+    #[test]
+    fn piped_invalid_validate_option_preserves_validate_parse_error() {
+        let err = parse_cli_from(["ff", "validate", "--bogus"], false)
+            .expect_err("invalid validate option should not be rewritten to send");
+        assert!(matches!(err.kind(), ErrorKind::UnknownArgument));
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("ff validate"),
+            "error should keep validate usage context, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn piped_invalid_subcommand_preserves_subcommand_parse_error() {
+        let err = parse_cli_from(["ff", "not-a-command"], false)
+            .expect_err("invalid subcommand should not be rewritten to send");
+        assert!(matches!(err.kind(), ErrorKind::InvalidSubcommand));
+    }
+
+    #[test]
+    fn piped_bare_invocation_still_parses_without_subcommand() {
+        let cli = parse_cli_from(["ff"], false)
+            .expect("bare piped invocation should parse without rewriting to invalid send");
+        assert!(cli.command.is_none());
     }
 
     #[test]

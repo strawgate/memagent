@@ -16,7 +16,9 @@ use std::sync::Arc;
 use ffwd_output::{BatchMetadata, Compression, OtlpProtocol, OtlpSink};
 use ffwd_types::diagnostics::ComponentStats;
 
+#[allow(clippy::expect_used, clippy::indexing_slicing)]
 pub mod cardinality;
+#[allow(clippy::expect_used, clippy::indexing_slicing)]
 pub mod generators;
 
 // ---------------------------------------------------------------------------
@@ -48,6 +50,7 @@ impl NullSink {
 }
 
 /// Create an `OtlpSink` for benchmarking (buffer-only, no HTTP).
+#[allow(clippy::expect_used)]
 pub fn make_otlp_sink(compression: Compression) -> OtlpSink {
     OtlpSink::new(
         "bench".into(),
