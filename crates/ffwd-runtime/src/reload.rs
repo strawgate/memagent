@@ -264,8 +264,14 @@ impl ReloadCoordinator {
             // ── ShuttingDown (terminal — no transitions) ──
             (State::ShuttingDown { .. }, _) => vec![],
 
-            // ── Invalid transitions (no-op) ──
-            _ => vec![],
+            // ── Invalid transitions (no-op with trace) ──
+            (_state, _event) => {
+                tracing::debug!(
+                    state = ?self.state,
+                    "reload coordinator: ignoring unexpected event in current state"
+                );
+                vec![]
+            }
         }
     }
 
@@ -620,6 +626,65 @@ mod proptests {
             if !c.is_terminal() {
                 c.step(Event::ShutdownRequested);
                 prop_assert!(c.is_terminal());
+            }
+        }
+
+        /// rebuild_attempts never exceeds MAX_REBUILD_ATTEMPTS.
+        #[test]
+        fn rebuild_attempts_bounded(events in proptest::collection::vec(arb_event(), 1..200)) {
+            let mut c = ReloadCoordinator::new(PathBuf::from("/tmp/test.yaml"));
+            for event in events {
+                c.step(event);
+                prop_assert!(c.rebuild_attempts <= MAX_REBUILD_ATTEMPTS);
+            }
+        }
+
+        /// has_pending is true only in Building state or terminal (where it's irrelevant).
+        #[test]
+        fn has_pending_only_in_building_or_terminal(events in proptest::collection::vec(arb_event(), 1..100)) {
+            let mut c = ReloadCoordinator::new(PathBuf::from("/tmp/test.yaml"));
+            for event in events {
+                c.step(event);
+                if c.has_pending() {
+                    prop_assert!(
+                        matches!(c.state(), &State::Building | &State::ShuttingDown { .. }),
+                        "has_pending=true in unexpected state: {:?}", c.state()
+                    );
+                }
+            }
+        }
+
+        /// Multiple reload cycles maintain consistent state (no leaks).
+        #[test]
+        fn multiple_reload_cycles_consistent(cycles in 1u32..10) {
+            let mut c = ReloadCoordinator::new(PathBuf::from("/tmp/test.yaml"));
+            c.step(Event::PipelinesBuilt);
+
+            for _ in 0..cycles {
+                if c.is_terminal() { break; }
+                c.step(Event::ReloadRequested);
+                c.step(Event::DrainCompleted);
+                c.step(Event::ConfigValid);
+                c.step(Event::PipelinesBuilt);
+                prop_assert_eq!(c.state(), &State::Running);
+                prop_assert!(!c.has_pending());
+                prop_assert!(!c.is_first_run());
+            }
+        }
+
+        /// DrainPipelines is only emitted when in Running state (or entering from Running).
+        #[test]
+        fn drain_only_from_running(events in proptest::collection::vec(arb_event(), 1..100)) {
+            let mut c = ReloadCoordinator::new(PathBuf::from("/tmp/test.yaml"));
+            for event in events {
+                let state_before = c.state().clone();
+                let effects = c.step(event);
+                if effects.iter().any(|e| matches!(e, Effect::DrainPipelines)) {
+                    prop_assert!(
+                        matches!(state_before, State::Running),
+                        "DrainPipelines emitted from non-Running state: {:?}", state_before
+                    );
+                }
             }
         }
     }

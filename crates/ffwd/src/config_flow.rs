@@ -242,3 +242,109 @@ mod tests {
         assert_eq!(state, State::Idle);
     }
 }
+
+#[cfg(test)]
+mod proptests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn arb_event() -> impl Strategy<Value = SimpleEvent> {
+        prop_oneof![
+            Just(SimpleEvent::ConfigAvailable),
+            Just(SimpleEvent::ReadOk),
+            Just(SimpleEvent::ReadFailed),
+            Just(SimpleEvent::WriteOk),
+            Just(SimpleEvent::WriteFailed),
+            Just(SimpleEvent::SignalDelivered),
+            Just(SimpleEvent::SignalFailed),
+        ]
+    }
+
+    proptest! {
+        /// Any event sequence never panics and stays in a valid state.
+        #[test]
+        fn never_panics(events in proptest::collection::vec(arb_event(), 1..100)) {
+            let mut state = State::Idle;
+            for event in &events {
+                state = transition(state, event);
+                prop_assert!(matches!(
+                    state,
+                    State::Idle | State::Reading | State::Writing | State::Signaling
+                ));
+            }
+        }
+
+        /// Invalid events never change state (idempotent no-op).
+        #[test]
+        fn invalid_events_are_noop(
+            events in proptest::collection::vec(arb_event(), 1..50),
+            extra in arb_event(),
+        ) {
+            let mut state = State::Idle;
+            for event in &events {
+                state = transition(state, event);
+            }
+            let state_before = state;
+            let state_after = transition(state, &extra);
+            // If the event is not valid for this state, state shouldn't change
+            let valid = match (state_before, &extra) {
+                (State::Idle, SimpleEvent::ConfigAvailable) => true,
+                (State::Reading, SimpleEvent::ReadOk | SimpleEvent::ReadFailed) => true,
+                (State::Writing, SimpleEvent::WriteOk | SimpleEvent::WriteFailed) => true,
+                (State::Signaling, SimpleEvent::SignalDelivered | SimpleEvent::SignalFailed) => true,
+                _ => false,
+            };
+            if !valid {
+                prop_assert_eq!(state_after, state_before);
+            }
+        }
+
+        /// Idle is always reachable: from any state, a bounded sequence reaches Idle.
+        #[test]
+        fn idle_always_reachable(events in proptest::collection::vec(arb_event(), 1..30)) {
+            let mut state = State::Idle;
+            for event in &events {
+                state = transition(state, event);
+            }
+            // From any state, at most one failure event reaches Idle
+            let recovery = match state {
+                State::Idle => State::Idle,
+                State::Reading => transition(state, &SimpleEvent::ReadFailed),
+                State::Writing => transition(state, &SimpleEvent::WriteFailed),
+                State::Signaling => transition(state, &SimpleEvent::SignalFailed),
+            };
+            prop_assert_eq!(recovery, State::Idle);
+        }
+
+        /// Happy path is deterministic: ConfigAvailable→ReadOk→WriteOk→SignalDelivered→Idle.
+        #[test]
+        fn happy_path_deterministic(_n in 0u32..50) {
+            let mut state = State::Idle;
+            state = transition(state, &SimpleEvent::ConfigAvailable);
+            prop_assert_eq!(state, State::Reading);
+            state = transition(state, &SimpleEvent::ReadOk);
+            prop_assert_eq!(state, State::Writing);
+            state = transition(state, &SimpleEvent::WriteOk);
+            prop_assert_eq!(state, State::Signaling);
+            state = transition(state, &SimpleEvent::SignalDelivered);
+            prop_assert_eq!(state, State::Idle);
+        }
+
+        /// Errors never advance the state machine past the current phase.
+        #[test]
+        fn errors_never_advance(events in proptest::collection::vec(arb_event(), 1..50)) {
+            let mut state = State::Idle;
+            for event in &events {
+                let prev = state;
+                state = transition(state, event);
+                // State can only advance forward or return to Idle (on error)
+                match prev {
+                    State::Idle => prop_assert!(matches!(state, State::Idle | State::Reading)),
+                    State::Reading => prop_assert!(matches!(state, State::Reading | State::Writing | State::Idle)),
+                    State::Writing => prop_assert!(matches!(state, State::Writing | State::Signaling | State::Idle)),
+                    State::Signaling => prop_assert!(matches!(state, State::Signaling | State::Idle)),
+                }
+            }
+        }
+    }
+}

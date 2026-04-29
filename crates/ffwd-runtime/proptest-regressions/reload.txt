@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 4ebb75d8473b5d6e3580f1de6d6cf4f466026e3ca9d8bf2d26891efac7744c08 # shrinks to events = [PipelinesBuilt, ReloadRequested, DrainCompleted, ConfigValid, ShutdownRequested]
