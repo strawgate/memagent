@@ -8,7 +8,6 @@ pub mod bootstrap;
 pub mod generated_cli;
 pub mod pipeline;
 pub mod processor;
-#[allow(dead_code)]
 pub(crate) mod reload;
 pub mod transform;
 #[cfg(feature = "turmoil")]

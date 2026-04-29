@@ -70,7 +70,10 @@ pub(crate) enum Effect {
     /// Drain running pipelines (cancel token + wait with timeout).
     DrainPipelines,
     /// Read and validate the config file.
-    ValidateConfig { path: PathBuf },
+    ValidateConfig {
+        #[allow(dead_code)]
+        path: PathBuf,
+    },
     /// Commit the validated config as current (metrics, OpAMP reporting).
     CommitConfig,
     /// Report a reload error (metric + log).
@@ -111,11 +114,13 @@ impl ReloadCoordinator {
     }
 
     /// Whether this is the first pipeline build (for banner/diagnostics).
+    #[allow(dead_code)]
     pub fn is_first_run(&self) -> bool {
         self.first_run
     }
 
     /// Whether a pending config was committed in the last transition.
+    #[allow(dead_code)]
     pub fn has_pending(&self) -> bool {
         self.has_pending
     }
@@ -224,6 +229,7 @@ impl ReloadCoordinator {
     }
 
     /// Whether the coordinator has reached a terminal state.
+    #[allow(dead_code)]
     pub fn is_terminal(&self) -> bool {
         matches!(self.state, State::ShuttingDown { .. })
     }
