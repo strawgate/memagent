@@ -101,6 +101,13 @@ RejectInvalidConfig ==
     /\ state' = "running"      \* Return to running with old config
     /\ UNCHANGED <<config, reload_count, reload_pending>>
 
+(* Terminal state: all reloads exhausted — prevents TLC deadlock *)
+Quiescent ==
+    /\ state = "running"
+    /\ ~reload_pending
+    /\ reload_count = MaxReloads
+    /\ UNCHANGED vars
+
 Next ==
     \/ TriggerReload
     \/ BeginDrain
@@ -108,6 +115,7 @@ Next ==
     \/ ReadConfig
     \/ ApplyValidConfig
     \/ RejectInvalidConfig
+    \/ Quiescent
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 

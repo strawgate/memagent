@@ -220,6 +220,11 @@ Shutdown ==
                    child_alive, child_pid_gen, signal_target_gen, child_config,
                    configs_pushed, configs_applied>>
 
+(* Terminal state: process exits after shutdown — prevents TLC deadlock *)
+Terminated ==
+    /\ shutdown_requested
+    /\ UNCHANGED vars
+
 Next ==
     \/ OpampReceiveConfig
     \/ OpampWriteConfig
@@ -232,6 +237,7 @@ Next ==
     \/ ChildCrash
     \/ ChildRespawn
     \/ Shutdown
+    \/ Terminated
 
 Spec == Init /\ [][Next]_vars /\ WF_vars(Next)
 
@@ -260,16 +266,19 @@ ChildConfigBounded ==
 
 (* ═══════════ LIVENESS PROPERTIES ═══════════ *)
 
-(* Every config pushed by OpAMP eventually reaches the child (under fairness) *)
+(* Every config pushed by OpAMP eventually reaches the child (under fairness).
+   Guarded by ~shutdown_requested: after shutdown, pending configs are abandoned. *)
 ConfigEventuallyApplied ==
-    [](configs_pushed > configs_applied => <>(configs_applied = configs_pushed))
+    [](~shutdown_requested /\ configs_pushed > configs_applied =>
+       <>(configs_applied = configs_pushed \/ shutdown_requested))
 
 (* After a crash, child is eventually respawned *)
 CrashEventuallyRecovered ==
-    [](~child_alive /\ ~shutdown_requested => <>(child_alive))
+    [](~child_alive /\ ~shutdown_requested => <>(child_alive \/ shutdown_requested))
 
-(* Supervisor always returns to idle *)
+(* Supervisor always returns to idle (unless shutdown interrupts) *)
 SupervisorAlwaysReturnsToIdle ==
-    [](supervisor_state # "idle" => <>(supervisor_state = "idle"))
+    [](supervisor_state # "idle" /\ ~shutdown_requested =>
+       <>(supervisor_state = "idle" \/ shutdown_requested))
 
 ================================================================================
