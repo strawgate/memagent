@@ -269,12 +269,14 @@ impl Pipeline {
         });
         // Keep input_transforms in sync: one transform per input.
         while self.input_transforms.len() < self.inputs.len() {
-            #[expect(
-                clippy::expect_used,
-                reason = "hardcoded passthrough SQL is validated by transform tests"
-            )]
-            let transform = create_transform("SELECT * FROM logs")
-                .expect("hardcoded passthrough 'SELECT * FROM logs' is always valid");
+            let Ok(transform) = create_transform("SELECT * FROM logs") else {
+                tracing::error!(
+                    input_name = name,
+                    "failed to build hardcoded passthrough transform for test input"
+                );
+                let _ = self.inputs.pop();
+                break;
+            };
             let scanner = Scanner::new(transform.scan_config());
             self.input_transforms.push(SourcePipeline {
                 scanner,
