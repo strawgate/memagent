@@ -471,15 +471,15 @@ impl PlatformSensorInput {
     ///
     /// Uses `pahole` (from the `dwarves` package) to introspect kernel BTF.
     /// Returns the byte offset on success.
-    fn check_drops(ebpf: &mut Ebpf) -> io::Result<u64> {
+    fn check_drops(ebpf: &mut Ebpf) -> u64 {
         let drops_map = match ebpf.map_mut("DROPS") {
             Some(map) => map,
-            None => return Ok(0),
+            None => return 0,
         };
 
         let mut drops_array = match aya::maps::PerCpuArray::<_, u64>::try_from(drops_map) {
             Ok(array) => array,
-            Err(_) => return Ok(0),
+            Err(_) => return 0,
         };
 
         let mut total_drops = 0;
@@ -516,7 +516,7 @@ impl PlatformSensorInput {
             }
         }
 
-        Ok(total_drops)
+        total_drops
     }
 
     fn drain_events(
@@ -883,9 +883,8 @@ impl InputSource for PlatformSensorInput {
                 skipped_probes,
                 degraded_capabilities,
             } => {
-                if let Ok(drops) = Self::check_drops(&mut ebpf)
-                    && drops > 0
-                {
+                let drops = Self::check_drops(&mut ebpf);
+                if drops > 0 {
                     self.stats.inc_ebpf_drops(drops);
                 }
                 let result = Self::drain_events(
