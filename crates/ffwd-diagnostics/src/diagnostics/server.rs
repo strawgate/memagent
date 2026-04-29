@@ -8,6 +8,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json};
 use axum::routing::get;
+use serde_json::json;
 use tokio::sync::{broadcast, oneshot};
 
 use super::metrics::PipelineMetrics;
@@ -737,7 +738,6 @@ fn build_stats_body(state: &DiagnosticsState) -> String {
 fn build_traces_body(state: &DiagnosticsState) -> String {
     use crate::span_exporter::TraceSpan;
     use std::collections::HashMap;
-    use std::fmt::Write;
 
     if let Some(ref buf) = state.trace_buf {
         let all_spans = buf.get_spans();
@@ -754,15 +754,8 @@ fn build_traces_body(state: &DiagnosticsState) -> String {
             }
         }
 
-        let mut out = String::with_capacity(64 * 1024);
-        out.push_str(r#"{"traces":["#);
-        let mut first = true;
+        let mut traces = Vec::with_capacity(roots.len().min(500) + state.pipelines.len() * 4);
         for root in roots.iter().rev().take(500) {
-            if !first {
-                out.push(',');
-            }
-            first = false;
-
             let mut scan_ns = 0u64;
             let mut scan_rows = 0u64;
             let mut transform_ns = 0u64;
@@ -841,62 +834,35 @@ fn build_traces_body(state: &DiagnosticsState) -> String {
             let output_rows: u64 = attr("output_rows").parse().unwrap_or(0);
             let errors: u64 = attr("errors").parse().unwrap_or(0);
 
-            let _ = write!(
-                out,
-                "{{\
-                    \"trace_id\":\"{tid}\",\
-                    \"pipeline\":\"{pl}\",\
-                    \"start_unix_ns\":\"{st}\",\
-                    \"total_ns\":\"{tot}\",\
-                    \"scan_ns\":\"{scan}\",\
-                    \"transform_ns\":\"{xfm}\",\
-                    \"output_ns\":\"{out_ns}\",\
-                    \"output_start_unix_ns\":\"{out_st}\",\
-                    \"scan_rows\":{sr},\
-                    \"input_rows\":{ir},\
-                    \"output_rows\":{or},\
-                    \"bytes_in\":{bi},\
-                    \"queue_wait_ns\":\"{qw}\",\
-                    \"worker_id\":{wid},\
-                    \"send_ns\":\"{snd}\",\
-                    \"recv_ns\":\"{rcv}\",\
-                    \"took_ms\":{tk},\
-                    \"retries\":{ret},\
-                    \"req_bytes\":{rb},\
-                    \"cmp_bytes\":{cb},\
-                    \"resp_bytes\":{rspb},\
-                    \"flush_reason\":\"{fr}\",\
-                    \"errors\":{err},\
-                    \"status\":\"{status}\",\
-                    \"lifecycle_state\":\"{lifecycle_state}\"\
-                }}",
-                tid = root.trace_id,
-                pl = esc(pipeline),
-                st = root.start_unix_ns,
-                tot = root.duration_ns,
-                scan = scan_ns,
-                xfm = transform_ns,
-                out_ns = output_ns,
-                out_st = output_start_unix_ns,
-                sr = scan_rows,
-                ir = input_rows,
-                or = output_rows,
-                bi = bytes_in,
-                qw = queue_wait_ns,
-                wid = worker_id,
-                snd = send_ns,
-                rcv = recv_ns,
-                tk = took_ms,
-                ret = retries,
-                rb = req_bytes,
-                cb = cmp_bytes,
-                rspb = resp_bytes,
-                fr = esc(flush_reason),
-                err = errors,
-                status = root.status,
-                lifecycle_state = TraceLifecycleState::Completed.as_str(),
-            );
+            traces.push(json!({
+                "trace_id": root.trace_id.as_str(),
+                "pipeline": pipeline,
+                "start_unix_ns": root.start_unix_ns.to_string(),
+                "total_ns": root.duration_ns.to_string(),
+                "scan_ns": scan_ns.to_string(),
+                "transform_ns": transform_ns.to_string(),
+                "output_ns": output_ns.to_string(),
+                "output_start_unix_ns": output_start_unix_ns.to_string(),
+                "scan_rows": scan_rows,
+                "input_rows": input_rows,
+                "output_rows": output_rows,
+                "bytes_in": bytes_in,
+                "queue_wait_ns": queue_wait_ns.to_string(),
+                "worker_id": worker_id,
+                "send_ns": send_ns.to_string(),
+                "recv_ns": recv_ns.to_string(),
+                "took_ms": took_ms,
+                "retries": retries,
+                "req_bytes": req_bytes,
+                "cmp_bytes": cmp_bytes,
+                "resp_bytes": resp_bytes,
+                "flush_reason": flush_reason,
+                "errors": errors,
+                "status": root.status,
+                "lifecycle_state": TraceLifecycleState::Completed.as_str(),
+            }));
         }
+
         // In-progress batches — live entries shown before completion.
         for pm in &state.pipelines {
             let active = pm
@@ -904,83 +870,62 @@ fn build_traces_body(state: &DiagnosticsState) -> String {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             for (id, b) in active.iter() {
-                if !first {
-                    out.push(',');
-                }
-                first = false;
-                let worker_id_json = b
+                let worker_id = b
                     .worker_id
-                    .map_or_else(|| "null".to_string(), |wid| wid.to_string());
-                let _ = write!(
-                    out,
-                    "{{\
-                            \"trace_id\":\"live-{id}\",\
-                            \"pipeline\":\"{pl}\",\
-                            \"start_unix_ns\":\"{st}\",\
-                            \"total_ns\":\"0\",\
-                            \"scan_ns\":\"{scan}\",\
-                            \"transform_ns\":\"{xfm}\",\
-                            \"output_ns\":\"0\",\
-                            \"output_start_unix_ns\":\"{out_st}\",\
-                            \"scan_rows\":0,\
-                            \"input_rows\":0,\
-                            \"output_rows\":0,\
-                            \"bytes_in\":0,\
-                            \"queue_wait_ns\":\"0\",\
-                            \"worker_id\":{wid},\
-                            \"send_ns\":\"0\",\
-                            \"recv_ns\":\"0\",\
-                            \"took_ms\":0,\
-                            \"retries\":0,\
-                            \"req_bytes\":0,\
-                            \"cmp_bytes\":0,\
-                            \"resp_bytes\":0,\
-                            \"flush_reason\":\"\",\
-                            \"errors\":0,\
-                            \"status\":\"unset\",\
-                            \"lifecycle_state\":\"{lifecycle_state}\",\
-                            \"lifecycle_state_start_unix_ns\":\"{state_start}\"\
-                        }}",
-                    id = id,
-                    pl = esc(&pm.name),
-                    st = b.start_unix_ns,
-                    scan = b.scan_ns,
-                    xfm = b.transform_ns,
-                    out_st = b.output_start_unix_ns,
-                    wid = worker_id_json,
-                    lifecycle_state =
-                        lifecycle_state_for_active_batch(b.stage, b.worker_id).as_str(),
-                    state_start = b.stage_start_unix_ns,
-                );
+                    .map_or(serde_json::Value::Null, serde_json::Value::from);
+                traces.push(json!({
+                    "trace_id": format!("live-{id}"),
+                    "pipeline": pm.name.as_str(),
+                    "start_unix_ns": b.start_unix_ns.to_string(),
+                    "total_ns": "0",
+                    "scan_ns": b.scan_ns.to_string(),
+                    "transform_ns": b.transform_ns.to_string(),
+                    "output_ns": "0",
+                    "output_start_unix_ns": b.output_start_unix_ns.to_string(),
+                    "scan_rows": 0,
+                    "input_rows": 0,
+                    "output_rows": 0,
+                    "bytes_in": 0,
+                    "queue_wait_ns": "0",
+                    "worker_id": worker_id,
+                    "send_ns": "0",
+                    "recv_ns": "0",
+                    "took_ms": 0,
+                    "retries": 0,
+                    "req_bytes": 0,
+                    "cmp_bytes": 0,
+                    "resp_bytes": 0,
+                    "flush_reason": "",
+                    "errors": 0,
+                    "status": "unset",
+                    "lifecycle_state": lifecycle_state_for_active_batch(b.stage, b.worker_id).as_str(),
+                    "lifecycle_state_start_unix_ns": b.stage_start_unix_ns.to_string(),
+                }));
             }
         }
-        out.push_str("]}");
-        out
+
+        serde_json::to_string(&json!({ "traces": traces })).unwrap_or_else(|e| {
+            tracing::error!(error = %e, "failed to serialize traces diagnostics payload");
+            r#"{"traces":[]}"#.to_string()
+        })
     } else {
         r#"{"traces":[]}"#.to_string()
     }
 }
 
 fn build_logs_body(state: &DiagnosticsState) -> String {
-    let lines = state.stderr.get_logs();
-    let mut body = String::with_capacity(lines.len() * 80 + 32);
-    body.push_str(r#"{"lines":["#);
-    for (i, line) in lines.iter().enumerate() {
-        if i > 0 {
-            body.push(',');
-        }
-        body.push('"');
-        body.push_str(&esc(line));
-        body.push('"');
-    }
-    body.push_str(r#"],"capturing":"#);
-    body.push_str(if state.stderr.is_active() {
-        "true"
-    } else {
-        "false"
+    build_logs_body_from_parts(state.stderr.get_logs(), state.stderr.is_active())
+}
+
+fn build_logs_body_from_parts(lines: Vec<String>, capturing: bool) -> String {
+    let body = json!({
+        "lines": lines,
+        "capturing": capturing,
     });
-    body.push('}');
-    body
+    serde_json::to_string(&body).unwrap_or_else(|e| {
+        tracing::error!(error = %e, "failed to serialize logs diagnostics payload");
+        r#"{"lines":[],"capturing":false}"#.to_string()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2389,6 +2334,60 @@ output:
         assert_eq!(output["worker_id"], 7);
         assert_eq!(output["output_start_unix_ns"], "1313500000");
         assert_eq!(output["lifecycle_state_start_unix_ns"], "1313500000");
+    }
+
+    #[test]
+    fn test_traces_endpoint_escapes_json_string_fields() {
+        use crate::span_exporter::{SpanBuffer, TraceSpan};
+
+        let trace_buf = SpanBuffer::new();
+        trace_buf.push_test_span(TraceSpan {
+            trace_id: "aabbccdd00112233aabbccdd00112233".into(),
+            span_id: "aabbccdd00112233".into(),
+            parent_id: "0000000000000000".into(),
+            name: "batch".into(),
+            start_unix_ns: 1_000_000_000,
+            duration_ns: 200_000_000,
+            attrs: vec![
+                ["pipeline".into(), "pipe\"line\nwith-newline".into()],
+                ["bytes_in".into(), "4096".into()],
+                ["input_rows".into(), "100".into()],
+                ["output_rows".into(), "75".into()],
+                ["errors".into(), "0".into()],
+                ["flush_reason".into(), "reason\"quoted\nline".into()],
+                ["queue_wait_ns".into(), "5000000".into()],
+            ],
+            status: "ok",
+        });
+
+        let mut server = server_with_test_pipeline();
+        server.set_trace_buffer(trace_buf);
+        let (_handle, addr) = server.start().expect("server bind failed");
+        let port = addr.port();
+
+        thread::sleep(std::time::Duration::from_millis(100));
+
+        let (status, body) = http_get(port, "/admin/v1/traces");
+        assert_eq!(status, 200);
+
+        let v: serde_json::Value =
+            serde_json::from_str(&body).expect("invalid JSON from /admin/v1/traces");
+        let traces = v["traces"].as_array().expect("traces must be array");
+        assert_eq!(traces.len(), 1);
+
+        let t = &traces[0];
+        assert_eq!(t["pipeline"], "pipe\"line\nwith-newline");
+        assert_eq!(t["flush_reason"], "reason\"quoted\nline");
+    }
+
+    #[test]
+    fn test_logs_endpoint_escapes_json_string_fields() {
+        let marker = "diag-json-escape \"quoted\" \\ slash\nnext-line";
+        let body = build_logs_body_from_parts(vec![marker.to_string()], true);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("invalid JSON from /admin/v1/logs");
+        assert_eq!(parsed["lines"][0], marker);
+        assert_eq!(parsed["capturing"], true);
     }
 
     /// Raw TCP POST helper for method-rejection tests.

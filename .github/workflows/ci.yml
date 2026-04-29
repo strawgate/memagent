@@ -376,7 +376,7 @@ jobs:
 
   # -------------------------------------------------------------------------
   # Kani formal verification — split into four parallel shards by layer so
-  # the slowest one finishes in roughly 10 minutes on a 4-vCPU runner.
+  # the slowest one finishes within the hosted-runner budget.
   # Observed wall-clock medians on main (per-job, --jobs 3):
   #   kani-core:           ~15 min  (ffwd-core,                ~103 proofs)
   #   kani-arrow:          ~19 min  (ffwd-arrow,                ~27 proofs;
@@ -388,10 +388,13 @@ jobs:
   #                                  ffwd-diagnostics + ffwd binary,
   #                                  ~52 I/O-layer proofs)
   # The previous monolithic kani-periphery shard (six crates, 107 proofs)
-  # was the long pole at ~21 minutes; splitting it by layer should bring
-  # both halves below 10 min on warm cache.  Each shard uses kissat and
-  # --jobs 3 — ubuntu-latest has 4 vCPUs; jobs=3 leaves headroom for
-  # solver memory spikes while still putting all cores to work.
+  # was the long pole at ~21 minutes. The split keeps ownership boundaries
+  # clear while the 120-minute timeout on the two broad shards leaves room
+  # for cold-cache variance and hosted-runner throttling. Revisit this after
+  # collecting stable main-branch runtime history and tune the broad shards
+  # back toward the 90-minute core/arrow budget if the split remains stable.
+  # Each shard uses kissat and --jobs 3 — ubuntu-latest has 4 vCPUs; jobs=3
+  # leaves headroom for solver memory spikes while still using the runner.
   # -------------------------------------------------------------------------
   kani-core:
     name: Kani proofs (core)
