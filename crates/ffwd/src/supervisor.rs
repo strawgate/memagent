@@ -32,11 +32,8 @@ pub(crate) async fn cmd_supervised(config_path: &str) -> Result<(), CliError> {
     // Parse config to extract opamp section.
     let config_yaml = std::fs::read_to_string(&config_path)
         .map_err(|e| CliError::Config(format!("cannot read {}: {e}", config_path.display())))?;
-    let config = ffwd_config::Config::load_str_with_base_path(
-        &config_yaml,
-        config_path.parent(),
-    )
-    .map_err(|e| CliError::Config(e.to_string()))?;
+    let config = ffwd_config::Config::load_str_with_base_path(&config_yaml, config_path.parent())
+        .map_err(|e| CliError::Config(e.to_string()))?;
 
     let opamp_config = config.opamp.ok_or_else(|| {
         CliError::Config("supervised mode requires an `opamp:` section in config".to_string())

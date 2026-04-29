@@ -292,7 +292,7 @@ log "Building OpAMP test server..."
 (cd "$WORK_DIR" && go build -o opamp-server server.go)
 
 log "Starting OpAMP test server on port $SERVER_PORT..."
-"$WORK_DIR/opamp-server" &
+PORT="$SERVER_PORT" "$WORK_DIR/opamp-server" &
 SERVER_PID=$!
 
 if ! wait_for_port "$SERVER_PORT" 10; then
@@ -302,7 +302,7 @@ fi
 log "OpAMP test server running (PID $SERVER_PID)"
 
 # --- Create ffwd config ---
-cat > "$WORK_DIR/ffwd.yaml" << 'YAMLEOF'
+cat > "$WORK_DIR/ffwd.yaml" << YAMLEOF
 pipelines:
   test:
     inputs:
@@ -314,7 +314,7 @@ pipelines:
     outputs:
       - type: "null"
 opamp:
-  endpoint: "http://127.0.0.1:14180/v1/opamp"
+  endpoint: "http://127.0.0.1:${SERVER_PORT}/v1/opamp"
   poll_interval_secs: 2
   accept_remote_config: true
   service_name: "ffwd-e2e-test"
@@ -369,7 +369,7 @@ log ""
 log "═══ TEST 3: SIGHUP triggers config reload ═══"
 
 # Write a new config (change pipeline name)
-cat > "$WORK_DIR/ffwd.yaml" << 'YAMLEOF2'
+cat > "$WORK_DIR/ffwd.yaml" << YAMLEOF2
 pipelines:
   reloaded:
     inputs:
@@ -381,7 +381,7 @@ pipelines:
     outputs:
       - type: "null"
 opamp:
-  endpoint: "http://127.0.0.1:14180/v1/opamp"
+  endpoint: "http://127.0.0.1:${SERVER_PORT}/v1/opamp"
   poll_interval_secs: 2
   accept_remote_config: true
   service_name: "ffwd-e2e-test"

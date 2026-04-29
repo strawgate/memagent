@@ -83,12 +83,14 @@ pipelines:
 
         // Modify config and send SIGHUP.
         std::fs::write(&config_path, modified_config()).expect("write modified config");
+        // SAFETY: pid is a valid child process we just spawned and verified is running.
         unsafe { libc::kill(pid, libc::SIGHUP) };
 
         // Wait for reload to process.
         std::thread::sleep(Duration::from_millis(1500));
 
         // Send SIGTERM to shut down gracefully.
+        // SAFETY: pid is a valid child process we just spawned.
         unsafe { libc::kill(pid, libc::SIGTERM) };
 
         let output = child.wait_with_output().expect("wait for ff");
@@ -133,12 +135,14 @@ pipelines:
 
         // Write broken config and trigger reload.
         std::fs::write(&config_path, "invalid yaml: [[[").expect("write bad config");
+        // SAFETY: pid is a valid child process we just spawned and verified is running.
         unsafe { libc::kill(pid, libc::SIGHUP) };
 
         // Process should survive.
         std::thread::sleep(Duration::from_millis(1500));
 
         // Send SIGTERM.
+        // SAFETY: pid is a valid child process we just spawned.
         unsafe { libc::kill(pid, libc::SIGTERM) };
 
         let output = child.wait_with_output().expect("wait for ff");
@@ -194,6 +198,7 @@ pipelines:
         std::thread::sleep(Duration::from_millis(2000));
 
         // Shut down.
+        // SAFETY: pid is a valid child process we just spawned.
         unsafe { libc::kill(pid, libc::SIGTERM) };
 
         let output = child.wait_with_output().expect("wait for ff");
