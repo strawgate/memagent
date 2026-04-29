@@ -24,11 +24,11 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
 
-      - name: Enable coverage instrumentation
-        run: echo 'RUSTFLAGS=-C instrument-coverage' >> "$GITHUB_ENV"
-
       - name: Install cargo-fuzz
         run: cargo +nightly install cargo-fuzz
+
+      - name: Enable coverage instrumentation
+        run: echo 'RUSTFLAGS=-C instrument-coverage' >> "$GITHUB_ENV"
 
       - name: Download previous corpus
         uses: actions/download-artifact@v4
@@ -86,11 +86,11 @@ jobs:
       - name: Install Rust toolchain
         uses: ./.github/actions/setup-rust
 
-      - name: Enable coverage instrumentation
-        run: echo 'RUSTFLAGS=-C instrument-coverage' >> "$GITHUB_ENV"
-
       - name: Install cargo-fuzz
         run: cargo +nightly install cargo-fuzz
+
+      - name: Enable coverage instrumentation
+        run: echo 'RUSTFLAGS=-C instrument-coverage' >> "$GITHUB_ENV"
 
       - name: Download previous corpus
         uses: actions/download-artifact@v4
