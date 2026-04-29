@@ -588,7 +588,8 @@ pub async fn run_pipelines(
                             .await
                             .is_ok();
                             join_siblings(&mut handles, &reload_error).await?;
-                            coordinator.step(Event::ReloadRequested);
+                            // DrainPipelines already performed inline above.
+                            let _effects = coordinator.step(Event::ReloadRequested);
                             if drain_ok {
                                 coordinator.step(Event::DrainCompleted);
                             } else {

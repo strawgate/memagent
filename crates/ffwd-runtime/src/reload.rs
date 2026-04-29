@@ -236,10 +236,9 @@ impl ReloadCoordinator {
                 let mut effects = Vec::new();
                 if self.has_pending {
                     effects.push(Effect::CommitConfig);
+                    effects.push(Effect::ReportReloadSuccess);
                     self.has_pending = false;
                 }
-                // Always report reload success for a completed reload cycle.
-                effects.push(Effect::ReportReloadSuccess);
                 self.state = State::Running;
                 effects.push(Effect::RunPipelines);
                 effects
