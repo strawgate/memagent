@@ -689,11 +689,11 @@ bench-source-metadata-fast *ARGS:
 
 # Profile OTLP decode/encode CPU with the normal allocator (flamegraph, per-mode timings).
 profile-otlp-io *ARGS:
-    cargo run -p ffwd-bench --release --features bench-tools --bin otlp_io_profile -- {{ARGS}}
+    cargo run -p ffwd-bench --release --features bench-tools,io-bench --bin otlp_io_profile -- {{ARGS}}
 
 # Profile OTLP decode/encode allocation counts with stats_alloc instrumentation.
 profile-otlp-io-alloc *ARGS:
-    cargo run -p ffwd-bench --release --features bench-tools,otlp-profile-alloc --bin otlp_io_profile -- {{ARGS}}
+    cargo run -p ffwd-bench --release --features bench-tools,io-bench,otlp-profile-alloc --bin otlp_io_profile -- {{ARGS}}
 
 # Generate microbenchmark report (markdown)
 bench-report:
@@ -701,11 +701,11 @@ bench-report:
 
 # Profile FramedInput / format processing overhead and print a markdown report.
 bench-framed-input *ARGS:
-    cargo run -p ffwd-bench --release --features bench-tools --bin framed_input_profile -- {{ARGS}}
+    cargo run -p ffwd-bench --release --features bench-tools,io-bench --bin framed_input_profile -- {{ARGS}}
 
 # Allocation-focused FramedInput profiling (dhat-backed, slower; no throughput numbers).
 bench-framed-input-alloc *ARGS:
-    cargo run -p ffwd-bench --release --features bench-tools,dhat-heap --bin framed_input_profile -- --alloc-only {{ARGS}}
+    cargo run -p ffwd-bench --release --features bench-tools,io-bench,dhat-heap --bin framed_input_profile -- --alloc-only {{ARGS}}
 
 # Run sustained-load memory profiler (generator → SQL → null, default 5 minutes).
 # Use --quick (30s) for CI or --medium (120s) for quick checks.

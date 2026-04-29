@@ -16,7 +16,6 @@ ffwd-core = { version = "0.1.0", path = "../ffwd-core" }
 ffwd-otap-proto = { version = "0.1.0", path = "../ffwd-otap-proto" }
 ffwd-types = { version = "0.1.0", path = "../ffwd-types" }
 flate2 = "1"
-libc = { workspace = true }
 httpdate = "1"
 itoa = "1"
 memchr = "2"
@@ -44,6 +43,9 @@ tokio-stream = "0.1.18"
 tracing = { workspace = true }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 zstd = "0.13"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
 arrow = { workspace = true, features = ["test_utils"] }
