@@ -208,30 +208,27 @@ export const base = import.meta.env.BASE_URL.replace(/\/$/, '');
   }
 `}</style>
 
-<script is:inline>
-(async function () {
-  const el = document.getElementById('bench-hero-stat');
+<Fragment set:html={`<script>(async function () {
+  var el = document.getElementById('bench-hero-stat');
   if (!el) return;
   try {
-    const res = await fetch(
+    var res = await fetch(
       'https://raw.githubusercontent.com/strawgate/fastforward-bench/bench-data/data/index.json'
     );
     if (!res.ok) throw new Error('not ok');
-    const index = await res.json();
-    const runs = index.runs || [];
+    var index = await res.json();
+    var runs = index.runs || [];
     if (!runs.length) {
       el.textContent = 'No benchmark runs recorded yet';
       return;
     }
-    // runs are newest-first
-    const latest = runs[runs.length - 1];
-    const count = runs.length;
-    const date = latest.timestamp
+    var latest = runs[runs.length - 1];
+    var count = runs.length;
+    var date = latest.timestamp
       ? new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(new Date(latest.timestamp))
       : '';
-    el.textContent = count + ' runs recorded · last updated ' + date;
-  } catch {
+    el.textContent = count + ' runs recorded \\u00b7 last updated ' + date;
+  } catch (e) {
     if (el) el.textContent = 'Benchmark data unavailable';
   }
-})();
-</script>
+})();</script>`} />
