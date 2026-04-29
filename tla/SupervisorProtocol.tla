@@ -13,22 +13,27 @@
  *   - Config monotonicity: main config file only changes through validation
  *   - No lost configs: every valid remote config eventually reaches the child
  *   - Graceful shutdown: signals are forwarded before cleanup
+ *
+ * Note: We use -1 as sentinel for "no value" to avoid TLC type errors from
+ * mixing strings and integers in the same variable domain.
  *)
-EXTENDS Naturals, Sequences, FiniteSets, TLC
+EXTENDS Integers, Sequences, FiniteSets, TLC
 
 CONSTANTS
     MaxConfigs,           \* Bound on total remote config pushes
     MaxCrashes            \* Bound on child crashes for model checking
 
+NONE == -1  \* Sentinel: no pending config / empty file
+
 VARIABLES
     (* OpAMP client state *)
     opamp_write_path,     \* Path where OpAMP writes remote config ("intermediate" | "main")
-    opamp_pending,        \* Whether OpAMP has a config waiting to write (Nat version or "none")
-    intermediate_file,    \* Content of the intermediate config file (Nat version or "empty")
+    opamp_pending,        \* Config waiting to write (version 1..MaxConfigs, or NONE)
+    intermediate_file,    \* Content of intermediate config file (version 1..MaxConfigs, or NONE)
 
     (* Supervisor state *)
     supervisor_read_path, \* Path supervisor reads from ("intermediate" | "main")
-    main_config_file,     \* Content of the main config file (Nat version)
+    main_config_file,     \* Content of the main config file (Nat version, 0 = initial)
     supervisor_state,     \* "idle" | "reading" | "validating" | "writing" | "signaling"
 
     (* Child process state *)
@@ -49,8 +54,8 @@ vars == <<opamp_write_path, opamp_pending, intermediate_file,
 
 TypeOK ==
     /\ opamp_write_path \in {"intermediate", "main"}
-    /\ (opamp_pending = "none" \/ opamp_pending \in 0..MaxConfigs)
-    /\ (intermediate_file = "empty" \/ intermediate_file \in 0..MaxConfigs)
+    /\ opamp_pending \in {NONE} \cup 1..MaxConfigs
+    /\ intermediate_file \in {NONE} \cup 1..MaxConfigs
     /\ supervisor_read_path \in {"intermediate", "main"}
     /\ main_config_file \in 0..MaxConfigs
     /\ supervisor_state \in {"idle", "reading", "validating", "writing", "signaling"}
@@ -64,8 +69,8 @@ TypeOK ==
 
 Init ==
     /\ opamp_write_path = "intermediate"   \* OpAMP writes to intermediate (correct!)
-    /\ opamp_pending = "none"
-    /\ intermediate_file = "empty"
+    /\ opamp_pending = NONE
+    /\ intermediate_file = NONE
     /\ supervisor_read_path = "intermediate" \* Supervisor reads from intermediate (matches!)
     /\ main_config_file = 0
     /\ supervisor_state = "idle"
@@ -83,7 +88,7 @@ Init ==
 OpampReceiveConfig ==
     /\ configs_pushed < MaxConfigs
     /\ ~shutdown_requested
-    /\ opamp_pending = "none"
+    /\ opamp_pending = NONE
     /\ opamp_pending' = configs_pushed + 1
     /\ configs_pushed' = configs_pushed + 1
     /\ UNCHANGED <<opamp_write_path, intermediate_file, supervisor_read_path,
@@ -92,20 +97,20 @@ OpampReceiveConfig ==
 
 (* OpAMP writes received config to the write path *)
 OpampWriteConfig ==
-    /\ opamp_pending # "none"
+    /\ opamp_pending # NONE
     /\ opamp_write_path = "intermediate"   \* In supervisor mode, always writes here
     /\ intermediate_file' = opamp_pending
-    /\ opamp_pending' = "none"
+    /\ opamp_pending' = NONE
     /\ UNCHANGED <<opamp_write_path, supervisor_read_path, main_config_file,
                    supervisor_state, child_alive, child_pid_gen, signal_target_gen,
                    child_config, configs_pushed, configs_applied, shutdown_requested>>
 
 (* BUG MODEL: OpAMP writes to main config directly (the bug we fixed) *)
 OpampWriteConfigBUGGY ==
-    /\ opamp_pending # "none"
+    /\ opamp_pending # NONE
     /\ opamp_write_path = "main"   \* WRONG: supervisor can't detect this!
     /\ main_config_file' = opamp_pending
-    /\ opamp_pending' = "none"
+    /\ opamp_pending' = NONE
     /\ UNCHANGED <<opamp_write_path, intermediate_file, supervisor_read_path,
                    supervisor_state, child_alive, child_pid_gen, signal_target_gen,
                    child_config, configs_pushed, configs_applied, shutdown_requested>>
@@ -115,7 +120,7 @@ OpampWriteConfigBUGGY ==
 (* Supervisor detects new config (reload notification from OpAMP) *)
 SupervisorBeginRead ==
     /\ supervisor_state = "idle"
-    /\ intermediate_file # "empty"   \* There's something to read
+    /\ intermediate_file # NONE   \* There's something to read
     /\ ~shutdown_requested
     /\ child_alive                     \* Only proceed if child is alive
     /\ supervisor_state' = "reading"
@@ -129,7 +134,7 @@ SupervisorBeginRead ==
 SupervisorValidate ==
     /\ supervisor_state = "reading"
     /\ supervisor_read_path = "intermediate"  \* Reads from intermediate (matches OpAMP write)
-    /\ intermediate_file # "empty"
+    /\ intermediate_file # NONE
     /\ supervisor_state' = "validating"
     /\ UNCHANGED <<opamp_write_path, opamp_pending, intermediate_file,
                    supervisor_read_path, main_config_file, child_alive,
@@ -140,7 +145,7 @@ SupervisorValidate ==
 SupervisorWrite ==
     /\ supervisor_state = "validating"
     /\ main_config_file' = intermediate_file   \* Copy validated config to main
-    /\ intermediate_file' = "empty"            \* Clear intermediate
+    /\ intermediate_file' = NONE               \* Clear intermediate
     /\ supervisor_state' = "writing"
     /\ UNCHANGED <<opamp_write_path, opamp_pending, supervisor_read_path,
                    child_alive, child_pid_gen, signal_target_gen, child_config,

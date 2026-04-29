@@ -8,17 +8,23 @@
  *   - No double-drain: only one reload can be in progress at a time
  *   - Convergence: every reload trigger eventually results in running pipelines
  *   - Config validation: invalid configs do not replace running pipelines
+ *
+ * Note: We use integer sentinels to avoid TLC type errors from mixing strings
+ * and integers in the same variable domain.
  *)
-EXTENDS Naturals, Sequences, FiniteSets, TLC
+EXTENDS Integers, Sequences, FiniteSets, TLC
 
 CONSTANTS
     MaxReloads,       \* Bound on total reload events for model checking
     MaxPipelines      \* Bound on pipeline count
 
+NONE == -1       \* Sentinel: no pending config
+INVALID == -2    \* Sentinel: pending config failed validation
+
 VARIABLES
     state,            \* Main state: "running" | "draining" | "building" | "waiting"
     config,           \* Current active config (a natural number representing version)
-    pending_config,   \* Config read from disk after reload trigger (Nat or "invalid")
+    pending_config,   \* Config read from disk after reload trigger (version, INVALID, or NONE)
     reload_count,     \* Number of completed reloads
     reload_pending,   \* Whether a reload signal is waiting
     pipelines_running \* Number of pipelines currently executing
@@ -28,7 +34,7 @@ vars == <<state, config, pending_config, reload_count, reload_pending, pipelines
 TypeOK ==
     /\ state \in {"running", "draining", "building"}
     /\ config \in 0..MaxReloads
-    /\ pending_config \in {"invalid", "none"} \/ pending_config \in 0..MaxReloads
+    /\ pending_config \in {NONE, INVALID} \cup 0..MaxReloads
     /\ reload_count \in 0..MaxReloads
     /\ reload_pending \in BOOLEAN
     /\ pipelines_running \in 0..MaxPipelines
@@ -36,7 +42,7 @@ TypeOK ==
 Init ==
     /\ state = "running"
     /\ config = 0
-    /\ pending_config = "none"
+    /\ pending_config = NONE
     /\ reload_count = 0
     /\ reload_pending = FALSE
     /\ pipelines_running = 1
@@ -67,11 +73,11 @@ DrainComplete ==
 (* --- Read and validate new config --- *)
 ReadConfig ==
     /\ state = "building"
-    /\ pending_config = "none"
+    /\ pending_config = NONE
     \* Non-deterministically choose valid or invalid new config.
     \* Valid config versions are strictly greater than current (monotonic).
-    /\ \E v \in {config + 1, "invalid"} :
-        /\ (v # "invalid") => (v \in 1..MaxReloads)
+    /\ \E v \in {config + 1, INVALID} :
+        /\ (v # INVALID) => (v \in 1..MaxReloads)
         /\ pending_config' = v
     /\ UNCHANGED <<state, config, reload_count, reload_pending, pipelines_running>>
 
@@ -80,7 +86,7 @@ ApplyValidConfig ==
     /\ state = "building"
     /\ pending_config \in 1..MaxReloads
     /\ config' = pending_config
-    /\ pending_config' = "none"
+    /\ pending_config' = NONE
     /\ pipelines_running' = 1  \* Simplified: at least 1 pipeline rebuilt
     /\ state' = "running"
     /\ reload_count' = reload_count + 1
@@ -89,8 +95,8 @@ ApplyValidConfig ==
 (* --- Config is invalid: keep old config version, rebuild with it --- *)
 RejectInvalidConfig ==
     /\ state = "building"
-    /\ pending_config = "invalid"
-    /\ pending_config' = "none"
+    /\ pending_config = INVALID
+    /\ pending_config' = NONE
     /\ pipelines_running' = 1  \* Rebuild with previous config
     /\ state' = "running"      \* Return to running with old config
     /\ UNCHANGED <<config, reload_count, reload_pending>>
