@@ -129,7 +129,6 @@ impl ReloadCoordinator {
     }
 
     /// Whether this is the first pipeline build (for banner/diagnostics).
-    #[allow(dead_code)]
     pub fn is_first_run(&self) -> bool {
         self.first_run
     }

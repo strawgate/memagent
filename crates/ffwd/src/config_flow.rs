@@ -68,7 +68,6 @@ pub(crate) enum Effect {
 /// Create a new instance for each reload cycle.
 pub(crate) struct ConfigFlow {
     state: State,
-    remote_path: Option<PathBuf>,
     validated: Option<ffwd_config::ValidatedConfig>,
     config_path: PathBuf,
     child_pid: u32,
@@ -79,7 +78,6 @@ impl ConfigFlow {
     pub fn new(config_path: PathBuf, child_pid: u32) -> Self {
         Self {
             state: State::Idle,
-            remote_path: None,
             validated: None,
             config_path,
             child_pid,
@@ -96,7 +94,6 @@ impl ConfigFlow {
         match (&self.state, event) {
             (State::Idle, Event::ConfigAvailable { remote_path }) => {
                 self.state = State::Reading;
-                self.remote_path = Some(remote_path.clone());
                 Effect::ReadAndValidate(remote_path)
             }
 
@@ -130,11 +127,18 @@ impl ConfigFlow {
             }
 
             (State::Signaling, Event::SignalDelivered) => {
-                let yaml = self
-                    .validated
-                    .take()
-                    .map(|v| v.into_parts().1)
-                    .unwrap_or_default();
+                // validated is always Some here: set in Reading→Writing transition.
+                let yaml = match self.validated.take() {
+                    Some(v) => v.into_parts().1,
+                    None => {
+                        // Defensive: should never happen if state machine is correct.
+                        self.state = State::Idle;
+                        return Effect::LogError(
+                            "internal error: validated config missing in Signaling state"
+                                .to_owned(),
+                        );
+                    }
+                };
                 self.state = State::Idle;
                 Effect::ReportEffective { yaml }
             }

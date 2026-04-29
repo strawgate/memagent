@@ -397,7 +397,16 @@ async fn handle_remote_config(
                 tracing::error!("supervisor: {msg}");
                 break;
             }
-            Effect::None => break,
+            Effect::None => {
+                // The state machine returned no effect — either the cycle is complete
+                // or an unexpected event was delivered (defensive no-op in step()).
+                debug_assert!(
+                    flow.is_idle(),
+                    "Effect::None with non-idle state {:?} — possible invalid transition",
+                    flow.state()
+                );
+                break;
+            }
         }
     }
 }

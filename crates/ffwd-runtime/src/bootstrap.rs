@@ -413,6 +413,8 @@ pub async fn run_pipelines(
                 }
 
                 // Pipeline build succeeded — process the transition.
+                // Capture first-run status before the step changes it.
+                let is_initial_startup = coordinator.is_first_run();
                 let effects = coordinator.step(Event::PipelinesBuilt);
                 for effect in &effects {
                     match effect {
@@ -431,10 +433,6 @@ pub async fn run_pipelines(
                         _ => {}
                     }
                 }
-
-                // First-run check: coordinator was in Starting before step.
-                let is_initial_startup = !effects.iter().any(|e| matches!(e, Effect::CommitConfig))
-                    && pipeline_metrics.is_empty();
 
                 if is_initial_startup && let Some(ref addr) = current_config.server.diagnostics {
                     let mut server = ffwd_diagnostics::diagnostics::DiagnosticsServer::new(addr);
