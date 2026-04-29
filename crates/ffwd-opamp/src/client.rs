@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn remote_config_path_with_data_dir() {
-        let dir = std::path::Path::new("/tmp/ffwd-test");
+        let dir = Path::new("/tmp/ffwd-test");
         let path = OpampClient::remote_config_path(Some(dir));
         assert_eq!(path, dir.join("opamp_remote_config.yaml"));
     }

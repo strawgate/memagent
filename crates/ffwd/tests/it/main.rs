@@ -3,3 +3,5 @@ mod compliance_file;
 mod finite_pipeline;
 mod integration;
 mod reload;
+#[cfg(unix)]
+mod supervisor;

@@ -405,6 +405,21 @@ pub(crate) enum Commands {
         #[arg(value_name = "SHELL", help = "Target shell")]
         shell: CompletionShell,
     },
+    /// Run under a supervisor that manages config via OpAMP.
+    ///
+    /// The supervisor starts `ff run` as a child process and communicates with
+    /// an OpAMP server. When the server pushes new config, the supervisor
+    /// writes it to disk and sends SIGHUP to reload the child.
+    #[cfg(unix)]
+    Supervised {
+        #[arg(
+            short = 'c',
+            long = "config",
+            value_name = "FILE",
+            help = "Path to YAML config file"
+        )]
+        config: Option<String>,
+    },
 }
 
 // ---------------------------------------------------------------------------

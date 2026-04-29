@@ -34,6 +34,7 @@ clap_complete_nushell = { workspace = true }
 dhat = { version = "0.3", optional = true }
 ffwd-arrow = { version = "0.1.0", path = "../ffwd-arrow" }
 ffwd-config = { version = "0.1.0", path = "../ffwd-config" }
+ffwd-opamp = { version = "0.1.0", path = "../ffwd-opamp" }
 ffwd-core = { version = "0.1.0", path = "../ffwd-core" }
 ffwd-diagnostics = { version = "0.1.0", path = "../ffwd-diagnostics" }
 ffwd-io = { version = "0.1.0", path = "../ffwd-io" }
@@ -50,11 +51,13 @@ tokio = { version = "1", features = [
     "signal",
     "time",
     "sync",
+    "process",
 ] }
 tokio-util = { version = "0.7" }
 tracing = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
+libc = "0.2"
 tikv-jemallocator = { version = "0.6", features = ["stats"] }
 
 [dev-dependencies]

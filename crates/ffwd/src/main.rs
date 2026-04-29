@@ -19,6 +19,8 @@ mod commands;
 mod config_templates;
 mod generate;
 mod send;
+#[cfg(unix)]
+mod supervisor;
 mod validate;
 
 use cli::{Cli, Commands, SendArgs, bold, dim, red, reset};

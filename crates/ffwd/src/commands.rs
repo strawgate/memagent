@@ -53,6 +53,11 @@ pub(crate) async fn run_command(command: Commands) -> Result<(), CliError> {
             cmd_completions(shell);
             Ok(())
         }
+        #[cfg(unix)]
+        Commands::Supervised { config } => {
+            let config_path = resolve_config_path(config.as_deref())?;
+            crate::supervisor::cmd_supervised(&config_path).await
+        }
     }
 }
 

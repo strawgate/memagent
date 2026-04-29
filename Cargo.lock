@@ -1963,6 +1963,7 @@ dependencies = [
  "ffwd-core",
  "ffwd-diagnostics",
  "ffwd-io",
+ "ffwd-opamp",
  "ffwd-output",
  "ffwd-runtime",
  "ffwd-test-utils",
