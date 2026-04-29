@@ -250,14 +250,8 @@ pub async fn run_pipelines(
             &opamp_cfg.service_name,
             env!("CARGO_PKG_VERSION"),
         );
-        let opamp_config = ffwd_opamp::OpampConfig {
-            endpoint: opamp_cfg.endpoint.clone(),
-            api_key: opamp_cfg.api_key.clone(),
-            poll_interval_secs: opamp_cfg.poll_interval_secs,
-            accept_remote_config: opamp_cfg.accept_remote_config,
-            ..Default::default()
-        };
-        let client = ffwd_opamp::OpampClient::new(opamp_config, identity, reload_tx.clone());
+        let client =
+            ffwd_opamp::OpampClient::new(opamp_cfg.clone(), identity, reload_tx.clone());
         let shutdown_for_opamp = shutdown.clone();
         let data_dir = configured_data_dir.clone();
         let opamp_state = client.state_handle();
@@ -491,7 +485,15 @@ pub async fn run_pipelines(
                     reload_requested = false;
                 }
                 _ = reload_rx.recv() => {
-                    // SIGHUP reload requested — graceful drain.
+                    // Reload requested: drain pipelines, then validate new config.
+                    //
+                    // NOTE: We drain BEFORE validation because `run_async` spawns
+                    // independent input tasks via `inputs.drain(..)`. Once the
+                    // tokio::select! drops the `run_async` future, those tasks are
+                    // orphaned — the only cleanup path is cancelling the token and
+                    // calling `run_async` again to flush buffered data. Pre-validation
+                    // without drain would require an architectural change to pipeline
+                    // lifecycle management. The drain cost is ~200ms in practice.
                     tracing::info!("config reload: draining pipelines");
                     pipeline_shutdown.cancel();
                     let _ = tokio::time::timeout(

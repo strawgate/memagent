@@ -42,7 +42,7 @@ pub use types::{
     HostInfoConfig, HostInfoStyle, HostMetricsInputConfig, HttpInputConfig, HttpMethodConfig,
     HttpOutputConfig, HttpTypeConfig, InputConfig, InputType, InputTypeConfig,
     JournaldBackendConfig, JournaldInputConfig, JournaldTypeConfig, JsonlEnrichmentConfig,
-    K8sPathConfig, LokiOutputConfig, NullOutputConfig, OtlpOutputConfig,
+    K8sPathConfig, LokiOutputConfig, NullOutputConfig, OpampConfig, OtlpOutputConfig,
     OtlpProtobufDecodeModeConfig, OtlpProtocol, OtlpTypeConfig, OutputConfigV2, OutputType,
     PipelineConfig, S3CompressionConfig, S3InputConfig, S3TypeConfig, SensorTypeConfig,
     ServerConfig, SourceMetadataStyle, StaticEnrichmentConfig, StdoutOutputConfig, StorageConfig,

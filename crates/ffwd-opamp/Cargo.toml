@@ -11,7 +11,6 @@ doctest = false
 
 [dependencies]
 ffwd-config = { version = "0.1.0", path = "../ffwd-config" }
-log = "0.4"
 otel-opamp-rs = { version = "0.0.14", features = ["http"] }
 serde = { workspace = true }
 serde_yaml_ng = { workspace = true }

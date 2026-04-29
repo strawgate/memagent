@@ -2186,7 +2186,6 @@ name = "ffwd-opamp"
 version = "0.1.0"
 dependencies = [
  "ffwd-config",
- "log",
  "otel-opamp-rs",
  "serde",
  "serde_yaml_ng",

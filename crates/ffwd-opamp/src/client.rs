@@ -10,7 +10,7 @@ use std::time::Duration;
 use otel_opamp_rs::api::{Api, ApiCallbacks, ApiClientError, ConnectionSettings};
 use otel_opamp_rs::opamp::spec::{AgentConfigFile, AgentConfigMap, AgentToServer, ServerToAgent};
 
-use crate::config::OpampConfig;
+use ffwd_config::OpampConfig;
 use crate::error::OpampError;
 use crate::identity::AgentIdentity;
 

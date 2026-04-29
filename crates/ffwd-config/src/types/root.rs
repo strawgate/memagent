@@ -62,7 +62,7 @@ pub struct Config {
 }
 
 /// OpAMP connection configuration for central management.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OpampConfig {
     /// OpAMP server endpoint (e.g., `http://localhost:4320/v1/opamp`).
@@ -82,6 +82,19 @@ pub struct OpampConfig {
     /// Whether to accept remote configuration from the server (default: true).
     #[serde(default = "default_accept_remote_config")]
     pub accept_remote_config: bool,
+}
+
+impl Default for OpampConfig {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            api_key: None,
+            instance_uid: default_instance_uid(),
+            service_name: default_service_name(),
+            poll_interval_secs: default_poll_interval_secs(),
+            accept_remote_config: default_accept_remote_config(),
+        }
+    }
 }
 
 fn default_instance_uid() -> String {

@@ -34,6 +34,10 @@ Returns:
 - `503 Service Unavailable` — reload not configured (no diagnostics server)
 - `429 Too Many Requests` — a reload is already in progress
 
+> **Security note:** The reload endpoint is served on the diagnostics listener
+> (configured via `server.diagnostics`). Bind it to `127.0.0.1` or a private
+> interface to prevent unauthorized external reload triggers.
+
 ### 3. File watching (`--watch-config`)
 
 Start ffwd with the `-w` / `--watch-config` flag to automatically reload

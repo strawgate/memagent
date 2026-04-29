@@ -21,12 +21,11 @@
 //! by SIGHUP, `--watch-config`, and `POST /api/v1/reload`).
 
 mod client;
-mod config;
 mod error;
 mod identity;
 
 pub use client::OpampClient;
 pub use client::OpampStateHandle;
-pub use config::OpampConfig;
 pub use error::OpampError;
+pub use ffwd_config::OpampConfig;
 pub use identity::AgentIdentity;
