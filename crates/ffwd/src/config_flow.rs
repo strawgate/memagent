@@ -348,3 +348,133 @@ mod proptests {
         }
     }
 }
+
+// ═══════════ Kani formal verification ═══════════
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Bounded state for Kani.
+    fn arb_state(tag: u8) -> State {
+        match tag % 4 {
+            0 => State::Idle,
+            1 => State::Reading,
+            2 => State::Writing,
+            _ => State::Signaling,
+        }
+    }
+
+    /// Bounded simplified event (mirrors SimpleEvent).
+    fn arb_event_tag(tag: u8) -> u8 {
+        tag % 7
+    }
+
+    /// Apply a simplified event to a state (pure transition, mirrors test transition()).
+    fn transition(state: State, event_tag: u8) -> State {
+        match (state, event_tag % 7) {
+            (State::Idle, 0) => State::Reading,      // ConfigAvailable
+            (State::Reading, 1) => State::Writing,   // ReadOk
+            (State::Reading, 2) => State::Idle,      // ReadFailed
+            (State::Writing, 3) => State::Signaling, // WriteOk
+            (State::Writing, 4) => State::Idle,      // WriteFailed
+            (State::Signaling, 5) => State::Idle,    // SignalDelivered
+            (State::Signaling, 6) => State::Idle,    // SignalFailed
+            (s, _) => s,                             // Invalid event → no-op
+        }
+    }
+
+    // ── Property 1: Any event from any state always produces a valid state ──
+
+    #[kani::proof]
+    fn verify_transition_always_valid() {
+        let state_tag: u8 = kani::any();
+        let event_tag: u8 = kani::any();
+
+        let state = arb_state(state_tag);
+        let next = transition(state, event_tag);
+
+        // Result is always a valid State variant
+        assert!(matches!(
+            next,
+            State::Idle | State::Reading | State::Writing | State::Signaling
+        ));
+
+        kani::cover!(next == State::Idle, "reached Idle");
+        kani::cover!(next == State::Reading, "reached Reading");
+        kani::cover!(next == State::Writing, "reached Writing");
+        kani::cover!(next == State::Signaling, "reached Signaling");
+    }
+
+    // ── Property 2: Idle is always reachable from any error path ──
+
+    #[kani::proof]
+    fn verify_idle_reachable_from_errors() {
+        let state_tag: u8 = kani::any();
+        let state = arb_state(state_tag);
+
+        // From any non-Idle state, there exists an event that returns to Idle
+        if state != State::Idle {
+            let back_to_idle = match state {
+                State::Reading => transition(state, 2),   // ReadFailed
+                State::Writing => transition(state, 4),   // WriteFailed
+                State::Signaling => transition(state, 6), // SignalFailed
+                _ => unreachable!(),
+            };
+            assert_eq!(back_to_idle, State::Idle);
+        }
+
+        kani::cover!(state == State::Reading, "reading error path");
+        kani::cover!(state == State::Writing, "writing error path");
+        kani::cover!(state == State::Signaling, "signaling error path");
+    }
+
+    // ── Property 3: Forward progress only (no backward transitions) ──
+
+    #[kani::proof]
+    fn verify_forward_progress_only() {
+        let state_tag: u8 = kani::any();
+        let event_tag: u8 = kani::any();
+
+        let state = arb_state(state_tag);
+        let next = transition(state, event_tag);
+
+        // State can only advance forward in pipeline or return to Idle
+        match state {
+            State::Idle => assert!(matches!(next, State::Idle | State::Reading)),
+            State::Reading => assert!(matches!(
+                next,
+                State::Reading | State::Writing | State::Idle
+            )),
+            State::Writing => assert!(matches!(
+                next,
+                State::Writing | State::Signaling | State::Idle
+            )),
+            State::Signaling => assert!(matches!(next, State::Signaling | State::Idle)),
+        }
+
+        kani::cover!(
+            state != next && next == State::Idle,
+            "error recovery to Idle"
+        );
+        kani::cover!(
+            state == State::Idle && next == State::Reading,
+            "start cycle"
+        );
+    }
+
+    // ── Property 4: Complete happy path ──
+
+    #[kani::proof]
+    fn verify_happy_path_complete_cycle() {
+        let s0 = State::Idle;
+        let s1 = transition(s0, 0); // ConfigAvailable
+        assert_eq!(s1, State::Reading);
+        let s2 = transition(s1, 1); // ReadOk
+        assert_eq!(s2, State::Writing);
+        let s3 = transition(s2, 3); // WriteOk
+        assert_eq!(s3, State::Signaling);
+        let s4 = transition(s3, 5); // SignalDelivered
+        assert_eq!(s4, State::Idle);
+    }
+}

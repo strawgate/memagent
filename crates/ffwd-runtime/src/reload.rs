@@ -710,3 +710,224 @@ mod proptests {
         }
     }
 }
+
+// ═══════════ Kani formal verification ═══════════
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Bounded state for Kani exploration (avoids unbounded String).
+    fn arb_state(tag: u8) -> State {
+        match tag % 6 {
+            0 => State::Starting,
+            1 => State::Running,
+            2 => State::Draining,
+            3 => State::Validating,
+            4 => State::Building,
+            _ => State::ShuttingDown { error: None },
+        }
+    }
+
+    /// Bounded event for Kani exploration.
+    fn arb_event(tag: u8) -> Event {
+        match tag % 11 {
+            0 => Event::PipelinesBuilt,
+            1 => Event::BuildFailed {
+                pipeline: String::new(),
+                error: String::new(),
+            },
+            2 => Event::PipelineCompleted { error: None },
+            3 => Event::ShutdownRequested,
+            4 => Event::ReloadRequested,
+            5 => Event::DrainCompleted,
+            6 => Event::DrainTimedOut,
+            7 => Event::ConfigValid,
+            8 => Event::ConfigInvalid(String::new()),
+            9 => Event::ConfigNotReloadable(String::new()),
+            _ => Event::ConfigUnchanged,
+        }
+    }
+
+    /// Construct a coordinator with arbitrary internal state for single-step proofs.
+    fn arb_coordinator(
+        state_tag: u8,
+        first_run: bool,
+        has_pending: bool,
+        attempts: u32,
+    ) -> ReloadCoordinator {
+        let state = arb_state(state_tag);
+        ReloadCoordinator {
+            state,
+            first_run,
+            has_pending,
+            rebuild_attempts: attempts % (MAX_REBUILD_ATTEMPTS + 1),
+            config_path: PathBuf::from("/x"),
+        }
+    }
+
+    // ── Property 1: ShuttingDown is absorbing ──
+
+    #[kani::proof]
+    fn verify_shutting_down_is_absorbing() {
+        let event_tag: u8 = kani::any();
+        let event = arb_event(event_tag);
+
+        let mut c = ReloadCoordinator {
+            state: State::ShuttingDown { error: None },
+            first_run: kani::any(),
+            has_pending: kani::any(),
+            rebuild_attempts: kani::any::<u32>() % (MAX_REBUILD_ATTEMPTS + 1),
+            config_path: PathBuf::from("/x"),
+        };
+
+        let effects = c.step(event);
+
+        // State must remain ShuttingDown
+        assert!(matches!(c.state(), State::ShuttingDown { .. }));
+        // No effects emitted from terminal state
+        assert!(effects.is_empty());
+
+        kani::cover!(event_tag % 11 == 3, "shutdown requested in terminal");
+        kani::cover!(event_tag % 11 == 0, "pipelines built in terminal");
+    }
+
+    // ── Property 2: ShutdownRequested always reaches terminal ──
+
+    #[kani::proof]
+    fn verify_shutdown_requested_always_terminal() {
+        let state_tag: u8 = kani::any();
+        let first_run: bool = kani::any();
+        let has_pending: bool = kani::any();
+        let attempts: u32 = kani::any::<u32>() % (MAX_REBUILD_ATTEMPTS + 1);
+
+        let mut c = arb_coordinator(state_tag, first_run, has_pending, attempts);
+        c.step(Event::ShutdownRequested);
+
+        // After ShutdownRequested, must be in ShuttingDown
+        assert!(matches!(c.state(), State::ShuttingDown { .. }));
+
+        kani::cover!(state_tag % 6 == 0, "shutdown from Starting");
+        kani::cover!(state_tag % 6 == 1, "shutdown from Running");
+        kani::cover!(state_tag % 6 == 4, "shutdown from Building");
+    }
+
+    // ── Property 3: First-run build failure is always fatal ──
+
+    #[kani::proof]
+    fn verify_first_run_build_failure_is_fatal() {
+        let mut c = ReloadCoordinator {
+            state: State::Starting,
+            first_run: true,
+            has_pending: false,
+            rebuild_attempts: 0,
+            config_path: PathBuf::from("/x"),
+        };
+
+        let effects = c.step(Event::BuildFailed {
+            pipeline: String::new(),
+            error: String::new(),
+        });
+
+        // Must reach ShuttingDown with error
+        assert!(matches!(c.state(), State::ShuttingDown { error: Some(_) }));
+        // Must emit FatalShutdown
+        assert!(
+            effects
+                .iter()
+                .any(|e| matches!(e, Effect::FatalShutdown(_)))
+        );
+    }
+
+    // ── Property 4: Rebuild attempts never exceed MAX ──
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn verify_rebuild_attempts_bounded() {
+        let mut c = ReloadCoordinator {
+            state: State::Building,
+            first_run: false,
+            has_pending: kani::any(),
+            rebuild_attempts: kani::any::<u32>() % (MAX_REBUILD_ATTEMPTS + 1),
+            config_path: PathBuf::from("/x"),
+        };
+
+        // Apply up to 4 build failures
+        for _ in 0..4u8 {
+            if c.is_terminal() {
+                break;
+            }
+            c.step(Event::BuildFailed {
+                pipeline: String::new(),
+                error: String::new(),
+            });
+            // Invariant: attempts never exceed MAX
+            assert!(c.rebuild_attempts <= MAX_REBUILD_ATTEMPTS);
+        }
+
+        // Must have either reached terminal or still be in Building
+        assert!(matches!(
+            c.state(),
+            State::ShuttingDown { .. } | State::Building
+        ));
+
+        kani::cover!(
+            matches!(c.state(), State::ShuttingDown { .. }),
+            "reached fatal after max attempts"
+        );
+    }
+
+    // ── Property 5: has_pending consistency ──
+
+    #[kani::proof]
+    fn verify_has_pending_invariant() {
+        let state_tag: u8 = kani::any();
+        let first_run: bool = kani::any();
+        let has_pending: bool = kani::any();
+        let attempts: u32 = kani::any::<u32>() % (MAX_REBUILD_ATTEMPTS + 1);
+        let event_tag: u8 = kani::any();
+
+        let mut c = arb_coordinator(state_tag, first_run, has_pending, attempts);
+        let event = arb_event(event_tag);
+        c.step(event);
+
+        // After any single step, has_pending implies Building or ShuttingDown
+        if c.has_pending() {
+            assert!(
+                matches!(c.state(), State::Building | State::ShuttingDown { .. }),
+                "has_pending=true in unexpected state"
+            );
+        }
+
+        kani::cover!(c.has_pending(), "has_pending is true after step");
+        kani::cover!(!c.has_pending(), "has_pending is false after step");
+    }
+
+    // ── Property 6: DrainPipelines only emitted from Running ──
+
+    #[kani::proof]
+    fn verify_drain_only_from_running() {
+        let state_tag: u8 = kani::any();
+        let first_run: bool = kani::any();
+        let has_pending: bool = kani::any();
+        let attempts: u32 = kani::any::<u32>() % (MAX_REBUILD_ATTEMPTS + 1);
+        let event_tag: u8 = kani::any();
+
+        let state_before = arb_state(state_tag);
+        let mut c = arb_coordinator(state_tag, first_run, has_pending, attempts);
+        let event = arb_event(event_tag);
+        let effects = c.step(event);
+
+        if effects.iter().any(|e| matches!(e, Effect::DrainPipelines)) {
+            assert!(
+                matches!(state_before, State::Running),
+                "DrainPipelines emitted from non-Running state"
+            );
+        }
+
+        kani::cover!(
+            effects.iter().any(|e| matches!(e, Effect::DrainPipelines)),
+            "drain was emitted"
+        );
+    }
+}

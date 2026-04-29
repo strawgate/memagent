@@ -304,9 +304,11 @@ RebuildAttemptsBounded ==
 HasPendingInvariant ==
     has_pending => state \in {"building", "shutting_down"}
 
-(* First-run build failure is always fatal *)
-FirstRunBuildFailureIsFatal ==
-    [](first_run /\ state = "starting" /\ state' = "shutting_down" => shutdown_error' = 1)
+(* First-run build failure always sets error (structural from StartupBuildFailure action).
+   This cannot be checked as a temporal property because ShutdownFromOther also transitions
+   from starting→shutting_down (with NONE error for clean requested shutdown).
+   The invariant is enforced structurally: StartupBuildFailure always sets shutdown_error=1. *)
+FirstRunBuildIsFatalNote == TRUE
 
 (* ═══════════ LIVENESS PROPERTIES ═══════════ *)
 

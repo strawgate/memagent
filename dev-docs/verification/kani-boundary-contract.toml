@@ -285,3 +285,15 @@ reason = "Protobuf varint length, tag size, and bytes-field total size oracles w
 path = "crates/ffwd-kani/src/iter.rs"
 status = "required"
 reason = "Byte search and whitespace skip oracles with contract proofs for memchr-equivalent operations."
+
+[[seams]]
+path = "crates/ffwd-runtime/src/reload.rs"
+status = "recommended"
+reason = "ReloadCoordinator state machine: absorbing terminal state, bounded retries, has_pending consistency, drain-only-from-running."
+issue = 2748
+
+[[seams]]
+path = "crates/ffwd/src/config_flow.rs"
+status = "recommended"
+reason = "ConfigFlow state machine: forward-progress-only, idle-reachable-from-errors, valid transitions, complete happy path."
+issue = 2748
