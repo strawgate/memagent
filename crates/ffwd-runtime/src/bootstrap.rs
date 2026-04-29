@@ -265,6 +265,11 @@ pub async fn run_pipelines(
     let meter = meter_provider.meter("ffwd");
 
     // ── OpAMP client (optional, feature-gated) ──
+    // OpAMP client: started once at process startup and never recreated.
+    // Changes to the `opamp:` config section require a full process restart.
+    // This matches the OpenTelemetry Collector supervisor pattern where the
+    // management connection is a process-lifetime concern, not a hot-reloadable
+    // component (session identity, auth tokens, etc. are tied to the connection).
     #[cfg(feature = "opamp")]
     let opamp_client = if let Some(ref opamp_cfg) = config.opamp {
         let identity = ffwd_opamp::AgentIdentity::resolve(

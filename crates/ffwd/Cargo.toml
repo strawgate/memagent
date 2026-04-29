@@ -13,11 +13,12 @@ path = "src/main.rs"
 doctest = false
 
 [features]
-default = ["datafusion"]
+default = ["datafusion", "opamp"]
 dhat-heap = ["dhat", "ffwd-runtime/dhat-heap"]
 cpu-profiling = ["ffwd-runtime/cpu-profiling"]
 turmoil = ["ffwd-runtime/turmoil"]
 datafusion = ["dep:ffwd-transform", "ffwd-runtime/datafusion"]
+opamp = ["ffwd-runtime/opamp"]
 otlp-research = [
     "ffwd-config/otlp-research",
     "ffwd-runtime/otlp-research",
