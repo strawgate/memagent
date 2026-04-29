@@ -317,12 +317,19 @@ impl HttpEnrichProcessor {
                 }
 
                 // Check this chunk's results only for missing keys (panicked threads).
-                let chunk_result_keys: HashSet<&str> = all_results
-                    .get(results_before..)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|(k, _)| k.as_str())
-                    .collect();
+                let chunk_results = match all_results.get(results_before..) {
+                    Some(results) => results,
+                    None => {
+                        tracing::error!(
+                            results_before,
+                            results_len = all_results.len(),
+                            "invalid enrichment result window"
+                        );
+                        &[]
+                    }
+                };
+                let chunk_result_keys: HashSet<&str> =
+                    chunk_results.iter().map(|(k, _)| k.as_str()).collect();
                 let missing: Vec<String> = chunk_keys
                     .iter()
                     .filter(|k| !chunk_result_keys.contains(**k))
