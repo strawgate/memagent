@@ -13,13 +13,14 @@ doctest = false
 ffwd-config = { version = "0.1.0", path = "../ffwd-config" }
 otel-opamp-rs = { version = "0.0.14", features = ["http"] }
 openssl = { version = "0.10", features = ["vendored"] }
-serde = { workspace = true }
-serde_yaml_ng = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "rt"] }
 tokio-util = { version = "0.7" }
 tracing = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
+
+[package.metadata.cargo-machete]
+ignored = ["openssl"]
 
 [dev-dependencies]
 proptest = { workspace = true }

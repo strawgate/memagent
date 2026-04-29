@@ -2192,8 +2192,6 @@ dependencies = [
  "openssl",
  "otel-opamp-rs",
  "proptest",
- "serde",
- "serde_yaml_ng",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
